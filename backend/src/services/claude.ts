@@ -86,12 +86,13 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
   const abortController = new AbortController();
   activeSessions.set(chatId, { abortController, emitter });
 
-  const options: any = {
+  const queryOpts: any = {
     prompt,
-    abortController,
-    cwd: chat.folder,
     options: {
+      abortController,
+      cwd: chat.folder,
       maxTurns: 50,
+      ...(chat.session_id ? { resume: chat.session_id } : {}),
       canUseTool: async (
         toolName: string,
         input: Record<string, unknown>,
@@ -145,15 +146,11 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
     },
   };
 
-  if (chat.session_id) {
-    options.resume = { id: chat.session_id, transcript: [] };
-  }
-
   (async () => {
     try {
       let sessionId: string | null = null;
 
-      const conversation = query(options);
+      const conversation = query(queryOpts);
 
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;
