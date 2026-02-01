@@ -70,23 +70,30 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
             .run(sessionId, new Date().toISOString(), chatId);
         }
 
-        if (message.type === 'assistant') {
-          for (const block of (message as any).message?.content || []) {
-            if (block.type === 'text') {
+        const blocks = (message as any).message?.content || [];
+        for (const block of blocks) {
+          switch (block.type) {
+            case 'text':
               emitter.emit('event', { type: 'text', content: block.text } as StreamEvent);
-            } else if (block.type === 'thinking') {
+              break;
+            case 'thinking':
               emitter.emit('event', { type: 'thinking', content: block.thinking } as StreamEvent);
-            } else if (block.type === 'tool_use') {
+              break;
+            case 'tool_use':
               emitter.emit('event', {
                 type: 'tool_use',
                 content: JSON.stringify(block.input),
                 toolName: block.name,
               } as StreamEvent);
-            } else if (block.type === 'tool_result') {
-              emitter.emit('event', {
-                type: 'tool_result',
-                content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-              } as StreamEvent);
+              break;
+            case 'tool_result': {
+              const content = typeof block.content === 'string'
+                ? block.content
+                : Array.isArray(block.content)
+                  ? block.content.map((c: any) => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join('\n')
+                  : JSON.stringify(block.content);
+              emitter.emit('event', { type: 'tool_result', content } as StreamEvent);
+              break;
             }
           }
         }

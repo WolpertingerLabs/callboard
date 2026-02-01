@@ -93,44 +93,62 @@ interface ParsedMessage {
   toolName?: string;
 }
 
+function extractToolResultContent(block: any): string {
+  if (typeof block.content === 'string') return block.content;
+  if (Array.isArray(block.content)) {
+    return block.content
+      .map((c: any) => {
+        if (typeof c === 'string') return c;
+        if (c.type === 'text') return c.text;
+        return JSON.stringify(c);
+      })
+      .join('\n');
+  }
+  return JSON.stringify(block.content);
+}
+
 function parseMessages(rawMessages: any[]): ParsedMessage[] {
   const result: ParsedMessage[] = [];
 
   for (const msg of rawMessages) {
-    if (msg.type === 'user' || msg.role === 'user') {
-      const content = msg.message?.content || msg.content;
-      if (typeof content === 'string') {
-        result.push({ role: 'user', type: 'text', content });
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === 'text') {
-            result.push({ role: 'user', type: 'text', content: block.text });
-          }
-        }
-      }
-    } else if (msg.type === 'assistant' || msg.role === 'assistant') {
-      const content = msg.message?.content || msg.content;
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === 'text') {
-            result.push({ role: 'assistant', type: 'text', content: block.text });
-          } else if (block.type === 'thinking') {
-            result.push({ role: 'assistant', type: 'thinking', content: block.thinking });
-          } else if (block.type === 'tool_use') {
-            result.push({
-              role: 'assistant',
-              type: 'tool_use',
-              content: JSON.stringify(block.input),
-              toolName: block.name,
-            });
-          } else if (block.type === 'tool_result') {
-            result.push({
-              role: 'assistant',
-              type: 'tool_result',
-              content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-            });
-          }
-        }
+    // Skip summary/metadata lines
+    if (msg.type === 'summary' || msg.type === 'queue-operation') continue;
+
+    const role: 'user' | 'assistant' = msg.message?.role || msg.type;
+    const content = msg.message?.content || msg.content;
+    if (!content) continue;
+
+    if (typeof content === 'string') {
+      result.push({ role, type: 'text', content });
+      continue;
+    }
+
+    if (!Array.isArray(content)) continue;
+
+    for (const block of content) {
+      switch (block.type) {
+        case 'text':
+          if (block.text) result.push({ role, type: 'text', content: block.text });
+          break;
+        case 'thinking':
+          result.push({ role: 'assistant', type: 'thinking', content: block.thinking || '' });
+          break;
+        case 'tool_use':
+          result.push({
+            role: 'assistant',
+            type: 'tool_use',
+            content: JSON.stringify(block.input),
+            toolName: block.name,
+          });
+          break;
+        case 'tool_result':
+          result.push({
+            role: 'assistant',
+            type: 'tool_result',
+            content: extractToolResultContent(block),
+            toolName: block.tool_use_id,
+          });
+          break;
       }
     }
   }
