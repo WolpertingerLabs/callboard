@@ -1,0 +1,7 @@
+node_modules/
+dist/
+backend/data/
+*.db
+*.db-journal
+*.db-wal
+.env
