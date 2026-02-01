@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import db from '../db.js';
@@ -58,32 +58,61 @@ chatsRouter.get('/:id', (req, res) => {
   res.json(chat);
 });
 
-// Get messages from SDK session JSONL
+function readJsonlFile(path: string): any[] {
+  try {
+    return readFileSync(path, 'utf-8')
+      .split('\n')
+      .filter(line => line.trim())
+      .map(line => { try { return JSON.parse(line); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// Get messages from SDK session JSONL files (all sessions for this chat)
 chatsRouter.get('/:id/messages', (req, res) => {
   const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(req.params.id) as any;
   if (!chat) return res.status(404).json({ error: 'Not found' });
   if (!chat.session_id) return res.json([]);
 
-  // Always derive path from session_id (it may change across resumes)
-  const logPath = findSessionLogPath(chat.session_id);
+  // Collect all session IDs from metadata + current
+  const meta = JSON.parse(chat.metadata || '{}');
+  const sessionIds: string[] = meta.session_ids || [];
+  if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
-  if (!logPath || !existsSync(logPath)) return res.json([]);
+  // Find the project dir from the current session, then load ALL jsonl files in it
+  // This catches sessions from before we started tracking session_ids
+  const currentLogPath = findSessionLogPath(chat.session_id);
+  const allRaw: any[] = [];
 
-  try {
-    const content = readFileSync(logPath, 'utf-8');
-    const messages = content
-      .split('\n')
-      .filter(line => line.trim())
-      .map(line => {
-        try { return JSON.parse(line); } catch { return null; }
-      })
-      .filter(Boolean);
+  if (currentLogPath) {
+    const projectDir = join(currentLogPath, '..');
+    const allFiles = readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ name: f, path: join(projectDir, f) }))
+      .sort((a, b) => {
+        // Sort by file modification time (oldest first)
+        const aStat = statSync(a.path);
+        const bStat = statSync(b.path);
+        return aStat.mtimeMs - bStat.mtimeMs;
+      });
 
-    const parsed = parseMessages(messages);
-    res.json(parsed);
-  } catch {
-    res.json([]);
+    for (const file of allFiles) {
+      allRaw.push(...readJsonlFile(file.path));
+    }
+  } else {
+    // Fallback: just try individual session IDs
+    for (const sid of sessionIds) {
+      const logPath = findSessionLogPath(sid);
+      if (logPath) allRaw.push(...readJsonlFile(logPath));
+    }
   }
+
+  if (allRaw.length === 0) return res.json([]);
+
+  const parsed = parseMessages(allRaw);
+  res.json(parsed);
 });
 
 interface ParsedMessage {

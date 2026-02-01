@@ -63,11 +63,13 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
 
         if ('session_id' in message && message.session_id && !sessionId) {
           sessionId = message.session_id as string;
-          // SDK stores sessions at ~/.claude/projects/{cwd-with-slashes-as-dashes}/{sessionId}.jsonl
-          // The cwd in the session may differ from chat.folder (SDK resolves it)
-          // We'll compute the log path after we see the cwd from messages, or use a glob fallback
-          db.prepare('UPDATE chats SET session_id = ?, updated_at = ? WHERE id = ?')
-            .run(sessionId, new Date().toISOString(), chatId);
+          // Append new session_id to metadata.session_ids array for full history
+          const meta = JSON.parse(chat.metadata || '{}');
+          const ids: string[] = meta.session_ids || [];
+          if (!ids.includes(sessionId)) ids.push(sessionId);
+          meta.session_ids = ids;
+          db.prepare('UPDATE chats SET session_id = ?, metadata = ?, updated_at = ? WHERE id = ?')
+            .run(sessionId, JSON.stringify(meta), new Date().toISOString(), chatId);
         }
 
         const blocks = (message as any).message?.content || [];
