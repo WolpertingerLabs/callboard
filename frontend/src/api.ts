@@ -48,3 +48,16 @@ export async function getMessages(id: string): Promise<ParsedMessage[]> {
 export async function stopChat(id: string): Promise<void> {
   await fetch(`${BASE}/chats/${id}/stop`, { method: 'POST' });
 }
+
+export async function respondToChat(
+  id: string,
+  allow: boolean,
+  updatedInput?: Record<string, unknown>,
+  updatedPermissions?: unknown[],
+): Promise<void> {
+  await fetch(`${BASE}/chats/${id}/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allow, updatedInput, updatedPermissions }),
+  });
+}

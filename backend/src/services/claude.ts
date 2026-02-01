@@ -1,13 +1,23 @@
 import { query } from '@anthropic-ai/claude-code';
+import type { PermissionResult } from '@anthropic-ai/claude-code';
 import { EventEmitter } from 'events';
-import { homedir } from 'os';
-import { join } from 'path';
 import db from '../db.js';
 
 export interface StreamEvent {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'done' | 'error';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'done' | 'error'
+    | 'permission_request' | 'user_question' | 'plan_review';
   content: string;
   toolName?: string;
+  input?: Record<string, unknown>;
+  questions?: unknown[];
+  suggestions?: unknown[];
+}
+
+interface PendingRequest {
+  toolName: string;
+  input: Record<string, unknown>;
+  suggestions?: unknown[];
+  resolve: (result: PermissionResult) => void;
 }
 
 interface ActiveSession {
@@ -16,9 +26,36 @@ interface ActiveSession {
 }
 
 const activeSessions = new Map<string, ActiveSession>();
+const pendingRequests = new Map<string, PendingRequest>();
 
 export function getActiveSession(chatId: string): ActiveSession | undefined {
   return activeSessions.get(chatId);
+}
+
+export function hasPendingRequest(chatId: string): boolean {
+  return pendingRequests.has(chatId);
+}
+
+export function respondToPermission(
+  chatId: string,
+  allow: boolean,
+  updatedInput?: Record<string, unknown>,
+  updatedPermissions?: unknown[],
+): boolean {
+  const pending = pendingRequests.get(chatId);
+  if (!pending) return false;
+  pendingRequests.delete(chatId);
+
+  if (allow) {
+    pending.resolve({
+      behavior: 'allow',
+      updatedInput: updatedInput || pending.input,
+      updatedPermissions: updatedPermissions as any,
+    });
+  } else {
+    pending.resolve({ behavior: 'deny', message: 'User denied', interrupt: true });
+  }
+  return true;
 }
 
 export function stopSession(chatId: string): boolean {
@@ -26,6 +63,7 @@ export function stopSession(chatId: string): boolean {
   if (session) {
     session.abortController.abort();
     activeSessions.delete(chatId);
+    pendingRequests.delete(chatId);
     return true;
   }
   return false;
@@ -45,6 +83,43 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
     cwd: chat.folder,
     options: {
       maxTurns: 50,
+      canUseTool: async (
+        toolName: string,
+        input: Record<string, unknown>,
+        { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
+      ): Promise<PermissionResult> => {
+        return new Promise<PermissionResult>((resolve) => {
+          // Emit appropriate event type based on tool
+          if (toolName === 'AskUserQuestion') {
+            emitter.emit('event', {
+              type: 'user_question',
+              content: '',
+              questions: input.questions as unknown[],
+            } as StreamEvent);
+          } else if (toolName === 'ExitPlanMode') {
+            emitter.emit('event', {
+              type: 'plan_review',
+              content: JSON.stringify(input),
+            } as StreamEvent);
+          } else {
+            emitter.emit('event', {
+              type: 'permission_request',
+              content: '',
+              toolName,
+              input,
+              suggestions,
+            } as StreamEvent);
+          }
+
+          pendingRequests.set(chatId, { toolName, input, suggestions, resolve });
+
+          // Clean up on abort
+          signal.addEventListener('abort', () => {
+            pendingRequests.delete(chatId);
+            resolve({ behavior: 'deny', message: 'Aborted' });
+          });
+        });
+      },
     },
   };
 
@@ -63,7 +138,6 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
 
         if ('session_id' in message && message.session_id && !sessionId) {
           sessionId = message.session_id as string;
-          // Append new session_id to metadata.session_ids array for full history
           const meta = JSON.parse(chat.metadata || '{}');
           const ids: string[] = meta.session_ids || [];
           if (!ids.includes(sessionId)) ids.push(sessionId);
@@ -110,6 +184,7 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
       }
     } finally {
       activeSessions.delete(chatId);
+      pendingRequests.delete(chatId);
     }
   })();
 

@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getChat, getMessages, type Chat as ChatType, type ParsedMessage } from '../api';
+import { getChat, getMessages, respondToChat, type Chat as ChatType, type ParsedMessage } from '../api';
 import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
+import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 
 export default function Chat() {
   const { id } = useParams<{ id: string }>();
@@ -10,6 +11,7 @@ export default function Chat() {
   const [chat, setChat] = useState<ChatType | null>(null);
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -68,6 +70,17 @@ export default function Chat() {
               setStreaming(false);
               return;
             }
+            if (event.type === 'permission_request' || event.type === 'user_question' || event.type === 'plan_review') {
+              setPendingAction({
+                type: event.type,
+                toolName: event.toolName,
+                input: event.input,
+                questions: event.questions,
+                suggestions: event.suggestions,
+                content: event.content,
+              });
+              continue;
+            }
             setMessages(prev => [...prev, {
               role: 'assistant',
               type: event.type,
@@ -85,6 +98,11 @@ export default function Chat() {
       setStreaming(false);
       abortRef.current = null;
     }
+  }, [id]);
+
+  const handleRespond = useCallback(async (allow: boolean, updatedInput?: Record<string, unknown>) => {
+    setPendingAction(null);
+    await respondToChat(id!, allow, updatedInput);
   }, [id]);
 
   const handleStop = useCallback(() => {
@@ -150,7 +168,11 @@ export default function Chat() {
         <div ref={bottomRef} />
       </div>
 
-      <PromptInput onSend={handleSend} disabled={streaming} />
+      {pendingAction ? (
+        <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
+      ) : (
+        <PromptInput onSend={handleSend} disabled={streaming} />
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMessage, getActiveSession, stopSession, type StreamEvent } from '../services/claude.js';
+import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, type StreamEvent } from '../services/claude.js';
 
 export const streamRouter = Router();
 
@@ -61,6 +61,16 @@ streamRouter.get('/:id/stream', (req, res) => {
   req.on('close', () => {
     session.emitter.removeListener('event', onEvent);
   });
+});
+
+// Respond to a pending permission/question/plan request
+streamRouter.post('/:id/respond', (req, res) => {
+  const { allow, updatedInput, updatedPermissions } = req.body;
+  if (!hasPendingRequest(req.params.id)) {
+    return res.status(404).json({ error: 'No pending request' });
+  }
+  const ok = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions);
+  res.json({ ok });
 });
 
 // Stop execution
