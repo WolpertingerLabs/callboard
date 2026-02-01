@@ -17,6 +17,8 @@ interface PendingRequest {
   toolName: string;
   input: Record<string, unknown>;
   suggestions?: unknown[];
+  eventType: 'permission_request' | 'user_question' | 'plan_review';
+  eventData: Record<string, unknown>;
   resolve: (result: PermissionResult) => void;
 }
 
@@ -34,6 +36,13 @@ export function getActiveSession(chatId: string): ActiveSession | undefined {
 
 export function hasPendingRequest(chatId: string): boolean {
   return pendingRequests.has(chatId);
+}
+
+export function getPendingRequest(chatId: string): Omit<PendingRequest, 'resolve'> | null {
+  const p = pendingRequests.get(chatId);
+  if (!p) return null;
+  const { resolve: _, ...rest } = p;
+  return rest;
 }
 
 export function respondToPermission(
@@ -111,7 +120,20 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
             } as StreamEvent);
           }
 
-          pendingRequests.set(chatId, { toolName, input, suggestions, resolve });
+          let eventType: PendingRequest['eventType'];
+          let eventData: Record<string, unknown>;
+          if (toolName === 'AskUserQuestion') {
+            eventType = 'user_question';
+            eventData = { questions: input.questions };
+          } else if (toolName === 'ExitPlanMode') {
+            eventType = 'plan_review';
+            eventData = { content: JSON.stringify(input) };
+          } else {
+            eventType = 'permission_request';
+            eventData = { toolName, input, suggestions };
+          }
+
+          pendingRequests.set(chatId, { toolName, input, suggestions, eventType, eventData, resolve });
 
           // Clean up on abort
           signal.addEventListener('abort', () => {

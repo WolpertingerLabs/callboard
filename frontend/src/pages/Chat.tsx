@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getChat, getMessages, respondToChat, type Chat as ChatType, type ParsedMessage } from '../api';
+import { getChat, getMessages, getPending, respondToChat, type Chat as ChatType, type ParsedMessage } from '../api';
 import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
@@ -15,40 +15,13 @@ export default function Chat() {
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    getChat(id!).then(setChat);
-    getMessages(id!).then(setMessages);
-  }, [id]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
-
-  const handleSend = useCallback(async (prompt: string) => {
-    setStreaming(true);
-    setMessages(prev => [...prev, { role: 'user', type: 'text', content: prompt }]);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
+  // Shared SSE reader that processes a ReadableStream of SSE data
+  const readSSE = useCallback(async (body: ReadableStream<Uint8Array>) => {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
     try {
-      const res = await fetch(`/api/chats/${id}/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ prompt }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok || !res.body) {
-        setStreaming(false);
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -90,6 +63,71 @@ export default function Chat() {
           } catch {}
         }
       }
+    } finally {
+      setStreaming(false);
+    }
+  }, []);
+
+  // Connect to an existing SSE stream (e.g. after page refresh)
+  const connectToStream = useCallback(async () => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const res = await fetch(`/api/chats/${id}/stream`, {
+        credentials: 'include',
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        setStreaming(false);
+        return;
+      }
+      await readSSE(res.body);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setStreaming(false);
+      }
+    } finally {
+      abortRef.current = null;
+    }
+  }, [id, readSSE]);
+
+  useEffect(() => {
+    getChat(id!).then(setChat);
+    getMessages(id!).then(setMessages);
+    getPending(id!).then(p => {
+      if (p) {
+        setPendingAction(p);
+        setStreaming(true);
+      }
+    });
+  }, [id]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length]);
+
+  const handleSend = useCallback(async (prompt: string) => {
+    setStreaming(true);
+    setMessages(prev => [...prev, { role: 'user', type: 'text', content: prompt }]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch(`/api/chats/${id}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ prompt }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        setStreaming(false);
+        return;
+      }
+
+      await readSSE(res.body);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         setMessages(prev => [...prev, { role: 'assistant', type: 'text', content: `Error: ${err.message}` }]);
@@ -98,17 +136,23 @@ export default function Chat() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [id]);
+  }, [id, readSSE]);
 
   const handleRespond = useCallback(async (allow: boolean, updatedInput?: Record<string, unknown>) => {
+    const wasReconnect = !abortRef.current; // no active SSE = page was refreshed
     setPendingAction(null);
     await respondToChat(id!, allow, updatedInput);
-  }, [id]);
+    // If we got here via page refresh, reconnect to the SSE stream
+    if (wasReconnect) {
+      connectToStream();
+    }
+  }, [id, connectToStream]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
     fetch(`/api/chats/${id}/stop`, { method: 'POST', credentials: 'include' });
     setStreaming(false);
+    setPendingAction(null);
   }, [id]);
 
   return (

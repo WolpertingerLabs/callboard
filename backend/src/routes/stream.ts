@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, type StreamEvent } from '../services/claude.js';
+import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
 
 export const streamRouter = Router();
 
@@ -60,6 +60,18 @@ streamRouter.get('/:id/stream', (req, res) => {
 
   req.on('close', () => {
     session.emitter.removeListener('event', onEvent);
+  });
+});
+
+// Check for a pending request (for page refresh reconnection)
+streamRouter.get('/:id/pending', (req, res) => {
+  const pending = getPendingRequest(req.params.id);
+  if (!pending) return res.json({ pending: null });
+  res.json({
+    pending: {
+      type: pending.eventType,
+      ...pending.eventData,
+    },
   });
 });
 
