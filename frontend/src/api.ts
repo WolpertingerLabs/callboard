@@ -45,6 +45,12 @@ export async function getMessages(id: string): Promise<ParsedMessage[]> {
   return res.json();
 }
 
+export async function getPending(id: string): Promise<any | null> {
+  const res = await fetch(`${BASE}/chats/${id}/pending`);
+  const data = await res.json();
+  return data.pending;
+}
+
 export async function stopChat(id: string): Promise<void> {
   await fetch(`${BASE}/chats/${id}/stop`, { method: 'POST' });
 }
