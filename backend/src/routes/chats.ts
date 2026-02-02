@@ -140,9 +140,35 @@ chatsRouter.delete('/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * Look up a chat by ID, checking the DB first then falling back to filesystem.
+ */
+function findChat(id: string): any | null {
+  const dbChat = db.prepare('SELECT * FROM chats WHERE id = ?').get(id);
+  if (dbChat) return dbChat;
+
+  // Try filesystem: id might be a session ID
+  const logPath = findSessionLogPath(id);
+  if (!logPath) return null;
+
+  const projectDir = join(logPath, '..');
+  const dirName = projectDir.split('/').pop()!;
+  const st = statSync(logPath);
+  return {
+    id,
+    folder: projectDirToFolder(dirName),
+    session_id: id,
+    session_log_path: logPath,
+    metadata: JSON.stringify({ session_ids: [id] }),
+    created_at: st.birthtime.toISOString(),
+    updated_at: st.mtime.toISOString(),
+    _from_filesystem: true,
+  };
+}
+
 // Get a single chat
 chatsRouter.get('/:id', (req, res) => {
-  const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(req.params.id);
+  const chat = findChat(req.params.id);
   if (!chat) return res.status(404).json({ error: 'Not found' });
   res.json(chat);
 });
@@ -161,7 +187,7 @@ function readJsonlFile(path: string): any[] {
 
 // Get messages from SDK session JSONL files (all sessions for this chat)
 chatsRouter.get('/:id/messages', (req, res) => {
-  const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(req.params.id) as any;
+  const chat = findChat(req.params.id) as any;
   if (!chat) return res.status(404).json({ error: 'Not found' });
   if (!chat.session_id) return res.json([]);
 
