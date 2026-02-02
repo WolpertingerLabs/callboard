@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import db from '../db.js';
@@ -24,10 +24,99 @@ function findSessionLogPath(sessionId: string): string | null {
   return null;
 }
 
-// List all chats
+/**
+ * Convert a project directory name back to a folder path.
+ * The SDK encodes paths by replacing / with -, so "-home-exedev-my-app"
+ * is ambiguous (could be /home/exedev/my-app or /home/exedev/my/app).
+ * We try all possible splits and return the first path that exists on disk.
+ */
+function projectDirToFolder(dirName: string): string {
+  // Strip leading dash (represents the root /)
+  const parts = dirName.slice(1).split('-');
+
+  // Try all possible ways to rejoin the parts with / or -
+  function resolve(index: number, current: string): string | null {
+    if (index === parts.length) {
+      return existsSync(current) ? current : null;
+    }
+    // Try joining with / first (prefer deeper paths)
+    const withSlash = resolve(index + 1, current + '/' + parts[index]);
+    if (withSlash) return withSlash;
+    // Then try joining with - (keeps it as part of the folder name)
+    const withDash = resolve(index + 1, current + '-' + parts[index]);
+    if (withDash) return withDash;
+    return null;
+  }
+
+  const resolved = resolve(1, '/' + parts[0]);
+  if (resolved) return resolved;
+
+  // Fallback: naive replacement
+  return '/' + parts.join('/');
+}
+
+/**
+ * Discover all session JSONL files across all project dirs.
+ * Returns entries with sessionId, folder, and file stats.
+ */
+function discoverAllSessions(): { sessionId: string; folder: string; filePath: string; createdAt: Date; updatedAt: Date }[] {
+  if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
+  const results: { sessionId: string; folder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
+  for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
+    const dirPath = join(CLAUDE_PROJECTS_DIR, dir);
+    try {
+      const dirStat = statSync(dirPath);
+      if (!dirStat.isDirectory()) continue;
+    } catch { continue; }
+    const folder = projectDirToFolder(dir);
+    for (const file of readdirSync(dirPath)) {
+      if (!file.endsWith('.jsonl')) continue;
+      const sessionId = file.replace('.jsonl', '');
+      const filePath = join(dirPath, file);
+      try {
+        const st = statSync(filePath);
+        results.push({ sessionId, folder, filePath, createdAt: st.birthtime, updatedAt: st.mtime });
+      } catch { continue; }
+    }
+  }
+  return results;
+}
+
+// List all chats (DB chats + untracked sessions from filesystem)
 chatsRouter.get('/', (_req, res) => {
-  const chats = db.prepare('SELECT * FROM chats ORDER BY updated_at DESC').all();
-  res.json(chats);
+  const dbChats = db.prepare('SELECT * FROM chats ORDER BY updated_at DESC').all() as any[];
+
+  // Collect all session IDs already tracked in the DB
+  const trackedSessionIds = new Set<string>();
+  for (const chat of dbChats) {
+    if (chat.session_id) trackedSessionIds.add(chat.session_id);
+    try {
+      const meta = JSON.parse(chat.metadata || '{}');
+      if (Array.isArray(meta.session_ids)) {
+        for (const sid of meta.session_ids) trackedSessionIds.add(sid);
+      }
+    } catch {}
+  }
+
+  // Discover untracked sessions from the filesystem
+  const allSessions = discoverAllSessions();
+  const untrackedChats = allSessions
+    .filter(s => !trackedSessionIds.has(s.sessionId))
+    .map(s => ({
+      id: s.sessionId,
+      folder: s.folder,
+      session_id: s.sessionId,
+      session_log_path: s.filePath,
+      metadata: JSON.stringify({ session_ids: [s.sessionId] }),
+      created_at: s.createdAt.toISOString(),
+      updated_at: s.updatedAt.toISOString(),
+      _from_filesystem: true,
+    }));
+
+  const allChats = [...dbChats, ...untrackedChats]
+    .sort((a: any, b: any) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
+  res.json(allChats);
 });
 
 // Create a chat
