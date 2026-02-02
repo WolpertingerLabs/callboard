@@ -18,10 +18,16 @@ export default function App() {
 
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
 
+  const handleLogout = () => {
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
+      .then(() => setAuthed(false))
+      .catch(() => setAuthed(false));
+  };
+
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<ChatList />} />
+        <Route path="/" element={<ChatList onLogout={handleLogout} />} />
         <Route path="/chat/:id" element={<Chat />} />
       </Routes>
     </BrowserRouter>

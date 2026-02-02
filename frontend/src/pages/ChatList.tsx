@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { listChats, createChat, deleteChat, type Chat } from '../api';
 import ChatListItem from '../components/ChatListItem';
 
-export default function ChatList() {
+export default function ChatList({ onLogout }: { onLogout: () => void }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [folder, setFolder] = useState('');
   const [showNew, setShowNew] = useState(false);
@@ -48,19 +48,34 @@ export default function ChatList() {
         justifyContent: 'space-between',
       }}>
         <h1 style={{ fontSize: 20, fontWeight: 600 }}>Claude Code</h1>
-        <button
-          onClick={() => setShowNew(!showNew)}
-          style={{
-            background: 'var(--accent)',
-            color: '#fff',
-            padding: '8px 16px',
-            borderRadius: 8,
-            fontSize: 14,
-            fontWeight: 500,
-          }}
-        >
-          New Chat
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => setShowNew(!showNew)}
+            style={{
+              background: 'var(--accent)',
+              color: '#fff',
+              padding: '8px 16px',
+              borderRadius: 8,
+              fontSize: 14,
+              fontWeight: 500,
+            }}
+          >
+            New Chat
+          </button>
+          <button
+            onClick={onLogout}
+            style={{
+              background: 'transparent',
+              color: 'var(--fg)',
+              padding: '8px 12px',
+              borderRadius: 8,
+              fontSize: 14,
+              border: '1px solid var(--border)',
+            }}
+          >
+            Logout
+          </button>
+        </div>
       </header>
 
       {showNew && (
