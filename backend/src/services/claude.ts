@@ -30,6 +30,39 @@ interface ActiveSession {
 const activeSessions = new Map<string, ActiveSession>();
 const pendingRequests = new Map<string, PendingRequest>();
 
+type PermissionLevel = 'allow' | 'ask' | 'deny';
+
+interface DefaultPermissions {
+  fileOperations: PermissionLevel;
+  codeExecution: PermissionLevel;
+  webAccess: PermissionLevel;
+}
+
+function categorizeToolPermission(toolName: string): keyof DefaultPermissions | null {
+  // File operations
+  if (['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep'].includes(toolName)) {
+    return 'fileOperations';
+  }
+
+  // Code execution
+  if (['Bash', 'NotebookEdit'].includes(toolName)) {
+    return 'codeExecution';
+  }
+
+  // Web access
+  if (['WebFetch', 'WebSearch'].includes(toolName)) {
+    return 'webAccess';
+  }
+
+  // Tools that don't need permission checks (always allowed)
+  if (['TodoWrite', 'Task', 'ExitPlanMode', 'AskUserQuestion', 'SlashCommand', 'BashOutput', 'KillShell'].includes(toolName)) {
+    return null;
+  }
+
+  // Default to file operations for unknown tools
+  return 'fileOperations';
+}
+
 export function getActiveSession(chatId: string): ActiveSession | undefined {
   return activeSessions.get(chatId);
 }
@@ -101,6 +134,30 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
         input: Record<string, unknown>,
         { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
       ): Promise<PermissionResult> => {
+        // Check for default permissions for this tool category
+        const category = categorizeToolPermission(toolName);
+        if (category) {
+          try {
+            const metadata = JSON.parse(chat.metadata || '{}');
+            const defaultPermissions: DefaultPermissions = metadata.defaultPermissions;
+
+            if (defaultPermissions && defaultPermissions[category]) {
+              const permission = defaultPermissions[category];
+
+              if (permission === 'allow') {
+                // Auto-approve
+                return { behavior: 'allow', updatedInput: input };
+              } else if (permission === 'deny') {
+                // Auto-deny
+                return { behavior: 'deny', message: `Auto-denied by default ${category} policy`, interrupt: true };
+              }
+              // If 'ask' or not set, fall through to normal permission flow
+            }
+          } catch {
+            // If metadata parsing fails, fall through to normal permission flow
+          }
+        }
+
         return new Promise<PermissionResult>((resolve) => {
           // Emit appropriate event type based on tool
           if (toolName === 'AskUserQuestion') {

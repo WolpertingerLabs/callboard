@@ -22,11 +22,19 @@ export async function listChats(): Promise<Chat[]> {
   return res.json();
 }
 
-export async function createChat(folder: string): Promise<Chat> {
+export type PermissionLevel = 'allow' | 'ask' | 'deny';
+
+export interface DefaultPermissions {
+  fileOperations: PermissionLevel;
+  codeExecution: PermissionLevel;
+  webAccess: PermissionLevel;
+}
+
+export async function createChat(folder: string, defaultPermissions?: DefaultPermissions): Promise<Chat> {
   const res = await fetch(`${BASE}/chats`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ folder }),
+    body: JSON.stringify({ folder, defaultPermissions }),
   });
   return res.json();
 }

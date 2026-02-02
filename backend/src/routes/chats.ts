@@ -121,13 +121,19 @@ chatsRouter.get('/', (_req, res) => {
 
 // Create a chat
 chatsRouter.post('/', (req, res) => {
-  const { folder } = req.body;
+  const { folder, defaultPermissions } = req.body;
   if (!folder) return res.status(400).json({ error: 'folder is required' });
 
   const id = uuid();
   const now = new Date().toISOString();
+
+  // Create metadata with default permissions if provided
+  const metadata = {
+    ...(defaultPermissions && { defaultPermissions })
+  };
+
   db.prepare('INSERT INTO chats (id, folder, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-    .run(id, folder, '{}', now, now);
+    .run(id, folder, JSON.stringify(metadata), now, now);
 
   const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(id);
   res.status(201).json(chat);

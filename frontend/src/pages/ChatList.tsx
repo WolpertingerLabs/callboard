@@ -1,13 +1,19 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { listChats, createChat, deleteChat, getSessionStatus, type Chat, type SessionStatus } from '../api';
+import { listChats, createChat, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from '../api';
 import ChatListItem from '../components/ChatListItem';
+import PermissionSettings from '../components/PermissionSettings';
 
 export default function ChatList({ onLogout }: { onLogout: () => void }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
   const [folder, setFolder] = useState('');
   const [showNew, setShowNew] = useState(false);
+  const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>({
+    fileOperations: 'ask',
+    codeExecution: 'ask',
+    webAccess: 'ask',
+  });
   const navigate = useNavigate();
 
   const load = async () => {
@@ -44,7 +50,7 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
   const handleCreate = async (dir?: string) => {
     const target = dir || folder.trim();
     if (!target) return;
-    const chat = await createChat(target);
+    const chat = await createChat(target, defaultPermissions);
     setFolder('');
     setShowNew(false);
     navigate(`/chat/${chat.id}`);
@@ -100,6 +106,11 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
           padding: '12px 20px',
           borderBottom: '1px solid var(--border)',
         }}>
+          <PermissionSettings
+            permissions={defaultPermissions}
+            onChange={setDefaultPermissions}
+          />
+
           {recentDirs.length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
