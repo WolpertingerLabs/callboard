@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import db from '../db.js';
@@ -81,32 +81,11 @@ chatsRouter.get('/:id/messages', (req, res) => {
   const sessionIds: string[] = meta.session_ids || [];
   if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
-  // Find the project dir from the current session, then load ALL jsonl files in it
-  // This catches sessions from before we started tracking session_ids
-  const currentLogPath = findSessionLogPath(chat.session_id);
+  // Load only JSONL files for sessions belonging to this chat
   const allRaw: any[] = [];
-
-  if (currentLogPath) {
-    const projectDir = join(currentLogPath, '..');
-    const allFiles = readdirSync(projectDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ name: f, path: join(projectDir, f) }))
-      .sort((a, b) => {
-        // Sort by file modification time (oldest first)
-        const aStat = statSync(a.path);
-        const bStat = statSync(b.path);
-        return aStat.mtimeMs - bStat.mtimeMs;
-      });
-
-    for (const file of allFiles) {
-      allRaw.push(...readJsonlFile(file.path));
-    }
-  } else {
-    // Fallback: just try individual session IDs
-    for (const sid of sessionIds) {
-      const logPath = findSessionLogPath(sid);
-      if (logPath) allRaw.push(...readJsonlFile(logPath));
-    }
+  for (const sid of sessionIds) {
+    const logPath = findSessionLogPath(sid);
+    if (logPath) allRaw.push(...readJsonlFile(logPath));
   }
 
   if (allRaw.length === 0) return res.json([]);
