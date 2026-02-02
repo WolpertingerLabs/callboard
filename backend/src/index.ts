@@ -13,7 +13,7 @@ import { streamRouter } from './routes/stream.js';
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from './auth.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 27568;
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
