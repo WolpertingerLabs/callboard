@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getChat, getMessages, getPending, respondToChat, type Chat as ChatType, type ParsedMessage } from '../api';
 import MessageBubble from '../components/MessageBubble';
@@ -155,6 +155,39 @@ export default function Chat() {
     setPendingAction(null);
   }, [id]);
 
+  // Check if there are any TodoWrite tool calls in the conversation
+  const hasTodoList = useMemo(() => {
+    return messages.some(message =>
+      message.type === 'tool_use' &&
+      message.toolName === 'TodoWrite'
+    );
+  }, [messages]);
+
+  const handleTodoListClick = useCallback(() => {
+    // Find the latest TodoWrite tool call and its result
+    let latestTodoIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'tool_use' && messages[i].toolName === 'TodoWrite') {
+        latestTodoIndex = i;
+        break;
+      }
+    }
+
+    if (latestTodoIndex >= 0) {
+      // Scroll to the todo list
+      const targetElement = document.querySelector(`[data-message-index="${latestTodoIndex}"]`) as HTMLElement | null;
+      if (targetElement) {
+        targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetElement.style.outline = '2px solid var(--accent)';
+        targetElement.style.borderRadius = '8px';
+        setTimeout(() => {
+          targetElement.style.outline = '';
+          targetElement.style.borderRadius = '';
+        }, 2000);
+      }
+    }
+  }, [messages]);
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <header style={{
@@ -179,6 +212,22 @@ export default function Chat() {
             {chat?.folder}
           </div>
         </div>
+        {hasTodoList && (
+          <button
+            onClick={handleTodoListClick}
+            style={{
+              background: 'var(--accent)',
+              color: '#fff',
+              padding: '6px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+              marginRight: 8,
+            }}
+            title="Jump to latest to-do list"
+          >
+            📋 Tasks
+          </button>
+        )}
         {streaming && (
           <button
             onClick={handleStop}
@@ -202,7 +251,9 @@ export default function Chat() {
           </p>
         )}
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+          <div key={i} data-message-index={i}>
+            <MessageBubble message={msg} />
+          </div>
         ))}
         {streaming && (
           <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '8px 0' }}>

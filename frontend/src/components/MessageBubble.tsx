@@ -1,5 +1,97 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { ParsedMessage } from '../api';
+
+interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm?: string;
+}
+
+function parseTodoItems(content: string): TodoItem[] | null {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed?.todos && Array.isArray(parsed.todos)) {
+      return parsed.todos;
+    }
+  } catch {}
+  return null;
+}
+
+const statusIcons: Record<string, string> = {
+  completed: '✅',
+  in_progress: '🔄',
+  pending: '⬜',
+};
+
+function TodoList({ items }: { items: TodoItem[] }) {
+  const completedCount = items.filter(t => t.status === 'completed').length;
+  const total = items.length;
+  const progressPct = total > 0 ? (completedCount / total) * 100 : 0;
+
+  return (
+    <div style={{
+      margin: '6px 0',
+      border: '1px solid var(--border)',
+      borderRadius: 10,
+      overflow: 'hidden',
+      background: 'var(--assistant-bg)',
+      maxWidth: '85%',
+    }}>
+      <div style={{
+        padding: '10px 14px 8px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        borderBottom: '1px solid var(--border)',
+      }}>
+        <span style={{ fontWeight: 600, fontSize: 14 }}>
+          Tasks
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          {completedCount}/{total} done
+        </span>
+      </div>
+
+      <div style={{
+        height: 3,
+        background: 'var(--border)',
+      }}>
+        <div style={{
+          height: '100%',
+          width: `${progressPct}%`,
+          background: 'var(--accent)',
+          borderRadius: 2,
+          transition: 'width 0.3s ease',
+        }} />
+      </div>
+
+      <div style={{ padding: '6px 0' }}>
+        {items.map((item, i) => (
+          <div key={i} style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 8,
+            padding: '5px 14px',
+            fontSize: 13,
+            lineHeight: 1.4,
+            opacity: item.status === 'completed' ? 0.65 : 1,
+          }}>
+            <span style={{ flexShrink: 0, fontSize: 14, lineHeight: '18px' }}>
+              {statusIcons[item.status] || '⬜'}
+            </span>
+            <span style={{
+              textDecoration: item.status === 'completed' ? 'line-through' : 'none',
+              color: item.status === 'in_progress' ? 'var(--accent)' : undefined,
+              fontWeight: item.status === 'in_progress' ? 500 : 400,
+            }}>
+              {item.content}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface Props {
   message: ParsedMessage;
@@ -8,6 +100,18 @@ interface Props {
 export default function MessageBubble({ message }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === 'user';
+
+  // Special rendering for TodoWrite tool calls
+  const todoItems = useMemo(() => {
+    if (message.type === 'tool_use' && message.toolName === 'TodoWrite') {
+      return parseTodoItems(message.content);
+    }
+    return null;
+  }, [message]);
+
+  if (todoItems) {
+    return <TodoList items={todoItems} />;
+  }
 
   if (message.type === 'thinking') {
     return (
