@@ -42,6 +42,8 @@ export class OpenRouterClient {
 		try {
 			const prompt = this.buildChatTitlePrompt(context);
 
+			const model = process.env.OPENROUTER_MODEL || 'openrouter/auto';
+
 			const result = await this.client!.chat.send({
 				messages: [
 					{
@@ -49,7 +51,7 @@ export class OpenRouterClient {
 						content: prompt
 					}
 				],
-				model: 'anthropic/claude-haiku-4.5',
+				model,
 				stream: false
 			});
 
