@@ -71,6 +71,11 @@ export default function Chat() {
 
   // Connect to an existing SSE stream (e.g. after page refresh)
   const connectToStream = useCallback(async () => {
+    // Avoid duplicate connections
+    if (abortRef.current) {
+      return;
+    }
+
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -101,10 +106,8 @@ export default function Chat() {
 
       // Auto-connect if session is active (web or CLI)
       if (status.active && (status.type === 'web' || status.type === 'cli')) {
-        if (!abortRef.current) { // Avoid duplicate connections
-          setStreaming(true);
-          connectToStream();
-        }
+        setStreaming(true);
+        connectToStream();
       }
     } catch (error) {
       console.warn('Failed to check session status:', error);
@@ -175,8 +178,9 @@ export default function Chat() {
     const wasReconnect = !abortRef.current; // no active SSE = page was refreshed
     setPendingAction(null);
     await respondToChat(id!, allow, updatedInput);
-    // If we got here via page refresh, reconnect to the SSE stream
+    // If we got here via page refresh (no active stream), reconnect to the SSE stream
     if (wasReconnect) {
+      setStreaming(true);
       connectToStream();
     }
   }, [id, connectToStream]);
