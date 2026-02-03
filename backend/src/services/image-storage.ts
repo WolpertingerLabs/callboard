@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs';
 import { join, dirname, extname } from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
@@ -111,16 +111,23 @@ export class ImageStorageService {
     try {
       // Find the image file - for now we'll scan the directory
       // In a production app, you'd want to store metadata in a database
-      const files = require('fs').readdirSync(IMAGES_DIR);
+      console.log(`[DEBUG] getImage called with imageId: ${imageId}`);
+      console.log(`[DEBUG] Looking in directory: ${IMAGES_DIR}`);
+      const files = readdirSync(IMAGES_DIR);
+      console.log(`[DEBUG] All files in directory:`, files);
       const imageFile = files.find((f: string) => f.startsWith(imageId));
+      console.log(`[DEBUG] Found matching file:`, imageFile);
 
-      if (!imageFile) return null;
+      if (!imageFile) {
+        console.log(`[DEBUG] No file found starting with ${imageId}`);
+        return null;
+      }
 
       const imagePath = join(IMAGES_DIR, imageFile);
       if (!existsSync(imagePath)) return null;
 
       const buffer = readFileSync(imagePath);
-      const stats = require('fs').statSync(imagePath);
+      const stats = statSync(imagePath);
 
       // Reconstruct image metadata (in production, store this in DB)
       const image: StoredImage = {
@@ -146,7 +153,7 @@ export class ImageStorageService {
    */
   static deleteImage(imageId: string): boolean {
     try {
-      const files = require('fs').readdirSync(IMAGES_DIR);
+      const files = readdirSync(IMAGES_DIR);
       const imageFile = files.find((f: string) => f.startsWith(imageId));
 
       if (!imageFile) return false;

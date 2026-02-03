@@ -122,13 +122,14 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
   const abortController = new AbortController();
   activeSessions.set(chatId, { abortController, emitter });
 
-  // Build prompt - use structured message for images, string for text-only (matching blueberry project)
-  let formattedPrompt: string | { role: string; content: any[] };
+  // Build prompt - SDK accepts either a string or AsyncIterable<SDKUserMessage>
+  // For multimodal content, we need to use AsyncIterable with proper message format
+  let formattedPrompt: string | AsyncIterable<any>;
 
   if (imageMetadata && imageMetadata.length > 0) {
     console.log(`[DEBUG] Building multimodal prompt with ${imageMetadata.length} images`);
 
-    // Build content array for multimodal message
+    // Build content array for multimodal message (Anthropic API format)
     const content: any[] = [];
 
     // Add text content if present
@@ -153,18 +154,33 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
       });
     }
 
-    // Return structured message object (matching blueberry project format)
-    formattedPrompt = {
-      role: 'user',
-      content: content
+    // SDK expects AsyncIterable<SDKUserMessage> for multimodal content
+    // SDKUserMessage has: { type: 'user', message: APIUserMessage, parent_tool_use_id: string | null }
+    // APIUserMessage is MessageParam from Anthropic SDK which has { role: 'user', content: ContentBlock[] }
+    const sdkMessage = {
+      type: 'user' as const,
+      message: {
+        role: 'user' as const,
+        content: content
+      },
+      parent_tool_use_id: null
     };
 
-    console.log(`[DEBUG] Final prompt structure: role=${formattedPrompt.role}, contentBlocks=${formattedPrompt.content.length}`);
+    console.log('[DEBUG] SDKMessage structure:',JSON.stringify(sdkMessage, null, 2));
+
+    // Create an async iterable that yields a single message
+    formattedPrompt = (async function* () {
+      yield sdkMessage;
+    })();
+
+    console.log(`[DEBUG] Final prompt structure: SDKUserMessage with ${content.length} content blocks`);
   } else {
     console.log(`[DEBUG] Building text-only prompt`);
     // Simple string prompt for text-only messages
     formattedPrompt = prompt;
   }
+
+  console.log('[DEBUG] About to call query() with prompt type:', typeof formattedPrompt);
 
   const queryOpts: any = {
     prompt: formattedPrompt,
@@ -173,6 +189,11 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
       cwd: chat.folder,
       maxTurns: 50,
       ...(chat.session_id ? { resume: chat.session_id } : {}),
+      env: {
+        ...process.env,
+        PATH: process.env.PATH,
+        NODE_PATH: process.env.NODE_PATH
+      },
       canUseTool: async (
         toolName: string,
         input: Record<string, unknown>,

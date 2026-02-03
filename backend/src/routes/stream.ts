@@ -74,6 +74,7 @@ async function generateAndSaveTitle(chatId: string, prompt: string): Promise<voi
 
 // Send a message and get SSE stream back
 streamRouter.post('/:id/message', async (req, res) => {
+  console.log('[DEBUG] Route hit:', req.method, req.path, JSON.stringify(req.body));
   const { prompt, imageIds } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
