@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQueueItems, cancelQueueItem, executeNow, type QueueItem } from '../api';
+import { getQueueItems, cancelQueueItem, executeNow, scheduleMessage, type QueueItem } from '../api';
 
 export default function Queue() {
   const navigate = useNavigate();
@@ -8,6 +8,9 @@ export default function Queue() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<string>('pending');
   const [error, setError] = useState<string | null>(null);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [schedulingItem, setSchedulingItem] = useState<QueueItem | null>(null);
+  const [scheduledTime, setScheduledTime] = useState('');
 
   const loadQueueItems = useCallback(async (status?: string) => {
     try {
@@ -42,6 +45,30 @@ export default function Queue() {
       setError(err.message || 'Failed to execute item');
     }
   }, [activeTab, loadQueueItems]);
+
+  const handleSchedule = useCallback((item: QueueItem) => {
+    setSchedulingItem(item);
+    setShowScheduleModal(true);
+  }, []);
+
+  const handleScheduleSubmit = useCallback(async () => {
+    if (!schedulingItem || !scheduledTime) return;
+
+    try {
+      // Cancel the existing item
+      await cancelQueueItem(schedulingItem.id);
+      // Create new scheduled item
+      await scheduleMessage(schedulingItem.chat_id, schedulingItem.user_message, new Date(scheduledTime).toISOString());
+      // Refresh the list
+      await loadQueueItems(activeTab === 'all' ? undefined : activeTab);
+      // Close modal
+      setShowScheduleModal(false);
+      setSchedulingItem(null);
+      setScheduledTime('');
+    } catch (err: any) {
+      setError(err.message || 'Failed to schedule item');
+    }
+  }, [schedulingItem, scheduledTime, activeTab, loadQueueItems]);
 
   const formatTime = (isoString: string) => {
     return new Date(isoString).toLocaleString();
@@ -86,7 +113,7 @@ export default function Queue() {
         >
           ←
         </button>
-        <div style={{ fontSize: 18, fontWeight: 600 }}>Message Queue</div>
+        <div style={{ fontSize: 18, fontWeight: 600 }}>Drafts</div>
         <button
           onClick={() => loadQueueItems(activeTab === 'all' ? undefined : activeTab)}
           style={{
@@ -236,6 +263,20 @@ export default function Queue() {
                           Execute Now
                         </button>
                         <button
+                          onClick={() => handleSchedule(item)}
+                          style={{
+                            background: 'var(--bg-secondary)',
+                            color: 'var(--text)',
+                            padding: '6px 12px',
+                            borderRadius: 4,
+                            fontSize: 12,
+                            border: '1px solid var(--border)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ⏰ Schedule
+                        </button>
+                        <button
                           onClick={() => handleCancel(item.id)}
                           style={{
                             background: 'var(--danger)',
@@ -247,7 +288,7 @@ export default function Queue() {
                             cursor: 'pointer',
                           }}
                         >
-                          Cancel
+                          Delete
                         </button>
                       </>
                     )}
@@ -272,6 +313,106 @@ export default function Queue() {
           </div>
         )}
       </div>
+
+      {/* Schedule Modal */}
+      {showScheduleModal && schedulingItem && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+        }}>
+          <div style={{
+            background: 'var(--bg)',
+            borderRadius: 8,
+            padding: 24,
+            width: '90%',
+            maxWidth: 400,
+            border: '1px solid var(--border)',
+          }}>
+            <h2 style={{ margin: '0 0 16px 0', fontSize: 18 }}>Schedule Draft</h2>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                Message preview:
+              </div>
+              <div style={{
+                background: 'var(--surface)',
+                padding: 8,
+                borderRadius: 4,
+                fontSize: 13,
+                maxHeight: 80,
+                overflow: 'auto',
+                border: '1px solid var(--border)',
+              }}>
+                {schedulingItem.user_message}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', marginBottom: 8, fontSize: 14, fontWeight: 500 }}>
+                Schedule for:
+              </label>
+              <input
+                type="datetime-local"
+                value={scheduledTime}
+                onChange={(e) => setScheduledTime(e.target.value)}
+                min={new Date(Date.now() + 60000).toISOString().slice(0, 16)}
+                style={{
+                  width: '100%',
+                  padding: 8,
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  fontSize: 14,
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setShowScheduleModal(false);
+                  setSchedulingItem(null);
+                  setScheduledTime('');
+                }}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 6,
+                  fontSize: 14,
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--text)',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleScheduleSubmit}
+                disabled={!scheduledTime}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 6,
+                  fontSize: 14,
+                  background: !scheduledTime ? 'var(--border)' : 'var(--accent)',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: !scheduledTime ? 'default' : 'pointer',
+                }}
+              >
+                Schedule
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

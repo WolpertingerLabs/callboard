@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, addToBacklog, type Chat as ChatType, type ParsedMessage, type SessionStatus } from '../api';
+import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, type Chat as ChatType, type ParsedMessage, type SessionStatus } from '../api';
 import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
-import ScheduleModal from '../components/ScheduleModal';
+import DraftModal from '../components/DraftModal';
 
 export default function Chat() {
   const { id } = useParams<{ id: string }>();
@@ -15,8 +15,8 @@ export default function Chat() {
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
   const [networkError, setNetworkError] = useState<string | null>(null);
-  const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [scheduleMessage, setScheduleMessage] = useState('');
+  const [showDraftModal, setShowDraftModal] = useState(false);
+  const [draftMessage, setDraftMessage] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -276,23 +276,18 @@ export default function Chat() {
     }
   }, [messages]);
 
-  const handleSchedule = useCallback((message: string, images?: File[]) => {
-    setScheduleMessage(message);
-    setShowScheduleModal(true);
-    // TODO: Handle images in scheduling
+  const handleSaveDraft = useCallback((message: string, images?: File[], onSuccess?: () => void) => {
+    if (!message.trim()) return;
+    setDraftMessage(message.trim());
+    setShowDraftModal(true);
+    // Store the success callback to call when draft is saved
+    if (onSuccess) {
+      setDraftSuccessCallback(() => onSuccess);
+    }
+    // TODO: Handle images in draft
   }, []);
 
-  const handleBacklog = useCallback(async (message: string, images?: File[]) => {
-    if (!id) return;
-    try {
-      await addToBacklog(id, message);
-      // TODO: Handle images in backlog
-      // Optionally show a toast notification
-      console.log('Added to backlog:', message);
-    } catch (error) {
-      console.error('Failed to add to backlog:', error);
-    }
-  }, [id]);
+  const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -435,17 +430,19 @@ export default function Chat() {
       {pendingAction ? (
         <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
       ) : (
-        <PromptInput onSend={handleSend} disabled={false} onSchedule={handleSchedule} onBacklog={handleBacklog} />
+        <PromptInput onSend={handleSend} disabled={false} onSaveDraft={handleSaveDraft} />
       )}
 
-      <ScheduleModal
-        isOpen={showScheduleModal}
+      <DraftModal
+        isOpen={showDraftModal}
         onClose={() => {
-          setShowScheduleModal(false);
-          setScheduleMessage('');
+          setShowDraftModal(false);
+          setDraftMessage('');
+          setDraftSuccessCallback(null);
         }}
         chatId={id!}
-        initialMessage={scheduleMessage}
+        message={draftMessage}
+        onSuccess={draftSuccessCallback || undefined}
       />
     </div>
   );
