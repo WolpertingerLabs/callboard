@@ -2,17 +2,34 @@ import { useState, useRef } from 'react';
 
 interface Props {
   onSend: (prompt: string) => void;
+  onSlashCommand?: (command: string, args: string) => void;
   disabled: boolean;
 }
 
-export default function PromptInput({ onSend, disabled }: Props) {
+export default function PromptInput({ onSend, onSlashCommand, disabled }: Props) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = () => {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
-    onSend(trimmed);
+
+    // Check if this is a slash command
+    if (trimmed.startsWith('/')) {
+      const firstSpace = trimmed.indexOf(' ');
+      const command = firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace);
+      const args = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1);
+
+      if (onSlashCommand) {
+        onSlashCommand(command, args);
+      } else {
+        // Fallback: send as regular message
+        onSend(trimmed);
+      }
+    } else {
+      onSend(trimmed);
+    }
+
     setValue('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';

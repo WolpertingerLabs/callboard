@@ -269,3 +269,162 @@ export async function sendMessage(chatId: string, prompt: string): Promise<Event
 
   return emitter;
 }
+
+export async function sendSlashCommand(chatId: string, command: string): Promise<EventEmitter> {
+  const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(chatId) as any;
+  if (!chat) throw new Error('Chat not found');
+
+  // Stop any existing session for this chat
+  stopSession(chatId);
+
+  const emitter = new EventEmitter();
+  const abortController = new AbortController();
+  activeSessions.set(chatId, { abortController, emitter });
+
+  const queryOpts: any = {
+    prompt: `Please execute this slash command: ${command}`,
+    options: {
+      abortController,
+      cwd: chat.folder,
+      maxTurns: 50,
+      ...(chat.session_id ? { resume: chat.session_id } : {}),
+      canUseTool: async (
+        toolName: string,
+        input: Record<string, unknown>,
+        { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
+      ): Promise<PermissionResult> => {
+        // Auto-allow SlashCommand tool for slash command processing
+        if (toolName === 'SlashCommand') {
+          return { behavior: 'allow', updatedInput: input };
+        }
+
+        // For other tools, use the same permission logic as sendMessage
+        const category = categorizeToolPermission(toolName);
+        if (category) {
+          try {
+            const metadata = JSON.parse(chat.metadata || '{}');
+            const defaultPermissions: DefaultPermissions = metadata.defaultPermissions;
+
+            if (defaultPermissions && defaultPermissions[category]) {
+              const permission = defaultPermissions[category];
+
+              if (permission === 'allow') {
+                return { behavior: 'allow', updatedInput: input };
+              } else if (permission === 'deny') {
+                return { behavior: 'deny', message: `Auto-denied by default ${category} policy`, interrupt: true };
+              }
+            }
+          } catch {
+            // If metadata parsing fails, fall through to normal permission flow
+          }
+        }
+
+        return new Promise<PermissionResult>((resolve) => {
+          if (toolName === 'AskUserQuestion') {
+            emitter.emit('event', {
+              type: 'user_question',
+              content: '',
+              questions: input.questions as unknown[],
+            } as StreamEvent);
+          } else if (toolName === 'ExitPlanMode') {
+            emitter.emit('event', {
+              type: 'plan_review',
+              content: JSON.stringify(input),
+            } as StreamEvent);
+          } else {
+            emitter.emit('event', {
+              type: 'permission_request',
+              content: '',
+              toolName,
+              input,
+              suggestions,
+            } as StreamEvent);
+          }
+
+          let eventType: PendingRequest['eventType'];
+          let eventData: Record<string, unknown>;
+          if (toolName === 'AskUserQuestion') {
+            eventType = 'user_question';
+            eventData = { questions: input.questions };
+          } else if (toolName === 'ExitPlanMode') {
+            eventType = 'plan_review';
+            eventData = { content: JSON.stringify(input) };
+          } else {
+            eventType = 'permission_request';
+            eventData = { toolName, input, suggestions };
+          }
+
+          pendingRequests.set(chatId, { toolName, input, suggestions, eventType, eventData, resolve });
+
+          signal.addEventListener('abort', () => {
+            pendingRequests.delete(chatId);
+            resolve({ behavior: 'deny', message: 'Aborted' });
+          });
+        });
+      },
+    },
+  };
+
+  (async () => {
+    try {
+      let sessionId: string | null = null;
+
+      const conversation = query(queryOpts);
+
+      for await (const message of conversation) {
+        if (abortController.signal.aborted) break;
+
+        if ('session_id' in message && message.session_id && !sessionId) {
+          sessionId = message.session_id as string;
+          const meta = JSON.parse(chat.metadata || '{}');
+          const ids: string[] = meta.session_ids || [];
+          if (!ids.includes(sessionId)) ids.push(sessionId);
+          meta.session_ids = ids;
+          db.prepare('UPDATE chats SET session_id = ?, metadata = ?, updated_at = ? WHERE id = ?')
+            .run(sessionId, JSON.stringify(meta), new Date().toISOString(), chatId);
+        }
+
+        const blocks = (message as any).message?.content || [];
+        for (const block of blocks) {
+          switch (block.type) {
+            case 'text':
+              emitter.emit('event', { type: 'text', content: block.text } as StreamEvent);
+              break;
+            case 'thinking':
+              emitter.emit('event', { type: 'thinking', content: block.thinking } as StreamEvent);
+              break;
+            case 'tool_use':
+              emitter.emit('event', {
+                type: 'tool_use',
+                content: JSON.stringify(block.input),
+                toolName: block.name,
+              } as StreamEvent);
+              break;
+            case 'tool_result': {
+              const content = typeof block.content === 'string'
+                ? block.content
+                : Array.isArray(block.content)
+                  ? block.content.map((c: any) => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join('\n')
+                  : JSON.stringify(block.content);
+              emitter.emit('event', { type: 'tool_result', content } as StreamEvent);
+              break;
+            }
+          }
+        }
+      }
+
+      db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?')
+        .run(new Date().toISOString(), chatId);
+      emitter.emit('event', { type: 'done', content: '' } as StreamEvent);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        emitter.emit('event', { type: 'error', content: err.message } as StreamEvent);
+      }
+    } finally {
+      activeSessions.delete(chatId);
+      pendingRequests.delete(chatId);
+    }
+  })();
+
+  return emitter;
+}

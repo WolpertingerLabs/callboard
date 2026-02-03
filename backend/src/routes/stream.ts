@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
+import { sendMessage, sendSlashCommand, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
 import { OpenRouterClient } from '../services/openrouter-client.js';
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -69,6 +69,38 @@ async function generateAndSaveTitle(chatId: string, prompt: string): Promise<voi
     console.warn('[OpenRouter] Title generation failed:', result.error);
   }
 }
+
+// Send a slash command and get SSE stream back
+streamRouter.post('/:id/command', async (req, res) => {
+  const { command } = req.body;
+  if (!command) return res.status(400).json({ error: 'command is required' });
+
+  try {
+    const emitter = await sendSlashCommand(req.params.id, command);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    const onEvent = (event: StreamEvent) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.type === 'done' || event.type === 'error') {
+        emitter.removeListener('event', onEvent);
+        res.end();
+      }
+    };
+
+    emitter.on('event', onEvent);
+
+    req.on('close', () => {
+      emitter.removeListener('event', onEvent);
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Send a message and get SSE stream back
 streamRouter.post('/:id/message', async (req, res) => {

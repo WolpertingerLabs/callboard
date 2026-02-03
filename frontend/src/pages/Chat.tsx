@@ -174,6 +174,89 @@ export default function Chat() {
     }
   }, [id, readSSE]);
 
+  const handleSlashCommand = useCallback(async (command: string, args: string) => {
+    // Handle built-in commands locally
+    switch (command) {
+      case 'clear':
+        setMessages([]);
+        return;
+
+      case 'help':
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          type: 'text',
+          content: 'Available slash commands:\n• `/clear` - Clear conversation history\n• `/help` - Show this help message\n• `/export` - Export conversation\n• `/model <name>` - Switch AI model\n• `/tasks` - Show task list\n\nAny other `/command` will be sent to Claude for processing.'
+        }]);
+        return;
+
+      case 'export':
+        // Create a simple text export
+        const exportText = messages.map(msg => {
+          const prefix = msg.role === 'user' ? 'User: ' : 'Assistant: ';
+          return prefix + msg.content;
+        }).join('\n\n');
+
+        const blob = new Blob([exportText], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `chat-${new Date().toISOString().slice(0, 19)}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          type: 'text',
+          content: 'Chat exported successfully!'
+        }]);
+        return;
+
+      default:
+        // For other commands, send them to Claude via the SlashCommand tool
+        const fullCommand = args ? `/${command} ${args}` : `/${command}`;
+        setMessages(prev => [...prev, { role: 'user', type: 'text', content: fullCommand }]);
+
+        // If there's already a streaming connection, stop it first
+        if (abortRef.current) {
+          abortRef.current.abort();
+          abortRef.current = null;
+        }
+
+        setStreaming(true);
+        const controller = new AbortController();
+        abortRef.current = controller;
+
+        try {
+          const res = await fetch(`/api/chats/${id}/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ command: fullCommand }),
+            signal: controller.signal,
+          });
+
+          if (!res.ok || !res.body) {
+            setStreaming(false);
+            return;
+          }
+
+          await readSSE(res.body);
+        } catch (err: any) {
+          if (err.name !== 'AbortError') {
+            setMessages(prev => [...prev, { role: 'assistant', type: 'text', content: `Error: ${err.message}` }]);
+            setStreaming(false);
+          }
+        } finally {
+          // Only stop streaming if this is still the current request
+          if (abortRef.current === controller) {
+            setStreaming(false);
+            abortRef.current = null;
+          }
+        }
+        break;
+    }
+  }, [id, readSSE, messages]);
+
   const handleRespond = useCallback(async (allow: boolean, updatedInput?: Record<string, unknown>) => {
     const wasReconnect = !abortRef.current; // no active SSE = page was refreshed
     setPendingAction(null);
@@ -320,7 +403,7 @@ export default function Chat() {
       {pendingAction ? (
         <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
       ) : (
-        <PromptInput onSend={handleSend} disabled={false} />
+        <PromptInput onSend={handleSend} onSlashCommand={handleSlashCommand} disabled={false} />
       )}
     </div>
   );
