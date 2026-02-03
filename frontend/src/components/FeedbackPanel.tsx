@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import MarkdownRenderer from './MarkdownRenderer';
 
 export interface PendingAction {
   type: 'permission_request' | 'user_question' | 'plan_review';
@@ -111,14 +112,19 @@ export default function FeedbackPanel({ action, onRespond }: Props) {
   }
 
   if (action.type === 'plan_review') {
+    const planContent = extractPlanFromContent(action.content);
+
     return (
       <div style={panelStyle}>
         <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 4 }}>
           Plan review
         </div>
-        <pre style={preStyle}>
-          {action.content || '(No plan content)'}
-        </pre>
+        <div style={planContainerStyle}>
+          <MarkdownRenderer
+            content={planContent}
+            className="plan-review-markdown"
+          />
+        </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => onRespond(true)} style={allowBtn}>Approve</button>
           <button onClick={() => onRespond(false)} style={denyBtn}>Reject</button>
@@ -136,6 +142,18 @@ function formatInput(toolName: string, input: Record<string, unknown>): string {
   if (toolName === 'Edit' && input.file_path) return `Edit ${input.file_path}`;
   if (toolName === 'Read' && input.file_path) return `Read ${input.file_path}`;
   return JSON.stringify(input, null, 2).slice(0, 500);
+}
+
+function extractPlanFromContent(content: string | undefined): string {
+  if (!content) return '(No plan content)';
+
+  try {
+    const parsed = JSON.parse(content);
+    return parsed.plan || content;
+  } catch {
+    // If it's not valid JSON, return as-is
+    return content;
+  }
 }
 
 const panelStyle: React.CSSProperties = {
@@ -194,4 +212,16 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 8,
   padding: '8px 12px',
   fontSize: 14,
+};
+
+const planContainerStyle: React.CSSProperties = {
+  background: 'var(--bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  padding: '12px',
+  marginBottom: 10,
+  maxHeight: 300,
+  overflow: 'auto',
+  fontSize: 14,
+  lineHeight: 1.5,
 };

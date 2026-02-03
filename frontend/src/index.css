@@ -131,3 +131,45 @@ a {
 .message-markdown em {
   font-style: italic;
 }
+
+/* Plan review markdown styling */
+.plan-review-markdown {
+  color: var(--text);
+}
+
+.plan-review-markdown h1,
+.plan-review-markdown h2,
+.plan-review-markdown h3,
+.plan-review-markdown h4,
+.plan-review-markdown h5,
+.plan-review-markdown h6 {
+  color: var(--text);
+  margin: 8px 0 6px 0;
+}
+
+.plan-review-markdown h1:first-child,
+.plan-review-markdown h2:first-child,
+.plan-review-markdown h3:first-child,
+.plan-review-markdown h4:first-child,
+.plan-review-markdown h5:first-child,
+.plan-review-markdown h6:first-child {
+  margin-top: 0;
+}
+
+.plan-review-markdown p {
+  margin: 0 0 6px 0;
+}
+
+.plan-review-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.plan-review-markdown ul,
+.plan-review-markdown ol {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.plan-review-markdown li {
+  margin: 1px 0;
+}
