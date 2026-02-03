@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { ParsedMessage } from '../api';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface TodoItem {
   content: string;
@@ -215,15 +216,22 @@ export default function MessageBubble({ message }: Props) {
         border: `1px solid ${getBorderColor()}`,
         fontSize: 14,
         lineHeight: 1.5,
-        whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
         ...(message.isBuiltInCommand && {
           fontFamily: 'monaco, "Courier New", monospace',
           color: 'var(--builtin-text)',
           fontWeight: 500,
+          whiteSpace: 'pre-wrap',
         }),
       }}>
-        {message.content}
+        {message.isBuiltInCommand ? (
+          message.content
+        ) : (
+          <MarkdownRenderer
+            content={message.content}
+            className="message-markdown"
+          />
+        )}
       </div>
     </div>
   );
