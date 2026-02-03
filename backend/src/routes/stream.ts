@@ -77,29 +77,48 @@ streamRouter.post('/:id/message', async (req, res) => {
   const { prompt, imageIds } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
+  console.log(`[DEBUG] Received message request:`, {
+    prompt: prompt?.substring(0, 100) + '...',
+    imageIds,
+    imageIdsLength: imageIds?.length || 0
+  });
+
   try {
     // Fetch image data if imageIds are provided
-    let imageBuffers: Buffer[] = [];
+    let imageMetadata: { buffer: Buffer; mimeType: string }[] = [];
     if (imageIds && imageIds.length > 0) {
+      console.log(`[DEBUG] Processing ${imageIds.length} image IDs: ${imageIds}`);
+
       for (const imageId of imageIds) {
         try {
+          console.log(`[DEBUG] Loading image: ${imageId}`);
           const result = ImageStorageService.getImage(imageId);
           if (result) {
-            imageBuffers.push(result.buffer);
+            console.log(`[DEBUG] Successfully loaded image ${imageId}, size: ${result.buffer.length} bytes, mimeType: ${result.image.mimeType}`);
+            imageMetadata.push({
+              buffer: result.buffer,
+              mimeType: result.image.mimeType
+            });
+          } else {
+            console.warn(`[DEBUG] Image not found: ${imageId}`);
           }
         } catch (error) {
           console.error(`Failed to load image ${imageId}:`, error);
         }
       }
 
+      console.log(`[DEBUG] Final imageMetadata count: ${imageMetadata.length}`);
+
       // Store image metadata in chat metadata for this message
       await storeMessageImages(req.params.id, imageIds);
+    } else {
+      console.log(`[DEBUG] No imageIds provided in request`);
     }
 
     // Auto-detect slash commands and route appropriately
     const emitter = prompt.startsWith('/')
       ? await sendSlashCommand(req.params.id, prompt)
-      : await sendMessage(req.params.id, prompt, imageBuffers.length > 0 ? imageBuffers : undefined);
+      : await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined);
 
     // Fire-and-forget: generate title from first message
     generateAndSaveTitle(req.params.id, prompt).catch(err =>

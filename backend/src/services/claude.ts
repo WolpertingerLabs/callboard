@@ -111,7 +111,7 @@ export function stopSession(chatId: string): boolean {
   return false;
 }
 
-export async function sendMessage(chatId: string, prompt: string | any, imageData?: Buffer[]): Promise<EventEmitter> {
+export async function sendMessage(chatId: string, prompt: string | any, imageMetadata?: { buffer: Buffer; mimeType: string }[]): Promise<EventEmitter> {
   const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(chatId) as any;
   if (!chat) throw new Error('Chat not found');
 
@@ -122,42 +122,47 @@ export async function sendMessage(chatId: string, prompt: string | any, imageDat
   const abortController = new AbortController();
   activeSessions.set(chatId, { abortController, emitter });
 
-  // Format the prompt/message for Claude
-  let formattedPrompt: string | AsyncIterable<any>;
-  if (imageData && imageData.length > 0) {
-    // Create content blocks with text and images
-    const contentBlocks = [
-      {
-        type: "text",
-        text: prompt
-      }
-    ];
+  // Build prompt - use structured message for images, string for text-only (matching blueberry project)
+  let formattedPrompt: string | { role: string; content: any[] };
 
-    // Add image blocks (using proper Claude SDK format)
-    for (const buffer of imageData) {
-      contentBlocks.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: "image/jpeg", // We could detect this from the buffer
-          data: buffer.toString('base64')
-        }
-      } as any);
+  if (imageMetadata && imageMetadata.length > 0) {
+    console.log(`[DEBUG] Building multimodal prompt with ${imageMetadata.length} images`);
+
+    // Build content array for multimodal message
+    const content: any[] = [];
+
+    // Add text content if present
+    if (prompt && prompt.trim()) {
+      content.push({
+        type: 'text',
+        text: prompt.trim()
+      });
     }
 
-    // Create an async iterable that yields the user message with content blocks
-    formattedPrompt = (async function* () {
-      yield {
-        type: 'user',
-        message: {
-          role: 'user',
-          content: contentBlocks
-        },
-        parent_tool_use_id: null,
-        session_id: chat.session_id || 'temp'
-      };
-    })();
+    // Add image content blocks
+    for (const { buffer, mimeType } of imageMetadata) {
+      const base64 = buffer.toString('base64');
+      console.log(`[DEBUG] Adding image: mimeType=${mimeType}, base64Length=${base64.length}`);
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: mimeType,
+          data: base64
+        }
+      });
+    }
+
+    // Return structured message object (matching blueberry project format)
+    formattedPrompt = {
+      role: 'user',
+      content: content
+    };
+
+    console.log(`[DEBUG] Final prompt structure: role=${formattedPrompt.role}, contentBlocks=${formattedPrompt.content.length}`);
   } else {
+    console.log(`[DEBUG] Building text-only prompt`);
+    // Simple string prompt for text-only messages
     formattedPrompt = prompt;
   }
 
