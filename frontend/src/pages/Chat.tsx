@@ -13,6 +13,7 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
+  const [networkError, setNetworkError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -90,6 +91,7 @@ export default function Chat() {
       await readSSE(res.body);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
+        setNetworkError('network error');
         setStreaming(false);
       }
     } finally {
@@ -106,6 +108,7 @@ export default function Chat() {
 
       // Auto-connect if session is active (web or CLI)
       if (status.active && (status.type === 'web' || status.type === 'cli')) {
+        setNetworkError(null); // Clear any previous network errors
         setStreaming(true);
         connectToStream();
       }
@@ -134,6 +137,7 @@ export default function Chat() {
 
   const handleSend = useCallback(async (prompt: string) => {
     setMessages(prev => [...prev, { role: 'user', type: 'text', content: prompt }]);
+    setNetworkError(null); // Clear any previous network errors
 
     // If there's already a streaming connection, stop it first
     if (abortRef.current) {
@@ -162,7 +166,7 @@ export default function Chat() {
       await readSSE(res.body);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
-        setMessages(prev => [...prev, { role: 'assistant', type: 'text', content: `Error: ${err.message}` }]);
+        setNetworkError('network error');
         setStreaming(false);
       }
     } finally {
@@ -191,6 +195,11 @@ export default function Chat() {
     setStreaming(false);
     setPendingAction(null);
   }, [id]);
+
+  const handleReconnect = useCallback(async () => {
+    setNetworkError(null);
+    await checkSessionStatus();
+  }, [checkSessionStatus]);
 
   // Check if there are any TodoWrite tool calls in the conversation
   const hasTodoList = useMemo(() => {
@@ -279,6 +288,24 @@ export default function Chat() {
             📋 Tasks
           </button>
         )}
+        {networkError && (
+          <button
+            onClick={handleReconnect}
+            style={{
+              background: 'var(--accent)',
+              color: '#fff',
+              padding: '6px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+            title="Reconnect to stream"
+          >
+            🔄 Reconnect
+          </button>
+        )}
         {streaming && (
           <button
             onClick={handleStop}
@@ -306,6 +333,34 @@ export default function Chat() {
             <MessageBubble message={msg} />
           </div>
         ))}
+        {networkError && (
+          <div style={{
+            color: 'var(--danger)',
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'var(--danger-bg, rgba(255, 0, 0, 0.1))',
+            borderRadius: 6,
+            padding: '12px 16px',
+            margin: '8px 0'
+          }}>
+            <div>⚠️ Network error occurred</div>
+            <button
+              onClick={handleReconnect}
+              style={{
+                background: 'var(--accent)',
+                color: '#fff',
+                padding: '4px 8px',
+                borderRadius: 4,
+                fontSize: 11,
+                marginLeft: 'auto'
+              }}
+            >
+              🔄 Reconnect
+            </button>
+          </div>
+        )}
         {streaming && (
           <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '8px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
             <div>Claude is working...</div>
