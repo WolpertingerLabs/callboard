@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { RotateCw } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, type Chat as ChatType, type ParsedMessage, type SessionStatus } from '../api';
+import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, type Chat as ChatType, type ParsedMessage, type SessionStatus } from '../api';
 import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
@@ -26,6 +26,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [draftMessage, setDraftMessage] = useState('');
   const [inFlightMessage, setInFlightMessage] = useState<string | null>(null);
+  const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
@@ -56,6 +57,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               // Refetch complete chat data and messages
               getChat(id!).then(setChat);
               getMessages(id!).then(setMessages);
+              // Refresh slash commands in case they were discovered during initialization
+              loadSlashCommands();
               return;
             }
 
@@ -150,6 +153,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, connectToStream]);
 
+  // Fetch slash commands for the chat
+  const loadSlashCommands = useCallback(async () => {
+    if (!id) return;
+    try {
+      const commands = await getSlashCommands(id);
+      setSlashCommands(commands);
+    } catch (error) {
+      console.warn('Failed to load slash commands:', error);
+    }
+  }, [id]);
+
   useEffect(() => {
     // Reset first response flag when chat ID changes
     hasReceivedFirstResponseRef.current = false;
@@ -165,7 +179,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
     // Check session status and auto-connect
     checkSessionStatus();
-  }, [id, checkSessionStatus]);
+
+    // Load slash commands
+    loadSlashCommands();
+  }, [id, checkSessionStatus, loadSlashCommands]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -498,7 +515,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       {pendingAction ? (
         <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
       ) : (
-        <PromptInput onSend={handleSend} disabled={false} onSaveDraft={handleSaveDraft} />
+        <PromptInput onSend={handleSend} disabled={false} onSaveDraft={handleSaveDraft} slashCommands={slashCommands} />
       )}
 
       <DraftModal

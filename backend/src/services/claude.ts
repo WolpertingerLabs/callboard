@@ -280,6 +280,18 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;
 
+        // Capture slash commands from system initialization message
+        if ('slash_commands' in message && message.slash_commands) {
+          const slashCommands = message.slash_commands as string[];
+          const meta = JSON.parse(chat.metadata || '{}');
+          // Only update if slash commands have changed
+          if (!meta.slashCommands || JSON.stringify(meta.slashCommands) !== JSON.stringify(slashCommands)) {
+            meta.slashCommands = slashCommands;
+            db.prepare('UPDATE chats SET metadata = ?, updated_at = ? WHERE id = ?')
+              .run(JSON.stringify(meta), new Date().toISOString(), chatId);
+          }
+        }
+
         if ('session_id' in message && message.session_id && !sessionId) {
           sessionId = message.session_id as string;
           const meta = JSON.parse(chat.metadata || '{}');
@@ -433,6 +445,18 @@ export async function sendSlashCommand(chatId: string, command: string): Promise
 
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;
+
+        // Capture slash commands from system initialization message
+        if ('slash_commands' in message && message.slash_commands) {
+          const slashCommands = message.slash_commands as string[];
+          const meta = JSON.parse(chat.metadata || '{}');
+          // Only update if slash commands have changed
+          if (!meta.slashCommands || JSON.stringify(meta.slashCommands) !== JSON.stringify(slashCommands)) {
+            meta.slashCommands = slashCommands;
+            db.prepare('UPDATE chats SET metadata = ?, updated_at = ? WHERE id = ?')
+              .run(JSON.stringify(meta), new Date().toISOString(), chatId);
+          }
+        }
 
         if ('session_id' in message && message.session_id && !sessionId) {
           sessionId = message.session_id as string;

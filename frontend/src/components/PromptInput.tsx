@@ -1,17 +1,20 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { ArrowUp, Paperclip, Edit } from 'lucide-react';
 import ImageUpload from './ImageUpload';
+import SlashCommandAutocomplete from './SlashCommandAutocomplete';
 
 interface Props {
   onSend: (prompt: string, images?: File[]) => void;
   disabled: boolean;
   onSaveDraft?: (prompt: string, images?: File[], onSuccess?: () => void) => void;
+  slashCommands?: string[];
 }
 
-export default function PromptInput({ onSend, disabled, onSaveDraft }: Props) {
+export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [] }: Props) {
   const [value, setValue] = useState('');
   const [images, setImages] = useState<File[]>([]);
   const [showImageUpload, setShowImageUpload] = useState(false);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = useCallback(async () => {
@@ -25,6 +28,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft }: Props) {
     setValue('');
     setImages([]);
     setShowImageUpload(false);
+    setShowAutocomplete(false);
 
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -32,9 +36,19 @@ export default function PromptInput({ onSend, disabled, onSaveDraft }: Props) {
   }, [value, images, disabled, onSend]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (showAutocomplete && (e.key === 'Escape')) {
+      e.preventDefault();
+      setShowAutocomplete(false);
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (showAutocomplete) {
+        setShowAutocomplete(false);
+      } else {
+        handleSend();
+      }
     }
   };
 
@@ -65,6 +79,19 @@ export default function PromptInput({ onSend, disabled, onSaveDraft }: Props) {
     onSaveDraft(value.trim(), images.length > 0 ? images : undefined, clearInput);
   }, [value, images, disabled, onSaveDraft]);
 
+  // Monitor value changes to show/hide autocomplete
+  useEffect(() => {
+    const trimmed = value.trim();
+    const shouldShow = trimmed.startsWith('/') && slashCommands.length > 0;
+    setShowAutocomplete(shouldShow);
+  }, [value, slashCommands]);
+
+  const handleCommandSelect = useCallback((command: string) => {
+    setValue(command + ' ');
+    setShowAutocomplete(false);
+    textareaRef.current?.focus();
+  }, []);
+
   const canSend = (value.trim() || images.length > 0) && !disabled;
 
   return (
@@ -93,6 +120,13 @@ export default function PromptInput({ onSend, disabled, onSaveDraft }: Props) {
         alignItems: 'flex-end',
       }}>
         <div style={{ flex: 1, position: 'relative' }}>
+          <SlashCommandAutocomplete
+            slashCommands={slashCommands}
+            query={value}
+            onSelect={handleCommandSelect}
+            visible={showAutocomplete}
+          />
+
           <textarea
             ref={textareaRef}
             value={value}

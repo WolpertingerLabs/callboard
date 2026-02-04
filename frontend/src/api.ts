@@ -181,3 +181,9 @@ export async function addToBacklog(chatId: string, message: string): Promise<Que
   const now = new Date().toISOString();
   return scheduleMessage(chatId, message, now);
 }
+
+export async function getSlashCommands(chatId: string): Promise<string[]> {
+  const res = await fetch(`${BASE}/chats/${chatId}/slash-commands`);
+  const data = await res.json();
+  return data.slashCommands || [];
+}

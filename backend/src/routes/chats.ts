@@ -266,6 +266,20 @@ chatsRouter.get('/:id/messages', (req, res) => {
   res.json(parsed);
 });
 
+// Get slash commands for a chat
+chatsRouter.get('/:id/slash-commands', (req, res) => {
+  const chat = findChat(req.params.id) as any;
+  if (!chat) return res.status(404).json({ error: 'Not found' });
+
+  try {
+    const meta = JSON.parse(chat.metadata || '{}');
+    const slashCommands = meta.slashCommands || [];
+    res.json({ slashCommands });
+  } catch {
+    res.json({ slashCommands: [] });
+  }
+});
+
 interface ParsedMessage {
   role: 'user' | 'assistant';
   type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
