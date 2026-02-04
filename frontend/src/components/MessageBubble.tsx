@@ -99,7 +99,7 @@ interface Props {
   message: ParsedMessage;
 }
 
-function MessageTimestamp({ timestamp }: { timestamp?: string }) {
+function MessageTimestamp({ timestamp, align = 'right' }: { timestamp?: string; align?: 'left' | 'right' }) {
   if (!timestamp) return null;
 
   return (
@@ -108,7 +108,7 @@ function MessageTimestamp({ timestamp }: { timestamp?: string }) {
       color: 'var(--text-muted)',
       opacity: 0.6,
       marginTop: 4,
-      textAlign: 'right',
+      textAlign: align,
     }}>
       {formatRelativeTime(timestamp)}
     </div>
@@ -153,7 +153,7 @@ export default function MessageBubble({ message }: Props) {
             </pre>
           )}
         </div>
-        <MessageTimestamp timestamp={message.timestamp} />
+        <MessageTimestamp timestamp={message.timestamp} align="left" />
       </div>
     );
   }
@@ -178,7 +178,7 @@ export default function MessageBubble({ message }: Props) {
             </pre>
           )}
         </div>
-        <MessageTimestamp timestamp={message.timestamp} />
+        <MessageTimestamp timestamp={message.timestamp} align="left" />
       </div>
     );
   }
@@ -205,7 +205,7 @@ export default function MessageBubble({ message }: Props) {
             </pre>
           )}
         </div>
-        <MessageTimestamp timestamp={message.timestamp} />
+        <MessageTimestamp timestamp={message.timestamp} align="left" />
       </div>
     );
   }
@@ -257,7 +257,7 @@ export default function MessageBubble({ message }: Props) {
           />
         )}
       </div>
-      <MessageTimestamp timestamp={message.timestamp} />
+      <MessageTimestamp timestamp={message.timestamp} align={isUser ? 'right' : 'left'} />
     </div>
   );
 }
