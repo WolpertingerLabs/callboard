@@ -83,7 +83,7 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
               border: '1px solid var(--border)',
             }}
           >
-            💾 Drafts
+            📋 Drafts
           </button>
           <button
             onClick={() => setShowNew(!showNew)}
