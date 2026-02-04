@@ -1,7 +1,25 @@
 import { query } from '@anthropic-ai/claude-code';
 import type { PermissionResult } from '@anthropic-ai/claude-code';
 import { EventEmitter } from 'events';
+import { appendFileSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import db from '../db.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const logDir = join(__dirname, '../../logs');
+mkdirSync(logDir, { recursive: true });
+const debugLogFile = join(logDir, 'slash-commands-debug.log');
+
+function logDebug(message: string, data?: any) {
+  const timestamp = new Date().toISOString();
+  const logEntry = data
+    ? `[${timestamp}] ${message}\n${JSON.stringify(data, null, 2)}\n\n`
+    : `[${timestamp}] ${message}\n\n`;
+
+  console.log(`[SLASH-DEBUG] ${message}`, data || '');
+  appendFileSync(debugLogFile, logEntry);
+}
 
 export interface StreamEvent {
   type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'done' | 'error'
@@ -275,20 +293,32 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
     try {
       let sessionId: string | null = null;
 
+      logDebug('Starting new chat session', { chatId, cwd: chat.folder });
+
       const conversation = query(queryOpts);
 
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;
 
+        // Debug: Log message structure to understand what we receive
+        logDebug('Received message from Claude SDK', {
+          keys: Object.keys(message),
+          type: (message as any).type,
+          hasSlashCommands: 'slash_commands' in message,
+          fullMessage: message
+        });
+
         // Capture slash commands from system initialization message
         if ('slash_commands' in message && message.slash_commands) {
           const slashCommands = message.slash_commands as string[];
+          logDebug('Found slash commands in SDK message', slashCommands);
           const meta = JSON.parse(chat.metadata || '{}');
           // Only update if slash commands have changed
           if (!meta.slashCommands || JSON.stringify(meta.slashCommands) !== JSON.stringify(slashCommands)) {
             meta.slashCommands = slashCommands;
             db.prepare('UPDATE chats SET metadata = ?, updated_at = ? WHERE id = ?')
               .run(JSON.stringify(meta), new Date().toISOString(), chatId);
+            logDebug('Updated chat metadata with slash commands', { chatId, slashCommands });
           }
         }
 
@@ -441,20 +471,32 @@ export async function sendSlashCommand(chatId: string, command: string): Promise
     try {
       let sessionId: string | null = null;
 
+      logDebug('Starting new chat session', { chatId, cwd: chat.folder });
+
       const conversation = query(queryOpts);
 
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;
 
+        // Debug: Log message structure to understand what we receive
+        logDebug('Received message from Claude SDK', {
+          keys: Object.keys(message),
+          type: (message as any).type,
+          hasSlashCommands: 'slash_commands' in message,
+          fullMessage: message
+        });
+
         // Capture slash commands from system initialization message
         if ('slash_commands' in message && message.slash_commands) {
           const slashCommands = message.slash_commands as string[];
+          logDebug('Found slash commands in SDK message', slashCommands);
           const meta = JSON.parse(chat.metadata || '{}');
           // Only update if slash commands have changed
           if (!meta.slashCommands || JSON.stringify(meta.slashCommands) !== JSON.stringify(slashCommands)) {
             meta.slashCommands = slashCommands;
             db.prepare('UPDATE chats SET metadata = ?, updated_at = ? WHERE id = ?')
               .run(JSON.stringify(meta), new Date().toISOString(), chatId);
+            logDebug('Updated chat metadata with slash commands', { chatId, slashCommands });
           }
         }
 

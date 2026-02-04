@@ -62,9 +62,13 @@ async function generateAndSaveTitle(chatId: string, prompt: string): Promise<voi
 
   const result = await client.generateChatTitle({ userMessage: prompt });
   if (result.success && result.content) {
-    meta.title = result.content;
+    // Re-read metadata to avoid race condition with slash commands being saved
+    const latestChat = db.prepare('SELECT metadata FROM chats WHERE id = ?').get(chatId) as { metadata: string } | undefined;
+    const latestMeta = latestChat ? JSON.parse(latestChat.metadata || '{}') : {};
+
+    latestMeta.title = result.content;
     db.prepare('UPDATE chats SET metadata = ?, updated_at = ? WHERE id = ?')
-      .run(JSON.stringify(meta), new Date().toISOString(), chatId);
+      .run(JSON.stringify(latestMeta), new Date().toISOString(), chatId);
     console.log(`[OpenRouter] Generated title for ${chatId}: "${result.content}"`);
   } else {
     console.warn('[OpenRouter] Title generation failed:', result.error);

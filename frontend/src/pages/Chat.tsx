@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { RotateCw } from 'lucide-react';
+import { RotateCw, CheckSquare, Square, Slash, ArrowLeft } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, type Chat as ChatType, type ParsedMessage, type SessionStatus } from '../api';
 import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 import DraftModal from '../components/DraftModal';
+import SlashCommandsModal from '../components/SlashCommandsModal';
 import { addRecentDirectory } from '../utils/localStorage';
 
 interface ChatProps {
@@ -27,6 +28,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [draftMessage, setDraftMessage] = useState('');
   const [inFlightMessage, setInFlightMessage] = useState<string | null>(null);
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
+  const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
@@ -340,6 +342,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
 
+  const handleCommandSelect = useCallback((command: string) => {
+    // For now, we'll just log the command. In the future, this could
+    // insert the command into the prompt input or trigger other actions
+    console.log('Selected command:', command);
+  }, []);
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <header style={{
@@ -353,9 +361,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         {isMobile && (
           <button
             onClick={() => navigate('/')}
-            style={{ background: 'none', fontSize: 18, padding: '4px 8px' }}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: '4px 8px',
+              cursor: 'pointer',
+              color: 'var(--text)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            title="Back to chat list"
           >
-            ←
+            <ArrowLeft size={20} />
           </button>
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -386,32 +404,61 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             style={{
               background: 'var(--accent)',
               color: '#fff',
-              padding: '6px 12px',
+              padding: '8px',
               borderRadius: 6,
-              fontSize: 13,
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               marginRight: 8,
             }}
             title="Jump to latest to-do list"
           >
-            📋 Tasks
+            <CheckSquare size={16} />
           </button>
         )}
+
+        {/* Slash Commands Modal Button */}
+        {slashCommands.length > 0 && (
+          <button
+            onClick={() => setShowSlashCommandsModal(true)}
+            style={{
+              background: 'var(--bg-secondary)',
+              color: 'var(--text)',
+              padding: '8px',
+              borderRadius: 6,
+              border: '1px solid var(--border)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginRight: 8,
+            }}
+            title="View available slash commands"
+          >
+            <Slash size={16} />
+          </button>
+        )}
+
         {networkError && (
           <button
             onClick={handleReconnect}
             style={{
               background: 'var(--accent)',
               color: '#fff',
-              padding: '6px 12px',
+              padding: '8px',
               borderRadius: 6,
-              fontSize: 13,
+              border: 'none',
+              cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
+              justifyContent: 'center',
+              marginRight: 8,
             }}
             title="Reconnect to stream"
           >
-            🔄 Reconnect
+            <RotateCw size={16} />
           </button>
         )}
         {streaming && (
@@ -420,12 +467,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             style={{
               background: 'var(--danger)',
               color: '#fff',
-              padding: '6px 12px',
+              padding: '8px',
               borderRadius: 6,
-              fontSize: 13,
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
+            title="Stop generation"
           >
-            Stop
+            <Square size={14} />
           </button>
         )}
       </header>
@@ -528,6 +580,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         chatId={id!}
         message={draftMessage}
         onSuccess={draftSuccessCallback || undefined}
+      />
+
+      <SlashCommandsModal
+        isOpen={showSlashCommandsModal}
+        onClose={() => setShowSlashCommandsModal(false)}
+        slashCommands={slashCommands}
+        onCommandSelect={handleCommandSelect}
       />
     </div>
   );
