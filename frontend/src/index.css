@@ -173,3 +173,30 @@ a {
 .plan-review-markdown li {
   margin: 1px 0;
 }
+
+/* Split layout responsive adjustments */
+@media (max-width: 768px) {
+  .split-layout {
+    flex-direction: column !important;
+  }
+
+  .split-sidebar {
+    width: 100% !important;
+    min-width: unset !important;
+  }
+
+  .split-main {
+    width: 100% !important;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1024px) {
+  .split-sidebar {
+    width: 25% !important;
+    min-width: 280px !important;
+  }
+
+  .split-main {
+    width: 75% !important;
+  }
+}

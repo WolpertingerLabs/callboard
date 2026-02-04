@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { RotateCw } from 'lucide-react';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, type Chat as ChatType, type ParsedMessage, type SessionStatus } from '../api';
 import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
@@ -11,6 +12,7 @@ import { addRecentDirectory } from '../utils/localStorage';
 export default function Chat() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [chat, setChat] = useState<ChatType | null>(null);
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -307,12 +309,14 @@ export default function Chat() {
         gap: 12,
         flexShrink: 0,
       }}>
-        <button
-          onClick={() => navigate('/')}
-          style={{ background: 'none', fontSize: 18, padding: '4px 8px' }}
-        >
-          ←
-        </button>
+        {isMobile && (
+          <button
+            onClick={() => navigate('/')}
+            style={{ background: 'none', fontSize: 18, padding: '4px 8px' }}
+          >
+            ←
+          </button>
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontSize: 15, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
