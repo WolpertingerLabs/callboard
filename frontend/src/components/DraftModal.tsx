@@ -207,7 +207,7 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
                   cursor: isSubmitting || !message.trim() ? 'default' : 'pointer',
                 }}
               >
-                {isSubmitting ? 'Saving...' : '💾 Save Draft'}
+                {isSubmitting ? 'Saving...' : 'Save Draft'}
               </button>
             )}
           </div>

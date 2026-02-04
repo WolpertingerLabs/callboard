@@ -165,7 +165,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft }: Props) {
             }}
             title="Save as draft"
           >
-            ��
+            📝
           </button>
         )}
 
