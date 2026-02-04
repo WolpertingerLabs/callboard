@@ -131,10 +131,21 @@ streamRouter.post('/:id/message', async (req, res) => {
     });
 
     const onEvent = (event: StreamEvent) => {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-      if (event.type === 'done' || event.type === 'error') {
+      // Send notification events instead of full content
+      if (event.type === 'done') {
+        res.write(`data: ${JSON.stringify({ type: 'message_complete' })}\n\n`);
         emitter.removeListener('event', onEvent);
         res.end();
+      } else if (event.type === 'error') {
+        res.write(`data: ${JSON.stringify({ type: 'message_error', content: event.content })}\n\n`);
+        emitter.removeListener('event', onEvent);
+        res.end();
+      } else if (event.type === 'permission_request' || event.type === 'user_question' || event.type === 'plan_review') {
+        // Still send permission/interaction requests as before
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      } else {
+        // For other events (text, thinking, tool_use, tool_result), just send a notification
+        res.write(`data: ${JSON.stringify({ type: 'message_update' })}\n\n`);
       }
     };
 
@@ -194,10 +205,21 @@ streamRouter.get('/:id/stream', (req, res) => {
   // If there's an active web session, connect to it
   if (session) {
     const onEvent = (event: StreamEvent) => {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-      if (event.type === 'done' || event.type === 'error') {
+      // Send notification events instead of full content
+      if (event.type === 'done') {
+        res.write(`data: ${JSON.stringify({ type: 'message_complete' })}\n\n`);
         session.emitter.removeListener('event', onEvent);
         res.end();
+      } else if (event.type === 'error') {
+        res.write(`data: ${JSON.stringify({ type: 'message_error', content: event.content })}\n\n`);
+        session.emitter.removeListener('event', onEvent);
+        res.end();
+      } else if (event.type === 'permission_request' || event.type === 'user_question' || event.type === 'plan_review') {
+        // Still send permission/interaction requests as before
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      } else {
+        // For other events (text, thinking, tool_use, tool_result), just send a notification
+        res.write(`data: ${JSON.stringify({ type: 'message_update' })}\n\n`);
       }
     };
 
@@ -248,31 +270,13 @@ streamRouter.get('/:id/stream', (req, res) => {
           try {
             const parsed = JSON.parse(line);
             if (parsed.message?.content) {
-              // Convert CLI log format to our stream format (match web session logic)
-              const blocks = Array.isArray(parsed.message.content) ? parsed.message.content : [parsed.message.content];
-              for (const block of blocks) {
-                if (typeof block === 'string') {
-                  res.write(`data: ${JSON.stringify({ type: 'text', content: block })}\n\n`);
-                } else if (block?.type === 'text') {
-                  res.write(`data: ${JSON.stringify({ type: 'text', content: block.text })}\n\n`);
-                } else if (block?.type === 'thinking') {
-                  res.write(`data: ${JSON.stringify({ type: 'thinking', content: block.thinking })}\n\n`);
-                } else if (block?.type === 'tool_use') {
-                  res.write(`data: ${JSON.stringify({
-                    type: 'tool_use',
-                    content: JSON.stringify(block.input),
-                    toolName: block.name
-                  })}\n\n`);
-                } else if (block?.type === 'tool_result') {
-                  // This is the critical missing piece - handle tool results (including command errors)
-                  const content = typeof block.content === 'string'
-                    ? block.content
-                    : Array.isArray(block.content)
-                      ? block.content.map((c: any) => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join('\n')
-                      : JSON.stringify(block.content);
-                  res.write(`data: ${JSON.stringify({ type: 'tool_result', content })}\n\n`);
-                }
-              }
+              // Just notify that there's new content, don't send the actual content
+              res.write(`data: ${JSON.stringify({ type: 'message_update' })}\n\n`);
+            }
+
+            // Check if this is the end of the conversation
+            if (parsed.type === 'summary' || (parsed.message?.stop_reason)) {
+              res.write(`data: ${JSON.stringify({ type: 'message_complete' })}\n\n`);
             }
           } catch (err) {
             // Log parsing errors for debugging instead of silently ignoring

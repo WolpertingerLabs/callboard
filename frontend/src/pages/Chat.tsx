@@ -21,7 +21,7 @@ export default function Chat() {
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Shared SSE reader that processes a ReadableStream of SSE data
+  // Shared SSE reader that processes notifications and refetches chat data
   const readSSE = useCallback(async (body: ReadableStream<Uint8Array>) => {
     const reader = body.getReader();
     const decoder = new TextDecoder();
@@ -40,17 +40,30 @@ export default function Chat() {
           if (!line.startsWith('data: ')) continue;
           try {
             const event = JSON.parse(line.slice(6));
-            if (event.type === 'done') {
+
+            if (event.type === 'message_complete') {
               setStreaming(false);
-              // Refresh chat data when stream ends to display updated title
+              // Refetch complete chat data and messages
               getChat(id!).then(setChat);
+              getMessages(id!).then(setMessages);
               return;
             }
-            if (event.type === 'error') {
-              setMessages(prev => [...prev, { role: 'assistant', type: 'text', content: `Error: ${event.content}` }]);
+
+            if (event.type === 'message_error') {
               setStreaming(false);
+              // Refetch messages to show any partial content, then add error
+              getMessages(id!).then(msgs => {
+                setMessages([...msgs, { role: 'assistant', type: 'text', content: `Error: ${event.content}` }]);
+              });
               return;
             }
+
+            if (event.type === 'message_update') {
+              // New content is available - refetch all messages to show latest state with timestamps
+              getMessages(id!).then(setMessages);
+              continue;
+            }
+
             if (event.type === 'permission_request' || event.type === 'user_question' || event.type === 'plan_review') {
               setPendingAction({
                 type: event.type,
@@ -62,19 +75,13 @@ export default function Chat() {
               });
               continue;
             }
-            setMessages(prev => [...prev, {
-              role: 'assistant',
-              type: event.type,
-              content: event.content,
-              toolName: event.toolName,
-            }]);
           } catch {}
         }
       }
     } finally {
       setStreaming(false);
     }
-  }, []);
+  }, [id]);
 
   // Connect to an existing SSE stream (e.g. after page refresh)
   const connectToStream = useCallback(async () => {
@@ -159,13 +166,7 @@ export default function Chat() {
       }
     }
 
-    // Display the user message (with image indicator if applicable)
-    let displayContent = prompt;
-    if (imageIds.length > 0) {
-      displayContent = `📷 ${imageIds.length} image${imageIds.length === 1 ? '' : 's'} attached\n\n${prompt}`;
-    }
-
-    setMessages(prev => [...prev, { role: 'user', type: 'text', content: displayContent }]);
+    // Don't add user message immediately - let the refetch handle showing complete conversation with timestamps
     setNetworkError(null); // Clear any previous network errors
 
     // Track directory usage when sending message
