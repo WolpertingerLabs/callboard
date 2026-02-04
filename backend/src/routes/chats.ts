@@ -280,6 +280,7 @@ interface ParsedMessage {
   type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
   content: string;
   toolName?: string;
+  timestamp?: string;
 }
 
 function extractToolResultContent(block: any): string {
@@ -305,10 +306,11 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
 
     const role: 'user' | 'assistant' = msg.message?.role || msg.type;
     const content = msg.message?.content || msg.content;
+    const timestamp = msg.timestamp;
     if (!content) continue;
 
     if (typeof content === 'string') {
-      result.push({ role, type: 'text', content });
+      result.push({ role, type: 'text', content, timestamp });
       continue;
     }
 
@@ -317,10 +319,10 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
     for (const block of content) {
       switch (block.type) {
         case 'text':
-          if (block.text) result.push({ role, type: 'text', content: block.text });
+          if (block.text) result.push({ role, type: 'text', content: block.text, timestamp });
           break;
         case 'thinking':
-          result.push({ role: 'assistant', type: 'thinking', content: block.thinking || '' });
+          result.push({ role: 'assistant', type: 'thinking', content: block.thinking || '', timestamp });
           break;
         case 'tool_use':
           result.push({
@@ -328,6 +330,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
             type: 'tool_use',
             content: JSON.stringify(block.input),
             toolName: block.name,
+            timestamp,
           });
           break;
         case 'tool_result':
@@ -336,6 +339,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
             type: 'tool_result',
             content: extractToolResultContent(block),
             toolName: block.tool_use_id,
+            timestamp,
           });
           break;
       }

@@ -16,6 +16,7 @@ export interface ParsedMessage {
   content: string;
   toolName?: string;
   isBuiltInCommand?: boolean;
+  timestamp?: string;
 }
 
 export interface ChatListResponse {

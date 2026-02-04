@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import type { ParsedMessage } from '../api';
 import MarkdownRenderer from './MarkdownRenderer';
+import { formatRelativeTime } from '../utils/dateFormat';
 
 interface TodoItem {
   content: string;
@@ -98,6 +99,22 @@ interface Props {
   message: ParsedMessage;
 }
 
+function MessageTimestamp({ timestamp }: { timestamp?: string }) {
+  if (!timestamp) return null;
+
+  return (
+    <div style={{
+      fontSize: 10,
+      color: 'var(--text-muted)',
+      opacity: 0.6,
+      marginTop: 4,
+      textAlign: 'right',
+    }}>
+      {formatRelativeTime(timestamp)}
+    </div>
+  );
+}
+
 export default function MessageBubble({ message }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === 'user';
@@ -116,73 +133,79 @@ export default function MessageBubble({ message }: Props) {
 
   if (message.type === 'thinking') {
     return (
-      <div
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          padding: '6px 12px',
-          margin: '4px 0',
-          fontSize: 13,
-          color: 'var(--text-muted)',
-          cursor: 'pointer',
-          borderLeft: '2px solid var(--border)',
-        }}
-      >
-        <span style={{ fontStyle: 'italic' }}>
-          {expanded ? 'Thinking:' : 'Thinking... (tap to expand)'}
-        </span>
-        {expanded && (
-          <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
-            {message.content}
-          </pre>
-        )}
+      <div style={{ margin: '4px 0' }}>
+        <div
+          onClick={() => setExpanded(!expanded)}
+          style={{
+            padding: '6px 12px',
+            fontSize: 13,
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            borderLeft: '2px solid var(--border)',
+          }}
+        >
+          <span style={{ fontStyle: 'italic' }}>
+            {expanded ? 'Thinking:' : 'Thinking... (tap to expand)'}
+          </span>
+          {expanded && (
+            <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
+              {message.content}
+            </pre>
+          )}
+        </div>
+        <MessageTimestamp timestamp={message.timestamp} />
       </div>
     );
   }
 
   if (message.type === 'tool_use') {
     return (
-      <div
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          padding: '6px 12px',
-          margin: '4px 0',
-          fontSize: 13,
-          color: 'var(--text-muted)',
-          cursor: 'pointer',
-          borderLeft: '2px solid var(--accent)',
-        }}
-      >
-        <span style={{ fontWeight: 500 }}>Tool: {message.toolName || 'unknown'}</span>
-        {expanded && (
-          <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
-            {message.content}
-          </pre>
-        )}
+      <div style={{ margin: '4px 0' }}>
+        <div
+          onClick={() => setExpanded(!expanded)}
+          style={{
+            padding: '6px 12px',
+            fontSize: 13,
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            borderLeft: '2px solid var(--accent)',
+          }}
+        >
+          <span style={{ fontWeight: 500 }}>Tool: {message.toolName || 'unknown'}</span>
+          {expanded && (
+            <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
+              {message.content}
+            </pre>
+          )}
+        </div>
+        <MessageTimestamp timestamp={message.timestamp} />
       </div>
     );
   }
 
   if (message.type === 'tool_result') {
     return (
-      <div
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          padding: '6px 12px',
-          margin: '4px 0',
-          fontSize: 13,
-          color: 'var(--text-muted)',
-          cursor: 'pointer',
-          borderLeft: '2px solid var(--border)',
-        }}
-      >
-        <span style={{ fontStyle: 'italic' }}>
-          {expanded ? 'Result:' : 'Tool result (tap to expand)'}
-        </span>
-        {expanded && (
-          <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, maxHeight: 300, overflow: 'auto' }}>
-            {message.content}
-          </pre>
-        )}
+      <div style={{ margin: '4px 0' }}>
+        <div
+          onClick={() => setExpanded(!expanded)}
+          style={{
+            padding: '6px 12px',
+            fontSize: 13,
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            borderLeft: '2px solid var(--border)',
+          }}
+        >
+          <span style={{ fontStyle: 'italic' }}>
+            {expanded ? 'Result:' : 'Tool result (tap to expand)'}
+          </span>
+          {expanded && (
+            <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, maxHeight: 300, overflow: 'auto' }}>
+              {message.content}
+            </pre>
+          )}
+        </div>
+        <MessageTimestamp timestamp={message.timestamp} />
       </div>
     );
   }
@@ -205,7 +228,8 @@ export default function MessageBubble({ message }: Props) {
   return (
     <div style={{
       display: 'flex',
-      justifyContent: isUser ? 'flex-end' : 'flex-start',
+      flexDirection: 'column',
+      alignItems: isUser ? 'flex-end' : 'flex-start',
       margin: '6px 0',
     }}>
       <div style={{
@@ -233,6 +257,7 @@ export default function MessageBubble({ message }: Props) {
           />
         )}
       </div>
+      <MessageTimestamp timestamp={message.timestamp} />
     </div>
   );
 }
