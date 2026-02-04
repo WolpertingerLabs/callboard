@@ -5,6 +5,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
+import { setSlashCommandsForDirectory } from './slashCommands.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logDir = join(__dirname, '../../logs');
@@ -312,14 +313,9 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
         if ('slash_commands' in message && message.slash_commands) {
           const slashCommands = message.slash_commands as string[];
           logDebug('Found slash commands in SDK message', slashCommands);
-          const meta = JSON.parse(chat.metadata || '{}');
-          // Only update if slash commands have changed
-          if (!meta.slashCommands || JSON.stringify(meta.slashCommands) !== JSON.stringify(slashCommands)) {
-            meta.slashCommands = slashCommands;
-            db.prepare('UPDATE chats SET metadata = ?, updated_at = ? WHERE id = ?')
-              .run(JSON.stringify(meta), new Date().toISOString(), chatId);
-            logDebug('Updated chat metadata with slash commands', { chatId, slashCommands });
-          }
+          // Save slash commands keyed by directory
+          setSlashCommandsForDirectory(chat.folder, slashCommands);
+          logDebug('Updated slash commands for directory', { chatId, folder: chat.folder, slashCommands });
         }
 
         if ('session_id' in message && message.session_id && !sessionId) {
@@ -490,14 +486,9 @@ export async function sendSlashCommand(chatId: string, command: string): Promise
         if ('slash_commands' in message && message.slash_commands) {
           const slashCommands = message.slash_commands as string[];
           logDebug('Found slash commands in SDK message', slashCommands);
-          const meta = JSON.parse(chat.metadata || '{}');
-          // Only update if slash commands have changed
-          if (!meta.slashCommands || JSON.stringify(meta.slashCommands) !== JSON.stringify(slashCommands)) {
-            meta.slashCommands = slashCommands;
-            db.prepare('UPDATE chats SET metadata = ?, updated_at = ? WHERE id = ?')
-              .run(JSON.stringify(meta), new Date().toISOString(), chatId);
-            logDebug('Updated chat metadata with slash commands', { chatId, slashCommands });
-          }
+          // Save slash commands keyed by directory
+          setSlashCommandsForDirectory(chat.folder, slashCommands);
+          logDebug('Updated slash commands for directory', { chatId, folder: chat.folder, slashCommands });
         }
 
         if ('session_id' in message && message.session_id && !sessionId) {

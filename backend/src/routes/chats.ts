@@ -4,6 +4,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import db from '../db.js';
+import { getSlashCommandsForDirectory } from '../services/slashCommands.js';
 
 export const chatsRouter = Router();
 
@@ -272,10 +273,10 @@ chatsRouter.get('/:id/slash-commands', (req, res) => {
   if (!chat) return res.status(404).json({ error: 'Not found' });
 
   try {
-    const meta = JSON.parse(chat.metadata || '{}');
-    const slashCommands = meta.slashCommands || [];
+    const slashCommands = getSlashCommandsForDirectory(chat.folder);
     res.json({ slashCommands });
-  } catch {
+  } catch (error) {
+    console.error('Failed to get slash commands:', error);
     res.json({ slashCommands: [] });
   }
 });
