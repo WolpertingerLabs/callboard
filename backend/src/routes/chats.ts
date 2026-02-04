@@ -83,7 +83,7 @@ function discoverAllSessions(): { sessionId: string; folder: string; filePath: s
 }
 
 // List all chats (pull from log directories, augment with DB records)
-chatsRouter.get('/', (_req, res) => {
+chatsRouter.get('/', (req, res) => {
   // Get all DB chats for augmentation lookup
   const dbChats = db.prepare('SELECT * FROM chats ORDER BY updated_at DESC').all() as any[];
 
@@ -165,7 +165,18 @@ chatsRouter.get('/', (_req, res) => {
   const allChats = chatsFromLogs
     .sort((a: any, b: any) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
-  res.json(allChats);
+  // Handle pagination
+  const limit = parseInt(req.query.limit as string) || allChats.length;
+  const offset = parseInt(req.query.offset as string) || 0;
+
+  const paginatedChats = allChats.slice(offset, offset + limit);
+  const hasMore = offset + limit < allChats.length;
+
+  res.json({
+    chats: paginatedChats,
+    hasMore,
+    total: allChats.length
+  });
 });
 
 // Create a chat

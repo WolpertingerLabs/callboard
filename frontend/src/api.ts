@@ -18,8 +18,18 @@ export interface ParsedMessage {
   isBuiltInCommand?: boolean;
 }
 
-export async function listChats(): Promise<Chat[]> {
-  const res = await fetch(`${BASE}/chats`);
+export interface ChatListResponse {
+  chats: Chat[];
+  hasMore: boolean;
+  total: number;
+}
+
+export async function listChats(limit?: number, offset?: number): Promise<ChatListResponse> {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.append('limit', limit.toString());
+  if (offset !== undefined) params.append('offset', offset.toString());
+
+  const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ''}`);
   return res.json();
 }
 

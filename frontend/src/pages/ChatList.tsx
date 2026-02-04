@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { listChats, createChat, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from '../api';
+import { listChats, createChat, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions, type ChatListResponse } from '../api';
 import ChatListItem from '../components/ChatListItem';
 import PermissionSettings from '../components/PermissionSettings';
 import ConfirmModal from '../components/ConfirmModal';
@@ -9,6 +9,8 @@ import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, ad
 export default function ChatList({ onLogout }: { onLogout: () => void }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [folder, setFolder] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
@@ -18,12 +20,13 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
   const navigate = useNavigate();
 
   const load = async () => {
-    const chats = await listChats();
-    setChats(chats);
+    const response = await listChats(20, 0);
+    setChats(response.chats);
+    setHasMore(response.hasMore);
 
     // Fetch session statuses for all chats
     const statuses = new Map<string, SessionStatus>();
-    await Promise.all(chats.map(async (chat) => {
+    await Promise.all(response.chats.map(async (chat) => {
       try {
         const status = await getSessionStatus(chat.id);
         if (status.active) {
@@ -32,6 +35,31 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
       } catch {} // Ignore errors for individual status checks
     }));
     setSessionStatuses(statuses);
+  };
+
+  const loadMore = async () => {
+    if (isLoadingMore || !hasMore) return;
+
+    setIsLoadingMore(true);
+    try {
+      const response = await listChats(20, chats.length);
+      setChats(prev => [...prev, ...response.chats]);
+      setHasMore(response.hasMore);
+
+      // Fetch session statuses for new chats
+      const statuses = new Map(sessionStatuses);
+      await Promise.all(response.chats.map(async (chat) => {
+        try {
+          const status = await getSessionStatus(chat.id);
+          if (status.active) {
+            statuses.set(chat.id, status);
+          }
+        } catch {} // Ignore errors for individual status checks
+      }));
+      setSessionStatuses(statuses);
+    } finally {
+      setIsLoadingMore(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -253,6 +281,28 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
             sessionStatus={sessionStatuses.get(chat.id)}
           />
         ))}
+
+        {hasMore && (
+          <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
+            <button
+              onClick={loadMore}
+              disabled={isLoadingMore}
+              style={{
+                width: '100%',
+                background: 'var(--surface)',
+                color: 'var(--text)',
+                padding: '12px 16px',
+                borderRadius: 8,
+                fontSize: 14,
+                border: '1px solid var(--border)',
+                cursor: isLoadingMore ? 'default' : 'pointer',
+                opacity: isLoadingMore ? 0.6 : 1,
+              }}
+            >
+              {isLoadingMore ? 'Loading...' : 'Load next page'}
+            </button>
+          </div>
+        )}
       </div>
 
       <ConfirmModal
