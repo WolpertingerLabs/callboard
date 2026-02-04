@@ -1,4 +1,5 @@
 import { useLocation } from 'react-router-dom';
+import { useRef } from 'react';
 import { useIsMobile } from '../hooks/useIsMobile';
 import ChatList from '../pages/ChatList';
 import Chat from '../pages/Chat';
@@ -10,17 +11,22 @@ interface SplitLayoutProps {
 export default function SplitLayout({ onLogout }: SplitLayoutProps) {
   const isMobile = useIsMobile();
   const location = useLocation();
+  const chatListRefreshRef = useRef<(() => void) | null>(null);
 
   // Check if we're on a chat page
   const chatMatch = location.pathname.match(/^\/chat\/(.+)$/);
   const activeChatId = chatMatch ? chatMatch[1] : null;
 
+  const refreshChatList = () => {
+    chatListRefreshRef.current?.();
+  };
+
   // Mobile behavior - keep existing full-page navigation
   if (isMobile) {
     if (activeChatId) {
-      return <Chat />;
+      return <Chat onChatListRefresh={refreshChatList} />;
     }
-    return <ChatList onLogout={onLogout} />;
+    return <ChatList onLogout={onLogout} onRefresh={(fn) => { chatListRefreshRef.current = fn; }} />;
   }
 
   // Desktop behavior - split view
@@ -39,7 +45,7 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
         flexDirection: 'column',
         background: 'var(--bg)',
       }}>
-        <ChatList onLogout={onLogout} />
+        <ChatList onLogout={onLogout} onRefresh={(fn) => { chatListRefreshRef.current = fn; }} />
       </div>
 
       {/* Active Chat Area - 3/4 of width */}
@@ -50,7 +56,7 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
         background: 'var(--bg)',
       }}>
         {activeChatId ? (
-          <Chat />
+          <Chat onChatListRefresh={refreshChatList} />
         ) : (
           <div style={{
             display: 'flex',

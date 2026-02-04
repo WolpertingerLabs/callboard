@@ -9,7 +9,11 @@ import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 import DraftModal from '../components/DraftModal';
 import { addRecentDirectory } from '../utils/localStorage';
 
-export default function Chat() {
+interface ChatProps {
+  onChatListRefresh?: () => void;
+}
+
+export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
@@ -23,6 +27,7 @@ export default function Chat() {
   const [draftMessage, setDraftMessage] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const hasReceivedFirstResponseRef = useRef<boolean>(false);
 
   // Shared SSE reader that processes notifications and refetches chat data
   const readSSE = useCallback(async (body: ReadableStream<Uint8Array>) => {
@@ -64,6 +69,12 @@ export default function Chat() {
             if (event.type === 'message_update') {
               // New content is available - refetch all messages to show latest state with timestamps
               getMessages(id!).then(setMessages);
+
+              // Check if this is the first response and we should refresh chat list
+              if (!hasReceivedFirstResponseRef.current && onChatListRefresh) {
+                hasReceivedFirstResponseRef.current = true;
+                onChatListRefresh();
+              }
               continue;
             }
 
@@ -134,6 +145,9 @@ export default function Chat() {
   }, [id, connectToStream]);
 
   useEffect(() => {
+    // Reset first response flag when chat ID changes
+    hasReceivedFirstResponseRef.current = false;
+
     getChat(id!).then(setChat);
     getMessages(id!).then(setMessages);
     getPending(id!).then(p => {

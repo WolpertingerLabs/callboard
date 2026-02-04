@@ -7,7 +7,12 @@ import PermissionSettings from '../components/PermissionSettings';
 import ConfirmModal from '../components/ConfirmModal';
 import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, addRecentDirectory, removeRecentDirectory } from '../utils/localStorage';
 
-export default function ChatList({ onLogout }: { onLogout: () => void }) {
+interface ChatListProps {
+  onLogout: () => void;
+  onRefresh: (refreshFn: () => void) => void;
+}
+
+export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
   const [hasMore, setHasMore] = useState(false);
@@ -63,7 +68,10 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    onRefresh(load);
+  }, [onRefresh]);
 
   const updateRecentDirs = () => {
     setRecentDirs(getRecentDirectories().map(r => r.path));
