@@ -3,17 +3,18 @@ import { useNavigate } from 'react-router-dom';
 import { listChats, createChat, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from '../api';
 import ChatListItem from '../components/ChatListItem';
 import PermissionSettings from '../components/PermissionSettings';
+import ConfirmModal from '../components/ConfirmModal';
+import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, addRecentDirectory, removeRecentDirectory } from '../utils/localStorage';
 
 export default function ChatList({ onLogout }: { onLogout: () => void }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
   const [folder, setFolder] = useState('');
   const [showNew, setShowNew] = useState(false);
-  const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>({
-    fileOperations: 'ask',
-    codeExecution: 'ask',
-    webAccess: 'ask',
-  });
+  const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
+  const [recentDirs, setRecentDirs] = useState(() => getRecentDirectories().map(r => r.path));
+  const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; path: string }>({ isOpen: false, path: '' });
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState<{ isOpen: boolean; chatId: string; chatName: string }>({ isOpen: false, chatId: '', chatName: '' });
   const navigate = useNavigate();
 
   const load = async () => {
@@ -35,29 +36,49 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
 
   useEffect(() => { load(); }, []);
 
-  // Unique recent directories from existing chats, most recent first
-  const recentDirs = useMemo(() => {
-    const seen = new Set<string>();
-    return chats
-      .filter(c => {
-        if (seen.has(c.folder)) return false;
-        seen.add(c.folder);
-        return true;
-      })
-      .map(c => c.folder);
-  }, [chats]);
+  const updateRecentDirs = () => {
+    setRecentDirs(getRecentDirectories().map(r => r.path));
+  };
+
+  const handleRemoveRecentDir = (path: string) => {
+    setConfirmModal({ isOpen: true, path });
+  };
+
+  const confirmRemoveRecentDir = () => {
+    removeRecentDirectory(confirmModal.path);
+    updateRecentDirs();
+    setConfirmModal({ isOpen: false, path: '' });
+  };
 
   const handleCreate = async (dir?: string) => {
     const target = dir || folder.trim();
     if (!target) return;
+
+    // Save permissions and add to recent directories
+    saveDefaultPermissions(defaultPermissions);
+    addRecentDirectory(target);
+    updateRecentDirs();
+
     const chat = await createChat(target, defaultPermissions);
     setFolder('');
     setShowNew(false);
     navigate(`/chat/${chat.id}`);
   };
 
-  const handleDelete = async (id: string) => {
-    await deleteChat(id);
+  const handleDelete = (chat: Chat) => {
+    let chatName: string | undefined;
+    try {
+      const meta = JSON.parse(chat.metadata || '{}');
+      chatName = meta.title;
+    } catch {}
+
+    const displayName = chatName || chat.folder.split('/').pop() || chat.folder;
+    setDeleteConfirmModal({ isOpen: true, chatId: chat.id, chatName: displayName });
+  };
+
+  const confirmDeleteChat = async () => {
+    await deleteChat(deleteConfirmModal.chatId);
+    setDeleteConfirmModal({ isOpen: false, chatId: '', chatName: '' });
     load();
   };
 
@@ -130,26 +151,50 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
                 Recent directories
               </div>
               {recentDirs.map(dir => (
-                <button
-                  key={dir}
-                  onClick={() => handleCreate(dir)}
-                  style={{
-                    display: 'block',
-                    width: '100%',
-                    textAlign: 'left',
-                    background: 'var(--surface)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    padding: '10px 12px',
-                    fontSize: 14,
-                    marginBottom: 4,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {dir}
-                </button>
+                <div key={dir} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  marginBottom: 4,
+                }}>
+                  <button
+                    onClick={() => handleCreate(dir)}
+                    style={{
+                      flex: 1,
+                      textAlign: 'left',
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 8,
+                      padding: '10px 12px',
+                      fontSize: 14,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {dir}
+                  </button>
+                  <button
+                    onClick={() => handleRemoveRecentDir(dir)}
+                    style={{
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      padding: '8px',
+                      fontSize: 12,
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      minWidth: 28,
+                      height: 28,
+                    }}
+                    title={`Remove ${dir} from recent directories`}
+                  >
+                    ✕
+                  </button>
+                </div>
               ))}
               <div style={{
                 fontSize: 12,
@@ -204,11 +249,31 @@ export default function ChatList({ onLogout }: { onLogout: () => void }) {
             key={chat.id}
             chat={chat}
             onClick={() => navigate(`/chat/${chat.id}`)}
-            onDelete={() => handleDelete(chat.id)}
+            onDelete={() => handleDelete(chat)}
             sessionStatus={sessionStatuses.get(chat.id)}
           />
         ))}
       </div>
+
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        onClose={() => setConfirmModal({ isOpen: false, path: '' })}
+        onConfirm={confirmRemoveRecentDir}
+        title="Remove Recent Directory"
+        message={`Are you sure you want to remove "${confirmModal.path}" from your recent directories? This action cannot be undone.`}
+        confirmText="Remove"
+        confirmStyle="danger"
+      />
+
+      <ConfirmModal
+        isOpen={deleteConfirmModal.isOpen}
+        onClose={() => setDeleteConfirmModal({ isOpen: false, chatId: '', chatName: '' })}
+        onConfirm={confirmDeleteChat}
+        title="Delete Chat"
+        message={`Are you sure you want to delete the chat "${deleteConfirmModal.chatName}"? This action cannot be undone.`}
+        confirmText="Delete"
+        confirmStyle="danger"
+      />
     </div>
   );
 }

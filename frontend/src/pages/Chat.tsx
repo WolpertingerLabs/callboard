@@ -5,6 +5,7 @@ import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 import DraftModal from '../components/DraftModal';
+import { addRecentDirectory } from '../utils/localStorage';
 
 export default function Chat() {
   const { id } = useParams<{ id: string }>();
@@ -166,6 +167,11 @@ export default function Chat() {
 
     setMessages(prev => [...prev, { role: 'user', type: 'text', content: displayContent }]);
     setNetworkError(null); // Clear any previous network errors
+
+    // Track directory usage when sending message
+    if (chat?.folder) {
+      addRecentDirectory(chat.folder);
+    }
 
     // If there's already a streaming connection, stop it first
     if (abortRef.current) {

@@ -117,9 +117,17 @@ streamRouter.post('/:id/message', async (req, res) => {
     }
 
     // Auto-detect slash commands and route appropriately
-    const emitter = prompt.startsWith('/')
-      ? await sendSlashCommand(req.params.id, prompt)
-      : await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined);
+    let emitter;
+    if (prompt.startsWith('/')) {
+      // Handle special commands
+      if (prompt.trim().toLowerCase() === '/help') {
+        emitter = await handleHelpCommand(req.params.id);
+      } else {
+        emitter = await sendSlashCommand(req.params.id, prompt);
+      }
+    } else {
+      emitter = await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined);
+    }
 
     // Generate title synchronously from first message
     await generateAndSaveTitle(req.params.id, prompt);
@@ -147,6 +155,41 @@ streamRouter.post('/:id/message', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+/**
+ * Handle /help command by providing information about available slash commands
+ */
+async function handleHelpCommand(chatId: string): Promise<EventEmitter> {
+  const emitter = new EventEmitter();
+
+  // Simulate an immediate response with help information
+  process.nextTick(() => {
+    emitter.emit('event', {
+      type: 'text',
+      content: `# Claude Code Available Commands
+
+Claude Code supports various slash commands for specialized tasks:
+
+## Usage
+Type any command starting with \`/\` and Claude Code will handle it appropriately.
+
+## Getting Help
+- \`/help\` - Show this help message (handled by the UI)
+
+## Notes
+- All other slash commands are processed directly by Claude Code
+- Claude Code will provide feedback if a command is not recognized
+- Commands are context-aware based on your project and current session
+
+For more detailed information about Claude Code capabilities, visit the [Claude Code documentation](https://docs.claude.ai/docs/claude-code).
+`
+    });
+
+    emitter.emit('event', { type: 'done', content: '' });
+  });
+
+  return emitter;
+}
 
 /**
  * Store image metadata for a message in chat metadata
