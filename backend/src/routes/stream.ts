@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { EventEmitter } from 'events';
 import { sendMessage, sendSlashCommand, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
 import { OpenRouterClient } from '../services/openrouter-client.js';
 import { ImageStorageService } from '../services/image-storage.js';
