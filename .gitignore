@@ -8,4 +8,6 @@ backend/data/
 .env
 .env.local
 .claude/settings.local.json
-backend/logs/*.log
+*.log
+logs/
+**/logs/
