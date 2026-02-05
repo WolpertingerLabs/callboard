@@ -1,10 +1,15 @@
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuid } from 'uuid';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const chatsDir = join(__dirname, '..', '..', 'data', 'chats');
+
+// Ensure chats directory exists
+if (!existsSync(chatsDir)) {
+  mkdirSync(chatsDir, { recursive: true });
+}
 
 export interface Chat {
   id: string;

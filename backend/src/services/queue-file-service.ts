@@ -1,10 +1,15 @@
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuid } from 'uuid';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const queueDir = join(__dirname, '..', '..', 'data', 'queue');
+
+// Ensure queue directory exists
+if (!existsSync(queueDir)) {
+  mkdirSync(queueDir, { recursive: true });
+}
 
 export interface QueueItem {
   id: string;
