@@ -5,7 +5,7 @@ import { listChats, createChat, deleteChat, getSessionStatus, type Chat, type Se
 import ChatListItem from '../components/ChatListItem';
 import PermissionSettings from '../components/PermissionSettings';
 import ConfirmModal from '../components/ConfirmModal';
-import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, addRecentDirectory, removeRecentDirectory } from '../utils/localStorage';
+import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, addRecentDirectory, removeRecentDirectory, initializeSuggestedDirectories } from '../utils/localStorage';
 
 interface ChatListProps {
   onLogout: () => void;
@@ -29,6 +29,13 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
     const response = await listChats(20, 0);
     setChats(response.chats);
     setHasMore(response.hasMore);
+
+    // Initialize suggested directories from first three chat directories if none exist
+    const chatDirectories = response.chats.map(chat => chat.folder);
+    initializeSuggestedDirectories(chatDirectories);
+
+    // Update the UI to reflect any new suggested directories
+    updateRecentDirs();
 
     // Fetch session statuses for all chats
     const statuses = new Map<string, SessionStatus>();

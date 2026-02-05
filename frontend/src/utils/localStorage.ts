@@ -83,3 +83,22 @@ export function clearAllRecentDirectories(): void {
   data.recentDirectories = [];
   setStorageData(data);
 }
+
+export function initializeSuggestedDirectories(chatDirectories: string[]): void {
+  const existing = getRecentDirectories();
+
+  // Only initialize if there are no existing suggested directories
+  if (existing.length === 0 && chatDirectories.length > 0) {
+    const data = getStorageData();
+
+    // Take first three unique directories
+    const uniqueDirs = [...new Set(chatDirectories)];
+    const suggestedDirs = uniqueDirs.slice(0, 3).map(path => ({
+      path,
+      lastUsed: new Date().toISOString()
+    }));
+
+    data.recentDirectories = suggestedDirs;
+    setStorageData(data);
+  }
+}
