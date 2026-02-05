@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import db from './db.js';
+import { getSession, createSession, deleteSession, cleanupExpiredSessions } from './services/sessions.js';
 
 const PASSWORD = process.env.AUTH_PASSWORD || 'REDACTED_PASSWORD';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -26,9 +26,8 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
-function getSession(token: string): { token: string; expires_at: number } | undefined {
-  return db.prepare('SELECT * FROM sessions WHERE token = ?').get(token) as any;
-}
+// Session cleanup on startup
+cleanupExpiredSessions();
 
 export function loginHandler(req: Request, res: Response) {
   const ip = getClientIp(req);
@@ -42,7 +41,7 @@ export function loginHandler(req: Request, res: Response) {
   }
 
   const token = randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO sessions (token, expires_at) VALUES (?, ?)').run(token, Date.now() + SESSION_TTL_MS);
+  createSession(token, Date.now() + SESSION_TTL_MS, ip);
 
   res.cookie('session', token, {
     httpOnly: true,
@@ -55,7 +54,7 @@ export function loginHandler(req: Request, res: Response) {
 
 export function logoutHandler(_req: Request, res: Response) {
   const token = _req.cookies?.session;
-  if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  if (token) deleteSession(token);
   res.clearCookie('session', { path: '/' });
   res.json({ ok: true });
 }
@@ -65,7 +64,7 @@ export function checkAuthHandler(req: Request, res: Response) {
   if (!token) return res.json({ authenticated: false });
   const entry = getSession(token);
   if (!entry || Date.now() > entry.expires_at) {
-    if (entry) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    if (entry) deleteSession(token);
     return res.json({ authenticated: false });
   }
   res.json({ authenticated: true });
@@ -82,7 +81,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   const entry = getSession(token);
   if (!entry || Date.now() > entry.expires_at) {
-    if (entry) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    if (entry) deleteSession(token);
     return res.status(401).json({ error: 'Session expired' });
   }
 

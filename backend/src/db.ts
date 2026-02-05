@@ -24,12 +24,7 @@ db.exec(`
   )
 `);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    token TEXT PRIMARY KEY,
-    expires_at INTEGER NOT NULL
-  )
-`);
+// Sessions table removed - now stored in /data/sessions.json
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS message_queue (
