@@ -212,7 +212,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }, [handleScroll]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Only auto-scroll if user is already at or near the bottom
+    if (!chatContainerRef.current) return;
+
+    const container = chatContainerRef.current;
+    const scrollTop = container.scrollTop;
+    const scrollHeight = container.scrollHeight;
+    const clientHeight = container.clientHeight;
+
+    // Check if user is at bottom (with tolerance for rounding errors)
+    const isAtBottom = scrollTop + clientHeight >= scrollHeight - 100;
+
+    if (isAtBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages.length, inFlightMessage]);
 
   const scrollToBottom = useCallback(() => {
