@@ -132,6 +132,56 @@ a {
   font-style: italic;
 }
 
+/* Hide GitHub light theme in dark mode, show GitHub dark theme */
+@media (prefers-color-scheme: dark) {
+  /* Hide light theme styles */
+  .hljs {
+    /* GitHub dark theme colors will be applied by the imported CSS */
+    background: var(--code-bg) !important;
+    border-radius: 6px !important;
+    padding: 12px !important;
+  }
+}
+
+/* Hide GitHub dark theme in light mode, show GitHub light theme */
+@media (prefers-color-scheme: light) {
+  /* Ensure light theme is properly applied */
+  .hljs {
+    background: var(--code-bg) !important;
+    border-radius: 6px !important;
+    padding: 12px !important;
+  }
+}
+
+/* Base code block styling for all themes */
+.hljs {
+  background: var(--code-bg) !important;
+  border-radius: 6px;
+  padding: 12px !important;
+  overflow-x: auto;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 13px;
+}
+
+/* Ensure inline code styling matches theme */
+code:not(.hljs) {
+  background: var(--code-bg) !important;
+  color: var(--text) !important;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+/* Pre blocks should inherit background from CSS variables */
+pre {
+  background: var(--code-bg) !important;
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
 /* Plan review markdown styling */
 .plan-review-markdown {
   color: var(--text);
