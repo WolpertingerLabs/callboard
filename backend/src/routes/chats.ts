@@ -92,36 +92,37 @@ function discoverSessionsPaginated(limit: number, offset: number): {
   if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
 
   try {
-    // Use cross-platform shell command to get file paths with modification timestamps
-    // This approach works on both GNU (Linux) and BSD (macOS) systems using standard UNIX commands
-    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -name "*.jsonl" -type f -exec sh -c 'echo "$(date -r "$1" +%s) $1"' _ {} \\; 2>/dev/null | sort -rn`;
+    // Use the fastest approach: find + xargs + ls -t for time-sorted file listing
+    // This is orders of magnitude faster than per-file operations
+    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -name "*.jsonl" -type f -print0 | xargs -0 ls -lt`;
     const output = execSync(findCommand, { encoding: 'utf8' }).trim();
 
     if (!output) return { sessions: [], total: 0 };
 
-    // Parse the output format: "timestamp filepath"
-    const allFiles = output.split('\n')
-      .filter(line => line.trim())
+    // Parse ls -lt output and extract file paths
+    // Since ls -t already sorts by modification time, we can use statSync only on paginated files
+    const filePathsFromLs = output.split('\n')
+      .filter(line => line.trim() && line.includes('.jsonl'))
       .map(line => {
-        const spaceIndex = line.indexOf(' ');
-        if (spaceIndex === -1) return null;
+        // Extract filepath from the end of ls -l output
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 9) return null;
 
-        const timestamp = parseInt(line.substring(0, spaceIndex), 10);
-        const filePath = line.substring(spaceIndex + 1).trim();
+        const filePath = parts.slice(8).join(' '); // Handle spaces in filenames
+        if (!filePath.endsWith('.jsonl')) return null;
 
-        if (isNaN(timestamp) || !filePath) return null;
-
-        return { timestamp, filePath };
+        return filePath;
       })
-      .filter((item): item is { timestamp: number; filePath: string } => item !== null);
+      .filter((filePath): filePath is string => filePath !== null);
 
-    const total = allFiles.length;
+    const total = filePathsFromLs.length;
 
-    // Only process the files we need for this page
-    const pageFiles = allFiles.slice(offset, offset + limit);
+    // Only process the files we need for this page (already sorted by ls -t)
+    const pageFiles = filePathsFromLs.slice(offset, offset + limit);
     const results: { sessionId: string; folder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
 
-    for (const { timestamp, filePath } of pageFiles) {
+    // Only call statSync on the paginated files we actually need
+    for (const filePath of pageFiles) {
       try {
         const sessionId = filePath.split('/').pop()?.replace('.jsonl', '');
         if (!sessionId) continue;
@@ -131,14 +132,14 @@ function discoverSessionsPaginated(limit: number, offset: number): {
 
         const folder = projectDirToFolder(projectDir);
 
-        // Use timestamp from shell command instead of additional statSync call
-        const mtime = new Date(timestamp * 1000); // Convert Unix timestamp to Date
+        // Get timestamps only for paginated files (much faster than all files)
+        const st = statSync(filePath);
         results.push({
           sessionId,
           folder,
           filePath,
-          createdAt: mtime, // Use mtime as approximation for createdAt
-          updatedAt: mtime
+          createdAt: st.birthtime,
+          updatedAt: st.mtime
         });
       } catch {
         continue;
