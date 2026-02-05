@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { v4 as uuid } from 'uuid';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { homedir } from 'os';
@@ -93,10 +92,25 @@ function discoverSessionsPaginated(limit: number, offset: number): {
   if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
 
   try {
-    // Use find command to get all .jsonl files sorted by modification time (newest first)
-    // This is much faster than Node.js file operations
-    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -name "*.jsonl" -type f -printf "%T@ %p\n" | sort -rn`;
-    const output = execSync(findCommand, { encoding: 'utf8' }).trim();
+    // Use cross-platform find command to get all .jsonl files
+    // Try different approaches for different systems
+    let findCommand: string;
+    let output: string;
+
+    // First try with GNU stat format (Linux)
+    try {
+      findCommand = `find "${CLAUDE_PROJECTS_DIR}" -name "*.jsonl" -type f -exec stat -c "%Y %n" {} + 2>/dev/null | sort -rn`;
+      output = execSync(findCommand, { encoding: 'utf8' }).trim();
+    } catch {
+      // Fallback to BSD stat format (macOS)
+      try {
+        findCommand = `find "${CLAUDE_PROJECTS_DIR}" -name "*.jsonl" -type f -exec stat -f "%m %N" {} + 2>/dev/null | sort -rn`;
+        output = execSync(findCommand, { encoding: 'utf8' }).trim();
+      } catch {
+        // If both fail, throw to trigger Node.js fallback
+        throw new Error('Cross-platform find commands failed');
+      }
+    }
 
     if (!output) return { sessions: [], total: 0 };
 
@@ -111,7 +125,7 @@ function discoverSessionsPaginated(limit: number, offset: number): {
     const pageFiles = allFiles.slice(offset, offset + limit);
     const results: { sessionId: string; folder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
 
-    for (const { timestamp, filePath } of pageFiles) {
+    for (const { filePath } of pageFiles) {
       try {
         const sessionId = filePath.split('/').pop()?.replace('.jsonl', '');
         if (!sessionId) continue;
@@ -138,15 +152,15 @@ function discoverSessionsPaginated(limit: number, offset: number): {
     return { sessions: results, total };
   } catch (error) {
     console.error('Error in optimized session discovery:', error);
-    // Fallback to original method if find command fails
-    return discoverAllSessionsFallback();
+    // Fallback to Node.js method if find command fails
+    return discoverAllSessionsFallback(limit, offset);
   }
 }
 
 /**
  * Fallback method that mimics original behavior
  */
-function discoverAllSessionsFallback(): {
+function discoverAllSessionsFallback(limit?: number, offset?: number): {
   sessions: { sessionId: string; folder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
   total: number;
 } {
@@ -169,7 +183,16 @@ function discoverAllSessionsFallback(): {
     }
   }
   results.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  return { sessions: results, total: results.length };
+
+  const total = results.length;
+
+  // Apply pagination if specified
+  if (typeof limit === 'number' && typeof offset === 'number') {
+    const paginatedResults = results.slice(offset, offset + limit);
+    return { sessions: paginatedResults, total };
+  }
+
+  return { sessions: results, total };
 }
 
 // List all chats (pull from log directories, augment with file storage data)
