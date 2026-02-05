@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { sendMessage, sendNewMessage, sendSlashCommand, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
 import { OpenRouterClient } from '../services/openrouter-client.js';
 import { ImageStorageService } from '../services/image-storage.js';
-import { statSync, existsSync, readdirSync, watchFile, unwatchFile, readFileSync, openSync, readSync, closeSync } from 'fs';
-import { join, dirname } from 'path';
+import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from 'fs';
+import { join } from 'path';
 import { homedir } from 'os';
 import { chatFileService } from '../services/chat-file-service.js';
 
