@@ -1,54 +1,44 @@
 #!/usr/bin/env node
 
 import { spawn } from 'child_process';
-import { promisify } from 'util';
 
-const execAsync = promisify(spawn);
+const PROCESS_NAME = 'claude-code-ui';
+const SCRIPT_PATH = 'backend/dist/index.js';
+
+function runCommand(cmd, args) {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args, { stdio: 'pipe' });
+    proc.on('exit', (code) => resolve(code === 0));
+  });
+}
 
 async function checkPM2Available() {
-  try {
-    // Check if pm2 command exists by trying to run it
-    const checkProcess = spawn('which', ['pm2'], { stdio: 'pipe' });
-    return new Promise((resolve) => {
-      checkProcess.on('exit', (code) => {
-        resolve(code === 0);
-      });
-    });
-  } catch (error) {
-    return false;
-  }
+  return runCommand('which', ['pm2']);
 }
 
 async function startServer() {
   const pm2Available = await checkPM2Available();
 
   if (pm2Available) {
-    console.log('PM2 detected. Checking if process exists...');
+    console.log('PM2 detected. Redeploying...');
 
-    // Try to restart first (handles existing processes)
-    const restartProcess = spawn('pm2', ['restart', 'claude-code-ui'], {
-      stdio: 'pipe'
+    // Always delete existing process to ensure correct script path
+    await runCommand('pm2', ['delete', PROCESS_NAME]);
+
+    // Start fresh with correct script
+    const startProcess = spawn('pm2', ['start', SCRIPT_PATH, '--name', PROCESS_NAME], {
+      stdio: 'inherit'
     });
 
-    restartProcess.on('exit', (code) => {
+    startProcess.on('exit', (code) => {
       if (code === 0) {
-        console.log('PM2 process restarted successfully.');
-        process.exit(0);
-      } else {
-        // If restart failed, try to start fresh
-        console.log('PM2 restart failed, starting new process...');
-        const startProcess = spawn('pm2', ['start', 'backend/dist/index.js', '--name', 'claude-code-ui'], {
-          stdio: 'inherit'
-        });
-
-        startProcess.on('exit', (code) => {
-          process.exit(code);
-        });
+        console.log('PM2 process started successfully.');
       }
+      process.exit(code);
     });
   } else {
     console.log('PM2 not available. Starting with node...');
-    const nodeProcess = spawn('node', ['backend/dist/index.js'], {
+    const nodeProcess = spawn('node', [SCRIPT_PATH], {
       stdio: 'inherit'
     });
 

@@ -9,7 +9,8 @@
     "build": "npm run build:backend && npm run build:frontend",
     "build:backend": "tsc -p backend/tsconfig.json",
     "build:frontend": "tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
-    "start": "node start-server.js",
+    "start": "node backend/dist/index.js",
+    "redeploy:prod": "node start-server.js",
     "preview": "vite preview --config frontend/vite.config.ts"
   },
   "dependencies": {
