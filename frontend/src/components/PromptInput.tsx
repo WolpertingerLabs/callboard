@@ -96,7 +96,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
   }, [value, slashCommands]);
 
   const handleCommandSelect = useCallback((command: string) => {
-    setValue(command + ' ');
+    setValue('/' + command + ' ');
     setShowAutocomplete(false);
     textareaRef.current?.focus();
   }, []);
