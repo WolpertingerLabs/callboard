@@ -324,8 +324,8 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
           const ids: string[] = meta.session_ids || [];
           if (!ids.includes(sessionId)) ids.push(sessionId);
           meta.session_ids = ids;
-          chatFileService.updateChat(chatId, {
-            session_id: sessionId,
+          // Use upsert to create file storage entry if it doesn't exist
+          chatFileService.upsertChat(chatId, chat.folder, sessionId, {
             metadata: JSON.stringify(meta)
           });
         }
@@ -498,8 +498,8 @@ export async function sendSlashCommand(chatId: string, command: string): Promise
           const ids: string[] = meta.session_ids || [];
           if (!ids.includes(sessionId)) ids.push(sessionId);
           meta.session_ids = ids;
-          chatFileService.updateChat(chatId, {
-            session_id: sessionId,
+          // Use upsert to create file storage entry if it doesn't exist
+          chatFileService.upsertChat(chatId, chat.folder, sessionId, {
             metadata: JSON.stringify(meta)
           });
         }

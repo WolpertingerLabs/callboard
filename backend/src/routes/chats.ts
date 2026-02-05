@@ -84,54 +84,136 @@ function discoverAllSessions(): { sessionId: string; folder: string; filePath: s
   return results;
 }
 
-// List all chats (pull from file storage, augment with filesystem session data)
+// List all chats (pull from log directories, augment with file storage data)
 chatsRouter.get('/', (req, res) => {
-  // Handle pagination
-  const limit = parseInt(req.query.limit as string) || undefined;
-  const offset = parseInt(req.query.offset as string) || undefined;
+  // Get all file chats for augmentation lookup
+  const fileChats = chatFileService.getAllChats();
 
-  // Get all chats from file storage
-  const fileChats = chatFileService.getAllChats(limit, offset);
+  // Create lookup map for file data by session ID
+  const fileChatsBySessionId = new Map<string, any>();
 
-  // Augment with session log paths and git info
-  const augmentedChats = fileChats.map(chat => {
-    const sessionLogPath = findSessionLogPath(chat.session_id);
-    const gitInfo = getGitInfo(chat.folder);
+  for (const chat of fileChats) {
+    // Index by session_id
+    if (chat.session_id) {
+      fileChatsBySessionId.set(chat.session_id, chat);
+    }
 
-    return {
-      ...chat,
-      session_log_path: sessionLogPath,
-      is_git_repo: gitInfo.isGitRepo,
-      git_branch: gitInfo.branch
-    };
+    // Also index by session_ids in metadata
+    try {
+      const meta = JSON.parse(chat.metadata || '{}');
+      if (Array.isArray(meta.session_ids)) {
+        for (const sid of meta.session_ids) {
+          fileChatsBySessionId.set(sid, chat);
+        }
+      }
+    } catch {}
+  }
+
+  // Discover all sessions from filesystem and augment with file storage data
+  const allSessions = discoverAllSessions();
+  const chatsFromLogs = allSessions.map(s => {
+    // Try to find by session ID
+    const fileChat = fileChatsBySessionId.get(s.sessionId);
+
+    // Get git info for the folder
+    const gitInfo = getGitInfo(s.folder);
+
+    if (fileChat) {
+      // Augment with file storage data while keeping filesystem as source of truth for timestamps
+      return {
+        ...fileChat,
+        // Keep filesystem timestamps as they're more accurate for actual activity
+        created_at: s.createdAt.toISOString(),
+        updated_at: s.updatedAt.toISOString(),
+        // Ensure session info from filesystem
+        session_id: s.sessionId,
+        session_log_path: s.filePath,
+        // Add git information
+        is_git_repo: gitInfo.isGitRepo,
+        git_branch: gitInfo.branch,
+        // Merge session_ids in metadata
+        metadata: (() => {
+          try {
+            const meta = JSON.parse(fileChat.metadata || '{}');
+            const sessionIds = Array.isArray(meta.session_ids) ? meta.session_ids : [];
+            if (!sessionIds.includes(s.sessionId)) {
+              sessionIds.push(s.sessionId);
+            }
+            return JSON.stringify({ ...meta, session_ids: sessionIds });
+          } catch {
+            return JSON.stringify({ session_ids: [s.sessionId] });
+          }
+        })(),
+        _augmented_from_file: true,
+      };
+    } else {
+      // No file record found, create from filesystem only
+      return {
+        id: s.sessionId,
+        folder: s.folder,
+        session_id: s.sessionId,
+        session_log_path: s.filePath,
+        metadata: JSON.stringify({ session_ids: [s.sessionId] }),
+        created_at: s.createdAt.toISOString(),
+        updated_at: s.updatedAt.toISOString(),
+        // Add git information
+        is_git_repo: gitInfo.isGitRepo,
+        git_branch: gitInfo.branch,
+        _from_filesystem: true,
+      };
+    }
   });
 
-  const totalChats = chatFileService.getTotalChats();
-  const hasMore = offset !== undefined && limit !== undefined && offset + limit < totalChats;
+  const allChats = chatsFromLogs
+    .sort((a: any, b: any) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
+  // Handle pagination
+  const limit = parseInt(req.query.limit as string) || allChats.length;
+  const offset = parseInt(req.query.offset as string) || 0;
+
+  const paginatedChats = allChats.slice(offset, offset + limit);
+  const hasMore = offset + limit < allChats.length;
 
   res.json({
-    chats: augmentedChats,
+    chats: paginatedChats,
     hasMore,
-    total: totalChats
+    total: allChats.length
   });
 });
 
-// Create a chat (requires session_id)
+// Create a chat (sessionId optional - will be assigned when Claude session starts)
 chatsRouter.post('/', (req, res) => {
   const { folder, sessionId, defaultPermissions } = req.body;
   if (!folder) return res.status(400).json({ error: 'folder is required' });
-  if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
 
   // Create metadata with default permissions if provided
   const metadata = {
     ...(defaultPermissions && { defaultPermissions })
   };
 
-  try {
-    const chat = chatFileService.createChat(folder, sessionId, JSON.stringify(metadata));
-    res.status(201).json(chat);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  // If sessionId provided, create in file storage
+  // Otherwise just return a temporary chat object (will be persisted when session starts)
+  if (sessionId) {
+    try {
+      const chat = chatFileService.createChat(folder, sessionId, JSON.stringify(metadata));
+      res.status(201).json(chat);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  } else {
+    // Return a temporary chat object - will be saved to file storage when session_id is assigned
+    const id = uuid();
+    const now = new Date().toISOString();
+    res.status(201).json({
+      id,
+      folder,
+      session_id: null,
+      session_log_path: null,
+      metadata: JSON.stringify(metadata),
+      created_at: now,
+      updated_at: now,
+      _temporary: true
+    });
   }
 });
 

@@ -100,7 +100,7 @@ export class ChatFileService {
     return chat;
   }
 
-  // Update an existing chat
+  // Update an existing chat (returns false if chat not found)
   updateChat(id: string, updates: Partial<Chat>): boolean {
     const chat = this.getChat(id);
     if (!chat) {
@@ -121,6 +121,45 @@ export class ChatFileService {
 
     this.saveChat(updatedChat);
     return true;
+  }
+
+  // Create or update a chat - useful when chat might only exist in filesystem
+  upsertChat(id: string, folder: string, sessionId: string, updates: Partial<Chat>): Chat {
+    const existingChat = this.getChat(id);
+
+    if (existingChat) {
+      // Update existing
+      const oldSessionId = existingChat.session_id;
+      const updatedChat = {
+        ...existingChat,
+        ...updates,
+        session_id: sessionId || existingChat.session_id,
+        updated_at: new Date().toISOString()
+      };
+
+      // If session_id changed, we need to rename the file
+      if (sessionId && sessionId !== oldSessionId) {
+        this.deleteChat(oldSessionId);
+      }
+
+      this.saveChat(updatedChat);
+      return updatedChat;
+    } else {
+      // Create new
+      const now = new Date().toISOString();
+      const newChat: Chat = {
+        id,
+        folder,
+        session_id: sessionId,
+        session_log_path: null,
+        metadata: updates.metadata || '{}',
+        created_at: now,
+        updated_at: now
+      };
+
+      this.saveChat(newChat);
+      return newChat;
+    }
   }
 
   // Delete a chat
