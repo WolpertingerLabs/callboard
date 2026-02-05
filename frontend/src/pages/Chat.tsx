@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ChevronDown, ArrowDown } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, type Chat as ChatType, type ParsedMessage, type SessionStatus } from '../api';
+import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, getSlashCommandsAndPlugins, type Chat as ChatType, type ParsedMessage, type SessionStatus, type Plugin } from '../api';
 import MessageBubble from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
@@ -28,6 +28,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [draftMessage, setDraftMessage] = useState('');
   const [inFlightMessage, setInFlightMessage] = useState<string | null>(null);
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
+  const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -159,14 +160,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, connectToStream]);
 
-  // Fetch slash commands for the chat
+  // Fetch slash commands and plugins for the chat
   const loadSlashCommands = useCallback(async () => {
     if (!id) return;
     try {
-      const commands = await getSlashCommands(id);
-      setSlashCommands(commands);
+      const { slashCommands, plugins } = await getSlashCommandsAndPlugins(id);
+      setSlashCommands(slashCommands);
+      setPlugins(plugins);
     } catch (error) {
-      console.warn('Failed to load slash commands:', error);
+      console.warn('Failed to load slash commands and plugins:', error);
     }
   }, [id]);
 
@@ -176,13 +178,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
     getChat(id!).then(chatData => {
       setChat(chatData);
-      // Use slash commands from chat data if available for faster display
+      // Use slash commands and plugins from chat data if available for faster display
       if (chatData?.slash_commands && chatData.slash_commands.length > 0) {
         setSlashCommands(chatData.slash_commands.map((cmd: any) =>
           typeof cmd === 'string' ? cmd : cmd.name
         ));
-      } else {
-        // Otherwise fetch them separately
+      }
+      if (chatData?.plugins && chatData.plugins.length > 0) {
+        setPlugins(chatData.plugins);
+      }
+
+      // Fetch fresh data if not available
+      if (!chatData?.slash_commands?.length && !chatData?.plugins?.length) {
         loadSlashCommands();
       }
     });
@@ -725,6 +732,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         isOpen={showSlashCommandsModal}
         onClose={() => setShowSlashCommandsModal(false)}
         slashCommands={slashCommands}
+        plugins={plugins}
         onCommandSelect={handleCommandSelect}
       />
     </div>

@@ -6,6 +6,33 @@ export interface SlashCommand {
   source?: string;
 }
 
+export interface PluginSkill {
+  name: string;
+  description?: string;
+}
+
+export interface PluginAgent {
+  name: string;
+  description?: string;
+}
+
+export interface PluginManifest {
+  name: string;
+  version: string;
+  description: string;
+  skills?: PluginSkill[];
+  agents?: PluginAgent[];
+  [key: string]: any;
+}
+
+export interface Plugin {
+  id: string;
+  path: string;
+  manifest: PluginManifest;
+  skills: PluginSkill[];
+  agents: PluginAgent[];
+}
+
 export interface Chat {
   id: string;
   folder: string;
@@ -17,6 +44,7 @@ export interface Chat {
   is_git_repo?: boolean;
   git_branch?: string;
   slash_commands?: SlashCommand[];
+  plugins?: Plugin[];
 }
 
 export interface ParsedMessage {
@@ -65,6 +93,7 @@ export interface NewChatInfo {
   is_git_repo: boolean;
   git_branch?: string;
   slash_commands: SlashCommand[];
+  plugins: Plugin[];
 }
 
 export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
@@ -239,4 +268,13 @@ export async function getSlashCommands(chatId: string): Promise<string[]> {
   const res = await fetch(`${BASE}/chats/${chatId}/slash-commands`);
   const data = await res.json();
   return data.slashCommands || [];
+}
+
+export async function getSlashCommandsAndPlugins(chatId: string): Promise<{ slashCommands: string[], plugins: Plugin[] }> {
+  const res = await fetch(`${BASE}/chats/${chatId}/slash-commands`);
+  const data = await res.json();
+  return {
+    slashCommands: data.slashCommands || [],
+    plugins: data.plugins || []
+  };
 }

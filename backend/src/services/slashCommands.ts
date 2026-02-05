@@ -1,11 +1,17 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { getPluginsForDirectory, Plugin, pluginToSlashCommands } from './plugins.js';
 
 const DATA_DIR = join(process.cwd(), 'data');
 const SLASH_COMMANDS_FILE = join(DATA_DIR, 'slash-commands.json');
 
 interface SlashCommandsData {
   [directory: string]: string[];
+}
+
+export interface DirectoryCommandsAndPlugins {
+  slashCommands: string[];
+  plugins: Plugin[];
 }
 
 /**
@@ -82,4 +88,36 @@ export function removeSlashCommandsForDirectory(directory: string): void {
   const data = loadSlashCommandsData();
   delete data[directory];
   saveSlashCommandsData(data);
+}
+
+/**
+ * Get both slash commands and plugins for a directory
+ */
+export function getCommandsAndPluginsForDirectory(directory: string): DirectoryCommandsAndPlugins {
+  const slashCommands = getSlashCommandsForDirectory(directory);
+  const plugins = getPluginsForDirectory(directory);
+
+  return {
+    slashCommands,
+    plugins
+  };
+}
+
+/**
+ * Get all available commands for a directory including plugin commands (for compatibility)
+ */
+export function getAllCommandsForDirectory(directory: string, activePluginIds: string[] = []): string[] {
+  const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(directory);
+
+  // Start with regular slash commands
+  const allCommands = [...slashCommands];
+
+  // Add commands from active plugins
+  for (const plugin of plugins) {
+    if (activePluginIds.includes(plugin.id)) {
+      allCommands.push(...pluginToSlashCommands(plugin));
+    }
+  }
+
+  return allCommands;
 }

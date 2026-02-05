@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
 import { chatFileService } from '../services/chat-file-service.js';
-import { getSlashCommandsForDirectory } from '../services/slashCommands.js';
+import { getSlashCommandsForDirectory, getCommandsAndPluginsForDirectory } from '../services/slashCommands.js';
 import { getGitInfo } from '../utils/git.js';
 
 export const chatsRouter = Router();
@@ -312,10 +312,13 @@ chatsRouter.get('/new/info', (req, res) => {
     gitInfo = getGitInfo(folder);
   } catch {}
 
-  // Get slash commands for the folder
+  // Get slash commands and plugins for the folder
   let slashCommands: any[] = [];
+  let plugins: any[] = [];
   try {
-    slashCommands = getSlashCommandsForDirectory(folder);
+    const result = getCommandsAndPluginsForDirectory(folder);
+    slashCommands = result.slashCommands;
+    plugins = result.plugins;
   } catch {}
 
   res.json({
@@ -323,6 +326,7 @@ chatsRouter.get('/new/info', (req, res) => {
     is_git_repo: gitInfo.isGitRepo,
     git_branch: gitInfo.branch,
     slash_commands: slashCommands,
+    plugins: plugins,
   });
 });
 
@@ -343,10 +347,13 @@ chatsRouter.post('/', (req, res) => {
     gitInfo = getGitInfo(folder);
   } catch {}
 
-  // Get slash commands for the folder
+  // Get slash commands and plugins for the folder
   let slashCommands: any[] = [];
+  let plugins: any[] = [];
   try {
-    slashCommands = getSlashCommandsForDirectory(folder);
+    const result = getCommandsAndPluginsForDirectory(folder);
+    slashCommands = result.slashCommands;
+    plugins = result.plugins;
   } catch {}
 
   try {
@@ -356,6 +363,7 @@ chatsRouter.post('/', (req, res) => {
       is_git_repo: gitInfo.isGitRepo,
       git_branch: gitInfo.branch,
       slash_commands: slashCommands,
+      plugins: plugins,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -444,17 +452,21 @@ chatsRouter.get('/:id', (req, res) => {
   const chat = findChat(req.params.id) as any;
   if (!chat) return res.status(404).json({ error: 'Not found' });
 
-  // Include slash commands for the chat's folder
+  // Include slash commands and plugins for the chat's folder
   let slashCommands: any[] = [];
+  let plugins: any[] = [];
   try {
     if (chat.folder) {
-      slashCommands = getSlashCommandsForDirectory(chat.folder);
+      const result = getCommandsAndPluginsForDirectory(chat.folder);
+      slashCommands = result.slashCommands;
+      plugins = result.plugins;
     }
   } catch {}
 
   res.json({
     ...chat,
     slash_commands: slashCommands,
+    plugins: plugins,
   });
 });
 
@@ -494,17 +506,17 @@ chatsRouter.get('/:id/messages', (req, res) => {
   res.json(parsed);
 });
 
-// Get slash commands for a chat
+// Get slash commands and plugins for a chat
 chatsRouter.get('/:id/slash-commands', (req, res) => {
   const chat = findChat(req.params.id) as any;
   if (!chat) return res.status(404).json({ error: 'Not found' });
 
   try {
-    const slashCommands = getSlashCommandsForDirectory(chat.folder);
-    res.json({ slashCommands });
+    const result = getCommandsAndPluginsForDirectory(chat.folder);
+    res.json({ slashCommands: result.slashCommands, plugins: result.plugins });
   } catch (error) {
-    console.error('Failed to get slash commands:', error);
-    res.json({ slashCommands: [] });
+    console.error('Failed to get slash commands and plugins:', error);
+    res.json({ slashCommands: [], plugins: [] });
   }
 });
 

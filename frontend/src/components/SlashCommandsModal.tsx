@@ -1,9 +1,12 @@
-import { X, Hash } from 'lucide-react';
+import { X, Hash, Puzzle, Check } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Plugin } from '../types/plugins';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   slashCommands: string[];
+  plugins?: Plugin[];
   onCommandSelect?: (command: string) => void;
 }
 
@@ -44,7 +47,44 @@ function getCommandCategory(command: string): string {
   return 'Other';
 }
 
-export default function SlashCommandsModal({ isOpen, onClose, slashCommands, onCommandSelect }: Props) {
+// Plugin activation state management
+function getActivePlugins(): Set<string> {
+  try {
+    const active = localStorage.getItem('activePlugins');
+    return new Set(active ? JSON.parse(active) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function setActivePlugins(activeIds: Set<string>): void {
+  try {
+    localStorage.setItem('activePlugins', JSON.stringify(Array.from(activeIds)));
+  } catch {
+    // Handle localStorage errors gracefully
+  }
+}
+
+export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plugins = [], onCommandSelect }: Props) {
+  const [activePluginIds, setActivePluginIds] = useState<Set<string>>(new Set());
+
+  // Load active plugins from localStorage on mount
+  useEffect(() => {
+    setActivePluginIds(getActivePlugins());
+  }, []);
+
+  // Toggle plugin activation
+  const togglePlugin = (pluginId: string) => {
+    const newActiveIds = new Set(activePluginIds);
+    if (newActiveIds.has(pluginId)) {
+      newActiveIds.delete(pluginId);
+    } else {
+      newActiveIds.add(pluginId);
+    }
+    setActivePluginIds(newActiveIds);
+    setActivePlugins(newActiveIds);
+  };
+
   if (!isOpen) return null;
 
   // Group commands by category
@@ -206,6 +246,163 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, onC
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Plugins Section */}
+          {plugins.length > 0 && (
+            <div style={{ marginTop: slashCommands.length > 0 ? '32px' : '0' }}>
+              <h3 style={{
+                margin: '0 0 16px 0',
+                fontSize: '14px',
+                fontWeight: 600,
+                color: 'var(--text-muted)',
+                textTransform: 'uppercase' as const,
+                letterSpacing: '0.05em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}>
+                <Puzzle size={16} />
+                Plugins ({plugins.length})
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {plugins.map((plugin) => {
+                  const isActive = activePluginIds.has(plugin.id);
+                  const pluginCommands = [...plugin.skills, ...plugin.agents];
+
+                  return (
+                    <div
+                      key={plugin.id}
+                      style={{
+                        border: '1px solid var(--border)',
+                        borderRadius: '8px',
+                        padding: '16px',
+                        backgroundColor: isActive ? 'var(--accent-bg, rgba(59, 130, 246, 0.05))' : 'transparent',
+                        borderColor: isActive ? 'var(--accent)' : 'var(--border)',
+                      }}
+                    >
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        justifyContent: 'space-between',
+                        gap: '12px',
+                        marginBottom: '12px',
+                      }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            marginBottom: '4px',
+                          }}>
+                            <code style={{
+                              color: 'var(--accent)',
+                              fontWeight: 600,
+                              fontSize: '14px',
+                              fontFamily: 'var(--font-mono)',
+                            }}>
+                              {plugin.manifest.name}
+                            </code>
+                            <span style={{
+                              fontSize: '12px',
+                              color: 'var(--text-muted)',
+                              background: 'var(--bg-secondary)',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                            }}>
+                              v{plugin.manifest.version}
+                            </span>
+                          </div>
+                          <p style={{
+                            margin: 0,
+                            color: 'var(--text-muted)',
+                            fontSize: '13px',
+                            lineHeight: 1.4,
+                          }}>
+                            {plugin.manifest.description}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => togglePlugin(plugin.id)}
+                          style={{
+                            background: isActive ? 'var(--accent)' : 'transparent',
+                            border: `1px solid ${isActive ? 'var(--accent)' : 'var(--border)'}`,
+                            borderRadius: '6px',
+                            padding: '6px 12px',
+                            cursor: 'pointer',
+                            color: isActive ? 'white' : 'var(--text)',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            transition: 'all 0.2s ease',
+                          }}
+                        >
+                          {isActive && <Check size={14} />}
+                          {isActive ? 'Active' : 'Activate'}
+                        </button>
+                      </div>
+
+                      {/* Show available commands when active */}
+                      {isActive && pluginCommands.length > 0 && (
+                        <div style={{
+                          paddingTop: '12px',
+                          borderTop: '1px solid var(--border)',
+                        }}>
+                          <p style={{
+                            margin: '0 0 8px 0',
+                            fontSize: '12px',
+                            color: 'var(--text-muted)',
+                            fontWeight: 600,
+                          }}>
+                            Available Commands:
+                          </p>
+                          <div style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            gap: '6px',
+                          }}>
+                            {pluginCommands.map((item, index) => (
+                              <button
+                                key={index}
+                                onClick={() => {
+                                  if (onCommandSelect) {
+                                    onCommandSelect(`/${plugin.manifest.name}:${item.name} `);
+                                  }
+                                  onClose();
+                                }}
+                                style={{
+                                  background: 'var(--bg-secondary)',
+                                  border: '1px solid var(--border)',
+                                  borderRadius: '4px',
+                                  padding: '4px 8px',
+                                  fontSize: '11px',
+                                  color: 'var(--text)',
+                                  cursor: 'pointer',
+                                  fontFamily: 'var(--font-mono)',
+                                  transition: 'all 0.2s ease',
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.background = 'var(--accent-bg, rgba(59, 130, 246, 0.1))';
+                                  e.currentTarget.style.borderColor = 'var(--accent)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.background = 'var(--bg-secondary)';
+                                  e.currentTarget.style.borderColor = 'var(--border)';
+                                }}
+                              >
+                                /{plugin.manifest.name}:{item.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>

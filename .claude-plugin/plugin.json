@@ -1,0 +1,25 @@
+{
+  "name": "code-utils",
+  "version": "1.0.0",
+  "description": "Utility tools for code analysis and development workflows",
+  "skills": [
+    {
+      "name": "analyze",
+      "description": "Analyze code structure and complexity"
+    },
+    {
+      "name": "optimize",
+      "description": "Suggest code optimizations and improvements"
+    }
+  ],
+  "agents": [
+    {
+      "name": "reviewer",
+      "description": "Automated code review agent"
+    },
+    {
+      "name": "tester",
+      "description": "Generate unit tests for code"
+    }
+  ]
+}
