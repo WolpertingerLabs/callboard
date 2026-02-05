@@ -20,6 +20,48 @@ function parseTodoItems(content: string): TodoItem[] | null {
   return null;
 }
 
+// Generate contextual summary for tool usage
+function getToolSummary(toolName: string, content: string): string {
+  try {
+    const input = JSON.parse(content);
+
+    switch (toolName) {
+      case 'Read':
+        return input.file_path ? ` - ${input.file_path.split('/').pop()}` : '';
+      case 'Write':
+      case 'Edit':
+      case 'MultiEdit':
+        return input.file_path ? ` - ${input.file_path.split('/').pop()}` : '';
+      case 'Bash':
+        const cmd = input.command || '';
+        const truncated = cmd.length > 40 ? cmd.substring(0, 40) + '...' : cmd;
+        return cmd ? ` - ${truncated}` : '';
+      case 'Grep':
+        return input.pattern ? ` - '${input.pattern}'` : '';
+      case 'Glob':
+        return input.pattern ? ` - ${input.pattern}` : '';
+      case 'WebFetch':
+        if (input.url) {
+          try {
+            const domain = new URL(input.url).hostname;
+            return ` - ${domain}`;
+          } catch {
+            return ` - ${input.url}`;
+          }
+        }
+        return '';
+      case 'Task':
+        return input.description ? ` - ${input.description}` : '';
+      case 'NotebookEdit':
+        return input.notebook_path ? ` - ${input.notebook_path.split('/').pop()}` : '';
+      default:
+        return '';
+    }
+  } catch {
+    return '';
+  }
+}
+
 const StatusIcon = ({ status }: { status: string }) => {
   switch (status) {
     case 'completed':
@@ -178,7 +220,9 @@ export default function MessageBubble({ message }: Props) {
             borderLeft: '2px solid var(--accent)',
           }}
         >
-          <span style={{ fontWeight: 500 }}>Tool: {message.toolName || 'unknown'}</span>
+          <span style={{ fontWeight: 500 }}>
+            Tool: {message.toolName || 'unknown'}{getToolSummary(message.toolName || '', message.content)}
+          </span>
           {expanded && (
             <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
               {message.content}
