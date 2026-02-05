@@ -116,7 +116,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
       chatName = meta.title;
     } catch {}
 
-    const displayName = chatName || chat.folder.split('/').pop() || chat.folder;
+    const displayName = chatName || chat.folder?.split('/').pop() || chat.folder || 'Chat';
     setDeleteConfirmModal({ isOpen: true, chatId: chat.id, chatName: displayName });
   };
 

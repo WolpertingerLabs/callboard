@@ -9,7 +9,7 @@ interface Props {
 }
 
 export default function ChatListItem({ chat, onClick, onDelete, sessionStatus }: Props) {
-  const folderName = chat.folder.split('/').pop() || chat.folder;
+  const folderName = chat.folder?.split('/').pop() || chat.folder || 'Chat';
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
