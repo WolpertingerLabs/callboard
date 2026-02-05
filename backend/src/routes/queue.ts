@@ -20,16 +20,23 @@ queueRouter.get('/', (req, res) => {
 
 // Schedule a new message
 queueRouter.post('/', (req, res) => {
-  const { chat_id, user_message, scheduled_time } = req.body;
+  const { chat_id, user_message, scheduled_time, folder, defaultPermissions } = req.body;
 
-  if (!chat_id || !user_message || !scheduled_time) {
+  if (!user_message || !scheduled_time) {
     return res.status(400).json({
-      error: 'chat_id, user_message, and scheduled_time are required'
+      error: 'user_message and scheduled_time are required'
+    });
+  }
+
+  // For new chats, chat_id can be null but folder is required
+  if (!chat_id && !folder) {
+    return res.status(400).json({
+      error: 'Either chat_id or folder is required'
     });
   }
 
   try {
-    const queueItem = queueFileService.createQueueItem(chat_id, user_message, scheduled_time);
+    const queueItem = queueFileService.createQueueItem(chat_id || null, user_message, scheduled_time, folder, defaultPermissions);
     res.status(201).json(queueItem);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -77,14 +84,34 @@ queueRouter.post('/:id/execute-now', async (req, res) => {
     // Update status to running
     queueFileService.updateQueueItem(req.params.id, { status: 'running' });
 
+    let apiUrl: string;
+    let requestBody: any;
+
+    if (queueItem.chat_id) {
+      // Existing chat - use regular message endpoint
+      apiUrl = `http://localhost:${process.env.PORT || 8000}/api/chats/${queueItem.chat_id}/message`;
+      requestBody = { prompt: queueItem.user_message };
+    } else {
+      // New chat - use new message endpoint
+      if (!queueItem.folder) {
+        throw new Error('Queue item missing required folder for new chat');
+      }
+      apiUrl = `http://localhost:${process.env.PORT || 8000}/api/chats/new/message`;
+      requestBody = {
+        folder: queueItem.folder,
+        prompt: queueItem.user_message,
+        defaultPermissions: queueItem.defaultPermissions
+      };
+    }
+
     // Execute the message by making internal API call
-    const response = await fetch(`http://localhost:${process.env.PORT || 8000}/api/chats/${queueItem.chat_id}/message`, {
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Cookie': req.headers.cookie || ''
       },
-      body: JSON.stringify({ prompt: queueItem.user_message })
+      body: JSON.stringify(requestBody)
     });
 
     if (response.ok) {

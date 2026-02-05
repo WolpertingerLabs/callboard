@@ -162,13 +162,16 @@ export function getImageUrl(imageId: string): string {
 // Queue API functions
 export interface QueueItem {
   id: string;
-  chat_id: string;
+  chat_id: string | null;
   user_message: string;
   scheduled_time: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   created_at: string;
   retry_count: number;
   error_message: string | null;
+  // New chat fields - only used when chat_id is null
+  folder?: string;
+  defaultPermissions?: DefaultPermissions;
 }
 
 export async function getQueueItems(status?: string, chatId?: string): Promise<QueueItem[]> {
@@ -180,14 +183,16 @@ export async function getQueueItems(status?: string, chatId?: string): Promise<Q
   return res.json();
 }
 
-export async function scheduleMessage(chatId: string, message: string, scheduledTime: string): Promise<QueueItem> {
+export async function scheduleMessage(chatId: string | null, message: string, scheduledTime: string, folder?: string, defaultPermissions?: DefaultPermissions): Promise<QueueItem> {
   const res = await fetch(`${BASE}/queue`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: chatId,
       user_message: message,
-      scheduled_time: scheduledTime
+      scheduled_time: scheduledTime,
+      ...(folder && { folder }),
+      ...(defaultPermissions && { defaultPermissions })
     })
   });
   return res.json();
@@ -201,10 +206,10 @@ export async function executeNow(id: string): Promise<void> {
   await fetch(`${BASE}/queue/${id}/execute-now`, { method: 'POST' });
 }
 
-export async function addToBacklog(chatId: string, message: string): Promise<QueueItem> {
+export async function addToBacklog(chatId: string | null, message: string, folder?: string, defaultPermissions?: DefaultPermissions): Promise<QueueItem> {
   // Schedule for immediate execution (current time)
   const now = new Date().toISOString();
-  return scheduleMessage(chatId, message, now);
+  return scheduleMessage(chatId, message, now, folder, defaultPermissions);
 }
 
 export async function getSlashCommands(chatId: string): Promise<string[]> {

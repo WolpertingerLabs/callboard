@@ -13,13 +13,16 @@ if (!existsSync(queueDir)) {
 
 export interface QueueItem {
   id: string;
-  chat_id: string;
+  chat_id: string | null;
   user_message: string;
   scheduled_time: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   created_at: string;
   retry_count: number;
   error_message: string | null;
+  // New chat fields - only used when chat_id is null
+  folder?: string;
+  defaultPermissions?: any;
 }
 
 export class QueueFileService {
@@ -71,7 +74,7 @@ export class QueueFileService {
   }
 
   // Create a new queue item
-  createQueueItem(chatId: string, userMessage: string, scheduledTime: string): QueueItem {
+  createQueueItem(chatId: string | null, userMessage: string, scheduledTime: string, folder?: string, defaultPermissions?: any): QueueItem {
     const id = uuid();
     const now = new Date().toISOString();
 
@@ -83,7 +86,9 @@ export class QueueFileService {
       status: 'pending',
       created_at: now,
       retry_count: 0,
-      error_message: null
+      error_message: null,
+      ...(folder && { folder }),
+      ...(defaultPermissions && { defaultPermissions })
     };
 
     this.saveQueueItem(item);
