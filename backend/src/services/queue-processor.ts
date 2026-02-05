@@ -1,4 +1,4 @@
-import db from '../db.js';
+import { queueFileService } from './queue-file-service.js';
 
 export class QueueProcessor {
   private intervalId: NodeJS.Timeout | null = null;
@@ -41,14 +41,7 @@ export class QueueProcessor {
   }
 
   private getDueMessages(): any[] {
-    const now = new Date().toISOString();
-    return db.prepare(`
-      SELECT * FROM message_queue
-      WHERE status = 'pending'
-      AND scheduled_time <= ?
-      ORDER BY scheduled_time ASC
-      LIMIT 10
-    `).all(now);
+    return queueFileService.getDueMessages(10);
   }
 
   private async executeMessage(queueItem: any): Promise<void> {
@@ -56,8 +49,7 @@ export class QueueProcessor {
 
     try {
       // Update status to running
-      db.prepare('UPDATE message_queue SET status = ? WHERE id = ?')
-        .run('running', id);
+      queueFileService.updateQueueItem(id, { status: 'running' });
 
       // Execute the message
       const response = await fetch(`http://localhost:${process.env.PORT || 8000}/api/chats/${chat_id}/message`, {
@@ -70,10 +62,9 @@ export class QueueProcessor {
       });
 
       if (response.ok) {
-        // Mark as completed
-        db.prepare('UPDATE message_queue SET status = ? WHERE id = ?')
-          .run('completed', id);
-        console.log(`Queue item ${id} executed successfully`);
+        // Delete the queue item when completed successfully
+        queueFileService.deleteQueueItem(id);
+        console.log(`Queue item ${id} executed successfully and removed from queue`);
       } else {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -85,16 +76,23 @@ export class QueueProcessor {
       const maxRetries = 3;
 
       if (retryCount >= maxRetries) {
-        db.prepare('UPDATE message_queue SET status = ?, error_message = ?, retry_count = ? WHERE id = ?')
-          .run('failed', error.message, retryCount, id);
+        queueFileService.updateQueueItem(id, {
+          status: 'failed',
+          error_message: error.message,
+          retry_count: retryCount
+        });
         console.log(`Queue item ${id} failed after ${maxRetries} attempts`);
       } else {
         // Schedule for retry (exponential backoff)
         const retryDelay = Math.pow(2, retryCount) * 60 * 1000; // 2^n minutes
         const retryTime = new Date(Date.now() + retryDelay).toISOString();
 
-        db.prepare('UPDATE message_queue SET status = ?, error_message = ?, retry_count = ?, scheduled_time = ? WHERE id = ?')
-          .run('pending', error.message, retryCount, retryTime, id);
+        queueFileService.updateQueueItem(id, {
+          status: 'pending',
+          error_message: error.message,
+          retry_count: retryCount,
+          scheduled_time: retryTime
+        });
         console.log(`Queue item ${id} scheduled for retry in ${retryDelay / 60000} minutes`);
       }
     }
