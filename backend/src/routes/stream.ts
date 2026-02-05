@@ -79,7 +79,7 @@ async function generateAndSaveTitle(chatId: string, prompt: string): Promise<voi
 
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post('/new/message', async (req, res) => {
-  const { folder, prompt, defaultPermissions, imageIds } = req.body;
+  const { folder, prompt, defaultPermissions, imageIds, activePlugins } = req.body;
   if (!folder) return res.status(400).json({ error: 'folder is required' });
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
@@ -109,8 +109,8 @@ streamRouter.post('/new/message', async (req, res) => {
 
     // Start a new chat session
     const emitter = prompt.startsWith('/')
-      ? await sendNewMessage(folder, prompt, defaultPermissions, imageMetadata.length > 0 ? imageMetadata : undefined)
-      : await sendNewMessage(folder, prompt, defaultPermissions, imageMetadata.length > 0 ? imageMetadata : undefined);
+      ? await sendNewMessage(folder, prompt, defaultPermissions, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins)
+      : await sendNewMessage(folder, prompt, defaultPermissions, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -161,7 +161,7 @@ streamRouter.post('/new/message', async (req, res) => {
 // Send a message and get SSE stream back
 streamRouter.post('/:id/message', async (req, res) => {
   console.log('[DEBUG] Route hit:', req.method, req.path, JSON.stringify(req.body));
-  const { prompt, imageIds } = req.body;
+  const { prompt, imageIds, activePlugins } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
   console.log(`[DEBUG] Received message request:`, {
@@ -204,8 +204,8 @@ streamRouter.post('/:id/message', async (req, res) => {
 
     // Auto-detect slash commands and route appropriately
     const emitter = prompt.startsWith('/')
-      ? await sendSlashCommand(req.params.id, prompt)
-      : await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined);
+      ? await sendSlashCommand(req.params.id, prompt, activePlugins)
+      : await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins);
 
     // Generate title synchronously from first message
     await generateAndSaveTitle(req.params.id, prompt);

@@ -6,6 +6,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { chatFileService } from './chat-file-service.js';
 import { setSlashCommandsForDirectory } from './slashCommands.js';
+import { getPluginsForDirectory, type Plugin } from './plugins.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logDir = join(__dirname, '../../logs');
@@ -50,6 +51,29 @@ interface ActiveSession {
 
 const activeSessions = new Map<string, ActiveSession>();
 const pendingRequests = new Map<string, PendingRequest>();
+
+/**
+ * Build plugin configuration for Claude SDK from active plugin IDs
+ */
+function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
+  if (!activePluginIds || activePluginIds.length === 0) {
+    return [];
+  }
+
+  try {
+    const plugins = getPluginsForDirectory(folder);
+    const activePlugins = plugins.filter((p: Plugin) => activePluginIds.includes(p.id));
+
+    return activePlugins.map((plugin: Plugin) => ({
+      type: 'local',
+      path: plugin.manifest.source,
+      name: plugin.manifest.name
+    }));
+  } catch (error) {
+    console.warn('Failed to build plugin options:', error);
+    return [];
+  }
+}
 
 type PermissionLevel = 'allow' | 'ask' | 'deny';
 
@@ -132,7 +156,7 @@ export function stopSession(chatId: string): boolean {
   return false;
 }
 
-export async function sendMessage(chatId: string, prompt: string | any, imageMetadata?: { buffer: Buffer; mimeType: string }[]): Promise<EventEmitter> {
+export async function sendMessage(chatId: string, prompt: string | any, imageMetadata?: { buffer: Buffer; mimeType: string }[], activePlugins?: string[]): Promise<EventEmitter> {
   const chat = chatFileService.getChat(chatId);
   if (!chat) throw new Error('Chat not found');
 
@@ -210,6 +234,7 @@ export async function sendMessage(chatId: string, prompt: string | any, imageMet
       cwd: chat.folder,
       maxTurns: 50,
       ...(chat.session_id ? { resume: chat.session_id } : {}),
+      ...(activePlugins ? { plugins: buildPluginOptions(chat.folder, activePlugins) } : {}),
       env: {
         ...process.env,
         PATH: process.env.PATH,
@@ -384,7 +409,8 @@ export async function sendNewMessage(
   folder: string,
   prompt: string,
   defaultPermissions?: DefaultPermissions,
-  imageMetadata?: { buffer: Buffer; mimeType: string }[]
+  imageMetadata?: { buffer: Buffer; mimeType: string }[],
+  activePlugins?: string[]
 ): Promise<EventEmitter> {
   const emitter = new EventEmitter();
   const abortController = new AbortController();
@@ -428,6 +454,7 @@ export async function sendNewMessage(
       abortController,
       cwd: folder,
       maxTurns: 50,
+      ...(activePlugins ? { plugins: buildPluginOptions(folder, activePlugins) } : {}),
       env: {
         ...process.env,
         PATH: process.env.PATH,
@@ -591,7 +618,7 @@ export async function sendNewMessage(
   return emitter;
 }
 
-export async function sendSlashCommand(chatId: string, command: string): Promise<EventEmitter> {
+export async function sendSlashCommand(chatId: string, command: string, activePlugins?: string[]): Promise<EventEmitter> {
   const chat = chatFileService.getChat(chatId);
   if (!chat) throw new Error('Chat not found');
 
@@ -609,6 +636,7 @@ export async function sendSlashCommand(chatId: string, command: string): Promise
       cwd: chat.folder,
       maxTurns: 50,
       ...(chat.session_id ? { resume: chat.session_id } : {}),
+      ...(activePlugins ? { plugins: buildPluginOptions(chat.folder, activePlugins) } : {}),
       canUseTool: async (
         toolName: string,
         input: Record<string, unknown>,

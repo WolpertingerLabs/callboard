@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
 import { chatFileService } from '../services/chat-file-service.js';
-import { getSlashCommandsForDirectory, getCommandsAndPluginsForDirectory } from '../services/slashCommands.js';
+import { getSlashCommandsForDirectory, getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from '../services/slashCommands.js';
 import { getGitInfo } from '../utils/git.js';
 
 export const chatsRouter = Router();
@@ -513,10 +513,25 @@ chatsRouter.get('/:id/slash-commands', (req, res) => {
 
   try {
     const result = getCommandsAndPluginsForDirectory(chat.folder);
-    res.json({ slashCommands: result.slashCommands, plugins: result.plugins });
+
+    // Check if activePlugins query param is provided
+    const activePluginIds = req.query.activePlugins
+      ? (Array.isArray(req.query.activePlugins)
+          ? req.query.activePlugins as string[]
+          : [req.query.activePlugins as string])
+      : [];
+
+    // Get all commands including active plugin commands
+    const allCommands = getAllCommandsForDirectory(chat.folder, activePluginIds);
+
+    res.json({
+      slashCommands: result.slashCommands,
+      plugins: result.plugins,
+      allCommands
+    });
   } catch (error) {
     console.error('Failed to get slash commands and plugins:', error);
-    res.json({ slashCommands: [], plugins: [] });
+    res.json({ slashCommands: [], plugins: [], allCommands: [] });
   }
 });
 
