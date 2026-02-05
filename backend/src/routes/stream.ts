@@ -90,7 +90,7 @@ streamRouter.post('/new/message', async (req, res) => {
 
   try {
     // Fetch image data if imageIds are provided
-    let imageMetadata: { buffer: Buffer; mimeType: string }[] = [];
+    const imageMetadata: { buffer: Buffer; mimeType: string }[] = [];
     if (imageIds && imageIds.length > 0) {
       for (const imageId of imageIds) {
         try {
@@ -172,7 +172,7 @@ streamRouter.post('/:id/message', async (req, res) => {
 
   try {
     // Fetch image data if imageIds are provided
-    let imageMetadata: { buffer: Buffer; mimeType: string }[] = [];
+    const imageMetadata: { buffer: Buffer; mimeType: string }[] = [];
     if (imageIds && imageIds.length > 0) {
       console.log(`[DEBUG] Processing ${imageIds.length} image IDs: ${imageIds}`);
 
