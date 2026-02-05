@@ -411,7 +411,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              marginRight: 8,
             }}
             title="Jump to latest to-do list"
           >
@@ -433,7 +432,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              marginRight: 8,
             }}
             title="View available slash commands"
           >
@@ -454,7 +452,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              marginRight: 8,
             }}
             title="Reconnect to stream"
           >
