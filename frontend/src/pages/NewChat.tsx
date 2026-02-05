@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, Slash } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { getNewChatInfo, addToBacklog, scheduleMessage, type NewChatInfo, type DefaultPermissions } from '../api';
+import { getNewChatInfo, addToBacklog, scheduleMessage, type NewChatInfo, type DefaultPermissions, type Plugin } from '../api';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 import SlashCommandsModal from '../components/SlashCommandsModal';
@@ -28,6 +28,7 @@ export default function NewChat({ onChatListRefresh }: NewChatProps = {}) {
   const [inFlightMessage, setInFlightMessage] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
+  const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
   const [showDraftModal, setShowDraftModal] = useState(false);
@@ -49,6 +50,9 @@ export default function NewChat({ onChatListRefresh }: NewChatProps = {}) {
           setSlashCommands(data.slash_commands.map(cmd =>
             typeof cmd === 'string' ? cmd : cmd.name
           ));
+        }
+        if (data.plugins) {
+          setPlugins(data.plugins);
         }
       })
       .catch(err => {
@@ -444,6 +448,7 @@ export default function NewChat({ onChatListRefresh }: NewChatProps = {}) {
         isOpen={showSlashCommandsModal}
         onClose={() => setShowSlashCommandsModal(false)}
         slashCommands={slashCommands}
+        plugins={plugins}
         onCommandSelect={handleCommandSelect}
       />
 
