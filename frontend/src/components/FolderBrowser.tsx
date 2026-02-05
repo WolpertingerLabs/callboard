@@ -116,7 +116,7 @@ export default function FolderBrowser({
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      zIndex: 1000,
+      zIndex: 1000
     }}>
       <div style={{
         background: 'var(--bg)',
@@ -128,7 +128,7 @@ export default function FolderBrowser({
         border: isMobile ? 'none' : '1px solid var(--border)',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
+        overflow: 'hidden'
       }}>
         {/* Header */}
         <div style={{
@@ -362,12 +362,13 @@ export default function FolderBrowser({
 
         {/* Footer */}
         <div style={{
-          padding: isMobile ? '8px 16px' : '12px 20px',
+          padding: isMobile ? '16px 16px 24px 16px' : '12px 20px',
           borderTop: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          background: 'var(--bg-secondary)'
+          background: 'var(--bg-secondary)',
+          flexShrink: 0
         }}>
           <div style={{ fontSize: isMobile ? 12 : 13, color: 'var(--text-muted)' }}>
             {browseResult && (
