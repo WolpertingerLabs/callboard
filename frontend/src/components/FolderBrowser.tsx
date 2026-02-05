@@ -1,0 +1,429 @@
+import { useState, useEffect } from 'react';
+import { X, Home, Folder, FolderOpen, File, GitBranch, Eye, EyeOff, ChevronRight, ArrowUp } from 'lucide-react';
+import { browseDirectory, getFolderSuggestions, type BrowseResult, type FolderItem, type FolderSuggestion } from '../api/folders';
+
+interface FolderBrowserProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSelect: (path: string) => void;
+  initialPath?: string;
+}
+
+export default function FolderBrowser({
+  isOpen,
+  onClose,
+  onSelect,
+  initialPath = '/'
+}: FolderBrowserProps) {
+  const [currentPath, setCurrentPath] = useState(initialPath);
+  const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showHidden, setShowHidden] = useState(() => {
+    return localStorage.getItem('folderBrowser.showHidden') === 'true';
+  });
+  const [suggestions, setSuggestions] = useState<FolderSuggestion[]>([]);
+
+  // Load folder suggestions on mount
+  useEffect(() => {
+    const loadSuggestions = async () => {
+      try {
+        const result = await getFolderSuggestions();
+        setSuggestions(result.suggestions);
+      } catch (err) {
+        console.error('Failed to load suggestions:', err);
+      }
+    };
+
+    if (isOpen) {
+      loadSuggestions();
+    }
+  }, [isOpen]);
+
+  // Browse directory when path changes
+  useEffect(() => {
+    const browse = async () => {
+      if (!isOpen || !currentPath) return;
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await browseDirectory(currentPath, showHidden);
+        setBrowseResult(result);
+        setCurrentPath(result.currentPath); // Update with resolved path
+      } catch (err: any) {
+        setError(err.message || 'Failed to browse directory');
+        setBrowseResult(null);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    browse();
+  }, [currentPath, showHidden, isOpen]);
+
+  // Reset state when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setCurrentPath(initialPath || '/');
+      setError(null);
+    }
+  }, [isOpen, initialPath]);
+
+  const handleToggleHidden = () => {
+    const newValue = !showHidden;
+    setShowHidden(newValue);
+    localStorage.setItem('folderBrowser.showHidden', newValue.toString());
+  };
+
+  const handleNavigate = (path: string) => {
+    setCurrentPath(path);
+  };
+
+  const handleItemClick = (item: FolderItem) => {
+    if (item.type === 'directory') {
+      handleNavigate(item.path);
+    }
+  };
+
+  const handleItemDoubleClick = (item: FolderItem) => {
+    if (item.type === 'directory') {
+      onSelect(item.path);
+    }
+  };
+
+  const getPathSegments = (path: string) => {
+    const segments = path.split('/').filter(Boolean);
+    return [{ name: 'Root', path: '/' }, ...segments.map((segment, index) => ({
+      name: segment,
+      path: '/' + segments.slice(0, index + 1).join('/')
+    }))];
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: 'rgba(0, 0, 0, 0.5)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1000,
+    }}>
+      <div style={{
+        background: 'var(--bg)',
+        borderRadius: 12,
+        width: '90%',
+        height: '90%',
+        maxWidth: 1000,
+        maxHeight: 700,
+        border: '1px solid var(--border)',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: '16px 20px',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: 'var(--bg-secondary)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Select Folder</h2>
+            <button
+              onClick={handleToggleHidden}
+              style={{
+                background: showHidden ? 'var(--accent)' : 'var(--surface)',
+                color: showHidden ? '#fff' : 'var(--text)',
+                padding: '6px 12px',
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 13
+              }}
+              title={showHidden ? 'Hide hidden files' : 'Show hidden files'}
+            >
+              {showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+              {showHidden ? 'Hide hidden' : 'Show hidden'}
+            </button>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: 8,
+              cursor: 'pointer',
+              color: 'var(--text-muted)',
+              borderRadius: 6
+            }}
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Breadcrumb */}
+        <div style={{
+          padding: '12px 20px',
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--surface)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          overflow: 'auto'
+        }}>
+          {getPathSegments(currentPath).map((segment, index, segments) => (
+            <div key={segment.path} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button
+                onClick={() => handleNavigate(segment.path)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: index === segments.length - 1 ? 'var(--text)' : 'var(--accent)',
+                  cursor: index === segments.length - 1 ? 'default' : 'pointer',
+                  fontSize: 14,
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  textDecoration: 'none'
+                }}
+              >
+                {index === 0 ? <Home size={16} /> : segment.name}
+              </button>
+              {index < segments.length - 1 && (
+                <ChevronRight size={14} style={{ color: 'var(--text-muted)' }} />
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          overflow: 'hidden'
+        }}>
+          {/* Sidebar with suggestions */}
+          <div style={{
+            width: 240,
+            borderRight: '1px solid var(--border)',
+            background: 'var(--bg-secondary)',
+            overflow: 'auto'
+          }}>
+            <div style={{ padding: '16px 16px 12px 16px' }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 8 }}>
+                Quick Access
+              </div>
+              {suggestions.map((suggestion) => (
+                <button
+                  key={suggestion.path}
+                  onClick={() => handleNavigate(suggestion.path)}
+                  style={{
+                    display: 'block',
+                    width: '100%',
+                    textAlign: 'left',
+                    background: currentPath === suggestion.path ? 'var(--accent)' : 'none',
+                    color: currentPath === suggestion.path ? '#fff' : 'var(--text)',
+                    border: 'none',
+                    padding: '8px 12px',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    marginBottom: 2,
+                    fontSize: 13
+                  }}
+                  title={suggestion.description}
+                >
+                  <div style={{ fontWeight: 500 }}>{suggestion.name}</div>
+                  <div style={{
+                    fontSize: 11,
+                    opacity: 0.7,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {suggestion.path}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Main content area */}
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {isLoading ? (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: 200,
+                color: 'var(--text-muted)'
+              }}>
+                Loading...
+              </div>
+            ) : error ? (
+              <div style={{
+                padding: 20,
+                color: 'var(--danger)',
+                textAlign: 'center'
+              }}>
+                {error}
+              </div>
+            ) : browseResult ? (
+              <div style={{ padding: '12px 16px' }}>
+                {/* Parent directory link */}
+                {browseResult.parent && (
+                  <div
+                    onClick={() => handleNavigate(browseResult.parent!)}
+                    onDoubleClick={() => handleNavigate(browseResult.parent!)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 12px',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      marginBottom: 8,
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border)'
+                    }}
+                  >
+                    <ArrowUp size={16} style={{ color: 'var(--text-muted)' }} />
+                    <span style={{ fontSize: 14 }}>.. (Parent Directory)</span>
+                  </div>
+                )}
+
+                {/* Directories */}
+                {browseResult.directories.map((item) => (
+                  <div
+                    key={item.path}
+                    onClick={() => handleItemClick(item)}
+                    onDoubleClick={() => handleItemDoubleClick(item)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '8px 12px',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      marginBottom: 2,
+                      opacity: item.isHidden ? 0.6 : 1
+                    }}
+                    onMouseOver={e => e.currentTarget.style.background = 'var(--surface)'}
+                    onMouseOut={e => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                      {item.isGitRepo ? (
+                        <GitBranch size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                      ) : (
+                        <Folder size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                      )}
+                      <span style={{
+                        fontSize: 14,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {item.name}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>
+                      {item.modified && formatDate(item.modified)}
+                    </div>
+                  </div>
+                ))}
+
+                {browseResult.directories.length === 0 && browseResult.files.length === 0 && (
+                  <div style={{
+                    textAlign: 'center',
+                    color: 'var(--text-muted)',
+                    padding: 40,
+                    fontSize: 14
+                  }}>
+                    This directory is empty
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          padding: '12px 20px',
+          borderTop: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: 'var(--bg-secondary)'
+        }}>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            {browseResult && (
+              <>
+                {browseResult.directories.length} folders
+                {browseResult.files.length > 0 && `, ${browseResult.files.length} files`}
+              </>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button
+              onClick={onClose}
+              style={{
+                background: 'var(--surface)',
+                color: 'var(--text)',
+                padding: '8px 16px',
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                fontSize: 14
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onSelect(currentPath)}
+              disabled={!browseResult?.exists}
+              style={{
+                background: browseResult?.exists ? 'var(--accent)' : 'var(--border)',
+                color: '#fff',
+                padding: '8px 16px',
+                borderRadius: 6,
+                border: 'none',
+                cursor: browseResult?.exists ? 'pointer' : 'default',
+                fontSize: 14
+              }}
+            >
+              Select Folder
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

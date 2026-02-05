@@ -5,6 +5,7 @@ import { listChats, deleteChat, getSessionStatus, type Chat, type SessionStatus,
 import ChatListItem from '../components/ChatListItem';
 import PermissionSettings from '../components/PermissionSettings';
 import ConfirmModal from '../components/ConfirmModal';
+import FolderSelector from '../components/FolderSelector';
 import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, addRecentDirectory, removeRecentDirectory, initializeSuggestedDirectories } from '../utils/localStorage';
 
 interface ChatListProps {
@@ -260,21 +261,14 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              value={folder}
-              onChange={e => setFolder(e.target.value)}
-              placeholder="Project folder path (e.g. /home/user/myproject)"
-              onKeyDown={e => e.key === 'Enter' && handleCreate()}
-              autoFocus
-              style={{
-                flex: 1,
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                padding: '10px 12px',
-                fontSize: 14,
-              }}
-            />
+            <div style={{ flex: 1 }}>
+              <FolderSelector
+                value={folder}
+                onChange={setFolder}
+                placeholder="Project folder path (e.g. /home/user/myproject)"
+                autoFocus
+              />
+            </div>
             <button
               onClick={() => handleCreate()}
               disabled={!folder.trim()}
