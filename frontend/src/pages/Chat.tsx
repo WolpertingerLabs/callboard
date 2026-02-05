@@ -422,7 +422,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontSize: 15, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {chat?.is_git_repo ? (chat.git_branch || 'main') : (chat?.folder.split('/').pop() || 'Chat')}
+              {chat?.is_git_repo ? (chat.git_branch || 'main') : (chat?.folder?.split('/').pop() || 'Chat')}
             </div>
             {sessionStatus?.active && (
               <div style={{
