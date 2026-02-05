@@ -14,5 +14,4 @@
 
 ## Workflow Instructions
 
-- When work is completed, commit and push changes to the repository
-- After committing and pushing, ask the user if they'd like to reboot production to deploy the changes
+- Use `/gsr` to build, commit, push, and redeploy production in one command
