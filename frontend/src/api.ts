@@ -46,6 +46,7 @@ export interface ParsedMessage {
   toolName?: string;
   isBuiltInCommand?: boolean;
   timestamp?: string;
+  teamName?: string;
 }
 
 export interface ChatListResponse {

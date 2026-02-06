@@ -543,6 +543,7 @@ interface ParsedMessage {
   content: string;
   toolName?: string;
   timestamp?: string;
+  teamName?: string;
 }
 
 function extractToolResultContent(block: any): string {
@@ -569,10 +570,11 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
     const role: 'user' | 'assistant' = msg.message?.role || msg.type;
     const content = msg.message?.content || msg.content;
     const timestamp = msg.timestamp;
+    const teamName = msg.teamName;
     if (!content) continue;
 
     if (typeof content === 'string') {
-      result.push({ role, type: 'text', content, timestamp });
+      result.push({ role, type: 'text', content, timestamp, ...(teamName && { teamName }) });
       continue;
     }
 
@@ -581,7 +583,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
     for (const block of content) {
       switch (block.type) {
         case 'text':
-          if (block.text) result.push({ role, type: 'text', content: block.text, timestamp });
+          if (block.text) result.push({ role, type: 'text', content: block.text, timestamp, ...(teamName && { teamName }) });
           break;
         case 'thinking':
           result.push({ role: 'assistant', type: 'thinking', content: block.thinking || '', timestamp });

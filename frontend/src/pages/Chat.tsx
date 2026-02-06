@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ChevronDown, ArrowDown } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, getSlashCommandsAndPlugins, type Chat as ChatType, type ParsedMessage, type SessionStatus, type Plugin } from '../api';
-import MessageBubble from '../components/MessageBubble';
+import MessageBubble, { TEAM_COLORS } from '../components/MessageBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 import DraftModal from '../components/DraftModal';
@@ -37,6 +37,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
+
+  // Compute team color map - assigns colors to teams in order of appearance
+  const teamColorMap = useMemo(() => {
+    const map = new Map<string, number>();
+    let colorIndex = 0;
+    for (const msg of messages) {
+      if (msg.teamName && !map.has(msg.teamName)) {
+        map.set(msg.teamName, colorIndex % TEAM_COLORS.length);
+        colorIndex++;
+      }
+    }
+    return map;
+  }, [messages]);
 
   // Shared SSE reader that processes notifications and refetches chat data
   const readSSE = useCallback(async (body: ReadableStream<Uint8Array>) => {
@@ -631,7 +644,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         )}
         {messages.map((msg, i) => (
           <div key={i} data-message-index={i}>
-            <MessageBubble message={msg} />
+            <MessageBubble message={msg} teamColorMap={teamColorMap} />
           </div>
         ))}
         {inFlightMessage && (
