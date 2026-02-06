@@ -94,7 +94,9 @@ function discoverSessionsPaginated(limit: number, offset: number): {
   try {
     // Use the fastest approach: find + xargs + ls -t for time-sorted file listing
     // This is orders of magnitude faster than per-file operations
-    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -name "*.jsonl" -type f -print0 | xargs -0 ls -lt`;
+    // Use -maxdepth 2 to only get .jsonl files directly inside project folders,
+    // excluding subagents/ subdirectories (projects/<name>/subagents/<id>.jsonl)
+    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -maxdepth 2 -name "*.jsonl" -type f -print0 | xargs -0 ls -lt`;
     const output = execSync(findCommand, { encoding: 'utf8' }).trim();
 
     if (!output) return { sessions: [], total: 0 };
