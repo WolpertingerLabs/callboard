@@ -611,89 +611,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div ref={chatContainerRef} style={{ height: '100%', overflow: 'auto', padding: '12px 16px' }}>
         {messages.length === 0 && !streaming && (
-          <div style={{ padding: '40px 20px', maxWidth: 600, margin: '0 auto' }}>
-            {/* Folder info */}
-            <div style={{
-              background: 'var(--bg-secondary)',
-              borderRadius: 12,
-              padding: '20px 24px',
-              marginBottom: 16,
-            }}>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>Working Directory</div>
-              <div style={{ fontSize: 15, fontWeight: 500, wordBreak: 'break-all' }}>{chat?.folder || 'Loading...'}</div>
-              {chat?.is_git_repo && (
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{
-                    background: '#10b981',
-                    color: '#fff',
-                    padding: '3px 8px',
-                    borderRadius: 4,
-                    fontSize: 11,
-                    fontWeight: 500,
-                  }}>Git</span>
-                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                    Branch: <strong style={{ color: 'var(--text)' }}>{chat?.git_branch || 'main'}</strong>
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Slash commands if available */}
-            {slashCommands.length > 0 && (
-              <div style={{
-                background: 'var(--bg-secondary)',
-                borderRadius: 12,
-                padding: '20px 24px',
-                marginBottom: 16,
-              }}>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>Available Commands</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {slashCommands.slice(0, 8).map((cmd, i) => (
-                    <button
-                      key={i}
-                      onClick={() => {
-                        if (promptInputSetValue) {
-                          promptInputSetValue(cmd);
-                        }
-                      }}
-                      style={{
-                        background: 'var(--bg)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 6,
-                        padding: '6px 12px',
-                        fontSize: 13,
-                        color: 'var(--accent)',
-                        cursor: 'pointer',
-                        fontFamily: 'monospace',
-                      }}
-                    >
-                      {cmd}
-                    </button>
-                  ))}
-                  {slashCommands.length > 8 && (
-                    <button
-                      onClick={() => setShowSlashCommandsModal(true)}
-                      style={{
-                        background: 'var(--bg)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 6,
-                        padding: '6px 12px',
-                        fontSize: 13,
-                        color: 'var(--text-muted)',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      +{slashCommands.length - 8} more
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Getting started hint */}
-            <p style={{ color: 'var(--text-muted)', textAlign: 'center', fontSize: 14 }}>
-              Send a message to start coding with Claude.
-            </p>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            height: '100%',
+            color: 'var(--text-muted)',
+            fontSize: 14,
+          }}>
+            No messages in this conversation
           </div>
         )}
         {messages.map((msg, i) => (
