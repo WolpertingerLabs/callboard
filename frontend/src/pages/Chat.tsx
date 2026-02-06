@@ -37,6 +37,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
+  const currentIdRef = useRef<string | undefined>(id);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -56,11 +57,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    // Capture the chat ID this stream was created for
+    const streamChatId = id;
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
+        // If the user navigated to a different chat, stop processing this stream
+        if (currentIdRef.current !== streamChatId) {
+          reader.cancel();
+          return;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -72,21 +81,30 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             const event = JSON.parse(line.slice(6));
 
             if (event.type === 'message_complete') {
+              if (currentIdRef.current !== streamChatId) return;
               setStreaming(false);
-              setInFlightMessage(null); // Clear in-flight message
+              setInFlightMessage(null);
               // Refetch complete chat data and messages
-              getChat(id!).then(setChat);
-              getMessages(id!).then(msgs => setMessages(Array.isArray(msgs) ? msgs : []));
+              getChat(streamChatId!).then(chatData => {
+                if (currentIdRef.current !== streamChatId) return;
+                setChat(chatData);
+              });
+              getMessages(streamChatId!).then(msgs => {
+                if (currentIdRef.current !== streamChatId) return;
+                setMessages(Array.isArray(msgs) ? msgs : []);
+              });
               // Refresh slash commands in case they were discovered during initialization
               loadSlashCommands();
               return;
             }
 
             if (event.type === 'message_error') {
+              if (currentIdRef.current !== streamChatId) return;
               setStreaming(false);
-              setInFlightMessage(null); // Clear in-flight message
+              setInFlightMessage(null);
               // Refetch messages to show any partial content, then add error
-              getMessages(id!).then(msgs => {
+              getMessages(streamChatId!).then(msgs => {
+                if (currentIdRef.current !== streamChatId) return;
                 const msgArray = Array.isArray(msgs) ? msgs : [];
                 setMessages([...msgArray, { role: 'assistant', type: 'text', content: `Error: ${event.content}` }]);
               });
@@ -94,10 +112,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             }
 
             if (event.type === 'message_update') {
+              if (currentIdRef.current !== streamChatId) return;
               // Clear in-flight message once we get the first response
               setInFlightMessage(null);
               // New content is available - refetch all messages to show latest state with timestamps
-              getMessages(id!).then(msgs => setMessages(Array.isArray(msgs) ? msgs : []));
+              getMessages(streamChatId!).then(msgs => {
+                if (currentIdRef.current !== streamChatId) return;
+                setMessages(Array.isArray(msgs) ? msgs : []);
+              });
 
               // Check if this is the first response and we should refresh chat list
               if (!hasReceivedFirstResponseRef.current && onChatListRefresh) {
@@ -108,6 +130,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             }
 
             if (event.type === 'permission_request' || event.type === 'user_question' || event.type === 'plan_review') {
+              if (currentIdRef.current !== streamChatId) return;
               setPendingAction({
                 type: event.type,
                 toolName: event.toolName,
@@ -122,8 +145,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     } finally {
-      setStreaming(false);
-      setInFlightMessage(null); // Clear in-flight message if streaming stops
+      // Only update state if still on the same chat
+      if (currentIdRef.current === streamChatId) {
+        setStreaming(false);
+        setInFlightMessage(null);
+      }
     }
   }, [id]);
 
@@ -159,8 +185,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Check session status and auto-connect to active sessions
   const checkSessionStatus = useCallback(async () => {
     if (!id) return;
+    const checkId = id; // Capture for staleness check
     try {
       const status = await getSessionStatus(id);
+      // If user navigated to a different chat while awaiting, discard result
+      if (currentIdRef.current !== checkId) return;
       setSessionStatus(status);
 
       // Auto-connect if session is active (web or CLI)
@@ -187,10 +216,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }, [id]);
 
   useEffect(() => {
+    // Track the current chat ID for staleness detection in closures
+    currentIdRef.current = id;
+
+    // Reset state for new chat — prevents old chat's streaming/error state
+    // from being visible while new chat data loads
+    setStreaming(false);
+    setInFlightMessage(null);
+    setPendingAction(null);
+    setNetworkError(null);
+    setSessionStatus(null);
+
     // Reset first response flag when chat ID changes
     hasReceivedFirstResponseRef.current = false;
 
     getChat(id!).then(chatData => {
+      // Guard: only apply if still on this chat
+      if (currentIdRef.current !== id) return;
       setChat(chatData);
       // Use slash commands and plugins from chat data if available for faster display
       if (chatData?.slash_commands && chatData.slash_commands.length > 0) {
@@ -207,8 +249,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         loadSlashCommands();
       }
     });
-    getMessages(id!).then(msgs => setMessages(Array.isArray(msgs) ? msgs : []));
+    getMessages(id!).then(msgs => {
+      if (currentIdRef.current !== id) return;
+      setMessages(Array.isArray(msgs) ? msgs : []);
+    });
     getPending(id!).then(p => {
+      if (currentIdRef.current !== id) return;
       if (p) {
         setPendingAction(p);
         setStreaming(true);
@@ -217,6 +263,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
     // Check session status and auto-connect
     checkSessionStatus();
+
+    // Cleanup: abort SSE stream when chat ID changes or component unmounts
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
   }, [id, checkSessionStatus, loadSlashCommands]);
 
 
