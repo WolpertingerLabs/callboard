@@ -20,6 +20,26 @@ function parseTodoItems(content: string): TodoItem[] | null {
   return null;
 }
 
+// 16 distinct team colors that work well in dark mode
+export const TEAM_COLORS = [
+  '#ef4444', // Red
+  '#f97316', // Orange
+  '#eab308', // Yellow
+  '#22c55e', // Green
+  '#14b8a6', // Teal
+  '#06b6d4', // Cyan
+  '#3b82f6', // Blue
+  '#6366f1', // Indigo
+  '#8b5cf6', // Violet
+  '#a855f7', // Purple
+  '#d946ef', // Fuchsia
+  '#ec4899', // Pink
+  '#f43f5e', // Rose
+  '#78716c', // Stone
+  '#84cc16', // Lime
+  '#0ea5e9', // Sky
+] as const;
+
 // Generate contextual summary for tool usage
 function getToolSummary(toolName: string, content: string): string {
   try {
@@ -146,6 +166,7 @@ function TodoList({ items }: { items: TodoItem[] }) {
 
 interface Props {
   message: ParsedMessage;
+  teamColorMap?: Map<string, number>;
 }
 
 function MessageTimestamp({ timestamp, align = 'right' }: { timestamp?: string; align?: 'left' | 'right' }) {
@@ -164,9 +185,18 @@ function MessageTimestamp({ timestamp, align = 'right' }: { timestamp?: string; 
   );
 }
 
-export default function MessageBubble({ message }: Props) {
+export default function MessageBubble({ message, teamColorMap }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === 'user';
+  const isTeamMessage = !!message.teamName;
+
+  // Get team color if this is a team message
+  const teamColor = useMemo(() => {
+    if (!isTeamMessage || !teamColorMap || !message.teamName) return null;
+    const colorIndex = teamColorMap.get(message.teamName);
+    if (colorIndex === undefined) return TEAM_COLORS[0];
+    return TEAM_COLORS[colorIndex % TEAM_COLORS.length];
+  }, [isTeamMessage, teamColorMap, message.teamName]);
 
   // Special rendering for TodoWrite tool calls
   const todoItems = useMemo(() => {
@@ -275,6 +305,47 @@ export default function MessageBubble({ message }: Props) {
     }
     return isUser ? 'transparent' : 'var(--border)';
   };
+
+  // Team messages render on the left with team color accent
+  if (isTeamMessage && teamColor) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-start',
+        margin: '6px 0',
+      }}>
+        <div style={{
+          fontSize: 11,
+          fontWeight: 600,
+          color: teamColor,
+          marginBottom: 2,
+          marginLeft: 2,
+        }}>
+          {message.teamName}
+        </div>
+        <div style={{
+          maxWidth: '85%',
+          padding: '10px 14px',
+          borderRadius: 'var(--radius)',
+          background: 'var(--assistant-bg)',
+          borderLeft: `3px solid ${teamColor}`,
+          borderTop: '1px solid var(--border)',
+          borderRight: '1px solid var(--border)',
+          borderBottom: '1px solid var(--border)',
+          fontSize: 14,
+          lineHeight: 1.5,
+          wordBreak: 'break-word',
+        }}>
+          <MarkdownRenderer
+            content={message.content}
+            className="message-markdown"
+          />
+        </div>
+        <MessageTimestamp timestamp={message.timestamp} align="left" />
+      </div>
+    );
+  }
 
   return (
     <div style={{
