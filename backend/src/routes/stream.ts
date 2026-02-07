@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMessage, sendNewMessage, sendSlashCommand, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
+import { sendMessage, sendNewMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
 import { OpenRouterClient } from '../services/openrouter-client.js';
 import { ImageStorageService } from '../services/image-storage.js';
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from 'fs';
@@ -202,10 +202,7 @@ streamRouter.post('/:id/message', async (req, res) => {
       console.log(`[DEBUG] No imageIds provided in request`);
     }
 
-    // Auto-detect slash commands and route appropriately
-    const emitter = prompt.startsWith('/')
-      ? await sendSlashCommand(req.params.id, prompt, activePlugins)
-      : await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins);
+    const emitter = await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins);
 
     // Generate title synchronously from first message
     await generateAndSaveTitle(req.params.id, prompt);
@@ -402,8 +399,8 @@ streamRouter.post('/:id/respond', (req, res) => {
   if (!hasPendingRequest(req.params.id)) {
     return res.status(404).json({ error: 'No pending request' });
   }
-  const ok = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions);
-  res.json({ ok });
+  const result = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions);
+  res.json({ ok: result.ok, toolName: result.toolName });
 });
 
 // Check session status - active in web, CLI, or inactive

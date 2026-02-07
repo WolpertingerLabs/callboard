@@ -155,9 +155,10 @@ export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve
   return rest;
 }
 
-export function respondToPermission(chatId: string, allow: boolean, updatedInput?: Record<string, unknown>, updatedPermissions?: unknown[]): boolean {
+export function respondToPermission(chatId: string, allow: boolean, updatedInput?: Record<string, unknown>, updatedPermissions?: unknown[]): { ok: boolean; toolName?: string } {
   const pending = pendingRequests.get(chatId);
-  if (!pending) return false;
+  if (!pending) return { ok: false };
+  const toolName = pending.toolName;
   pendingRequests.delete(chatId);
 
   if (allow) {
@@ -169,7 +170,7 @@ export function respondToPermission(chatId: string, allow: boolean, updatedInput
   } else {
     pending.resolve({ behavior: "deny", message: "User denied", interrupt: true });
   }
-  return true;
+  return { ok: true, toolName };
 }
 
 export function stopSession(chatId: string): boolean {
@@ -657,179 +658,3 @@ export async function sendNewMessage(
   return emitter;
 }
 
-export async function sendSlashCommand(chatId: string, command: string, activePlugins?: string[]): Promise<EventEmitter> {
-  const chat = chatFileService.getChat(chatId);
-  if (!chat) throw new Error("Chat not found");
-
-  // Stop any existing session for this chat
-  stopSession(chatId);
-
-  const emitter = new EventEmitter();
-  const abortController = new AbortController();
-  activeSessions.set(chatId, { abortController, emitter });
-
-  const queryOpts: any = {
-    prompt: command,
-    options: {
-      abortController,
-      cwd: chat.folder,
-      settingSources: ["user", "project", "local"],
-      maxTurns: 50,
-      ...(chat.session_id ? { resume: chat.session_id } : {}),
-      ...(activePlugins ? { plugins: buildPluginOptions(chat.folder, activePlugins) } : {}),
-      canUseTool: async (
-        toolName: string,
-        input: Record<string, unknown>,
-        { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
-      ): Promise<PermissionResult> => {
-        // Use the same permission logic as sendMessage
-        const category = categorizeToolPermission(toolName);
-        if (category) {
-          try {
-            const metadata = JSON.parse(chat.metadata || "{}");
-            const defaultPermissions = migratePermissions(metadata.defaultPermissions);
-
-            if (defaultPermissions && defaultPermissions[category]) {
-              const permission = defaultPermissions[category];
-
-              if (permission === "allow") {
-                return { behavior: "allow", updatedInput: input };
-              } else if (permission === "deny") {
-                return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
-              }
-            }
-          } catch {
-            // If metadata parsing fails, fall through to normal permission flow
-          }
-        }
-
-        return new Promise<PermissionResult>((resolve) => {
-          if (toolName === "AskUserQuestion") {
-            emitter.emit("event", {
-              type: "user_question",
-              content: "",
-              questions: input.questions as unknown[],
-            } as StreamEvent);
-          } else if (toolName === "ExitPlanMode") {
-            emitter.emit("event", {
-              type: "plan_review",
-              content: JSON.stringify(input),
-            } as StreamEvent);
-          } else {
-            emitter.emit("event", {
-              type: "permission_request",
-              content: "",
-              toolName,
-              input,
-              suggestions,
-            } as StreamEvent);
-          }
-
-          let eventType: PendingRequest["eventType"];
-          let eventData: Record<string, unknown>;
-          if (toolName === "AskUserQuestion") {
-            eventType = "user_question";
-            eventData = { questions: input.questions };
-          } else if (toolName === "ExitPlanMode") {
-            eventType = "plan_review";
-            eventData = { content: JSON.stringify(input) };
-          } else {
-            eventType = "permission_request";
-            eventData = { toolName, input, suggestions };
-          }
-
-          pendingRequests.set(chatId, { toolName, input, suggestions, eventType, eventData, resolve });
-
-          signal.addEventListener("abort", () => {
-            pendingRequests.delete(chatId);
-            resolve({ behavior: "deny", message: "Aborted" });
-          });
-        });
-      },
-    },
-  };
-
-  (async () => {
-    try {
-      let sessionId: string | null = null;
-
-      logDebug("Starting new chat session", { chatId, cwd: chat.folder });
-
-      const conversation = query(queryOpts);
-
-      for await (const message of conversation) {
-        if (abortController.signal.aborted) break;
-
-        // Debug: Log message structure to understand what we receive
-        logDebug("Received message from Claude SDK", {
-          keys: Object.keys(message),
-          type: (message as any).type,
-          hasSlashCommands: "slash_commands" in message,
-          fullMessage: message,
-        });
-
-        // Capture slash commands from system initialization message
-        if ("slash_commands" in message && message.slash_commands) {
-          const slashCommands = message.slash_commands as string[];
-          logDebug("Found slash commands in SDK message", slashCommands);
-          // Save slash commands keyed by directory
-          setSlashCommandsForDirectory(chat.folder, slashCommands);
-          logDebug("Updated slash commands for directory", { chatId, folder: chat.folder, slashCommands });
-        }
-
-        if ("session_id" in message && message.session_id && !sessionId) {
-          sessionId = message.session_id as string;
-          const meta = JSON.parse(chat.metadata || "{}");
-          const ids: string[] = meta.session_ids || [];
-          if (!ids.includes(sessionId)) ids.push(sessionId);
-          meta.session_ids = ids;
-          // Use upsert to create file storage entry if it doesn't exist
-          chatFileService.upsertChat(chatId, chat.folder, sessionId, {
-            metadata: JSON.stringify(meta),
-          });
-        }
-
-        const blocks = (message as any).message?.content || [];
-        for (const block of blocks) {
-          switch (block.type) {
-            case "text":
-              emitter.emit("event", { type: "text", content: block.text } as StreamEvent);
-              break;
-            case "thinking":
-              emitter.emit("event", { type: "thinking", content: block.thinking } as StreamEvent);
-              break;
-            case "tool_use":
-              emitter.emit("event", {
-                type: "tool_use",
-                content: JSON.stringify(block.input),
-                toolName: block.name,
-              } as StreamEvent);
-              break;
-            case "tool_result": {
-              const content =
-                typeof block.content === "string"
-                  ? block.content
-                  : Array.isArray(block.content)
-                    ? block.content.map((c: any) => (typeof c === "string" ? c : c.text || JSON.stringify(c))).join("\n")
-                    : JSON.stringify(block.content);
-              emitter.emit("event", { type: "tool_result", content } as StreamEvent);
-              break;
-            }
-          }
-        }
-      }
-
-      chatFileService.updateChat(chatId, {});
-      emitter.emit("event", { type: "done", content: "" } as StreamEvent);
-    } catch (err: any) {
-      if (err.name !== "AbortError") {
-        emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
-      }
-    } finally {
-      activeSessions.delete(chatId);
-      pendingRequests.delete(chatId);
-    }
-  })();
-
-  return emitter;
-}

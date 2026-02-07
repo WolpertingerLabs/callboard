@@ -54,6 +54,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
   const currentIdRef = useRef<string | undefined>(id);
+  const handleSendRef = useRef<(prompt: string) => void>(() => {});
+  const planApprovedRef = useRef(false);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -154,6 +156,27 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
             if (event.type === 'message_complete') {
               if (currentIdRef.current !== streamChatId) return;
+
+              // Check if the conversation ended right after a plan approval.
+              // The SDK may end the conversation turn after ExitPlanMode is processed,
+              // requiring a follow-up message to start the implementation phase.
+              if (planApprovedRef.current) {
+                planApprovedRef.current = false;
+                // Refetch messages first, then auto-continue
+                getChat(streamChatId!).then(chatData => {
+                  if (currentIdRef.current !== streamChatId) return;
+                  setChat(chatData);
+                });
+                getMessages(streamChatId!).then(msgs => {
+                  if (currentIdRef.current !== streamChatId) return;
+                  setMessages(Array.isArray(msgs) ? msgs : []);
+                });
+                // Send a continuation message to start the implementation
+                // This mirrors how the CLI handles plan approval - it auto-continues
+                handleSendRef.current('Proceed with the plan.');
+                return;
+              }
+
               setStreaming(false);
               setInFlightMessage(null);
               // Refetch complete chat data and messages
@@ -172,6 +195,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
             if (event.type === 'message_error') {
               if (currentIdRef.current !== streamChatId) return;
+              planApprovedRef.current = false;
               setStreaming(false);
               setInFlightMessage(null);
               // Refetch messages to show any partial content, then add error
@@ -185,6 +209,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
             if (event.type === 'message_update') {
               if (currentIdRef.current !== streamChatId) return;
+              // If we get message_update events after plan approval, it means
+              // the SDK continued on its own — clear the auto-continue flag
+              if (planApprovedRef.current) {
+                planApprovedRef.current = false;
+              }
               // Clear in-flight message once we get the first response
               setInFlightMessage(null);
               // New content is available - refetch all messages to show latest state with timestamps
@@ -299,8 +328,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setNetworkError(null);
     setSessionStatus(null);
 
-    // Reset first response flag when chat ID changes
+    // Reset first response flag and plan approval tracking when chat ID changes
     hasReceivedFirstResponseRef.current = false;
+    planApprovedRef.current = false;
 
     getChat(id!).then(chatData => {
       // Guard: only apply if still on this chat
@@ -464,10 +494,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, readSSE, activePluginIds]);
 
+  // Keep ref in sync so readSSE can call handleSend without stale closure
+  handleSendRef.current = handleSend;
+
   const handleRespond = useCallback(async (allow: boolean, updatedInput?: Record<string, unknown>) => {
     const wasReconnect = !abortRef.current; // no active SSE = page was refreshed
     setPendingAction(null);
-    await respondToChat(id!, allow, updatedInput);
+    const result = await respondToChat(id!, allow, updatedInput);
+
+    // Track if this was an ExitPlanMode approval - the SDK conversation may end
+    // after plan approval, so we need to auto-send a continuation message
+    if (result.toolName === 'ExitPlanMode' && allow) {
+      planApprovedRef.current = true;
+    }
+
     // If we got here via page refresh (no active stream), reconnect to the SSE stream
     if (wasReconnect) {
       setStreaming(true);
