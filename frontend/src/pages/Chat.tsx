@@ -702,6 +702,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <header style={{
         padding: '12px 16px',
+        borderTop: '1px solid var(--border)',
         borderBottom: '1px solid var(--border)',
         display: 'flex',
         alignItems: 'center',
