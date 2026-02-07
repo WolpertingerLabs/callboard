@@ -128,13 +128,17 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
   };
 
   const handleDelete = (chat: Chat) => {
-    let chatName: string | undefined;
+    let chatPreview: string | undefined;
     try {
       const meta = JSON.parse(chat.metadata || "{}");
-      chatName = meta.title;
+      chatPreview = meta.preview;
     } catch {}
 
-    const displayName = chatName || chat.folder?.split("/").pop() || chat.folder || "Chat";
+    const displayName = chatPreview
+      ? chatPreview.length > 60
+        ? chatPreview.slice(0, 60) + "..."
+        : chatPreview
+      : chat.folder?.split("/").pop() || chat.folder || "Chat";
     setDeleteConfirmModal({ isOpen: true, chatId: chat.id, chatName: displayName });
   };
 

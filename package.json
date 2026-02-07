@@ -21,9 +21,7 @@
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown"
   },
   "dependencies": {
-    "shared": "file:shared",
     "@anthropic-ai/claude-agent-sdk": "^0.2.32",
-    "@openrouter/sdk": "^0.5.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
@@ -36,6 +34,7 @@
     "react-router-dom": "^6.26.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
+    "shared": "file:shared",
     "uuid": "^10.0.0"
   },
   "devDependencies": {

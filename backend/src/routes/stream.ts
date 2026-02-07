@@ -1,50 +1,15 @@
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
-import { OpenRouterClient } from "../services/openrouter-client.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { chatFileService } from "../services/chat-file-service.js";
 import { ensureWorktree, switchBranch } from "../utils/git.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
 import { writeSSEHeaders, sendSSE, createSSEHandler } from "../utils/sse.js";
 
 export const streamRouter = Router();
-
-/**
- * Generate a chat title from the first user message using OpenRouter,
- * then save it into the chat's metadata JSON.
- */
-async function generateAndSaveTitle(chatId: string, prompt: string): Promise<void> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return;
-
-  const client = new OpenRouterClient(apiKey);
-  if (!client.isReady()) return;
-
-  const chat = chatFileService.getChat(chatId);
-  if (!chat) return;
-
-  const meta = JSON.parse(chat.metadata || "{}");
-  if (meta.title) return; // already has a title
-
-  const result = await client.generateChatTitle({ userMessage: prompt });
-  if (result.success && result.content) {
-    // Re-read metadata to avoid race condition with slash commands being saved
-    const latestChat = chatFileService.getChat(chatId);
-    const latestMeta = latestChat ? JSON.parse(latestChat.metadata || "{}") : {};
-
-    latestMeta.title = result.content;
-    chatFileService.updateChat(chatId, {
-      metadata: JSON.stringify(latestMeta),
-    });
-    console.log(`[OpenRouter] Generated title for ${chatId}: "${result.content}"`);
-  } else {
-    console.warn("[OpenRouter] Title generation failed:", result.error);
-  }
-}
 
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post("/new/message", async (req, res) => {
@@ -128,16 +93,10 @@ streamRouter.post("/new/message", async (req, res) => {
 
     writeSSEHeaders(res);
 
-    let chatId: string | null = null;
-
     // Custom handler for new chat — needs to intercept chat_created event
     const onEvent = (event: StreamEvent) => {
       if (event.type === "chat_created") {
-        chatId = event.chatId || null;
         sendSSE(res, { type: "chat_created", chatId: event.chatId, chat: event.chat });
-        if (chatId) {
-          generateAndSaveTitle(chatId, prompt);
-        }
         return;
       }
 
@@ -208,9 +167,6 @@ streamRouter.post("/:id/message", async (req, res) => {
       imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
       activePlugins,
     });
-
-    // Generate title synchronously from first message
-    await generateAndSaveTitle(req.params.id, prompt);
 
     writeSSEHeaders(res);
 

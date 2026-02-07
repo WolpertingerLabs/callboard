@@ -37,6 +37,37 @@ function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string
 }
 
 /**
+ * Extract the first user message text from a JSONL session file (up to maxLength chars).
+ * Used as a chat preview/title in the chat list.
+ */
+function getFirstUserMessage(filePath: string, maxLength: number = 200): string | null {
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === "user" && msg.message?.role === "user") {
+          const contentBlocks = msg.message.content;
+          if (typeof contentBlocks === "string") {
+            return contentBlocks.slice(0, maxLength);
+          }
+          if (Array.isArray(contentBlocks)) {
+            for (const block of contentBlocks) {
+              if (block.type === "text" && block.text) {
+                return block.text.slice(0, maxLength);
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+/**
  * Discover session JSONL files using filesystem-level sorting for optimal performance.
  * Only processes the files needed for the current page.
  */
@@ -210,6 +241,9 @@ chatsRouter.get("/", (req, res) => {
       // Get cached git info for the folder (with fallback)
       const gitInfo = getCachedGitInfo(s.folder);
 
+      // Extract preview from the first user message in the JSONL file
+      const preview = getFirstUserMessage(s.filePath);
+
       if (fileChat) {
         // Augment with file storage data while keeping filesystem as source of truth for timestamps
         return {
@@ -223,7 +257,7 @@ chatsRouter.get("/", (req, res) => {
           // Add git information
           is_git_repo: gitInfo.isGitRepo,
           git_branch: gitInfo.branch,
-          // Merge session_ids in metadata
+          // Merge session_ids in metadata and add preview
           metadata: (() => {
             try {
               const meta = JSON.parse(fileChat.metadata || "{}");
@@ -231,9 +265,9 @@ chatsRouter.get("/", (req, res) => {
               if (!sessionIds.includes(s.sessionId)) {
                 sessionIds.push(s.sessionId);
               }
-              return JSON.stringify({ ...meta, session_ids: sessionIds });
+              return JSON.stringify({ ...meta, session_ids: sessionIds, ...(preview && { preview }) });
             } catch {
-              return JSON.stringify({ session_ids: [s.sessionId] });
+              return JSON.stringify({ session_ids: [s.sessionId], ...(preview && { preview }) });
             }
           })(),
           _augmented_from_file: true,
@@ -245,7 +279,7 @@ chatsRouter.get("/", (req, res) => {
           folder: s.folder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: JSON.stringify({ session_ids: [s.sessionId] }),
+          metadata: JSON.stringify({ session_ids: [s.sessionId], ...(preview && { preview }) }),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information
