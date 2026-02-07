@@ -3,7 +3,6 @@ import { useRef } from 'react';
 import { useIsMobile } from '../hooks/useIsMobile';
 import ChatList from '../pages/ChatList';
 import Chat from '../pages/Chat';
-import NewChat from '../pages/NewChat';
 
 interface SplitLayoutProps {
   onLogout: () => void;
@@ -28,7 +27,7 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
   // Mobile behavior - keep existing full-page navigation
   if (isMobile) {
     if (isNewChat) {
-      return <NewChat onChatListRefresh={refreshChatList} />;
+      return <Chat onChatListRefresh={refreshChatList} />;
     }
     if (activeChatId) {
       return <Chat onChatListRefresh={refreshChatList} />;
@@ -63,7 +62,7 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
         background: 'var(--bg)',
       }}>
         {isNewChat ? (
-          <NewChat onChatListRefresh={refreshChatList} />
+          <Chat onChatListRefresh={refreshChatList} />
         ) : activeChatId ? (
           <Chat onChatListRefresh={refreshChatList} />
         ) : (

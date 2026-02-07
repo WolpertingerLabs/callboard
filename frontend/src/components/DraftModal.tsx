@@ -1,15 +1,17 @@
 import { useState, useEffect } from 'react';
-import { addToBacklog, scheduleMessage } from '../api';
+import { addToBacklog, scheduleMessage, type DefaultPermissions } from '../api';
 
 interface DraftModalProps {
   isOpen: boolean;
   onClose: () => void;
-  chatId: string;
+  chatId: string | null;
   message: string;
   onSuccess?: () => void;
+  folder?: string;
+  defaultPermissions?: DefaultPermissions;
 }
 
-export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess }: DraftModalProps) {
+export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess, folder, defaultPermissions }: DraftModalProps) {
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduledTime, setScheduledTime] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -33,7 +35,7 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
     setError(null);
 
     try {
-      await addToBacklog(chatId, message.trim());
+      await addToBacklog(chatId, message.trim(), folder, defaultPermissions);
       onSuccess?.();
       onClose();
     } catch (err: any) {
@@ -50,7 +52,7 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
     setError(null);
 
     try {
-      await scheduleMessage(chatId, message.trim(), new Date(scheduledTime).toISOString());
+      await scheduleMessage(chatId, message.trim(), new Date(scheduledTime).toISOString(), folder, defaultPermissions);
       onSuccess?.();
       onClose();
     } catch (err: any) {
@@ -87,7 +89,15 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
         maxWidth: 500,
         border: '1px solid var(--border)',
       }}>
-        <h2 style={{ margin: '0 0 16px 0', fontSize: 18 }}>Save Message</h2>
+        <h2 style={{ margin: '0 0 16px 0', fontSize: 18 }}>{chatId ? 'Save Message' : 'Save New Chat Message'}</h2>
+
+        {!chatId && folder && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Folder: {folder}
+            </div>
+          </div>
+        )}
 
         <div>
           <div style={{ marginBottom: 16 }}>

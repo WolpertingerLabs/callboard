@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ChevronDown, ArrowDown } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, getSlashCommandsAndPlugins, type Chat as ChatType, type ParsedMessage, type SessionStatus, type Plugin } from '../api';
+import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, getSlashCommandsAndPlugins, getNewChatInfo, type Chat as ChatType, type ParsedMessage, type SessionStatus, type Plugin, type NewChatInfo, type DefaultPermissions } from '../api';
 import MessageBubble, { TEAM_COLORS } from '../components/MessageBubble';
 import ToolCallBubble from '../components/ToolCallBubble';
 import PromptInput from '../components/PromptInput';
@@ -33,8 +33,16 @@ interface ChatProps {
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
   const isMobile = useIsMobile();
+
+  // Mode detection: no id means we're on /chat/new (new chat mode)
+  const folder = searchParams.get('folder') || '';
+  const defaultPermissions = (location.state as any)?.defaultPermissions as DefaultPermissions | undefined;
+
   const [chat, setChat] = useState<ChatType | null>(null);
+  const [info, setInfo] = useState<NewChatInfo | null>(null);
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -56,6 +64,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const currentIdRef = useRef<string | undefined>(id);
   const handleSendRef = useRef<(prompt: string) => void>(() => {});
   const planApprovedRef = useRef(false);
+  const tempChatIdRef = useRef<string | null>(null);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -126,6 +135,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return items;
   }, [messages]);
 
+  // Keep navigate and onChatListRefresh in refs to avoid readSSE dependency churn
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+  const onChatListRefreshRef = useRef(onChatListRefresh);
+  onChatListRefreshRef.current = onChatListRefresh;
+
   // Shared SSE reader that processes notifications and refetches chat data
   const readSSE = useCallback(async (body: ReadableStream<Uint8Array>) => {
     const reader = body.getReader();
@@ -153,6 +168,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (!line.startsWith('data: ')) continue;
           try {
             const event = JSON.parse(line.slice(6));
+
+            // Handle chat_created - fires during new chat creation
+            if (event.type === 'chat_created' && event.chatId) {
+              tempChatIdRef.current = event.chatId;
+              // Navigate to the real chat URL
+              navigateRef.current(`/chat/${event.chatId}`, { replace: true });
+              // Refresh chat list to show the new chat
+              onChatListRefreshRef.current?.();
+              // Cancel this stream - Chat will re-render with id param
+              // and auto-connect via checkSessionStatus()
+              reader.cancel();
+              return;
+            }
 
             if (event.type === 'message_complete') {
               if (currentIdRef.current !== streamChatId) return;
@@ -316,7 +344,49 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id]);
 
+  // Load folder info for new chat mode
   useEffect(() => {
+    if (id || !folder) return; // Only run in new chat mode with a folder
+
+    // Reset state from any previous existing chat — prevents stale streaming/error state
+    // from carrying over when navigating from an active chat to a new chat
+    setStreaming(false);
+    setInFlightMessage(null);
+    setPendingAction(null);
+    setNetworkError(null);
+    setSessionStatus(null);
+    setChat(null);
+    setMessages([]);
+    currentIdRef.current = undefined;
+    tempChatIdRef.current = null;
+
+    // Abort any existing SSE stream from a previous chat
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+
+    getNewChatInfo(folder)
+      .then(data => {
+        setInfo(data);
+        if (data.slash_commands) {
+          setSlashCommands(data.slash_commands.map((cmd: any) =>
+            typeof cmd === 'string' ? cmd : cmd.name
+          ));
+        }
+        if (data.plugins) {
+          setPlugins(data.plugins);
+        }
+      })
+      .catch(err => {
+        setNetworkError(err.message || 'Failed to load folder info');
+      });
+  }, [folder, id]);
+
+  // Load existing chat data (only when id is available)
+  useEffect(() => {
+    if (!id) return;
+
     // Track the current chat ID for staleness detection in closures
     currentIdRef.current = id;
 
@@ -327,10 +397,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setPendingAction(null);
     setNetworkError(null);
     setSessionStatus(null);
+    setInfo(null); // Clear new-chat info when transitioning to existing mode
 
     // Reset first response flag and plan approval tracking when chat ID changes
     hasReceivedFirstResponseRef.current = false;
     planApprovedRef.current = false;
+    tempChatIdRef.current = null;
 
     getChat(id!).then(chatData => {
       // Guard: only apply if still on this chat
@@ -419,31 +491,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }, []);
 
   const handleSend = useCallback(async (prompt: string, images?: File[]) => {
-    // Handle image upload first if images are provided
-    let imageIds: string[] = [];
-    if (images && images.length > 0) {
-      try {
-        const uploadResult = await uploadImages(id!, images);
-        if (uploadResult.success) {
-          imageIds = uploadResult.images.map(img => img.id);
-        } else {
-          console.error('Image upload failed:', uploadResult.errors);
-          // Continue without images
-        }
-      } catch (error) {
-        console.error('Image upload error:', error);
-        // Continue without images
-      }
-    }
-
     // Set in-flight message to show user's message immediately
     setInFlightMessage(prompt);
     setNetworkError(null); // Clear any previous network errors
-
-    // Track directory usage when sending message
-    if (chat?.folder) {
-      addRecentDirectory(chat.folder);
-    }
 
     // If there's already a streaming connection, stop it first
     if (abortRef.current) {
@@ -456,24 +506,67 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     abortRef.current = controller;
 
     try {
-      const body: any = { prompt };
-      if (imageIds.length > 0) {
-        body.imageIds = imageIds;
-      }
-      if (activePluginIds.length > 0) {
-        body.activePlugins = activePluginIds;
-      }
+      let res: Response;
 
-      const res = await fetch(`/api/chats/${id}/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      if (!id) {
+        // NEW CHAT MODE: POST to /api/chats/new/message
+        addRecentDirectory(folder);
+
+        const requestBody: any = { folder, prompt, defaultPermissions };
+        if (activePluginIds.length > 0) {
+          requestBody.activePlugins = activePluginIds;
+        }
+
+        res = await fetch('/api/chats/new/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } else {
+        // EXISTING CHAT MODE: POST to /api/chats/:id/message
+        // Handle image upload first if images are provided
+        let imageIds: string[] = [];
+        if (images && images.length > 0) {
+          try {
+            const uploadResult = await uploadImages(id, images);
+            if (uploadResult.success) {
+              imageIds = uploadResult.images.map(img => img.id);
+            } else {
+              console.error('Image upload failed:', uploadResult.errors);
+            }
+          } catch (error) {
+            console.error('Image upload error:', error);
+          }
+        }
+
+        if (chat?.folder) {
+          addRecentDirectory(chat.folder);
+        }
+
+        const body: any = { prompt };
+        if (imageIds.length > 0) {
+          body.imageIds = imageIds;
+        }
+        if (activePluginIds.length > 0) {
+          body.activePlugins = activePluginIds;
+        }
+
+        res = await fetch(`/api/chats/${id}/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      }
 
       if (!res.ok || !res.body) {
+        const errorData = await res.json().catch(() => ({}));
+        setNetworkError(errorData.error || 'Failed to send message');
         setStreaming(false);
+        setInFlightMessage(null);
         return;
       }
 
@@ -492,7 +585,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         abortRef.current = null;
       }
     }
-  }, [id, readSSE, activePluginIds]);
+  }, [id, folder, defaultPermissions, readSSE, activePluginIds, chat]);
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
   handleSendRef.current = handleSend;
@@ -500,7 +593,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const handleRespond = useCallback(async (allow: boolean, updatedInput?: Record<string, unknown>) => {
     const wasReconnect = !abortRef.current; // no active SSE = page was refreshed
     setPendingAction(null);
-    const result = await respondToChat(id!, allow, updatedInput);
+
+    // Use id if available, fall back to tempChatIdRef for new chat mode
+    const chatId = id || tempChatIdRef.current;
+    if (!chatId) return;
+
+    const result = await respondToChat(chatId, allow, updatedInput);
 
     // Track if this was an ExitPlanMode approval - the SDK conversation may end
     // after plan approval, so we need to auto-send a continuation message
@@ -509,7 +607,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
 
     // If we got here via page refresh (no active stream), reconnect to the SSE stream
-    if (wasReconnect) {
+    if (wasReconnect && id) {
       setStreaming(true);
       connectToStream();
     }
@@ -517,7 +615,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
-    fetch(`/api/chats/${id}/stop`, { method: 'POST', credentials: 'include' });
+    if (id) {
+      fetch(`/api/chats/${id}/stop`, { method: 'POST', credentials: 'include' });
+    }
     setStreaming(false);
     setInFlightMessage(null); // Clear in-flight message when stopping
     setPendingAction(null);
@@ -589,6 +689,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [promptInputSetValue]);
 
+  // Early return: no folder specified in new chat mode
+  if (!id && !folder) {
+    return (
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <p style={{ color: 'var(--text-muted)' }}>No folder specified. Please select a folder from the chat list.</p>
+      </div>
+    );
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <header style={{
@@ -620,9 +729,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontSize: 15, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {chat?.is_git_repo ? (chat.git_branch || 'main') : (chat?.folder?.split('/').pop() || 'Chat')}
+              {!id
+                ? (info?.is_git_repo ? (info.git_branch || 'main') : (folder.split('/').pop() || 'New Chat'))
+                : (chat?.is_git_repo ? (chat.git_branch || 'main') : (chat?.folder?.split('/').pop() || 'Chat'))
+              }
             </div>
-            {sessionStatus?.active && (
+            {!id ? (
+              <div style={{
+                fontSize: 11,
+                padding: '2px 6px',
+                borderRadius: 4,
+                background: 'var(--accent)',
+                color: '#fff',
+                fontWeight: 500,
+              }}>
+                New
+              </div>
+            ) : sessionStatus?.active ? (
               <div style={{
                 fontSize: 11,
                 padding: '2px 6px',
@@ -633,10 +756,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               }}>
                 {sessionStatus.type === 'web' ? '🌐 Active' : '💻 CLI'}
               </div>
-            )}
+            ) : null}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {chat?.folder}
+            {!id ? folder : chat?.folder}
           </div>
         </div>
         {hasTodoList && (
@@ -722,144 +845,291 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div ref={chatContainerRef} style={{ height: '100%', overflow: 'auto', padding: '12px 16px' }}>
-        {messages.length === 0 && !streaming && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '100%',
-            color: 'var(--text-muted)',
-            fontSize: 14,
-          }}>
-            No messages in this conversation
-          </div>
-        )}
-        {displayItems.map((item, i) => {
-          if (item.kind === 'tool_group') {
-            return (
-              <div key={`tool-${item.originalIndices[0]}`} data-message-index={item.originalIndices[0]}>
-                <ToolCallBubble
-                  toolUse={item.toolUse}
-                  toolResult={item.toolResult}
-                  isRunning={item.toolResult === null && streaming}
-                />
+        {!id ? (
+          /* NEW CHAT MODE: Welcome screen */
+          <>
+            {networkError && (
+              <div style={{
+                color: 'var(--danger)',
+                background: 'var(--danger-bg, rgba(255, 0, 0, 0.1))',
+                padding: '12px 16px',
+                borderRadius: 6,
+                marginBottom: 16,
+              }}>
+                {networkError}
               </div>
-            );
-          }
-          return (
-            <div key={item.originalIndex} data-message-index={item.originalIndex}>
-              <MessageBubble message={item.message} teamColorMap={teamColorMap} />
-            </div>
-          );
-        })}
-        {inFlightMessage && (
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'flex-end',
-            margin: '6px 0',
-          }}>
-            <div style={{
-              maxWidth: '85%',
-              padding: '10px 14px',
-              borderRadius: 'var(--radius)',
-              background: 'var(--user-bg)',
-              border: '1px solid transparent',
-              fontSize: 14,
-              lineHeight: 1.5,
-              wordBreak: 'break-word',
-              opacity: 0.7,
-            }}>
-              {inFlightMessage}
-            </div>
-            <div style={{
-              fontSize: 10,
-              color: 'var(--text-muted)',
-              opacity: 0.5,
-              marginTop: 4,
-              textAlign: 'right' as const,
-            }}>
-              Sending...
-            </div>
-          </div>
+            )}
+
+            {!streaming && !networkError && (
+              <div style={{ padding: '40px 20px', maxWidth: 600, margin: '0 auto' }}>
+                {/* Folder info */}
+                <div style={{
+                  background: 'var(--bg-secondary)',
+                  borderRadius: 12,
+                  padding: '20px 24px',
+                  marginBottom: 16,
+                }}>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>Working Directory</div>
+                  <div style={{ fontSize: 15, fontWeight: 500, wordBreak: 'break-all' }}>{folder}</div>
+                  {info?.is_git_repo && (
+                    <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{
+                        background: '#10b981',
+                        color: '#fff',
+                        padding: '3px 8px',
+                        borderRadius: 4,
+                        fontSize: 11,
+                        fontWeight: 500,
+                      }}>Git</span>
+                      <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                        Branch: <strong style={{ color: 'var(--text)' }}>{info.git_branch || 'main'}</strong>
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Slash commands if available */}
+                {slashCommands.length > 0 && (
+                  <div style={{
+                    background: 'var(--bg-secondary)',
+                    borderRadius: 12,
+                    padding: '20px 24px',
+                    marginBottom: 16,
+                  }}>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>Available Commands</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {slashCommands.slice(0, 8).map((cmd, i) => (
+                        <button
+                          key={i}
+                          onClick={() => {
+                            if (promptInputSetValue) {
+                              promptInputSetValue(cmd);
+                            }
+                          }}
+                          style={{
+                            background: 'var(--bg)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 6,
+                            padding: '6px 12px',
+                            fontSize: 13,
+                            color: 'var(--accent)',
+                            cursor: 'pointer',
+                            fontFamily: 'monospace',
+                          }}
+                        >
+                          {cmd}
+                        </button>
+                      ))}
+                      {slashCommands.length > 8 && (
+                        <button
+                          onClick={() => setShowSlashCommandsModal(true)}
+                          style={{
+                            background: 'var(--bg)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 6,
+                            padding: '6px 12px',
+                            fontSize: 13,
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          +{slashCommands.length - 8} more
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Getting started hint */}
+                <p style={{ color: 'var(--text-muted)', textAlign: 'center', fontSize: 14 }}>
+                  Send a message to start coding with Claude.
+                </p>
+              </div>
+            )}
+
+            {inFlightMessage && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                margin: '6px 0',
+              }}>
+                <div style={{
+                  maxWidth: '85%',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius)',
+                  background: 'var(--user-bg)',
+                  border: '1px solid transparent',
+                  fontSize: 14,
+                  lineHeight: 1.5,
+                  wordBreak: 'break-word',
+                  opacity: 0.7,
+                }}>
+                  {inFlightMessage}
+                </div>
+                <div style={{
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
+                  opacity: 0.5,
+                  marginTop: 4,
+                  textAlign: 'right',
+                }}>
+                  Sending...
+                </div>
+              </div>
+            )}
+
+            {streaming && (
+              <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '8px 0' }}>
+                Starting chat session...
+              </div>
+            )}
+          </>
+        ) : (
+          /* EXISTING CHAT MODE: Message list */
+          <>
+            {messages.length === 0 && !streaming && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+                color: 'var(--text-muted)',
+                fontSize: 14,
+              }}>
+                No messages in this conversation
+              </div>
+            )}
+            {displayItems.map((item, i) => {
+              if (item.kind === 'tool_group') {
+                return (
+                  <div key={`tool-${item.originalIndices[0]}`} data-message-index={item.originalIndices[0]}>
+                    <ToolCallBubble
+                      toolUse={item.toolUse}
+                      toolResult={item.toolResult}
+                      isRunning={item.toolResult === null && streaming}
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div key={item.originalIndex} data-message-index={item.originalIndex}>
+                  <MessageBubble message={item.message} teamColorMap={teamColorMap} />
+                </div>
+              );
+            })}
+            {inFlightMessage && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                margin: '6px 0',
+              }}>
+                <div style={{
+                  maxWidth: '85%',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius)',
+                  background: 'var(--user-bg)',
+                  border: '1px solid transparent',
+                  fontSize: 14,
+                  lineHeight: 1.5,
+                  wordBreak: 'break-word',
+                  opacity: 0.7,
+                }}>
+                  {inFlightMessage}
+                </div>
+                <div style={{
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
+                  opacity: 0.5,
+                  marginTop: 4,
+                  textAlign: 'right' as const,
+                }}>
+                  Sending...
+                </div>
+              </div>
+            )}
+            {networkError && (
+              <div style={{
+                color: 'var(--danger)',
+                fontSize: 13,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                background: 'var(--danger-bg, rgba(255, 0, 0, 0.1))',
+                borderRadius: 6,
+                padding: '12px 16px',
+                margin: '8px 0'
+              }}>
+                <div>Network error occurred</div>
+                <button
+                  onClick={handleReconnect}
+                  style={{
+                    background: 'var(--accent)',
+                    color: '#fff',
+                    padding: '4px 8px',
+                    borderRadius: 4,
+                    fontSize: 11,
+                    marginLeft: 'auto'
+                  }}
+                >
+                  <RotateCw size={12} style={{ marginRight: 4 }} />
+                  Reconnect
+                </button>
+              </div>
+            )}
+            {streaming && (
+              <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '8px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div>Claude is working...</div>
+                <div style={{ fontSize: 11, opacity: 0.7 }}>
+                  (You can send another message anytime)
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </>
         )}
-        {networkError && (
-          <div style={{
-            color: 'var(--danger)',
-            fontSize: 13,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            background: 'var(--danger-bg, rgba(255, 0, 0, 0.1))',
-            borderRadius: 6,
-            padding: '12px 16px',
-            margin: '8px 0'
-          }}>
-            <div>⚠️ Network error occurred</div>
-            <button
-              onClick={handleReconnect}
-              style={{
-                background: 'var(--accent)',
-                color: '#fff',
-                padding: '4px 8px',
-                borderRadius: 4,
-                fontSize: 11,
-                marginLeft: 'auto'
-              }}
-            >
-              <RotateCw size={12} style={{ marginRight: 4 }} />
-              Reconnect
-            </button>
-          </div>
-        )}
-        {streaming && (
-          <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '8px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div>Claude is working...</div>
-            <div style={{ fontSize: 11, opacity: 0.7 }}>
-              (You can send another message anytime)
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
         </div>
 
-        {/* Auto-scroll toggle button */}
-        <button
-          onClick={toggleAutoScroll}
-          style={{
-            position: 'absolute',
-            bottom: '20px',
-            right: '20px',
-            background: autoScroll ? 'var(--accent)' : 'var(--bg-secondary)',
-            color: autoScroll ? '#fff' : 'var(--text)',
-            border: autoScroll ? 'none' : '1px solid var(--border)',
-            borderRadius: '50%',
-            width: '40px',
-            height: '40px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-            zIndex: 10,
-            transition: 'all 0.2s ease',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.transform = 'scale(1.1)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.transform = 'scale(1)';
-          }}
-          title={autoScroll ? 'Auto-scroll is ON - Click to disable' : 'Auto-scroll is OFF - Click to enable'}
-        >
-          <ArrowDown size={20} />
-        </button>
+        {/* Auto-scroll toggle button - only show in existing chat mode */}
+        {id && (
+          <button
+            onClick={toggleAutoScroll}
+            style={{
+              position: 'absolute',
+              bottom: '20px',
+              right: '20px',
+              background: autoScroll ? 'var(--accent)' : 'var(--bg-secondary)',
+              color: autoScroll ? '#fff' : 'var(--text)',
+              border: autoScroll ? 'none' : '1px solid var(--border)',
+              borderRadius: '50%',
+              width: '40px',
+              height: '40px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+              zIndex: 10,
+              transition: 'all 0.2s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'scale(1.1)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'scale(1)';
+            }}
+            title={autoScroll ? 'Auto-scroll is ON - Click to disable' : 'Auto-scroll is OFF - Click to enable'}
+          >
+            <ArrowDown size={20} />
+          </button>
+        )}
       </div>
 
       {pendingAction ? (
         <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
       ) : (
-        <PromptInput onSend={handleSend} disabled={false} onSaveDraft={handleSaveDraft} slashCommands={slashCommands} onSetValue={setPromptInputSetValue} />
+        <PromptInput onSend={handleSend} disabled={!id && streaming} onSaveDraft={handleSaveDraft} slashCommands={slashCommands} onSetValue={setPromptInputSetValue} />
       )}
 
       <DraftModal
@@ -869,9 +1139,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           setDraftMessage('');
           setDraftSuccessCallback(null);
         }}
-        chatId={id!}
+        chatId={id || null}
         message={draftMessage}
         onSuccess={draftSuccessCallback || undefined}
+        folder={!id ? folder : undefined}
+        defaultPermissions={!id ? defaultPermissions : undefined}
       />
 
       <SlashCommandsModal
