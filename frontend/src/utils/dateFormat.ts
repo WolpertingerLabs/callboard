@@ -20,3 +20,14 @@ export function formatRelativeTime(timestamp: string): string {
     return 'just now';
   }
 }
+
+/**
+ * Returns true if the timestamp is recent enough to be showing
+ * seconds or minutes (i.e. less than 1 hour old), meaning it
+ * should auto-refresh on a short interval.
+ */
+export function shouldAutoRefresh(timestamp: string): boolean {
+  const diff = Date.now() - new Date(timestamp).getTime();
+  const hours = Math.floor(diff / 3_600_000);
+  return hours < 1;
+}

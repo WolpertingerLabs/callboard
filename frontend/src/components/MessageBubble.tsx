@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { Check, RotateCw, Square } from 'lucide-react';
 import type { ParsedMessage } from '../api';
 import MarkdownRenderer from './MarkdownRenderer';
-import { formatRelativeTime } from '../utils/dateFormat';
+import { useRelativeTime } from '../hooks/useRelativeTime';
 
 interface TodoItem {
   content: string;
@@ -170,7 +170,8 @@ interface Props {
 }
 
 function MessageTimestamp({ timestamp, align = 'right' }: { timestamp?: string; align?: 'left' | 'right' }) {
-  if (!timestamp) return null;
+  const relativeTime = useRelativeTime(timestamp);
+  if (!relativeTime) return null;
 
   return (
     <div style={{
@@ -180,7 +181,7 @@ function MessageTimestamp({ timestamp, align = 'right' }: { timestamp?: string; 
       marginTop: 4,
       textAlign: align,
     }}>
-      {formatRelativeTime(timestamp)}
+      {relativeTime}
     </div>
   );
 }

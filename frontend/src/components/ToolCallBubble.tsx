@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { RotateCw, ChevronRight, ChevronDown } from 'lucide-react';
 import type { ParsedMessage } from '../api';
 import { getToolSummary, parseTodoItems, TodoList } from './MessageBubble';
-import { formatRelativeTime } from '../utils/dateFormat';
+import { useRelativeTime } from '../hooks/useRelativeTime';
 
 interface ToolCallBubbleProps {
   toolUse: ParsedMessage;
@@ -13,6 +13,7 @@ interface ToolCallBubbleProps {
 export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolCallBubbleProps) {
   const [inputExpanded, setInputExpanded] = useState(false);
   const [resultExpanded, setResultExpanded] = useState(false);
+  const relativeTime = useRelativeTime(toolResult?.timestamp || toolUse.timestamp);
 
   // Special case: TodoWrite renders as TodoList component
   const todoItems = useMemo(() => {
@@ -129,7 +130,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
       </div>
 
       {/* Timestamp from the latest available message */}
-      {(toolResult?.timestamp || toolUse.timestamp) && (
+      {relativeTime && (
         <div style={{
           fontSize: 10,
           color: 'var(--text-muted)',
@@ -137,7 +138,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
           marginTop: 4,
           textAlign: 'left' as const,
         }}>
-          {formatRelativeTime((toolResult?.timestamp || toolUse.timestamp)!)}
+          {relativeTime}
         </div>
       )}
     </div>
