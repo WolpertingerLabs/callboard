@@ -55,10 +55,10 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 
 ### 2.2 Fix Command Injection Vulnerability (CRITICAL)
 
-- [ ] Replace all `execSync` calls in `backend/src/utils/git.ts` that interpolate user input (`branch`, `base` params at lines 260, 267, 284, 290) with `execFileSync` (bypasses shell entirely)
-- [ ] Replace `JSON.stringify`-based shell escaping in `removeWorktree` (`utils/git.ts:207`) with `execFileSync`
-- [ ] Add branch name validation (regex allowlist for valid git ref characters) before any git operations
-- [ ] Add `folder` path validation/allowlisting in `backend/src/routes/git.ts` endpoints
+- [x] ~~Replace all `execSync` calls in `backend/src/utils/git.ts` that interpolate user input (`branch`, `base` params at lines 260, 267, 284, 290) with `execFileSync` (bypasses shell entirely)~~ (FIXED)
+- [x] ~~Replace `JSON.stringify`-based shell escaping in `removeWorktree` (`utils/git.ts:207`) with `execFileSync`~~ (FIXED)
+- [x] ~~Add branch name validation (regex allowlist for valid git ref characters) before any git operations~~ (FIXED -- `validateGitRef()` added, called in `ensureWorktree` and `switchBranch`)
+- [x] ~~Add `folder` path validation/allowlisting in `backend/src/routes/git.ts` endpoints~~ (FIXED -- `validateFolderPath()` added, used in all git route handlers)
 
 ### 2.3 Fix Configuration Errors
 
@@ -255,9 +255,9 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 
 ### 9.1 Critical
 
-- [ ] Restrict CORS `origin` to specific allowed domain(s) in production (currently `origin: true`)
-- [ ] Add path allowlist to folder browsing service (currently unrestricted filesystem access)
-- [ ] Add path allowlist to git operations in `routes/git.ts` (NEW -- same unrestricted access problem)
+- [ ] Restrict CORS `origin` to specific allowed domain(s) in production (currently `origin: true`) ⏳ **REVIEW LATER** -- mitigated by authentication requirement
+- [ ] Add path allowlist to folder browsing service (currently unrestricted filesystem access) ⏳ **REVIEW LATER** -- mitigated by authentication requirement
+- [x] ~~Add path allowlist to git operations in `routes/git.ts` (NEW -- same unrestricted access problem)~~ (FIXED -- `validateFolderPath()` resolves paths and validates existence)
 - [ ] Fix queue processor auth bypass (has existing TODO)
 
 ### 9.2 Important

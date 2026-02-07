@@ -1,6 +1,5 @@
 import { Router } from "express";
-import { existsSync } from "fs";
-import { getGitBranches, getGitWorktrees, removeWorktree } from "../utils/git.js";
+import { getGitBranches, getGitWorktrees, removeWorktree, validateFolderPath } from "../utils/git.js";
 
 export const gitRouter = Router();
 
@@ -15,9 +14,15 @@ gitRouter.get("/branches", (req, res) => {
   /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the git repository' } */
   /* #swagger.responses[200] = { description: "Array of branch objects" } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
-  const folder = req.query.folder as string;
-  if (!folder) return res.status(400).json({ error: "folder query param is required" });
-  if (!existsSync(folder)) return res.status(400).json({ error: "folder does not exist" });
+  const rawFolder = req.query.folder as string;
+  if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
+
+  let folder: string;
+  try {
+    folder = validateFolderPath(rawFolder);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
 
   try {
     const branches = getGitBranches(folder);
@@ -37,9 +42,15 @@ gitRouter.get("/worktrees", (req, res) => {
   /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the git repository' } */
   /* #swagger.responses[200] = { description: "Array of worktree objects" } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
-  const folder = req.query.folder as string;
-  if (!folder) return res.status(400).json({ error: "folder query param is required" });
-  if (!existsSync(folder)) return res.status(400).json({ error: "folder does not exist" });
+  const rawFolder = req.query.folder as string;
+  if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
+
+  let folder: string;
+  try {
+    folder = validateFolderPath(rawFolder);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
 
   try {
     const worktrees = getGitWorktrees(folder);
@@ -74,10 +85,16 @@ gitRouter.delete("/worktrees", (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Worktree removed" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
-  const { folder, worktreePath, force } = req.body;
-  if (!folder) return res.status(400).json({ error: "folder is required" });
+  const { folder: rawFolder, worktreePath, force } = req.body;
+  if (!rawFolder) return res.status(400).json({ error: "folder is required" });
   if (!worktreePath) return res.status(400).json({ error: "worktreePath is required" });
-  if (!existsSync(folder)) return res.status(400).json({ error: "folder does not exist" });
+
+  let folder: string;
+  try {
+    folder = validateFolderPath(rawFolder);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
 
   try {
     removeWorktree(folder, worktreePath, !!force);

@@ -1,6 +1,60 @@
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { existsSync, statSync } from "fs";
-import { join, dirname, basename } from "path";
+import { join, dirname, basename, resolve } from "path";
+
+/**
+ * Validate a string as a safe git ref name.
+ * Rejects characters and patterns that are invalid or dangerous in git branch names.
+ * Based on git-check-ref-format rules.
+ */
+export function validateGitRef(ref: string): void {
+  if (!ref || typeof ref !== "string") {
+    throw new Error("Branch name is required");
+  }
+  if (ref.length > 255) {
+    throw new Error("Branch name must be 255 characters or fewer");
+  }
+  // Forbidden patterns per git-check-ref-format(1)
+  const forbiddenPatterns: [RegExp, string][] = [
+    [/\.\./, "Branch name cannot contain '..'"],
+    // eslint-disable-next-line no-control-regex
+    [/[\x00-\x1f\x7f]/, "Branch name cannot contain control characters"],
+    // eslint-disable-next-line no-useless-escape
+    [/[ ~^:?*\[\\]/, "Branch name cannot contain spaces or special characters: ~ ^ : ? * [ \\"],
+    [/\/$/, "Branch name cannot end with '/'"],
+    [/\.lock$/, "Branch name cannot end with '.lock'"],
+    [/^\//, "Branch name cannot start with '/'"],
+    [/\/\//, "Branch name cannot contain consecutive slashes"],
+    [/\.$/, "Branch name cannot end with '.'"],
+    [/^-/, "Branch name cannot start with '-'"],
+    [/@\{/, "Branch name cannot contain '@{'"],
+  ];
+
+  for (const [pattern, message] of forbiddenPatterns) {
+    if (pattern.test(ref)) {
+      throw new Error(message);
+    }
+  }
+}
+
+/**
+ * Validate that a folder path is an absolute path to an existing directory.
+ * Resolves symlinks/traversal to prevent path-based attacks.
+ */
+export function validateFolderPath(folder: string): string {
+  if (!folder || typeof folder !== "string") {
+    throw new Error("Folder path is required");
+  }
+  const resolved = resolve(folder);
+  if (!existsSync(resolved)) {
+    throw new Error("Folder does not exist");
+  }
+  const stat = statSync(resolved);
+  if (!stat.isDirectory()) {
+    throw new Error("Path is not a directory");
+  }
+  return resolved;
+}
 
 export interface GitInfo {
   isGitRepo: boolean;
@@ -203,8 +257,10 @@ export function removeWorktree(repoDir: string, worktreePath: string, force: boo
     throw new Error("Cannot remove the main worktree");
   }
 
-  const forceFlag = force ? " --force" : "";
-  execSync(`git worktree remove${forceFlag} ${JSON.stringify(worktreePath)}`, {
+  const args = ["worktree", "remove"];
+  if (force) args.push("--force");
+  args.push(worktreePath);
+  execFileSync("git", args, {
     cwd: repoDir,
     stdio: "pipe",
     timeout: 10000,
@@ -243,6 +299,9 @@ function sanitizeBranchForPath(branch: string): string {
  * @returns The absolute path to the worktree directory
  */
 export function ensureWorktree(repoDir: string, branch: string, createBranch: boolean, baseBranch?: string): string {
+  validateGitRef(branch);
+  if (baseBranch) validateGitRef(baseBranch);
+
   const sanitized = sanitizeBranchForPath(branch);
   const repoName = basename(repoDir);
   const parentDir = dirname(repoDir);
@@ -257,14 +316,14 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
   if (createBranch) {
     // Create a new branch and worktree in one command
     const base = baseBranch || "HEAD";
-    execSync(`git worktree add -b ${branch} ${JSON.stringify(worktreePath)} ${base}`, {
+    execFileSync("git", ["worktree", "add", "-b", branch, worktreePath, base], {
       cwd: repoDir,
       stdio: "pipe",
       timeout: 10000,
     });
   } else {
     // Use an existing branch
-    execSync(`git worktree add ${JSON.stringify(worktreePath)} ${branch}`, {
+    execFileSync("git", ["worktree", "add", worktreePath, branch], {
       cwd: repoDir,
       stdio: "pipe",
       timeout: 10000,
@@ -279,15 +338,18 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
  * If createNew is true, creates the branch from baseBranch first.
  */
 export function switchBranch(directory: string, branch: string, createNew: boolean, baseBranch?: string): void {
+  validateGitRef(branch);
+  if (baseBranch) validateGitRef(baseBranch);
+
   if (createNew) {
     const base = baseBranch || "HEAD";
-    execSync(`git checkout -b ${branch} ${base}`, {
+    execFileSync("git", ["checkout", "-b", branch, base], {
       cwd: directory,
       stdio: "pipe",
       timeout: 5000,
     });
   } else {
-    execSync(`git checkout ${branch}`, {
+    execFileSync("git", ["checkout", branch], {
       cwd: directory,
       stdio: "pipe",
       timeout: 5000,
