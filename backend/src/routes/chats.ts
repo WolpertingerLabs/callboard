@@ -6,7 +6,7 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
 import { getGitInfo } from "../utils/git.js";
 import { CLAUDE_PROJECTS_DIR, projectDirToFolder } from "../utils/paths.js";
-import { findSessionLogPath } from "../utils/session-log.js";
+import { findSessionLogPath, findSubagentFiles } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import type { ParsedMessage } from "shared/types/index.js";
 
@@ -461,8 +461,39 @@ chatsRouter.get("/:id/messages", (req, res) => {
 
   if (allRaw.length === 0) return res.json([]);
 
-  const parsed = parseMessages(allRaw);
-  res.json(parsed);
+  // Build agentId -> description map from parent Task tool_use blocks
+  const agentDescMap = buildSubagentMap(allRaw);
+
+  // Parse parent messages
+  const parentMessages = parseMessages(allRaw);
+
+  // Find and parse subagent messages
+  const subagentMessages: ParsedMessage[] = [];
+  for (const sid of sessionIds) {
+    const subagentFiles = findSubagentFiles(sid);
+    for (const { agentId, filePath } of subagentFiles) {
+      const subRaw = readJsonlFile(filePath);
+      if (subRaw.length === 0) continue;
+
+      // Get display name: prefer description from parent Task, fall back to slug, then agentId
+      const description = agentDescMap.get(agentId);
+      const slug = subRaw[0]?.slug;
+      const displayName = description || slug || `Agent ${agentId}`;
+
+      subagentMessages.push(...parseSubagentMessages(subRaw, displayName));
+    }
+  }
+
+  // Merge parent + subagent messages and sort by timestamp
+  const allMessages = [...parentMessages, ...subagentMessages];
+  if (subagentMessages.length > 0) {
+    allMessages.sort((a, b) => {
+      if (!a.timestamp || !b.timestamp) return 0;
+      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+    });
+  }
+
+  res.json(allMessages);
 });
 
 // Get slash commands and plugins for a chat
@@ -513,6 +544,48 @@ function extractToolResultContent(block: any): string {
       .join("\n");
   }
   return JSON.stringify(block.content);
+}
+
+/**
+ * Build a mapping from agentId to a human-readable display name.
+ * Scans parent JSONL lines for Task tool_use blocks (which have input.description)
+ * and their corresponding tool_result lines (which have toolUseResult.agentId).
+ */
+function buildSubagentMap(rawMessages: any[]): Map<string, string> {
+  const toolUseDescriptions = new Map<string, string>(); // tool_use block id -> description
+  const agentDescriptions = new Map<string, string>(); // agentId -> description
+
+  for (const msg of rawMessages) {
+    const content = msg.message?.content;
+    if (!Array.isArray(content)) continue;
+
+    // Capture Task tool_use descriptions
+    for (const block of content) {
+      if (block.type === "tool_use" && block.name === "Task" && block.input?.description) {
+        toolUseDescriptions.set(block.id, block.input.description);
+      }
+    }
+
+    // The toolUseResult field is on the JSONL line itself (not inside message.content)
+    if (msg.toolUseResult?.agentId) {
+      // Find the tool_use_id from the tool_result block in this line's content
+      const toolResultBlock = Array.isArray(content) ? content.find((b: any) => b.type === "tool_result") : undefined;
+      const toolUseId = toolResultBlock?.tool_use_id;
+      const desc = toolUseId ? toolUseDescriptions.get(toolUseId) : undefined;
+      agentDescriptions.set(msg.toolUseResult.agentId, desc || `Agent ${msg.toolUseResult.agentId}`);
+    }
+  }
+
+  return agentDescriptions;
+}
+
+/**
+ * Parse subagent JSONL messages and stamp them with a teamName for display.
+ * Reuses the existing parseMessages() function, then adds teamName to every result.
+ */
+function parseSubagentMessages(rawMessages: any[], teamName: string): ParsedMessage[] {
+  const parsed = parseMessages(rawMessages);
+  return parsed.map((msg) => ({ ...msg, teamName }));
 }
 
 function parseMessages(rawMessages: any[]): ParsedMessage[] {

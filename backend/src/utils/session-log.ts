@@ -20,3 +20,34 @@ export function findSessionLogPath(sessionId: string): string | null {
   }
   return null;
 }
+
+/**
+ * Find all subagent JSONL files for a given session.
+ * Subagent files live at:
+ *   ~/.claude/projects/<project-dir>/<sessionId>/subagents/agent-<shortId>.jsonl
+ *
+ * Returns an array of { agentId, filePath } objects.
+ */
+export function findSubagentFiles(sessionId: string): { agentId: string; filePath: string }[] {
+  if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
+
+  const results: { agentId: string; filePath: string }[] = [];
+  try {
+    for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
+      const subagentsDir = join(CLAUDE_PROJECTS_DIR, dir, sessionId, "subagents");
+      if (!existsSync(subagentsDir)) continue;
+
+      for (const file of readdirSync(subagentsDir)) {
+        if (!file.startsWith("agent-") || !file.endsWith(".jsonl")) continue;
+        const agentId = file.replace("agent-", "").replace(".jsonl", "");
+        results.push({
+          agentId,
+          filePath: join(subagentsDir, file),
+        });
+      }
+    }
+  } catch {
+    // Silently handle errors (directory not accessible, etc.)
+  }
+  return results;
+}

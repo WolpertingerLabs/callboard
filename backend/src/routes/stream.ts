@@ -3,7 +3,8 @@ import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPen
 import { OpenRouterClient } from "../services/openrouter-client.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
-import { statSync, existsSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
+import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
+import { join } from "path";
 import { chatFileService } from "../services/chat-file-service.js";
 import { ensureWorktree, switchBranch } from "../utils/git.js";
 import { findSessionLogPath } from "../utils/session-log.js";
@@ -307,8 +308,35 @@ streamRouter.get("/:id/stream", (req, res) => {
 
   watchFile(logPath, { interval: 1000 }, watchHandler);
 
+  // Watch for subagent files (created dynamically as Task tools are spawned)
+  const subagentsDir = logPath.replace(".jsonl", "") + "/subagents";
+  const watchedSubagentSizes = new Map<string, number>();
+
+  const subagentScanInterval = setInterval(() => {
+    try {
+      if (!existsSync(subagentsDir)) return;
+
+      for (const file of readdirSync(subagentsDir)) {
+        if (!file.startsWith("agent-") || !file.endsWith(".jsonl")) continue;
+        const filePath = join(subagentsDir, file);
+
+        try {
+          const stats = statSync(filePath);
+          const prevSize = watchedSubagentSizes.get(filePath) ?? 0;
+
+          if (stats.size > prevSize) {
+            watchedSubagentSizes.set(filePath, stats.size);
+            // Signal the client to refetch messages (which now includes subagent data)
+            sendSSE(res, { type: "message_update" });
+          }
+        } catch {}
+      }
+    } catch {}
+  }, 1000);
+
   req.on("close", () => {
     unwatchFile(logPath, watchHandler);
+    clearInterval(subagentScanInterval);
   });
 });
 
