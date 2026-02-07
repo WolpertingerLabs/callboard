@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, Slash } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { getNewChatInfo, addToBacklog, scheduleMessage, type NewChatInfo, type DefaultPermissions, type Plugin } from '../api';
+import { getNewChatInfo, addToBacklog, scheduleMessage, respondToChat, type NewChatInfo, type DefaultPermissions, type Plugin } from '../api';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 import SlashCommandsModal from '../components/SlashCommandsModal';
@@ -201,13 +201,13 @@ export default function NewChat({ onChatListRefresh }: NewChatProps = {}) {
   }, [folder, defaultPermissions, navigate, onChatListRefresh, activePluginIds]);
 
   const handleRespond = useCallback(async (allow: boolean, updatedInput?: Record<string, unknown>) => {
-    // For new chats, we need to respond using the temp chat ID
-    // This is tricky because we don't have a real chat ID yet
-    // For now, just clear the pending action - the session should handle it
     setPendingAction(null);
 
-    // TODO: Implement proper permission response for new chats
-    // This would require tracking the temp session ID and responding to it
+    // Respond using the real chat ID if we have one (set by chat_created event)
+    const chatId = tempChatIdRef.current;
+    if (chatId) {
+      await respondToChat(chatId, allow, updatedInput);
+    }
   }, []);
 
   const handleStop = useCallback(() => {

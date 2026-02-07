@@ -129,12 +129,16 @@ export async function respondToChat(
   allow: boolean,
   updatedInput?: Record<string, unknown>,
   updatedPermissions?: unknown[],
-): Promise<void> {
-  await fetch(`${BASE}/chats/${id}/respond`, {
+): Promise<{ ok: boolean; toolName?: string }> {
+  const res = await fetch(`${BASE}/chats/${id}/respond`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ allow, updatedInput, updatedPermissions }),
   });
+  if (!res.ok) {
+    return { ok: false };
+  }
+  return res.json();
 }
 
 export interface SessionStatus {
