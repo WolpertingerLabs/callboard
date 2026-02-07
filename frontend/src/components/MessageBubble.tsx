@@ -10,7 +10,7 @@ interface TodoItem {
   activeForm?: string;
 }
 
-function parseTodoItems(content: string): TodoItem[] | null {
+export function parseTodoItems(content: string): TodoItem[] | null {
   try {
     const parsed = JSON.parse(content);
     if (parsed?.todos && Array.isArray(parsed.todos)) {
@@ -41,7 +41,7 @@ export const TEAM_COLORS = [
 ] as const;
 
 // Generate contextual summary for tool usage
-function getToolSummary(toolName: string, content: string): string {
+export function getToolSummary(toolName: string, content: string): string {
   try {
     const input = JSON.parse(content);
 
@@ -94,7 +94,7 @@ const StatusIcon = ({ status }: { status: string }) => {
   }
 };
 
-function TodoList({ items }: { items: TodoItem[] }) {
+export function TodoList({ items }: { items: TodoItem[] }) {
   const completedCount = items.filter(t => t.status === 'completed').length;
   const total = items.length;
   const progressPct = total > 0 ? (completedCount / total) * 100 : 0;

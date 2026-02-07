@@ -4,11 +4,27 @@ import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ChevronDown, ArrowDown
 import { useIsMobile } from '../hooks/useIsMobile';
 import { getChat, getMessages, getPending, respondToChat, getSessionStatus, uploadImages, getSlashCommands, getSlashCommandsAndPlugins, type Chat as ChatType, type ParsedMessage, type SessionStatus, type Plugin } from '../api';
 import MessageBubble, { TEAM_COLORS } from '../components/MessageBubble';
+import ToolCallBubble from '../components/ToolCallBubble';
 import PromptInput from '../components/PromptInput';
 import FeedbackPanel, { type PendingAction } from '../components/FeedbackPanel';
 import DraftModal from '../components/DraftModal';
 import SlashCommandsModal from '../components/SlashCommandsModal';
 import { addRecentDirectory } from '../utils/localStorage';
+
+interface ToolGroup {
+  kind: 'tool_group';
+  toolUse: ParsedMessage;
+  toolResult: ParsedMessage | null;
+  originalIndices: [number, number | null];
+}
+
+interface SingleMessage {
+  kind: 'single';
+  message: ParsedMessage;
+  originalIndex: number;
+}
+
+type DisplayItem = ToolGroup | SingleMessage;
 
 interface ChatProps {
   onChatListRefresh?: () => void;
@@ -50,6 +66,62 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
     }
     return map;
+  }, [messages]);
+
+  // Group tool_use + tool_result pairs into combined display items
+  const displayItems: DisplayItem[] = useMemo(() => {
+    const items: DisplayItem[] = [];
+    const consumedIndices = new Set<number>();
+
+    for (let i = 0; i < messages.length; i++) {
+      if (consumedIndices.has(i)) continue;
+      const msg = messages[i];
+
+      if (msg.type === 'tool_use') {
+        // Look for a matching tool_result
+        let matchedResultIndex: number | null = null;
+
+        if (i + 1 < messages.length && messages[i + 1].type === 'tool_result') {
+          // If both have toolUseId, verify the match
+          if (msg.toolUseId && messages[i + 1].toolUseId) {
+            if (messages[i + 1].toolUseId === msg.toolUseId) {
+              matchedResultIndex = i + 1;
+            }
+          } else {
+            // Fallback for old data without toolUseId: trust adjacency
+            matchedResultIndex = i + 1;
+          }
+        }
+
+        // If not adjacent, scan forward with toolUseId matching
+        if (matchedResultIndex === null && msg.toolUseId) {
+          for (let j = i + 1; j < messages.length && j < i + 10; j++) {
+            if (messages[j].type === 'tool_result' && messages[j].toolUseId === msg.toolUseId && !consumedIndices.has(j)) {
+              matchedResultIndex = j;
+              break;
+            }
+          }
+        }
+
+        if (matchedResultIndex !== null) {
+          consumedIndices.add(matchedResultIndex);
+        }
+
+        items.push({
+          kind: 'tool_group',
+          toolUse: msg,
+          toolResult: matchedResultIndex !== null ? messages[matchedResultIndex] : null,
+          originalIndices: [i, matchedResultIndex],
+        });
+      } else if (msg.type === 'tool_result') {
+        // Orphaned tool_result (its tool_use was not found or already consumed)
+        items.push({ kind: 'single', message: msg, originalIndex: i });
+      } else {
+        items.push({ kind: 'single', message: msg, originalIndex: i });
+      }
+    }
+
+    return items;
   }, [messages]);
 
   // Shared SSE reader that processes notifications and refetches chat data
@@ -622,11 +694,24 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             No messages in this conversation
           </div>
         )}
-        {messages.map((msg, i) => (
-          <div key={i} data-message-index={i}>
-            <MessageBubble message={msg} teamColorMap={teamColorMap} />
-          </div>
-        ))}
+        {displayItems.map((item, i) => {
+          if (item.kind === 'tool_group') {
+            return (
+              <div key={`tool-${item.originalIndices[0]}`} data-message-index={item.originalIndices[0]}>
+                <ToolCallBubble
+                  toolUse={item.toolUse}
+                  toolResult={item.toolResult}
+                  isRunning={item.toolResult === null && streaming}
+                />
+              </div>
+            );
+          }
+          return (
+            <div key={item.originalIndex} data-message-index={item.originalIndex}>
+              <MessageBubble message={item.message} teamColorMap={teamColorMap} />
+            </div>
+          );
+        })}
         {inFlightMessage && (
           <div style={{
             display: 'flex',

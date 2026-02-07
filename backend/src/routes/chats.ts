@@ -542,6 +542,7 @@ interface ParsedMessage {
   type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
   content: string;
   toolName?: string;
+  toolUseId?: string;
   timestamp?: string;
   teamName?: string;
 }
@@ -594,6 +595,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
             type: 'tool_use',
             content: JSON.stringify(block.input),
             toolName: block.name,
+            toolUseId: block.id,
             timestamp,
           });
           break;
@@ -603,6 +605,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
             type: 'tool_result',
             content: extractToolResultContent(block),
             toolName: block.tool_use_id,
+            toolUseId: block.tool_use_id,
             timestamp,
           });
           break;
