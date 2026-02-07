@@ -184,170 +184,235 @@ export function stopSession(chatId: string): boolean {
   return false;
 }
 
-export async function sendMessage(
-  chatId: string,
+/**
+ * Build the SDK prompt from text and optional images.
+ * Returns either a plain string or an AsyncIterable<SDKUserMessage> for multimodal content.
+ */
+function buildFormattedPrompt(
   prompt: string | any,
   imageMetadata?: { buffer: Buffer; mimeType: string }[],
-  activePlugins?: string[],
-): Promise<EventEmitter> {
-  const chat = chatFileService.getChat(chatId);
-  if (!chat) throw new Error("Chat not found");
+): string | AsyncIterable<any> {
+  if (!imageMetadata || imageMetadata.length === 0) {
+    return prompt;
+  }
 
-  // Stop any existing session for this chat (web or CLI monitoring)
-  stopSession(chatId);
+  // Build content array for multimodal message (Anthropic API format)
+  const content: any[] = [];
+
+  if (prompt && prompt.trim()) {
+    content.push({ type: "text", text: prompt.trim() });
+  }
+
+  for (const { buffer, mimeType } of imageMetadata) {
+    const base64 = buffer.toString("base64");
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: mimeType, data: base64 },
+    });
+  }
+
+  // SDK expects AsyncIterable<SDKUserMessage> for multimodal content
+  const sdkMessage = {
+    type: "user" as const,
+    message: { role: "user" as const, content },
+    parent_tool_use_id: null,
+  };
+
+  return (async function* () {
+    yield sdkMessage;
+  })();
+}
+
+/**
+ * Build the canUseTool permission handler for the Claude SDK.
+ * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
+ */
+function buildCanUseTool(
+  emitter: EventEmitter,
+  getDefaultPermissions: () => DefaultPermissions | null,
+  getTrackingId: () => string,
+) {
+  return async (
+    toolName: string,
+    input: Record<string, unknown>,
+    { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
+  ): Promise<PermissionResult> => {
+    const category = categorizeToolPermission(toolName);
+    if (category) {
+      try {
+        const defaultPermissions = getDefaultPermissions();
+        if (defaultPermissions && defaultPermissions[category]) {
+          const permission = defaultPermissions[category];
+          if (permission === "allow") {
+            return { behavior: "allow", updatedInput: input };
+          } else if (permission === "deny") {
+            return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
+          }
+        }
+      } catch {
+        // If permission lookup fails, fall through to normal permission flow
+      }
+    }
+
+    return new Promise<PermissionResult>((resolve) => {
+      if (toolName === "AskUserQuestion") {
+        emitter.emit("event", {
+          type: "user_question",
+          content: "",
+          questions: input.questions as unknown[],
+        } as StreamEvent);
+      } else if (toolName === "ExitPlanMode") {
+        emitter.emit("event", {
+          type: "plan_review",
+          content: JSON.stringify(input),
+        } as StreamEvent);
+      } else {
+        emitter.emit("event", {
+          type: "permission_request",
+          content: "",
+          toolName,
+          input,
+          suggestions,
+        } as StreamEvent);
+      }
+
+      let eventType: PendingRequest["eventType"];
+      let eventData: Record<string, unknown>;
+      if (toolName === "AskUserQuestion") {
+        eventType = "user_question";
+        eventData = { questions: input.questions };
+      } else if (toolName === "ExitPlanMode") {
+        eventType = "plan_review";
+        eventData = { content: JSON.stringify(input) };
+      } else {
+        eventType = "permission_request";
+        eventData = { toolName, input, suggestions };
+      }
+
+      const trackingId = getTrackingId();
+      pendingRequests.set(trackingId, { toolName, input, suggestions, eventType, eventData, resolve });
+
+      signal.addEventListener("abort", () => {
+        pendingRequests.delete(trackingId);
+        resolve({ behavior: "deny", message: "Aborted" });
+      });
+    });
+  };
+}
+
+/**
+ * Emit stream events for content blocks from a Claude SDK message.
+ */
+function emitContentBlocks(emitter: EventEmitter, message: any): void {
+  const blocks = message.message?.content || [];
+  for (const block of blocks) {
+    switch (block.type) {
+      case "text":
+        emitter.emit("event", { type: "text", content: block.text } as StreamEvent);
+        break;
+      case "thinking":
+        emitter.emit("event", { type: "thinking", content: block.thinking } as StreamEvent);
+        break;
+      case "tool_use":
+        emitter.emit("event", {
+          type: "tool_use",
+          content: JSON.stringify(block.input),
+          toolName: block.name,
+        } as StreamEvent);
+        break;
+      case "tool_result": {
+        const content =
+          typeof block.content === "string"
+            ? block.content
+            : Array.isArray(block.content)
+              ? block.content.map((c: any) => (typeof c === "string" ? c : c.text || JSON.stringify(c))).join("\n")
+              : JSON.stringify(block.content);
+        emitter.emit("event", { type: "tool_result", content } as StreamEvent);
+        break;
+      }
+    }
+  }
+}
+
+interface SendMessageOptions {
+  prompt: string | any;
+  imageMetadata?: { buffer: Buffer; mimeType: string }[];
+  activePlugins?: string[];
+  /** For existing chats: the chat ID to continue */
+  chatId?: string;
+  /** For new chats: the working directory */
+  folder?: string;
+  /** For new chats: initial permission settings */
+  defaultPermissions?: DefaultPermissions;
+}
+
+/**
+ * Unified message sending function.
+ * Handles both existing chats (provide chatId) and new chats (provide folder).
+ * For new chats, creates the chat record when session_id arrives from the SDK
+ * and emits a "chat_created" event so the frontend can navigate.
+ */
+export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
+  const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
+  const isNewChat = !opts.chatId;
+
+  // Resolve chat context: existing chat or new chat setup
+  let folder: string;
+  let resumeSessionId: string | undefined;
+  let initialMetadata: Record<string, any>;
+
+  if (opts.chatId) {
+    // Existing chat flow
+    const chat = chatFileService.getChat(opts.chatId);
+    if (!chat) throw new Error("Chat not found");
+    folder = chat.folder;
+    resumeSessionId = chat.session_id;
+    initialMetadata = JSON.parse(chat.metadata || "{}");
+    stopSession(opts.chatId);
+  } else if (opts.folder) {
+    // New chat flow
+    folder = opts.folder;
+    resumeSessionId = undefined;
+    initialMetadata = {
+      ...(defaultPermissions && { defaultPermissions }),
+    };
+  } else {
+    throw new Error("Either chatId or folder is required");
+  }
 
   const emitter = new EventEmitter();
   const abortController = new AbortController();
-  activeSessions.set(chatId, { abortController, emitter });
 
-  // Build prompt - SDK accepts either a string or AsyncIterable<SDKUserMessage>
-  // For multimodal content, we need to use AsyncIterable with proper message format
-  let formattedPrompt: string | AsyncIterable<any>;
+  // Mutable tracking ID: for new chats starts as a temp ID, migrates to real chatId on session_id arrival
+  let trackingId = opts.chatId || `new-${Date.now()}`;
+  activeSessions.set(trackingId, { abortController, emitter });
 
-  if (imageMetadata && imageMetadata.length > 0) {
-    console.log(`[DEBUG] Building multimodal prompt with ${imageMetadata.length} images`);
+  const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata);
 
-    // Build content array for multimodal message (Anthropic API format)
-    const content: any[] = [];
-
-    // Add text content if present
-    if (prompt && prompt.trim()) {
-      content.push({
-        type: "text",
-        text: prompt.trim(),
-      });
+  const getDefaultPermissions = (): DefaultPermissions | null => {
+    if (isNewChat) {
+      // For new chats, use the permissions passed directly
+      return migratePermissions(defaultPermissions);
     }
-
-    // Add image content blocks
-    for (const { buffer, mimeType } of imageMetadata) {
-      const base64 = buffer.toString("base64");
-      console.log(`[DEBUG] Adding image: mimeType=${mimeType}, base64Length=${base64.length}`);
-      content.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: mimeType,
-          data: base64,
-        },
-      });
-    }
-
-    // SDK expects AsyncIterable<SDKUserMessage> for multimodal content
-    // SDKUserMessage has: { type: 'user', message: APIUserMessage, parent_tool_use_id: string | null }
-    // APIUserMessage is MessageParam from Anthropic SDK which has { role: 'user', content: ContentBlock[] }
-    const sdkMessage = {
-      type: "user" as const,
-      message: {
-        role: "user" as const,
-        content: content,
-      },
-      parent_tool_use_id: null,
-    };
-
-    console.log("[DEBUG] SDKMessage structure:", JSON.stringify(sdkMessage, null, 2));
-
-    // Create an async iterable that yields a single message
-    formattedPrompt = (async function* () {
-      yield sdkMessage;
-    })();
-
-    console.log(`[DEBUG] Final prompt structure: SDKUserMessage with ${content.length} content blocks`);
-  } else {
-    console.log(`[DEBUG] Building text-only prompt`);
-    // Simple string prompt for text-only messages
-    formattedPrompt = prompt;
-  }
-
-  console.log("[DEBUG] About to call query() with prompt type:", typeof formattedPrompt);
+    // For existing chats, read from chat metadata (may have been updated)
+    return migratePermissions(initialMetadata.defaultPermissions);
+  };
 
   const queryOpts: any = {
     prompt: formattedPrompt,
     options: {
       abortController,
-      cwd: chat.folder,
+      cwd: folder,
       settingSources: ["user", "project", "local"],
       maxTurns: 50,
-      ...(chat.session_id ? { resume: chat.session_id } : {}),
-      ...(activePlugins ? { plugins: buildPluginOptions(chat.folder, activePlugins) } : {}),
+      ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+      ...(activePlugins ? { plugins: buildPluginOptions(folder, activePlugins) } : {}),
       env: {
         ...process.env,
         PATH: process.env.PATH,
         NODE_PATH: process.env.NODE_PATH,
       },
-      canUseTool: async (
-        toolName: string,
-        input: Record<string, unknown>,
-        { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
-      ): Promise<PermissionResult> => {
-        // Check for default permissions for this tool category
-        const category = categorizeToolPermission(toolName);
-        if (category) {
-          try {
-            const metadata = JSON.parse(chat.metadata || "{}");
-            const defaultPermissions = migratePermissions(metadata.defaultPermissions);
-
-            if (defaultPermissions && defaultPermissions[category]) {
-              const permission = defaultPermissions[category];
-
-              if (permission === "allow") {
-                // Auto-approve
-                return { behavior: "allow", updatedInput: input };
-              } else if (permission === "deny") {
-                // Auto-deny
-                return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
-              }
-              // If 'ask' or not set, fall through to normal permission flow
-            }
-          } catch {
-            // If metadata parsing fails, fall through to normal permission flow
-          }
-        }
-
-        return new Promise<PermissionResult>((resolve) => {
-          // Emit appropriate event type based on tool
-          if (toolName === "AskUserQuestion") {
-            emitter.emit("event", {
-              type: "user_question",
-              content: "",
-              questions: input.questions as unknown[],
-            } as StreamEvent);
-          } else if (toolName === "ExitPlanMode") {
-            emitter.emit("event", {
-              type: "plan_review",
-              content: JSON.stringify(input),
-            } as StreamEvent);
-          } else {
-            emitter.emit("event", {
-              type: "permission_request",
-              content: "",
-              toolName,
-              input,
-              suggestions,
-            } as StreamEvent);
-          }
-
-          let eventType: PendingRequest["eventType"];
-          let eventData: Record<string, unknown>;
-          if (toolName === "AskUserQuestion") {
-            eventType = "user_question";
-            eventData = { questions: input.questions };
-          } else if (toolName === "ExitPlanMode") {
-            eventType = "plan_review";
-            eventData = { content: JSON.stringify(input) };
-          } else {
-            eventType = "permission_request";
-            eventData = { toolName, input, suggestions };
-          }
-
-          pendingRequests.set(chatId, { toolName, input, suggestions, eventType, eventData, resolve });
-
-          // Clean up on abort
-          signal.addEventListener("abort", () => {
-            pendingRequests.delete(chatId);
-            resolve({ behavior: "deny", message: "Aborted" });
-          });
-        });
-      },
+      canUseTool: buildCanUseTool(emitter, getDefaultPermissions, () => trackingId),
     },
   };
 
@@ -355,14 +420,13 @@ export async function sendMessage(
     try {
       let sessionId: string | null = null;
 
-      logDebug("Starting new chat session", { chatId, cwd: chat.folder });
+      logDebug("Starting chat session", { trackingId, isNewChat, cwd: folder });
 
       const conversation = query(queryOpts);
 
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;
 
-        // Debug: Log message structure to understand what we receive
         logDebug("Received message from Claude SDK", {
           keys: Object.keys(message),
           type: (message as any).type,
@@ -374,284 +438,62 @@ export async function sendMessage(
         if ("slash_commands" in message && message.slash_commands) {
           const slashCommands = message.slash_commands as string[];
           logDebug("Found slash commands in SDK message", slashCommands);
-          // Save slash commands keyed by directory
-          setSlashCommandsForDirectory(chat.folder, slashCommands);
-          logDebug("Updated slash commands for directory", { chatId, folder: chat.folder, slashCommands });
-        }
-
-        if ("session_id" in message && message.session_id && !sessionId) {
-          sessionId = message.session_id as string;
-          const meta = JSON.parse(chat.metadata || "{}");
-          const ids: string[] = meta.session_ids || [];
-          if (!ids.includes(sessionId)) ids.push(sessionId);
-          meta.session_ids = ids;
-          // Use upsert to create file storage entry if it doesn't exist
-          chatFileService.upsertChat(chatId, chat.folder, sessionId, {
-            metadata: JSON.stringify(meta),
-          });
-        }
-
-        const blocks = (message as any).message?.content || [];
-        for (const block of blocks) {
-          switch (block.type) {
-            case "text":
-              emitter.emit("event", { type: "text", content: block.text } as StreamEvent);
-              break;
-            case "thinking":
-              emitter.emit("event", { type: "thinking", content: block.thinking } as StreamEvent);
-              break;
-            case "tool_use":
-              emitter.emit("event", {
-                type: "tool_use",
-                content: JSON.stringify(block.input),
-                toolName: block.name,
-              } as StreamEvent);
-              break;
-            case "tool_result": {
-              const content =
-                typeof block.content === "string"
-                  ? block.content
-                  : Array.isArray(block.content)
-                    ? block.content.map((c: any) => (typeof c === "string" ? c : c.text || JSON.stringify(c))).join("\n")
-                    : JSON.stringify(block.content);
-              emitter.emit("event", { type: "tool_result", content } as StreamEvent);
-              break;
-            }
-          }
-        }
-      }
-
-      chatFileService.updateChat(chatId, {});
-      emitter.emit("event", { type: "done", content: "" } as StreamEvent);
-    } catch (err: any) {
-      if (err.name !== "AbortError") {
-        emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
-      }
-    } finally {
-      activeSessions.delete(chatId);
-      pendingRequests.delete(chatId);
-    }
-  })();
-
-  return emitter;
-}
-
-/**
- * Send the first message to create a new chat session.
- * This is used when no chat exists yet - it creates the chat when session_id is received from SDK.
- */
-export async function sendNewMessage(
-  folder: string,
-  prompt: string,
-  defaultPermissions?: DefaultPermissions,
-  imageMetadata?: { buffer: Buffer; mimeType: string }[],
-  activePlugins?: string[],
-): Promise<EventEmitter> {
-  const emitter = new EventEmitter();
-  const abortController = new AbortController();
-
-  // Use a temporary ID for tracking the session until we get the real session_id
-  const tempId = `new-${Date.now()}`;
-  activeSessions.set(tempId, { abortController, emitter });
-
-  // Build prompt
-  let formattedPrompt: string | AsyncIterable<any>;
-
-  if (imageMetadata && imageMetadata.length > 0) {
-    const content: any[] = [];
-    if (prompt && prompt.trim()) {
-      content.push({ type: "text", text: prompt.trim() });
-    }
-    for (const { buffer, mimeType } of imageMetadata) {
-      const base64 = buffer.toString("base64");
-      content.push({
-        type: "image",
-        source: { type: "base64", media_type: mimeType, data: base64 },
-      });
-    }
-    const sdkMessage = {
-      type: "user" as const,
-      message: { role: "user" as const, content },
-      parent_tool_use_id: null,
-    };
-    formattedPrompt = (async function* () {
-      yield sdkMessage;
-    })();
-  } else {
-    formattedPrompt = prompt;
-  }
-
-  const metadata = {
-    ...(defaultPermissions && { defaultPermissions }),
-  };
-
-  const queryOpts: any = {
-    prompt: formattedPrompt,
-    options: {
-      abortController,
-      cwd: folder,
-      settingSources: ["user", "project", "local"],
-      maxTurns: 50,
-      ...(activePlugins ? { plugins: buildPluginOptions(folder, activePlugins) } : {}),
-      env: {
-        ...process.env,
-        PATH: process.env.PATH,
-        NODE_PATH: process.env.NODE_PATH,
-      },
-      canUseTool: async (
-        toolName: string,
-        input: Record<string, unknown>,
-        { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
-      ): Promise<PermissionResult> => {
-        const category = categorizeToolPermission(toolName);
-        const migratedPermissions = migratePermissions(defaultPermissions);
-        if (category && migratedPermissions && migratedPermissions[category]) {
-          const permission = migratedPermissions[category];
-          if (permission === "allow") {
-            return { behavior: "allow", updatedInput: input };
-          } else if (permission === "deny") {
-            return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
-          }
-        }
-
-        return new Promise<PermissionResult>((resolve) => {
-          if (toolName === "AskUserQuestion") {
-            emitter.emit("event", {
-              type: "user_question",
-              content: "",
-              questions: input.questions as unknown[],
-            } as StreamEvent);
-          } else if (toolName === "ExitPlanMode") {
-            emitter.emit("event", {
-              type: "plan_review",
-              content: JSON.stringify(input),
-            } as StreamEvent);
-          } else {
-            emitter.emit("event", {
-              type: "permission_request",
-              content: "",
-              toolName,
-              input,
-              suggestions,
-            } as StreamEvent);
-          }
-
-          let eventType: PendingRequest["eventType"];
-          let eventData: Record<string, unknown>;
-          if (toolName === "AskUserQuestion") {
-            eventType = "user_question";
-            eventData = { questions: input.questions };
-          } else if (toolName === "ExitPlanMode") {
-            eventType = "plan_review";
-            eventData = { content: JSON.stringify(input) };
-          } else {
-            eventType = "permission_request";
-            eventData = { toolName, input, suggestions };
-          }
-
-          pendingRequests.set(tempId, { toolName, input, suggestions, eventType, eventData, resolve });
-
-          signal.addEventListener("abort", () => {
-            pendingRequests.delete(tempId);
-            resolve({ behavior: "deny", message: "Aborted" });
-          });
-        });
-      },
-    },
-  };
-
-  (async () => {
-    try {
-      let sessionId: string | null = null;
-      let chatId: string | null = null;
-
-      logDebug("Starting new chat session (new chat flow)", { folder });
-
-      const conversation = query(queryOpts);
-
-      for await (const message of conversation) {
-        if (abortController.signal.aborted) break;
-
-        // Capture slash commands from system initialization message
-        if ("slash_commands" in message && message.slash_commands) {
-          const slashCommands = message.slash_commands as string[];
           setSlashCommandsForDirectory(folder, slashCommands);
+          logDebug("Updated slash commands for directory", { trackingId, folder, slashCommands });
         }
 
-        // Create the chat when we receive session_id
+        // Handle session_id arrival
         if ("session_id" in message && message.session_id && !sessionId) {
           sessionId = message.session_id as string;
-          chatId = sessionId; // Use session_id as the chat ID
 
-          const meta = { ...metadata, session_ids: [sessionId] };
-          const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
-            metadata: JSON.stringify(meta),
-          });
+          if (isNewChat) {
+            // New chat: create the chat record and migrate tracking from temp ID to real chat ID
+            const meta = { ...initialMetadata, session_ids: [sessionId] };
+            const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
+              metadata: JSON.stringify(meta),
+            });
 
-          // Move the session tracking from tempId to the real chatId
-          activeSessions.delete(tempId);
-          activeSessions.set(chatId, { abortController, emitter });
+            const oldTrackingId = trackingId;
+            trackingId = sessionId;
 
-          // Move pending requests too
-          const pending = pendingRequests.get(tempId);
-          if (pending) {
-            pendingRequests.delete(tempId);
-            pendingRequests.set(chatId, pending);
-          }
+            activeSessions.delete(oldTrackingId);
+            activeSessions.set(trackingId, { abortController, emitter });
 
-          // Emit chat_created event so frontend can navigate
-          emitter.emit("event", {
-            type: "chat_created",
-            content: "",
-            chatId: sessionId,
-            chat: {
-              ...chat,
-              session_id: sessionId,
-            },
-          } as StreamEvent);
-        }
-
-        const blocks = (message as any).message?.content || [];
-        for (const block of blocks) {
-          switch (block.type) {
-            case "text":
-              emitter.emit("event", { type: "text", content: block.text } as StreamEvent);
-              break;
-            case "thinking":
-              emitter.emit("event", { type: "thinking", content: block.thinking } as StreamEvent);
-              break;
-            case "tool_use":
-              emitter.emit("event", {
-                type: "tool_use",
-                content: JSON.stringify(block.input),
-                toolName: block.name,
-              } as StreamEvent);
-              break;
-            case "tool_result": {
-              const content =
-                typeof block.content === "string"
-                  ? block.content
-                  : Array.isArray(block.content)
-                    ? block.content.map((c: any) => (typeof c === "string" ? c : c.text || JSON.stringify(c))).join("\n")
-                    : JSON.stringify(block.content);
-              emitter.emit("event", { type: "tool_result", content } as StreamEvent);
-              break;
+            const pending = pendingRequests.get(oldTrackingId);
+            if (pending) {
+              pendingRequests.delete(oldTrackingId);
+              pendingRequests.set(trackingId, pending);
             }
+
+            emitter.emit("event", {
+              type: "chat_created",
+              content: "",
+              chatId: sessionId,
+              chat: { ...chat, session_id: sessionId },
+            } as StreamEvent);
+          } else {
+            // Existing chat: append session_id to metadata
+            const ids: string[] = initialMetadata.session_ids || [];
+            if (!ids.includes(sessionId)) ids.push(sessionId);
+            initialMetadata.session_ids = ids;
+            chatFileService.upsertChat(trackingId, folder, sessionId, {
+              metadata: JSON.stringify(initialMetadata),
+            });
           }
         }
+
+        emitContentBlocks(emitter, message);
       }
 
-      if (chatId) {
-        chatFileService.updateChat(chatId, {});
-      }
+      chatFileService.updateChat(trackingId, {});
       emitter.emit("event", { type: "done", content: "" } as StreamEvent);
     } catch (err: any) {
       if (err.name !== "AbortError") {
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {
-      activeSessions.delete(tempId);
-      pendingRequests.delete(tempId);
+      activeSessions.delete(trackingId);
+      pendingRequests.delete(trackingId);
     }
   })();
 

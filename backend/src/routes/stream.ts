@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMessage, sendNewMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
+import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from '../services/claude.js';
 import { OpenRouterClient } from '../services/openrouter-client.js';
 import { ImageStorageService } from '../services/image-storage.js';
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from 'fs';
@@ -108,9 +108,13 @@ streamRouter.post('/new/message', async (req, res) => {
     }
 
     // Start a new chat session
-    const emitter = prompt.startsWith('/')
-      ? await sendNewMessage(folder, prompt, defaultPermissions, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins)
-      : await sendNewMessage(folder, prompt, defaultPermissions, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins);
+    const emitter = await sendMessage({
+      prompt,
+      folder,
+      defaultPermissions,
+      imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
+      activePlugins,
+    });
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -202,7 +206,12 @@ streamRouter.post('/:id/message', async (req, res) => {
       console.log(`[DEBUG] No imageIds provided in request`);
     }
 
-    const emitter = await sendMessage(req.params.id, prompt, imageMetadata.length > 0 ? imageMetadata : undefined, activePlugins);
+    const emitter = await sendMessage({
+      chatId: req.params.id,
+      prompt,
+      imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
+      activePlugins,
+    });
 
     // Generate title synchronously from first message
     await generateAndSaveTitle(req.params.id, prompt);
