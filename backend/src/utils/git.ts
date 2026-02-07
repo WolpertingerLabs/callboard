@@ -119,7 +119,7 @@ export function getGitInfo(directory: string): GitInfo {
     }
 
     return { isGitRepo: false };
-  } catch (error) {
+  } catch (_error) {
     // Any other error (permissions, etc.)
     return { isGitRepo: false };
   }

@@ -1074,7 +1074,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     No messages in this conversation
                   </div>
                 )}
-                {displayItems.map((item, i) => {
+                {displayItems.map((item) => {
                   if (item.kind === "tool_group") {
                     return (
                       <div key={`tool-${item.originalIndices[0]}`} data-message-index={item.originalIndices[0]}>

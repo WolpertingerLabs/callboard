@@ -100,7 +100,7 @@ export class FolderService {
           }
 
           processedCount++;
-        } catch (err) {
+        } catch (_err) {
           // Skip items we can't stat (permission issues, etc.)
           continue;
         }
@@ -147,7 +147,7 @@ export class FolderService {
         isDirectory,
         isGit,
       };
-    } catch (err) {
+    } catch (_err) {
       return {
         valid: false,
         exists: existsSync(resolvedPath),

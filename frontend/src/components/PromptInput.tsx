@@ -1,7 +1,7 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import { ArrowUp, Paperclip, Edit } from 'lucide-react';
-import ImageUpload from './ImageUpload';
-import SlashCommandAutocomplete from './SlashCommandAutocomplete';
+import { useState, useRef, useCallback, useEffect } from "react";
+import { ArrowUp, Paperclip, Edit } from "lucide-react";
+import ImageUpload from "./ImageUpload";
+import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
 
 interface Props {
   onSend: (prompt: string, images?: File[]) => void;
@@ -12,10 +12,10 @@ interface Props {
 }
 
 export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], onSetValue }: Props) {
-  const [value, setValue] = useState('');
+  const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [showImageUpload, setShowImageUpload] = useState(false);
-  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [autocompleteDismissed, setAutocompleteDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -34,27 +34,27 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
     onSend(trimmed, images.length > 0 ? images : undefined);
 
     // Clear input and images
-    setValue('');
+    setValue("");
     setImages([]);
     setShowImageUpload(false);
-    setShowAutocomplete(false);
+    setAutocompleteDismissed(false);
 
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = "auto";
     }
   }, [value, images, disabled, onSend]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (showAutocomplete && (e.key === 'Escape')) {
+    if (showAutocomplete && e.key === "Escape") {
       e.preventDefault();
-      setShowAutocomplete(false);
+      setAutocompleteDismissed(true);
       return;
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (showAutocomplete) {
-        setShowAutocomplete(false);
+        setAutocompleteDismissed(true);
       } else {
         handleSend();
       }
@@ -64,8 +64,8 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
   const handleInput = () => {
     const el = textareaRef.current;
     if (el) {
-      el.style.height = 'auto';
-      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 120) + "px";
     }
   };
 
@@ -77,82 +77,76 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
     if (!onSaveDraft || !value.trim() || disabled) return;
 
     const clearInput = () => {
-      setValue('');
+      setValue("");
       setImages([]);
       setShowImageUpload(false);
       if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = "auto";
       }
     };
 
     onSaveDraft(value.trim(), images.length > 0 ? images : undefined, clearInput);
   }, [value, images, disabled, onSaveDraft]);
 
-  // Monitor value changes to show/hide autocomplete
-  useEffect(() => {
-    const trimmed = value.trim();
-    const shouldShow = trimmed.startsWith('/') && slashCommands.length > 0;
-    setShowAutocomplete(shouldShow);
-  }, [value, slashCommands]);
+  // Derive autocomplete visibility from value (no effect needed)
+  const showAutocomplete = !autocompleteDismissed && value.trim().startsWith("/") && slashCommands.length > 0;
 
   const handleCommandSelect = useCallback((command: string) => {
-    setValue('/' + command + ' ');
-    setShowAutocomplete(false);
+    setValue("/" + command + " ");
+    setAutocompleteDismissed(true);
     textareaRef.current?.focus();
   }, []);
 
   const canSend = (value.trim() || images.length > 0) && !disabled;
 
   return (
-    <div style={{
-      padding: '8px 12px',
-      paddingBottom: 'calc(8px + var(--safe-bottom))',
-      borderTop: '1px solid var(--border)',
-      background: 'var(--bg)',
-      flexShrink: 0,
-    }}>
+    <div
+      style={{
+        padding: "8px 12px",
+        paddingBottom: "calc(8px + var(--safe-bottom))",
+        borderTop: "1px solid var(--border)",
+        background: "var(--bg)",
+        flexShrink: 0,
+      }}
+    >
       {/* Image upload area */}
       {showImageUpload && (
         <div style={{ marginBottom: 8 }}>
-          <ImageUpload
-            images={images}
-            onImagesChange={setImages}
-            disabled={disabled}
-          />
+          <ImageUpload images={images} onImagesChange={setImages} disabled={disabled} />
         </div>
       )}
 
       {/* Message input area */}
-      <div style={{
-        display: 'flex',
-        gap: 8,
-        alignItems: 'flex-end',
-      }}>
-        <div style={{ flex: 1, position: 'relative' }}>
-          <SlashCommandAutocomplete
-            slashCommands={slashCommands}
-            query={value}
-            onSelect={handleCommandSelect}
-            visible={showAutocomplete}
-          />
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "flex-end",
+        }}
+      >
+        <div style={{ flex: 1, position: "relative" }}>
+          <SlashCommandAutocomplete slashCommands={slashCommands} query={value} onSelect={handleCommandSelect} visible={showAutocomplete} />
 
           <textarea
             ref={textareaRef}
             value={value}
-            onChange={e => setValue(e.target.value)}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setAutocompleteDismissed(false);
+            }}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
             placeholder={images.length > 0 ? "Add a message (optional)..." : "Send a message..."}
             disabled={disabled}
             rows={1}
             style={{
-              width: '100%',
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
+              width: "100%",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
               borderRadius: 10,
-              padding: '10px 40px 10px 14px',
+              padding: "10px 40px 10px 14px",
               fontSize: 15,
-              resize: 'none',
+              resize: "none",
               maxHeight: 120,
               lineHeight: 1.4,
             }}
@@ -163,24 +157,24 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
             onClick={toggleImageUpload}
             disabled={disabled}
             style={{
-              position: 'absolute',
+              position: "absolute",
               right: 8,
               bottom: 8,
               width: 24,
               height: 24,
               borderRadius: 6,
-              background: showImageUpload ? 'var(--accent)' : 'var(--border)',
-              color: showImageUpload ? '#fff' : 'var(--text-muted)',
-              border: 'none',
+              background: showImageUpload ? "var(--accent)" : "var(--border)",
+              color: showImageUpload ? "#fff" : "var(--text-muted)",
+              border: "none",
               fontSize: 14,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: disabled ? 'default' : 'pointer',
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: disabled ? "default" : "pointer",
               opacity: disabled ? 0.5 : 1,
-              transition: 'all 0.2s ease',
+              transition: "all 0.2s ease",
             }}
-            title={showImageUpload ? 'Hide image upload' : 'Upload images'}
+            title={showImageUpload ? "Hide image upload" : "Upload images"}
           >
             <Paperclip size={14} />
           </button>
@@ -192,20 +186,20 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
             onClick={handleSaveDraft}
             disabled={!value.trim() || disabled}
             style={{
-              background: !value.trim() || disabled ? 'var(--border)' : 'var(--bg-secondary)',
-              color: !value.trim() || disabled ? 'var(--text-muted)' : 'var(--text)',
+              background: !value.trim() || disabled ? "var(--border)" : "var(--bg-secondary)",
+              color: !value.trim() || disabled ? "var(--text-muted)" : "var(--text)",
               width: 40,
               height: 40,
               borderRadius: 10,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
               fontSize: 16,
               flexShrink: 0,
-              border: '1px solid var(--border)',
-              cursor: !value.trim() || disabled ? 'default' : 'pointer',
+              border: "1px solid var(--border)",
+              cursor: !value.trim() || disabled ? "default" : "pointer",
               opacity: disabled ? 0.5 : 1,
-              transition: 'all 0.2s ease',
+              transition: "all 0.2s ease",
             }}
             title="Save as draft"
           >
@@ -218,19 +212,19 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
           onClick={handleSend}
           disabled={!canSend}
           style={{
-            background: !canSend ? 'var(--border)' : 'var(--accent)',
-            color: '#fff',
+            background: !canSend ? "var(--border)" : "var(--accent)",
+            color: "#fff",
             width: 40,
             height: 40,
             borderRadius: 10,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
             fontSize: 18,
             flexShrink: 0,
-            border: 'none',
-            cursor: !canSend ? 'default' : 'pointer',
-            transition: 'background 0.2s ease',
+            border: "none",
+            cursor: !canSend ? "default" : "pointer",
+            transition: "background 0.2s ease",
           }}
         >
           <ArrowUp size={18} />
@@ -239,13 +233,15 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
 
       {/* Image count indicator */}
       {images.length > 0 && (
-        <div style={{
-          fontSize: 12,
-          color: 'var(--text-muted)',
-          marginTop: 4,
-          textAlign: 'center' as const,
-        }}>
-          {images.length} image{images.length === 1 ? '' : 's'} selected
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginTop: 4,
+            textAlign: "center" as const,
+          }}
+        >
+          {images.length} image{images.length === 1 ? "" : "s"} selected
         </div>
       )}
     </div>

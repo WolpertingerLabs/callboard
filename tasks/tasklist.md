@@ -1,12 +1,12 @@
 # Cleanup Task List
 
-> **Last updated:** Post-commit `e1787b8` (feat: add OpenAPI spec auto-generation)
+> **Last updated:** Post-commit `478305b` (refactor: create shared types package, deduplicate backend utils, and fix quick wins)
 
 Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 
 ---
 
-## Phase 1: Dead Code Removal (Low Risk, Immediate Value)
+## Phase 1: Dead Code Removal (Low Risk, Immediate Value) ✅ COMPLETE
 
 ### 1.1 Delete Unused Files
 
@@ -42,13 +42,13 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 
 ### 1.5 Remove Debug Logging from Production
 
-- [ ] Remove or gate behind `NODE_ENV` the `appendFileSync` debug logger in `backend/src/services/claude.ts:11-22`
-- [ ] Remove 8 `console.log('[DEBUG]...')` statements from `backend/src/routes/stream.ts` (lines 248, 252, 262, 266, 269, 275, 282, 287)
+- [x] ~~Remove or gate behind `NODE_ENV` the `appendFileSync` debug logger in `backend/src/services/claude.ts:11-22`~~ (FIXED -- gated behind `NODE_ENV !== "production"` check)
+- [x] ~~Remove 8 `console.log('[DEBUG]...')` statements from `backend/src/routes/stream.ts`~~ (FIXED -- removed. One informational `console.log` remains for OpenRouter title generation at line 40)
 - [x] ~~Remove 5 `console.log('[DEBUG]...')` statements from `backend/src/services/image-storage.ts` (including directory listing dump)~~ (FIXED in prior commit)
 
 ---
 
-## Phase 2: Bug Fixes & Critical Security (Low Risk, Critical)
+## Phase 2: Bug Fixes & Critical Security (Low Risk, Critical) ✅ COMPLETE
 
 ### 2.1 Fix Unreachable Route
 
@@ -64,12 +64,12 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 ### 2.3 Fix Configuration Errors
 
 - [x] ~~Fix hardcoded path in `ecosystem.config.cjs` from `/home/exedev/` to `/home/cybil/`~~ (FIXED -- uses `__dirname` for portability across machines)
-- [ ] Move `@types/multer` from `dependencies` to `devDependencies` in `package.json`
+- [x] ~~Move `@types/multer` from `dependencies` to `devDependencies` in `package.json`~~ (VERIFIED -- already in `devDependencies` at line 47)
 - [x] ~~Remove redundant root `tsc` call from the `build` script in `package.json`~~ (FIXED in recent commits)
 
 ---
 
-## Phase 3: Define Missing CSS Variables (Low Risk)
+## Phase 3: Define Missing CSS Variables (Low Risk) ✅ COMPLETE
 
 - [x] ~~Define `--bg-secondary` in `frontend/src/index.css` (affects **12 files** incl. BranchSelector.tsx)~~ (FIXED -- dark: #1c2128, light: #f0f4f8)
 - [x] ~~Define `--font-mono` in `frontend/src/index.css`~~ (FIXED -- SF Mono, Monaco, Cascadia Code, Roboto Mono, Consolas, Courier New, monospace)
@@ -81,27 +81,28 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 
 ---
 
-## Phase 4: Create Shared Types Package (Medium Risk, Highest Value)
+## Phase 4: Create Shared Types Package (Medium Risk, Highest Value) ✅ COMPLETE
 
 ### 4.1 Set Up Shared Package
 
-- [ ] Create `shared/` directory at project root with its own `tsconfig.json`
-- [ ] Update `backend/tsconfig.json` and `frontend/tsconfig.json` to reference shared types
-- [ ] Update build scripts to compile shared types first
+- [x] ~~Create `shared/` directory at project root with its own `tsconfig.json`~~ (FIXED -- `shared/package.json` and `shared/tsconfig.json` created)
+- [x] ~~Update `backend/tsconfig.json` and `frontend/tsconfig.json` to reference shared types~~ (FIXED -- path aliases configured in both)
+- [x] ~~Update build scripts to compile shared types first~~ (FIXED -- Vite alias and local package dependency configured)
 
 ### 4.2 Migrate Types to Shared Package
 
-- [ ] Move `DefaultPermissions` / `PermissionLevel` to `shared/types/permissions.ts` and remove from `backend/services/claude.ts`, `frontend/api.ts`, `frontend/utils/localStorage.ts`
-- [ ] Move `Plugin` / `PluginCommand` / `PluginManifest` to `shared/types/plugins.ts` and remove from `backend/services/plugins.ts`, `frontend/api.ts`, `frontend/types/plugins.ts`
-- [ ] Move `Chat` to `shared/types/chat.ts` -- reconcile extra frontend fields (`title`, `session_ids`, `session_log_path`) into a single definition; remove from `backend/chat-file-service.ts`, `frontend/api.ts`
-- [ ] Move `ParsedMessage` to `shared/types/message.ts` -- reconcile diverged fields (frontend: `toolUseId`, `isBuiltInCommand`, `teamName`; backend: `tool_name`, `tool_input`, `tool_result`, `thinking`); remove from `backend/routes/chats.ts`, `frontend/api.ts`
-- [ ] Move `StoredImage` to `shared/types/image.ts` -- add `chatId?`, `sha256?` fields the frontend was missing; remove from `backend/image-storage.ts`, `frontend/api.ts`
-- [ ] Move `QueueItem` to `shared/types/queue.ts` -- type `defaultPermissions` properly (not `any`); remove from `backend/queue-file-service.ts`, `frontend/api.ts`
-- [ ] Move `FolderItem` / `BrowseResult` / `ValidateResult` / `FolderSuggestion` to `shared/types/folders.ts`; remove from `backend/folder-service.ts`, `frontend/api/folders.ts`
-- [ ] Move `StreamEvent` to `shared/types/stream.ts` -- add all fields; remove from `backend/services/claude.ts`, `frontend/hooks/useStream.ts`
-- [ ] Move `SlashCommand` to `shared/types/slashCommand.ts`; remove from `backend/services/slashCommands.ts`, `frontend/api.ts`
-- [ ] Move `BranchConfig` to `shared/types/git.ts` (NEW -- currently frontend-only at `api.ts:283-287` with no backend definition)
-- [ ] Delete `frontend/src/types/plugins.ts` (now empty)
+- [x] ~~Move `DefaultPermissions` / `PermissionLevel` to `shared/types/permissions.ts`~~ (FIXED -- includes `migratePermissions()` function)
+- [x] ~~Move `Plugin` / `PluginCommand` / `PluginManifest` to `shared/types/plugins.ts`~~ (FIXED -- `frontend/types/plugins.ts` now re-exports)
+- [x] ~~Move `Chat` to `shared/types/chat.ts`~~ (FIXED -- reconciled with all fields; `ChatListResponse` also shared)
+- [x] ~~Move `ParsedMessage` to `shared/types/message.ts`~~ (FIXED -- reconciled fields from both sides)
+- [x] ~~Move `StoredImage` to `shared/types/image.ts`~~ (FIXED -- includes `chatId`, `sha256`; also `ImageUploadResult`)
+- [x] ~~Move `QueueItem` to `shared/types/queue.ts`~~ (FIXED -- `defaultPermissions` properly typed)
+- [x] ~~Move `FolderItem` / `BrowseResult` / `ValidateResult` / `FolderSuggestion` to `shared/types/folders.ts`~~ (FIXED)
+- [x] ~~Move `StreamEvent` to `shared/types/stream.ts`~~ (FIXED -- all fields included)
+- [x] ~~Move `SlashCommand` to `shared/types/slashCommand.ts`~~ (FIXED)
+- [x] ~~Move `BranchConfig` to `shared/types/git.ts`~~ (FIXED -- was frontend-only, now shared)
+- [x] ~~`SessionStatus` to `shared/types/session.ts`~~ (FIXED -- new shared definition)
+- [x] ~~`frontend/src/types/plugins.ts` updated~~ (FIXED -- now re-exports from shared, not empty but a thin passthrough)
 
 ---
 
@@ -109,53 +110,52 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 
 ### 5.1 Extract Shared Utilities
 
-- [x] ~~Create `backend/src/utils/paths.ts` with shared `CLAUDE_PROJECTS_DIR` constant~~ (FIXED -- `utils/paths.ts` now exists with `CLAUDE_PROJECTS_DIR` and `projectDirToFolder`)
-- [ ] Create `backend/src/utils/session-log.ts` with shared `findSessionLogPath()` function (note: `chats.ts:22-29` and `stream.ts:16-25` have diverged -- stream.ts has try/catch, chats.ts does not)
-- [ ] Create `backend/src/utils/chat-lookup.ts` with unified `findChat()` function (merging `findChat` at `chats.ts:413-466` and `findChatForStatus` at `stream.ts:30-43`)
-- [ ] Update `routes/chats.ts` and `routes/stream.ts` to import from shared utilities instead of defining locally
+- [x] ~~Create `backend/src/utils/paths.ts` with shared `CLAUDE_PROJECTS_DIR` constant~~ (FIXED -- `utils/paths.ts` now exists with `CLAUDE_PROJECTS_DIR`, `DATA_DIR`, and `projectDirToFolder`)
+- [x] ~~Create `backend/src/utils/session-log.ts` with shared `findSessionLogPath()` function~~ (FIXED -- both `chats.ts` and `stream.ts` now import from shared utility)
+- [x] ~~Create `backend/src/utils/chat-lookup.ts` with unified `findChat()` function~~ (FIXED -- provides `findChat()` and `findChatForStatus()`; both routes import from shared utility)
+- [x] ~~Update `routes/chats.ts` and `routes/stream.ts` to import from shared utilities instead of defining locally~~ (FIXED)
 
 ### 5.2 Unify Data Directory Resolution
 
-- [ ] Audit all 5 services (`chat-file-service.ts`, `queue-file-service.ts`, `sessions.ts`, `image-storage.ts`, `slashCommands.ts`) for data directory strategy
-- [ ] Standardize on `__dirname`-based resolution (not `process.cwd()`)
-- [ ] Create `backend/src/utils/data-dir.ts` with a single `getDataDir(subpath)` function
-- [ ] Update all services to use the shared data directory function
+- [x] ~~Audit all 5 services for data directory strategy~~ (DONE -- 4 of 5 now use shared `DATA_DIR`)
+- [x] ~~Create shared `DATA_DIR` constant~~ (FIXED -- in `utils/paths.ts`, used by `chat-file-service.ts`, `queue-file-service.ts`, `sessions.ts`, `image-storage.ts`)
+- [ ] Update `slashCommands.ts` to import `DATA_DIR` from `utils/paths.ts` instead of defining its own via `process.cwd()`
 
 ### 5.3 Extract SSE Helpers
 
 - [ ] Create `backend/src/utils/sse.ts` with `writeSSEHeaders(res)` function
 - [ ] Create shared SSE event handler factory in `backend/src/utils/sse.ts`
-- [ ] Refactor `routes/stream.ts` to use the shared SSE helpers (eliminating 3x repetition at lines 178-212, 300-323, 377-402)
+- [ ] Refactor `routes/stream.ts` to use the shared SSE helpers (eliminating 3x repetition)
 
 ### 5.4 Consolidate Image Metadata Logic
 
-- [ ] Merge `updateChatWithImages()` (`images.ts:205-230`) and `storeMessageImages()` (`stream.ts:338-365`) into a single function in `services/image-storage.ts`
+- [ ] Merge `updateChatWithImages()` (`images.ts`) and `storeMessageImages()` (`stream.ts`) into a single function in `services/image-storage.ts`
 - [ ] Update both routes to call the shared function
 
 ### 5.5 Cache Git Info Properly
 
-- [ ] Extend `getCachedGitInfo()` (chats.ts:34-49) usage to all 4 bare `getGitInfo()` call sites (lines 304, 360, 427, 447) -- currently only used at line 223
+- [ ] Extend `getCachedGitInfo()` usage to all bare `getGitInfo()` call sites
 - [ ] Move git info fetching to a service with TTL-based caching
 
 ### 5.6 Deduplicate `migratePermissions()`
 
-- [ ] Move `migratePermissions()` to `shared/utils/permissions.ts`
-- [ ] Update `backend/services/claude.ts` and `frontend/utils/localStorage.ts` to import from shared
+- [x] ~~Move `migratePermissions()` to shared package~~ (FIXED -- now in `shared/types/permissions.ts`)
+- [x] ~~Update `backend/services/claude.ts` and `frontend/utils/localStorage.ts` to import from shared~~ (FIXED)
 
 ### 5.7 Consolidate `ensureDataDir` Pattern
 
 - [ ] Create `backend/src/utils/data-dir.ts` utility that handles `mkdirSync({ recursive: true })` once
-- [ ] Replace the 4 separate `mkdirSync` calls across services
+- [ ] Replace the separate `mkdirSync` calls across services
 
-### 5.8 Consolidate `__dirname` Computation (NEW)
+### 5.8 Consolidate `__dirname` Computation
 
-- [ ] Create a shared `__dirname` helper in `backend/src/utils/paths.ts` (e.g., `getDirname(importMetaUrl)`)
-- [ ] Replace the 7 independent `dirname(fileURLToPath(import.meta.url))` computations (`index.ts:7,95`, `swagger.ts:5`, `queue-file-service.ts:6`, `image-storage.ts:7`, `chat-file-service.ts:6`, `claude.ts:11`, `sessions.ts:5`)
+- [x] ~~Replace 5 service-level `__dirname` computations with `DATA_DIR` import~~ (FIXED -- `chat-file-service.ts`, `queue-file-service.ts`, `sessions.ts`, `image-storage.ts`, `claude.ts` all use shared `DATA_DIR`)
+- [ ] Create a shared `__dirname` helper for the remaining 2 files (`index.ts:7,73` and `swagger.ts:5`) that still need module-relative `__dirname`
 
-### 5.9 Fix `projectDirToFolder()` Exponential Complexity (NEW)
+### 5.9 Fix `projectDirToFolder()` Exponential Complexity
 
-- [ ] Replace the exponential `2^(n-1)` brute-force path resolution in `utils/paths.ts:13-36` with a linear algorithm (e.g., walk the filesystem incrementally)
-- [ ] Fix the lossy fallback that converts ALL dashes to slashes (line 35)
+- [x] ~~Replace the exponential `2^(n-1)` brute-force path resolution in `utils/paths.ts` with a linear algorithm~~ (FIXED -- O(n) greedy left-to-right directory walking)
+- [x] ~~Fix the lossy fallback that converts ALL dashes to slashes~~ (FIXED -- removed)
 
 ---
 
@@ -187,15 +187,15 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 - [ ] Audit all functions in `frontend/src/api.ts` -- ensure consistent throw-on-error behavior
 - [ ] Remove silent fallback returns (e.g., `getSlashCommands` returning empty array on error)
 
-### 6.6 Add Input Validation to BranchSelector (NEW)
+### 6.6 Add Input Validation to BranchSelector
 
-- [ ] Add client-side git branch name validation regex to `BranchSelector.tsx:216` input
-- [ ] Ensure worktree path preview (`BranchSelector.tsx:72-76`) matches backend path computation to avoid misleading users
+- [x] ~~Add client-side git branch name validation regex to `BranchSelector.tsx` input~~ (FIXED -- `validateBranchName()` with comprehensive checks; error display integrated into input)
+- [ ] Ensure worktree path preview (`BranchSelector.tsx`) matches backend path computation to avoid misleading users
 
-### 6.7 Fix `formatRelativeTime()` Edge Cases (NEW)
+### 6.7 Fix `formatRelativeTime()` Edge Cases
 
-- [ ] Handle invalid date strings in `frontend/src/utils/dateFormat.ts` (currently returns `'just now'` for invalid input)
-- [ ] Handle negative time differences (future timestamps / clock skew)
+- [x] ~~Handle invalid date strings in `frontend/src/utils/dateFormat.ts`~~ (FIXED -- returns `""` for invalid dates)
+- [x] ~~Handle negative time differences (future timestamps / clock skew)~~ (FIXED -- returns `"just now"` for future timestamps)
 
 ---
 
@@ -209,16 +209,16 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 - [ ] Extract message list rendering into `frontend/src/components/MessageList.tsx`
 - [ ] Extract in-flight message display into `frontend/src/components/InFlightMessage.tsx`
 - [ ] Extract new-chat welcome screen into `frontend/src/components/NewChatWelcome.tsx`
-- [ ] Deduplicate the two in-flight message UI blocks (lines 956-986 and 1027-1057)
+- [ ] Deduplicate the two in-flight message UI blocks
 
-### 7.2 Refactor `routes/chats.ts` (659 lines)
+### 7.2 Refactor `routes/chats.ts` (reduced from 659 lines after dedup)
 
 - [ ] Extract `parseMessages()` into `backend/src/services/message-parser.ts`
 - [ ] Extract `discoverSessionsPaginated()` into `backend/src/services/session-discovery.ts`
 - [ ] Extract `readJsonlFile()` into `backend/src/utils/jsonl.ts`
 - [ ] Move git caching into the git service (see Phase 5.5)
 
-### 7.3 Refactor `routes/stream.ts` (587 lines)
+### 7.3 Refactor `routes/stream.ts` (reduced from 587 lines after dedup)
 
 - [ ] Extract title generation logic into `backend/src/services/title-generator.ts`
 - [ ] Extract image metadata storage into image-storage service (see Phase 5.4)
@@ -232,7 +232,7 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 ### 8.1 Backend Performance
 
 - [ ] Replace blocking `execSync` in `routes/chats.ts:70` with async `execFile` or `readdir` ⏳ **REVIEW LATER**
-- [ ] Fix exponential `projectDirToFolder()` in `utils/paths.ts` (see Phase 5.9)
+- [x] ~~Fix exponential `projectDirToFolder()` in `utils/paths.ts`~~ (FIXED -- see Phase 5.9)
 - [ ] Add in-memory cache with TTL to `ChatFileService.getAllChats()` (invalidate on write)
 - [ ] Replace `readdirSync` + `find()` in `image-storage.ts:getImage()` with a lookup map
 - [ ] Replace synchronous file I/O in `slashCommands.ts` with async equivalents
@@ -248,7 +248,7 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 - [ ] Memoize `remarkPlugins`, `rehypePlugins`, `components` arrays in `MarkdownRenderer.tsx`
 - [ ] Replace 6x `.filter()` with a single `.reduce()` for queue tab counts in `Queue.tsx`
 - [ ] Cache `getValidationMessage()` result in `FolderSelector.tsx` to avoid double-call
-- [ ] Implement tiered interval in `useRelativeTime.ts` (NEW -- 5s for <60s, 30s for <60m) to reduce re-renders from dozens of concurrent 5-second intervals
+- [ ] Implement tiered interval in `useRelativeTime.ts` (5s for <60s, 30s for <60m) to reduce re-renders from dozens of concurrent 5-second intervals
 
 ---
 
@@ -258,16 +258,16 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 
 - [ ] Restrict CORS `origin` to specific allowed domain(s) in production (currently `origin: true`) ⏳ **REVIEW LATER** -- mitigated by authentication requirement
 - [ ] Add path allowlist to folder browsing service (currently unrestricted filesystem access) ⏳ **REVIEW LATER** -- mitigated by authentication requirement
-- [x] ~~Add path allowlist to git operations in `routes/git.ts` (NEW -- same unrestricted access problem)~~ (FIXED -- `validateFolderPath()` resolves paths and validates existence)
-- [x] ~~Fix queue processor auth bypass (has existing TODO)~~ (FIXED -- queue processor and execute-now route now call `sendMessage()` directly instead of HTTP, eliminating the auth bypass entirely)
+- [x] ~~Add path allowlist to git operations in `routes/git.ts`~~ (FIXED -- `validateFolderPath()` resolves paths and validates existence)
+- [x] ~~Fix queue processor auth bypass~~ (FIXED -- queue processor and execute-now route now call `sendMessage()` directly instead of HTTP, eliminating the auth bypass entirely)
 
 ### 9.2 Important
 
 - [ ] Add `secure: true` flag to session cookie in production (`backend/src/auth.ts`) ⏳ **REVIEW LATER**
 - [x] ~~Sanitize image IDs before filesystem lookup to prevent directory traversal (`image-storage.ts`)~~ (FIXED -- added UUID format validation in `getImage()` and `deleteImage()`; also removed debug logging)
 - [ ] Remove `storagePath` from API responses in `image-storage.ts` (leaks server paths)
-- [ ] Fix `sanitizeBranchForPath()` (`utils/git.ts:229-231`) -- handle `\`, `?`, `*`, `:` characters and prevent collision between `feature/foo` and `feature-foo` (NEW)
-- [ ] Fix `ensureWorktree` TOCTOU race condition (`utils/git.ts:252-254`) -- make check+create atomic (NEW)
+- [ ] Fix `sanitizeBranchForPath()` (`utils/git.ts`) -- handle `\`, `?`, `*`, `:` characters and prevent collision between `feature/foo` and `feature-foo`
+- [ ] Fix `ensureWorktree` TOCTOU race condition (`utils/git.ts`) -- make check+create atomic
 
 ### 9.3 Maintenance
 
@@ -282,10 +282,10 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 - [ ] Define a standard success envelope: `{ success: true, data: T }` and apply across all routes
 - [ ] Define a standard error envelope: `{ success: false, error: string, details?: unknown }` and apply across all routes
 - [ ] Replace `error: any` in all catch blocks with proper type narrowing (`error instanceof Error`)
-- [ ] Add `.catch()` handlers to all fire-and-forget async calls (e.g., `generateAndSaveTitle()` at `stream.ts:194`)
-- [ ] Make `generateAndSaveTitle()` invocation consistent -- currently fire-and-forget in `POST /new/message` (line 194) but `await`ed in `POST /:id/message` (line 298) (NEW)
+- [ ] Add `.catch()` handlers to all fire-and-forget async calls (e.g., `generateAndSaveTitle()` at `stream.ts`)
+- [ ] Make `generateAndSaveTitle()` invocation consistent -- currently fire-and-forget in `POST /new/message` but `await`ed in `POST /:id/message`
 - [ ] Audit and remove all empty `catch {}` blocks -- log errors or handle them properly
-- [ ] Fix images router double-mount -- mount only on `/api/images`, update frontend calls accordingly (now at `index.ts:88-89`)
+- [ ] Fix images router double-mount -- mount only on `/api/images`, update frontend calls accordingly
 
 ---
 
@@ -296,7 +296,7 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 - [ ] Narrow lint-staged glob from `*.{ts,tsx}` to `{frontend,backend}/**/*.{ts,tsx}` for performance
 - [ ] Standardize monospace font stack across all components (currently 4 different stacks)
 - [ ] Extract all inline `style={{}}` objects to module-level constants or CSS classes (especially BranchSelector.tsx with ~20 inline styles)
-- [ ] Evaluate whether `prebuild: npm run swagger` should be a soft dependency (warning, not failure) to prevent swagger issues from blocking builds (NEW)
+- [ ] Evaluate whether `prebuild: npm run swagger` should be a soft dependency (warning, not failure) to prevent swagger issues from blocking builds
 
 ---
 
@@ -308,5 +308,5 @@ Ordered by dependency, risk level, and impact. Complete top-to-bottom.
 - [ ] Verify SSE streaming still works end-to-end
 - [ ] Verify queue processing still works
 - [ ] Verify image upload/display still works
-- [ ] Verify branch selector / worktree creation works end-to-end (NEW)
+- [ ] Verify branch selector / worktree creation works end-to-end
 - [ ] Run production build and smoke test with `npm run redeploy:prod`

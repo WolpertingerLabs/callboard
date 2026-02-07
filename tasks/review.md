@@ -1,6 +1,6 @@
 # Full Architectural Review: Claude Code UI
 
-> **Last updated:** Post-commit `e1787b8` (feat: add OpenAPI spec auto-generation)
+> **Last updated:** Post-commit `478305b` (refactor: create shared types package, deduplicate backend utils, and fix quick wins)
 
 ## Table of Contents
 
@@ -20,36 +20,38 @@
 
 ### Entire Unused Files
 
-| File                                        | Lines | Notes                                                     |
-| ------------------------------------------- | ----- | --------------------------------------------------------- |
-| `frontend/src/hooks/useStream.ts`           | 87    | Never imported anywhere. Chat.tsx implements SSE inline   |
-| `frontend/src/components/ScheduleModal.tsx` | 161   | Never imported. DraftModal.tsx handles scheduling instead |
+| File                                        | Lines  | Notes                                                                 |
+| ------------------------------------------- | ------ | --------------------------------------------------------------------- |
+| ~~`frontend/src/hooks/useStream.ts`~~       | ~~87~~ | **FIXED** -- deleted (never imported; Chat.tsx implements SSE inline) |
+| `frontend/src/components/ScheduleModal.tsx` | 161    | Not dead code -- used in Queue.tsx                                    |
 
 ### Unused Backend Exports
 
-| Function                               | File                                        | Line |
-| -------------------------------------- | ------------------------------------------- | ---- |
-| `getAllSessions()`                     | `backend/src/services/sessions.ts`          | 101  |
-| `getTotalChats()`                      | `backend/src/services/chat-file-service.ts` | 194  |
-| `getImagesDir()`                       | `backend/src/services/image-storage.ts`     | 203  |
-| `getAllDirectoriesWithSlashCommands()` | `backend/src/services/slashCommands.ts`     | 79   |
-| `removeSlashCommandsForDirectory()`    | `backend/src/services/slashCommands.ts`     | 87   |
+| Function                                   | File                                        | Line | Status               |
+| ------------------------------------------ | ------------------------------------------- | ---- | -------------------- |
+| ~~`getAllSessions()`~~                     | `backend/src/services/sessions.ts`          | 101  | **FIXED** -- removed |
+| ~~`getTotalChats()`~~                      | `backend/src/services/chat-file-service.ts` | 194  | **FIXED** -- removed |
+| ~~`getImagesDir()`~~                       | `backend/src/services/image-storage.ts`     | 203  | **FIXED** -- removed |
+| ~~`getAllDirectoriesWithSlashCommands()`~~ | `backend/src/services/slashCommands.ts`     | 79   | **FIXED** -- removed |
+| ~~`removeSlashCommandsForDirectory()`~~    | `backend/src/services/slashCommands.ts`     | 87   | **FIXED** -- removed |
 
 ### Unused Frontend Functions/Imports
 
-| Item                           | File                                           | Notes                                                                    |
-| ------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------ |
-| `stopChat()`                   | `frontend/src/api.ts:123`                      | Chat.tsx makes its own inline fetch                                      |
-| `createChat()`                 | `frontend/src/api.ts:77`                       | Chat creation uses `/new/message` now                                    |
-| `getImageUrl()`                | `frontend/src/api.ts:186`                      | Never called                                                             |
-| `getSlashCommands()`           | `frontend/src/api.ts:266`                      | Imported in Chat.tsx but never invoked                                   |
-| `clearFolderCache()`           | `frontend/src/api/folders.ts:91`               | Never called                                                             |
-| `clearAllRecentDirectories()`  | `frontend/src/utils/localStorage.ts:111`       | Never called                                                             |
-| `ChevronDown` import           | `frontend/src/pages/Chat.tsx:3`                | Imported but unused in this file (used separately in BranchSelector.tsx) |
-| `useMemo` import               | `frontend/src/pages/ChatList.tsx:1`            | Imported but never used                                                  |
-| `ChatListResponse` type import | `frontend/src/pages/ChatList.tsx:4`            | Imported but never used                                                  |
-| `FolderOpen`, `File` imports   | `frontend/src/components/FolderBrowser.tsx:2`  | Icons imported but unused                                                |
-| `StoredImage` interface        | `frontend/src/components/ImageUpload.tsx:4-11` | Defined locally but never referenced                                     |
+| Item                               | File                                        | Status                                                                     |
+| ---------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------- |
+| ~~`stopChat()`~~                   | `frontend/src/api.ts`                       | **FIXED** -- removed                                                       |
+| ~~`createChat()`~~                 | `frontend/src/api.ts`                       | **FIXED** -- removed                                                       |
+| ~~`getImageUrl()`~~                | `frontend/src/api.ts`                       | **FIXED** -- removed                                                       |
+| ~~`getSlashCommands()`~~           | `frontend/src/api.ts`                       | **FIXED** -- removed (and import in Chat.tsx)                              |
+| ~~`clearFolderCache()`~~           | `frontend/src/api/folders.ts`               | **FIXED** -- removed                                                       |
+| ~~`clearAllRecentDirectories()`~~  | `frontend/src/utils/localStorage.ts`        | **FIXED** -- removed                                                       |
+| ~~`addToBacklog()`~~               | `frontend/src/api.ts`                       | **FIXED** -- removed; DraftModal.tsx updated to use `createDraft` directly |
+| ~~`ChevronDown` import~~           | `frontend/src/pages/Chat.tsx`               | **FIXED** -- removed                                                       |
+| ~~`useMemo` import~~               | `frontend/src/pages/ChatList.tsx`           | **FIXED** -- removed                                                       |
+| ~~`ChatListResponse` type import~~ | `frontend/src/pages/ChatList.tsx`           | **FIXED** -- removed                                                       |
+| ~~`FolderOpen`, `File` imports~~   | `frontend/src/components/FolderBrowser.tsx` | **FIXED** -- removed                                                       |
+| ~~`StoredImage` interface~~        | `frontend/src/components/ImageUpload.tsx`   | **FIXED** -- removed                                                       |
+| ~~`getSlashCommandsForDirectory`~~ | `backend/src/routes/chats.ts`               | **FIXED** -- removed                                                       |
 
 ### Unreachable Backend Route
 
@@ -63,47 +65,48 @@
 
 ### Cross-File Duplications (Backend)
 
-| What                                              | Location A                          | Location B                                                                                                                                  | Impact                                                                                                      |
-| ------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `findSessionLogPath()`                            | `routes/chats.ts:22-29`             | `routes/stream.ts:16-25`                                                                                                                    | Duplicated with slight divergence -- stream.ts wraps in try/catch, chats.ts does not                        |
-| ~~`CLAUDE_PROJECTS_DIR` constant~~                | ~~`routes/chats.ts:12`~~            | ~~`routes/stream.ts:12`~~                                                                                                                   | **FIXED** -- now shared via `utils/paths.ts`                                                                |
-| `findChat()` / `findChatForStatus()`              | `routes/chats.ts:413-466`           | `routes/stream.ts:30-43`                                                                                                                    | Same lookup pattern                                                                                         |
-| SSE event handler pattern                         | `routes/stream.ts:186-212`          | `routes/stream.ts:306-323` & `385-402`                                                                                                      | Same handler logic repeated **3 times**                                                                     |
-| SSE header block                                  | `routes/stream.ts:178-182`          | `routes/stream.ts:300-304` & `377-381`                                                                                                      | Same 5-line writeHead block **3 times**                                                                     |
-| Image loading loop                                | `routes/stream.ts:152-167`          | `routes/stream.ts:260-288`                                                                                                                  | Same iteration over imageIds                                                                                |
-| `updateChatWithImages()` / `storeMessageImages()` | `routes/images.ts:205-230`          | `routes/stream.ts:338-365`                                                                                                                  | Near-identical metadata storage                                                                             |
-| Git info fetch pattern                            | `routes/chats.ts`                   | Lines 304, 360, 427, 447                                                                                                                    | Same bare try/catch `getGitInfo()` block **4 times** (cached version exists at line 223 but only used once) |
-| `__dirname` computation                           | **7 files**                         | `index.ts:7,95`, `swagger.ts:5`, `queue-file-service.ts:6`, `image-storage.ts:7`, `chat-file-service.ts:6`, `claude.ts:11`, `sessions.ts:5` |
-| `migratePermissions()`                            | `backend/services/claude.ts:90-109` | `frontend/utils/localStorage.ts:13-35`                                                                                                      | Same migration logic in both ends                                                                           |
+| What                                              | Location A                       | Location B                             | Impact                                                                                                                                           |
+| ------------------------------------------------- | -------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ~~`findSessionLogPath()`~~                        | ~~`routes/chats.ts:22-29`~~      | ~~`routes/stream.ts:16-25`~~           | **FIXED** -- extracted to `utils/session-log.ts`; both routes now import from shared utility                                                     |
+| ~~`CLAUDE_PROJECTS_DIR` constant~~                | ~~`routes/chats.ts:12`~~         | ~~`routes/stream.ts:12`~~              | **FIXED** -- now shared via `utils/paths.ts`                                                                                                     |
+| ~~`findChat()` / `findChatForStatus()`~~          | ~~`routes/chats.ts:413-466`~~    | ~~`routes/stream.ts:30-43`~~           | **FIXED** -- extracted to `utils/chat-lookup.ts`; both routes now import from shared utility                                                     |
+| SSE event handler pattern                         | `routes/stream.ts:186-212`       | `routes/stream.ts:306-323` & `385-402` | Same handler logic repeated **3 times**                                                                                                          |
+| SSE header block                                  | `routes/stream.ts:178-182`       | `routes/stream.ts:300-304` & `377-381` | Same 5-line writeHead block **3 times**                                                                                                          |
+| Image loading loop                                | `routes/stream.ts:152-167`       | `routes/stream.ts:260-288`             | Same iteration over imageIds                                                                                                                     |
+| `updateChatWithImages()` / `storeMessageImages()` | `routes/images.ts:205-230`       | `routes/stream.ts:338-365`             | Near-identical metadata storage                                                                                                                  |
+| Git info fetch pattern                            | `routes/chats.ts`                | Lines 304, 360, 427, 447               | Same bare try/catch `getGitInfo()` block **4 times** (cached version exists at line 223 but only used once)                                      |
+| `__dirname` computation                           | **2 files**                      | `index.ts:7,73`, `swagger.ts:5`        | Partially fixed -- 5 services now use `DATA_DIR` from `utils/paths.ts`; only `index.ts` and `swagger.ts` still compute `__dirname` independently |
+| ~~`migratePermissions()`~~                        | ~~`backend/services/claude.ts`~~ | ~~`frontend/utils/localStorage.ts`~~   | **FIXED** -- moved to `shared/types/permissions.ts`; both ends now import from shared                                                            |
 
 ### Cross-File Duplications (Frontend)
 
 | What                               | Location A                                                                                    | Location B                                   |
-| ---------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------- |
-| `Plugin` type definitions          | `frontend/src/api.ts:9-26`                                                                    | `frontend/src/types/plugins.ts:1-18`         |
+| ---------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| ~~`Plugin` type definitions~~      | ~~`frontend/src/api.ts:9-26`~~                                                                | ~~`frontend/src/types/plugins.ts:1-18`~~     | **FIXED** -- both now import from `shared/types/plugins.ts`; `types/plugins.ts` is a re-export |
 | `getCommandDescription()`          | `SlashCommandAutocomplete.tsx:125-134`                                                        | `SlashCommandsModal.tsx:14-32`               |
 | `getMinDateTime()`                 | `DraftModal.tsx:65-69`                                                                        | `Queue.tsx:375` (inline)                     |
 | `activePlugins` localStorage logic | `SlashCommandsModal.tsx:51-66`                                                                | `Chat.tsx:462-483`                           |
 | In-flight message UI block         | `Chat.tsx:956-986`                                                                            | `Chat.tsx:1027-1057`                         |
 | Modal overlay pattern              | `ConfirmModal`, `DraftModal`, `ScheduleModal`, `Queue`, `FolderBrowser`, `SlashCommandsModal` | Same 10-line style block in **6 components** |
-| Worktree path computation          | `frontend/src/components/BranchSelector.tsx:72-76`                                            | `backend/src/utils/git.ts:233-240`           | Client-side preview computes path independently from backend -- can diverge |
+| Worktree path computation          | `frontend/src/components/BranchSelector.tsx:72-76`                                            | `backend/src/utils/git.ts:233-240`           | Client-side preview computes path independently from backend -- can diverge                    |
 
 ### Cross-Boundary Duplications (Backend <-> Frontend)
 
-Every shared type is manually duplicated with no single source of truth:
+~~Every shared type is manually duplicated with no single source of truth.~~ **LARGELY FIXED** -- A `shared/` types package now provides the single source of truth. Both frontend and backend import from `shared/types/`. The following types have been unified:
 
-| Type                                     | Backend                                   | Frontend                                 | Divergence                                                                                                                 |
-| ---------------------------------------- | ----------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `DefaultPermissions`                     | `services/claude.ts:75-82`                | `api.ts:68-75` + `localStorage.ts:3-11`  | 3 copies, consistent                                                                                                       |
-| `Plugin/PluginCommand/PluginManifest`    | `services/plugins.ts:4-21`                | `api.ts:11-39` + `types/plugins.ts:1-30` | 3 copies                                                                                                                   |
-| `Chat`                                   | `chat-file-service.ts:14-22`              | `api.ts:41-51`                           | Frontend has extra fields (`title`, `session_ids`)                                                                         |
-| `ParsedMessage`                          | `routes/chats.ts:607-652`                 | `api.ts:42-51`                           | Frontend has `toolUseId`, `isBuiltInCommand`, `teamName`; backend has `tool_name`, `tool_input`, `tool_result`, `thinking` |
-| `StoredImage`                            | `image-storage.ts:13-23`                  | `api.ts:157-164`                         | Backend has `chatId`, `sha256` fields frontend omits                                                                       |
-| `QueueItem`                              | `queue-file-service.ts:22`                | `api.ts:200`                             | Backend uses `any` for `defaultPermissions`                                                                                |
-| `FolderItem/BrowseResult/ValidateResult` | `folder-service.ts:4-36`                  | `api/folders.ts:3-37`                    | Identical copy-paste                                                                                                       |
-| `StreamEvent`                            | `services/claude.ts:24-33`                | `hooks/useStream.ts:4-8`                 | Frontend missing 5 fields                                                                                                  |
-| `SlashCommand`                           | `services/slashCommands.ts:5-10`          | `api.ts:3-9`                             | Identical                                                                                                                  |
-| `BranchConfig`                           | Expected by `routes/stream.ts` (req.body) | `api.ts:283-287`                         | Frontend-only type, no backend definition                                                                                  |
+| Type                                                          | Shared Location                | Status                                                                 |
+| ------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------- |
+| ~~`DefaultPermissions`~~                                      | `shared/types/permissions.ts`  | **FIXED** -- single definition; `migratePermissions()` also shared     |
+| ~~`Plugin/PluginCommand/PluginManifest`~~                     | `shared/types/plugins.ts`      | **FIXED** -- single definition; `frontend/types/plugins.ts` re-exports |
+| ~~`Chat` / `ChatListResponse`~~                               | `shared/types/chat.ts`         | **FIXED** -- reconciled with all fields                                |
+| ~~`ParsedMessage`~~                                           | `shared/types/message.ts`      | **FIXED** -- reconciled with all fields from both sides                |
+| ~~`StoredImage` / `ImageUploadResult`~~                       | `shared/types/image.ts`        | **FIXED** -- includes `chatId`, `sha256` fields                        |
+| ~~`QueueItem`~~                                               | `shared/types/queue.ts`        | **FIXED** -- `defaultPermissions` properly typed                       |
+| ~~`FolderItem/BrowseResult/ValidateResult/FolderSuggestion`~~ | `shared/types/folders.ts`      | **FIXED** -- single definition                                         |
+| ~~`StreamEvent`~~                                             | `shared/types/stream.ts`       | **FIXED** -- all fields included                                       |
+| ~~`SlashCommand`~~                                            | `shared/types/slashCommand.ts` | **FIXED** -- single definition                                         |
+| ~~`BranchConfig`~~                                            | `shared/types/git.ts`          | **FIXED** -- now shared (was frontend-only)                            |
+| ~~`SessionStatus`~~                                           | `shared/types/session.ts`      | **FIXED** -- new shared definition                                     |
 
 ---
 
@@ -111,20 +114,20 @@ Every shared type is manually duplicated with no single source of truth:
 
 ### Backend Performance Issues
 
-| Issue                                              | File:Line                                | Severity    | Detail                                                                                                                                                       |
-| -------------------------------------------------- | ---------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Blocking `execSync`** for chat listing           | `routes/chats.ts:70`                     | **HIGH** ⏳ | `find \| xargs \| ls` shell pipeline runs synchronously, blocking the Node event loop                                                                        |
-| **Exponential `projectDirToFolder()`**             | `utils/paths.ts:13-36`                   | **HIGH**    | Tries `2^(n-1)` path combinations for directory names with `n` dashes, each calling `existsSync()`. Called per-session in chat listing.                      |
-| **Full directory scan per image retrieval**        | `image-storage.ts:116`                   | MEDIUM      | `readdirSync` + `find()` on every `getImage()` call; also recomputes SHA256 hash every time                                                                  |
-| **No caching in ChatFileService**                  | `chat-file-service.ts:27-53`             | MEDIUM      | `getAllChats()` reads+parses every JSON file from disk on every request                                                                                      |
-| **No caching in slashCommands**                    | `slashCommands.ts`                       | LOW         | Reads/writes JSON file synchronously on every call                                                                                                           |
-| **O(n\*m) scan to remove one image**               | `routes/images.ts:235-266`               | MEDIUM      | `removeImageFromAllChats()` reads ALL chat files, parses ALL metadata                                                                                        |
-| **O(n) fallback in `getChat()`**                   | `chat-file-service.ts:56-87`             | LOW         | Falls back to reading every JSON file if filename lookup fails                                                                                               |
-| ~~**Queue self-HTTP calls**~~                      | `queue-processor.ts` & `routes/queue.ts` | ~~MEDIUM~~  | **FIXED** -- both now call `sendMessage()` directly instead of HTTP                                                                                          |
-| **Synchronous `appendFileSync` debug logging**     | `services/claude.ts:11-22`               | LOW         | Blocks I/O; runs in production                                                                                                                               |
-| **Synchronous `execSync` for git info**            | `utils/git.ts:31-52`                     | LOW         | Two synchronous process spawns with 5s timeouts; cached in only 1 of 5 call sites                                                                            |
-| **`getRecentFolders()` full scan with `statSync`** | `folder-service.ts:194-281`              | MEDIUM      | Reads all `.jsonl` files + `statSync` per file + `existsSync` per folder (may trigger exponential `projectDirToFolder`). 2-min cache mitigates repeat calls. |
-| **`browseDirectory()` per-file `statSync`**        | `folder-service.ts:104-137`              | LOW         | Synchronous `statSync` for up to 500 entries, blocking event loop                                                                                            |
+| Issue                                              | File:Line                                | Severity     | Detail                                                                                                                                                         |
+| -------------------------------------------------- | ---------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Blocking `execSync`** for chat listing           | `routes/chats.ts:70`                     | **HIGH** ⏳  | `find \| xargs \| ls` shell pipeline runs synchronously, blocking the Node event loop                                                                          |
+| ~~**Exponential `projectDirToFolder()`**~~         | `utils/paths.ts`                         | ~~**HIGH**~~ | **FIXED** -- replaced with O(n) greedy left-to-right directory walking algorithm; lossy fallback removed                                                       |
+| **Full directory scan per image retrieval**        | `image-storage.ts:116`                   | MEDIUM       | `readdirSync` + `find()` on every `getImage()` call; also recomputes SHA256 hash every time                                                                    |
+| **No caching in ChatFileService**                  | `chat-file-service.ts:27-53`             | MEDIUM       | `getAllChats()` reads+parses every JSON file from disk on every request                                                                                        |
+| **No caching in slashCommands**                    | `slashCommands.ts`                       | LOW          | Reads/writes JSON file synchronously on every call                                                                                                             |
+| **O(n\*m) scan to remove one image**               | `routes/images.ts:235-266`               | MEDIUM       | `removeImageFromAllChats()` reads ALL chat files, parses ALL metadata                                                                                          |
+| **O(n) fallback in `getChat()`**                   | `chat-file-service.ts:56-87`             | LOW          | Falls back to reading every JSON file if filename lookup fails                                                                                                 |
+| ~~**Queue self-HTTP calls**~~                      | `queue-processor.ts` & `routes/queue.ts` | ~~MEDIUM~~   | **FIXED** -- both now call `sendMessage()` directly instead of HTTP                                                                                            |
+| ~~**Synchronous `appendFileSync` debug logging**~~ | ~~`services/claude.ts:11-22`~~           | ~~LOW~~      | **FIXED** -- gated behind `NODE_ENV !== "production"` check; debug log file only created in non-production                                                     |
+| **Synchronous `execSync` for git info**            | `utils/git.ts:31-52`                     | LOW          | Two synchronous process spawns with 5s timeouts; cached in only 1 of 5 call sites                                                                              |
+| **`getRecentFolders()` full scan with `statSync`** | `folder-service.ts:194-281`              | MEDIUM       | Reads all `.jsonl` files + `statSync` per file + `existsSync` per folder. 2-min cache mitigates repeat calls. (Exponential `projectDirToFolder` is now fixed.) |
+| **`browseDirectory()` per-file `statSync`**        | `folder-service.ts:104-137`              | LOW          | Synchronous `statSync` for up to 500 entries, blocking event loop                                                                                              |
 
 ### Frontend Performance Issues
 
@@ -188,29 +191,35 @@ Every shared type is manually duplicated with no single source of truth:
 | `backend/src/routes/chats.ts`  | **659**    | Extract `parseMessages()`, `discoverSessionsPaginated()`, `readJsonlFile()`, git caching into services                  |
 | `backend/src/routes/stream.ts` | **587**    | Extract SSE helpers, title generation, image metadata storage, CLI file watcher into services                           |
 
-### No Shared Types Package
+### ~~No Shared Types Package~~
 
-The single biggest architectural issue. Every type is manually duplicated between `frontend/` and `backend/` with no shared `types/` or `shared/` package. This is the root cause of at least **11 type inconsistencies** (including the new `BranchConfig` type).
+~~The single biggest architectural issue. Every type is manually duplicated between `frontend/` and `backend/` with no shared `types/` or `shared/` package.~~
+
+**FIXED** -- `shared/` package created at project root with unified type definitions for all 11 previously duplicated types. Both frontend (`api.ts`, `localStorage.ts`, `api/folders.ts`, `types/plugins.ts`) and backend (7 service/route files) now import from `shared/types/`. Configured via TypeScript path aliases and Vite alias resolution.
 
 ### Inconsistent Data Directory Resolution
 
-| Service                | Strategy                                                  | Risk                                                   |
-| ---------------------- | --------------------------------------------------------- | ------------------------------------------------------ |
-| `sessions.ts`          | `__dirname + '../../../data'` -> project root `/data/`    | Different root than other services                     |
-| `chat-file-service.ts` | `__dirname + '../../data/chats'` -> `backend/data/chats/` | OK                                                     |
-| `slashCommands.ts`     | `process.cwd() + '/data'` -> depends on working dir       | **Fragile** -- depends on working directory at startup |
+Mostly fixed -- 4 of 5 services now use `DATA_DIR` from `utils/paths.ts`. One holdout remains:
+
+| Service                     | Strategy                                            | Status                                                    |
+| --------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
+| ~~`sessions.ts`~~           | ~~`__dirname + '../../../data'`~~                   | **FIXED** -- now imports `DATA_DIR` from `utils/paths.ts` |
+| ~~`chat-file-service.ts`~~  | ~~`__dirname + '../../data/chats'`~~                | **FIXED** -- now imports `DATA_DIR` from `utils/paths.ts` |
+| ~~`image-storage.ts`~~      | (was independent)                                   | **FIXED** -- now imports `DATA_DIR` from `utils/paths.ts` |
+| ~~`queue-file-service.ts`~~ | (was independent)                                   | **FIXED** -- now imports `DATA_DIR` from `utils/paths.ts` |
+| `slashCommands.ts`          | `process.cwd() + '/data'` -> depends on working dir | **NOT FIXED** -- still defines own `DATA_DIR` locally     |
 
 ### Debug Logging in Production
 
-- `backend/src/services/claude.ts:11-22`: Writes to `logs/slash-commands-debug.log` with synchronous `appendFileSync` unconditionally
-- `backend/src/routes/stream.ts`: 8 `console.log('[DEBUG]...')` statements (lines 248, 252, 262, 266, 269, 275, 282, 287) including full request body dumps
-- `backend/src/services/image-storage.ts`: 5 `console.log('[DEBUG]...')` lines in `getImage()` -- including `console.log('[DEBUG] All files in directory:', files)` which dumps full directory listings
+- ~~`backend/src/services/claude.ts:11-22`: Writes to `logs/slash-commands-debug.log` with synchronous `appendFileSync` unconditionally~~ **FIXED** -- gated behind `NODE_ENV !== "production"`
+- ~~`backend/src/routes/stream.ts`: 8 `console.log('[DEBUG]...')` statements including full request body dumps~~ **FIXED** -- removed. One `console.log` remains for OpenRouter title generation (line 40) -- informational, not debug
+- ~~`backend/src/services/image-storage.ts`: 5 `console.log('[DEBUG]...')` lines in `getImage()`~~ **FIXED** -- removed in prior commit
 
 ### New Architectural Concerns
 
-- **`projectDirToFolder()` exponential complexity** (`utils/paths.ts:13-36`): Generates `2^(n-1)` path candidates for directory names with `n` dash-separated segments. Lossy fallback converts ALL dashes to slashes (e.g., `/home/my-app` -> `/home/my/app`).
+- ~~**`projectDirToFolder()` exponential complexity** (`utils/paths.ts:13-36`)~~ **FIXED** -- replaced with O(n) greedy left-to-right directory walking; lossy fallback removed.
 - **`swagger.ts` computes `__dirname` independently** (line 5) despite `utils/paths.ts` existing for shared path constants.
-- **`index.ts` computes `__dirname`/`__rootDir` twice** (lines 7 and 95) for different purposes.
+- **`index.ts` computes `__dirname`/`__rootDir` twice** (lines 7 and 73) for different purposes.
 - **`folder-service.ts` cache stores heterogeneous types via unsafe double cast** (`cached.data as unknown as RecentFolder[]` at line 199 and `results as unknown as BrowseResult` at line 274).
 - **`switchBranch()` doesn't verify directory is a git repo** (`utils/git.ts:281-296`) unlike `getGitInfo()` which checks for `.git`.
 - **Hardcoded `"main"` fallback branch** (`utils/git.ts:56,63`): Returns `"main"` for detached HEAD instead of `undefined` or `"HEAD (detached)"` -- misleading for repos using `master` or other default branches.
@@ -221,24 +230,24 @@ The single biggest architectural issue. Every type is manually duplicated betwee
 
 ## 7. Styling Issues
 
-### Undefined CSS Variables
+### ~~Undefined CSS Variables~~
 
-These are referenced in inline styles but **never defined** in `index.css`:
+**FIXED** -- All previously undefined CSS variables are now defined in `index.css` for both dark and light modes:
 
-| Variable           | Files Using It                                     | Impact                                            |
-| ------------------ | -------------------------------------------------- | ------------------------------------------------- |
-| `--bg-secondary`   | **12 files** (incl. new `BranchSelector.tsx`)      | All backgrounds using this resolve to transparent |
-| `--font-mono`      | 3 files                                            | Falls through to browser default                  |
-| `--error`          | PermissionSettings                                 | **No fallback** -- property invalid               |
-| `--border-light`   | PermissionSettings                                 | **No fallback** -- property invalid               |
-| `--text-secondary` | Chat.tsx (line 836)                                | No fallback                                       |
-| `--text-muted`     | BranchSelector.tsx (lines 139, 161, 169, 205, 258) | **NEW** -- 5 references with no fallback          |
+| Variable               | Status                                                                   |
+| ---------------------- | ------------------------------------------------------------------------ |
+| ~~`--bg-secondary`~~   | **FIXED** -- dark: `#1c2128`, light: `#f0f4f8`                           |
+| ~~`--font-mono`~~      | **FIXED** -- SF Mono, Monaco, Cascadia Code, Roboto Mono, Consolas, etc. |
+| ~~`--error`~~          | **FIXED** -- dark: `#f85149`, light: `#cf222e`                           |
+| ~~`--border-light`~~   | **FIXED** -- dark: `#21262d`, light: `#e2e8f0`                           |
+| ~~`--text-secondary`~~ | **FIXED** -- dark: `#8b949e`, light: `#64748b`                           |
+| `--text-muted`         | Was already defined -- dark: `#8b949e`, light: `#64748b`                 |
 
 ### Other Styling Issues
 
 - **6 modal components** each re-implement the same fullscreen overlay pattern (~10 lines each) -- no shared `<ModalOverlay>` component
 - **4 different monospace font stacks** used across components
-- **Identical `.hljs` media query rules** for dark and light mode in `index.css` (lines 136-154)
+- ~~**Identical `.hljs` media query rules** for dark and light mode in `index.css` (lines 136-154)~~ **FIXED** -- removed redundant dark/light media queries; base rule already uses CSS variables
 - **All inline `style={{}}`** -- new objects created on every render, no hover/focus pseudo-class support, no reuse
 - **BranchSelector.tsx has ~20 inline style objects** that are all recreated every render
 
@@ -246,18 +255,16 @@ These are referenced in inline styles but **never defined** in `index.css`:
 
 ## 8. Type Safety Issues
 
-- **`any` types** used in 20+ locations across frontend and backend (API return types, catch blocks, request bodies). Notable new instances:
+- **`any` types** used in 20+ locations across frontend and backend (API return types, catch blocks, request bodies). Notable instances:
   - `routes/chats.ts:185,193` -- `fileChats: any[]`, `fileChatsBySessionId: Map<string, any>`
-  - `routes/chats.ts:413` -- `findChat(id: string): any | null`
-  - `routes/chats.ts:476,523,554` -- `findChat(...) as any` casts
-  - `routes/stream.ts:30` -- `findChatForStatus(id: string): any | null`
   - `routes/queue.ts:185` -- `requestBody: any`
   - `Chat.tsx:518` -- `const requestBody: any = { folder, prompt, defaultPermissions }`
+  - Note: `findChat()` and `findChatForStatus()` moved to `utils/chat-lookup.ts` -- return types improved but some `any` casts may remain in route handlers
 - **Non-null assertions (`!`)**: 12+ instances of `streamChatId!` and `id!` in Chat.tsx
-- **`addToBacklog()` is a trivial wrapper** around `createDraft()` with misleading naming (`api.ts:261-264`)
-- **`BranchConfig` interface** defined only in frontend (`api.ts:283-287`) with no backend counterpart
+- ~~**`addToBacklog()` is a trivial wrapper** around `createDraft()` with misleading naming (`api.ts:261-264`)~~ **FIXED** -- removed; callers use `createDraft()` directly
+- ~~**`BranchConfig` interface** defined only in frontend (`api.ts:283-287`) with no backend counterpart~~ **FIXED** -- moved to `shared/types/git.ts`
 - **`getGitBranches` return type** is an inline object (`Promise<{ branches: string[] }>`) rather than a named interface
-- **`formatRelativeTime()` silently returns `'just now'`** for invalid dates and future timestamps (`dateFormat.ts:2-4`) -- no error indication
+- ~~**`formatRelativeTime()` silently returns `'just now'`** for invalid dates and future timestamps (`dateFormat.ts:2-4`) -- no error indication~~ **FIXED** -- now returns `""` for invalid dates and `"just now"` for future timestamps (clock skew)
 - **`getCachedGitInfo()` and 4 other git call sites** silently swallow all errors with empty `catch {}` blocks
 
 ---
@@ -268,5 +275,5 @@ These are referenced in inline styles but **never defined** in `index.css`:
 | ------------------------------------------------ | ------------------------ | ---------------------------------------------------------------------------------- |
 | ~~**Wrong hardcoded path**~~                     | `ecosystem.config.cjs:6` | **FIXED** -- now uses `__dirname` for portability across machines                  |
 | ~~**start-server.js ignores ecosystem.config**~~ | `start-server.js`        | **FIXED** -- now uses `pm2 start ecosystem.config.cjs` instead of inline args      |
-| **`@types/multer` in dependencies**              | `package.json:26`        | Should be in `devDependencies`                                                     |
+| ~~**`@types/multer` in dependencies**~~          | `package.json:47`        | **FIXED** -- already in `devDependencies` (verified)                               |
 | ~~**Redundant root `tsc` in build script**~~     | ~~`package.json:8`~~     | **FIXED** -- build script is now `npm run build:backend && npm run build:frontend` |

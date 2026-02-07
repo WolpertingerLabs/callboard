@@ -1,5 +1,5 @@
 import { X, Hash, Puzzle, Check } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Plugin } from "../types/plugins";
 
 interface Props {
@@ -66,12 +66,7 @@ function setActivePlugins(activeIds: Set<string>): void {
 }
 
 export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plugins = [], onCommandSelect, onActivePluginsChange }: Props) {
-  const [activePluginIds, setActivePluginIds] = useState<Set<string>>(new Set());
-
-  // Load active plugins from localStorage on mount
-  useEffect(() => {
-    setActivePluginIds(getActivePlugins());
-  }, []);
+  const [activePluginIds, setActivePluginIds] = useState<Set<string>>(() => getActivePlugins());
 
   // Toggle plugin activation
   const togglePlugin = (pluginId: string) => {
@@ -454,7 +449,7 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
               textAlign: "center" as const,
             }}
           >
-            Type "/" in the message input to see autocomplete suggestions
+            Type {'"/"'} in the message input to see autocomplete suggestions
           </p>
         </div>
       </div>
