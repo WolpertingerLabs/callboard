@@ -35,6 +35,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
     chatId: "",
     chatName: "",
   });
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const navigate = useNavigate();
 
   const load = async () => {
@@ -193,7 +194,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
             <Plus size={18} />
           </button>
           <button
-            onClick={onLogout}
+            onClick={() => setLogoutConfirmOpen(true)}
             style={{
               background: "transparent",
               color: "var(--text)",
@@ -357,6 +358,19 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
         title="Delete Chat"
         message={`Are you sure you want to delete the chat "${deleteConfirmModal.chatName}"? This action cannot be undone.`}
         confirmText="Delete"
+        confirmStyle="danger"
+      />
+
+      <ConfirmModal
+        isOpen={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        onConfirm={() => {
+          setLogoutConfirmOpen(false);
+          onLogout();
+        }}
+        title="Logout"
+        message="Are you sure you want to log out?"
+        confirmText="Logout"
         confirmStyle="danger"
       />
     </div>
