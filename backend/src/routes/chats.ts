@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { readFileSync, existsSync, readdirSync, statSync } from "fs";
+import { readFileSync, existsSync, readdirSync, statSync, unlinkSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { chatFileService } from "../services/chat-file-service.js";
@@ -399,22 +399,37 @@ chatsRouter.post("/", (req, res) => {
   }
 });
 
-// Delete a chat (only deletes from file storage if it exists there)
+// Delete a chat (deletes both file storage metadata and JSONL session log)
 chatsRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Delete a chat'
-  // #swagger.description = 'Delete a chat from file storage. Returns success even if the chat only existed in the filesystem.'
+  // #swagger.description = 'Delete a chat from file storage and its JSONL session log from the filesystem.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "Chat deleted" } */
   try {
-    const chat = chatFileService.getChat(req.params.id);
-    if (chat) {
-      const deleted = chatFileService.deleteChat(chat.session_id);
-      if (!deleted) {
-        return res.status(500).json({ error: "Failed to delete chat from storage" });
-      }
+    // Find the chat (checks file storage + filesystem)
+    const chat = findChat(req.params.id, false);
+
+    // Delete the JSON metadata file from /data/chats/ if it exists
+    const fileChat = chatFileService.getChat(req.params.id);
+    if (fileChat) {
+      chatFileService.deleteChat(fileChat.session_id);
     }
-    // Even if chat wasn't in file storage, return success (it may only exist in filesystem)
+
+    // Delete the JSONL session log file from ~/.claude/projects/
+    if (chat?.session_log_path && existsSync(chat.session_log_path)) {
+      unlinkSync(chat.session_log_path);
+    }
+
+    // Delete subagent files for this session
+    const sessionId = chat?.session_id || req.params.id;
+    const subagentFiles = findSubagentFiles(sessionId);
+    for (const sub of subagentFiles) {
+      try {
+        unlinkSync(sub.filePath);
+      } catch {}
+    }
+
     res.json({ ok: true });
   } catch (err: any) {
     console.error("Error deleting chat:", err);
