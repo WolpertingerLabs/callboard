@@ -490,6 +490,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, inFlightMessage, autoScroll]);
 
+  // Auto-scroll to bottom when switching from diff view back to chat
+  useEffect(() => {
+    if (viewMode === "chat") {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [viewMode]);
+
   // Load active plugins from localStorage and listen for changes
   useEffect(() => {
     const loadActive = () => setActivePluginIds(Array.from(getActivePlugins()));
