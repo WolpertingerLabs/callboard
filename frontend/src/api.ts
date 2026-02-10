@@ -17,6 +17,7 @@ import type {
   BrowseResult,
   ValidateResult,
   FolderSuggestion,
+  GitDiffResponse,
 } from "shared/types/index.js";
 
 export type {
@@ -38,6 +39,7 @@ export type {
   BrowseResult,
   ValidateResult,
   FolderSuggestion,
+  GitDiffResponse,
 };
 
 const BASE = "/api";
@@ -187,10 +189,22 @@ export async function getGitBranches(folder: string): Promise<{ branches: string
   return res.json();
 }
 
-export async function getGitDiff(folder: string): Promise<{ diff: string }> {
+export async function getGitDiff(folder: string): Promise<GitDiffResponse> {
   const res = await fetch(`${BASE}/git/diff?folder=${encodeURIComponent(folder)}`);
   await assertOk(res, "Failed to get diff");
   return res.json();
+}
+
+export async function getGitFileDiff(folder: string, filename: string): Promise<{ diff: string; additions: number; deletions: number }> {
+  const params = new URLSearchParams({ folder, filename });
+  const res = await fetch(`${BASE}/git/diff/file?${params}`);
+  await assertOk(res, "Failed to get file diff");
+  return res.json();
+}
+
+export function getGitFileRawUrl(folder: string, filename: string): string {
+  const params = new URLSearchParams({ folder, filename });
+  return `${BASE}/git/diff/file/raw?${params}`;
 }
 
 // Folder browsing API functions

@@ -17,6 +17,6 @@ export type { StreamEvent } from "./stream.js";
 
 export type { SlashCommand } from "./slashCommand.js";
 
-export type { BranchConfig } from "./git.js";
+export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
 
 export type { SessionStatus } from "./session.js";

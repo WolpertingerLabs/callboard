@@ -1,6 +1,7 @@
 import { execSync, execFileSync } from "child_process";
-import { existsSync, statSync } from "fs";
-import { join, dirname, basename, resolve } from "path";
+import { existsSync, statSync, readFileSync } from "fs";
+import { join, dirname, basename, resolve, extname } from "path";
+import type { DiffFileEntry, DiffFileType } from "shared/types/index.js";
 
 /**
  * Validate a string as a safe git ref name.
@@ -386,4 +387,297 @@ export function getGitDiff(directory: string): string {
   } catch {
     return "";
   }
+}
+
+// --- Enhanced structured diff support ---
+
+const LARGE_FILE_THRESHOLD = 10 * 1024; // 10 KB
+
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp", ".tiff", ".avif"]);
+
+const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv", ".ogv"]);
+
+function classifyFile(filename: string): DiffFileType {
+  const ext = extname(filename).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (VIDEO_EXTENSIONS.has(ext)) return "video";
+  return "text";
+}
+
+/**
+ * Validate a filename to prevent path traversal attacks.
+ */
+export function validateFilename(filename: string): void {
+  if (!filename || filename.includes("..") || filename.startsWith("/")) {
+    throw new Error("Invalid filename");
+  }
+}
+
+/**
+ * Get list of untracked files using git status --porcelain.
+ */
+function getUntrackedFiles(directory: string): string[] {
+  try {
+    const output = execSync("git status --porcelain", {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    return output
+      .split("\n")
+      .filter((line) => line.startsWith("?? "))
+      .map((line) => line.slice(3).replace(/^"(.*)"$/, "$1"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Generate a unified diff for an untracked file.
+ * Uses git diff --no-index which exits with code 1 when files differ.
+ */
+function generateUntrackedFileDiff(directory: string, filename: string): string {
+  try {
+    const result = execFileSync("git", ["diff", "--no-index", "--", "/dev/null", filename], {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    return result;
+  } catch (err: unknown) {
+    // git diff --no-index exits with code 1 when there are differences (expected)
+    const execError = err as { stdout?: string };
+    if (execError.stdout) {
+      return execError.stdout;
+    }
+    return "";
+  }
+}
+
+/**
+ * Split a combined diff string into per-file chunks.
+ */
+function parseDiffIntoFiles(rawDiff: string): Array<{ filename: string; diff: string; additions: number; deletions: number; isBinary: boolean }> {
+  if (!rawDiff.trim()) return [];
+
+  const files: Array<{ filename: string; diff: string; additions: number; deletions: number; isBinary: boolean }> = [];
+  const parts = rawDiff.split(/(?=^diff --git )/m);
+
+  for (const part of parts) {
+    if (!part.trim()) continue;
+
+    const headerMatch = part.match(/^diff --git a\/(.+?) b\/(.+)/);
+    if (!headerMatch) continue;
+
+    const filename = headerMatch[2];
+
+    // Check for binary file
+    if (part.includes("Binary files") && part.includes("differ")) {
+      files.push({ filename, diff: part, additions: 0, deletions: 0, isBinary: true });
+      continue;
+    }
+
+    let additions = 0;
+    let deletions = 0;
+
+    for (const line of part.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+      if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+    }
+
+    files.push({ filename, diff: part, additions, deletions, isBinary: false });
+  }
+
+  return files;
+}
+
+/**
+ * Detect file status from diff content.
+ */
+function detectFileStatus(diffContent: string): "modified" | "added" | "deleted" | "renamed" {
+  if (diffContent.includes("--- /dev/null")) return "added";
+  if (diffContent.includes("+++ /dev/null")) return "deleted";
+  if (diffContent.includes("rename from")) return "renamed";
+  return "modified";
+}
+
+/**
+ * Get structured git diff with file metadata, untracked files, and large file gating.
+ */
+export function getGitDiffStructured(directory: string): DiffFileEntry[] {
+  if (!directory || !existsSync(directory)) {
+    return [];
+  }
+
+  const results: DiffFileEntry[] = [];
+
+  try {
+    // 1. Get tracked file diffs (unstaged + staged)
+    const unstaged = execSync("git diff", {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+
+    const staged = execSync("git diff --cached", {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+
+    const trackedFiles = parseDiffIntoFiles((staged + unstaged).trim());
+
+    for (const tf of trackedFiles) {
+      const fileType = tf.isBinary ? classifyFile(tf.filename) : classifyFile(tf.filename);
+      const filePath = join(directory, tf.filename);
+      let size = 0;
+      try {
+        size = statSync(filePath).size;
+      } catch {
+        // File may have been deleted
+      }
+
+      const status = detectFileStatus(tf.diff);
+      const isBinary = tf.isBinary;
+      const isMedia = fileType === "image" || fileType === "video";
+      const isLargeText = size > LARGE_FILE_THRESHOLD && fileType === "text" && !isBinary;
+
+      results.push({
+        filename: tf.filename,
+        status,
+        fileType: isBinary && !isMedia ? "binary" : fileType,
+        size,
+        contentIncluded: !isLargeText && !isBinary,
+        diff: isLargeText || isBinary ? null : tf.diff,
+        additions: isLargeText || isBinary ? 0 : tf.additions,
+        deletions: isLargeText || isBinary ? 0 : tf.deletions,
+      });
+    }
+
+    // 2. Get untracked files
+    const untrackedFiles = getUntrackedFiles(directory);
+
+    for (const filename of untrackedFiles) {
+      const filePath = join(directory, filename);
+      let size = 0;
+      try {
+        size = statSync(filePath).size;
+      } catch {
+        continue; // Skip files that disappeared
+      }
+
+      const fileType = classifyFile(filename);
+      const isMedia = fileType === "image" || fileType === "video";
+      const isLargeText = size > LARGE_FILE_THRESHOLD && fileType === "text";
+
+      let diff: string | null = null;
+      let additions = 0;
+
+      if (!isLargeText && fileType === "text") {
+        diff = generateUntrackedFileDiff(directory, filename);
+        for (const line of diff.split("\n")) {
+          if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+        }
+      }
+
+      results.push({
+        filename,
+        status: "untracked",
+        fileType: isMedia ? fileType : "text",
+        size,
+        contentIncluded: !isLargeText && fileType === "text",
+        diff,
+        additions,
+        deletions: 0,
+      });
+    }
+  } catch {
+    // Return whatever we have so far, or empty
+  }
+
+  return results;
+}
+
+/**
+ * Get the diff for a single file on demand (for large files loaded after user clicks "show anyway").
+ */
+export function getGitFileDiff(directory: string, filename: string): { diff: string; additions: number; deletions: number } {
+  validateFilename(filename);
+
+  // Check if it's an untracked file
+  const untrackedFiles = getUntrackedFiles(directory);
+
+  if (untrackedFiles.includes(filename)) {
+    const diff = generateUntrackedFileDiff(directory, filename);
+    let additions = 0;
+    for (const line of diff.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+    }
+    return { diff, additions, deletions: 0 };
+  }
+
+  // Tracked file: get both staged and unstaged diff for this specific file
+  try {
+    const unstaged = execFileSync("git", ["diff", "--", filename], {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    const staged = execFileSync("git", ["diff", "--cached", "--", filename], {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    const diff = (staged + unstaged).trim();
+    let additions = 0;
+    let deletions = 0;
+    for (const line of diff.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+      if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+    }
+    return { diff, additions, deletions };
+  } catch {
+    return { diff: "", additions: 0, deletions: 0 };
+  }
+}
+
+/**
+ * Read a raw file from a repository for media previews.
+ */
+export function readRepoFile(directory: string, filename: string): { buffer: Buffer; contentType: string } {
+  validateFilename(filename);
+
+  const filePath = join(directory, filename);
+  if (!existsSync(filePath)) {
+    throw new Error("File not found");
+  }
+
+  const buffer = readFileSync(filePath);
+  const ext = extname(filename).toLowerCase();
+  const mimeMap: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+    ".ogv": "video/ogg",
+  };
+  const contentType = mimeMap[ext] || "application/octet-stream";
+
+  return { buffer, contentType };
 }
