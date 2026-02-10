@@ -14,6 +14,7 @@ import {
   removeRecentDirectory,
   initializeSuggestedDirectories,
 } from "../utils/localStorage";
+import { truncatePath } from "../utils/truncatePath";
 
 interface ChatListProps {
   onLogout: () => void;
@@ -236,6 +237,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
                 >
                   <button
                     onClick={() => handleCreate(dir)}
+                    title={dir}
                     style={{
                       flex: 1,
                       textAlign: "left",
@@ -249,7 +251,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {dir}
+                    {truncatePath(dir, 50)}
                   </button>
                   <button
                     onClick={() => handleRemoveRecentDir(dir)}

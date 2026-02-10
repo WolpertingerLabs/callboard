@@ -28,6 +28,7 @@ import SlashCommandsModal from "../components/SlashCommandsModal";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
 import { addRecentDirectory } from "../utils/localStorage";
+import { truncatePath } from "../utils/truncatePath";
 import { getActivePlugins } from "../utils/plugins";
 
 interface ToolGroup {
@@ -892,8 +893,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               </div>
             ) : null}
           </div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {!id ? folder : chat?.folder}
+          <div
+            title={!id ? folder : chat?.folder}
+            style={{ fontSize: 12, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            {truncatePath((!id ? folder : chat?.folder) || "", 50)}
           </div>
         </div>
         {/* Chat / Diff view toggle - only for git repos */}
