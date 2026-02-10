@@ -1,6 +1,5 @@
 import { Globe, Monitor, X } from "lucide-react";
 import type { Chat, SessionStatus } from "../api";
-import { truncatePath } from "../utils/truncatePath";
 
 interface Props {
   chat: Chat;
@@ -58,9 +57,18 @@ export default function ChatListItem({ chat, onClick, onDelete, sessionStatus }:
         </div>
         <div
           title={chat.folder}
-          style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginTop: 2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            direction: "rtl",
+            textAlign: "left",
+          }}
         >
-          {truncatePath(chat.folder, 45)}
+          {chat.folder}
         </div>
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{time}</div>
       </div>
