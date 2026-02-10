@@ -1,5 +1,14 @@
 import { Router } from "express";
-import { getGitBranches, getGitDiff, getGitWorktrees, removeWorktree, validateFolderPath } from "../utils/git.js";
+import {
+  getGitBranches,
+  getGitDiffStructured,
+  getGitFileDiff,
+  getGitWorktrees,
+  readRepoFile,
+  removeWorktree,
+  validateFilename,
+  validateFolderPath,
+} from "../utils/git.js";
 
 export const gitRouter = Router();
 
@@ -105,14 +114,14 @@ gitRouter.delete("/worktrees", (req, res) => {
 });
 
 /**
- * Get the git diff (unstaged + staged) for a repository.
+ * Get structured git diff with file metadata, untracked files, and large file gating.
  */
 gitRouter.get("/diff", (req, res) => {
   // #swagger.tags = ['Git']
-  // #swagger.summary = 'Get git diff'
-  // #swagger.description = 'Returns the combined unstaged and staged diff for a git repository.'
+  // #swagger.summary = 'Get structured git diff'
+  // #swagger.description = 'Returns per-file diff data including untracked files, with large file gating.'
   /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the git repository' } */
-  /* #swagger.responses[200] = { description: "Diff string" } */
+  /* #swagger.responses[200] = { description: "Structured diff response with files array" } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
   const rawFolder = req.query.folder as string;
   if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
@@ -125,9 +134,77 @@ gitRouter.get("/diff", (req, res) => {
   }
 
   try {
-    const diff = getGitDiff(folder);
-    res.json({ diff });
+    const files = getGitDiffStructured(folder);
+    res.json({ files });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to get diff", details: err.message });
+  }
+});
+
+/**
+ * Get the diff for a single file on demand (for large files).
+ */
+gitRouter.get("/diff/file", (req, res) => {
+  // #swagger.tags = ['Git']
+  // #swagger.summary = 'Get single file diff'
+  // #swagger.description = 'Returns the diff for a single file, used for on-demand loading of large files.'
+  /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string' } */
+  /* #swagger.parameters['filename'] = { in: 'query', required: true, type: 'string' } */
+  const rawFolder = req.query.folder as string;
+  const filename = req.query.filename as string;
+
+  if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
+  if (!filename) return res.status(400).json({ error: "filename query param is required" });
+
+  let folder: string;
+  try {
+    folder = validateFolderPath(rawFolder);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    validateFilename(filename);
+    const result = getGitFileDiff(folder, filename);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to get file diff", details: err.message });
+  }
+});
+
+/**
+ * Serve raw file content for media previews (images, videos).
+ */
+gitRouter.get("/diff/file/raw", (req, res) => {
+  // #swagger.tags = ['Git']
+  // #swagger.summary = 'Get raw file content'
+  // #swagger.description = 'Serves raw file bytes for media previews in the diff view.'
+  /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string' } */
+  /* #swagger.parameters['filename'] = { in: 'query', required: true, type: 'string' } */
+  const rawFolder = req.query.folder as string;
+  const filename = req.query.filename as string;
+
+  if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
+  if (!filename) return res.status(400).json({ error: "filename query param is required" });
+
+  let folder: string;
+  try {
+    folder = validateFolderPath(rawFolder);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    validateFilename(filename);
+    const { buffer, contentType } = readRepoFile(folder, filename);
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Length", buffer.length);
+    res.setHeader("Cache-Control", "no-cache");
+    res.end(buffer);
+  } catch (err: any) {
+    if (err.message === "File not found") {
+      return res.status(404).json({ error: "File not found" });
+    }
+    res.status(500).json({ error: "Failed to read file", details: err.message });
   }
 });
