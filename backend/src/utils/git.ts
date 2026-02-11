@@ -1,6 +1,6 @@
 import { execSync, execFileSync } from "child_process";
-import { existsSync, statSync, readFileSync } from "fs";
-import { join, dirname, basename, resolve, extname } from "path";
+import { existsSync, statSync, readFileSync, readdirSync } from "fs";
+import { join, dirname, basename, resolve, extname, relative } from "path";
 import type { DiffFileEntry, DiffFileType } from "shared/types/index.js";
 
 /**
@@ -414,7 +414,30 @@ export function validateFilename(filename: string): void {
 }
 
 /**
+ * Recursively list all files under a directory, returning paths relative to baseDir.
+ */
+function listFilesRecursively(dirPath: string, baseDir: string): string[] {
+  const results: string[] = [];
+  try {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...listFilesRecursively(fullPath, baseDir));
+      } else if (entry.isFile()) {
+        results.push(relative(baseDir, fullPath));
+      }
+    }
+  } catch {
+    // Skip directories we can't read
+  }
+  return results;
+}
+
+/**
  * Get list of untracked files using git status --porcelain.
+ * When git reports an untracked directory (trailing slash), expands it
+ * into all individual files within that directory.
  */
 function getUntrackedFiles(directory: string): string[] {
   try {
@@ -424,10 +447,22 @@ function getUntrackedFiles(directory: string): string[] {
       stdio: "pipe",
       timeout: 10000,
     });
-    return output
+    const entries = output
       .split("\n")
       .filter((line) => line.startsWith("?? "))
       .map((line) => line.slice(3).replace(/^"(.*)"$/, "$1"));
+
+    const files: string[] = [];
+    for (const entry of entries) {
+      if (entry.endsWith("/")) {
+        // It's a directory — expand into individual files
+        const dirPath = join(directory, entry);
+        files.push(...listFilesRecursively(dirPath, directory));
+      } else {
+        files.push(entry);
+      }
+    }
+    return files;
   } catch {
     return [];
   }
