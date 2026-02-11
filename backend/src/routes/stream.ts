@@ -44,7 +44,7 @@ streamRouter.post("/new/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
-  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig } = req.body;
+  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns } = req.body;
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
@@ -89,6 +89,7 @@ streamRouter.post("/new/message", async (req, res) => {
       defaultPermissions,
       imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
       activePlugins,
+      maxTurns,
     });
 
     writeSSEHeaders(res);
@@ -151,7 +152,7 @@ streamRouter.post("/:id/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with message_update, permission_request, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
-  const { prompt, imageIds, activePlugins } = req.body;
+  const { prompt, imageIds, activePlugins, maxTurns } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
   try {
@@ -166,6 +167,7 @@ streamRouter.post("/:id/message", async (req, res) => {
       prompt,
       imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
       activePlugins,
+      maxTurns,
     });
 
     writeSSEHeaders(res);

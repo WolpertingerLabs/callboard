@@ -284,6 +284,8 @@ interface SendMessageOptions {
   folder?: string;
   /** For new chats: initial permission settings */
   defaultPermissions?: DefaultPermissions;
+  /** Maximum number of agent turns before stopping (default: 200) */
+  maxTurns?: number;
 }
 
 /**
@@ -344,7 +346,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       abortController,
       cwd: folder,
       settingSources: ["user", "project", "local"],
-      maxTurns: 50,
+      maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(activePlugins ? { plugins: buildPluginOptions(folder, activePlugins) } : {}),
       env: {
