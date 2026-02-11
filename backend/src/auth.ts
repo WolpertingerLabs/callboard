@@ -1,15 +1,15 @@
-import { randomBytes } from 'crypto';
-import type { Request, Response, NextFunction } from 'express';
-import { getSession, createSession, deleteSession, cleanupExpiredSessions } from './services/sessions.js';
+import { randomBytes } from "crypto";
+import type { Request, Response, NextFunction } from "express";
+import { getSession, createSession, deleteSession, cleanupExpiredSessions } from "./services/sessions.js";
 
 // Read password lazily so dotenv.config() in index.ts has time to load .env first
 // (ES module imports are hoisted and run before dotenv.config)
-function getPassword(): string {
-  const pw = process.env.AUTH_PASSWORD;
-  if (!pw) {
-    throw new Error('AUTH_PASSWORD environment variable is not set. Please set it in your .env file.');
-  }
-  return pw;
+function getPassword(): string | null {
+  return process.env.AUTH_PASSWORD || null;
+}
+
+export function isPasswordConfigured(): boolean {
+  return !!process.env.AUTH_PASSWORD;
 }
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -19,7 +19,7 @@ const MAX_ATTEMPTS = 3;
 const WINDOW_MS = 60 * 1000; // 1 minute
 
 function getClientIp(req: Request): string {
-  return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+  return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
 }
 
 function checkRateLimit(ip: string): boolean {
@@ -38,24 +38,29 @@ function checkRateLimit(ip: string): boolean {
 cleanupExpiredSessions();
 
 export function loginHandler(req: Request, res: Response) {
+  const configuredPassword = getPassword();
+  if (!configuredPassword) {
+    return res.status(503).json({ error: "Server misconfigured: AUTH_PASSWORD is not set." });
+  }
+
   const ip = getClientIp(req);
   if (!checkRateLimit(ip)) {
-    return res.status(429).json({ error: 'Too many attempts. Try again in a minute.' });
+    return res.status(429).json({ error: "Too many attempts. Try again in a minute." });
   }
 
   const { password } = req.body;
-  if (password !== getPassword()) {
-    return res.status(401).json({ error: 'Invalid password' });
+  if (password !== configuredPassword) {
+    return res.status(401).json({ error: "Invalid password" });
   }
 
-  const token = randomBytes(32).toString('hex');
+  const token = randomBytes(32).toString("hex");
   createSession(token, Date.now() + SESSION_TTL_MS, ip);
 
-  res.cookie('session', token, {
+  res.cookie("session", token, {
     httpOnly: true,
-    sameSite: 'strict',
+    sameSite: "strict",
     maxAge: SESSION_TTL_MS,
-    path: '/',
+    path: "/",
   });
   res.json({ ok: true });
 }
@@ -63,11 +68,14 @@ export function loginHandler(req: Request, res: Response) {
 export function logoutHandler(_req: Request, res: Response) {
   const token = _req.cookies?.session;
   if (token) deleteSession(token);
-  res.clearCookie('session', { path: '/' });
+  res.clearCookie("session", { path: "/" });
   res.json({ ok: true });
 }
 
 export function checkAuthHandler(req: Request, res: Response) {
+  if (!isPasswordConfigured()) {
+    return res.json({ authenticated: false, error: "Server misconfigured: AUTH_PASSWORD is not set." });
+  }
   const token = req.cookies?.session;
   if (!token) return res.json({ authenticated: false });
   const entry = getSession(token);
@@ -80,17 +88,21 @@ export function checkAuthHandler(req: Request, res: Response) {
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   // Allow login/auth-check endpoints through
-  if (req.path === '/api/auth/login' || req.path === '/api/auth/check' || req.path === '/api/auth/logout') {
+  if (req.path === "/api/auth/login" || req.path === "/api/auth/check" || req.path === "/api/auth/logout") {
     return next();
   }
 
+  if (!isPasswordConfigured()) {
+    return res.status(503).json({ error: "Server misconfigured: AUTH_PASSWORD is not set." });
+  }
+
   const token = req.cookies?.session;
-  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  if (!token) return res.status(401).json({ error: "Not authenticated" });
 
   const entry = getSession(token);
   if (!entry || Date.now() > entry.expires_at) {
     if (entry) deleteSession(token);
-    return res.status(401).json({ error: 'Session expired' });
+    return res.status(401).json({ error: "Session expired" });
   }
 
   next();
