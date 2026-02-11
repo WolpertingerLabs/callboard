@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ClipboardList, X, Plus, LogOut } from "lucide-react";
+import { ClipboardList, X, Plus, LogOut, Settings } from "lucide-react";
 import { listChats, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
 import ChatListItem from "../components/ChatListItem";
 import PermissionSettings from "../components/PermissionSettings";
 import ConfirmModal from "../components/ConfirmModal";
+import SettingsModal from "../components/SettingsModal";
 import FolderSelector from "../components/FolderSelector";
 import {
   getDefaultPermissions,
@@ -36,6 +37,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
     chatName: "",
   });
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const navigate = useNavigate();
 
   const load = async () => {
@@ -192,6 +194,22 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
             title="New Chat"
           >
             <Plus size={18} />
+          </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            style={{
+              background: "var(--bg-secondary)",
+              color: "var(--text)",
+              padding: "10px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Settings"
+          >
+            <Settings size={18} />
           </button>
           <button
             onClick={() => setLogoutConfirmOpen(true)}
@@ -375,6 +393,8 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
         confirmText="Logout"
         confirmStyle="danger"
       />
+
+      <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 }

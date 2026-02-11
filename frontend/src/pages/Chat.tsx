@@ -27,7 +27,7 @@ import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
-import { addRecentDirectory } from "../utils/localStorage";
+import { addRecentDirectory, getMaxTurns } from "../utils/localStorage";
 import { getActivePlugins } from "../utils/plugins";
 
 interface ToolGroup {
@@ -289,7 +289,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
                 // Build a system message if the session ended for a non-normal reason
                 const reasonMessages: Record<string, string> = {
-                  max_turns: "Agent reached the maximum turn limit (50). You can send another message to continue.",
+                  max_turns: `Agent reached the maximum turn limit (${getMaxTurns()}). You can send another message to continue.`,
                   max_budget: "Agent reached the maximum budget limit.",
                   execution_error: "Agent stopped due to an execution error.",
                   aborted: "Session was interrupted.",
@@ -625,7 +625,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // NEW CHAT MODE: POST to /api/chats/new/message
           addRecentDirectory(folder);
 
-          const requestBody: any = { folder, prompt, defaultPermissions };
+          const requestBody: any = { folder, prompt, defaultPermissions, maxTurns: getMaxTurns() };
           if (activePluginIds.length > 0) {
             requestBody.activePlugins = activePluginIds;
           }
@@ -661,7 +661,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             addRecentDirectory(chat.folder);
           }
 
-          const body: any = { prompt };
+          const body: any = { prompt, maxTurns: getMaxTurns() };
           if (imageIds.length > 0) {
             body.imageIds = imageIds;
           }

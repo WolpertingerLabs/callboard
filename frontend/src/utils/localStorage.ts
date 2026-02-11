@@ -13,6 +13,7 @@ interface RecentDirectory {
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
   recentDirectories?: RecentDirectory[];
+  maxTurns?: number;
 }
 
 const DEFAULT_PERMISSIONS: DefaultPermissions = {
@@ -50,6 +51,19 @@ export function getDefaultPermissions(): DefaultPermissions {
 export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   const data = getStorageData();
   data.defaultPermissions = permissions;
+  setStorageData(data);
+}
+
+const DEFAULT_MAX_TURNS = 200;
+
+export function getMaxTurns(): number {
+  const data = getStorageData();
+  return data.maxTurns ?? DEFAULT_MAX_TURNS;
+}
+
+export function saveMaxTurns(value: number): void {
+  const data = getStorageData();
+  data.maxTurns = value;
   setStorageData(data);
 }
 
