@@ -1,25 +1,29 @@
-import { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import SplitLayout from './components/SplitLayout';
-import Queue from './pages/Queue';
-import Login from './pages/Login';
+import { useState, useEffect } from "react";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import SplitLayout from "./components/SplitLayout";
+import Queue from "./pages/Queue";
+import Login from "./pages/Login";
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
+  const [serverError, setServerError] = useState("");
 
   useEffect(() => {
-    fetch('/api/auth/check', { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => setAuthed(d.authenticated))
+    fetch("/api/auth/check", { credentials: "include" })
+      .then((r) => r.json())
+      .then((d) => {
+        setAuthed(d.authenticated);
+        if (d.error) setServerError(d.error);
+      })
       .catch(() => setAuthed(false));
   }, []);
 
   if (authed === null) return null; // loading
 
-  if (!authed) return <Login onLogin={() => setAuthed(true)} />;
+  if (!authed) return <Login onLogin={() => setAuthed(true)} serverError={serverError} />;
 
   const handleLogout = () => {
-    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
+    fetch("/api/auth/logout", { method: "POST", credentials: "include" })
       .then(() => setAuthed(false))
       .catch(() => setAuthed(false));
   };
