@@ -357,11 +357,30 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   (async () => {
     try {
       let sessionId: string | null = null;
+      let endReason: string | undefined;
 
       const conversation = query(queryOpts);
 
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;
+
+        // Detect SDK result messages (always the last yielded message).
+        // These tell us *why* the conversation ended — max turns, budget, error, or success.
+        if ("type" in message && (message as any).type === "result") {
+          const result = message as any;
+          if (result.subtype === "error_max_turns") {
+            endReason = "max_turns";
+            console.warn(`[claude] Session ${trackingId} ended: max turns (${result.num_turns}) reached`);
+          } else if (result.subtype === "error_max_budget_usd") {
+            endReason = "max_budget";
+            console.warn(`[claude] Session ${trackingId} ended: max budget reached`);
+          } else if (result.subtype === "error_during_execution") {
+            endReason = "execution_error";
+            console.warn(`[claude] Session ${trackingId} ended: execution error — ${result.errors?.join("; ") || "unknown"}`);
+          }
+          // For "success" subtype, endReason stays undefined (normal completion)
+          continue;
+        }
 
         // Capture slash commands from system initialization message
         if ("slash_commands" in message && message.slash_commands) {
@@ -417,9 +436,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }
 
       chatFileService.updateChat(trackingId, {});
-      emitter.emit("event", { type: "done", content: "" } as StreamEvent);
+      emitter.emit("event", { type: "done", content: "", ...(endReason && { reason: endReason }) } as StreamEvent);
     } catch (err: any) {
-      if (err.name !== "AbortError") {
+      if (err.name === "AbortError") {
+        // Emit done with reason so the frontend knows the session was aborted,
+        // rather than silently swallowing the event.
+        console.warn(`[claude] Session ${trackingId} ended: aborted`);
+        chatFileService.updateChat(trackingId, {});
+        emitter.emit("event", { type: "done", content: "", reason: "aborted" } as StreamEvent);
+      } else {
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {

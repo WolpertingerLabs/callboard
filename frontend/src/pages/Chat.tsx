@@ -287,6 +287,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   return;
                 }
 
+                // Build a system message if the session ended for a non-normal reason
+                const reasonMessages: Record<string, string> = {
+                  max_turns: "Agent reached the maximum turn limit (50). You can send another message to continue.",
+                  max_budget: "Agent reached the maximum budget limit.",
+                  execution_error: "Agent stopped due to an execution error.",
+                  aborted: "Session was interrupted.",
+                };
+                const reasonMsg = event.reason ? reasonMessages[event.reason] : undefined;
+
                 setStreaming(false);
                 setInFlightMessage(null);
                 // Refetch complete chat data and messages
@@ -296,7 +305,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 });
                 getMessages(streamChatId!).then((msgs) => {
                   if (currentIdRef.current !== streamChatId) return;
-                  setMessages(Array.isArray(msgs) ? msgs : []);
+                  const msgArray = Array.isArray(msgs) ? msgs : [];
+                  if (reasonMsg) {
+                    setMessages([...msgArray, { role: "system", type: "system", content: reasonMsg }]);
+                  } else {
+                    setMessages(msgArray);
+                  }
                 });
                 // Refresh slash commands in case they were discovered during initialization
                 loadSlashCommands();

@@ -101,7 +101,7 @@ streamRouter.post("/new/message", async (req, res) => {
       }
 
       if (event.type === "done") {
-        sendSSE(res, { type: "message_complete" });
+        sendSSE(res, { type: "message_complete", ...(event.reason && { reason: event.reason }) });
         emitter.removeListener("event", onEvent);
         res.end();
       } else if (event.type === "error") {

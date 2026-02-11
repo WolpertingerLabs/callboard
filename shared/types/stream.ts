@@ -20,4 +20,6 @@ export interface StreamEvent {
   chatId?: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   chat?: any;
+  /** Reason the session ended (e.g. "max_turns", "aborted") — attached to "done" events */
+  reason?: string;
 }
