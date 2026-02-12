@@ -9,4 +9,17 @@ export interface ParsedMessage {
   teamName?: string;
   /** Present on system messages like compact_boundary */
   subtype?: string;
+  /** Model name from the API response, e.g. "claude-opus-4-6" */
+  model?: string;
+  /** Git branch at the time this message was recorded */
+  gitBranch?: string;
+  /** Token usage from the API response */
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  /** API service tier, e.g. "standard" */
+  serviceTier?: string;
 }

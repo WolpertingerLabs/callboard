@@ -665,8 +665,28 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
     const teamName = msg.teamName;
     if (!content) continue;
 
+    // Extract per-entry metadata (shared across all content blocks from this JSONL line)
+    const model = msg.message?.model;
+    const gitBranch = msg.gitBranch;
+    const rawUsage = msg.message?.usage;
+    const usage = rawUsage
+      ? {
+          input_tokens: rawUsage.input_tokens,
+          output_tokens: rawUsage.output_tokens,
+          cache_creation_input_tokens: rawUsage.cache_creation_input_tokens,
+          cache_read_input_tokens: rawUsage.cache_read_input_tokens,
+        }
+      : undefined;
+    const serviceTier = rawUsage?.service_tier;
+    const meta = {
+      ...(model && { model }),
+      ...(gitBranch && { gitBranch }),
+      ...(usage && { usage }),
+      ...(serviceTier && { serviceTier }),
+    };
+
     if (typeof content === "string") {
-      result.push({ role, type: "text", content, timestamp, ...(teamName && { teamName }) });
+      result.push({ role, type: "text", content, timestamp, ...(teamName && { teamName }), ...meta });
       continue;
     }
 
@@ -675,10 +695,10 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
     for (const block of content) {
       switch (block.type) {
         case "text":
-          if (block.text) result.push({ role, type: "text", content: block.text, timestamp, ...(teamName && { teamName }) });
+          if (block.text) result.push({ role, type: "text", content: block.text, timestamp, ...(teamName && { teamName }), ...meta });
           break;
         case "thinking":
-          result.push({ role: "assistant", type: "thinking", content: block.thinking || "", timestamp });
+          result.push({ role: "assistant", type: "thinking", content: block.thinking || "", timestamp, ...meta });
           break;
         case "tool_use":
           result.push({
@@ -688,6 +708,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
             toolName: block.name,
             toolUseId: block.id,
             timestamp,
+            ...meta,
           });
           break;
         case "tool_result":
@@ -698,6 +719,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
             toolName: block.tool_use_id,
             toolUseId: block.tool_use_id,
             timestamp,
+            ...meta,
           });
           break;
       }

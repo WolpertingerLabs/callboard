@@ -181,9 +181,46 @@ interface Props {
   teamColorMap?: Map<string, number>;
 }
 
-function MessageTimestamp({ timestamp, align = "right" }: { timestamp?: string; align?: "left" | "right" }) {
-  const relativeTime = useRelativeTime(timestamp);
+/** "claude-opus-4-6" → "Opus 4.6", "claude-sonnet-4-5-20250929" → "Sonnet 4.5" */
+function formatModelName(model: string): string {
+  // Strip "claude-" prefix
+  const withoutPrefix = model.replace(/^claude-/, "");
+  // Split on hyphens
+  const parts = withoutPrefix.split("-");
+  if (parts.length === 0) return model;
+  // Capitalize model family name
+  const name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  // Collect version digits (stop at first non-single-digit part, which is likely a date suffix)
+  const versionParts: string[] = [];
+  for (let i = 1; i < parts.length; i++) {
+    if (/^\d{1,2}$/.test(parts[i])) {
+      versionParts.push(parts[i]);
+    } else {
+      break;
+    }
+  }
+  const version = versionParts.join(".");
+  return version ? `${name} ${version}` : name;
+}
+
+/** Format usage object into a readable string */
+function formatUsage(usage: NonNullable<ParsedMessage["usage"]>): string {
+  const parts: string[] = [];
+  if (usage.input_tokens != null) parts.push(`${usage.input_tokens.toLocaleString()} in`);
+  if (usage.output_tokens != null) parts.push(`${usage.output_tokens.toLocaleString()} out`);
+  if (usage.cache_read_input_tokens) parts.push(`${usage.cache_read_input_tokens.toLocaleString()} cache read`);
+  if (usage.cache_creation_input_tokens) parts.push(`${usage.cache_creation_input_tokens.toLocaleString()} cache write`);
+  return parts.join(", ");
+}
+
+export function MessageMetadata({ message, align = "right" }: { message: ParsedMessage; align?: "left" | "right" }) {
+  const relativeTime = useRelativeTime(message.timestamp);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+
   if (!relativeTime) return null;
+
+  const displayModel = message.model ? formatModelName(message.model) : null;
+  const hasDetails = !!(message.gitBranch || message.usage || message.serviceTier);
 
   return (
     <div
@@ -195,7 +232,41 @@ function MessageTimestamp({ timestamp, align = "right" }: { timestamp?: string; 
         textAlign: align,
       }}
     >
-      {relativeTime}
+      <span>
+        {relativeTime}
+        {displayModel && <span> · {displayModel}</span>}
+        {hasDetails && (
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              setDetailsExpanded(!detailsExpanded);
+            }}
+            style={{
+              cursor: "pointer",
+              marginLeft: 4,
+              textDecoration: "underline",
+              textDecorationStyle: "dotted" as const,
+            }}
+          >
+            ({detailsExpanded ? "less" : "more"})
+          </span>
+        )}
+      </span>
+
+      {detailsExpanded && hasDetails && (
+        <div
+          style={{
+            marginTop: 3,
+            fontSize: 10,
+            lineHeight: 1.6,
+            textAlign: align,
+          }}
+        >
+          {message.gitBranch && <div>Branch: {message.gitBranch}</div>}
+          {message.serviceTier && <div>Tier: {message.serviceTier}</div>}
+          {message.usage && <div>Tokens: {formatUsage(message.usage)}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -269,7 +340,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
           <span style={{ fontStyle: "italic" }}>{expanded ? "Thinking:" : "Thinking... (tap to expand)"}</span>
           {expanded && <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{message.content}</pre>}
         </div>
-        <MessageTimestamp timestamp={message.timestamp} align="left" />
+        <MessageMetadata message={message} align="left" />
       </div>
     );
   }
@@ -293,7 +364,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
           </span>
           {expanded && <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{message.content}</pre>}
         </div>
-        <MessageTimestamp timestamp={message.timestamp} align="left" />
+        <MessageMetadata message={message} align="left" />
       </div>
     );
   }
@@ -318,7 +389,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
             </pre>
           )}
         </div>
-        <MessageTimestamp timestamp={message.timestamp} align="left" />
+        <MessageMetadata message={message} align="left" />
       </div>
     );
   }
@@ -377,7 +448,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
         >
           <MarkdownRenderer content={message.content} className="message-markdown" />
         </div>
-        <MessageTimestamp timestamp={message.timestamp} align="left" />
+        <MessageMetadata message={message} align="left" />
       </div>
     );
   }
@@ -411,7 +482,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
       >
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
       </div>
-      <MessageTimestamp timestamp={message.timestamp} align={isUser ? "right" : "left"} />
+      <MessageMetadata message={message} align={isUser ? "right" : "left"} />
     </div>
   );
 }
