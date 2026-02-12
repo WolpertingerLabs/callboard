@@ -538,6 +538,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       const messageArray = Array.isArray(msgs) ? msgs : [];
       setMessages(messageArray);
 
+      // On chat refresh / SSE drop, if messages contain a user message,
+      // refresh the chat list so the title/preview shows up in the sidebar
+      if (messageArray.some((m) => m.role === "user")) {
+        onChatListRefreshRef.current?.();
+      }
+
       if (pending) {
         setPendingAction(pending);
         setStreaming(true);
