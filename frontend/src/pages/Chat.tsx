@@ -469,6 +469,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setChat(null);
     setMessages([]);
     setBranchConfig({});
+    setViewMode("chat");
     currentIdRef.current = undefined;
     tempChatIdRef.current = null;
 
@@ -508,6 +509,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setNetworkError(null);
     setSessionStatus(null);
     setInfo(null); // Clear new-chat info when transitioning to existing mode
+    setViewMode("chat"); // Reset to chat view when switching chats
 
     // Reset first response flag and plan approval tracking when chat ID changes
     hasReceivedFirstResponseRef.current = false;
