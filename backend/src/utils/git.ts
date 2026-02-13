@@ -406,9 +406,17 @@ function classifyFile(filename: string): DiffFileType {
 
 /**
  * Validate a filename to prevent path traversal attacks.
+ * Allows legitimate patterns like Next.js catch-all routes: [[...slug]], [...params]
  */
 export function validateFilename(filename: string): void {
-  if (!filename || filename.includes("..") || filename.startsWith("/")) {
+  if (!filename || filename.startsWith("/")) {
+    throw new Error("Invalid filename");
+  }
+  // Check for ".." as a directory traversal path segment, not as a substring.
+  // This allows valid filenames containing ".." within brackets (e.g. [[...category]])
+  // while still blocking traversal attempts like "../../etc/passwd" or "foo/../bar".
+  const segments = filename.split("/");
+  if (segments.some((seg) => seg === ".." || seg === ".")) {
     throw new Error("Invalid filename");
   }
 }

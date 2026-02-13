@@ -25,7 +25,9 @@
     "lint:fix": "git diff --name-only --cached HEAD | grep -E '\\.(js|jsx|ts|tsx)$' | xargs -r eslint --fix",
     "lint:all": "eslint . --ext .js,.jsx,.ts,.tsx",
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
-    "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown"
+    "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
@@ -36,6 +38,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "tsx": "^4.0.0",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.54.0"
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^4.0.18"
   }
 }
