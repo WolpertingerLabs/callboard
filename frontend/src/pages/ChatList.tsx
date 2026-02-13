@@ -1,23 +1,12 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ClipboardList, X, Plus, LogOut, Settings } from "lucide-react";
-import {
-  listChats,
-  deleteChat,
-  getSessionStatus,
-  getRecentFoldersGrouped,
-  isWorktreeGroup,
-  type Chat,
-  type SessionStatus,
-  type DefaultPermissions,
-  type GroupedRecentItem,
-} from "../api";
+import { listChats, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
 import ChatListItem from "../components/ChatListItem";
 import PermissionSettings from "../components/PermissionSettings";
 import ConfirmModal from "../components/ConfirmModal";
 import SettingsModal from "../components/SettingsModal";
 import FolderSelector from "../components/FolderSelector";
-import WorktreeGroupRow from "../components/WorktreeGroupRow";
 import {
   getDefaultPermissions,
   saveDefaultPermissions,
@@ -41,8 +30,6 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
   const [showNew, setShowNew] = useState(false);
   const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
   const [recentDirs, setRecentDirs] = useState(() => getRecentDirectories().map((r) => r.path));
-  const [groupedRecent, setGroupedRecent] = useState<GroupedRecentItem[]>([]);
-  const [groupedRecentLoaded, setGroupedRecentLoaded] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; path: string }>({ isOpen: false, path: "" });
   const [deleteConfirmModal, setDeleteConfirmModal] = useState<{ isOpen: boolean; chatId: string; chatName: string }>({
     isOpen: false,
@@ -111,24 +98,6 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
     load();
     onRefresh(load);
   }, [onRefresh]);
-
-  // Load grouped recent folders from backend when new chat panel opens
-  useEffect(() => {
-    if (showNew) {
-      setGroupedRecentLoaded(false);
-      getRecentFoldersGrouped(10)
-        .then((result) => {
-          if (result.grouped) {
-            setGroupedRecent(result.grouped);
-          }
-          setGroupedRecentLoaded(true);
-        })
-        .catch(() => {
-          // Fallback: no grouping, just show flat list from localStorage
-          setGroupedRecentLoaded(true);
-        });
-    }
-  }, [showNew]);
 
   const updateRecentDirs = () => {
     setRecentDirs(getRecentDirectories().map((r) => r.path));
@@ -270,133 +239,60 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
         >
           <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />
 
-          {(groupedRecentLoaded ? groupedRecent.length > 0 : recentDirs.length > 0) && (
+          {recentDirs.length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
-              {groupedRecentLoaded && groupedRecent.length > 0
-                ? groupedRecent.map((item) => {
-                    if (isWorktreeGroup(item)) {
-                      return (
-                        <WorktreeGroupRow
-                          key={item.mainRepo.path}
-                          mainRepo={item.mainRepo}
-                          worktrees={item.worktrees.map((wt) => ({
-                            path: wt.path,
-                            name: wt.name,
-                            branch: wt.worktreeBranch,
-                          }))}
-                          onSelect={(dir) => handleCreate(dir)}
-                          onRemove={(path) => handleRemoveRecentDir(path)}
-                          variant="recent"
-                        />
-                      );
-                    } else {
-                      // Ungrouped folder — same as current flat button
-                      return (
-                        <div
-                          key={item.path}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 4,
-                            marginBottom: 4,
-                          }}
-                        >
-                          <button
-                            onClick={() => handleCreate(item.path)}
-                            title={item.path}
-                            style={{
-                              flex: 1,
-                              textAlign: "left",
-                              background: "var(--surface)",
-                              border: "1px solid var(--border)",
-                              borderRadius: 8,
-                              padding: "10px 12px",
-                              fontSize: 14,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              direction: "rtl",
-                            }}
-                          >
-                            {item.path}
-                          </button>
-                          <button
-                            onClick={() => handleRemoveRecentDir(item.path)}
-                            style={{
-                              background: "var(--surface)",
-                              border: "1px solid var(--border)",
-                              borderRadius: 6,
-                              padding: "8px",
-                              fontSize: 12,
-                              color: "var(--text-muted)",
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              minWidth: 28,
-                              height: 28,
-                            }}
-                            title={`Remove ${item.path} from recent directories`}
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      );
-                    }
-                  })
-                : // Fallback: flat localStorage list while grouped data loads
-                  recentDirs.map((dir) => (
-                    <div
-                      key={dir}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        marginBottom: 4,
-                      }}
-                    >
-                      <button
-                        onClick={() => handleCreate(dir)}
-                        title={dir}
-                        style={{
-                          flex: 1,
-                          textAlign: "left",
-                          background: "var(--surface)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 8,
-                          padding: "10px 12px",
-                          fontSize: 14,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          direction: "rtl",
-                        }}
-                      >
-                        {dir}
-                      </button>
-                      <button
-                        onClick={() => handleRemoveRecentDir(dir)}
-                        style={{
-                          background: "var(--surface)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 6,
-                          padding: "8px",
-                          fontSize: 12,
-                          color: "var(--text-muted)",
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          minWidth: 28,
-                          height: 28,
-                        }}
-                        title={`Remove ${dir} from recent directories`}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
+              {recentDirs.map((dir) => (
+                <div
+                  key={dir}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    marginBottom: 4,
+                  }}
+                >
+                  <button
+                    onClick={() => handleCreate(dir)}
+                    title={dir}
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      background: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      padding: "10px 12px",
+                      fontSize: 14,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      direction: "rtl",
+                    }}
+                  >
+                    {dir}
+                  </button>
+                  <button
+                    onClick={() => handleRemoveRecentDir(dir)}
+                    style={{
+                      background: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      padding: "8px",
+                      fontSize: 12,
+                      color: "var(--text-muted)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      minWidth: 28,
+                      height: 28,
+                    }}
+                    title={`Remove ${dir} from recent directories`}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
               <div
                 style={{
                   fontSize: 12,

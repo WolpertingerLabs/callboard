@@ -1,11 +1,3 @@
-/** Information about a git worktree returned by `git worktree list --porcelain` */
-export interface WorktreeInfo {
-  path: string;
-  branch: string | null; // null for detached HEAD
-  isMainWorktree: boolean;
-  isBare: boolean;
-}
-
 export interface BranchConfig {
   baseBranch?: string;
   newBranch?: string;

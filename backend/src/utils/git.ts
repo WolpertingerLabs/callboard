@@ -1,7 +1,7 @@
 import { execSync, execFileSync } from "child_process";
-import { existsSync, statSync, lstatSync, readFileSync, readdirSync } from "fs";
+import { existsSync, statSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, basename, resolve, extname, relative } from "path";
-import type { DiffFileEntry, DiffFileType, WorktreeInfo } from "shared/types/index.js";
+import type { DiffFileEntry, DiffFileType } from "shared/types/index.js";
 
 /**
  * Validate a string as a safe git ref name.
@@ -173,69 +173,11 @@ export function getGitBranches(directory: string): string[] {
   }
 }
 
-/**
- * Cheaply detect if a directory is a git worktree checkout (not the main repo).
- * In a worktree, `.git` is a FILE containing "gitdir: /path/to/main/.git/worktrees/<name>".
- * In a main repo, `.git` is a DIRECTORY.
- * Returns the main repo path and branch if it's a worktree, null otherwise.
- */
-export function detectWorktreeMainRepo(dirPath: string): { mainRepoPath: string; branch: string | null } | null {
-  const gitPath = join(dirPath, ".git");
-  if (!existsSync(gitPath)) return null;
-
-  try {
-    const stat = lstatSync(gitPath);
-    if (!stat.isFile()) return null; // .git is a directory => main repo, not a worktree
-
-    // Read the .git file to extract the gitdir path
-    const content = readFileSync(gitPath, "utf8").trim();
-    const match = content.match(/^gitdir:\s*(.+)$/);
-    if (!match) return null;
-
-    const gitdir = resolve(dirPath, match[1]);
-    // gitdir looks like: /path/to/main-repo/.git/worktrees/<worktree-name>
-    // We need to extract /path/to/main-repo from it
-    const worktreesMatch = gitdir.match(/^(.+)\/\.git\/worktrees\/.+$/);
-    if (!worktreesMatch) return null;
-
-    const mainRepoPath = worktreesMatch[1];
-
-    // Validate that the main repo still exists
-    if (!existsSync(mainRepoPath)) return null;
-
-    // Try to read the branch from HEAD in the worktree's gitdir
-    let branch: string | null = null;
-    try {
-      const headPath = join(gitdir, "HEAD");
-      if (existsSync(headPath)) {
-        const headContent = readFileSync(headPath, "utf8").trim();
-        const branchMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
-        if (branchMatch) {
-          branch = branchMatch[1];
-        }
-        // else: detached HEAD, branch stays null
-      }
-    } catch {
-      // Non-fatal
-    }
-
-    return { mainRepoPath, branch };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Check if a directory is a main git repo (has .git as a directory, not a file).
- */
-export function isMainGitRepo(dirPath: string): boolean {
-  const gitPath = join(dirPath, ".git");
-  if (!existsSync(gitPath)) return false;
-  try {
-    return lstatSync(gitPath).isDirectory();
-  } catch {
-    return false;
-  }
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null; // null for detached HEAD
+  isMainWorktree: boolean;
+  isBare: boolean;
 }
 
 /**

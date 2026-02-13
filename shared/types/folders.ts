@@ -6,18 +6,6 @@ export interface FolderItem {
   size?: number;
   modified?: string;
   isGitRepo?: boolean;
-  /** True if this directory is a git worktree checkout (`.git` is a file, not a directory) */
-  isWorktree?: boolean;
-  /** Branch checked out in this worktree */
-  worktreeBranch?: string;
-  /** Absolute path to the main repository (set when `isWorktree` is true) */
-  mainRepoPath?: string;
-}
-
-/** A main git repository grouped with its sibling worktree directories */
-export interface WorktreeGroup {
-  mainRepo: FolderItem;
-  worktrees: FolderItem[];
 }
 
 export interface BrowseResult {
@@ -26,8 +14,6 @@ export interface BrowseResult {
   parent: string | null;
   exists: boolean;
   currentPath: string;
-  /** Directories grouped by worktree relationship (main repo + its worktrees) */
-  worktreeGroups?: WorktreeGroup[];
 }
 
 export interface ValidateResult {
