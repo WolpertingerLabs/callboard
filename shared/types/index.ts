@@ -11,12 +11,12 @@ export type { StoredImage, ImageUploadResult } from "./image.js";
 
 export type { QueueItem } from "./queue.js";
 
-export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "./folders.js";
+export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion, WorktreeGroup } from "./folders.js";
 
 export type { StreamEvent } from "./stream.js";
 
 export type { SlashCommand } from "./slashCommand.js";
 
-export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
+export type { WorktreeInfo, BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
 
 export type { SessionStatus } from "./session.js";

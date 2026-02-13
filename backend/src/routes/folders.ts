@@ -72,13 +72,21 @@ foldersRouter.get("/suggestions", async (req, res) => {
 foldersRouter.get("/recent", async (req, res) => {
   // #swagger.tags = ['Folders']
   // #swagger.summary = 'Get recent folders'
-  // #swagger.description = 'Returns recently used project directories derived from chat history.'
+  // #swagger.description = 'Returns recently used project directories derived from chat history. Optionally groups by worktree relationship.'
   /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Max folders to return (default: 10)' } */
-  /* #swagger.responses[200] = { description: "Array of recent folder paths" } */
+  /* #swagger.parameters['groupByWorktree'] = { in: 'query', type: 'boolean', description: 'Group folders by git worktree relationship (default: false)' } */
+  /* #swagger.responses[200] = { description: "Array of recent folder paths, optionally with worktree grouping" } */
   try {
     const limit = parseInt(req.query.limit as string) || 10;
+    const groupByWorktree = req.query.groupByWorktree === "true";
     const recent = folderService.getRecentFolders(limit);
-    res.json({ recent });
+
+    if (groupByWorktree) {
+      const grouped = folderService.groupRecentByWorktree(recent);
+      res.json({ recent, grouped });
+    } else {
+      res.json({ recent });
+    }
   } catch (err: any) {
     console.error("Error getting recent folders:", err);
     res.status(500).json({ error: "Failed to get recent folders", details: err.message });

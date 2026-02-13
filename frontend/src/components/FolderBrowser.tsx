@@ -3,6 +3,7 @@ import { X, Home, Folder, GitBranch, Eye, EyeOff, ChevronRight, ArrowUp } from "
 import { browseDirectory, getFolderSuggestions, type BrowseResult, type FolderItem, type FolderSuggestion } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ModalOverlay from "./ModalOverlay";
+import WorktreeGroupRow from "./WorktreeGroupRow";
 
 interface FolderBrowserProps {
   isOpen: boolean;
@@ -307,45 +308,98 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
                   </div>
                 )}
 
-                {/* Directories */}
-                {browseResult.directories.map((item) => (
-                  <div
-                    key={item.path}
-                    onClick={() => handleItemClick(item)}
-                    onDoubleClick={() => handleItemDoubleClick(item)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: isMobile ? 8 : 12,
-                      padding: isMobile ? "8px 10px" : "8px 12px",
-                      borderRadius: 6,
-                      cursor: "pointer",
-                      marginBottom: 2,
-                      opacity: item.isHidden ? 0.6 : 1,
-                      minHeight: isMobile ? 44 : 40, // Better touch target on mobile
-                    }}
-                    onMouseOver={(e) => (e.currentTarget.style.background = "var(--surface)")}
-                    onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
-                      {item.isGitRepo ? (
-                        <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent)", flexShrink: 0 }} />
-                      ) : (
-                        <Folder size={isMobile ? 14 : 16} style={{ color: "var(--accent)", flexShrink: 0 }} />
-                      )}
-                      <span
+                {/* Directories — grouped by worktree relationship and ungrouped */}
+                {(() => {
+                  const groups = browseResult.worktreeGroups || [];
+                  const groupedPaths = new Set<string>();
+                  for (const group of groups) {
+                    groupedPaths.add(group.mainRepo.path);
+                    for (const wt of group.worktrees) {
+                      groupedPaths.add(wt.path);
+                    }
+                  }
+
+                  // Build a merged list: groups appear at the main repo's alphabetical position,
+                  // ungrouped directories appear normally
+                  const allDirs = browseResult.directories;
+                  const groupByMainPath = new Map(groups.map((g) => [g.mainRepo.path, g]));
+                  const rendered = new Set<string>();
+
+                  return allDirs.map((item) => {
+                    if (rendered.has(item.path)) return null;
+
+                    // If this item is a worktree that's part of a group, skip it
+                    // (it will be rendered as a sub-item of its group)
+                    if (groupedPaths.has(item.path) && !groupByMainPath.has(item.path)) {
+                      rendered.add(item.path);
+                      return null;
+                    }
+
+                    // If this item is a main repo with a group, render the group
+                    const group = groupByMainPath.get(item.path);
+                    if (group) {
+                      rendered.add(item.path);
+                      for (const wt of group.worktrees) {
+                        rendered.add(wt.path);
+                      }
+                      return (
+                        <WorktreeGroupRow
+                          key={item.path}
+                          mainRepo={group.mainRepo}
+                          worktrees={group.worktrees.map((wt) => ({
+                            path: wt.path,
+                            name: wt.name,
+                            branch: wt.worktreeBranch,
+                          }))}
+                          onNavigate={(path) => handleNavigate(path)}
+                          onSelect={(path) => onSelect(path)}
+                          variant="browser"
+                        />
+                      );
+                    }
+
+                    // Regular ungrouped directory
+                    rendered.add(item.path);
+                    return (
+                      <div
+                        key={item.path}
+                        onClick={() => handleItemClick(item)}
+                        onDoubleClick={() => handleItemDoubleClick(item)}
                         style={{
-                          fontSize: isMobile ? 13 : 14,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: isMobile ? 8 : 12,
+                          padding: isMobile ? "8px 10px" : "8px 12px",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          marginBottom: 2,
+                          opacity: item.isHidden ? 0.6 : 1,
+                          minHeight: isMobile ? 44 : 40,
                         }}
+                        onMouseOver={(e) => (e.currentTarget.style.background = "var(--surface)")}
+                        onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
                       >
-                        {item.name}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
+                          {item.isGitRepo ? (
+                            <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                          ) : (
+                            <Folder size={isMobile ? 14 : 16} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                          )}
+                          <span
+                            style={{
+                              fontSize: isMobile ? 13 : 14,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {item.name}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
 
                 {browseResult.directories.length === 0 && browseResult.files.length === 0 && (
                   <div

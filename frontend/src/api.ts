@@ -17,6 +17,7 @@ import type {
   BrowseResult,
   ValidateResult,
   FolderSuggestion,
+  WorktreeGroup,
   GitDiffResponse,
 } from "shared/types/index.js";
 
@@ -39,6 +40,7 @@ export type {
   BrowseResult,
   ValidateResult,
   FolderSuggestion,
+  WorktreeGroup,
   GitDiffResponse,
 };
 
@@ -236,5 +238,37 @@ export async function validatePath(path: string): Promise<ValidateResult> {
 export async function getFolderSuggestions(): Promise<SuggestionsResponse> {
   const res = await fetch(`${BASE}/folders/suggestions`);
   await assertOk(res, "Failed to get folder suggestions");
+  return res.json();
+}
+
+// Recent folder types matching backend RecentFolder shape
+export interface RecentFolderData {
+  path: string;
+  name: string;
+  description: string;
+  type: "recent";
+  lastUsed: string;
+  chatCount: number;
+  isWorktree?: boolean;
+  mainRepoPath?: string;
+  worktreeBranch?: string;
+}
+
+/** A grouped recent item: either a standalone folder or a main repo with its worktrees */
+export type GroupedRecentItem = RecentFolderData | { mainRepo: RecentFolderData; worktrees: RecentFolderData[] };
+
+/** Type guard: check if a grouped item is a worktree group (not a standalone folder) */
+export function isWorktreeGroup(item: GroupedRecentItem): item is { mainRepo: RecentFolderData; worktrees: RecentFolderData[] } {
+  return "mainRepo" in item && "worktrees" in item;
+}
+
+export async function getRecentFoldersGrouped(limit: number = 10): Promise<{ recent: RecentFolderData[]; grouped: GroupedRecentItem[] }> {
+  const params = new URLSearchParams({
+    limit: limit.toString(),
+    groupByWorktree: "true",
+  });
+
+  const res = await fetch(`${BASE}/folders/recent?${params}`);
+  await assertOk(res, "Failed to get recent folders");
   return res.json();
 }
