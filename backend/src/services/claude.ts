@@ -362,8 +362,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(activePlugins ? { plugins: buildPluginOptions(folder, activePlugins) } : {}),
       env: {
         ...process.env,
+        // Remove CLAUDECODE to prevent "cannot be launched inside another Claude Code session" errors
+        // when the backend was started from within a Claude Code session (e.g. via PM2 redeploy)
+        CLAUDECODE: undefined,
       },
       canUseTool: buildCanUseTool(emitter, getDefaultPermissions, () => trackingId),
+      stderr: (data: string) => {
+        log.warn(`[SDK stderr] ${data.trimEnd()}`);
+      },
     },
   };
   log.debug(`SDK query options — cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);

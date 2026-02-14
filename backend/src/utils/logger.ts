@@ -7,17 +7,26 @@ const logFormat = printf(({ level, message, timestamp, module }) => {
   return `[${timestamp}] [${level}]${mod} ${message}`;
 });
 
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || "info",
-  format: combine(timestamp({ format: "YYYY-MM-DD HH:mm:ss" }), colorize(), logFormat),
-  transports: [new winston.transports.Console()],
-});
+// Lazily initialize the logger so that dotenv has loaded .env by the time
+// the log level is read from process.env.
+let _logger: winston.Logger | null = null;
+
+function getLogger(): winston.Logger {
+  if (!_logger) {
+    _logger = winston.createLogger({
+      level: process.env.LOG_LEVEL || "info",
+      format: combine(timestamp({ format: "YYYY-MM-DD HH:mm:ss" }), colorize(), logFormat),
+      transports: [new winston.transports.Console()],
+    });
+  }
+  return _logger;
+}
 
 /**
  * Create a child logger with a fixed module label.
  */
 export function createLogger(module: string): winston.Logger {
-  return logger.child({ module });
+  return getLogger().child({ module });
 }
 
-export default logger;
+export default getLogger;
