@@ -35,11 +35,13 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
           gitInfo = getGitInfo(fileChat.folder);
         } catch {}
       }
-      // Resolve worktree paths to main repo for display
+      // Resolve worktree paths to main repo for display/grouping only
       const { mainRepoPath } = resolveWorktreeToMainRepoCached(fileChat.folder);
       return {
         ...fileChat,
-        folder: mainRepoPath,
+        // Keep original folder (may be a worktree) — logs are stored under this path
+        folder: fileChat.folder,
+        displayFolder: mainRepoPath,
         session_log_path: logPath,
         ...(includeGitInfo && {
           is_git_repo: gitInfo.isGitRepo,
@@ -64,12 +66,14 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
         gitInfo = getGitInfo(originalFolder);
       } catch {}
     }
-    // Resolve worktree paths to main repo for display
+    // Resolve worktree paths to main repo for display/grouping only
     const { mainRepoPath } = resolveWorktreeToMainRepoCached(originalFolder);
 
     return {
       id,
-      folder: mainRepoPath,
+      // Keep original folder (may be a worktree) — logs are stored under this path
+      folder: originalFolder,
+      displayFolder: mainRepoPath,
       session_id: id,
       session_log_path: logPath,
       metadata: JSON.stringify({ session_ids: [id] }),

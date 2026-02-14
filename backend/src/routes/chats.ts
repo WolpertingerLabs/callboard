@@ -78,7 +78,7 @@ function discoverSessionsPaginated(
   limit: number,
   offset: number,
 ): {
-  sessions: { sessionId: string; folder: string; originalFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
+  sessions: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
   total: number;
 } {
   if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
@@ -114,7 +114,7 @@ function discoverSessionsPaginated(
 
     // Only process the files we need for this page (already sorted by ls -t)
     const pageFiles = filePathsFromLs.slice(offset, offset + limit);
-    const results: { sessionId: string; folder: string; originalFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
+    const results: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
 
     // Only call statSync on the paginated files we actually need
     for (const filePath of pageFiles) {
@@ -126,15 +126,15 @@ function discoverSessionsPaginated(
         if (!projectDir) continue;
 
         const originalFolder = projectDirToFolder(projectDir);
-        // Resolve worktree paths to the main repo for display/grouping
+        // Resolve worktree paths to the main repo for display/grouping only
         const { mainRepoPath } = resolveWorktreeToMainRepoCached(originalFolder);
 
         // Get timestamps only for paginated files (much faster than all files)
         const st = statSync(filePath);
         results.push({
           sessionId,
-          folder: mainRepoPath,
-          originalFolder,
+          folder: originalFolder,
+          displayFolder: mainRepoPath,
           filePath,
           createdAt: st.birthtime,
           updatedAt: st.mtime,
@@ -159,10 +159,10 @@ function discoverAllSessionsFallback(
   limit?: number,
   offset?: number,
 ): {
-  sessions: { sessionId: string; folder: string; originalFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
+  sessions: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
   total: number;
 } {
-  const results: { sessionId: string; folder: string; originalFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
+  const results: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
   for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
     const dirPath = join(CLAUDE_PROJECTS_DIR, dir);
     try {
@@ -179,7 +179,7 @@ function discoverAllSessionsFallback(
       const filePath = join(dirPath, file);
       try {
         const st = statSync(filePath);
-        results.push({ sessionId, folder: mainRepoPath, originalFolder, filePath, createdAt: st.birthtime, updatedAt: st.mtime });
+        results.push({ sessionId, folder: originalFolder, displayFolder: mainRepoPath, filePath, createdAt: st.birthtime, updatedAt: st.mtime });
       } catch {
         continue;
       }
@@ -246,7 +246,7 @@ chatsRouter.get("/", (req, res) => {
       const fileChat = fileChatsBySessionId.get(s.sessionId);
 
       // Get cached git info using the original folder (may be a worktree) for correct branch
-      const gitInfo = getCachedGitInfo(s.originalFolder);
+      const gitInfo = getCachedGitInfo(s.folder);
 
       // Extract preview from the first user message in the JSONL file
       const preview = getFirstUserMessage(s.filePath);
@@ -255,8 +255,10 @@ chatsRouter.get("/", (req, res) => {
         // Augment with file storage data while keeping filesystem as source of truth for timestamps
         return {
           ...fileChat,
-          // Use resolved folder (worktree paths → main repo)
+          // Keep original folder (may be a worktree) — logs are stored under this path
           folder: s.folder,
+          // Resolved main repo path for display/grouping in the UI
+          displayFolder: s.displayFolder,
           // Keep filesystem timestamps as they're more accurate for actual activity
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
@@ -285,7 +287,10 @@ chatsRouter.get("/", (req, res) => {
         // No file record found, create from filesystem only - this is normal
         return {
           id: s.sessionId,
+          // Keep original folder (may be a worktree)
           folder: s.folder,
+          // Resolved main repo path for display/grouping in the UI
+          displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
           metadata: JSON.stringify({ session_ids: [s.sessionId], ...(preview && { preview }) }),

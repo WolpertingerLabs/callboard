@@ -46,7 +46,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
     setHasMore(response.hasMore);
 
     // Initialize suggested directories from first three chat directories if none exist
-    const chatDirectories = response.chats.map((chat) => chat.folder);
+    const chatDirectories = response.chats.map((chat) => chat.displayFolder || chat.folder);
     initializeSuggestedDirectories(chatDirectories);
 
     // Update the UI to reflect any new suggested directories
@@ -141,7 +141,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
       ? chatPreview.length > 60
         ? chatPreview.slice(0, 60) + "..."
         : chatPreview
-      : chat.folder?.split("/").pop() || chat.folder || "Chat";
+      : (chat.displayFolder || chat.folder)?.split("/").pop() || chat.displayFolder || chat.folder || "Chat";
     setDeleteConfirmModal({ isOpen: true, chatId: chat.id, chatName: displayName });
   };
 

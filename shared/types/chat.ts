@@ -3,7 +3,10 @@ import type { Plugin } from "./plugins.js";
 
 export interface Chat {
   id: string;
+  /** The actual working directory (may be a worktree). Logs are stored under this path. */
   folder: string;
+  /** Resolved main repo path for display/grouping (equals folder when not a worktree). */
+  displayFolder?: string;
   session_id: string;
   session_log_path: string | null;
   metadata: string;

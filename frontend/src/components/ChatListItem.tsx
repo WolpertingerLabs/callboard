@@ -9,7 +9,8 @@ interface Props {
 }
 
 export default function ChatListItem({ chat, onClick, onDelete, sessionStatus }: Props) {
-  const folderName = chat.folder?.split("/").pop() || chat.folder || "Chat";
+  const displayPath = chat.displayFolder || chat.folder;
+  const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
@@ -56,7 +57,7 @@ export default function ChatListItem({ chat, onClick, onDelete, sessionStatus }:
           )}
         </div>
         <div
-          title={chat.folder}
+          title={displayPath}
           style={{
             fontSize: 12,
             color: "var(--text-muted)",
@@ -68,7 +69,7 @@ export default function ChatListItem({ chat, onClick, onDelete, sessionStatus }:
             textAlign: "left",
           }}
         >
-          {chat.folder}
+          {displayPath}
         </div>
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{time}</div>
       </div>

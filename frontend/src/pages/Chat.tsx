@@ -666,7 +666,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
 
           if (chat?.folder) {
-            addRecentDirectory(chat.folder);
+            addRecentDirectory(chat.displayFolder || chat.folder);
           }
 
           const body: any = { prompt, maxTurns: getMaxTurns() };
@@ -884,7 +884,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   : folder.split("/").pop() || "New Chat"
                 : chat?.is_git_repo
                   ? chat.git_branch || "main"
-                  : chat?.folder?.split("/").pop() || "Chat"}
+                  : (chat?.displayFolder || chat?.folder)?.split("/").pop() || "Chat"}
             </div>
             {!id ? (
               <div
@@ -915,7 +915,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             ) : null}
           </div>
           <div
-            title={!id ? folder : chat?.folder}
+            title={!id ? folder : chat?.displayFolder || chat?.folder}
             style={{
               fontSize: 12,
               color: "var(--text-muted)",
@@ -926,7 +926,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               textAlign: "left",
             }}
           >
-            {!id ? folder : chat?.folder}
+            {!id ? folder : chat?.displayFolder || chat?.folder}
           </div>
         </div>
         {/* Chat / Diff view toggle - only for git repos */}
