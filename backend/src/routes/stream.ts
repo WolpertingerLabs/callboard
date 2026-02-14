@@ -67,13 +67,15 @@ streamRouter.post("/new/message", async (req, res) => {
       }
     } else if (newBranch) {
       try {
-        switchBranch(folder, newBranch, true, baseBranch);
+        const worktreePath = switchBranch(folder, newBranch, true, baseBranch);
+        if (worktreePath) effectiveFolder = worktreePath;
       } catch (err: any) {
         return res.status(500).json({ error: `Failed to create branch: ${err.message}` });
       }
     } else if (baseBranch) {
       try {
-        switchBranch(folder, baseBranch, false);
+        const worktreePath = switchBranch(folder, baseBranch, false);
+        if (worktreePath) effectiveFolder = worktreePath;
       } catch (err: any) {
         return res.status(500).json({ error: `Failed to switch branch: ${err.message}` });
       }
