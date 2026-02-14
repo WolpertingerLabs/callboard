@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b && vite build",
-    "dev": "vite --host --port 3000"
+    "dev": "vite --host"
   },
   "dependencies": {
     "lucide-react": "^0.563.0",

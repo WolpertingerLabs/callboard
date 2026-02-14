@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": "source .env 2>/dev/null; PORT=${DEV_PORT_SERVER:-3002} npm -w claude-code-ui-backend run dev",
+    "dev:backend": "npm -w claude-code-ui-backend run dev",
     "dev:frontend": "npm -w claude-code-ui-frontend run dev",
     "swagger": "tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
@@ -18,7 +18,7 @@
     "build:shared": "npm -w shared run build",
     "build:backend": "npm -w claude-code-ui-backend run build",
     "build:frontend": "npm -w claude-code-ui-frontend run build",
-    "start": "node backend/dist/index.js",
+    "start": "NODE_ENV=production node backend/dist/index.js",
     "redeploy:prod": "node start-server.js",
     "preview": "npm -w claude-code-ui-frontend exec vite preview",
     "lint": "git diff --name-only --cached HEAD | grep -E '\\.(js|jsx|ts|tsx)$' | xargs -r eslint",

@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 
 // Load .env from project root
 const __rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-dotenv.config({ path: path.join(__rootDir, ".env") });
+dotenv.config({ path: path.join(__rootDir, ".env"), override: true });
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { chatsRouter } from "./routes/chats.js";
@@ -21,7 +21,8 @@ import { createLogger } from "./utils/logger.js";
 const log = createLogger("server");
 
 const app = express();
-const PORT = process.env.PORT || 8000;
+const isProduction = process.env.NODE_ENV === "production";
+const PORT = (!isProduction && process.env.DEV_PORT_SERVER) || process.env.PORT || 8000;
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
