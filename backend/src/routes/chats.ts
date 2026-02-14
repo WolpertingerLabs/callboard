@@ -340,6 +340,9 @@ chatsRouter.get("/new/info", (req, res) => {
     gitInfo = getGitInfo(folder);
   } catch {}
 
+  // Resolve worktree to get main repo path
+  const { mainRepoPath, isWorktree } = resolveWorktreeToMainRepoCached(folder);
+
   // Get slash commands and plugins for the folder
   let slashCommands: any[] = [];
   let plugins: any[] = [];
@@ -351,7 +354,9 @@ chatsRouter.get("/new/info", (req, res) => {
 
   res.json({
     folder,
+    displayFolder: mainRepoPath,
     is_git_repo: gitInfo.isGitRepo,
+    is_worktree: isWorktree,
     git_branch: gitInfo.branch,
     slash_commands: slashCommands,
     plugins: plugins,

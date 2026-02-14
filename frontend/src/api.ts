@@ -64,7 +64,9 @@ export async function listChats(limit?: number, offset?: number): Promise<ChatLi
 
 export interface NewChatInfo {
   folder: string;
+  displayFolder?: string;
   is_git_repo: boolean;
+  is_worktree?: boolean;
   git_branch?: string;
   slash_commands: SlashCommand[];
   plugins: Plugin[];

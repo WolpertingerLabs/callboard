@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
-import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ArrowDown, MessageSquare, GitBranch } from "lucide-react";
+import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ArrowDown, MessageSquare, GitBranch, GitFork } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
   getChat,
@@ -884,7 +884,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   : folder.split("/").pop() || "New Chat"
                 : chat?.is_git_repo
                   ? chat.git_branch || "main"
-                  : (chat?.displayFolder || chat?.folder)?.split("/").pop() || "Chat"}
+                  : chat?.folder?.split("/").pop() || "Chat"}
             </div>
             {!id ? (
               <div
@@ -913,9 +913,30 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 {sessionStatus.type === "web" ? "🌐 Active" : "💻 CLI"}
               </div>
             ) : null}
+            {/* Worktree tag */}
+            {(!id ? info?.is_worktree : chat?.folder && chat?.displayFolder && chat.folder !== chat.displayFolder) && (
+              <div
+                style={{
+                  fontSize: 11,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: "#8b5cf6",
+                  color: "#fff",
+                  fontWeight: 500,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 3,
+                  flexShrink: 0,
+                }}
+                title="This session is running in a git worktree"
+              >
+                <GitFork size={10} />
+                worktree
+              </div>
+            )}
           </div>
           <div
-            title={!id ? folder : chat?.displayFolder || chat?.folder}
+            title={!id ? folder : chat?.folder}
             style={{
               fontSize: 12,
               color: "var(--text-muted)",
@@ -926,7 +947,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               textAlign: "left",
             }}
           >
-            {!id ? folder : chat?.displayFolder || chat?.folder}
+            {!id ? folder : chat?.folder}
           </div>
         </div>
         {/* Chat / Diff view toggle - only for git repos */}
