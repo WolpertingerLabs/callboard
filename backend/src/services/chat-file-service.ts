@@ -3,6 +3,9 @@ import { join } from "path";
 import { v4 as uuid } from "uuid";
 import type { Chat } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("chat-file");
 
 export type { Chat };
 
@@ -26,7 +29,7 @@ export class ChatFileService {
           const chat: Chat = JSON.parse(content);
           chats.push(chat);
         } catch (error) {
-          console.error(`Error reading chat file ${file}:`, error);
+          log.error(`Error reading chat file ${file}: ${error}`);
         }
       }
 
@@ -38,7 +41,7 @@ export class ChatFileService {
       const end = limit ? start + limit : undefined;
       return chats.slice(start, end);
     } catch (error) {
-      console.error("Error reading chats directory:", error);
+      log.error(`Error reading chats directory: ${error}`);
       return [];
     }
   }
@@ -52,7 +55,7 @@ export class ChatFileService {
         const content = readFileSync(sessionFilepath, "utf8");
         return JSON.parse(content);
       } catch (error) {
-        console.error(`Error reading chat file for session ${id}:`, error);
+        log.error(`Error reading chat file for session ${id}: ${error}`);
       }
     }
 
@@ -67,11 +70,11 @@ export class ChatFileService {
             return chat;
           }
         } catch (error) {
-          console.error(`Error reading chat file ${file}:`, error);
+          log.error(`Error reading chat file ${file}: ${error}`);
         }
       }
     } catch (error) {
-      console.error("Error searching for chat:", error);
+      log.error(`Error searching for chat: ${error}`);
     }
 
     return null;
@@ -79,6 +82,7 @@ export class ChatFileService {
 
   // Create a new chat (requires session_id)
   createChat(folder: string, sessionId: string, metadata: string = "{}"): Chat {
+    log.debug(`createChat — folder=${folder}, sessionId=${sessionId}`);
     const id = uuid();
     const now = new Date().toISOString();
 
@@ -98,6 +102,7 @@ export class ChatFileService {
 
   // Update an existing chat (returns false if chat not found)
   updateChat(id: string, updates: Partial<Chat>): boolean {
+    log.debug(`updateChat — id=${id}`);
     const chat = this.getChat(id);
     if (!chat) {
       return false;
@@ -121,6 +126,7 @@ export class ChatFileService {
 
   // Create or update a chat - useful when chat might only exist in filesystem
   upsertChat(id: string, folder: string, sessionId: string, updates: Partial<Chat>): Chat {
+    log.debug(`upsertChat — id=${id}, folder=${folder}, sessionId=${sessionId}`);
     const existingChat = this.getChat(id);
 
     if (existingChat) {
@@ -160,6 +166,7 @@ export class ChatFileService {
 
   // Delete a chat
   deleteChat(sessionId: string): boolean {
+    log.debug(`deleteChat — sessionId=${sessionId}`);
     const filepath = join(chatsDir, `${sessionId}.json`);
 
     if (!existsSync(filepath)) {
@@ -170,7 +177,7 @@ export class ChatFileService {
       unlinkSync(filepath);
       return true;
     } catch (error) {
-      console.error(`Error deleting chat file ${sessionId}:`, error);
+      log.error(`Error deleting chat file ${sessionId}: ${error}`);
       return false;
     }
   }
