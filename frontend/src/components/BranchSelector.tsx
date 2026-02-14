@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { GitBranch, GitFork } from "lucide-react";
 import { getGitBranches, type BranchConfig } from "../api";
 import { getUseWorktree, saveUseWorktree } from "../utils/localStorage";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 /**
  * Validate a git branch name according to git-check-ref-format rules.
@@ -105,7 +106,90 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   const parentDir = lastSlash >= 0 ? trimmedFolder.slice(0, lastSlash) : "";
   const worktreePath = `${parentDir}/${repoName}.${sanitized}`;
 
+  const isMobile = useIsMobile();
+
   const hasChanges = baseBranch !== currentBranch || newBranch.trim() || useWorktree;
+
+  // Shared sub-components
+  const baseBranchSelect = (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: isMobile ? 1 : undefined }}>
+      <GitBranch size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
+      {loading ? (
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</span>
+      ) : error ? (
+        <span style={{ fontSize: 12, color: "var(--danger, #ef4444)" }}>{error}</span>
+      ) : (
+        <select
+          value={baseBranch}
+          onChange={(e) => setBaseBranch(e.target.value)}
+          style={{
+            background: "var(--bg)",
+            color: "var(--text)",
+            border: "1px solid var(--border)",
+            borderRadius: 5,
+            padding: "4px 8px",
+            fontSize: 12,
+            fontFamily: "monospace",
+            cursor: "pointer",
+            outline: "none",
+            ...(isMobile ? { flex: 1, minWidth: 0 } : { maxWidth: 180 }),
+          }}
+        >
+          {branches.map((branch) => (
+            <option key={branch} value={branch}>
+              {branch}
+              {branch === currentBranch ? " (current)" : ""}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+
+  const newBranchInput = (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, minWidth: isMobile ? 0 : 120 }}>
+      <input
+        type="text"
+        value={newBranch}
+        onChange={(e) => setNewBranch(e.target.value)}
+        placeholder="new-branch (optional)"
+        style={{
+          flex: 1,
+          background: "var(--bg)",
+          color: "var(--text)",
+          border: branchError ? "1px solid var(--danger, #ef4444)" : "1px solid var(--border)",
+          borderRadius: 5,
+          padding: "4px 8px",
+          fontSize: 12,
+          fontFamily: "monospace",
+          outline: "none",
+          minWidth: 0,
+          boxSizing: "border-box",
+        }}
+      />
+    </div>
+  );
+
+  const worktreeToggle = (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        cursor: "pointer",
+        fontSize: 12,
+        color: useWorktree ? "var(--accent)" : "var(--text-muted)",
+        flexShrink: 0,
+        userSelect: "none",
+        fontWeight: useWorktree ? 500 : 400,
+        transition: "color 0.15s ease",
+      }}
+    >
+      <input type="checkbox" checked={useWorktree} onChange={(e) => handleWorktreeChange(e.target.checked)} style={{ cursor: "pointer", margin: 0 }} />
+      <GitFork size={12} style={{ flexShrink: 0 }} />
+      Worktree
+    </label>
+  );
 
   return (
     <div
@@ -118,100 +202,33 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         transition: "border-color 0.2s ease",
       }}
     >
-      {/* Single-row inline layout: base branch | new branch | worktree */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          flexWrap: "wrap",
-        }}
-      >
-        {/* Base Branch */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-          <GitBranch size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
-          {loading ? (
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</span>
-          ) : error ? (
-            <span style={{ fontSize: 12, color: "var(--danger, #ef4444)" }}>{error}</span>
-          ) : (
-            <select
-              value={baseBranch}
-              onChange={(e) => setBaseBranch(e.target.value)}
-              style={{
-                background: "var(--bg)",
-                color: "var(--text)",
-                border: "1px solid var(--border)",
-                borderRadius: 5,
-                padding: "4px 8px",
-                fontSize: 12,
-                fontFamily: "monospace",
-                cursor: "pointer",
-                outline: "none",
-                maxWidth: 180,
-              }}
-            >
-              {branches.map((branch) => (
-                <option key={branch} value={branch}>
-                  {branch}
-                  {branch === currentBranch ? " (current)" : ""}
-                </option>
-              ))}
-            </select>
-          )}
+      {isMobile ? (
+        /* Mobile: two-row layout */
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* Row 1: Base branch selector (full width) */}
+          {baseBranchSelect}
+          {/* Row 2: New branch input + worktree toggle */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {newBranchInput}
+            {worktreeToggle}
+          </div>
         </div>
-
-        {/* Separator */}
-        <span style={{ color: "var(--border)", fontSize: 14, userSelect: "none" }}>/</span>
-
-        {/* New Branch */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, minWidth: 120 }}>
-          <input
-            type="text"
-            value={newBranch}
-            onChange={(e) => setNewBranch(e.target.value)}
-            placeholder="new-branch (optional)"
-            style={{
-              flex: 1,
-              background: "var(--bg)",
-              color: "var(--text)",
-              border: branchError ? "1px solid var(--danger, #ef4444)" : "1px solid var(--border)",
-              borderRadius: 5,
-              padding: "4px 8px",
-              fontSize: 12,
-              fontFamily: "monospace",
-              outline: "none",
-              minWidth: 0,
-              boxSizing: "border-box",
-            }}
-          />
-        </div>
-
-        {/* Worktree toggle */}
-        <label
+      ) : (
+        /* Desktop: single-row inline layout */
+        <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 5,
-            cursor: "pointer",
-            fontSize: 12,
-            color: useWorktree ? "var(--accent)" : "var(--text-muted)",
-            flexShrink: 0,
-            userSelect: "none",
-            fontWeight: useWorktree ? 500 : 400,
-            transition: "color 0.15s ease",
+            gap: 10,
+            flexWrap: "wrap",
           }}
         >
-          <input
-            type="checkbox"
-            checked={useWorktree}
-            onChange={(e) => handleWorktreeChange(e.target.checked)}
-            style={{ cursor: "pointer", margin: 0 }}
-          />
-          <GitFork size={12} style={{ flexShrink: 0 }} />
-          Worktree
-        </label>
-      </div>
+          {baseBranchSelect}
+          <span style={{ color: "var(--border)", fontSize: 14, userSelect: "none" }}>/</span>
+          {newBranchInput}
+          {worktreeToggle}
+        </div>
+      )}
 
       {/* Validation error */}
       {branchError && (
