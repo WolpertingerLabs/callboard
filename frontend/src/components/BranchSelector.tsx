@@ -37,6 +37,9 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   const [newBranch, setNewBranch] = useState("");
   const [useWorktree, setUseWorktree] = useState(() => getUseWorktree());
 
+  // Worktree only makes sense when there's a branch change
+  const worktreeEnabled = baseBranch !== currentBranch || !!newBranch.trim();
+
   // Fetch branches on mount
   useEffect(() => {
     setLoading(true);
@@ -59,7 +62,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
   // Propagate changes to parent
   const propagateChange = useCallback(
-    (base: string, newBr: string, worktree: boolean) => {
+    (base: string, newBr: string, worktree: boolean, wtEnabled: boolean) => {
       const config: BranchConfig = {};
 
       if (newBr.trim()) {
@@ -69,7 +72,8 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         config.baseBranch = base;
       }
 
-      if (worktree) {
+      // Only honor worktree when enabled (i.e. there's a branch change)
+      if (wtEnabled && worktree) {
         config.useWorktree = true;
         // Always include baseBranch when using worktree so the backend knows context
         if (!config.baseBranch) {
@@ -88,8 +92,8 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   // Propagate on state changes (skip if branch name is invalid)
   useEffect(() => {
     if (branchError) return;
-    propagateChange(baseBranch, newBranch, useWorktree);
-  }, [baseBranch, newBranch, useWorktree, propagateChange, branchError]);
+    propagateChange(baseBranch, newBranch, useWorktree, worktreeEnabled);
+  }, [baseBranch, newBranch, useWorktree, worktreeEnabled, propagateChange, branchError]);
 
   // Persist worktree preference
   const handleWorktreeChange = useCallback((checked: boolean) => {
@@ -108,7 +112,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
   const isMobile = useIsMobile();
 
-  const hasChanges = baseBranch !== currentBranch || newBranch.trim() || useWorktree;
+  const hasChanges = baseBranch !== currentBranch || newBranch.trim() || (worktreeEnabled && useWorktree);
 
   // Shared sub-components
   const baseBranchSelect = (
@@ -176,16 +180,24 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         display: "flex",
         alignItems: "center",
         gap: 5,
-        cursor: "pointer",
+        cursor: worktreeEnabled ? "pointer" : "not-allowed",
         fontSize: 12,
-        color: useWorktree ? "var(--accent)" : "var(--text-muted)",
+        color: !worktreeEnabled ? "var(--text-muted)" : useWorktree ? "var(--accent)" : "var(--text-muted)",
         flexShrink: 0,
         userSelect: "none",
-        fontWeight: useWorktree ? 500 : 400,
-        transition: "color 0.15s ease",
+        fontWeight: worktreeEnabled && useWorktree ? 500 : 400,
+        opacity: worktreeEnabled ? 1 : 0.5,
+        transition: "color 0.15s ease, opacity 0.15s ease",
       }}
+      title={worktreeEnabled ? undefined : "Select a different branch or enter a new branch name to use worktrees"}
     >
-      <input type="checkbox" checked={useWorktree} onChange={(e) => handleWorktreeChange(e.target.checked)} style={{ cursor: "pointer", margin: 0 }} />
+      <input
+        type="checkbox"
+        checked={worktreeEnabled && useWorktree}
+        disabled={!worktreeEnabled}
+        onChange={(e) => handleWorktreeChange(e.target.checked)}
+        style={{ cursor: worktreeEnabled ? "pointer" : "not-allowed", margin: 0 }}
+      />
       <GitFork size={12} style={{ flexShrink: 0 }} />
       Worktree
     </label>
@@ -246,7 +258,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       )}
 
       {/* Worktree path preview */}
-      {useWorktree && (
+      {worktreeEnabled && useWorktree && (
         <div
           style={{
             marginTop: 6,
