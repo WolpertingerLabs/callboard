@@ -16,6 +16,9 @@ import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
 import { existsSync, readFileSync } from "fs";
+import { createLogger } from "./utils/logger.js";
+
+const log = createLogger("server");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -98,16 +101,17 @@ app.get("*", (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
+  log.info(`Backend running on http://localhost:${PORT}`);
+  log.info(`Log level: ${process.env.LOG_LEVEL || "info"}`);
 });
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
-  console.log("SIGTERM received, shutting down gracefully");
+  log.info("SIGTERM received, shutting down gracefully");
   process.exit(0);
 });
 
 process.on("SIGINT", () => {
-  console.log("SIGINT received, shutting down gracefully");
+  log.info("SIGINT received, shutting down gracefully");
   process.exit(0);
 });
