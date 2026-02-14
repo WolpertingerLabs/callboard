@@ -423,10 +423,24 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
 /**
  * Switch to a branch in the given directory (non-worktree mode).
  * If createNew is true, creates the branch from baseBranch first.
+ *
+ * Before checking out, inspects the worktree list. If the target branch is
+ * already checked out in a different worktree, returns that worktree's path
+ * instead of attempting (and failing) the checkout.
+ *
+ * @returns The worktree path if the branch lives in a different worktree, or
+ *          `null` if the checkout happened in-place in `directory`.
  */
-export function switchBranch(directory: string, branch: string, createNew: boolean, baseBranch?: string): void {
+export function switchBranch(directory: string, branch: string, createNew: boolean, baseBranch?: string): string | null {
   validateGitRef(branch);
   if (baseBranch) validateGitRef(baseBranch);
+
+  // Check if the branch is already checked out in a worktree elsewhere
+  const worktrees = getGitWorktrees(directory);
+  const existing = worktrees.find((wt) => wt.branch === branch && wt.path !== directory);
+  if (existing) {
+    return existing.path;
+  }
 
   if (createNew) {
     const base = baseBranch || "HEAD";
@@ -442,6 +456,7 @@ export function switchBranch(directory: string, branch: string, createNew: boole
       timeout: 5000,
     });
   }
+  return null;
 }
 
 /**
