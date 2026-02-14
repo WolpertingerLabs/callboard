@@ -7,6 +7,9 @@ import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent } from "shared/types/index.js";
 import { migratePermissions } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("claude");
 
 export type { StreamEvent };
 
@@ -45,7 +48,7 @@ function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
       name: plugin.manifest.name,
     }));
   } catch (error) {
-    console.warn("Failed to build plugin options:", error);
+    log.warn(`Failed to build plugin options: ${error}`);
     return [];
   }
 }
@@ -184,8 +187,10 @@ function buildCanUseTool(emitter: EventEmitter, getDefaultPermissions: () => Def
         if (defaultPermissions && defaultPermissions[category]) {
           const permission = defaultPermissions[category];
           if (permission === "allow") {
+            log.debug(`Permission auto-allow: tool=${toolName}, category=${category}`);
             return { behavior: "allow", updatedInput: input };
           } else if (permission === "deny") {
+            log.debug(`Permission auto-deny: tool=${toolName}, category=${category}`);
             return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
           }
         }
@@ -299,6 +304,7 @@ interface SendMessageOptions {
 export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
   const isNewChat = !opts.chatId;
+  log.debug(`sendMessage — isNewChat=${isNewChat}, folder=${opts.folder || "n/a"}, chatId=${opts.chatId || "n/a"}`);
 
   // Resolve chat context: existing chat or new chat setup
   let folder: string; // Working directory for the SDK (may be a worktree)
@@ -360,6 +366,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       canUseTool: buildCanUseTool(emitter, getDefaultPermissions, () => trackingId),
     },
   };
+  log.debug(`SDK query options — cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);
 
   (async () => {
     try {
@@ -377,13 +384,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           const result = message as any;
           if (result.subtype === "error_max_turns") {
             endReason = "max_turns";
-            console.warn(`[claude] Session ${trackingId} ended: max turns (${result.num_turns}) reached`);
+            log.warn(`Session ${trackingId} ended: max turns (${result.num_turns}) reached`);
           } else if (result.subtype === "error_max_budget_usd") {
             endReason = "max_budget";
-            console.warn(`[claude] Session ${trackingId} ended: max budget reached`);
+            log.warn(`Session ${trackingId} ended: max budget reached`);
           } else if (result.subtype === "error_during_execution") {
             endReason = "execution_error";
-            console.warn(`[claude] Session ${trackingId} ended: execution error — ${result.errors?.join("; ") || "unknown"}`);
+            log.warn(`Session ${trackingId} ended: execution error — ${result.errors?.join("; ") || "unknown"}`);
           }
           // For "success" subtype, endReason stays undefined (normal completion)
           continue;
@@ -397,16 +404,19 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // Handle session_id arrival
         if ("session_id" in message && message.session_id && !sessionId) {
           sessionId = message.session_id as string;
+          log.debug(`Session ID arrived: ${sessionId}`);
 
           if (isNewChat) {
             // New chat: create the chat record and migrate tracking from temp ID to real chat ID
             const meta = { ...initialMetadata, session_ids: [sessionId] };
+            log.debug(`Creating chat record — sessionId=${sessionId}, folder=${storageFolder}`);
             const chat = chatFileService.upsertChat(sessionId, storageFolder, sessionId, {
               metadata: JSON.stringify(meta),
             });
 
             const oldTrackingId = trackingId;
             trackingId = sessionId;
+            log.debug(`Migrated tracking ID: ${oldTrackingId} → ${trackingId}`);
 
             activeSessions.delete(oldTrackingId);
             activeSessions.set(trackingId, { abortController, emitter });
@@ -443,15 +453,17 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }
 
       chatFileService.updateChat(trackingId, {});
+      log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}`);
       emitter.emit("event", { type: "done", content: "", ...(endReason && { reason: endReason }) } as StreamEvent);
     } catch (err: any) {
       if (err.name === "AbortError") {
         // Emit done with reason so the frontend knows the session was aborted,
         // rather than silently swallowing the event.
-        console.warn(`[claude] Session ${trackingId} ended: aborted`);
+        log.warn(`Session ${trackingId} ended: aborted`);
         chatFileService.updateChat(trackingId, {});
         emitter.emit("event", { type: "done", content: "", reason: "aborted" } as StreamEvent);
       } else {
+        log.error(`Session ${trackingId} error: ${err.message}`);
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {

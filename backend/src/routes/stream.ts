@@ -8,6 +8,9 @@ import { ensureWorktree, switchBranch, resolveWorktreeToMainRepoCached } from ".
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
 import { writeSSEHeaders, sendSSE, createSSEHandler } from "../utils/sse.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("stream");
 
 export const streamRouter = Router();
 
@@ -45,6 +48,7 @@ streamRouter.post("/new/message", async (req, res) => {
   /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
   const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns } = req.body;
+  log.debug(`POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`);
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
@@ -61,22 +65,29 @@ streamRouter.post("/new/message", async (req, res) => {
 
     if (targetBranch && useWorktree) {
       try {
+        log.debug(`Creating worktree for branch=${targetBranch}, isNew=${!!newBranch}, base=${baseBranch}`);
         effectiveFolder = ensureWorktree(folder, targetBranch, !!newBranch, baseBranch);
+        log.debug(`Worktree created at ${effectiveFolder}`);
       } catch (err: any) {
+        log.error(`Failed to create worktree: ${err.message}`);
         return res.status(500).json({ error: `Failed to create worktree: ${err.message}` });
       }
     } else if (newBranch) {
       try {
+        log.debug(`Creating new branch=${newBranch}, base=${baseBranch}`);
         const worktreePath = switchBranch(folder, newBranch, true, baseBranch);
         if (worktreePath) effectiveFolder = worktreePath;
       } catch (err: any) {
+        log.error(`Failed to create branch: ${err.message}`);
         return res.status(500).json({ error: `Failed to create branch: ${err.message}` });
       }
     } else if (baseBranch) {
       try {
+        log.debug(`Switching to branch=${baseBranch}`);
         const worktreePath = switchBranch(folder, baseBranch, false);
         if (worktreePath) effectiveFolder = worktreePath;
       } catch (err: any) {
+        log.error(`Failed to switch branch: ${err.message}`);
         return res.status(500).json({ error: `Failed to switch branch: ${err.message}` });
       }
     }
@@ -102,15 +113,18 @@ streamRouter.post("/new/message", async (req, res) => {
     // Custom handler for new chat — needs to intercept chat_created event
     const onEvent = (event: StreamEvent) => {
       if (event.type === "chat_created") {
+        log.debug(`SSE chat_created — chatId=${event.chatId}`);
         sendSSE(res, { type: "chat_created", chatId: event.chatId, chat: event.chat });
         return;
       }
 
       if (event.type === "done") {
+        log.debug(`SSE done — reason=${event.reason || "normal"}`);
         sendSSE(res, { type: "message_complete", ...(event.reason && { reason: event.reason }) });
         emitter.removeListener("event", onEvent);
         res.end();
       } else if (event.type === "error") {
+        log.error(`SSE error — ${event.content}`);
         sendSSE(res, { type: "message_error", content: event.content });
         emitter.removeListener("event", onEvent);
         res.end();
@@ -129,6 +143,7 @@ streamRouter.post("/new/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
+    log.error(`POST /new/message failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -158,6 +173,7 @@ streamRouter.post("/:id/message", async (req, res) => {
   /* #swagger.responses[200] = { description: "SSE stream with message_update, permission_request, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
   const { prompt, imageIds, activePlugins, maxTurns } = req.body;
+  log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
   try {
@@ -184,6 +200,7 @@ streamRouter.post("/:id/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
+    log.error(`POST /${req.params.id}/message failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -295,13 +312,13 @@ streamRouter.get("/:id/stream", (req, res) => {
               return;
             }
           } catch (err) {
-            console.warn("[CLI Monitor] Failed to parse log line:", err instanceof Error ? err.message : "Unknown error", "Line:", line.slice(0, 100));
+            log.warn(`[CLI Monitor] Failed to parse log line: ${err instanceof Error ? err.message : "Unknown error"} Line: ${line.slice(0, 100)}`);
           }
         }
         lastPosition = newStats.size;
       }
     } catch (err) {
-      console.warn("[CLI Monitor] File watch error:", err instanceof Error ? err.message : "Unknown error");
+      log.warn(`[CLI Monitor] File watch error: ${err instanceof Error ? err.message : "Unknown error"}`);
     }
   };
 
