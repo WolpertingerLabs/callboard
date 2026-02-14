@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": "PORT=3002 npm -w claude-code-ui-backend run dev",
+    "dev:backend": "source .env 2>/dev/null; PORT=${DEV_PORT_SERVER:-3002} npm -w claude-code-ui-backend run dev",
     "dev:frontend": "npm -w claude-code-ui-frontend run dev",
     "swagger": "tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
