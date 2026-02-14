@@ -25,6 +25,7 @@ interface DiffFile {
   status: "modified" | "added" | "deleted" | "renamed" | "untracked";
   fileType: DiffFileType;
   size: number;
+  changeSize: number;
   contentIncluded: boolean;
 }
 
@@ -111,6 +112,7 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
           status: entry.status,
           fileType: entry.fileType,
           size: entry.size,
+          changeSize: entry.changeSize,
           contentIncluded: entry.contentIncluded,
           hunks,
           additions,
@@ -481,7 +483,7 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
                 >
                   <FileIcon size={16} style={{ marginBottom: 4, opacity: 0.6 }} />
                   <div>
-                    <span>File too large ({formatBytes(file.size)})</span>
+                    <span>Change too large ({formatBytes(file.changeSize)})</span>
                     {" \u2014 "}
                     <button
                       onClick={(e) => {

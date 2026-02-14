@@ -688,17 +688,19 @@ export function getGitDiffStructured(directory: string): DiffFileEntry[] {
       const status = detectFileStatus(tf.diff);
       const isBinary = tf.isBinary;
       const isMedia = fileType === "image" || fileType === "video";
-      const isLargeText = size > LARGE_FILE_THRESHOLD && fileType === "text" && !isBinary;
+      const changeSize = Buffer.byteLength(tf.diff, "utf8");
+      const isLargeChange = changeSize > LARGE_FILE_THRESHOLD && fileType === "text" && !isBinary;
 
       results.push({
         filename: tf.filename,
         status,
         fileType: isBinary && !isMedia ? "binary" : fileType,
         size,
-        contentIncluded: !isLargeText && !isBinary,
-        diff: isLargeText || isBinary ? null : tf.diff,
-        additions: isLargeText || isBinary ? 0 : tf.additions,
-        deletions: isLargeText || isBinary ? 0 : tf.deletions,
+        changeSize,
+        contentIncluded: !isLargeChange && !isBinary,
+        diff: isLargeChange || isBinary ? null : tf.diff,
+        additions: isLargeChange || isBinary ? 0 : tf.additions,
+        deletions: isLargeChange || isBinary ? 0 : tf.deletions,
       });
     }
 
@@ -716,24 +718,32 @@ export function getGitDiffStructured(directory: string): DiffFileEntry[] {
 
       const fileType = classifyFile(filename);
       const isMedia = fileType === "image" || fileType === "video";
-      const isLargeText = size > LARGE_FILE_THRESHOLD && fileType === "text";
 
       let diff: string | null = null;
       let additions = 0;
+      let changeSize = 0;
 
-      if (!isLargeText && fileType === "text") {
+      if (fileType === "text") {
         diff = generateUntrackedFileDiff(directory, filename);
-        for (const line of diff.split("\n")) {
-          if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+        changeSize = Buffer.byteLength(diff, "utf8");
+        if (changeSize > LARGE_FILE_THRESHOLD) {
+          diff = null;
+        } else {
+          for (const line of diff.split("\n")) {
+            if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+          }
         }
       }
+
+      const isLargeChange = changeSize > LARGE_FILE_THRESHOLD && fileType === "text";
 
       results.push({
         filename,
         status: "untracked",
         fileType: isMedia ? fileType : "text",
         size,
-        contentIncluded: !isLargeText && fileType === "text",
+        changeSize,
+        contentIncluded: !isLargeChange && fileType === "text",
         diff,
         additions,
         deletions: 0,
