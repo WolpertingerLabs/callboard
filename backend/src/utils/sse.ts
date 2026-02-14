@@ -1,11 +1,15 @@
 import type { Response } from "express";
 import type { EventEmitter } from "events";
 import type { StreamEvent } from "../services/claude.js";
+import { createLogger } from "./logger.js";
+
+const log = createLogger("sse");
 
 /**
  * Write standard SSE headers to an Express response.
  */
 export function writeSSEHeaders(res: Response): void {
+  log.debug("Writing SSE headers");
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -17,6 +21,7 @@ export function writeSSEHeaders(res: Response): void {
  * Send an SSE event as a JSON-encoded `data:` line.
  */
 export function sendSSE(res: Response, data: Record<string, unknown>): void {
+  log.debug(`SSE send: type=${data.type}`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 

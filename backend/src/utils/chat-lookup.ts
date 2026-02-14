@@ -4,6 +4,9 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "./git.js";
 import { projectDirToFolder } from "./paths.js";
 import { findSessionLogPath } from "./session-log.js";
+import { createLogger } from "./logger.js";
+
+const log = createLogger("chat-lookup");
 
 /**
  * Look up a chat by ID, checking file storage first then falling back to filesystem.
@@ -19,10 +22,11 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
     try {
       fileChat = chatFileService.getChat(id);
     } catch (err) {
-      console.error("Error reading chat from file storage:", err);
+      log.error(`Error reading chat from file storage: ${err}`);
     }
 
     if (fileChat) {
+      log.debug(`findChat — found in file storage: id=${id}`);
       const logPath = findSessionLogPath(fileChat.session_id);
       // Use original folder for git info (correct branch for worktrees)
       let gitInfo: { isGitRepo: boolean; branch?: string } = { isGitRepo: false };
@@ -45,6 +49,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
     }
 
     // Try filesystem fallback: id might be a session ID with no file storage
+    log.debug(`findChat — not in file storage, trying filesystem fallback: id=${id}`);
     const logPath = findSessionLogPath(id);
     if (!logPath) return null;
 
@@ -77,7 +82,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       _from_filesystem: true,
     };
   } catch (err) {
-    console.error("Error finding chat:", err);
+    log.error(`Error finding chat: ${err}`);
     return null;
   }
 }

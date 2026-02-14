@@ -9,6 +9,9 @@ import { CLAUDE_PROJECTS_DIR, projectDirToFolder } from "../utils/paths.js";
 import { findSessionLogPath, findSubagentFiles } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import type { ParsedMessage } from "shared/types/index.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("chats");
 
 export const chatsRouter = Router();
 
@@ -143,7 +146,7 @@ function discoverSessionsPaginated(
 
     return { sessions: results, total };
   } catch (error) {
-    console.error("Error in optimized session discovery:", error);
+    log.error(`Error in optimized session discovery: ${error}`);
     // Fallback to Node.js method if find command fails
     return discoverAllSessionsFallback(limit, offset);
   }
@@ -209,7 +212,7 @@ chatsRouter.get("/", (req, res) => {
     try {
       fileChats = chatFileService.getAllChats() || [];
     } catch (err) {
-      console.error("Error reading file chats, continuing with filesystem only:", err);
+      log.error(`Error reading file chats, continuing with filesystem only: ${err}`);
     }
 
     // Create lookup map for file data by session ID
@@ -305,7 +308,7 @@ chatsRouter.get("/", (req, res) => {
       total,
     });
   } catch (err: any) {
-    console.error("Error listing chats:", err);
+    log.error(`Error listing chats: ${err}`);
     res.status(500).json({ error: "Failed to list chats", details: err.message });
   }
 });
@@ -441,7 +444,7 @@ chatsRouter.delete("/:id", (req, res) => {
 
     res.json({ ok: true });
   } catch (err: any) {
-    console.error("Error deleting chat:", err);
+    log.error(`Error deleting chat: ${err}`);
     res.status(500).json({ error: "Failed to delete chat", details: err.message });
   }
 });
@@ -585,7 +588,7 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
       allCommands,
     });
   } catch (error) {
-    console.error("Failed to get slash commands and plugins:", error);
+    log.error(`Failed to get slash commands and plugins: ${error}`);
     res.json({ slashCommands: [], plugins: [], allCommands: [] });
   }
 });
