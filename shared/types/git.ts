@@ -17,6 +17,8 @@ export interface DiffFileEntry {
   fileType: DiffFileType;
   /** File size in bytes */
   size: number;
+  /** Size of the diff/change content in bytes */
+  changeSize: number;
   /** Whether the diff content is included in this response */
   contentIncluded: boolean;
   /** The unified diff content for this file (null if contentIncluded is false) */
