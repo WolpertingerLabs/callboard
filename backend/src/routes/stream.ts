@@ -275,7 +275,7 @@ streamRouter.get("/:id/stream", (req, res) => {
 
   // Track last activity time for inactivity timeout
   let lastActivityTime = Date.now();
-  const CLI_INACTIVITY_TIMEOUT_MS = 120_000; // 2 minutes
+  const CLI_INACTIVITY_TIMEOUT_MS = 300_000; // 5 minutes
 
   const watchHandler = () => {
     try {
@@ -451,7 +451,7 @@ streamRouter.get("/:id/status", (req, res) => {
     const stats = statSync(logPath);
     const lastModified = stats.mtime.getTime();
     const now = Date.now();
-    const recentThreshold = now - 120_000; // 2 minutes
+    const recentThreshold = now - 300_000; // 5 minutes
 
     const isRecentlyActive = lastModified > recentThreshold;
 
