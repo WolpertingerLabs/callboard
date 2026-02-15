@@ -187,7 +187,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Safety timeout: if streaming is true but no SSE events arrive for 2 minutes,
   // assume the stream is dead and reset the indicator.
-  const STREAMING_INACTIVITY_TIMEOUT_MS = 120_000; // 2 minutes
+  const STREAMING_INACTIVITY_TIMEOUT_MS = 300_000; // 5 minutes
 
   const clearStreamingTimeout = useCallback(() => {
     if (streamingTimeoutRef.current) {
