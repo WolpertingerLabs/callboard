@@ -1,8 +1,9 @@
-import { X, Hash, Puzzle, Check } from "lucide-react";
+import { X, Hash, Puzzle, Check, Server, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { Plugin } from "../types/plugins";
 import { getCommandDescription, getCommandCategory } from "../utils/commands";
 import { getActivePlugins, setActivePlugins } from "../utils/plugins";
+import { toggleAppPlugin, toggleMcpServer, type AppPluginsData, type AppPlugin, type McpServerConfig } from "../api";
 import ModalOverlay from "./ModalOverlay";
 
 interface Props {
@@ -10,14 +11,25 @@ interface Props {
   onClose: () => void;
   slashCommands: string[];
   plugins?: Plugin[];
+  appPluginsData?: AppPluginsData | null;
   onCommandSelect?: (command: string) => void;
   onActivePluginsChange?: (activePluginIds: string[]) => void;
+  onAppPluginsDataChange?: (data: AppPluginsData) => void;
 }
 
-export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plugins = [], onCommandSelect, onActivePluginsChange }: Props) {
+export default function SlashCommandsModal({
+  isOpen,
+  onClose,
+  slashCommands,
+  plugins = [],
+  appPluginsData,
+  onCommandSelect,
+  onActivePluginsChange,
+  onAppPluginsDataChange,
+}: Props) {
   const [activePluginIds, setActivePluginIds] = useState<Set<string>>(() => getActivePlugins());
 
-  // Toggle plugin activation
+  // Toggle per-directory plugin activation
   const togglePlugin = (pluginId: string) => {
     const newActiveIds = new Set(activePluginIds);
     if (newActiveIds.has(pluginId)) {
@@ -30,7 +42,70 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
     onActivePluginsChange?.(Array.from(newActiveIds));
   };
 
+  // Toggle app-wide plugin activation
+  const handleToggleAppPlugin = async (pluginId: string, enabled: boolean) => {
+    if (!appPluginsData || !onAppPluginsDataChange) return;
+
+    // Optimistic update (cascade: disabling plugin disables its embedded MCP servers)
+    const updatedPlugins = appPluginsData.plugins.map((p) => {
+      if (p.id !== pluginId) return p;
+      const updated = { ...p, enabled };
+      if (!enabled && updated.mcpServers) {
+        updated.mcpServers = updated.mcpServers.map((s) => ({ ...s, enabled: false }));
+      }
+      return updated;
+    });
+    onAppPluginsDataChange({ ...appPluginsData, plugins: updatedPlugins });
+
+    try {
+      await toggleAppPlugin(pluginId, enabled);
+    } catch {
+      // Revert on error
+      onAppPluginsDataChange(appPluginsData);
+    }
+  };
+
+  // Toggle MCP server activation
+  const handleToggleMcpServer = async (serverId: string, enabled: boolean) => {
+    if (!appPluginsData || !onAppPluginsDataChange) return;
+
+    // Optimistic update — modify servers within their parent plugins
+    const updatedPlugins = appPluginsData.plugins.map((p) => ({
+      ...p,
+      mcpServers: p.mcpServers?.map((s) => (s.id === serverId ? { ...s, enabled } : s)),
+    }));
+    onAppPluginsDataChange({ ...appPluginsData, plugins: updatedPlugins });
+
+    try {
+      await toggleMcpServer(serverId, enabled);
+    } catch {
+      // Revert on error
+      onAppPluginsDataChange(appPluginsData);
+    }
+  };
+
   if (!isOpen) return null;
+
+  /** Check if an MCP server has required env vars that are missing */
+  const serverHasMissingEnv = (server: McpServerConfig): boolean => {
+    if (!server.envDefaults) return false;
+    for (const key of Object.keys(server.envDefaults)) {
+      const raw = server.envDefaults[key];
+      const match = raw.match(/^\$\{([^}:]+)(?::-(.*))?\}$/);
+      // Required = has ${VAR} pattern with no :- default
+      if (match && match[2] === undefined) {
+        const val = server.env?.[key];
+        if (!val || val.trim() === "") return true;
+      }
+    }
+    return false;
+  };
+
+  /** Check if a plugin has any MCP servers with missing required env */
+  const pluginHasMissingEnv = (plugin: AppPlugin): boolean => {
+    if (!plugin.mcpServers) return false;
+    return plugin.mcpServers.some(serverHasMissingEnv);
+  };
 
   // Group commands by category
   const categorizedCommands = slashCommands.reduce(
@@ -49,6 +124,12 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
     }
     onClose();
   };
+
+  const appPlugins = appPluginsData?.plugins ?? [];
+  const mcpServers = appPlugins.flatMap((p) => p.mcpServers ?? []);
+  const hasAppPlugins = appPlugins.length > 0;
+  const hasMcpServers = mcpServers.length > 0;
+  const hasAnyContent = slashCommands.length > 0 || plugins.length > 0 || hasAppPlugins || hasMcpServers;
 
   return (
     <ModalOverlay style={{ padding: "20px" }}>
@@ -119,7 +200,7 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
             maxHeight: "calc(80vh - 120px)",
           }}
         >
-          {slashCommands.length === 0 ? (
+          {!hasAnyContent ? (
             <div
               style={{
                 textAlign: "center" as const,
@@ -132,6 +213,7 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+              {/* Slash Commands */}
               {Object.entries(categorizedCommands).map(([category, commands]) => (
                 <div key={category}>
                   <h3
@@ -206,7 +288,7 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
             </div>
           )}
 
-          {/* Plugins Section */}
+          {/* Per-Directory Plugins Section */}
           {plugins.length > 0 && (
             <div style={{ marginTop: slashCommands.length > 0 ? "32px" : "0" }}>
               <h3
@@ -363,6 +445,403 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
                           </div>
                         </div>
                       )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* App-Wide Plugins Section */}
+          {hasAppPlugins && (
+            <div style={{ marginTop: slashCommands.length > 0 || plugins.length > 0 ? "32px" : "0" }}>
+              <h3
+                style={{
+                  margin: "0 0 16px 0",
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase" as const,
+                  letterSpacing: "0.05em",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <Puzzle size={16} />
+                App-Wide Plugins ({appPlugins.length})
+              </h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {appPlugins.map((plugin: AppPlugin) => {
+                  const hasMissingEnv = pluginHasMissingEnv(plugin);
+                  const isEnabled = plugin.enabled && !hasMissingEnv;
+                  const isDisabledByEnv = plugin.enabled && hasMissingEnv;
+                  const pluginCommands = plugin.commands;
+
+                  return (
+                    <div
+                      key={plugin.id}
+                      style={{
+                        border: isDisabledByEnv
+                          ? "1px solid rgba(220, 53, 69, 0.4)"
+                          : "1px solid var(--border)",
+                        borderRadius: "8px",
+                        padding: "16px",
+                        backgroundColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.04)"
+                          : isEnabled
+                            ? "var(--accent-bg, rgba(59, 130, 246, 0.05))"
+                            : "transparent",
+                        borderColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.4)"
+                          : isEnabled
+                            ? "var(--accent)"
+                            : "var(--border)",
+                        opacity: isDisabledByEnv ? 0.7 : 1,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: "space-between",
+                          gap: "12px",
+                          marginBottom: (pluginCommands.length > 0 && isEnabled) || isDisabledByEnv ? "12px" : "0",
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            <code
+                              style={{
+                                color: isDisabledByEnv ? "var(--text-muted)" : "var(--accent)",
+                                fontWeight: 600,
+                                fontSize: "14px",
+                                fontFamily: "var(--font-mono)",
+                              }}
+                            >
+                              {plugin.manifest.name}
+                            </code>
+                            <span
+                              style={{
+                                fontSize: "10px",
+                                color: "var(--text-muted)",
+                                background: "var(--bg-secondary)",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                fontWeight: 500,
+                              }}
+                            >
+                              app-wide
+                            </span>
+                          </div>
+                          <p
+                            style={{
+                              margin: 0,
+                              color: "var(--text-muted)",
+                              fontSize: "13px",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {plugin.manifest.description}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => !hasMissingEnv && handleToggleAppPlugin(plugin.id, !plugin.enabled)}
+                          disabled={hasMissingEnv}
+                          style={{
+                            background: isDisabledByEnv
+                              ? "rgba(220, 53, 69, 0.15)"
+                              : isEnabled
+                                ? "var(--accent)"
+                                : "transparent",
+                            border: `1px solid ${isDisabledByEnv ? "rgba(220, 53, 69, 0.4)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            borderRadius: "6px",
+                            padding: "6px 12px",
+                            cursor: hasMissingEnv ? "not-allowed" : "pointer",
+                            color: isDisabledByEnv ? "var(--danger, #dc3545)" : isEnabled ? "white" : "var(--text)",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            transition: "all 0.2s ease",
+                          }}
+                        >
+                          {isDisabledByEnv && <AlertTriangle size={14} />}
+                          {isEnabled && <Check size={14} />}
+                          {isDisabledByEnv ? "Missing Env" : isEnabled ? "Active" : "Activate"}
+                        </button>
+                      </div>
+
+                      {/* Missing env warning */}
+                      {isDisabledByEnv && (
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "8px 12px",
+                            borderRadius: "6px",
+                            background: "rgba(220, 53, 69, 0.08)",
+                            border: "1px solid rgba(220, 53, 69, 0.2)",
+                            color: "var(--danger, #dc3545)",
+                            fontSize: "12px",
+                            fontWeight: 500,
+                            marginBottom: pluginCommands.length > 0 ? "12px" : "0",
+                          }}
+                        >
+                          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                          <span>
+                            MCP server{plugin.mcpServers!.filter(serverHasMissingEnv).length > 1 ? "s" : ""}{" "}
+                            <strong>
+                              {plugin.mcpServers!
+                                .filter(serverHasMissingEnv)
+                                .map((s) => s.name)
+                                .join(", ")}
+                            </strong>{" "}
+                            missing required environment variables. Configure in Settings.
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Show available commands when enabled */}
+                      {isEnabled && pluginCommands.length > 0 && (
+                        <div
+                          style={{
+                            paddingTop: "12px",
+                            borderTop: "1px solid var(--border)",
+                          }}
+                        >
+                          <p
+                            style={{
+                              margin: "0 0 8px 0",
+                              fontSize: "12px",
+                              color: "var(--text-muted)",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Available Commands:
+                          </p>
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: "6px",
+                            }}
+                          >
+                            {pluginCommands.map((item, index) => (
+                              <button
+                                key={index}
+                                onClick={() => {
+                                  if (onCommandSelect) {
+                                    onCommandSelect(`/${plugin.manifest.name}:${item.name} `);
+                                  }
+                                  onClose();
+                                }}
+                                style={{
+                                  background: "var(--bg-secondary)",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: "4px",
+                                  padding: "4px 8px",
+                                  fontSize: "11px",
+                                  color: "var(--text)",
+                                  cursor: "pointer",
+                                  fontFamily: "var(--font-mono)",
+                                  transition: "all 0.2s ease",
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.background = "var(--accent-bg, rgba(59, 130, 246, 0.1))";
+                                  e.currentTarget.style.borderColor = "var(--accent)";
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.background = "var(--bg-secondary)";
+                                  e.currentTarget.style.borderColor = "var(--border)";
+                                }}
+                              >
+                                /{plugin.manifest.name}:{item.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* MCP Servers Section */}
+          {hasMcpServers && (
+            <div style={{ marginTop: slashCommands.length > 0 || plugins.length > 0 || hasAppPlugins ? "32px" : "0" }}>
+              <h3
+                style={{
+                  margin: "0 0 16px 0",
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase" as const,
+                  letterSpacing: "0.05em",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <Server size={16} />
+                MCP Servers ({mcpServers.length})
+              </h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {mcpServers.map((server: McpServerConfig) => {
+                  const hasMissingEnv = serverHasMissingEnv(server);
+                  const isEnabled = server.enabled && !hasMissingEnv;
+                  const isDisabledByEnv = server.enabled && hasMissingEnv;
+                  // Find the source plugin name if available
+                  const sourcePlugin = server.sourcePluginId ? appPlugins.find((p) => p.id === server.sourcePluginId) : null;
+
+                  return (
+                    <div
+                      key={server.id}
+                      style={{
+                        border: isDisabledByEnv
+                          ? "1px solid rgba(220, 53, 69, 0.4)"
+                          : "1px solid var(--border)",
+                        borderRadius: "8px",
+                        padding: "16px",
+                        backgroundColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.04)"
+                          : isEnabled
+                            ? "var(--accent-bg, rgba(59, 130, 246, 0.05))"
+                            : "transparent",
+                        borderColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.4)"
+                          : isEnabled
+                            ? "var(--accent)"
+                            : "var(--border)",
+                        opacity: isDisabledByEnv ? 0.7 : 1,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: "space-between",
+                          gap: "12px",
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            <code
+                              style={{
+                                color: isDisabledByEnv ? "var(--text-muted)" : "var(--accent)",
+                                fontWeight: 600,
+                                fontSize: "14px",
+                                fontFamily: "var(--font-mono)",
+                              }}
+                            >
+                              {server.name}
+                            </code>
+                            <span
+                              style={{
+                                fontSize: "10px",
+                                color: "var(--text-muted)",
+                                background: "var(--bg-secondary)",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                fontWeight: 500,
+                                textTransform: "uppercase" as const,
+                              }}
+                            >
+                              {server.type}
+                            </span>
+                            {server.env && Object.keys(server.env).length > 0 && !hasMissingEnv && (
+                              <span
+                                style={{
+                                  fontSize: "10px",
+                                  color: "var(--text-muted)",
+                                  background: "var(--bg-secondary)",
+                                  padding: "2px 6px",
+                                  borderRadius: "4px",
+                                  fontWeight: 500,
+                                }}
+                              >
+                                {Object.keys(server.env).length} env var{Object.keys(server.env).length !== 1 ? "s" : ""}
+                              </span>
+                            )}
+                          </div>
+                          {sourcePlugin && (
+                            <p
+                              style={{
+                                margin: 0,
+                                color: "var(--text-muted)",
+                                fontSize: "12px",
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              from plugin: {sourcePlugin.manifest.name}
+                            </p>
+                          )}
+                          {/* Missing env warning */}
+                          {isDisabledByEnv && (
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                marginTop: "6px",
+                                padding: "4px 8px",
+                                borderRadius: "4px",
+                                background: "rgba(220, 53, 69, 0.08)",
+                                color: "var(--danger, #dc3545)",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                              }}
+                            >
+                              <AlertTriangle size={12} />
+                              Missing required env vars — configure in Settings
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => !hasMissingEnv && handleToggleMcpServer(server.id, !server.enabled)}
+                          disabled={hasMissingEnv}
+                          style={{
+                            background: isDisabledByEnv
+                              ? "rgba(220, 53, 69, 0.15)"
+                              : isEnabled
+                                ? "var(--accent)"
+                                : "transparent",
+                            border: `1px solid ${isDisabledByEnv ? "rgba(220, 53, 69, 0.4)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            borderRadius: "6px",
+                            padding: "6px 12px",
+                            cursor: hasMissingEnv ? "not-allowed" : "pointer",
+                            color: isDisabledByEnv ? "var(--danger, #dc3545)" : isEnabled ? "white" : "var(--text)",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            transition: "all 0.2s ease",
+                          }}
+                        >
+                          {isDisabledByEnv && <AlertTriangle size={14} />}
+                          {isEnabled && <Check size={14} />}
+                          {isDisabledByEnv ? "Missing Env" : isEnabled ? "Active" : "Activate"}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

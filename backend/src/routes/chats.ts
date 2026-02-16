@@ -4,6 +4,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
+import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import { CLAUDE_PROJECTS_DIR, projectDirToFolder } from "../utils/paths.js";
 import { findSessionLogPath, findSubagentFiles } from "../utils/session-log.js";
@@ -352,6 +353,14 @@ chatsRouter.get("/new/info", (req, res) => {
     plugins = result.plugins;
   } catch {}
 
+  // Get app-wide plugins
+  let appPluginsData;
+  try {
+    appPluginsData = getAllAppPluginsData();
+  } catch {
+    appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
+  }
+
   res.json({
     folder,
     displayFolder: mainRepoPath,
@@ -360,6 +369,7 @@ chatsRouter.get("/new/info", (req, res) => {
     git_branch: gitInfo.branch,
     slash_commands: slashCommands,
     plugins: plugins,
+    appPlugins: appPluginsData,
   });
 });
 
@@ -481,10 +491,19 @@ chatsRouter.get("/:id", (req, res) => {
     }
   } catch {}
 
+  // Get app-wide plugins
+  let appPluginsData;
+  try {
+    appPluginsData = getAllAppPluginsData();
+  } catch {
+    appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
+  }
+
   res.json({
     ...chat,
     slash_commands: slashCommands,
     plugins: plugins,
+    appPlugins: appPluginsData,
   });
 });
 
@@ -592,14 +611,23 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
     // Get all commands including active plugin commands
     const allCommands = getAllCommandsForDirectory(chat.folder, activePluginIds);
 
+    // Get app-wide plugins
+    let appPluginsData;
+    try {
+      appPluginsData = getAllAppPluginsData();
+    } catch {
+      appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
+    }
+
     res.json({
       slashCommands: result.slashCommands,
       plugins: result.plugins,
       allCommands,
+      appPlugins: appPluginsData,
     });
   } catch (error) {
     log.error(`Failed to get slash commands and plugins: ${error}`);
-    res.json({ slashCommands: [], plugins: [], allCommands: [] });
+    res.json({ slashCommands: [], plugins: [], allCommands: [], appPlugins: { scanRoots: [], plugins: [], mcpServers: [] } });
   }
 });
 

@@ -1,13 +1,16 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "events";
+import { resolve, isAbsolute } from "path";
 import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent } from "shared/types/index.js";
+import type { McpServerConfig } from "shared/types/index.js";
 import { migratePermissions } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
+import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -32,25 +35,141 @@ const activeSessions = new Map<string, ActiveSession>();
 const pendingRequests = new Map<string, PendingRequest>();
 
 /**
- * Build plugin configuration for Claude SDK from active plugin IDs
+ * Build plugin configuration for Claude SDK from active plugin IDs.
+ * Merges per-directory plugins with enabled app-wide plugins.
+ * Per-directory plugins take precedence over app-wide plugins with the same name.
  */
 function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
-  if (!activePluginIds || activePluginIds.length === 0) {
-    return [];
+  const sdkPlugins: any[] = [];
+  const includedNames = new Set<string>();
+
+  // Per-directory plugins (existing behavior)
+  if (activePluginIds && activePluginIds.length > 0) {
+    try {
+      const plugins = getPluginsForDirectory(folder);
+      const activePlugins = plugins.filter((p: Plugin) => activePluginIds.includes(p.id));
+
+      for (const plugin of activePlugins) {
+        sdkPlugins.push({
+          type: "local",
+          path: plugin.manifest.source,
+          name: plugin.manifest.name,
+        });
+        includedNames.add(plugin.manifest.name);
+      }
+    } catch (error) {
+      log.warn(`Failed to build per-directory plugin options: ${error}`);
+    }
   }
 
+  // App-wide plugins (always included if enabled in settings)
   try {
-    const plugins = getPluginsForDirectory(folder);
-    const activePlugins = plugins.filter((p: Plugin) => activePluginIds.includes(p.id));
-
-    return activePlugins.map((plugin: Plugin) => ({
-      type: "local",
-      path: plugin.manifest.source,
-      name: plugin.manifest.name,
-    }));
+    const appPlugins = getEnabledAppPlugins();
+    for (const appPlugin of appPlugins) {
+      // Deduplicate: per-directory plugins take precedence
+      if (!includedNames.has(appPlugin.manifest.name)) {
+        sdkPlugins.push({
+          type: "local",
+          path: appPlugin.pluginPath,
+          name: appPlugin.manifest.name,
+        });
+        includedNames.add(appPlugin.manifest.name);
+      }
+    }
   } catch (error) {
-    log.warn(`Failed to build plugin options: ${error}`);
-    return [];
+    log.warn(`Failed to build app-wide plugin options: ${error}`);
+  }
+
+  return sdkPlugins;
+}
+
+/**
+ * Build MCP server configuration for Claude SDK from enabled plugin-embedded MCP servers.
+ */
+function resolveEnvReferences(env: Record<string, string>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    // Resolve ${VAR_NAME} references from process.env
+    const match = value.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/);
+    if (match) {
+      resolved[key] = process.env[match[1]] || "";
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Resolve ${CLAUDE_PLUGIN_ROOT} and relative paths in MCP server command/args.
+ * Uses the server's mcpJsonDir or the parent plugin's path as the base directory.
+ */
+function resolveServerPaths(
+  server: McpServerConfig,
+  pluginPath?: string,
+): { command?: string; args?: string[] } {
+  const baseDir = server.mcpJsonDir || pluginPath;
+  if (!baseDir) return { command: server.command, args: server.args };
+
+  const resolvePath = (value: string): string => {
+    // Replace ${CLAUDE_PLUGIN_ROOT} with the base directory
+    const replaced = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, baseDir);
+    // If still relative after replacement, resolve against baseDir
+    if (!isAbsolute(replaced)) {
+      return resolve(baseDir, replaced);
+    }
+    return replaced;
+  };
+
+  return {
+    command: server.command ? resolvePath(server.command) : server.command,
+    args: server.args?.map(resolvePath),
+  };
+}
+
+function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTools: string[] } | undefined {
+  try {
+    const mcpServers = getEnabledMcpServers();
+    if (mcpServers.length === 0) return undefined;
+
+    // Build a map of plugin ID → plugin path for resolving MCP server paths
+    const appPlugins = getEnabledAppPlugins();
+    const pluginPathMap = new Map<string, string>();
+    for (const plugin of appPlugins) {
+      pluginPathMap.set(plugin.id, plugin.pluginPath);
+    }
+
+    const serverConfig: Record<string, any> = {};
+    const allowedTools: string[] = [];
+
+    for (const server of mcpServers) {
+      const resolvedEnv = server.env ? resolveEnvReferences(server.env) : undefined;
+      if (server.type === "stdio") {
+        const pluginPath = pluginPathMap.get(server.sourcePluginId);
+        const { command, args } = resolveServerPaths(server, pluginPath);
+        serverConfig[server.name] = {
+          command,
+          args: args || [],
+          ...(resolvedEnv && { env: resolvedEnv }),
+        };
+      } else {
+        // HTTP/SSE type
+        serverConfig[server.name] = {
+          type: server.type,
+          url: server.url,
+          ...(server.headers && { headers: server.headers }),
+          ...(resolvedEnv && { env: resolvedEnv }),
+        };
+      }
+      allowedTools.push(`mcp__${server.name}__*`);
+    }
+
+    if (Object.keys(serverConfig).length === 0) return undefined;
+
+    return { mcpServers: serverConfig, allowedTools };
+  } catch (error) {
+    log.warn(`Failed to build MCP server options: ${error}`);
+    return undefined;
   }
 }
 
@@ -357,6 +476,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     return migratePermissions(initialMetadata.defaultPermissions);
   };
 
+  // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)
+  const plugins = buildPluginOptions(folder, activePlugins);
+  const mcpOpts = buildMcpServerOptions();
+
   const queryOpts: any = {
     prompt: formattedPrompt,
     options: {
@@ -365,7 +488,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       settingSources: ["user", "project", "local"],
       maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-      ...(activePlugins ? { plugins: buildPluginOptions(folder, activePlugins) } : {}),
+      ...(plugins.length > 0 ? { plugins } : {}),
+      ...(mcpOpts ? { mcpServers: mcpOpts.mcpServers, allowedTools: mcpOpts.allowedTools } : {}),
       env: {
         ...process.env,
         // Remove CLAUDECODE to prevent "cannot be launched inside another Claude Code session" errors

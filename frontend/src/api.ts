@@ -18,6 +18,11 @@ import type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
+  AppPlugin,
+  McpServerConfig,
+  PluginScanRoot,
+  AppPluginsData,
+  ScanResult,
 } from "shared/types/index.js";
 
 export type {
@@ -40,6 +45,11 @@ export type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
+  AppPlugin,
+  McpServerConfig,
+  PluginScanRoot,
+  AppPluginsData,
+  ScanResult,
 };
 
 const BASE = "/api";
@@ -70,6 +80,7 @@ export interface NewChatInfo {
   git_branch?: string;
   slash_commands: SlashCommand[];
   plugins: Plugin[];
+  appPlugins?: AppPluginsData;
 }
 
 export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
@@ -174,13 +185,16 @@ export async function executeDraft(id: string): Promise<void> {
   await assertOk(res, "Failed to execute draft");
 }
 
-export async function getSlashCommandsAndPlugins(chatId: string): Promise<{ slashCommands: string[]; plugins: Plugin[] }> {
+export async function getSlashCommandsAndPlugins(
+  chatId: string,
+): Promise<{ slashCommands: string[]; plugins: Plugin[]; appPlugins?: AppPluginsData }> {
   const res = await fetch(`${BASE}/chats/${chatId}/slash-commands`);
   await assertOk(res, "Failed to get slash commands");
   const data = await res.json();
   return {
     slashCommands: data.slashCommands || [],
     plugins: data.plugins || [],
+    appPlugins: data.appPlugins,
   };
 }
 
@@ -239,4 +253,68 @@ export async function getFolderSuggestions(): Promise<SuggestionsResponse> {
   const res = await fetch(`${BASE}/folders/suggestions`);
   await assertOk(res, "Failed to get folder suggestions");
   return res.json();
+}
+
+// App-wide Plugins & MCP Servers API functions
+
+export async function getAppPlugins(): Promise<AppPluginsData> {
+  const res = await fetch(`${BASE}/app-plugins`);
+  await assertOk(res, "Failed to get app plugins");
+  return res.json();
+}
+
+export async function scanForPlugins(directory: string): Promise<ScanResult> {
+  const res = await fetch(`${BASE}/app-plugins/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ directory }),
+  });
+  await assertOk(res, "Failed to scan for plugins");
+  return res.json();
+}
+
+export async function rescanPlugins(directory?: string): Promise<AppPluginsData> {
+  const res = await fetch(`${BASE}/app-plugins/rescan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ directory }),
+  });
+  await assertOk(res, "Failed to rescan plugins");
+  return res.json();
+}
+
+export async function removeScanRoot(directory: string): Promise<void> {
+  const res = await fetch(`${BASE}/app-plugins/scan-root`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ directory }),
+  });
+  await assertOk(res, "Failed to remove scan root");
+}
+
+export async function toggleAppPlugin(pluginId: string, enabled: boolean): Promise<void> {
+  const res = await fetch(`${BASE}/app-plugins/plugins/${encodeURIComponent(pluginId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  await assertOk(res, "Failed to toggle plugin");
+}
+
+export async function toggleMcpServer(serverId: string, enabled: boolean): Promise<void> {
+  const res = await fetch(`${BASE}/app-plugins/mcp-servers/${encodeURIComponent(serverId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  await assertOk(res, "Failed to toggle MCP server");
+}
+
+export async function updateMcpServerEnv(serverId: string, env: Record<string, string>): Promise<void> {
+  const res = await fetch(`${BASE}/app-plugins/mcp-servers/${encodeURIComponent(serverId)}/env`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ env }),
+  });
+  await assertOk(res, "Failed to update MCP server env");
 }

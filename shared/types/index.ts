@@ -3,6 +3,8 @@ export { migratePermissions } from "./permissions.js";
 
 export type { PluginCommand, PluginManifest, Plugin } from "./plugins.js";
 
+export type { AppPlugin, McpServerConfig, PluginScanRoot, AppPluginsData, ScanResult } from "./appPlugins.js";
+
 export type { Chat, ChatListResponse } from "./chat.js";
 
 export type { ParsedMessage } from "./message.js";
