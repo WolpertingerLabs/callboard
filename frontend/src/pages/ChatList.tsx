@@ -18,10 +18,11 @@ import {
 
 interface ChatListProps {
   onLogout: () => void;
+  activeChatId?: string;
   onRefresh: (refreshFn: () => void) => void;
 }
 
-export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
+export default function ChatList({ onLogout, activeChatId, onRefresh }: ChatListProps) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
   const [hasMore, setHasMore] = useState(false);
@@ -334,6 +335,7 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
           <ChatListItem
             key={chat.id}
             chat={chat}
+            isActive={chat.id === activeChatId}
             onClick={() => navigate(`/chat/${chat.id}`)}
             onDelete={() => handleDelete(chat)}
             sessionStatus={sessionStatuses.get(chat.id)}

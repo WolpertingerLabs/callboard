@@ -3,12 +3,13 @@ import type { Chat, SessionStatus } from "../api";
 
 interface Props {
   chat: Chat;
+  isActive?: boolean;
   onClick: () => void;
   onDelete: () => void;
   sessionStatus?: SessionStatus;
 }
 
-export default function ChatListItem({ chat, onClick, onDelete, sessionStatus }: Props) {
+export default function ChatListItem({ chat, isActive, onClick, onDelete, sessionStatus }: Props) {
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
@@ -36,6 +37,8 @@ export default function ChatListItem({ chat, onClick, onDelete, sessionStatus }:
         alignItems: "center",
         justifyContent: "space-between",
         cursor: "pointer",
+        background: isActive ? "var(--accent-light, rgba(99,102,241,0.1))" : undefined,
+        borderLeft: isActive ? "3px solid var(--accent)" : "3px solid transparent",
       }}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
