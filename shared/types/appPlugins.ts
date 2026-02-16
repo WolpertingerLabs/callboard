@@ -22,6 +22,8 @@ export interface McpServerConfig {
   headers?: Record<string, string>;
   /** Environment variables to pass to the server */
   env?: Record<string, string>;
+  /** The scan root this MCP server was discovered from (for standalone servers) */
+  scanRoot?: string;
 }
 
 /** An app-wide plugin discovered from a recursive scan */
