@@ -2,9 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronLeft, RotateCw, Loader } from "lucide-react";
 import { getDrafts, deleteDraft, executeDraft, type QueueItem } from "../api";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 export default function Queue() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [drafts, setDrafts] = useState<QueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -70,9 +72,11 @@ export default function Queue() {
           flexShrink: 0,
         }}
       >
-        <button onClick={() => navigate("/")} style={{ background: "none", padding: "4px 8px", display: "flex", alignItems: "center", color: "var(--text)" }}>
-          <ChevronLeft size={20} />
-        </button>
+        {isMobile && (
+          <button onClick={() => navigate("/")} style={{ background: "none", padding: "4px 8px", display: "flex", alignItems: "center", color: "var(--text)" }}>
+            <ChevronLeft size={20} />
+          </button>
+        )}
         <div style={{ fontSize: 18, fontWeight: 600 }}>Drafts</div>
         <button
           onClick={() => loadDrafts()}

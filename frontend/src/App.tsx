@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import SplitLayout from "./components/SplitLayout";
-import Queue from "./pages/Queue";
 import Login from "./pages/Login";
 
 export default function App() {
@@ -34,7 +33,7 @@ export default function App() {
         <Route path="/" element={<SplitLayout onLogout={handleLogout} />} />
         <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} />} />
         <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} />} />
-        <Route path="/queue" element={<Queue />} />
+        <Route path="/queue" element={<SplitLayout onLogout={handleLogout} />} />
       </Routes>
     </BrowserRouter>
   );
