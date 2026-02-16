@@ -1,4 +1,4 @@
-import { Globe, Monitor, X } from "lucide-react";
+import { Globe, Monitor, X, Bookmark } from "lucide-react";
 import type { Chat, SessionStatus } from "../api";
 
 interface Props {
@@ -6,10 +6,11 @@ interface Props {
   isActive?: boolean;
   onClick: () => void;
   onDelete: () => void;
+  onToggleBookmark?: (bookmarked: boolean) => void;
   sessionStatus?: SessionStatus;
 }
 
-export default function ChatListItem({ chat, isActive, onClick, onDelete, sessionStatus }: Props) {
+export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, sessionStatus }: Props) {
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
@@ -20,9 +21,11 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, sessio
   });
 
   let preview: string | undefined;
+  let isBookmarked = false;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     preview = meta.preview;
+    isBookmarked = meta.bookmarked === true;
   } catch {}
 
   const displayName = preview ? (preview.length > 60 ? preview.slice(0, 60) + "..." : preview) : folderName;
@@ -43,6 +46,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, sessio
     >
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isBookmarked && <Bookmark size={14} style={{ color: "var(--accent)", flexShrink: 0 }} fill="var(--accent)" />}
           <div style={{ fontSize: 15, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
           {sessionStatus?.active && (
             <div
@@ -76,21 +80,40 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, sessio
         </div>
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{time}</div>
       </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-        style={{
-          background: "none",
-          color: "var(--text-muted)",
-          fontSize: 18,
-          padding: "4px 8px",
-          marginLeft: 8,
-        }}
-      >
-        <X size={16} />
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: 8, flexShrink: 0 }}>
+        {onToggleBookmark && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleBookmark(!isBookmarked);
+            }}
+            title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
+            style={{
+              background: "none",
+              color: isBookmarked ? "var(--accent)" : "var(--text-muted)",
+              padding: "4px",
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            <Bookmark size={16} fill={isBookmarked ? "currentColor" : "none"} />
+          </button>
+        )}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          style={{
+            background: "none",
+            color: "var(--text-muted)",
+            fontSize: 18,
+            padding: "4px 8px",
+          }}
+        >
+          <X size={16} />
+        </button>
+      </div>
     </div>
   );
 }

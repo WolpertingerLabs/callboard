@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ClipboardList, X, Plus, Settings } from "lucide-react";
-import { listChats, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
+import { ClipboardList, X, Plus, Settings, Bookmark } from "lucide-react";
+import { listChats, deleteChat, toggleBookmark, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
 import ChatListItem from "../components/ChatListItem";
 import PermissionSettings from "../components/PermissionSettings";
 import ConfirmModal from "../components/ConfirmModal";
@@ -25,6 +25,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [bookmarkFilter, setBookmarkFilter] = useState(false);
   const [folder, setFolder] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
@@ -40,39 +41,45 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const isQueueActive = location.pathname === "/queue";
   const isSettingsActive = location.pathname === "/settings";
 
-  const load = async () => {
-    const response = await listChats(20, 0);
-    setChats(response.chats);
-    setHasMore(response.hasMore);
+  const load = useCallback(
+    async (filterOverride?: boolean) => {
+      const useFilter = filterOverride !== undefined ? filterOverride : bookmarkFilter;
+      const response = await listChats(20, 0, useFilter || undefined);
+      setChats(response.chats);
+      setHasMore(response.hasMore);
 
-    // Initialize suggested directories from first three chat directories if none exist
-    const chatDirectories = response.chats.map((chat) => chat.displayFolder || chat.folder);
-    initializeSuggestedDirectories(chatDirectories);
+      // Initialize suggested directories from first three chat directories if none exist
+      if (!useFilter) {
+        const chatDirectories = response.chats.map((chat) => chat.displayFolder || chat.folder);
+        initializeSuggestedDirectories(chatDirectories);
+      }
 
-    // Update the UI to reflect any new suggested directories
-    updateRecentDirs();
+      // Update the UI to reflect any new suggested directories
+      updateRecentDirs();
 
-    // Fetch session statuses for all chats
-    const statuses = new Map<string, SessionStatus>();
-    await Promise.all(
-      response.chats.map(async (chat) => {
-        try {
-          const status = await getSessionStatus(chat.id);
-          if (status.active) {
-            statuses.set(chat.id, status);
-          }
-        } catch {} // Ignore errors for individual status checks
-      }),
-    );
-    setSessionStatuses(statuses);
-  };
+      // Fetch session statuses for all chats
+      const statuses = new Map<string, SessionStatus>();
+      await Promise.all(
+        response.chats.map(async (chat) => {
+          try {
+            const status = await getSessionStatus(chat.id);
+            if (status.active) {
+              statuses.set(chat.id, status);
+            }
+          } catch {} // Ignore errors for individual status checks
+        }),
+      );
+      setSessionStatuses(statuses);
+    },
+    [bookmarkFilter],
+  );
 
   const loadMore = async () => {
     if (isLoadingMore || !hasMore) return;
 
     setIsLoadingMore(true);
     try {
-      const response = await listChats(20, chats.length);
+      const response = await listChats(20, chats.length, bookmarkFilter || undefined);
       setChats((prev) => [...prev, ...response.chats]);
       setHasMore(response.hasMore);
 
@@ -96,8 +103,8 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
 
   useEffect(() => {
     load();
-    onRefresh(load);
-  }, [onRefresh]);
+    onRefresh(() => load());
+  }, [onRefresh, load]);
 
   const updateRecentDirs = () => {
     setRecentDirs(getRecentDirectories().map((r) => r.path));
@@ -151,6 +158,38 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     load();
   };
 
+  const handleToggleBookmark = async (chat: Chat, bookmarked: boolean) => {
+    try {
+      await toggleBookmark(chat.id, bookmarked);
+      if (bookmarkFilter && !bookmarked) {
+        // When filter is active and unbookmarking, remove from list
+        setChats((prev) => prev.filter((c) => c.id !== chat.id));
+      } else {
+        // Optimistically update local state
+        setChats((prev) =>
+          prev.map((c) => {
+            if (c.id !== chat.id) return c;
+            try {
+              const meta = JSON.parse(c.metadata || "{}");
+              meta.bookmarked = bookmarked;
+              return { ...c, metadata: JSON.stringify(meta) };
+            } catch {
+              return c;
+            }
+          }),
+        );
+      }
+    } catch (err) {
+      console.error("Failed to toggle bookmark:", err);
+    }
+  };
+
+  const handleToggleFilter = () => {
+    const newFilter = !bookmarkFilter;
+    setBookmarkFilter(newFilter);
+    load(newFilter);
+  };
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <header
@@ -179,6 +218,22 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
             title="Drafts"
           >
             <ClipboardList size={18} />
+          </button>
+          <button
+            onClick={handleToggleFilter}
+            style={{
+              background: bookmarkFilter ? "var(--accent)" : "var(--bg-secondary)",
+              color: bookmarkFilter ? "#fff" : "var(--text)",
+              padding: "10px",
+              borderRadius: 8,
+              border: bookmarkFilter ? "none" : "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title={bookmarkFilter ? "Show all chats" : "Show bookmarked chats"}
+          >
+            <Bookmark size={18} fill={bookmarkFilter ? "currentColor" : "none"} />
           </button>
           <button
             onClick={() => setShowNew(!showNew)}
@@ -311,7 +366,11 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
       )}
 
       <div style={{ flex: 1, overflow: "auto" }}>
-        {chats.length === 0 && <p style={{ padding: 20, color: "var(--text-muted)", textAlign: "center" }}>No chats yet. Create one to get started.</p>}
+        {chats.length === 0 && (
+          <p style={{ padding: 20, color: "var(--text-muted)", textAlign: "center" }}>
+            {bookmarkFilter ? "No bookmarked chats" : "No chats yet. Create one to get started."}
+          </p>
+        )}
         {chats.map((chat) => (
           <ChatListItem
             key={chat.id}
@@ -319,6 +378,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
             isActive={chat.id === activeChatId}
             onClick={() => navigate(`/chat/${chat.id}`)}
             onDelete={() => handleDelete(chat)}
+            onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
             sessionStatus={sessionStatuses.get(chat.id)}
           />
         ))}
