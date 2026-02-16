@@ -1,8 +1,9 @@
-import { X, Hash, Puzzle, Check } from "lucide-react";
+import { X, Hash, Puzzle, Check, Server } from "lucide-react";
 import { useState } from "react";
 import { Plugin } from "../types/plugins";
 import { getCommandDescription, getCommandCategory } from "../utils/commands";
 import { getActivePlugins, setActivePlugins } from "../utils/plugins";
+import { toggleAppPlugin, toggleMcpServer, type AppPluginsData, type AppPlugin, type McpServerConfig } from "../api";
 import ModalOverlay from "./ModalOverlay";
 
 interface Props {
@@ -10,14 +11,25 @@ interface Props {
   onClose: () => void;
   slashCommands: string[];
   plugins?: Plugin[];
+  appPluginsData?: AppPluginsData | null;
   onCommandSelect?: (command: string) => void;
   onActivePluginsChange?: (activePluginIds: string[]) => void;
+  onAppPluginsDataChange?: (data: AppPluginsData) => void;
 }
 
-export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plugins = [], onCommandSelect, onActivePluginsChange }: Props) {
+export default function SlashCommandsModal({
+  isOpen,
+  onClose,
+  slashCommands,
+  plugins = [],
+  appPluginsData,
+  onCommandSelect,
+  onActivePluginsChange,
+  onAppPluginsDataChange,
+}: Props) {
   const [activePluginIds, setActivePluginIds] = useState<Set<string>>(() => getActivePlugins());
 
-  // Toggle plugin activation
+  // Toggle per-directory plugin activation
   const togglePlugin = (pluginId: string) => {
     const newActiveIds = new Set(activePluginIds);
     if (newActiveIds.has(pluginId)) {
@@ -28,6 +40,42 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
     setActivePluginIds(newActiveIds);
     setActivePlugins(newActiveIds);
     onActivePluginsChange?.(Array.from(newActiveIds));
+  };
+
+  // Toggle app-wide plugin activation
+  const handleToggleAppPlugin = async (pluginId: string, enabled: boolean) => {
+    if (!appPluginsData || !onAppPluginsDataChange) return;
+
+    // Optimistic update
+    const updatedPlugins = appPluginsData.plugins.map((p) => (p.id === pluginId ? { ...p, enabled } : p));
+    // If disabling a plugin, also disable its MCP servers
+    const updatedMcpServers = !enabled
+      ? appPluginsData.mcpServers.map((s) => (s.sourcePluginId === pluginId ? { ...s, enabled: false } : s))
+      : appPluginsData.mcpServers;
+    onAppPluginsDataChange({ ...appPluginsData, plugins: updatedPlugins, mcpServers: updatedMcpServers });
+
+    try {
+      await toggleAppPlugin(pluginId, enabled);
+    } catch {
+      // Revert on error
+      onAppPluginsDataChange(appPluginsData);
+    }
+  };
+
+  // Toggle MCP server activation
+  const handleToggleMcpServer = async (serverId: string, enabled: boolean) => {
+    if (!appPluginsData || !onAppPluginsDataChange) return;
+
+    // Optimistic update
+    const updatedMcpServers = appPluginsData.mcpServers.map((s) => (s.id === serverId ? { ...s, enabled } : s));
+    onAppPluginsDataChange({ ...appPluginsData, mcpServers: updatedMcpServers });
+
+    try {
+      await toggleMcpServer(serverId, enabled);
+    } catch {
+      // Revert on error
+      onAppPluginsDataChange(appPluginsData);
+    }
   };
 
   if (!isOpen) return null;
@@ -49,6 +97,12 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
     }
     onClose();
   };
+
+  const appPlugins = appPluginsData?.plugins ?? [];
+  const mcpServers = appPluginsData?.mcpServers ?? [];
+  const hasAppPlugins = appPlugins.length > 0;
+  const hasMcpServers = mcpServers.length > 0;
+  const hasAnyContent = slashCommands.length > 0 || plugins.length > 0 || hasAppPlugins || hasMcpServers;
 
   return (
     <ModalOverlay style={{ padding: "20px" }}>
@@ -119,7 +173,7 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
             maxHeight: "calc(80vh - 120px)",
           }}
         >
-          {slashCommands.length === 0 ? (
+          {!hasAnyContent ? (
             <div
               style={{
                 textAlign: "center" as const,
@@ -132,6 +186,7 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+              {/* Slash Commands */}
               {Object.entries(categorizedCommands).map(([category, commands]) => (
                 <div key={category}>
                   <h3
@@ -206,7 +261,7 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
             </div>
           )}
 
-          {/* Plugins Section */}
+          {/* Per-Directory Plugins Section */}
           {plugins.length > 0 && (
             <div style={{ marginTop: slashCommands.length > 0 ? "32px" : "0" }}>
               <h3
@@ -363,6 +418,300 @@ export default function SlashCommandsModal({ isOpen, onClose, slashCommands, plu
                           </div>
                         </div>
                       )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* App-Wide Plugins Section */}
+          {hasAppPlugins && (
+            <div style={{ marginTop: slashCommands.length > 0 || plugins.length > 0 ? "32px" : "0" }}>
+              <h3
+                style={{
+                  margin: "0 0 16px 0",
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase" as const,
+                  letterSpacing: "0.05em",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <Puzzle size={16} />
+                App-Wide Plugins ({appPlugins.length})
+              </h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {appPlugins.map((plugin: AppPlugin) => {
+                  const isEnabled = plugin.enabled;
+                  const pluginCommands = plugin.commands;
+
+                  return (
+                    <div
+                      key={plugin.id}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: "8px",
+                        padding: "16px",
+                        backgroundColor: isEnabled ? "var(--accent-bg, rgba(59, 130, 246, 0.05))" : "transparent",
+                        borderColor: isEnabled ? "var(--accent)" : "var(--border)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: "space-between",
+                          gap: "12px",
+                          marginBottom: pluginCommands.length > 0 && isEnabled ? "12px" : "0",
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            <code
+                              style={{
+                                color: "var(--accent)",
+                                fontWeight: 600,
+                                fontSize: "14px",
+                                fontFamily: "var(--font-mono)",
+                              }}
+                            >
+                              {plugin.manifest.name}
+                            </code>
+                            <span
+                              style={{
+                                fontSize: "10px",
+                                color: "var(--text-muted)",
+                                background: "var(--bg-secondary)",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                fontWeight: 500,
+                              }}
+                            >
+                              app-wide
+                            </span>
+                          </div>
+                          <p
+                            style={{
+                              margin: 0,
+                              color: "var(--text-muted)",
+                              fontSize: "13px",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {plugin.manifest.description}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleToggleAppPlugin(plugin.id, !isEnabled)}
+                          style={{
+                            background: isEnabled ? "var(--accent)" : "transparent",
+                            border: `1px solid ${isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            borderRadius: "6px",
+                            padding: "6px 12px",
+                            cursor: "pointer",
+                            color: isEnabled ? "white" : "var(--text)",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            transition: "all 0.2s ease",
+                          }}
+                        >
+                          {isEnabled && <Check size={14} />}
+                          {isEnabled ? "Active" : "Activate"}
+                        </button>
+                      </div>
+
+                      {/* Show available commands when enabled */}
+                      {isEnabled && pluginCommands.length > 0 && (
+                        <div
+                          style={{
+                            paddingTop: "12px",
+                            borderTop: "1px solid var(--border)",
+                          }}
+                        >
+                          <p
+                            style={{
+                              margin: "0 0 8px 0",
+                              fontSize: "12px",
+                              color: "var(--text-muted)",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Available Commands:
+                          </p>
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: "6px",
+                            }}
+                          >
+                            {pluginCommands.map((item, index) => (
+                              <button
+                                key={index}
+                                onClick={() => {
+                                  if (onCommandSelect) {
+                                    onCommandSelect(`/${plugin.manifest.name}:${item.name} `);
+                                  }
+                                  onClose();
+                                }}
+                                style={{
+                                  background: "var(--bg-secondary)",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: "4px",
+                                  padding: "4px 8px",
+                                  fontSize: "11px",
+                                  color: "var(--text)",
+                                  cursor: "pointer",
+                                  fontFamily: "var(--font-mono)",
+                                  transition: "all 0.2s ease",
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.background = "var(--accent-bg, rgba(59, 130, 246, 0.1))";
+                                  e.currentTarget.style.borderColor = "var(--accent)";
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.background = "var(--bg-secondary)";
+                                  e.currentTarget.style.borderColor = "var(--border)";
+                                }}
+                              >
+                                /{plugin.manifest.name}:{item.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* MCP Servers Section */}
+          {hasMcpServers && (
+            <div style={{ marginTop: slashCommands.length > 0 || plugins.length > 0 || hasAppPlugins ? "32px" : "0" }}>
+              <h3
+                style={{
+                  margin: "0 0 16px 0",
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase" as const,
+                  letterSpacing: "0.05em",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <Server size={16} />
+                MCP Servers ({mcpServers.length})
+              </h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {mcpServers.map((server: McpServerConfig) => {
+                  const isEnabled = server.enabled;
+                  // Find the source plugin name if available
+                  const sourcePlugin = server.sourcePluginId ? appPlugins.find((p) => p.id === server.sourcePluginId) : null;
+
+                  return (
+                    <div
+                      key={server.id}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: "8px",
+                        padding: "16px",
+                        backgroundColor: isEnabled ? "var(--accent-bg, rgba(59, 130, 246, 0.05))" : "transparent",
+                        borderColor: isEnabled ? "var(--accent)" : "var(--border)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: "space-between",
+                          gap: "12px",
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            <code
+                              style={{
+                                color: "var(--accent)",
+                                fontWeight: 600,
+                                fontSize: "14px",
+                                fontFamily: "var(--font-mono)",
+                              }}
+                            >
+                              {server.name}
+                            </code>
+                            <span
+                              style={{
+                                fontSize: "10px",
+                                color: "var(--text-muted)",
+                                background: "var(--bg-secondary)",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                fontWeight: 500,
+                                textTransform: "uppercase" as const,
+                              }}
+                            >
+                              {server.type}
+                            </span>
+                          </div>
+                          {sourcePlugin && (
+                            <p
+                              style={{
+                                margin: 0,
+                                color: "var(--text-muted)",
+                                fontSize: "12px",
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              from plugin: {sourcePlugin.manifest.name}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => handleToggleMcpServer(server.id, !isEnabled)}
+                          style={{
+                            background: isEnabled ? "var(--accent)" : "transparent",
+                            border: `1px solid ${isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            borderRadius: "6px",
+                            padding: "6px 12px",
+                            cursor: "pointer",
+                            color: isEnabled ? "white" : "var(--text)",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            transition: "all 0.2s ease",
+                          }}
+                        >
+                          {isEnabled && <Check size={14} />}
+                          {isEnabled ? "Active" : "Activate"}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

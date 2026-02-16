@@ -18,6 +18,7 @@ import {
   type NewChatInfo,
   type DefaultPermissions,
   type BranchConfig,
+  type AppPluginsData,
 } from "../api";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ToolCallBubble from "../components/ToolCallBubble";
@@ -94,6 +95,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [activePluginIds, setActivePluginIds] = useState<string[]>([]);
+  const [appPluginsData, setAppPluginsData] = useState<AppPluginsData | null>(null);
   const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -447,9 +449,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const loadSlashCommands = useCallback(async () => {
     if (!id) return;
     try {
-      const { slashCommands, plugins } = await getSlashCommandsAndPlugins(id);
+      const { slashCommands, plugins, appPlugins } = await getSlashCommandsAndPlugins(id);
       setSlashCommands(slashCommands);
       setPlugins(plugins);
+      if (appPlugins) setAppPluginsData(appPlugins);
     } catch (error) {
       console.warn("Failed to load slash commands and plugins:", error);
     }
@@ -487,6 +490,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
         if (data.plugins) {
           setPlugins(data.plugins);
+        }
+        if (data.appPlugins) {
+          setAppPluginsData(data.appPlugins);
         }
       })
       .catch((err) => {
@@ -526,6 +532,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
       if (chatData?.plugins && chatData.plugins.length > 0) {
         setPlugins(chatData.plugins);
+      }
+      if ((chatData as any)?.appPlugins) {
+        setAppPluginsData((chatData as any).appPlugins);
       }
 
       // Fetch fresh data if not available
@@ -1394,8 +1403,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         onClose={() => setShowSlashCommandsModal(false)}
         slashCommands={slashCommands}
         plugins={plugins}
+        appPluginsData={appPluginsData}
         onCommandSelect={handleCommandSelect}
         onActivePluginsChange={setActivePluginIds}
+        onAppPluginsDataChange={setAppPluginsData}
       />
     </div>
   );
