@@ -73,6 +73,7 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
       >
         <ChatList
           onLogout={onLogout}
+          activeChatId={activeChatId ?? undefined}
           onRefresh={(fn) => {
             chatListRefreshRef.current = fn;
           }}
