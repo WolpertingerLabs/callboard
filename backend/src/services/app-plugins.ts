@@ -107,6 +107,38 @@ function discoverPluginCommands(pluginSourcePath: string, marketplaceDir: string
 // ─── MCP Server Discovery ──────────────────────────────────────────────────
 
 /**
+ * Resolve env var template values from .mcp.json into concrete values + defaults.
+ *
+ * Patterns handled:
+ *   "${VAR}"         → env value = "", envDefaults template = "${VAR}"
+ *   "${VAR:-default}" → env value = "default", envDefaults template = "${VAR:-default}"
+ *   "literal"        → env value = "literal", envDefaults template = "literal"
+ */
+function resolveEnvDefaults(rawEnv: Record<string, string>): {
+  env: Record<string, string>;
+  envDefaults: Record<string, string>;
+} {
+  const env: Record<string, string> = {};
+  const envDefaults: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(rawEnv)) {
+    envDefaults[key] = value;
+
+    // Match ${VAR} or ${VAR:-default}
+    const match = value.match(/^\$\{([^}:]+)(?::-(.*))?\}$/);
+    if (match) {
+      // match[2] is the default value (undefined if no :- syntax)
+      env[key] = match[2] ?? "";
+    } else {
+      // Plain literal value
+      env[key] = value;
+    }
+  }
+
+  return { env, envDefaults };
+}
+
+/**
  * Parse a .mcp.json file and return MCP server configs.
  * Used for both plugin-embedded and standalone .mcp.json discovery.
  */
@@ -153,7 +185,9 @@ function parseMcpJsonFile(
       }
 
       if (serverConfig.env && typeof serverConfig.env === "object") {
-        server.env = serverConfig.env as Record<string, string>;
+        const { env, envDefaults } = resolveEnvDefaults(serverConfig.env as Record<string, string>);
+        server.env = env;
+        server.envDefaults = envDefaults;
       }
 
       servers.push(server);
@@ -451,25 +485,29 @@ export function rescanRoot(directory: string): ScanResult {
   const resolvedDir = resolve(directory);
   const data = loadAppPluginsData();
 
-  // Save current enabled states
+  // Save current enabled states and user-set env values
   const pluginEnabledStates = new Map<string, boolean>();
   const mcpEnabledStates = new Map<string, boolean>();
+  const mcpEnvStates = new Map<string, Record<string, string>>();
 
   for (const p of data.plugins) {
     if (p.scanRoot === resolvedDir) {
       pluginEnabledStates.set(p.pluginPath, p.enabled);
       if (p.mcpServers) {
         for (const s of p.mcpServers) {
-          mcpEnabledStates.set(`${p.pluginPath}:${s.name}`, s.enabled);
+          const key = `${p.pluginPath}:${s.name}`;
+          mcpEnabledStates.set(key, s.enabled);
+          if (s.env) mcpEnvStates.set(key, s.env);
         }
       }
     }
   }
 
-  // Save standalone MCP server enabled states
+  // Save standalone MCP server enabled states and env values
   for (const s of data.mcpServers) {
     if (s.scanRoot === resolvedDir) {
       mcpEnabledStates.set(`standalone:${s.name}`, s.enabled);
+      if (s.env) mcpEnvStates.set(`standalone:${s.name}`, s.env);
     }
   }
 
@@ -485,7 +523,7 @@ export function rescanRoot(directory: string): ScanResult {
   // Re-scan
   const { plugins, mcpServers } = scanDirectory(resolvedDir);
 
-  // Restore enabled states for plugins and their embedded MCP servers
+  // Restore enabled states and user-set env values for plugins and their embedded MCP servers
   for (const plugin of plugins) {
     const prevEnabled = pluginEnabledStates.get(plugin.pluginPath);
     if (prevEnabled !== undefined) {
@@ -498,16 +536,25 @@ export function rescanRoot(directory: string): ScanResult {
         if (prevServerEnabled !== undefined) {
           server.enabled = prevServerEnabled;
         }
+        const prevEnv = mcpEnvStates.get(key);
+        if (prevEnv) {
+          server.env = prevEnv;
+        }
       }
     }
   }
 
-  // Restore enabled states for standalone MCP servers
+  // Restore enabled states and env values for standalone MCP servers
   for (const server of mcpServers) {
     if (!server.sourcePluginId) {
-      const prev = mcpEnabledStates.get(`standalone:${server.name}`);
+      const standaloneKey = `standalone:${server.name}`;
+      const prev = mcpEnabledStates.get(standaloneKey);
       if (prev !== undefined) {
         server.enabled = prev;
+      }
+      const prevEnv = mcpEnvStates.get(standaloneKey);
+      if (prevEnv) {
+        server.env = prevEnv;
       }
     }
   }
@@ -636,6 +683,46 @@ export function setMcpServerEnabled(serverId: string, enabled: boolean): void {
 
   saveAppPluginsData(data);
   log.debug(`MCP server ${serverId} set to ${enabled ? "enabled" : "disabled"}`);
+}
+
+/**
+ * Update an MCP server's environment variables.
+ */
+export function setMcpServerEnv(serverId: string, env: Record<string, string>): void {
+  const data = loadAppPluginsData();
+  let found = false;
+
+  // Check standalone MCP servers
+  for (const server of data.mcpServers) {
+    if (server.id === serverId) {
+      server.env = env;
+      found = true;
+      break;
+    }
+  }
+
+  // Check MCP servers embedded in plugins
+  if (!found) {
+    for (const plugin of data.plugins) {
+      if (plugin.mcpServers) {
+        for (const server of plugin.mcpServers) {
+          if (server.id === serverId) {
+            server.env = env;
+            found = true;
+            break;
+          }
+        }
+      }
+      if (found) break;
+    }
+  }
+
+  if (!found) {
+    throw new Error(`MCP server not found: ${serverId}`);
+  }
+
+  saveAppPluginsData(data);
+  log.debug(`MCP server ${serverId} env updated (${Object.keys(env).length} vars)`);
 }
 
 // ─── SDK Integration Getters ───────────────────────────────────────────────

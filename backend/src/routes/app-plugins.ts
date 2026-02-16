@@ -7,6 +7,7 @@ import {
   rescanAll,
   setPluginEnabled,
   setMcpServerEnabled,
+  setMcpServerEnv,
 } from "../services/app-plugins.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -212,5 +213,45 @@ appPluginsRouter.patch("/mcp-servers/:id", (req, res) => {
     }
     log.error(`Error toggling MCP server ${req.params.id}: ${err.message}`);
     res.status(500).json({ error: "Failed to toggle MCP server", details: err.message });
+  }
+});
+
+// Update an MCP server's environment variables
+appPluginsRouter.patch("/mcp-servers/:id/env", (req, res) => {
+  // #swagger.tags = ['App Plugins']
+  // #swagger.summary = 'Update MCP server environment variables'
+  // #swagger.description = 'Set or override environment variables for an MCP server. Values are persisted and used when the server is started.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'MCP server ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["env"],
+          properties: {
+            env: { type: "object", description: "Key-value pairs of environment variables" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "MCP server env updated" } */
+  /* #swagger.responses[404] = { description: "MCP server not found" } */
+  const { env } = req.body;
+
+  if (!env || typeof env !== "object" || Array.isArray(env)) {
+    return res.status(400).json({ error: "env (object) is required" });
+  }
+
+  try {
+    setMcpServerEnv(req.params.id, env);
+    res.json({ ok: true });
+  } catch (err: any) {
+    if (err.message.includes("not found")) {
+      return res.status(404).json({ error: err.message });
+    }
+    log.error(`Error updating MCP server env ${req.params.id}: ${err.message}`);
+    res.status(500).json({ error: "Failed to update MCP server env", details: err.message });
   }
 });

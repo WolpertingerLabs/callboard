@@ -20,8 +20,10 @@ export interface McpServerConfig {
   url?: string;
   /** For sse/http: request headers */
   headers?: Record<string, string>;
-  /** Environment variables to pass to the server */
+  /** Environment variables to pass to the server (resolved/user-set values) */
   env?: Record<string, string>;
+  /** Original env templates from .mcp.json (e.g. "${API_KEY}", "${DB_URL:-localhost}") */
+  envDefaults?: Record<string, string>;
   /** The scan root this MCP server was discovered from (for standalone servers) */
   scanRoot?: string;
 }

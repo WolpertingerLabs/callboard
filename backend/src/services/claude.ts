@@ -84,6 +84,20 @@ function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
 /**
  * Build MCP server configuration for Claude SDK from enabled app-wide MCP servers.
  */
+function resolveEnvReferences(env: Record<string, string>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    // Resolve ${VAR_NAME} references from process.env
+    const match = value.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/);
+    if (match) {
+      resolved[key] = process.env[match[1]] || "";
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}
+
 function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTools: string[] } | undefined {
   try {
     const mcpServers = getEnabledMcpServers();
@@ -93,11 +107,12 @@ function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTool
     const allowedTools: string[] = [];
 
     for (const server of mcpServers) {
+      const resolvedEnv = server.env ? resolveEnvReferences(server.env) : undefined;
       if (server.type === "stdio") {
         serverConfig[server.name] = {
           command: server.command,
           args: server.args || [],
-          ...(server.env && { env: server.env }),
+          ...(resolvedEnv && { env: resolvedEnv }),
         };
       } else {
         // HTTP/SSE type
@@ -105,7 +120,7 @@ function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTool
           type: server.type,
           url: server.url,
           ...(server.headers && { headers: server.headers }),
-          ...(server.env && { env: server.env }),
+          ...(resolvedEnv && { env: resolvedEnv }),
         };
       }
       allowedTools.push(`mcp__${server.name}__*`);

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, LogOut, FolderSearch, RefreshCw, Trash2, Plug, Server, Plus, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronDown, ChevronRight, LogOut, FolderSearch, RefreshCw, Trash2, Plug, Server, Plus, Loader2, Eye, EyeOff, Save, AlertTriangle } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ConfirmModal from "../components/ConfirmModal";
 import FolderBrowser from "../components/FolderBrowser";
@@ -12,6 +12,7 @@ import {
   removeScanRoot,
   toggleAppPlugin,
   toggleMcpServer,
+  updateMcpServerEnv,
   type AppPluginsData,
   type AppPlugin,
   type McpServerConfig,
@@ -34,6 +35,13 @@ export default function Settings({ onLogout }: SettingsProps) {
   const [scanError, setScanError] = useState<string | null>(null);
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [removingRoot, setRemovingRoot] = useState<string | null>(null);
+
+  // Env var editor state
+  const [expandedMcpServerId, setExpandedMcpServerId] = useState<string | null>(null);
+  const [editingEnv, setEditingEnv] = useState<Record<string, string> | null>(null);
+  const [showEnvValues, setShowEnvValues] = useState<Record<string, boolean>>({});
+  const [envSaved, setEnvSaved] = useState(false);
+  const [envSaving, setEnvSaving] = useState(false);
 
   // Load app plugins data on mount
   const loadPluginsData = useCallback(async () => {
@@ -145,6 +153,95 @@ export default function Settings({ onLogout }: SettingsProps) {
       console.error("Failed to toggle MCP server:", err);
       await loadPluginsData(); // Revert on error
     }
+  };
+
+  // Env var editing handlers
+  const handleExpandMcpServer = (server: McpServerConfig) => {
+    if (expandedMcpServerId === server.id) {
+      // Collapse
+      setExpandedMcpServerId(null);
+      setEditingEnv(null);
+      setShowEnvValues({});
+      setEnvSaved(false);
+    } else {
+      // Expand and initialize editing state from server's env
+      setExpandedMcpServerId(server.id);
+      setEditingEnv({ ...(server.env || {}) });
+      setShowEnvValues({});
+      setEnvSaved(false);
+    }
+  };
+
+  const handleSaveEnv = async (serverId: string) => {
+    if (!editingEnv) return;
+    setEnvSaving(true);
+    try {
+      await updateMcpServerEnv(serverId, editingEnv);
+      // Optimistic update of local state
+      setAppPluginsData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          mcpServers: prev.mcpServers.map((s) => (s.id === serverId ? { ...s, env: { ...editingEnv } } : s)),
+          plugins: prev.plugins.map((p) => ({
+            ...p,
+            mcpServers: p.mcpServers?.map((s) => (s.id === serverId ? { ...s, env: { ...editingEnv } } : s)),
+          })),
+        };
+      });
+      setEnvSaved(true);
+      setTimeout(() => setEnvSaved(false), 2000);
+    } catch (err) {
+      console.error("Failed to save env vars:", err);
+      await loadPluginsData();
+    } finally {
+      setEnvSaving(false);
+    }
+  };
+
+  const getEnvDefaultHint = (envDefaults: Record<string, string> | undefined, key: string): string | null => {
+    if (!envDefaults || !envDefaults[key]) return null;
+    const raw = envDefaults[key];
+    const match = raw.match(/^\$\{([^}:]+)(?::-(.*))?\}$/);
+    if (match) {
+      return match[2] !== undefined ? `default: ${match[2]}` : "required";
+    }
+    return null;
+  };
+
+  const isEnvKeyRequired = (envDefaults: Record<string, string> | undefined, key: string): boolean => {
+    if (!envDefaults || !envDefaults[key]) return false;
+    const raw = envDefaults[key];
+    // Required means ${VAR} with no :- default syntax
+    const match = raw.match(/^\$\{([^}:]+)(?::-(.*))?\}$/);
+    return !!match && match[2] === undefined;
+  };
+
+  /** Returns list of required env keys that have no value set */
+  const getMissingRequiredEnvKeys = (server: McpServerConfig): string[] => {
+    if (!server.envDefaults) return [];
+    const missing: string[] = [];
+    for (const key of Object.keys(server.envDefaults)) {
+      if (isEnvKeyRequired(server.envDefaults, key)) {
+        const val = server.env?.[key];
+        if (!val || val.trim() === "") {
+          missing.push(key);
+        }
+      }
+    }
+    return missing;
+  };
+
+  const hasEnvVars = (server: McpServerConfig): boolean => {
+    return !!(
+      (server.env && Object.keys(server.env).length > 0) ||
+      (server.envDefaults && Object.keys(server.envDefaults).length > 0)
+    );
+  };
+
+  /** Check if value is a ${ENV_VAR} reference for native env pass-through */
+  const isEnvReference = (value: string): boolean => {
+    return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value);
   };
 
   // Collect all MCP servers from all sources
@@ -547,88 +644,351 @@ export default function Settings({ onLogout }: SettingsProps) {
                 MCP Servers ({allMcpServers.length})
               </div>
 
-              {allMcpServers.map((server) => (
-                <div
-                  key={server.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    padding: "10px 12px",
-                    borderRadius: 6,
-                    border: "1px solid var(--border)",
-                    marginBottom: 4,
-                    background: "var(--surface)",
-                    opacity: server.enabled ? 1 : 0.6,
-                  }}
-                >
-                  {/* Toggle */}
-                  <button
-                    onClick={() => handleToggleMcpServer(server.id, !server.enabled)}
+              {allMcpServers.map((server) => {
+                const isExpanded = expandedMcpServerId === server.id;
+                const serverHasEnv = hasEnvVars(server);
+                const envKeys = Object.keys(server.envDefaults || server.env || {});
+                const missingKeys = getMissingRequiredEnvKeys(server);
+                const hasMissingEnv = missingKeys.length > 0;
+
+                return (
+                  <div
+                    key={server.id}
                     style={{
-                      width: 36,
-                      height: 20,
-                      borderRadius: 10,
-                      border: "none",
-                      background: server.enabled ? "var(--accent)" : "var(--border)",
-                      cursor: "pointer",
-                      position: "relative",
-                      flexShrink: 0,
-                      marginRight: 12,
-                      transition: "background 0.2s",
+                      borderRadius: 6,
+                      border: hasMissingEnv ? "1px solid var(--danger, #dc3545)" : "1px solid var(--border)",
+                      marginBottom: 4,
+                      background: "var(--surface)",
+                      opacity: server.enabled ? 1 : 0.6,
                     }}
                   >
                     <div
                       style={{
-                        width: 16,
-                        height: 16,
-                        borderRadius: "50%",
-                        background: "#fff",
-                        position: "absolute",
-                        top: 2,
-                        left: server.enabled ? 18 : 2,
-                        transition: "left 0.2s",
+                        display: "flex",
+                        alignItems: "center",
+                        padding: "10px 12px",
                       }}
-                    />
-                  </button>
+                    >
+                      {/* Toggle */}
+                      <button
+                        onClick={() => handleToggleMcpServer(server.id, !server.enabled)}
+                        style={{
+                          width: 36,
+                          height: 20,
+                          borderRadius: 10,
+                          border: "none",
+                          background: server.enabled ? "var(--accent)" : "var(--border)",
+                          cursor: "pointer",
+                          position: "relative",
+                          flexShrink: 0,
+                          marginRight: 12,
+                          transition: "background 0.2s",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: "50%",
+                            background: "#fff",
+                            position: "absolute",
+                            top: 2,
+                            left: server.enabled ? 18 : 2,
+                            transition: "left 0.2s",
+                          }}
+                        />
+                      </button>
 
-                  {/* Server info */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 500,
-                          fontFamily: "monospace",
-                          color: "var(--text)",
-                        }}
-                      >
-                        {server.name}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 10,
-                          padding: "1px 5px",
-                          borderRadius: 3,
-                          background: server.type === "stdio" ? "#2d6a4f22" : "#1d3557aa",
-                          color: server.type === "stdio" ? "#2d6a4f" : "#a8dadc",
-                          fontFamily: "monospace",
-                        }}
-                      >
-                        {server.type}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                      {server.pluginName && <span>from {server.pluginName}</span>}
-                      {!server.pluginName && server.type === "stdio" && server.command && (
-                        <span>
-                          {server.command} {server.args?.join(" ")}
-                        </span>
+                      {/* Server info */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 500,
+                              fontFamily: "monospace",
+                              color: "var(--text)",
+                            }}
+                          >
+                            {server.name}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "1px 5px",
+                              borderRadius: 3,
+                              background: server.type === "stdio" ? "#2d6a4f22" : "#1d3557aa",
+                              color: server.type === "stdio" ? "#2d6a4f" : "#a8dadc",
+                              fontFamily: "monospace",
+                            }}
+                          >
+                            {server.type}
+                          </span>
+                          {serverHasEnv && !hasMissingEnv && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "1px 5px",
+                                borderRadius: 3,
+                                background: "var(--border)",
+                                color: "var(--text-muted)",
+                              }}
+                            >
+                              {envKeys.length} env
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                          {server.pluginName && <span>from {server.pluginName}</span>}
+                          {!server.pluginName && server.type === "stdio" && server.command && (
+                            <span>
+                              {server.command} {server.args?.join(" ")}
+                            </span>
+                          )}
+                          {!server.pluginName && server.type !== "stdio" && server.url && <span>{server.url}</span>}
+                        </div>
+
+                        {/* Missing env warning */}
+                        {hasMissingEnv && !isExpanded && (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 5,
+                              marginTop: 6,
+                              padding: "4px 8px",
+                              borderRadius: 4,
+                              background: "rgba(220, 53, 69, 0.1)",
+                              color: "var(--danger, #dc3545)",
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          >
+                            <AlertTriangle size={12} />
+                            Missing {missingKeys.length} required environment variable{missingKeys.length !== 1 ? "s" : ""}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Expand/collapse chevron for env vars */}
+                      {serverHasEnv && (
+                        <button
+                          onClick={() => handleExpandMcpServer(server)}
+                          className={hasMissingEnv && !isExpanded ? "env-pulse" : ""}
+                          style={{
+                            background: hasMissingEnv && !isExpanded ? "rgba(220, 53, 69, 0.15)" : "none",
+                            border: hasMissingEnv && !isExpanded ? "1px solid var(--danger, #dc3545)" : "none",
+                            borderRadius: 6,
+                            padding: "4px 6px",
+                            cursor: "pointer",
+                            color: hasMissingEnv && !isExpanded ? "var(--danger, #dc3545)" : "var(--text-muted)",
+                            display: "flex",
+                            alignItems: "center",
+                            flexShrink: 0,
+                            marginLeft: 8,
+                          }}
+                          title={
+                            hasMissingEnv
+                              ? `Configure ${missingKeys.length} missing env var${missingKeys.length !== 1 ? "s" : ""}`
+                              : isExpanded
+                                ? "Hide env vars"
+                                : "Show env vars"
+                          }
+                        >
+                          {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                        </button>
                       )}
-                      {!server.pluginName && server.type !== "stdio" && server.url && <span>{server.url}</span>}
                     </div>
+
+                    {/* Expanded env var editor */}
+                    {isExpanded && editingEnv && (
+                      <div
+                        style={{
+                          borderTop: hasMissingEnv ? "1px solid var(--danger, #dc3545)" : "1px solid var(--border)",
+                          padding: "12px",
+                          background: "var(--bg)",
+                          borderRadius: "0 0 6px 6px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 500,
+                            color: "var(--text-muted)",
+                            marginBottom: 8,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px",
+                          }}
+                        >
+                          Environment Variables
+                        </div>
+
+                        {hasMissingEnv && (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "6px 10px",
+                              borderRadius: 4,
+                              background: "rgba(220, 53, 69, 0.1)",
+                              border: "1px solid rgba(220, 53, 69, 0.3)",
+                              color: "var(--danger, #dc3545)",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              marginBottom: 10,
+                            }}
+                          >
+                            <AlertTriangle size={14} />
+                            Set required variables below before this server can be used
+                          </div>
+                        )}
+
+                        {envKeys.map((key) => {
+                          const hint = getEnvDefaultHint(server.envDefaults, key);
+                          const isRequired = isEnvKeyRequired(server.envDefaults, key);
+                          const isVisible = showEnvValues[key] || false;
+                          const currentVal = editingEnv[key] || "";
+                          const isMissing = isRequired && !currentVal.trim();
+                          const isRef = isEnvReference(currentVal);
+
+                          return (
+                            <div key={key} style={{ marginBottom: 8 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                                <span
+                                  style={{
+                                    fontSize: 12,
+                                    fontFamily: "monospace",
+                                    fontWeight: 500,
+                                    color: isMissing ? "var(--danger, #dc3545)" : "var(--text)",
+                                  }}
+                                >
+                                  {key}
+                                </span>
+                                {hint && (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      color: hint === "required" ? "var(--danger, #dc3545)" : "var(--text-muted)",
+                                      fontStyle: "italic",
+                                      fontWeight: isMissing ? 600 : 400,
+                                    }}
+                                  >
+                                    {hint}
+                                  </span>
+                                )}
+                                {isRef && (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      padding: "1px 5px",
+                                      borderRadius: 3,
+                                      background: "#2d6a4f22",
+                                      color: "#2d6a4f",
+                                      fontFamily: "monospace",
+                                    }}
+                                  >
+                                    from env
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                <input
+                                  type={isVisible ? "text" : "password"}
+                                  value={currentVal}
+                                  onChange={(e) => {
+                                    setEditingEnv((prev) => (prev ? { ...prev, [key]: e.target.value } : prev));
+                                    setEnvSaved(false);
+                                  }}
+                                  placeholder={hint === "required" ? "Required" : hint?.replace("default: ", "") || ""}
+                                  style={{
+                                    flex: 1,
+                                    padding: "6px 8px",
+                                    borderRadius: 4,
+                                    border: isMissing ? "1px solid var(--danger, #dc3545)" : "1px solid var(--border)",
+                                    background: isMissing ? "rgba(220, 53, 69, 0.05)" : "var(--surface)",
+                                    color: "var(--text)",
+                                    fontSize: 12,
+                                    fontFamily: "monospace",
+                                    boxSizing: "border-box",
+                                  }}
+                                />
+                                <button
+                                  onClick={() => {
+                                    const envVarName = `\${${key}}`;
+                                    setEditingEnv((prev) => (prev ? { ...prev, [key]: envVarName } : prev));
+                                    setEnvSaved(false);
+                                  }}
+                                  style={{
+                                    background: isRef ? "#2d6a4f22" : "none",
+                                    border: isRef ? "1px solid #2d6a4f" : "1px solid var(--border)",
+                                    borderRadius: 4,
+                                    padding: "5px 6px",
+                                    cursor: "pointer",
+                                    color: isRef ? "#2d6a4f" : "var(--text-muted)",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    fontSize: 10,
+                                    fontFamily: "monospace",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                  title={`Use $\{${key}} to pull from system environment`}
+                                >
+                                  ${"{"}ENV{"}"}
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    setShowEnvValues((prev) => ({
+                                      ...prev,
+                                      [key]: !prev[key],
+                                    }))
+                                  }
+                                  style={{
+                                    background: "none",
+                                    border: "1px solid var(--border)",
+                                    borderRadius: 4,
+                                    padding: "5px 6px",
+                                    cursor: "pointer",
+                                    color: "var(--text-muted)",
+                                    display: "flex",
+                                    alignItems: "center",
+                                  }}
+                                  title={isVisible ? "Hide value" : "Show value"}
+                                >
+                                  {isVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                          <button
+                            onClick={() => handleSaveEnv(server.id)}
+                            disabled={envSaving}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 5,
+                              padding: "5px 12px",
+                              borderRadius: 4,
+                              border: "none",
+                              background: envSaved ? "#2d6a4f" : "var(--accent)",
+                              color: "#fff",
+                              fontSize: 12,
+                              cursor: envSaving ? "default" : "pointer",
+                              opacity: envSaving ? 0.7 : 1,
+                            }}
+                          >
+                            <Save size={12} />
+                            {envSaving ? "Saving..." : envSaved ? "Saved!" : "Save"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -733,11 +1093,18 @@ export default function Settings({ onLogout }: SettingsProps) {
       {/* Folder Browser for adding scan roots */}
       <FolderBrowser isOpen={showFolderBrowser} onClose={() => setShowFolderBrowser(false)} onSelect={handleAddScanRoot} />
 
-      {/* CSS for spinner animation */}
+      {/* CSS for spinner and pulse animations */}
       <style>{`
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
+        }
+        @keyframes env-pulse-anim {
+          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); }
+          50% { opacity: 0.85; box-shadow: 0 0 0 4px rgba(220, 53, 69, 0); }
+        }
+        .env-pulse {
+          animation: env-pulse-anim 2s ease-in-out infinite;
         }
       `}</style>
     </div>

@@ -309,3 +309,12 @@ export async function toggleMcpServer(serverId: string, enabled: boolean): Promi
   });
   await assertOk(res, "Failed to toggle MCP server");
 }
+
+export async function updateMcpServerEnv(serverId: string, env: Record<string, string>): Promise<void> {
+  const res = await fetch(`${BASE}/app-plugins/mcp-servers/${encodeURIComponent(serverId)}/env`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ env }),
+  });
+  await assertOk(res, "Failed to update MCP server env");
+}

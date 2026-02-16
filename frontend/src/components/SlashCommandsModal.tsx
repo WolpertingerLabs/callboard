@@ -1,4 +1,4 @@
-import { X, Hash, Puzzle, Check, Server } from "lucide-react";
+import { X, Hash, Puzzle, Check, Server, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { Plugin } from "../types/plugins";
 import { getCommandDescription, getCommandCategory } from "../utils/commands";
@@ -79,6 +79,27 @@ export default function SlashCommandsModal({
   };
 
   if (!isOpen) return null;
+
+  /** Check if an MCP server has required env vars that are missing */
+  const serverHasMissingEnv = (server: McpServerConfig): boolean => {
+    if (!server.envDefaults) return false;
+    for (const key of Object.keys(server.envDefaults)) {
+      const raw = server.envDefaults[key];
+      const match = raw.match(/^\$\{([^}:]+)(?::-(.*))?\}$/);
+      // Required = has ${VAR} pattern with no :- default
+      if (match && match[2] === undefined) {
+        const val = server.env?.[key];
+        if (!val || val.trim() === "") return true;
+      }
+    }
+    return false;
+  };
+
+  /** Check if a plugin has any MCP servers with missing required env */
+  const pluginHasMissingEnv = (plugin: AppPlugin): boolean => {
+    if (!plugin.mcpServers) return false;
+    return plugin.mcpServers.some(serverHasMissingEnv);
+  };
 
   // Group commands by category
   const categorizedCommands = slashCommands.reduce(
@@ -446,18 +467,31 @@ export default function SlashCommandsModal({
               </h3>
               <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {appPlugins.map((plugin: AppPlugin) => {
-                  const isEnabled = plugin.enabled;
+                  const hasMissingEnv = pluginHasMissingEnv(plugin);
+                  const isEnabled = plugin.enabled && !hasMissingEnv;
+                  const isDisabledByEnv = plugin.enabled && hasMissingEnv;
                   const pluginCommands = plugin.commands;
 
                   return (
                     <div
                       key={plugin.id}
                       style={{
-                        border: "1px solid var(--border)",
+                        border: isDisabledByEnv
+                          ? "1px solid rgba(220, 53, 69, 0.4)"
+                          : "1px solid var(--border)",
                         borderRadius: "8px",
                         padding: "16px",
-                        backgroundColor: isEnabled ? "var(--accent-bg, rgba(59, 130, 246, 0.05))" : "transparent",
-                        borderColor: isEnabled ? "var(--accent)" : "var(--border)",
+                        backgroundColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.04)"
+                          : isEnabled
+                            ? "var(--accent-bg, rgba(59, 130, 246, 0.05))"
+                            : "transparent",
+                        borderColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.4)"
+                          : isEnabled
+                            ? "var(--accent)"
+                            : "var(--border)",
+                        opacity: isDisabledByEnv ? 0.7 : 1,
                       }}
                     >
                       <div
@@ -466,7 +500,7 @@ export default function SlashCommandsModal({
                           alignItems: "flex-start",
                           justifyContent: "space-between",
                           gap: "12px",
-                          marginBottom: pluginCommands.length > 0 && isEnabled ? "12px" : "0",
+                          marginBottom: (pluginCommands.length > 0 && isEnabled) || isDisabledByEnv ? "12px" : "0",
                         }}
                       >
                         <div style={{ flex: 1 }}>
@@ -480,7 +514,7 @@ export default function SlashCommandsModal({
                           >
                             <code
                               style={{
-                                color: "var(--accent)",
+                                color: isDisabledByEnv ? "var(--text-muted)" : "var(--accent)",
                                 fontWeight: 600,
                                 fontSize: "14px",
                                 fontFamily: "var(--font-mono)",
@@ -513,14 +547,19 @@ export default function SlashCommandsModal({
                           </p>
                         </div>
                         <button
-                          onClick={() => handleToggleAppPlugin(plugin.id, !isEnabled)}
+                          onClick={() => !hasMissingEnv && handleToggleAppPlugin(plugin.id, !plugin.enabled)}
+                          disabled={hasMissingEnv}
                           style={{
-                            background: isEnabled ? "var(--accent)" : "transparent",
-                            border: `1px solid ${isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            background: isDisabledByEnv
+                              ? "rgba(220, 53, 69, 0.15)"
+                              : isEnabled
+                                ? "var(--accent)"
+                                : "transparent",
+                            border: `1px solid ${isDisabledByEnv ? "rgba(220, 53, 69, 0.4)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
                             borderRadius: "6px",
                             padding: "6px 12px",
-                            cursor: "pointer",
-                            color: isEnabled ? "white" : "var(--text)",
+                            cursor: hasMissingEnv ? "not-allowed" : "pointer",
+                            color: isDisabledByEnv ? "var(--danger, #dc3545)" : isEnabled ? "white" : "var(--text)",
                             fontSize: "12px",
                             fontWeight: 600,
                             display: "flex",
@@ -529,10 +568,42 @@ export default function SlashCommandsModal({
                             transition: "all 0.2s ease",
                           }}
                         >
+                          {isDisabledByEnv && <AlertTriangle size={14} />}
                           {isEnabled && <Check size={14} />}
-                          {isEnabled ? "Active" : "Activate"}
+                          {isDisabledByEnv ? "Missing Env" : isEnabled ? "Active" : "Activate"}
                         </button>
                       </div>
+
+                      {/* Missing env warning */}
+                      {isDisabledByEnv && (
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "8px 12px",
+                            borderRadius: "6px",
+                            background: "rgba(220, 53, 69, 0.08)",
+                            border: "1px solid rgba(220, 53, 69, 0.2)",
+                            color: "var(--danger, #dc3545)",
+                            fontSize: "12px",
+                            fontWeight: 500,
+                            marginBottom: pluginCommands.length > 0 ? "12px" : "0",
+                          }}
+                        >
+                          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                          <span>
+                            MCP server{plugin.mcpServers!.filter(serverHasMissingEnv).length > 1 ? "s" : ""}{" "}
+                            <strong>
+                              {plugin.mcpServers!
+                                .filter(serverHasMissingEnv)
+                                .map((s) => s.name)
+                                .join(", ")}
+                            </strong>{" "}
+                            missing required environment variables. Configure in Settings.
+                          </span>
+                        </div>
+                      )}
 
                       {/* Show available commands when enabled */}
                       {isEnabled && pluginCommands.length > 0 && (
@@ -622,7 +693,9 @@ export default function SlashCommandsModal({
               </h3>
               <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {mcpServers.map((server: McpServerConfig) => {
-                  const isEnabled = server.enabled;
+                  const hasMissingEnv = serverHasMissingEnv(server);
+                  const isEnabled = server.enabled && !hasMissingEnv;
+                  const isDisabledByEnv = server.enabled && hasMissingEnv;
                   // Find the source plugin name if available
                   const sourcePlugin = server.sourcePluginId ? appPlugins.find((p) => p.id === server.sourcePluginId) : null;
 
@@ -630,11 +703,22 @@ export default function SlashCommandsModal({
                     <div
                       key={server.id}
                       style={{
-                        border: "1px solid var(--border)",
+                        border: isDisabledByEnv
+                          ? "1px solid rgba(220, 53, 69, 0.4)"
+                          : "1px solid var(--border)",
                         borderRadius: "8px",
                         padding: "16px",
-                        backgroundColor: isEnabled ? "var(--accent-bg, rgba(59, 130, 246, 0.05))" : "transparent",
-                        borderColor: isEnabled ? "var(--accent)" : "var(--border)",
+                        backgroundColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.04)"
+                          : isEnabled
+                            ? "var(--accent-bg, rgba(59, 130, 246, 0.05))"
+                            : "transparent",
+                        borderColor: isDisabledByEnv
+                          ? "rgba(220, 53, 69, 0.4)"
+                          : isEnabled
+                            ? "var(--accent)"
+                            : "var(--border)",
+                        opacity: isDisabledByEnv ? 0.7 : 1,
                       }}
                     >
                       <div
@@ -656,7 +740,7 @@ export default function SlashCommandsModal({
                           >
                             <code
                               style={{
-                                color: "var(--accent)",
+                                color: isDisabledByEnv ? "var(--text-muted)" : "var(--accent)",
                                 fontWeight: 600,
                                 fontSize: "14px",
                                 fontFamily: "var(--font-mono)",
@@ -677,6 +761,20 @@ export default function SlashCommandsModal({
                             >
                               {server.type}
                             </span>
+                            {server.env && Object.keys(server.env).length > 0 && !hasMissingEnv && (
+                              <span
+                                style={{
+                                  fontSize: "10px",
+                                  color: "var(--text-muted)",
+                                  background: "var(--bg-secondary)",
+                                  padding: "2px 6px",
+                                  borderRadius: "4px",
+                                  fontWeight: 500,
+                                }}
+                              >
+                                {Object.keys(server.env).length} env var{Object.keys(server.env).length !== 1 ? "s" : ""}
+                              </span>
+                            )}
                           </div>
                           {sourcePlugin && (
                             <p
@@ -690,16 +788,41 @@ export default function SlashCommandsModal({
                               from plugin: {sourcePlugin.manifest.name}
                             </p>
                           )}
+                          {/* Missing env warning */}
+                          {isDisabledByEnv && (
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                marginTop: "6px",
+                                padding: "4px 8px",
+                                borderRadius: "4px",
+                                background: "rgba(220, 53, 69, 0.08)",
+                                color: "var(--danger, #dc3545)",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                              }}
+                            >
+                              <AlertTriangle size={12} />
+                              Missing required env vars — configure in Settings
+                            </div>
+                          )}
                         </div>
                         <button
-                          onClick={() => handleToggleMcpServer(server.id, !isEnabled)}
+                          onClick={() => !hasMissingEnv && handleToggleMcpServer(server.id, !server.enabled)}
+                          disabled={hasMissingEnv}
                           style={{
-                            background: isEnabled ? "var(--accent)" : "transparent",
-                            border: `1px solid ${isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            background: isDisabledByEnv
+                              ? "rgba(220, 53, 69, 0.15)"
+                              : isEnabled
+                                ? "var(--accent)"
+                                : "transparent",
+                            border: `1px solid ${isDisabledByEnv ? "rgba(220, 53, 69, 0.4)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
                             borderRadius: "6px",
                             padding: "6px 12px",
-                            cursor: "pointer",
-                            color: isEnabled ? "white" : "var(--text)",
+                            cursor: hasMissingEnv ? "not-allowed" : "pointer",
+                            color: isDisabledByEnv ? "var(--danger, #dc3545)" : isEnabled ? "white" : "var(--text)",
                             fontSize: "12px",
                             fontWeight: 600,
                             display: "flex",
@@ -708,8 +831,9 @@ export default function SlashCommandsModal({
                             transition: "all 0.2s ease",
                           }}
                         >
+                          {isDisabledByEnv && <AlertTriangle size={14} />}
                           {isEnabled && <Check size={14} />}
-                          {isEnabled ? "Active" : "Activate"}
+                          {isDisabledByEnv ? "Missing Env" : isEnabled ? "Active" : "Activate"}
                         </button>
                       </div>
                     </div>
