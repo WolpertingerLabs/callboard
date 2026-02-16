@@ -4,6 +4,7 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import ChatList from "../pages/ChatList";
 import Chat from "../pages/Chat";
 import Queue from "../pages/Queue";
+import Settings from "../pages/Settings";
 
 interface SplitLayoutProps {
   onLogout: () => void;
@@ -13,6 +14,9 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
   const isMobile = useIsMobile();
   const location = useLocation();
   const chatListRefreshRef = useRef<(() => void) | null>(null);
+
+  // Check if we're on the settings page
+  const isSettings = location.pathname === "/settings";
 
   // Check if we're on the queue/drafts page
   const isQueue = location.pathname === "/queue";
@@ -30,6 +34,9 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
 
   // Mobile behavior - keep existing full-page navigation
   if (isMobile) {
+    if (isSettings) {
+      return <Settings onLogout={onLogout} />;
+    }
     if (isQueue) {
       return <Queue />;
     }
@@ -41,7 +48,6 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
     }
     return (
       <ChatList
-        onLogout={onLogout}
         onRefresh={(fn) => {
           chatListRefreshRef.current = fn;
         }}
@@ -72,7 +78,6 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
         }}
       >
         <ChatList
-          onLogout={onLogout}
           activeChatId={activeChatId ?? undefined}
           onRefresh={(fn) => {
             chatListRefreshRef.current = fn;
@@ -90,7 +95,9 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
           background: "var(--bg)",
         }}
       >
-        {isQueue ? (
+        {isSettings ? (
+          <Settings onLogout={onLogout} />
+        ) : isQueue ? (
           <Queue />
         ) : isNewChat ? (
           <Chat onChatListRefresh={refreshChatList} />

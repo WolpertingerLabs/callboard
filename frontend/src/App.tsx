@@ -34,6 +34,7 @@ export default function App() {
         <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} />} />
         <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} />} />
         <Route path="/queue" element={<SplitLayout onLogout={handleLogout} />} />
+        <Route path="/settings" element={<SplitLayout onLogout={handleLogout} />} />
       </Routes>
     </BrowserRouter>
   );

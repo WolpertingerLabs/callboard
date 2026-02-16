@@ -1,11 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ClipboardList, X, Plus, LogOut, Settings } from "lucide-react";
+import { ClipboardList, X, Plus, Settings } from "lucide-react";
 import { listChats, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
 import ChatListItem from "../components/ChatListItem";
 import PermissionSettings from "../components/PermissionSettings";
 import ConfirmModal from "../components/ConfirmModal";
-import SettingsModal from "../components/SettingsModal";
 import FolderSelector from "../components/FolderSelector";
 import {
   getDefaultPermissions,
@@ -17,12 +16,11 @@ import {
 } from "../utils/localStorage";
 
 interface ChatListProps {
-  onLogout: () => void;
   activeChatId?: string;
   onRefresh: (refreshFn: () => void) => void;
 }
 
-export default function ChatList({ onLogout, activeChatId, onRefresh }: ChatListProps) {
+export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
   const [hasMore, setHasMore] = useState(false);
@@ -37,11 +35,10 @@ export default function ChatList({ onLogout, activeChatId, onRefresh }: ChatList
     chatId: "",
     chatName: "",
   });
-  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const isQueueActive = location.pathname === "/queue";
+  const isSettingsActive = location.pathname === "/settings";
 
   const load = async () => {
     const response = await listChats(20, 0);
@@ -199,13 +196,13 @@ export default function ChatList({ onLogout, activeChatId, onRefresh }: ChatList
             <Plus size={18} />
           </button>
           <button
-            onClick={() => setShowSettings(true)}
+            onClick={() => navigate("/settings")}
             style={{
-              background: "var(--bg-secondary)",
-              color: "var(--text)",
+              background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
+              color: isSettingsActive ? "#fff" : "var(--text)",
               padding: "10px",
               borderRadius: 8,
-              border: "1px solid var(--border)",
+              border: isSettingsActive ? "none" : "1px solid var(--border)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -213,22 +210,6 @@ export default function ChatList({ onLogout, activeChatId, onRefresh }: ChatList
             title="Settings"
           >
             <Settings size={18} />
-          </button>
-          <button
-            onClick={() => setLogoutConfirmOpen(true)}
-            style={{
-              background: "transparent",
-              color: "var(--text)",
-              padding: "10px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Logout"
-          >
-            <LogOut size={18} />
           </button>
         </div>
       </header>
@@ -384,21 +365,6 @@ export default function ChatList({ onLogout, activeChatId, onRefresh }: ChatList
         confirmText="Delete"
         confirmStyle="danger"
       />
-
-      <ConfirmModal
-        isOpen={logoutConfirmOpen}
-        onClose={() => setLogoutConfirmOpen(false)}
-        onConfirm={() => {
-          setLogoutConfirmOpen(false);
-          onLogout();
-        }}
-        title="Logout"
-        message="Are you sure you want to log out?"
-        confirmText="Logout"
-        confirmStyle="danger"
-      />
-
-      <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 }
