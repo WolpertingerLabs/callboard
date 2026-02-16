@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { ClipboardList, X, Plus, LogOut, Settings } from "lucide-react";
 import { listChats, deleteChat, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
 import ChatListItem from "../components/ChatListItem";
@@ -39,6 +39,8 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+  const isQueueActive = location.pathname === "/queue";
 
   const load = async () => {
     const response = await listChats(20, 0);
@@ -167,11 +169,11 @@ export default function ChatList({ onLogout, onRefresh }: ChatListProps) {
           <button
             onClick={() => navigate("/queue")}
             style={{
-              background: "var(--bg-secondary)",
-              color: "var(--text)",
+              background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
+              color: isQueueActive ? "#fff" : "var(--text)",
               padding: "10px",
               borderRadius: 8,
-              border: "1px solid var(--border)",
+              border: isQueueActive ? "none" : "1px solid var(--border)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
