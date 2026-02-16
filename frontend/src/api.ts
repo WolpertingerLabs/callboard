@@ -62,13 +62,24 @@ async function assertOk(res: Response, fallback: string): Promise<void> {
   }
 }
 
-export async function listChats(limit?: number, offset?: number): Promise<ChatListResponse> {
+export async function listChats(limit?: number, offset?: number, bookmarked?: boolean): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
   if (offset !== undefined) params.append("offset", offset.toString());
+  if (bookmarked) params.append("bookmarked", "true");
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");
+  return res.json();
+}
+
+export async function toggleBookmark(id: string, bookmarked: boolean): Promise<Chat> {
+  const res = await fetch(`${BASE}/chats/${id}/bookmark`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bookmarked }),
+  });
+  await assertOk(res, "Failed to toggle bookmark");
   return res.json();
 }
 
@@ -185,9 +196,7 @@ export async function executeDraft(id: string): Promise<void> {
   await assertOk(res, "Failed to execute draft");
 }
 
-export async function getSlashCommandsAndPlugins(
-  chatId: string,
-): Promise<{ slashCommands: string[]; plugins: Plugin[]; appPlugins?: AppPluginsData }> {
+export async function getSlashCommandsAndPlugins(chatId: string): Promise<{ slashCommands: string[]; plugins: Plugin[]; appPlugins?: AppPluginsData }> {
   const res = await fetch(`${BASE}/chats/${chatId}/slash-commands`);
   await assertOk(res, "Failed to get slash commands");
   const data = await res.json();

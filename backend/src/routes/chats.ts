@@ -206,6 +206,7 @@ chatsRouter.get("/", (req, res) => {
   // #swagger.description = 'Returns paginated list of chats from filesystem session logs, augmented with file storage metadata. Sorted by most recently updated.'
   /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Number of chats per page (default: 20)' } */
   /* #swagger.parameters['offset'] = { in: 'query', type: 'integer', description: 'Offset for pagination (default: 0)' } */
+  /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore and total fields" } */
   try {
     // Get all file chats for augmentation lookup (may be empty if no file storage)
@@ -239,10 +240,30 @@ chatsRouter.get("/", (req, res) => {
     // Handle pagination
     const limit = parseInt(req.query.limit as string) || 20;
     const offset = parseInt(req.query.offset as string) || 0;
+    const bookmarkedFilter = req.query.bookmarked === "true";
 
-    // Use optimized pagination to discover only the sessions we need
-    const { sessions: paginatedSessions, total } = discoverSessionsPaginated(limit, offset);
-    const chatsFromLogs = paginatedSessions.map((s) => {
+    // Build set of bookmarked session IDs when filtering
+    let bookmarkedSessionIds: Set<string> | null = null;
+    if (bookmarkedFilter) {
+      bookmarkedSessionIds = new Set<string>();
+      for (const [sessionId, fileChat] of fileChatsBySessionId) {
+        try {
+          const meta = JSON.parse(fileChat?.metadata || "{}");
+          if (meta.bookmarked === true) {
+            bookmarkedSessionIds.add(sessionId);
+          }
+        } catch {}
+      }
+    }
+
+    // When filtering by bookmarks, fetch all sessions since bookmarked chats may be
+    // spread across pages. The bookmarked set is typically small so this is fine.
+    // Otherwise, use optimized pagination to discover only the sessions we need.
+    const fetchLimit = bookmarkedFilter ? 9999 : limit;
+    const fetchOffset = bookmarkedFilter ? 0 : offset;
+    const { sessions: paginatedSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
+
+    const augmentSession = (s: (typeof paginatedSessions)[0]) => {
       // Try to find by session ID (may not exist in file storage - that's fine)
       const fileChat = fileChatsBySessionId.get(s.sessionId);
 
@@ -303,10 +324,25 @@ chatsRouter.get("/", (req, res) => {
           _from_filesystem: true,
         };
       }
-    });
+    };
 
-    // Sessions are already sorted by the optimized discovery function
-    const hasMore = offset + limit < total;
+    let chatsFromLogs;
+    let total: number;
+    let hasMore: boolean;
+
+    if (bookmarkedFilter && bookmarkedSessionIds) {
+      // Filter to only bookmarked sessions, then augment and paginate
+      const bookmarkedSessions = paginatedSessions.filter((s) => bookmarkedSessionIds!.has(s.sessionId));
+      total = bookmarkedSessions.length;
+      const paged = bookmarkedSessions.slice(offset, offset + limit);
+      chatsFromLogs = paged.map(augmentSession);
+      hasMore = offset + limit < total;
+    } else {
+      // Normal path: sessions are already paginated
+      chatsFromLogs = paginatedSessions.map(augmentSession);
+      total = rawTotal;
+      hasMore = offset + limit < total;
+    }
 
     res.json({
       chats: chatsFromLogs,
@@ -428,6 +464,57 @@ chatsRouter.post("/", (req, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle bookmark on a chat
+chatsRouter.patch("/:id/bookmark", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Toggle bookmark on a chat'
+  // #swagger.description = 'Set or unset the bookmarked flag in chat metadata. Creates a file storage record if the chat only exists on the filesystem.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["bookmarked"],
+          properties: {
+            bookmarked: { type: "boolean", description: "Whether the chat should be bookmarked" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[400] = { description: "Invalid request body" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const { bookmarked } = req.body;
+  if (typeof bookmarked !== "boolean") {
+    return res.status(400).json({ error: "bookmarked must be a boolean" });
+  }
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    // Parse existing metadata and update bookmarked flag
+    let meta: Record<string, any> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+
+    meta.bookmarked = bookmarked;
+    const updatedMetadata = JSON.stringify(meta);
+
+    // Upsert: creates file storage record if it only existed on filesystem
+    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+
+    res.json(updatedChat);
+  } catch (err: any) {
+    log.error(`Error toggling bookmark: ${err}`);
+    res.status(500).json({ error: "Failed to toggle bookmark", details: err.message });
   }
 });
 
