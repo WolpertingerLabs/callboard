@@ -127,7 +127,7 @@ function resolveServerPaths(
   };
 }
 
-function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTools: string[] } | undefined {
+function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTools: string[]; resolvedEnvVars: Record<string, string> } | undefined {
   try {
     const mcpServers = getEnabledMcpServers();
     if (mcpServers.length === 0) return undefined;
@@ -141,9 +141,16 @@ function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTool
 
     const serverConfig: Record<string, any> = {};
     const allowedTools: string[] = [];
+    // Collect all resolved env vars so they can be propagated to the CLI subprocess.
+    // Plugins loaded by the CLI re-read .mcp.json and resolve ${VAR} templates from
+    // process.env, so we must ensure these vars are present in the subprocess environment.
+    const resolvedEnvVars: Record<string, string> = {};
 
     for (const server of mcpServers) {
       const resolvedEnv = server.env ? resolveEnvReferences(server.env) : undefined;
+      if (resolvedEnv) {
+        Object.assign(resolvedEnvVars, resolvedEnv);
+      }
       if (server.type === "stdio") {
         const pluginPath = pluginPathMap.get(server.sourcePluginId);
         const { command, args } = resolveServerPaths(server, pluginPath);
@@ -166,7 +173,7 @@ function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTool
 
     if (Object.keys(serverConfig).length === 0) return undefined;
 
-    return { mcpServers: serverConfig, allowedTools };
+    return { mcpServers: serverConfig, allowedTools, resolvedEnvVars };
   } catch (error) {
     log.warn(`Failed to build MCP server options: ${error}`);
     return undefined;
@@ -492,6 +499,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(mcpOpts ? { mcpServers: mcpOpts.mcpServers, allowedTools: mcpOpts.allowedTools } : {}),
       env: {
         ...process.env,
+        // Propagate resolved MCP server env vars to the CLI subprocess so that plugins
+        // loaded by the CLI can resolve ${VAR} templates in their .mcp.json files.
+        ...(mcpOpts?.resolvedEnvVars ?? {}),
         // Remove CLAUDECODE to prevent "cannot be launched inside another Claude Code session" errors
         // when the backend was started from within a Claude Code session (e.g. via PM2 redeploy)
         CLAUDECODE: undefined,
