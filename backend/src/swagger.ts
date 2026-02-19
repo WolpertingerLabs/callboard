@@ -47,8 +47,8 @@ const doc = {
     cookieAuth: {
       type: "apiKey",
       in: "cookie",
-      name: "session",
-      description: "Session cookie obtained from POST /api/auth/login",
+      name: "ccui_session",
+      description: "Session cookie obtained from POST /api/auth/login (configurable via SESSION_COOKIE_NAME env var)",
     },
   },
   security: [{ cookieAuth: [] }],

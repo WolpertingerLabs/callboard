@@ -1,12 +1,6 @@
 import { randomBytes } from "crypto";
 import type { Request, Response, NextFunction } from "express";
-import {
-  getSession,
-  createSession,
-  deleteSession,
-  extendSession,
-  cleanupExpiredSessions,
-} from "./services/sessions.js";
+import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions } from "./services/sessions.js";
 
 // Read password lazily so dotenv.config() in index.ts has time to load .env first
 // (ES module imports are hoisted and run before dotenv.config)
@@ -17,6 +11,8 @@ function getPassword(): string | null {
 export function isPasswordConfigured(): boolean {
   return !!process.env.AUTH_PASSWORD;
 }
+
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "ccui_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Rate limiting: track attempts per IP
@@ -44,7 +40,7 @@ function checkRateLimit(ip: string): boolean {
 function rollSession(token: string, res: Response): void {
   const newExpiry = Date.now() + SESSION_TTL_MS;
   extendSession(token, newExpiry);
-  res.cookie("session", token, {
+  res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "strict",
     maxAge: SESSION_TTL_MS,
@@ -74,7 +70,7 @@ export function loginHandler(req: Request, res: Response) {
   const token = randomBytes(32).toString("hex");
   createSession(token, Date.now() + SESSION_TTL_MS, ip);
 
-  res.cookie("session", token, {
+  res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "strict",
     maxAge: SESSION_TTL_MS,
@@ -84,9 +80,9 @@ export function loginHandler(req: Request, res: Response) {
 }
 
 export function logoutHandler(_req: Request, res: Response) {
-  const token = _req.cookies?.session;
+  const token = _req.cookies?.[SESSION_COOKIE_NAME];
   if (token) deleteSession(token);
-  res.clearCookie("session", { path: "/" });
+  res.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
   res.json({ ok: true });
 }
 
@@ -94,7 +90,7 @@ export function checkAuthHandler(req: Request, res: Response) {
   if (!isPasswordConfigured()) {
     return res.json({ authenticated: false, error: "Server misconfigured: AUTH_PASSWORD is not set." });
   }
-  const token = req.cookies?.session;
+  const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.json({ authenticated: false });
   const entry = getSession(token);
   if (!entry || Date.now() > entry.expires_at) {
@@ -118,7 +114,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return res.status(503).json({ error: "Server misconfigured: AUTH_PASSWORD is not set." });
   }
 
-  const token = req.cookies?.session;
+  const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.status(401).json({ error: "Not authenticated" });
 
   const entry = getSession(token);
