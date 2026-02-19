@@ -1,11 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ClipboardList, X, Plus, Settings, Bookmark } from "lucide-react";
+import { ClipboardList, X, Plus, Settings } from "lucide-react";
 import { listChats, deleteChat, toggleBookmark, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
 import ChatListItem from "../components/ChatListItem";
+import ChatFilterBar from "../components/ChatFilterBar";
 import PermissionSettings from "../components/PermissionSettings";
 import ConfirmModal from "../components/ConfirmModal";
 import FolderSelector from "../components/FolderSelector";
+import { useChatSearch } from "../hooks/useChatSearch";
+import { DEFAULT_CHAT_FILTERS, hasActiveFilters, type ChatFilters } from "../types/chatFilters";
 import {
   getDefaultPermissions,
   saveDefaultPermissions,
@@ -26,6 +29,8 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
+  const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
+  const [searchQuery, setSearchQuery] = useState("");
   const [folder, setFolder] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
@@ -41,12 +46,22 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const isQueueActive = location.pathname === "/queue";
   const isSettingsActive = location.pathname === "/settings";
 
+  // Content search hook
+  const { matchingChatIds, isSearching } = useChatSearch(searchQuery);
+
+  // Determine if any filter is active (advanced filters, content search, or bookmarks)
+  const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
+
   const load = useCallback(
     async (filterOverride?: boolean) => {
       const useFilter = filterOverride !== undefined ? filterOverride : bookmarkFilter;
-      const response = await listChats(20, 0, useFilter || undefined);
+      // When advanced filters or content search are active, fetch all chats
+      // to avoid missing matches due to pagination
+      const shouldFetchAll = anyFilterActive || useFilter;
+      const limit = shouldFetchAll ? 9999 : 20;
+      const response = await listChats(limit, 0, useFilter || undefined);
       setChats(response.chats);
-      setHasMore(response.hasMore);
+      setHasMore(shouldFetchAll ? false : response.hasMore);
 
       // Initialize suggested directories from first three chat directories if none exist
       if (!useFilter) {
@@ -71,7 +86,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
       );
       setSessionStatuses(statuses);
     },
-    [bookmarkFilter],
+    [bookmarkFilter, anyFilterActive],
   );
 
   const loadMore = async () => {
@@ -184,11 +199,58 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     }
   };
 
-  const handleToggleFilter = () => {
+  const handleToggleBookmarkFilter = () => {
     const newFilter = !bookmarkFilter;
     setBookmarkFilter(newFilter);
     load(newFilter);
   };
+
+  // Client-side filtering for advanced filters and content search
+  const filteredChats = useMemo(() => {
+    let result = chats;
+
+    // Directory include regex
+    if (filters.directoryInclude.active && filters.directoryInclude.value) {
+      try {
+        const regex = new RegExp(filters.directoryInclude.value, "i");
+        result = result.filter((c) => regex.test(c.displayFolder || c.folder));
+      } catch {
+        /* invalid regex, skip */
+      }
+    }
+
+    // Directory exclude regex
+    if (filters.directoryExclude.active && filters.directoryExclude.value) {
+      try {
+        const regex = new RegExp(filters.directoryExclude.value, "i");
+        result = result.filter((c) => !regex.test(c.displayFolder || c.folder));
+      } catch {
+        /* invalid regex, skip */
+      }
+    }
+
+    // Date min
+    if (filters.dateMin.active && filters.dateMin.value) {
+      const minTime = new Date(filters.dateMin.value).getTime();
+      result = result.filter((c) => new Date(c.updated_at).getTime() >= minTime);
+    }
+
+    // Date max
+    if (filters.dateMax.active && filters.dateMax.value) {
+      const maxTime = new Date(filters.dateMax.value).getTime();
+      result = result.filter((c) => new Date(c.updated_at).getTime() <= maxTime);
+    }
+
+    // Content search
+    if (matchingChatIds !== null) {
+      result = result.filter((c) => matchingChatIds.has(c.id));
+    }
+
+    return result;
+  }, [chats, filters, matchingChatIds]);
+
+  // Determine the empty state message
+  const isFiltered = bookmarkFilter || hasActiveFilters(filters) || matchingChatIds !== null;
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -218,22 +280,6 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
             title="Drafts"
           >
             <ClipboardList size={18} />
-          </button>
-          <button
-            onClick={handleToggleFilter}
-            style={{
-              background: bookmarkFilter ? "var(--accent)" : "var(--bg-secondary)",
-              color: bookmarkFilter ? "#fff" : "var(--text)",
-              padding: "10px",
-              borderRadius: 8,
-              border: bookmarkFilter ? "none" : "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title={bookmarkFilter ? "Show all chats" : "Show bookmarked chats"}
-          >
-            <Bookmark size={18} fill={bookmarkFilter ? "currentColor" : "none"} />
           </button>
           <button
             onClick={() => setShowNew(!showNew)}
@@ -268,6 +314,16 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
           </button>
         </div>
       </header>
+
+      <ChatFilterBar
+        bookmarkFilter={bookmarkFilter}
+        onToggleBookmark={handleToggleBookmarkFilter}
+        filters={filters}
+        onFiltersChange={setFilters}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        isSearching={isSearching}
+      />
 
       {showNew && (
         <div
@@ -366,12 +422,12 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
       )}
 
       <div style={{ flex: 1, overflow: "auto" }}>
-        {chats.length === 0 && (
+        {filteredChats.length === 0 && (
           <p style={{ padding: 20, color: "var(--text-muted)", textAlign: "center" }}>
-            {bookmarkFilter ? "No bookmarked chats" : "No chats yet. Create one to get started."}
+            {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
           </p>
         )}
-        {chats.map((chat) => (
+        {filteredChats.map((chat) => (
           <ChatListItem
             key={chat.id}
             chat={chat}
@@ -383,7 +439,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
           />
         ))}
 
-        {hasMore && (
+        {hasMore && !anyFilterActive && (
           <div style={{ padding: "16px 20px", borderTop: "1px solid var(--border)" }}>
             <button
               onClick={loadMore}

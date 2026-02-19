@@ -73,6 +73,13 @@ export async function listChats(limit?: number, offset?: number, bookmarked?: bo
   return res.json();
 }
 
+export async function searchChatContents(query: string): Promise<{ chatIds: string[] }> {
+  const params = new URLSearchParams({ q: query });
+  const res = await fetch(`${BASE}/chats/search?${params}`);
+  await assertOk(res, "Failed to search chats");
+  return res.json();
+}
+
 export async function toggleBookmark(id: string, bookmarked: boolean): Promise<Chat> {
   const res = await fetch(`${BASE}/chats/${id}/bookmark`, {
     method: "PATCH",
