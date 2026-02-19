@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Trash2, Bot, ChevronRight } from "lucide-react";
+import { Plus, Trash2, Bot, ChevronRight, MessageSquare } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { listAgents, deleteAgent } from "../../api";
 import type { AgentConfig } from "shared";
@@ -72,6 +72,22 @@ export default function AgentList() {
             <Plus size={16} />
             {!isMobile && "New Agent"}
           </button>
+          <button
+            onClick={() => navigate("/")}
+            style={{
+              background: "var(--bg-secondary)",
+              color: "var(--text)",
+              padding: "10px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Chats"
+          >
+            <MessageSquare size={18} />
+          </button>
         </div>
       </div>
 
@@ -111,9 +127,7 @@ export default function AgentList() {
             </div>
             <div>
               <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 6 }}>No agents yet</h2>
-              <p style={{ fontSize: 14, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                Create your first agent to get started.
-              </p>
+              <p style={{ fontSize: 14, color: "var(--text-muted)", lineHeight: 1.6 }}>Create your first agent to get started.</p>
             </div>
             <button
               onClick={() => navigate("/agents/new")}
@@ -163,12 +177,8 @@ export default function AgentList() {
                   cursor: "pointer",
                   transition: "border-color 0.15s",
                 }}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.borderColor = "var(--accent)")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.borderColor = "var(--border)")
-                }
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
