@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { readFileSync, existsSync, readdirSync, statSync, unlinkSync } from "fs";
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { join } from "path";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
@@ -198,6 +198,70 @@ function discoverAllSessionsFallback(
 
   return { sessions: results, total };
 }
+
+// Search chat contents using grep for performance
+chatsRouter.get("/search", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Search chat contents'
+  // #swagger.description = 'Search through JSONL session files for matching content. Uses grep for fast filesystem-level search.'
+  /* #swagger.parameters['q'] = { in: 'query', type: 'string', required: true, description: 'Search query string' } */
+  /* #swagger.responses[200] = { description: "Array of matching chat/session IDs" } */
+  try {
+    const query = ((req.query.q as string) || "").trim();
+    if (!query) {
+      return res.json({ chatIds: [] });
+    }
+
+    if (!existsSync(CLAUDE_PROJECTS_DIR)) {
+      return res.json({ chatIds: [] });
+    }
+
+    let matchingFiles: string[] = [];
+    try {
+      // Use execFileSync with array args to prevent shell injection
+      const output = execFileSync("grep", ["-rl", "-i", "--include=*.jsonl", query, CLAUDE_PROJECTS_DIR], {
+        encoding: "utf8",
+        timeout: 15000, // 15 second timeout
+      }).trim();
+
+      if (output) {
+        matchingFiles = output.split("\n").filter(Boolean);
+      }
+    } catch (err: any) {
+      // grep exits with code 1 when no matches found — that's not an error
+      if (err.status !== 1) {
+        log.error(`grep search error: ${err.message}`);
+      }
+    }
+
+    // Extract session IDs from matching file paths
+    // Files are at: ~/.claude/projects/<project-dir>/<sessionId>.jsonl
+    // or subagent files at: ~/.claude/projects/<project-dir>/<sessionId>/subagents/agent-<id>.jsonl
+    const chatIds = new Set<string>();
+    for (const filePath of matchingFiles) {
+      const fileName = filePath.split("/").pop();
+      if (!fileName) continue;
+
+      // Direct session file: <sessionId>.jsonl
+      if (!filePath.includes("/subagents/")) {
+        chatIds.add(fileName.replace(".jsonl", ""));
+      } else {
+        // Subagent file: extract parent session ID from path
+        // Path: .../<project-dir>/<sessionId>/subagents/agent-<id>.jsonl
+        const parts = filePath.split("/");
+        const subagentsIdx = parts.indexOf("subagents");
+        if (subagentsIdx > 0) {
+          chatIds.add(parts[subagentsIdx - 1]);
+        }
+      }
+    }
+
+    res.json({ chatIds: Array.from(chatIds) });
+  } catch (err: any) {
+    log.error(`Error searching chats: ${err}`);
+    res.status(500).json({ error: "Failed to search chats", details: err.message });
+  }
+});
 
 // List all chats (pull from log directories, augment with file storage data)
 chatsRouter.get("/", (req, res) => {
