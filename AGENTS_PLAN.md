@@ -2,38 +2,102 @@
 
 Autonomous agent management within claude-code-ui — agents with personalities, memory, scheduled tasks, heartbeats, and external triggers that programmatically create and control Claude Code sessions.
 
-**Core insight**: Each agent's workspace directory is a real Claude Code project. `CLAUDE.md` is **compiled** by the backend from the agent's structured settings (identity, personality, user context) plus its workspace markdown files (SOUL.md, TOOLS.md, etc.), then auto-loaded by the Claude Code SDK when a session starts. The agent's folder *is* its personality.
+**Core insight**: Each agent's workspace directory (`~/.ccui-agents/{alias}/`) is a real Claude Code project. Identity is injected via two complementary layers:
+1. **`CLAUDE.md` in the workspace** — Contains the behavioral/workspace protocol (memory rules, safety, heartbeats, group chat etiquette). Auto-loaded by the Claude Code SDK via `settingSources: ["project"]`. This is a copy of the AGENTS.md scaffold template.
+2. **`systemPrompt.append` via the SDK** — The agent's structured identity (name, emoji, role, tone, guidelines, user context) is compiled into a markdown string and appended to Claude Code's preset system prompt via `{ type: 'preset', preset: 'claude_code', append: compiledIdentity }`.
 
-**Identity model**: Agent identity lives as structured settings in `.agent.json` — editable via clean form fields in the dashboard. No separate `IDENTITY.md` file. The backend compiles these settings into the `CLAUDE.md` system prompt before each session, giving users a form-based editing experience while producing the rich context the agent needs.
+This two-layer approach gives clean separation: workspace protocol lives in files the agent can read and reference, while structured identity is injected at the SDK level from form-editable settings.
+
+**Identity model**: Agent identity lives as structured fields in `agent.json` (stored in `data/agents/{alias}/`) — editable via dashboard form fields. No separate `IDENTITY.md` file. The backend compiles these settings into a system prompt append string, giving users a form-based editing experience while producing the rich context the agent needs.
 
 ---
 
-## Current State (Phase 1 — Complete)
+## Current State (Phase 1 + Early Phase 2 — In Progress)
 
-Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and navigation between the chat and agent views.
+Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and navigation. Early Phase 2 work has added workspace scaffolding, identity compilation, system prompt injection, and the agent chat flow from the main chat list.
 
 ### What Exists Today
 
 **Shared Types** (`shared/types/`)
-- `agent.ts` — `AgentConfig` interface: `{ name, alias, description, systemPrompt?, createdAt }`
+- `agent.ts` — `AgentConfig` interface with full identity fields:
+  ```typescript
+  export interface AgentConfig {
+    // Core
+    name: string;
+    alias: string;
+    description: string;
+    systemPrompt?: string;
+    createdAt: number;
+    workspacePath?: string; // Resolved server-side, present in API responses
+
+    // Identity (compiled into systemPrompt append)
+    emoji?: string;
+    personality?: string;
+    role?: string;
+    tone?: string;
+    pronouns?: string;
+    languages?: string[];
+    guidelines?: string[];
+
+    // User context (compiled into systemPrompt append)
+    userName?: string;
+    userTimezone?: string;
+    userLocation?: string;
+    userContext?: string;
+  }
+  ```
 - `agentFeatures.ts` — `ChatMessage`, `CronJob`, `Connection`, `Trigger`, `ActivityEntry`, `MemoryItem` interfaces
 
 **Backend** (`backend/src/`)
 - `services/agent-file-service.ts` — File-based agent persistence. Stores configs at `data/agents/{alias}/agent.json`. Exports: `isValidAlias`, `agentExists`, `createAgent`, `getAgent`, `listAgents`, `deleteAgent`
-- `routes/agents.ts` — Express Router with CRUD endpoints: `GET /api/agents`, `POST /api/agents`, `GET /api/agents/:alias`, `DELETE /api/agents/:alias`. Validation for name (1-128), alias (lowercase alphanumeric, 2-64), description (1-512), systemPrompt (optional)
+- `services/claude-compiler.ts` — Identity compilation and workspace scaffolding:
+  - `compileIdentityPrompt(config: AgentConfig): string` — Builds markdown identity string from structured settings (name, emoji, role, personality, tone, pronouns, languages, user context, guidelines). Omits sections with no data.
+  - `scaffoldWorkspace(workspacePath: string): void` — Copies all 6 scaffold template files + creates CLAUDE.md (from AGENTS.md) + `memory/` subdirectory. Skips files that already exist.
+  - `readWorkspaceFile(workspacePath: string, filename: string): string | undefined` — Helper to read workspace files.
+- `services/claude.ts` — Claude Code SDK integration:
+  - `sendMessage(opts)` — Creates/resumes Claude sessions via `@anthropic-ai/claude-agent-sdk`
+  - `SendMessageOptions` — `{ prompt, chatId?, folder?, defaultPermissions?, maxTurns?, activePlugins?, imageMetadata?, systemPrompt? }`
+  - When `systemPrompt` is provided, passes it to the SDK as `{ type: 'preset', preset: 'claude_code', append: systemPrompt }` — appending agent identity to Claude Code's built-in system prompt
+  - Returns an `EventEmitter` that emits `StreamEvent`s
+  - `respondToPermission(chatId, approved)` — Resolves pending permission requests
+  - `getActiveSession(chatId)` / `stopSession(chatId)` — Session lifecycle
+- `routes/agents.ts` — Express Router with full CRUD + identity:
+  - `GET /api/agents` — List all agents with resolved `workspacePath`
+  - `POST /api/agents` — Create agent + scaffold workspace with template files
+  - `GET /api/agents/:alias` — Get single agent with `workspacePath`
+  - `GET /api/agents/:alias/identity-prompt` — Returns compiled identity prompt string
+  - `PUT /api/agents/:alias` — Partial update for all config fields (identity, user context, etc.)
+  - `DELETE /api/agents/:alias` — Delete agent + clean up workspace directory
+  - Workspace path resolved via `CCUI_AGENTS_DIR` env var (default: `~/.ccui-agents`)
+  - Auto-heals missing workspace dirs on GET requests
+- `routes/stream.ts` — SSE streaming:
+  - `POST /api/stream/new/message` — Start new chat session (accepts optional `systemPrompt` in request body)
+  - `POST /api/stream/:chatId/message` — Send message to existing session
+  - `GET /api/stream/:chatId/events` — SSE event stream
 
-**Frontend** (`frontend/src/pages/agents/`)
-- `AgentList.tsx` — Agent list page with create/delete, navigation to chat view
-- `CreateAgent.tsx` — Agent creation form (name, alias auto-gen, description, system prompt) — to be expanded with structured identity fields in Phase 2
-- `AgentDashboard.tsx` — Dashboard layout with sidebar nav (desktop) / bottom tab bar (mobile), uses `useOutletContext` to pass agent data to sub-pages
-- `dashboard/Overview.tsx` — Stat cards, quick actions, recent activity feed
-- `dashboard/Chat.tsx` — Chat interface with mock auto-replies
-- `dashboard/CronJobs.tsx` — Scheduled task cards with pause/resume toggles
-- `dashboard/Connections.tsx` — Service integration cards grid with connect/disconnect
-- `dashboard/Triggers.tsx` — Event trigger cards with enable/pause
-- `dashboard/Activity.tsx` — Timeline with type-based filter pills
-- `dashboard/Memory.tsx` — Searchable, expandable key-value store with category badges
-- `dashboard/mockData.ts` — Mock data powering all dashboard pages (to be replaced)
+**Scaffold Templates** (`backend/src/scaffold/`)
+- `AGENTS.md` (7.4KB) — Workspace behavioral protocol: session startup sequence, memory protocol (daily journals + MEMORY.md), safety rules, group chat etiquette, heartbeat strategy, platform formatting, memory maintenance
+- `SOUL.md` — Personality foundation: core truths, boundaries, vibe, continuity
+- `USER.md` — Human context placeholder (name, timezone, location, free-form context)
+- `TOOLS.md` — Environment-specific notes placeholder (cameras, SSH, TTS, devices)
+- `HEARTBEAT.md` — Empty heartbeat task file (agent populates as needed)
+- `MEMORY.md` — Empty curated long-term memory placeholder
+
+On agent creation, all 6 files are copied to the workspace, plus AGENTS.md → CLAUDE.md (the SDK-loaded file).
+
+**Frontend** (`frontend/src/pages/`)
+- `ChatList.tsx` — Main chat list with "Claude Code | Agent" mode toggle:
+  - Full-width grouped button toggle in the new chat panel
+  - Claude Code mode: unchanged (PermissionSettings, recent dirs, FolderSelector)
+  - Agent mode: lazily-fetched agent list with selectable cards, "Start Chat" button
+  - On agent chat start: fetches compiled identity prompt → navigates to `/chat/new?folder={workspacePath}` with `{ defaultPermissions: allAllow, systemPrompt }` in location state
+- `Chat.tsx` — Reads `systemPrompt` from location state, includes it in the new chat stream request body so the backend passes it to the SDK
+- `agents/AgentList.tsx` — Agent list page with create/delete, navigation to chat view
+- `agents/CreateAgent.tsx` — Agent creation form (name, alias auto-gen, description, system prompt)
+- `agents/AgentDashboard.tsx` — Dashboard layout with sidebar nav (desktop) / bottom tab bar (mobile)
+- `agents/dashboard/` — Overview, Chat, CronJobs, Connections, Triggers, Activity, Memory sub-pages (all using mock data)
+- `agents/dashboard/mockData.ts` — Mock data powering dashboard pages (to be replaced)
+- `api.ts` — Agent API functions: `listAgents`, `getAgent`, `createAgent`, `updateAgent`, `deleteAgent`, `getAgentIdentityPrompt`
 
 **Routing** — Agent routes in `App.tsx`:
 ```
@@ -50,41 +114,38 @@ Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and
 
 **Navigation** — Symmetrical icon buttons: ChatList header has a Bot icon → `/agents`, AgentList header has a MessageSquare icon → `/`
 
-**Data Directory** — `data/agents/` for agent config storage
+**Data Directory** — `data/agents/` for agent config storage; `~/.ccui-agents/` for agent workspaces
 
 **CSS Variables** — `--success` and `--warning` added for dashboard status indicators
 
-### Key Integration Points
+### How Agent Chat Works (End-to-End Flow)
 
-The existing Claude Code integration lives in `backend/src/services/claude.ts`:
-- `sendMessage(opts)` — Creates/resumes Claude sessions via `@anthropic-ai/claude-agent-sdk`
-- `SendMessageOptions` — `{ prompt, chatId?, folder?, defaultPermissions?, maxTurns?, activePlugins?, imageMetadata? }`
-- Returns an `EventEmitter` that emits `StreamEvent`s: `chat_created`, `message_update`, `permission_request`, `user_question`, `plan_review`, `message_complete`, `message_error`
-- `respondToPermission(chatId, approved)` — Resolves pending permission requests
-- `getActiveSession(chatId)` / `stopSession(chatId)` — Session lifecycle
-
-SSE streaming in `backend/src/routes/stream.ts`:
-- `POST /api/stream/new/message` — Start new chat session
-- `POST /api/stream/:chatId/message` — Send message to existing session
-- `GET /api/stream/:chatId/events` — SSE event stream
+1. User clicks "+" to open new chat panel
+2. Toggles to "Agent" mode → sees agent list
+3. Selects an agent → clicks "Start Chat"
+4. Frontend fetches `GET /api/agents/:alias/identity-prompt` → gets compiled identity string
+5. Navigates to `/chat/new?folder={workspacePath}` with `{ defaultPermissions: allAllow, systemPrompt: identityString }` in location state
+6. User types a message → `POST /api/chats/new/message` with `{ folder, prompt, defaultPermissions, systemPrompt }`
+7. Backend calls `sendMessage({ folder, prompt, defaultPermissions, systemPrompt })` → SDK receives `systemPrompt: { type: 'preset', preset: 'claude_code', append: identityString }`
+8. SDK starts session in agent's workspace → auto-loads `CLAUDE.md` (behavioral protocol) via `settingSources: ["project"]` → identity appended to system prompt
+9. Agent has full personality: Claude Code tools + identity + workspace protocol + SOUL.md/TOOLS.md etc. in the workspace for reference
+10. Chat appears in main chat list like any other chat
 
 ---
 
-## Phase 2: Agent Workspace & Memory
+## Phase 2: Agent Workspace & Memory (Remaining Work)
 
-**Goal**: Replace the flat `agent.json` + mock data with a real workspace directory that serves as both storage and Claude Code project. Inspired by the OpenClaw agent structure (`~/.ccui-agents/test/`).
+**Goal**: Complete the workspace-based architecture. Early Phase 2 items (workspace scaffolding, identity compilation, system prompt injection) are done. Remaining work: operational data services, workspace file editing, and wiring the dashboard to real APIs.
 
-### 2.1 — Workspace Directory Structure
+### 2.1 — Workspace Directory Structure ✅
 
-Each agent gets a full workspace directory. When Claude Code starts a session with `folder` set to this workspace, `CLAUDE.md` auto-loads the agent's compiled system prompt:
+Each agent gets a full workspace directory at `~/.ccui-agents/{alias}/`:
 
 ```
 ~/.ccui-agents/{alias}/
-├── CLAUDE.md           # COMPILED — auto-generated before each session from:
-│                       #   1. Agent identity settings (from .agent.json)
-│                       #   2. SOUL.md, USER.md, TOOLS.md contents
-│                       #   3. Default behavioral instructions (memory protocol, safety, etc.)
-│                       #   DO NOT EDIT DIRECTLY — will be overwritten on next compile
+├── CLAUDE.md           # Copy of AGENTS.md scaffold — behavioral/workspace protocol
+│                       #   Auto-loaded by SDK via settingSources: ["project"]
+├── AGENTS.md           # Source behavioral protocol (memory rules, safety, heartbeats, etc.)
 ├── SOUL.md             # Personality, values, tone, boundaries — who the agent IS
 ├── USER.md             # Info about the human (name, timezone, preferences)
 ├── TOOLS.md            # Environment-specific notes (devices, SSH hosts, API keys context)
@@ -92,71 +153,30 @@ Each agent gets a full workspace directory. When Claude Code starts a session wi
 ├── memory/
 │   ├── YYYY-MM-DD.md   # Daily journals — raw logs of what happened each day
 │   └── ...
-├── MEMORY.md           # Curated long-term memory — distilled from daily journals
-└── .agent.json         # Structured settings (identity + execution config):
-                        #   See AgentConfig in section 2.2
+└── MEMORY.md           # Curated long-term memory — distilled from daily journals
 ```
 
 **Key principles**:
-- **Identity is structured, not markdown.** Agent name, emoji, description, platform handles, etc. live as fields in `.agent.json`, editable via dashboard form fields. No separate `IDENTITY.md` — that data belongs in structured settings.
-- **`CLAUDE.md` is compiled, not hand-edited.** The backend generates it before each session by combining identity settings + workspace files (SOUL, USER, TOOLS) + default behavioral instructions (memory protocol, safety rules). This gives users the best of both worlds: clean forms for identity, free-form markdown for personality/context, and a single compiled output for the SDK.
+- **Identity is structured, not markdown.** Agent name, emoji, description, etc. live as fields in `data/agents/{alias}/agent.json`, editable via dashboard form fields. No `IDENTITY.md`.
+- **`CLAUDE.md` is a workspace protocol file**, not a compiled identity dump. It contains the behavioral instructions (memory protocol, safety, heartbeats) from the AGENTS.md scaffold. Identity is injected separately via the SDK's `systemPrompt.append`.
 - **Workspace markdown files are the agent's own.** `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `MEMORY.md`, and daily journals are read and written by the agent during sessions. The agent maintains its own memory.
 
-**Why `~/.ccui-agents/` instead of `data/agents/`?** The workspace needs to be a real directory the Claude Code SDK can use as a project root. Keeping it in the user's home directory (configurable) separates agent workspaces from the app's internal data. The path is configurable via environment variable `CCUI_AGENTS_DIR` (default: `~/.ccui-agents`).
+### 2.2 — Agent Config & Identity ✅
 
-### 2.2 — Agent Config & Identity
-
-The current `AgentConfig` is too flat (just name, alias, description, systemPrompt). Expand it to hold comprehensive structured identity settings alongside execution config. Everything in `.agent.json` is editable via dashboard form fields.
-
-**`shared/types/agent.ts`**:
-```typescript
-export interface AgentConfig {
-  // Core identity
-  alias: string;                       // Unique identifier (immutable after creation)
-  createdAt: number;
-
-  // Identity settings (editable via dashboard forms → compiled into CLAUDE.md)
-  name: string;                        // Display name ("Hex", "CodeBot")
-  emoji?: string;                      // Agent emoji ("🔮", "🤖")
-  description: string;                 // Short description for agent list
-  personality?: string;                // One-liner personality hint ("Sharp, witty, direct")
-  role?: string;                       // What this agent does ("Code reviewer", "Discord bot")
-  tone?: string;                       // Communication style ("Professional", "Casual and friendly",
-                                       //   "Terse and technical", custom free-text)
-  pronouns?: string;                   // Agent's pronouns ("they/them", "she/her", etc.)
-  languages?: string[];                // Languages the agent should respond in (["English", "Spanish"])
-  guidelines?: string[];               // Custom behavioral rules as short bullet points
-                                       //   e.g. ["Never apologize", "Always suggest tests",
-                                       //         "Prefer functional patterns"]
-
-  // User context (who the agent serves — compiled into CLAUDE.md)
-  userName?: string;                   // Human's name
-  userTimezone?: string;               // e.g. "America/New_York"
-  userLocation?: string;               // e.g. "Phoenixville, PA"
-  userContext?: string;                 // Free-text: what matters to this human, their projects,
-                                       //   preferences, quirks — the stuff that makes help personal
-
-  // Execution defaults (used by agent-executor, not compiled into prompt)
-  defaultFolder?: string;              // Working directory for sessions (defaults to workspace)
-  defaultPermissions?: DefaultPermissions;
-  maxTurns?: number;                   // Default: 200
-  activePlugins?: string[];            // Plugin IDs to always activate
-}
-```
-
-**Workspace markdown files** — What the agent reads/writes during sessions:
-- `SOUL.md` → Deep personality, values, boundaries — the agent's inner compass (editable via UI as free-form markdown)
-- `USER.md` → Extended user notes the agent accumulates over time (starts from `userContext` but the agent grows it)
-- `TOOLS.md` → Environment-specific notes (devices, SSH hosts, API quirks — the agent adds to this)
-- `HEARTBEAT.md` → Fluid heartbeat checklist (see Phase 4)
-- `MEMORY.md` → Curated long-term memory
-- `memory/YYYY-MM-DD.md` → Daily journals
+The `AgentConfig` interface holds comprehensive structured identity settings alongside core fields. See "What Exists Today" above for the full interface.
 
 **What goes where?**
-- **Structured settings** (`.agent.json` → form fields): Anything that has a clear shape — name, emoji, tone, role, timezone, guidelines. Users shouldn't have to write markdown for these.
+- **Structured settings** (`agent.json` → form fields): Anything that has a clear shape — name, emoji, tone, role, timezone, guidelines. Users shouldn't have to write markdown for these.
 - **Free-form markdown** (workspace files → markdown editor): Anything that benefits from narrative or open-ended expression — personality depth (SOUL), extended notes (USER, TOOLS), memory.
 
-### 2.3 — Revised Shared Types
+### 2.3 — Identity Compilation ✅
+
+**`backend/src/services/claude-compiler.ts`** — Already implemented:
+- `compileIdentityPrompt(config)` builds the identity string from structured AgentConfig fields
+- `scaffoldWorkspace(workspacePath)` copies template files on agent creation
+- Identity is injected via SDK `systemPrompt: { type: 'preset', preset: 'claude_code', append }` — not written to CLAUDE.md
+
+### 2.4 — Revised Shared Types
 
 **`shared/types/agentFeatures.ts`** — Keep operational types, drop `MemoryItem`:
 
@@ -188,100 +208,22 @@ export interface TriggerAction {
 }
 
 // REMOVE MemoryItem — memory is now markdown files, not key-value pairs
-// The dashboard Memory page becomes a file editor (see Phase 2.6)
+// The dashboard Memory page becomes a file editor (see Phase 2.7)
 ```
-
-### 2.4 — Backend Workspace Service
-
-**New file: `backend/src/services/agent-workspace.ts`**
-
-Replaces the current `agent-file-service.ts`. Manages the workspace directory:
-
-```typescript
-// Workspace lifecycle
-export function createWorkspace(alias: string, config: AgentConfig): void
-export function deleteWorkspace(alias: string): void
-export function workspaceExists(alias: string): boolean
-export function getWorkspacePath(alias: string): string
-
-// Agent config (.agent.json)
-export function getAgentConfig(alias: string): AgentConfig | undefined
-export function updateAgentConfig(alias: string, updates: Partial<AgentConfig>): AgentConfig
-export function listAgents(): AgentConfig[]
-
-// CLAUDE.md compilation
-export function compileClaude(alias: string): void
-
-// Workspace files (markdown)
-export function readWorkspaceFile(alias: string, filename: string): string | undefined
-export function writeWorkspaceFile(alias: string, filename: string, content: string): void
-export function listWorkspaceFiles(alias: string): string[]
-
-// Daily memory
-export function readDailyMemory(alias: string, date?: string): string | undefined
-export function appendDailyMemory(alias: string, entry: string, date?: string): void
-export function listMemoryDates(alias: string): string[]
-
-// Curated memory (MEMORY.md)
-export function readLongTermMemory(alias: string): string | undefined
-export function writeLongTermMemory(alias: string, content: string): void
-```
-
-**`compileClaude(alias)`** — The core compilation function. Generates `CLAUDE.md` from:
-1. **Identity block** — Compiled from `.agent.json` structured fields:
-   ```markdown
-   # Identity
-   - **Name:** Hex
-   - **Role:** Code reviewer and Discord bot
-   - **Personality:** Sharp, witty, direct
-   - **Tone:** Casual and friendly
-   - **Emoji:** 🔮
-   - **Pronouns:** they/them
-   - **Languages:** English, Spanish
-   ```
-2. **User context block** — Compiled from `.agent.json` user fields:
-   ```markdown
-   # Your Human
-   - **Name:** Ben
-   - **Timezone:** America/New_York
-   - **Location:** Phoenixville, PA
-   - **Context:** [free-text from userContext field]
-   ```
-3. **Guidelines block** — Compiled from `.agent.json` guidelines array:
-   ```markdown
-   # Guidelines
-   - Never apologize
-   - Always suggest tests
-   - Prefer functional patterns
-   ```
-4. **Behavioral instructions** — Default template (memory protocol, safety rules, session startup sequence)
-5. **Workspace file contents** — Inline `SOUL.md`, `TOOLS.md` if they exist (so the agent doesn't have to read them separately)
-
-Called automatically:
-- On `createWorkspace` (initial generation)
-- On `updateAgentConfig` (identity/user settings changed)
-- On `writeWorkspaceFile` for SOUL.md or TOOLS.md (markdown content changed)
-- Before each session start (in the executor, to ensure freshness)
-
-On `createWorkspace`:
-1. Create `~/.ccui-agents/{alias}/` and `memory/` subdirectory
-2. Write `.agent.json` with full config (identity + execution settings)
-3. Generate starter `SOUL.md`, `USER.md`, `TOOLS.md` from templates
-4. Create empty `HEARTBEAT.md`
-5. Call `compileClaude(alias)` to generate initial `CLAUDE.md`
 
 ### 2.5 — Backend Services for Operational Data
 
-These still use JSON files, but stored in the app's data directory (not the agent workspace), since they're managed by the app, not the agent:
+These still use JSON files, stored in the app's data directory (not the agent workspace), since they're managed by the app, not the agent:
 
 ```
 data/agents/{alias}/
-├── connections.json    # Connection[]
-├── triggers.json       # Trigger[]
-├── cron-jobs.json      # CronJob[]
-├── activity.jsonl      # ActivityEntry[] (append-only log)
-└── sessions/           # Links to Claude Code sessions
-    └── {chatId}.json   # { chatId, startedAt, triggeredBy, status }
+├── agent.json         # AgentConfig (already exists)
+├── connections.json   # Connection[]
+├── triggers.json      # Trigger[]
+├── cron-jobs.json     # CronJob[]
+├── activity.jsonl     # ActivityEntry[] (append-only log)
+└── sessions/          # Links to Claude Code sessions
+    └── {chatId}.json  # { chatId, startedAt, triggeredBy, status }
 ```
 
 Create file-based services following the existing `chat-file-service.ts` pattern:
@@ -293,13 +235,12 @@ Create file-based services following the existing `chat-file-service.ts` pattern
 | `backend/src/services/agent-cron-jobs.ts` | CRUD for agent cron jobs |
 | `backend/src/services/agent-activity.ts` | Append-only activity log (JSONL) |
 
-### 2.6 — Backend Routes
+### 2.6 — Backend Routes (Remaining)
 
 Mount sub-routes under the existing agents router:
 
-| New/Modified File | Endpoints |
+| New File | Endpoints |
 |---|---|
-| `backend/src/routes/agents.ts` (modify) | Update CRUD to use workspace service |
 | `backend/src/routes/agent-workspace.ts` | `GET/PUT /api/agents/:alias/workspace/:filename` — read/write markdown files |
 | `backend/src/routes/agent-memory.ts` | `GET /api/agents/:alias/memory` — list dates + read daily/long-term memory; `PUT` to update |
 | `backend/src/routes/agent-connections.ts` | `GET/POST/PUT/DELETE /api/agents/:alias/connections` |
@@ -312,20 +253,20 @@ Mount sub-routes under the existing agents router:
 The dashboard sub-pages need significant rework to match the new model:
 
 **Overview page** → Agent identity + settings form + stats:
-- Agent header: display name + emoji + role from `AgentConfig` (not parsed from a file)
+- Agent header: display name + emoji + role from `AgentConfig`
 - **Settings section**: Form fields for all identity settings:
   - Name, emoji picker, description, role, personality, tone (dropdown + custom), pronouns, languages
   - User context: userName, userTimezone (dropdown), userLocation, userContext (textarea)
   - Guidelines: list editor (add/remove/reorder bullet points)
   - Execution: defaultFolder, maxTurns, defaultPermissions, activePlugins
-- Saves to `PUT /api/agents/:alias` → updates `.agent.json` → triggers `compileClaude()`
+- Saves to `PUT /api/agents/:alias` → updates `agent.json`
 - Stat cards: active connections, cron jobs, triggers (from real APIs)
 - Recent activity from real activity log
 
 **Memory page** → Becomes a **workspace file editor**:
 - Left sidebar: list of workspace files (`SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`)
 - Main area: markdown editor for selected file
-- Saving a file calls `PUT /api/agents/:alias/workspace/:filename` → triggers `compileClaude()` if SOUL.md or TOOLS.md
+- Saving a file calls `PUT /api/agents/:alias/workspace/:filename`
 - Below or in a tab: daily memory timeline (`memory/YYYY-MM-DD.md`) — read-only viewer with date picker
 - `MEMORY.md` section: editable curated long-term memory
 
@@ -344,65 +285,12 @@ The dashboard sub-pages need significant rework to match the new model:
 
 Remove `mockData.ts` when all pages are wired up.
 
-### 2.8 — Default Templates & CLAUDE.md Compilation
+### 2.8 — Verification
 
-**`backend/src/services/claude-compiler.ts`** — The compilation logic:
-
-Takes an `AgentConfig` + workspace file contents and produces the full `CLAUDE.md` output. The compiled file has a clear structure:
-
-```markdown
-<!-- AUTO-GENERATED — Do not edit directly. Edit via dashboard settings or workspace files. -->
-
-# {name} {emoji}
-
-{role and personality summary}
-
-## Identity
-- **Name:** ...
-- **Tone:** ...
-- **Pronouns:** ...
-(etc — from AgentConfig structured fields)
-
-## Your Human
-- **Name:** ...
-- **Timezone:** ...
-(etc — from AgentConfig user fields)
-
-## Guidelines
-- {guideline 1}
-- {guideline 2}
-(etc — from AgentConfig.guidelines[])
-
-## Soul
-{contents of SOUL.md, if it exists}
-
-## Tools & Environment
-{contents of TOOLS.md, if it exists}
-
-## Workspace Protocol
-{default behavioral instructions template:}
-- Session startup: read today's + yesterday's memory/YYYY-MM-DD.md, read MEMORY.md
-- Memory protocol: daily journals in memory/YYYY-MM-DD.md, curated in MEMORY.md
-- Safety rules: don't exfiltrate data, ask before external actions
-- Write-it-down principle: files over "mental notes"
-```
-
-**Default workspace file templates** (`backend/src/templates/`):
-
-**`soul.md.template`** — Starter personality:
-- Placeholder prompts for the user to fill in
-- Core values (be helpful, have opinions, be resourceful)
-
-**`user.md.template`** — Extended user notes placeholder (the agent grows this over time)
-
-**`tools.md.template`** — Environment notes placeholder
-
-### 2.9 — Verification
-
-- Creating an agent produces a full workspace directory with compiled `CLAUDE.md`
-- `CLAUDE.md` contains compiled identity from structured settings + SOUL.md + TOOLS.md + behavioral instructions
-- Updating agent settings via dashboard re-compiles `CLAUDE.md`
-- Editing SOUL.md or TOOLS.md via workspace editor re-compiles `CLAUDE.md`
+- Creating an agent produces a full workspace directory with CLAUDE.md + all scaffold files
+- `GET /api/agents/:alias/identity-prompt` returns compiled identity from structured settings
+- Starting an agent chat injects identity via SDK systemPrompt.append
+- Updating agent settings via PUT persists changes; next chat uses updated identity
 - All workspace files are readable/editable via API and dashboard
 - Overview page shows all identity fields in form format, saves correctly
 - Daily memory files can be viewed by date
@@ -415,13 +303,13 @@ Takes an `AgentConfig` + workspace file contents and produces the full `CLAUDE.m
 
 ## Phase 3: Agent Execution Engine
 
-**Goal**: Agents can programmatically create and manage Claude Code sessions. The execution model is simple: point `sendMessage()` at the agent's workspace directory and let `CLAUDE.md` do the rest.
+**Goal**: Agents can programmatically create and manage Claude Code sessions. The execution model: compile identity → inject via `systemPrompt.append` → set `folder` to workspace → call `sendMessage()`.
 
 ### 3.1 — Agent Executor Service
 
 **New file: `backend/src/services/agent-executor.ts`**
 
-The bridge between agent config and the existing `sendMessage()` function. Because `CLAUDE.md` auto-loads in the workspace, the executor is thin:
+The bridge between agent config and the existing `sendMessage()` function:
 
 ```typescript
 export interface AgentExecutionOptions {
@@ -439,19 +327,18 @@ export async function executeAgent(opts: AgentExecutionOptions): Promise<{
 ```
 
 Key responsibilities:
-1. Load the agent's `.agent.json` config
-2. Call `compileClaude(alias)` to ensure `CLAUDE.md` is fresh (identity + workspace files → compiled prompt)
+1. Load the agent's config from `data/agents/{alias}/agent.json`
+2. Call `compileIdentityPrompt(config)` to build the identity string
 3. Determine `folder` — use override, or agent's `defaultFolder`, or fall back to workspace path
-4. Call `sendMessage()` with `{ prompt, folder, defaultPermissions, maxTurns, activePlugins }` from agent config
+4. Call `sendMessage()` with `{ prompt, folder, defaultPermissions, maxTurns, activePlugins, systemPrompt: identityString }` from agent config
 5. Link the created session to the agent in `data/agents/{alias}/sessions/`
 6. Log lifecycle events to the agent's activity feed
 7. On session complete: append a summary entry to today's `memory/YYYY-MM-DD.md`
 
-**What the executor does NOT do** (because `CLAUDE.md` handles it):
-- ~~Manually build prompts by concatenating personality + context~~ → `compileClaude()` already assembled everything into `CLAUDE.md`
-- ~~Inject identity~~ → Compiled into `CLAUDE.md` from structured settings
-- ~~Inject user context~~ → Compiled into `CLAUDE.md` from structured settings
-- ~~Format memory items~~ → Agent reads `MEMORY.md` and daily journals itself per workspace protocol
+**What the executor does NOT do** (because the two-layer prompt handles it):
+- ~~Manually build prompts by concatenating personality + context~~ → `compileIdentityPrompt()` builds the identity string, SDK's `systemPrompt.append` injects it
+- ~~Write to CLAUDE.md~~ → CLAUDE.md is the static workspace protocol, not dynamically compiled
+- ~~Format memory items~~ → Agent reads `MEMORY.md` and daily journals itself per workspace protocol in CLAUDE.md
 
 ### 3.2 — Agent Chat Routes
 
@@ -484,8 +371,8 @@ Add an `agentAlias` field to the chat metadata so the main ChatList can display 
 ### 3.5 — Verification
 
 - Start a Claude Code session from the agent dashboard chat
-- Agent's `CLAUDE.md` is loaded (verify by checking that it follows SOUL.md personality)
-- Agent reads its own memory files during the session
+- Agent's identity is injected (verify by checking that it follows personality settings)
+- Agent reads its own memory files during the session (per CLAUDE.md workspace protocol)
 - Session appears in both the agent view and the main chat list
 - Activity log records session lifecycle events
 - Daily memory updated after session completes
@@ -550,7 +437,7 @@ On each heartbeat tick:
 - **Cron** = precise schedule, specific task, isolated session ("run this report every Monday at 9am")
 - **Heartbeat** = periodic check-in, agent decides what to do, fluid and adaptive ("anything need attention?")
 
-Add `heartbeat` field to `.agent.json`:
+Add `heartbeat` field to `AgentConfig`:
 ```typescript
 export interface AgentConfig {
   // ... existing fields ...
@@ -626,7 +513,7 @@ Natural extensions once the core pipeline is working.
 ### 5.1 — Agent Memory Auto-Update
 - After sessions complete, agent can update its own `MEMORY.md` and daily journals (it already has write access to its workspace)
 - During heartbeats, agent can review recent daily files and curate `MEMORY.md` (like a human reviewing their journal)
-- Add guidance in the compiled `CLAUDE.md` workspace protocol section for memory maintenance
+- The workspace protocol in CLAUDE.md already includes guidance for memory maintenance
 
 ### 5.2 — Connection Management
 - Real OAuth flows for Google, Slack, Discord, etc.
@@ -670,19 +557,19 @@ Natural extensions once the core pipeline is working.
 │  /            │  │          │      │      │             │    │   │
 │  /chat/:id    │  └──────────────────────────────────────────┘   │
 │               │  /agents/:alias/*                                │
-│               │                                                  │
-│               │  Overview page = identity settings form:         │
-│               │  ┌──────────────────────────────────────────┐   │
-│               │  │ Name: [Hex    ] Emoji: [🔮]  Role: [...] │   │
+│  New chat:    │                                                  │
+│  Claude Code  │  Overview page = identity settings form:         │
+│  | Agent      │  ┌──────────────────────────────────────────┐   │
+│  (toggle)     │  │ Name: [Hex    ] Emoji: [🔮]  Role: [...] │   │
 │               │  │ Tone: [Casual ▾]  Pronouns: [they/them] │   │
-│               │  │ Guidelines: [+ Add rule]                 │   │
-│               │  │ User: [Ben] TZ: [America/New_York ▾]    │   │
-│               │  └──────────────────────────────────────────┘   │
-│               │                                                  │
-│               │  Memory page = workspace file editor:            │
-│               │  ┌─────────┬────────────────────────────────┐   │
-│               │  │ Files   │ Markdown Editor                │   │
-│               │  │─────────│                                │   │
+│  Agent mode:  │  │ Guidelines: [+ Add rule]                 │   │
+│  select agent │  │ User: [Ben] TZ: [America/New_York ▾]    │   │
+│  → Start Chat │  └──────────────────────────────────────────┘   │
+│  (fetches     │                                                  │
+│  identity     │  Memory page = workspace file editor:            │
+│  prompt →     │  ┌─────────┬────────────────────────────────┐   │
+│  navigates to │  │ Files   │ Markdown Editor                │   │
+│  /chat/new)   │  │─────────│                                │   │
 │               │  │ SOUL    │ # Soul                         │   │
 │               │  │ USER    │ Be genuinely helpful, not      │   │
 │               │  │ TOOLS   │ performatively helpful...      │   │
@@ -695,7 +582,8 @@ Natural extensions once the core pipeline is working.
 │                     Express Backend (API)                         │
 ├──────────────────────────────────────────────────────────────────┤
 │  /api/stream/*     │  /api/agents/*         │  /api/agents/:alias│
-│  (existing SSE)    │  (agent CRUD)          │  /workspace/:file  │
+│  (SSE — accepts    │  (agent CRUD +         │  /identity-prompt  │
+│   systemPrompt)    │   PUT updates)         │  /workspace/:file  │
 │                    │                        │  /memory            │
 │                    │                        │  /connections       │
 │                    │                        │  /triggers          │
@@ -709,29 +597,51 @@ Natural extensions once the core pipeline is working.
 │ claude.ts│ agent-    │ claude-  │ cron-   │ heart-  │ trigger- │
 │ (SDK)    │ executor  │ compiler │ sched.  │ beat    │ engine   │
 │          │           │          │         │         │          │
-│ sendMsg()│ compile → │ settings │ node-   │ periodic│ matches  │
-│ SSE      │ folder +  │ + md →   │ cron    │ open-   │ events → │
-│ perms    │ config    │ CLAUDE.md│ specific│ ended   │ triggers │
-│          │ → sendMsg │          │ tasks   │ check-in│ →executor│
-│          │           │          │→executor│→executor│          │
+│ sendMsg()│ identity  │ compile  │ node-   │ periodic│ matches  │
+│ SSE      │ + folder  │ Identity │ cron    │ open-   │ events → │
+│ perms    │ + config  │ Prompt() │ specific│ ended   │ triggers │
+│ system-  │ → sendMsg │ scaffold │ tasks   │ check-in│ →executor│
+│ Prompt   │           │ Wkspace()│→executor│→executor│          │
 ├──────────┴───────────┴──────────┴─────────┴──────────┴───────────┤
 │                       Storage                                     │
 ├─────────────────────────────┬────────────────────────────────────┤
 │  App Data (data/)           │  Agent Workspaces (~/.ccui-agents/) │
 │  ├── chats/ (existing)      │  └── {alias}/                      │
-│  └── agents/{alias}/        │      ├── CLAUDE.md  ← COMPILED     │
+│  └── agents/{alias}/        │      ├── CLAUDE.md  ← AGENTS.md   │
+│      ├── agent.json         │      ├── AGENTS.md  (protocol)    │
 │      ├── connections.json   │      ├── SOUL.md                   │
 │      ├── triggers.json      │      ├── USER.md                   │
 │      ├── cron-jobs.json     │      ├── TOOLS.md                  │
 │      ├── activity.jsonl     │      ├── HEARTBEAT.md              │
 │      └── sessions/          │      ├── MEMORY.md                 │
-│                             │      ├── memory/                   │
-│                             │      │   └── YYYY-MM-DD.md         │
-│                             │      └── .agent.json               │
+│                             │      └── memory/                   │
+│                             │          └── YYYY-MM-DD.md         │
 ├─────────────────────────────┴────────────────────────────────────┤
 │              External Services (via mcp-secure-proxy)             │
 │  Discord │ Slack │ GitHub │ Gmail │ Webhooks │ ...               │
 └──────────────────────────────────────────────────────────────────┘
+```
+
+**Two-Layer Prompt Architecture:**
+```
+                SDK systemPrompt.append              SDK settingSources: ["project"]
+                ┌──────────────────────┐             ┌─────────────────────────────┐
+                │  Compiled Identity   │             │  CLAUDE.md (workspace)      │
+                │  from AgentConfig:   │             │  = AGENTS.md scaffold:      │
+                │  - Name, emoji, role │             │  - Session startup sequence │
+                │  - Personality, tone │             │  - Memory protocol          │
+                │  - User context      │             │  - Safety rules             │
+                │  - Guidelines        │             │  - Heartbeat strategy       │
+                └──────────┬───────────┘             │  - Group chat etiquette     │
+                           │                         └──────────────┬──────────────┘
+                           ▼                                        ▼
+                ┌──────────────────────────────────────────────────────┐
+                │              Claude Code Session                     │
+                │  Claude Code preset system prompt                    │
+                │  + appended identity (systemPrompt.append)           │
+                │  + CLAUDE.md workspace protocol (settingSources)     │
+                │  + cwd = ~/.ccui-agents/{alias}/                     │
+                └──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -741,19 +651,27 @@ Natural extensions once the core pipeline is working.
 ```
 Phase 1 ✅  Foundation (agent CRUD, dashboard UI, navigation)
     │
+    ├── ✅  Agent chat mode (Claude Code | Agent toggle in new chat panel)
+    ├── ✅  Workspace path support (resolved server-side, API responses)
+    ├── ✅  Scaffold templates (AGENTS.md, SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md, MEMORY.md)
+    ├── ✅  Workspace scaffolding on agent creation
+    ├── ✅  AgentConfig expanded (identity + user context fields)
+    ├── ✅  Identity compilation (compileIdentityPrompt → systemPrompt.append)
+    ├── ✅  SDK systemPrompt passthrough (claude.ts → stream.ts → frontend)
+    ├── ✅  PUT /api/agents/:alias (partial config update)
+    ├── ✅  GET /api/agents/:alias/identity-prompt
+    │
     ▼
-Phase 2     Workspace & Memory
-    │       - Agent workspace directories with compiled CLAUDE.md
-    │       - Structured identity settings in .agent.json (form-editable)
-    │       - CLAUDE.md compiler: settings + SOUL.md + TOOLS.md → system prompt
-    │       - Markdown workspace files (SOUL, USER, TOOLS) for free-form content
-    │       - Daily journal + curated MEMORY.md
-    │       - JSON persistence for connections, triggers, cron, activity
+Phase 2     Workspace & Memory (remaining)
+    │       - Operational data services (connections, triggers, cron, activity)
+    │       - Workspace file read/write API endpoints
     │       - Dashboard: Overview → settings form, Memory → file editor
+    │       - Wire dashboard pages to real APIs, remove mockData.ts
+    │       - CreateAgent form expansion (structured identity fields)
     │
     ▼
 Phase 3     Execution Engine
-    │       - Thin executor: compileClaude() + folder + config → sendMessage()
+    │       - Thin executor: compileIdentityPrompt() + folder + config → sendMessage()
     │       - Agent chat routes + SSE streaming
     │       - Frontend chat wired to real sessions
     │       - Session ownership (agent badge in main chat list)
