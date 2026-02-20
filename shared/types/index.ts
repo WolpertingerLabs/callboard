@@ -25,4 +25,4 @@ export type { SessionStatus } from "./session.js";
 
 export type { AgentConfig } from "./agent.js";
 
-export type { ChatMessage, ChatMessage as AgentChatMessage, CronJob, Connection, Trigger, ActivityEntry, MemoryItem } from "./agentFeatures.js";
+export type { TriggerAction, CronJob, Trigger, ActivityEntry } from "./agentFeatures.js";

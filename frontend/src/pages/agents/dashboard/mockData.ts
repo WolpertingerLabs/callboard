@@ -1,7 +1,36 @@
-import type { ChatMessage, CronJob, Connection, Trigger, ActivityEntry, MemoryItem } from "shared";
+import type { CronJob, Trigger, ActivityEntry } from "shared";
 
-// Re-export types for convenience in dashboard components
-export type { ChatMessage, CronJob, Connection, Trigger, ActivityEntry, MemoryItem };
+// Re-export shared types for convenience in dashboard components
+export type { CronJob, Trigger, ActivityEntry };
+
+// ── Local mock types (removed from shared — will be replaced in §2.7) ──
+
+/** Mock chat message type — will be replaced by real Claude SDK sessions in Phase 3 */
+export interface MockChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+}
+
+/** Mock connection type — connections are now read-only views of mcp-secure-proxy state */
+export interface MockConnection {
+  id: string;
+  service: string;
+  type: "bot" | "api" | "oauth";
+  status: "connected" | "disconnected" | "error";
+  connectedAt?: number;
+  description: string;
+}
+
+/** Mock memory item type — memory is now markdown files in the agent workspace */
+export interface MockMemoryItem {
+  id: string;
+  key: string;
+  value: string;
+  category: "fact" | "preference" | "context" | "instruction";
+  updatedAt: number;
+}
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -10,7 +39,7 @@ const future = (minutes: number) => Date.now() + minutes * 60 * 1000;
 
 // ── Mock Chat Messages ──────────────────────────────────
 
-export const mockMessages: ChatMessage[] = [
+export const mockMessages: MockChatMessage[] = [
   {
     id: "m1",
     role: "user",
@@ -64,6 +93,7 @@ export const mockCronJobs: CronJob[] = [
     lastRun: ago(180),
     nextRun: future(720),
     description: "Collect updates from all connected channels and post a standup summary to #team-updates on Slack.",
+    action: { type: "start_session", prompt: "Collect standup updates from all channels and post summary to #team-updates" },
   },
   {
     id: "cj2",
@@ -74,6 +104,7 @@ export const mockCronJobs: CronJob[] = [
     lastRun: ago(2880),
     nextRun: future(7200),
     description: "Aggregate usage stats from Google Analytics and OpenRouter, generate a summary, and email it to the team.",
+    action: { type: "start_session", prompt: "Generate weekly analytics report and email to team" },
   },
   {
     id: "cj3",
@@ -83,6 +114,7 @@ export const mockCronJobs: CronJob[] = [
     status: "active",
     nextRun: future(360),
     description: "Remind about the v2 API DNS cutover coordination with DevOps. Notify via chat and Slack.",
+    action: { type: "send_message", prompt: "Reminder: DNS cutover coordination with DevOps scheduled for Tuesday 2am UTC" },
   },
   {
     id: "cj4",
@@ -92,6 +124,7 @@ export const mockCronJobs: CronJob[] = [
     status: "paused",
     lastRun: ago(43200),
     description: "Archive completed cards older than 30 days and move stale cards to the Icebox list.",
+    action: { type: "start_session", prompt: "Archive completed Trello cards older than 30 days and move stale cards to Icebox" },
   },
   {
     id: "cj5",
@@ -101,12 +134,13 @@ export const mockCronJobs: CronJob[] = [
     status: "completed",
     lastRun: ago(10080),
     description: "Gather sprint metrics and prepare retro discussion points from completed cards and PRs.",
+    action: { type: "start_session", prompt: "Gather sprint metrics and prepare retro discussion points" },
   },
 ];
 
 // ── Mock Connections ────────────────────────────────────
 
-export const mockConnections: Connection[] = [
+export const mockConnections: MockConnection[] = [
   {
     id: "cn1",
     service: "Discord",
@@ -163,49 +197,55 @@ export const mockTriggers: Trigger[] = [
   {
     id: "t1",
     name: "Urgent Discord Messages",
-    source: "Discord",
-    event: "New message in #alerts",
-    condition: "Contains keyword: urgent, critical, down",
+    source: "discord-bot",
+    event: "MESSAGE_CREATE",
+    condition: 'contains("urgent") OR contains("critical") OR contains("down")',
     status: "active",
     lastTriggered: ago(45),
     description: "Wake up and respond immediately when an urgent message appears in the alerts channel.",
+    action: { type: "start_session", prompt: "Urgent message detected in Discord: {{event.data.content}}" },
   },
   {
     id: "t2",
     name: "VIP Email Arrivals",
-    source: "Gmail",
-    event: "New email received",
-    condition: "From: CEO, CTO, or DevOps team",
+    source: "gmail",
+    event: "NEW_EMAIL",
+    condition: 'from("ceo@") OR from("cto@")',
     status: "paused",
     lastTriggered: ago(1440),
     description: "Summarize and notify on Slack when emails arrive from key stakeholders.",
+    action: { type: "start_session", prompt: "Summarize this VIP email and notify on Slack: {{event.data}}" },
   },
   {
     id: "t3",
     name: "Trello Card Assigned",
-    source: "Trello",
-    event: "Card assigned to agent",
+    source: "trello",
+    event: "webhook:trello",
     status: "active",
     lastTriggered: ago(4320),
     description: "When a Trello card is assigned, analyze the task and post an initial plan as a comment.",
+    action: { type: "start_session", prompt: "Analyze this Trello card and post a plan: {{event.data}}" },
   },
   {
     id: "t4",
     name: "Slack Direct Messages",
-    source: "Slack",
-    event: "Direct message received",
+    source: "slack",
+    event: "MESSAGE",
     status: "active",
     lastTriggered: ago(15),
     description: "Respond to any direct messages in Slack with full conversational context.",
+    action: { type: "start_session", prompt: "Respond to this Slack DM: {{event.data.text}}" },
   },
   {
     id: "t5",
-    name: "Google Calendar Event Starting",
-    source: "Google",
-    event: "Event starting in 10 minutes",
+    name: "GitHub PR Opened",
+    source: "github",
+    event: "webhook:github",
+    condition: 'contains("pull_request") AND contains("opened")',
     status: "active",
     lastTriggered: ago(180),
-    description: "Send a briefing with meeting context, attendee info, and relevant documents 10 minutes before any calendar event.",
+    description: "Review new pull requests and post a summary comment with initial feedback.",
+    action: { type: "start_session", prompt: "Review this GitHub PR and post feedback: {{event.data}}" },
   },
 ];
 
@@ -231,7 +271,7 @@ export const mockActivity: ActivityEntry[] = [
 
 // ── Mock Memory ─────────────────────────────────────────
 
-export const mockMemory: MemoryItem[] = [
+export const mockMemory: MockMemoryItem[] = [
   {
     id: "mem1",
     key: "team_timezone",
