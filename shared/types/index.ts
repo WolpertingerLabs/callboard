@@ -25,4 +25,4 @@ export type { SessionStatus } from "./session.js";
 
 export type { AgentConfig } from "./agent.js";
 
-export type { TriggerAction, CronJob, Trigger, ActivityEntry } from "./agentFeatures.js";
+export type { CronAction, CronJob, EventSubscription, ActivityEntry } from "./agentFeatures.js";

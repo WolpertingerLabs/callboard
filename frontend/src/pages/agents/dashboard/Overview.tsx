@@ -3,12 +3,12 @@ import {
   MessageSquare,
   Plug,
   Clock,
-  Zap,
+  Radio,
   ChevronRight,
   Bot,
 } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { mockActivity, mockConnections, mockCronJobs, mockTriggers } from "./mockData";
+import { mockActivity, mockConnections, mockCronJobs, mockEventSubscriptions } from "./mockData";
 import type { AgentConfig } from "shared";
 
 function timeAgo(ts: number): string {
@@ -24,7 +24,7 @@ function timeAgo(ts: number): string {
 
 const typeColors: Record<string, string> = {
   chat: "var(--accent)",
-  trigger: "var(--warning)",
+  event: "var(--warning)",
   cron: "var(--success)",
   connection: "#58a6ff",
   system: "var(--text-muted)",
@@ -37,13 +37,13 @@ export default function Overview() {
 
   const activeConnections = mockConnections.filter((c) => c.status === "connected").length;
   const activeCrons = mockCronJobs.filter((c) => c.status === "active").length;
-  const activeTriggers = mockTriggers.filter((t) => t.status === "active").length;
+  const activeSubscriptions = mockEventSubscriptions.filter((s) => s.enabled).length;
   const recentActivity = mockActivity.slice(0, 5);
 
   const stats = [
     { label: "Connections", value: activeConnections, total: mockConnections.length, icon: Plug, color: "#58a6ff" },
     { label: "Cron Jobs", value: activeCrons, total: mockCronJobs.length, icon: Clock, color: "var(--success)" },
-    { label: "Triggers", value: activeTriggers, total: mockTriggers.length, icon: Zap, color: "var(--warning)" },
+    { label: "Events", value: activeSubscriptions, total: mockEventSubscriptions.length, icon: Radio, color: "var(--warning)" },
   ];
 
   const basePath = `/agents/${agent.alias}`;
@@ -199,7 +199,7 @@ export default function Overview() {
             View Connections
           </button>
           <button
-            onClick={() => navigate(`${basePath}/triggers`)}
+            onClick={() => navigate(`${basePath}/events`)}
             style={{
               display: "flex",
               alignItems: "center",
@@ -216,8 +216,8 @@ export default function Overview() {
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            <Zap size={16} />
-            Manage Triggers
+            <Radio size={16} />
+            Manage Events
           </button>
         </div>
       </div>
