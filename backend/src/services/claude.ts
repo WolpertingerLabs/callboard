@@ -11,6 +11,7 @@ import type { McpServerConfig } from "shared/types/index.js";
 import { migratePermissions } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
+import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -417,6 +418,8 @@ interface SendMessageOptions {
   maxTurns?: number;
   /** Agent identity prompt — appended to Claude Code's preset system prompt */
   systemPrompt?: string;
+  /** Agent alias — when set, injects CCUI custom tools MCP server into the session */
+  agentAlias?: string;
 }
 
 /**
@@ -459,6 +462,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     resumeSessionId = undefined;
     initialMetadata = {
       ...(defaultPermissions && { defaultPermissions }),
+      ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
     };
   } else {
     throw new Error("Either chatId or folder is required");
@@ -486,8 +490,33 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   const plugins = buildPluginOptions(folder, activePlugins);
   const mcpOpts = buildMcpServerOptions();
 
+  // Build MCP servers map: start with configured servers, add CCUI agent tools if this is an agent session
+  const mcpServers: Record<string, any> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
+  const allowedTools: string[] = mcpOpts ? [...mcpOpts.allowedTools] : [];
+
+  if (opts.agentAlias) {
+    const ccuiServer = buildAgentToolsServer(opts.agentAlias);
+    mcpServers["ccui"] = ccuiServer;
+    allowedTools.push("mcp__ccui__*");
+    log.debug(`Injected CCUI agent tools for agent=${opts.agentAlias}`);
+  }
+
+  const hasMcpServers = Object.keys(mcpServers).length > 0;
+
+  // When MCP servers are present, the SDK requires an AsyncIterable prompt.
+  // Wrap string/non-iterable prompts in an async generator.
+  let effectivePrompt = formattedPrompt;
+  if (hasMcpServers && typeof formattedPrompt === "string") {
+    effectivePrompt = (async function* () {
+      yield {
+        type: "user" as const,
+        message: { role: "user" as const, content: formattedPrompt },
+      };
+    })();
+  }
+
   const queryOpts: any = {
-    prompt: formattedPrompt,
+    prompt: effectivePrompt,
     options: {
       abortController,
       cwd: folder,
@@ -495,7 +524,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(plugins.length > 0 ? { plugins } : {}),
-      ...(mcpOpts ? { mcpServers: mcpOpts.mcpServers, allowedTools: mcpOpts.allowedTools } : {}),
+      ...(hasMcpServers ? { mcpServers, allowedTools } : {}),
       ...(opts.systemPrompt ? { systemPrompt: { type: "preset", preset: "claude_code", append: opts.systemPrompt } } : {}),
       env: {
         ...process.env,
@@ -620,3 +649,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   return emitter;
 }
+
+// Register sendMessage as the message sender for agent-tools.ts (breaks circular dependency)
+setMessageSender(sendMessage);

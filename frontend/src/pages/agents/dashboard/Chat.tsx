@@ -1,24 +1,14 @@
-import { useState, useRef, useEffect } from "react";
-import { useOutletContext } from "react-router-dom";
-import { Send, Bot, User } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { useNavigate, useOutletContext } from "react-router-dom";
+import { MessageSquare, Plus, Bot, ExternalLink } from "lucide-react";
+import { listChats, getAgentIdentityPrompt, type Chat as ChatType } from "../../../api";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import type { AgentConfig } from "shared";
+import type { AgentConfig, DefaultPermissions } from "shared";
 
-/** Mock chat message type — will be replaced by real Claude SDK sessions in Phase 3 */
-interface MockChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: number;
-}
-
-function formatTime(ts: number): string {
-  const d = new Date(ts);
+function formatTime(dateStr: string): string {
+  const d = new Date(dateStr);
   const now = new Date();
-  const isToday =
-    d.getDate() === now.getDate() &&
-    d.getMonth() === now.getMonth() &&
-    d.getFullYear() === now.getFullYear();
+  const isToday = d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   if (isToday) return time;
   return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
@@ -26,78 +16,99 @@ function formatTime(ts: number): string {
 
 export default function Chat() {
   const { agent } = useOutletContext<{ agent: AgentConfig }>();
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const [messages, setMessages] = useState<MockChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [typing, setTyping] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [conversations, setConversations] = useState<ChatType[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const scrollToBottom = () => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  const loadConversations = useCallback(async () => {
+    try {
+      // Fetch all chats and filter to this agent's conversations
+      const response = await listChats(9999, 0);
+      const agentChats = response.chats.filter((chat) => {
+        try {
+          const meta = JSON.parse(chat.metadata || "{}");
+          return meta.agentAlias === agent.alias;
+        } catch {
+          return false;
+        }
+      });
+      setConversations(agentChats);
+    } catch (err) {
+      console.error("Failed to load agent conversations:", err);
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [agent.alias]);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, typing]);
+    loadConversations();
+  }, [loadConversations]);
 
-  const mockReplies = [
-    "I've looked into that and here's what I found. The data shows a clear trend we should discuss further.",
-    "Done! I've updated the relevant systems. Let me know if you need anything else.",
-    "That's a great question. Based on the information from our connected services, I'd recommend we take a closer look at the recent activity patterns.",
-    "I've checked all connected channels and everything looks normal. No alerts or unusual activity to report.",
-    "I'll set that up right away. You should see the changes reflected in the next few minutes.",
-  ];
+  const handleNewChat = async () => {
+    if (!agent.workspacePath) return;
 
-  const handleSend = () => {
-    const text = input.trim();
-    if (!text) return;
-
-    const userMsg: MockChatMessage = {
-      id: `m-${Date.now()}`,
-      role: "user",
-      content: text,
-      timestamp: Date.now(),
+    const agentPermissions: DefaultPermissions = {
+      fileRead: "allow",
+      fileWrite: "allow",
+      codeExecution: "allow",
+      webAccess: "allow",
     };
 
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
-    setTyping(true);
+    // Fetch compiled identity prompt
+    let systemPrompt: string | undefined;
+    try {
+      systemPrompt = await getAgentIdentityPrompt(agent.alias);
+    } catch {
+      // Continue without if fetch fails
+    }
 
-    // Mock auto-reply
-    setTimeout(() => {
-      const reply: MockChatMessage = {
-        id: `m-${Date.now()}-reply`,
-        role: "assistant",
-        content: mockReplies[Math.floor(Math.random() * mockReplies.length)],
-        timestamp: Date.now(),
-      };
-      setTyping(false);
-      setMessages((prev) => [...prev, reply]);
-    }, 1200 + Math.random() * 800);
+    navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
+      state: { defaultPermissions: agentPermissions, systemPrompt, agentAlias: agent.alias },
+    });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
+  const handleOpenChat = (chatId: string) => {
+    navigate(`/chat/${chatId}`);
   };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Messages */}
+      {/* Header */}
       <div
-        ref={scrollRef}
         style={{
-          flex: 1,
-          overflow: "auto",
-          padding: isMobile ? "16px" : "24px 32px",
+          padding: isMobile ? "16px" : "20px 24px",
+          borderBottom: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
         }}
       >
-        {messages.length === 0 ? (
+        <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Conversations</h3>
+        <button
+          onClick={handleNewChat}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: "var(--accent)",
+            color: "#fff",
+            padding: "8px 14px",
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 500,
+          }}
+        >
+          <Plus size={14} />
+          New Chat
+        </button>
+      </div>
+
+      {/* Conversation List */}
+      <div style={{ flex: 1, overflow: "auto" }}>
+        {loading ? (
+          <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>Loading conversations...</div>
+        ) : conversations.length === 0 ? (
           <div
             style={{
               display: "flex",
@@ -107,178 +118,95 @@ export default function Chat() {
               height: "100%",
               gap: 12,
               color: "var(--text-muted)",
+              padding: 40,
             }}
           >
             <Bot size={40} />
-            <p style={{ fontSize: 15 }}>Start a conversation with {agent.name}</p>
+            <p style={{ fontSize: 15, margin: 0 }}>No conversations yet</p>
+            <p style={{ fontSize: 13, margin: 0, textAlign: "center" }}>Start a new chat to talk with {agent.name}</p>
+            <button
+              onClick={handleNewChat}
+              style={{
+                marginTop: 8,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: "var(--accent)",
+                color: "#fff",
+                padding: "10px 20px",
+                borderRadius: 8,
+                fontSize: 14,
+                fontWeight: 500,
+              }}
+            >
+              <Plus size={16} />
+              Start Chat
+            </button>
           </div>
         ) : (
-          <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
-            {messages.map((msg) => {
-              const isUser = msg.role === "user";
-              return (
-                <div
-                  key={msg.id}
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: isUser ? "flex-end" : "flex-start",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "flex-end", gap: 8, maxWidth: "85%" }}>
-                    {!isUser && (
-                      <div
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: "50%",
-                          background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          flexShrink: 0,
-                        }}
-                      >
-                        <Bot size={14} style={{ color: "var(--accent)" }} />
-                      </div>
-                    )}
-                    <div
-                      style={{
-                        padding: "10px 14px",
-                        borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                        background: isUser ? "var(--accent)" : "var(--surface)",
-                        color: isUser ? "#fff" : "var(--text)",
-                        border: isUser ? "none" : "1px solid var(--border)",
-                        fontSize: 14,
-                        lineHeight: 1.6,
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {msg.content}
-                    </div>
-                    {isUser && (
-                      <div
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: "50%",
-                          background: "var(--bg-secondary)",
-                          border: "1px solid var(--border)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          flexShrink: 0,
-                        }}
-                      >
-                        <User size={14} style={{ color: "var(--text-muted)" }} />
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: "var(--text-muted)",
-                      marginTop: 4,
-                      paddingLeft: isUser ? 0 : 36,
-                      paddingRight: isUser ? 36 : 0,
-                    }}
-                  >
-                    {formatTime(msg.timestamp)}
-                  </span>
-                </div>
-              );
-            })}
+          <div style={{ padding: isMobile ? "8px" : "8px 12px" }}>
+            {conversations.map((chat) => {
+              let preview: string | undefined;
+              try {
+                const meta = JSON.parse(chat.metadata || "{}");
+                preview = meta.preview;
+              } catch {}
 
-            {/* Typing indicator */}
-            {typing && (
-              <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-                <div
+              const displayName = preview ? (preview.length > 80 ? preview.slice(0, 80) + "..." : preview) : "Chat session";
+
+              return (
+                <button
+                  key={chat.id}
+                  onClick={() => handleOpenChat(chat.id)}
                   style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: "50%",
-                    background: "color-mix(in srgb, var(--accent) 12%, transparent)",
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                  }}
-                >
-                  <Bot size={14} style={{ color: "var(--accent)" }} />
-                </div>
-                <div
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: "14px 14px 14px 4px",
+                    gap: 12,
+                    width: "100%",
+                    textAlign: "left",
                     background: "var(--surface)",
                     border: "1px solid var(--border)",
-                    fontSize: 14,
-                    color: "var(--text-muted)",
+                    borderRadius: 10,
+                    padding: "14px 16px",
+                    marginBottom: 6,
+                    cursor: "pointer",
+                    transition: "border-color 0.15s",
                   }}
                 >
-                  Thinking…
-                </div>
-              </div>
-            )}
+                  <div
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: "50%",
+                      background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <MessageSquare size={16} style={{ color: "var(--accent)" }} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 500,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {displayName}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{formatTime(chat.updated_at)}</div>
+                  </div>
+                  <ExternalLink size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                </button>
+              );
+            })}
           </div>
         )}
-      </div>
-
-      {/* Input bar */}
-      <div
-        style={{
-          padding: isMobile ? "12px 16px" : "12px 32px",
-          borderTop: "1px solid var(--border)",
-          background: "var(--surface)",
-          flexShrink: 0,
-          paddingBottom: isMobile ? "calc(12px + var(--safe-bottom))" : 12,
-        }}
-      >
-        <div
-          style={{
-            maxWidth: 680,
-            margin: "0 auto",
-            display: "flex",
-            gap: 10,
-            alignItems: "center",
-          }}
-        >
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Message ${agent.name}...`}
-            style={{
-              flex: 1,
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              padding: "12px 14px",
-              fontSize: 14,
-            }}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim()}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 42,
-              height: 42,
-              borderRadius: 10,
-              background: input.trim() ? "var(--accent)" : "var(--border)",
-              color: "#fff",
-              flexShrink: 0,
-              transition: "background 0.15s",
-            }}
-          >
-            <Send size={18} />
-          </button>
-        </div>
       </div>
     </div>
   );

@@ -47,7 +47,7 @@ streamRouter.post("/new/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
-  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt } = req.body;
+  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
   );
@@ -106,6 +106,7 @@ streamRouter.post("/new/message", async (req, res) => {
       activePlugins,
       maxTurns,
       systemPrompt,
+      agentAlias,
     });
 
     writeSSEHeaders(res);

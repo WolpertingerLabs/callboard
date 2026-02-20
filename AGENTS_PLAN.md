@@ -3,6 +3,7 @@
 Autonomous agent management within claude-code-ui — agents with personalities, memory, scheduled tasks, heartbeats, and event-driven behavior that programmatically create and control Claude Code sessions.
 
 **Core insight**: Each agent's workspace directory (`~/.ccui-agents/{alias}/`) is a real Claude Code project. Identity is injected via two complementary layers:
+
 1. **`CLAUDE.md` in the workspace** — Contains the behavioral/workspace protocol (memory rules, safety, heartbeats, group chat etiquette). Auto-loaded by the Claude Code SDK via `settingSources: ["project"]`. This is a copy of the AGENTS.md scaffold template.
 2. **`systemPrompt.append` via the SDK** — The agent's structured identity (name, emoji, role, tone, guidelines, user context) is compiled into a markdown string and appended to Claude Code's preset system prompt via `{ type: 'preset', preset: 'claude_code', append: compiledIdentity }`.
 
@@ -14,14 +15,16 @@ This two-layer approach gives clean separation: workspace protocol lives in file
 
 ---
 
-## Current State (Phase 1 + Phase 2 — Complete)
+## Current State (Phase 1 + Phase 2 + Phase 3 — Complete)
 
-Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and navigation. Phase 2 added workspace scaffolding, identity compilation, system prompt injection, agent chat flow, operational data services (cron jobs, activity logs), workspace file editing, and wired all dashboard pages to real APIs (removing all mock data).
+Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and navigation. Phase 2 added workspace scaffolding, identity compilation, system prompt injection, agent chat flow, operational data services (cron jobs, activity logs), workspace file editing, and wired all dashboard pages to real APIs (removing all mock data). Phase 3 added custom CCUI tools via an in-process MCP server (`createSdkMcpServer`), giving agents programmatic access to the platform — orchestrating other agents, managing cron jobs, querying activity, and discovering agents. Agent sessions are tagged with `agentAlias` in chat metadata for ownership tracking, and the dashboard Chat page shows real conversations.
 
 ### What Exists Today
 
 **Shared Types** (`shared/types/`)
+
 - `agent.ts` — `AgentConfig` interface with full identity fields + event subscriptions:
+
   ```typescript
   export interface AgentConfig {
     // Core
@@ -51,9 +54,11 @@ Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and
     eventSubscriptions?: EventSubscription[];
   }
   ```
+
 - `agentFeatures.ts` — `CronJob`, `CronAction`, `EventSubscription`, `ActivityEntry` interfaces (ChatMessage, Connection, MemoryItem, Trigger removed — see §2.4)
 
 **Backend** (`backend/src/`)
+
 - `services/agent-file-service.ts` — File-based agent persistence. Stores configs at `data/agents/{alias}/agent.json`. Exports: `isValidAlias`, `agentExists`, `createAgent`, `getAgent`, `listAgents`, `deleteAgent`
 - `services/claude-compiler.ts` — Identity compilation and workspace scaffolding:
   - `compileIdentityPrompt(config: AgentConfig): string` — Builds markdown identity string from structured settings (name, emoji, role, personality, tone, pronouns, languages, user context, guidelines). Omits sections with no data.
@@ -100,11 +105,22 @@ Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and
   - `GET /api/agents/:alias/activity` — Query activity (with type filter, limit, offset)
   - `POST /api/agents/:alias/activity` — Append new activity entry
 - `routes/stream.ts` — SSE streaming:
-  - `POST /api/stream/new/message` — Start new chat session (accepts optional `systemPrompt` in request body)
+  - `POST /api/stream/new/message` — Start new chat session (accepts optional `systemPrompt` and `agentAlias` in request body)
   - `POST /api/stream/:chatId/message` — Send message to existing session
   - `GET /api/stream/:chatId/events` — SSE event stream
+- `services/agent-tools.ts` — Custom CCUI agent tools MCP server:
+  - Built with `createSdkMcpServer()` from `@anthropic-ai/claude-agent-sdk`
+  - `buildAgentToolsServer(agentAlias)` → returns an in-process MCP server scoped to the agent
+  - 11 tools exposed as `mcp__ccui__*`:
+    - **Orchestration**: `start_agent_session`, `get_session_status`, `read_session_messages`
+    - **Cron Jobs**: `list_cron_jobs`, `create_cron_job`, `update_cron_job`, `delete_cron_job`
+    - **Activity**: `get_activity`, `log_activity`
+    - **Discovery**: `list_agents`, `get_agent_info`
+  - Uses `setMessageSender()` callback pattern to break circular dependency with `claude.ts`
+  - Scoped tools (cron, activity) only access the owning agent's data; orchestration tools can target any agent
 
 **Scaffold Templates** (`backend/src/scaffold/`)
+
 - `AGENTS.md` (7.4KB) — Workspace behavioral protocol: session startup sequence, memory protocol (daily journals + MEMORY.md), safety rules, group chat etiquette, heartbeat strategy, platform formatting, memory maintenance
 - `SOUL.md` — Personality foundation: core truths, boundaries, vibe, continuity
 - `USER.md` — Human context placeholder (name, timezone, location, free-form context)
@@ -115,18 +131,20 @@ Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and
 On agent creation, all 6 files are copied to the workspace, plus AGENTS.md → CLAUDE.md (the SDK-loaded file).
 
 **Frontend** (`frontend/src/pages/`)
+
 - `ChatList.tsx` — Main chat list with "Claude Code | Agent" mode toggle:
   - Full-width grouped button toggle in the new chat panel
   - Claude Code mode: unchanged (PermissionSettings, recent dirs, FolderSelector)
   - Agent mode: lazily-fetched agent list with selectable cards, "Start Chat" button
-  - On agent chat start: fetches compiled identity prompt → navigates to `/chat/new?folder={workspacePath}` with `{ defaultPermissions: allAllow, systemPrompt }` in location state
-- `Chat.tsx` — Reads `systemPrompt` from location state, includes it in the new chat stream request body so the backend passes it to the SDK
+  - On agent chat start: fetches compiled identity prompt → navigates to `/chat/new?folder={workspacePath}` with `{ defaultPermissions: allAllow, systemPrompt, agentAlias }` in location state
+- `Chat.tsx` — Reads `systemPrompt` and `agentAlias` from location state, includes both in the new chat stream request body so the backend passes them to the SDK
+- `ChatListItem.tsx` — Displays agent badge (Bot icon + alias) on chats that have `agentAlias` in metadata
 - `agents/AgentList.tsx` — Agent list page with create/delete, navigation to chat view
 - `agents/CreateAgent.tsx` — Agent creation form with structured identity fields (name, alias auto-gen, description, emoji, role, personality, tone)
 - `agents/AgentDashboard.tsx` — Dashboard layout with sidebar nav (desktop) / bottom tab bar (mobile); passes `onAgentUpdate` via outlet context for child pages to sync state
 - `agents/dashboard/` — All sub-pages wired to real APIs (no mock data):
   - `Overview.tsx` — Identity settings form (emoji, role, personality, tone, pronouns, user context) + stats cards (cron jobs, event subscriptions) + recent activity
-  - `Chat.tsx` — Chat interface (mock auto-replies until Phase 3 wires real sessions)
+  - `Chat.tsx` — Agent conversations list filtered by `agentAlias` in chat metadata, with "New Chat" button that navigates to the main chat view with agent identity + CCUI tools
   - `CronJobs.tsx` — Full CRUD: create form with name/schedule/type/description/prompt, pause/resume, delete
   - `Connections.tsx` — Read-only proxy status view showing known mcp-secure-proxy connections
   - `Events.tsx` — Event subscription toggles (persisted to `agent.eventSubscriptions`) + event activity feed
@@ -135,6 +153,7 @@ On agent creation, all 6 files are copied to the workspace, plus AGENTS.md → C
 - `api.ts` — Agent API functions: `listAgents`, `getAgent`, `createAgent` (with identity fields), `updateAgent`, `deleteAgent`, `getAgentIdentityPrompt`, `getWorkspaceFiles`, `getWorkspaceFile`, `updateWorkspaceFile`, `getAgentMemory`, `getAgentDailyMemory`, `getAgentCronJobs`, `createAgentCronJob`, `updateAgentCronJob`, `deleteAgentCronJob`, `getAgentActivity`
 
 **Routing** — Agent routes in `App.tsx`:
+
 ```
 /agents                    → AgentList
 /agents/new                → CreateAgent
@@ -159,12 +178,17 @@ On agent creation, all 6 files are copied to the workspace, plus AGENTS.md → C
 2. Toggles to "Agent" mode → sees agent list
 3. Selects an agent → clicks "Start Chat"
 4. Frontend fetches `GET /api/agents/:alias/identity-prompt` → gets compiled identity string
-5. Navigates to `/chat/new?folder={workspacePath}` with `{ defaultPermissions: allAllow, systemPrompt: identityString }` in location state
-6. User types a message → `POST /api/chats/new/message` with `{ folder, prompt, defaultPermissions, systemPrompt }`
-7. Backend calls `sendMessage({ folder, prompt, defaultPermissions, systemPrompt })` → SDK receives `systemPrompt: { type: 'preset', preset: 'claude_code', append: identityString }`
-8. SDK starts session in agent's workspace → auto-loads `CLAUDE.md` (behavioral protocol) via `settingSources: ["project"]` → identity appended to system prompt
-9. Agent has full personality: Claude Code tools + identity + workspace protocol + SOUL.md/TOOLS.md etc. in the workspace for reference
-10. Chat appears in main chat list like any other chat
+5. Navigates to `/chat/new?folder={workspacePath}` with `{ defaultPermissions: allAllow, systemPrompt: identityString, agentAlias }` in location state
+6. User types a message → `POST /api/stream/new/message` with `{ folder, prompt, defaultPermissions, systemPrompt, agentAlias }`
+7. Backend calls `sendMessage({ ..., systemPrompt, agentAlias })`:
+   - SDK receives `systemPrompt: { type: 'preset', preset: 'claude_code', append: identityString }`
+   - `agentAlias` triggers injection of the CCUI custom tools MCP server (`buildAgentToolsServer(agentAlias)`)
+   - Prompt is wrapped as async generator (SDK requirement when MCP servers are present)
+   - `agentAlias` is stored in the chat metadata for ownership tracking
+8. SDK starts session in agent's workspace → auto-loads `CLAUDE.md` (behavioral protocol) via `settingSources: ["project"]` → identity appended to system prompt → CCUI tools available as `mcp__ccui__*`
+9. Agent has full personality: Claude Code tools + CCUI platform tools + identity + workspace protocol + SOUL.md/TOOLS.md etc. in the workspace for reference
+10. Chat appears in main chat list with an agent badge (Bot icon + alias)
+11. Agent can use CCUI tools during the session to orchestrate other agents, manage cron jobs, log activity, etc.
 
 ---
 
@@ -195,6 +219,7 @@ mcp-secure-proxy runs as a **two-server system**:
 ### Per-Caller Access Control
 
 Each caller is defined in `remote.config.json` with:
+
 - **`peerKeyDir`**: Path to the caller's Ed25519 public key (for authentication)
 - **`connections`**: Array of connection aliases the caller can access (e.g., `["github", "discord-bot"]`)
 - **`env`**: Optional per-caller environment variable overrides — allows different secrets for the same connection across callers (e.g., Alice uses her GitHub token, Bob uses his)
@@ -207,6 +232,7 @@ Each caller is defined in `remote.config.json` with:
 ### Already Built — Available via MCP Tools
 
 **Authenticated API Access** (`secure_request` tool):
+
 - 15 pre-configured connection templates: Discord Bot, Discord OAuth, GitHub, Slack, Stripe, Notion, Linear, Trello, Google, Google AI, OpenAI, Anthropic, OpenRouter, Hex, Devin
 - Each template defines: allowed endpoint patterns (globs), auto-injected auth headers, required secret names
 - Secrets never leave the remote server — zero-knowledge proxy architecture
@@ -214,6 +240,7 @@ Each caller is defined in `remote.config.json` with:
 - The agent calls `secure_request({ method, url, body })` and auth is handled transparently
 
 **Real-Time Event Ingestion** (ingestors):
+
 - **WebSocket ingestors**: Discord Gateway (full implementation with heartbeat, resume, reconnect), Slack Socket Mode
 - **Webhook ingestors**: GitHub (HMAC-SHA256), Stripe (with timestamp replay protection), Trello
 - **Poll ingestors**: Notion, Linear (interval-based with deduplication)
@@ -222,20 +249,22 @@ Each caller is defined in `remote.config.json` with:
 - **Ring buffer eviction**: When full, oldest events are silently evicted on new push. High-traffic sources (e.g., busy Discord guild) can evict events in seconds if the buffer is too small or consumers poll too infrequently.
 
 **Event Consumption** (`poll_events` tool):
+
 - `poll_events(connection?, after_id?)` → returns `IngestedEvent[]`
 - Each event has the structure:
   ```typescript
   interface IngestedEvent {
-    id: number;           // Monotonically increasing per ingestor (survives evictions)
-    receivedAt: string;   // ISO-8601 timestamp
-    source: string;       // Connection alias (e.g., "discord-bot", "github")
-    eventType: string;    // Source-specific type (e.g., "MESSAGE_CREATE", "push")
-    data: unknown;        // Raw payload from external service (structure varies by source)
+    id: number; // Monotonically increasing per ingestor (survives evictions)
+    receivedAt: string; // ISO-8601 timestamp
+    source: string; // Connection alias (e.g., "discord-bot", "github")
+    eventType: string; // Source-specific type (e.g., "MESSAGE_CREATE", "push")
+    data: unknown; // Raw payload from external service (structure varies by source)
   }
   ```
 - Cursor-based — consumers track their own `after_id` and retrieve only events with `id > after_id`
 
 **Status Monitoring** (`list_routes`, `ingestor_status` tools):
+
 - `list_routes()` → all available connections with endpoint patterns, docs URLs, secret placeholder names (not values), and auto-injected header names
 - `ingestor_status()` → live state of all ingestors (connected/reconnecting/error, buffer sizes, total event counts, last event timestamps)
 
@@ -252,6 +281,7 @@ This means **any process** with the right keypair can talk to the remote server 
 ### What This Means for the Agents Plan
 
 **ELIMINATED from claude-code-ui (mcp-secure-proxy handles these):**
+
 - ❌ `agent-connections.ts` service — no CRUD for connections in our data layer
 - ❌ `connections.json` per agent — no credential storage or connection state
 - ❌ `agent-connections.ts` routes — no connection management API
@@ -261,11 +291,13 @@ This means **any process** with the right keypair can talk to the remote server 
 - ❌ Custom event ingestion (`event-poller.ts` with its own WebSocket/webhook/poll infrastructure) — proxy already buffers events from all sources; event watcher just calls `poll_events`
 
 **SIMPLIFIED:**
+
 - **Connections page** → becomes a **read-only status view** that calls `list_routes` and `ingestor_status` via the proxy to show which external services are available and their live status. No CRUD — connections are configured in `mcp-secure-proxy`'s `remote.config.json`.
 - **Events** → simplified: the event watcher polls `poll_events`, finds agents with subscriptions matching the event source, and wakes them via `executeAgent()`. No condition matching — the agent decides. No need to build our own event ingestion pipeline — we consume the proxy's buffer.
 - **Connection type in `AgentConfig`** → not needed. The agent simply has the mcp-secure-proxy plugin enabled, which gives it access to all connections configured for that caller.
 
 **KEPT (still needed in claude-code-ui):**
+
 - ✅ Cron job CRUD — scheduled tasks independent of external events
 - ✅ Activity logging — recording what happened (event wakeups, cron executions, sessions)
 - ✅ Event watcher — the backend loop that calls `poll_events` and wakes agents that have new events
@@ -274,6 +306,7 @@ This means **any process** with the right keypair can talk to the remote server 
 - ✅ Dashboard UI for managing cron jobs (CRUD) and event subscriptions (settings)
 
 **REVISED — Triggers eliminated as a CRUD concept:**
+
 - ❌ `Trigger` interface — replaced by lightweight event subscriptions on `AgentConfig`
 - ❌ `triggers.json` per agent — no separate trigger storage
 - ❌ `agent-triggers.ts` service — no trigger CRUD
@@ -309,6 +342,7 @@ Each agent gets a full workspace directory at `~/.ccui-agents/{alias}/`:
 ```
 
 **Key principles**:
+
 - **Identity is structured, not markdown.** Agent name, emoji, description, etc. live as fields in `data/agents/{alias}/agent.json`, editable via dashboard form fields. No `IDENTITY.md`.
 - **`CLAUDE.md` is a workspace protocol file**, not a compiled identity dump. It contains the behavioral instructions (memory protocol, safety, heartbeats) from the AGENTS.md scaffold. Identity is injected separately via the SDK's `systemPrompt.append`.
 - **Workspace markdown files are the agent's own.** `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `MEMORY.md`, and daily journals are read and written by the agent during sessions. The agent maintains its own memory.
@@ -318,12 +352,14 @@ Each agent gets a full workspace directory at `~/.ccui-agents/{alias}/`:
 The `AgentConfig` interface holds comprehensive structured identity settings alongside core fields. See "What Exists Today" above for the full interface.
 
 **What goes where?**
+
 - **Structured settings** (`agent.json` → form fields): Anything that has a clear shape — name, emoji, tone, role, timezone, guidelines. Users shouldn't have to write markdown for these.
 - **Free-form markdown** (workspace files → markdown editor): Anything that benefits from narrative or open-ended expression — personality depth (SOUL), extended notes (USER, TOOLS), memory.
 
 ### 2.3 — Identity Compilation ✅
 
 **`backend/src/services/claude-compiler.ts`** — Already implemented:
+
 - `compileIdentityPrompt(config)` builds the identity string from structured AgentConfig fields
 - `scaffoldWorkspace(workspacePath)` copies template files on agent creation
 - Identity is injected via SDK `systemPrompt: { type: 'preset', preset: 'claude_code', append }` — not written to CLAUDE.md
@@ -335,13 +371,15 @@ The `AgentConfig` interface holds comprehensive structured identity settings alo
 **Second pass (needed):** Remove `Trigger` and `TriggerAction` from shared types entirely. Triggers are eliminated as a CRUD concept — replaced by event subscriptions on `AgentConfig`.
 
 Changes needed:
+
 - **Remove** `Trigger` interface — no longer a first-class entity
 - **Remove** `TriggerAction` interface — cron jobs use a simpler `CronAction` instead
 - **Add** `EventSubscription` to `AgentConfig`:
+
   ```typescript
   export interface EventSubscription {
-    connectionAlias: string;    // mcp-secure-proxy connection (e.g., "discord-bot")
-    enabled: boolean;           // toggle without removing
+    connectionAlias: string; // mcp-secure-proxy connection (e.g., "discord-bot")
+    enabled: boolean; // toggle without removing
   }
 
   export interface AgentConfig {
@@ -349,6 +387,7 @@ Changes needed:
     eventSubscriptions?: EventSubscription[];
   }
   ```
+
 - **Revise** `CronJob.action` to use a simpler inline type:
   ```typescript
   export interface CronAction {
@@ -378,10 +417,10 @@ data/agents/{alias}/
 
 Create file-based services following the existing `chat-file-service.ts` pattern:
 
-| New File | Responsibility |
-|---|---|
-| `backend/src/services/agent-cron-jobs.ts` | CRUD for agent cron jobs |
-| `backend/src/services/agent-activity.ts` | Append-only activity log (JSONL) |
+| New File                                  | Responsibility                   |
+| ----------------------------------------- | -------------------------------- |
+| `backend/src/services/agent-cron-jobs.ts` | CRUD for agent cron jobs         |
+| `backend/src/services/agent-activity.ts`  | Append-only activity log (JSONL) |
 
 **Removed:** `agent-connections.ts` — connections are managed by mcp-secure-proxy, not us.
 **Removed:** `agent-triggers.ts` — triggers eliminated as CRUD entities. Event subscriptions are stored in `agent.json` as part of `AgentConfig`, managed via the existing `PUT /api/agents/:alias` endpoint.
@@ -390,20 +429,20 @@ Create file-based services following the existing `chat-file-service.ts` pattern
 
 Mount sub-routes under the existing agents router:
 
-| New File | Endpoints |
-|---|---|
-| `backend/src/routes/agent-workspace.ts` | `GET/PUT /api/agents/:alias/workspace/:filename` — read/write markdown files |
-| `backend/src/routes/agent-memory.ts` | `GET /api/agents/:alias/memory` — list dates + read daily/long-term memory; `PUT` to update |
-| `backend/src/routes/agent-cron-jobs.ts` | `GET/POST/PUT/DELETE /api/agents/:alias/cron-jobs` |
-| `backend/src/routes/agent-activity.ts` | `GET /api/agents/:alias/activity` (with type filter) |
+| New File                                | Endpoints                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `backend/src/routes/agent-workspace.ts` | `GET/PUT /api/agents/:alias/workspace/:filename` — read/write markdown files                |
+| `backend/src/routes/agent-memory.ts`    | `GET /api/agents/:alias/memory` — list dates + read daily/long-term memory; `PUT` to update |
+| `backend/src/routes/agent-cron-jobs.ts` | `GET/POST/PUT/DELETE /api/agents/:alias/cron-jobs`                                          |
+| `backend/src/routes/agent-activity.ts`  | `GET /api/agents/:alias/activity` (with type filter)                                        |
 
 **Removed:** `agent-connections.ts` routes — connections managed by mcp-secure-proxy.
 **Removed:** `agent-triggers.ts` routes — triggers eliminated. Event subscriptions are part of `AgentConfig`, managed via `PUT /api/agents/:alias`.
 
 **New proxy passthrough route** (optional, for dashboard convenience):
 
-| New File | Endpoints |
-|---|---|
+| New File                                   | Endpoints                                                                                                                     |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | `backend/src/routes/agent-proxy-status.ts` | `GET /api/proxy/routes` — proxies `list_routes` from mcp-secure-proxy; `GET /api/proxy/ingestors` — proxies `ingestor_status` |
 
 This is optional — the frontend could also call the proxy MCP tools directly via the existing plugin infrastructure. But a thin REST passthrough makes the dashboard simpler (no MCP session needed for read-only status checks).
@@ -413,6 +452,7 @@ This is optional — the frontend could also call the proxy MCP tools directly v
 The dashboard sub-pages need significant rework to match the new model:
 
 **Overview page** → Agent identity + settings form + stats:
+
 - Agent header: display name + emoji + role from `AgentConfig`
 - **Settings section**: Form fields for all identity settings:
   - Name, emoji picker, description, role, personality, tone (dropdown + custom), pronouns, languages
@@ -424,6 +464,7 @@ The dashboard sub-pages need significant rework to match the new model:
 - Recent activity from real activity log
 
 **Memory page** → Becomes a **workspace file editor**:
+
 - Left sidebar: list of workspace files (`SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`)
 - Main area: markdown editor for selected file
 - Saving a file calls `PUT /api/agents/:alias/workspace/:filename`
@@ -431,6 +472,7 @@ The dashboard sub-pages need significant rework to match the new model:
 - `MEMORY.md` section: editable curated long-term memory
 
 **Connections page** → **Read-only proxy status view**:
+
 - Fetches available connections from `list_routes` (via proxy passthrough or MCP)
 - Shows live ingestor status from `ingestor_status` (connected/reconnecting/error, buffer sizes, last event time)
 - Each connection card: name, description, docs link, allowed endpoints, ingestor state
@@ -438,12 +480,14 @@ The dashboard sub-pages need significant rework to match the new model:
 - Helper text explaining where to configure new connections
 
 **Triggers page → Event Subscriptions & Activity view**:
+
 - Replace trigger CRUD with a two-part page:
   1. **Event subscriptions** — toggle which proxy connections this agent listens to (checkboxes mapped to `AgentConfig.eventSubscriptions[]`). Source list populated from `list_routes`. Saves via `PUT /api/agents/:alias`.
   2. **Event activity feed** — read-only log of recent events received from subscribed connections (filtered view of agent activity where `type === "event"`). Shows source, event type, timestamp, and what the agent did (if anything).
 - No condition builder, no action config — the agent's personality/guidelines define how it responds to events.
 
 **CronJobs, Activity** → Wire to real APIs:
+
 - Replace mock data imports with `useEffect` + `useState` API calls
 - Wire create/update/delete buttons to real API calls for cron jobs
 - Add loading spinners and error states
@@ -451,6 +495,7 @@ The dashboard sub-pages need significant rework to match the new model:
 **Chat page** → Stays mock for now (wired in Phase 3)
 
 **CreateAgent page** → Expanded form:
+
 - Current fields: name, alias, description, system prompt
 - Replace "system prompt" textarea with structured identity fields: personality, role, tone, emoji
 - Add optional "User context" section: userName, userTimezone
@@ -476,11 +521,12 @@ The dashboard sub-pages need significant rework to match the new model:
 
 ---
 
-## Phase 3: Agent Custom Tools & Session Integration
+## Phase 3: Agent Custom Tools & Session Integration ✅
 
 **Goal**: Agents become autonomous platform actors. Instead of building separate agent chat routes, we inject **custom SDK tools** into agent sessions via the existing chat flow, giving agents programmatic access to the CCUI platform APIs — spinning off other agents, creating cron jobs, reading sessions, logging events, etc.
 
 **Key design decisions**:
+
 - **No separate agent chat routes.** The existing `/api/stream/*` routes and `Chat.tsx` page already handle agent sessions end-to-end (identity injection, workspace folder, SSE streaming). No duplication needed.
 - **No separate session storage.** Agent sessions are regular Claude Code sessions stored in standard logs. We tag chat metadata with `agentAlias` for ownership tracking.
 - **Always run in workspace folder.** Agents always run in `~/.ccui-agents/{alias}/` — no folder override. This ensures access to `CLAUDE.md` (behavioral protocol), `MEMORY.md`, daily journals, and all workspace files. If the agent needs to work on a different project, it uses absolute paths via its tools.
@@ -488,7 +534,7 @@ The dashboard sub-pages need significant rework to match the new model:
 - **Async generator prompt format required.** Custom MCP tools require the SDK `prompt` parameter to be an `AsyncIterable`, not a plain string. `sendMessage()` already handles this for image attachments — same pattern.
 - **Event persistence.** All ingestor events from mcp-secure-proxy are stored and tracked in the activity log as they arrive, creating a complete audit trail.
 
-### 3.1 — Custom Agent Tools MCP Server
+### 3.1 — Custom Agent Tools MCP Server ✅
 
 **New file: `backend/src/services/agent-tools.ts`**
 
@@ -510,23 +556,23 @@ export function buildAgentToolsServer(agentAlias: string) {
     version: "1.0.0",
     tools: [
       // --- Agent Orchestration ---
-      startAgentSession,      // Spin off a session for another (or self) agent
-      getSessionStatus,       // Check if a session is active/complete/errored
-      readSessionMessages,    // Read the output of a completed session
+      startAgentSession, // Spin off a session for another (or self) agent
+      getSessionStatus, // Check if a session is active/complete/errored
+      readSessionMessages, // Read the output of a completed session
 
       // --- Cron Job Management ---
-      listCronJobs,           // List this agent's cron jobs
-      createCronJob,          // Schedule a new recurring task
-      updateCronJob,          // Modify an existing cron job
-      deleteCronJob,          // Remove a cron job
+      listCronJobs, // List this agent's cron jobs
+      createCronJob, // Schedule a new recurring task
+      updateCronJob, // Modify an existing cron job
+      deleteCronJob, // Remove a cron job
 
       // --- Activity & Events ---
-      getActivity,            // Query this agent's activity log
-      logActivity,            // Append an entry to the activity log
+      getActivity, // Query this agent's activity log
+      logActivity, // Append an entry to the activity log
 
       // --- Agent Discovery ---
-      listAgents,             // List all agents on the platform
-      getAgentInfo,           // Get another agent's config (name, role, description)
+      listAgents, // List all agents on the platform
+      getAgentInfo, // Get another agent's config (name, role, description)
     ],
   });
 }
@@ -536,34 +582,34 @@ export function buildAgentToolsServer(agentAlias: string) {
 
 **Agent Orchestration:**
 
-| Tool | Description | Input | What It Does |
-|------|-------------|-------|-------------|
-| `start_agent_session` | Start a new Claude Code session for any agent | `{ targetAgent: string, prompt: string, maxTurns?: number }` | Loads target agent config, compiles identity, calls `sendMessage()` with workspace folder + identity + CCUI tools. Returns `{ chatId }`. The spawned session is independent — it runs asynchronously. |
-| `get_session_status` | Check if a session is active, complete, or errored | `{ chatId: string }` | Queries `getActiveSession()` and session log. Returns `{ status: "active" \| "complete" \| "error" \| "not_found", lastActivity? }` |
-| `read_session_messages` | Read the messages/output from a session | `{ chatId: string, limit?: number }` | Reads the session's JSONL log, extracts assistant text messages. Returns the conversation content. |
+| Tool                    | Description                                        | Input                                                        | What It Does                                                                                                                                                                                          |
+| ----------------------- | -------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start_agent_session`   | Start a new Claude Code session for any agent      | `{ targetAgent: string, prompt: string, maxTurns?: number }` | Loads target agent config, compiles identity, calls `sendMessage()` with workspace folder + identity + CCUI tools. Returns `{ chatId }`. The spawned session is independent — it runs asynchronously. |
+| `get_session_status`    | Check if a session is active, complete, or errored | `{ chatId: string }`                                         | Queries `getActiveSession()` and session log. Returns `{ status: "active" \| "complete" \| "error" \| "not_found", lastActivity? }`                                                                   |
+| `read_session_messages` | Read the messages/output from a session            | `{ chatId: string, limit?: number }`                         | Reads the session's JSONL log, extracts assistant text messages. Returns the conversation content.                                                                                                    |
 
 **Cron Job Management:**
 
-| Tool | Description | Input | What It Does |
-|------|-------------|-------|-------------|
-| `list_cron_jobs` | List all cron jobs for this agent | `{}` | Calls `listCronJobs(agentAlias)` from agent-cron-jobs service |
-| `create_cron_job` | Create a new scheduled task | `{ name, schedule, prompt, type?, description? }` | Calls `createCronJob(agentAlias, ...)`. Returns the created job. |
-| `update_cron_job` | Update an existing cron job | `{ jobId, name?, schedule?, prompt?, status? }` | Calls `updateCronJob(agentAlias, jobId, ...)` |
-| `delete_cron_job` | Delete a cron job | `{ jobId }` | Calls `deleteCronJob(agentAlias, jobId)` |
+| Tool              | Description                       | Input                                             | What It Does                                                     |
+| ----------------- | --------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------- |
+| `list_cron_jobs`  | List all cron jobs for this agent | `{}`                                              | Calls `listCronJobs(agentAlias)` from agent-cron-jobs service    |
+| `create_cron_job` | Create a new scheduled task       | `{ name, schedule, prompt, type?, description? }` | Calls `createCronJob(agentAlias, ...)`. Returns the created job. |
+| `update_cron_job` | Update an existing cron job       | `{ jobId, name?, schedule?, prompt?, status? }`   | Calls `updateCronJob(agentAlias, jobId, ...)`                    |
+| `delete_cron_job` | Delete a cron job                 | `{ jobId }`                                       | Calls `deleteCronJob(agentAlias, jobId)`                         |
 
 **Activity & Events:**
 
-| Tool | Description | Input | What It Does |
-|------|-------------|-------|-------------|
-| `get_activity` | Query the activity log | `{ type?: string, limit?: number }` | Calls `getActivity(agentAlias, ...)`. Returns recent activity entries. |
-| `log_activity` | Record an activity entry | `{ type, message, metadata? }` | Calls `appendActivity(agentAlias, ...)`. For agents to explicitly log events. |
+| Tool           | Description              | Input                               | What It Does                                                                  |
+| -------------- | ------------------------ | ----------------------------------- | ----------------------------------------------------------------------------- |
+| `get_activity` | Query the activity log   | `{ type?: string, limit?: number }` | Calls `getActivity(agentAlias, ...)`. Returns recent activity entries.        |
+| `log_activity` | Record an activity entry | `{ type, message, metadata? }`      | Calls `appendActivity(agentAlias, ...)`. For agents to explicitly log events. |
 
 **Agent Discovery:**
 
-| Tool | Description | Input | What It Does |
-|------|-------------|-------|-------------|
-| `list_agents` | List all agents on the platform | `{}` | Calls `listAgents()`. Returns `[{ alias, name, emoji, role, description }]` — just enough to identify and orchestrate, not full configs. |
-| `get_agent_info` | Get another agent's public info | `{ alias: string }` | Calls `getAgent(alias)`. Returns name, emoji, role, description, personality. Not sensitive fields. |
+| Tool             | Description                     | Input               | What It Does                                                                                                                             |
+| ---------------- | ------------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_agents`    | List all agents on the platform | `{}`                | Calls `listAgents()`. Returns `[{ alias, name, emoji, role, description }]` — just enough to identify and orchestrate, not full configs. |
+| `get_agent_info` | Get another agent's public info | `{ alias: string }` | Calls `getAgent(alias)`. Returns name, emoji, role, description, personality. Not sensitive fields.                                      |
 
 #### Security Boundary
 
@@ -572,26 +618,29 @@ export function buildAgentToolsServer(agentAlias: string) {
 - `read_session_messages` can read any session — needed so an orchestrating agent can check what a spawned agent did
 - No tool exposes credentials, secrets, or mcp-secure-proxy connection details
 
-### 3.2 — Integrate Custom Tools into sendMessage()
+### 3.2 — Integrate Custom Tools into sendMessage() ✅
 
 Modify `backend/src/services/claude.ts` to support custom MCP servers:
 
 **Changes to `SendMessageOptions`:**
+
 ```typescript
 interface SendMessageOptions {
   // ... existing fields ...
-  agentAlias?: string;              // NEW — if set, injects CCUI custom tools
-  customMcpServers?: Record<string, any>;  // NEW — in-process MCP servers
+  agentAlias?: string; // NEW — if set, injects CCUI custom tools
+  customMcpServers?: Record<string, any>; // NEW — in-process MCP servers
 }
 ```
 
 **Changes to `sendMessage()` body:**
+
 1. When `agentAlias` is provided, call `buildAgentToolsServer(agentAlias)` and merge into the SDK's `mcpServers` option alongside any existing MCP servers (from plugins)
 2. Ensure the prompt is wrapped as an async generator when custom MCP servers are present (SDK requirement). The existing `buildFormattedPrompt()` already returns an `AsyncIterable` for image messages — extend this to always return an iterable when MCP servers are in play.
 3. Add `mcp__ccui__*` to `allowedTools` so the agent can use all CCUI tools
 
 **Changes to `stream.ts`:**
 The `POST /api/stream/new/message` route already accepts `systemPrompt` in the request body. Add `agentAlias` to the request body so it can be passed through to `sendMessage()`:
+
 ```typescript
 const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias } = req.body;
 // ...
@@ -601,49 +650,53 @@ const emitter = await sendMessage({
   defaultPermissions,
   // ...
   systemPrompt,
-  agentAlias,  // NEW — triggers custom tool injection
+  agentAlias, // NEW — triggers custom tool injection
 });
 ```
 
-### 3.3 — Session Ownership & Chat Metadata
+### 3.3 — Session Ownership & Chat Metadata ✅
 
 **Tag agent sessions with `agentAlias`:**
 When `sendMessage()` creates a new chat record (on session_id arrival), if `agentAlias` is provided, store it in the chat metadata:
+
 ```typescript
 const meta = {
   ...initialMetadata,
   session_ids: [sessionId],
-  agentAlias,  // NEW — links this chat to the agent
+  agentAlias, // NEW — links this chat to the agent
 };
 ```
 
 **Frontend: Agent badge in ChatList:**
+
 - `ChatList.tsx` already fetches chat metadata. If `metadata.agentAlias` is present, display the agent's emoji + name as a badge on the chat card.
 - `GET /api/chats` response already includes metadata — no new API needed.
 
 **Frontend: Dashboard Chat page → Agent's sessions list:**
+
 - Replace the mock auto-reply UI in `dashboard/Chat.tsx` with a filtered view of the agent's real conversations
 - Fetch all chats from `GET /api/chats`, filter by `metadata.agentAlias === alias`
 - Each chat card links to `/chat/:id` (the existing main chat view)
 - "New Chat" button triggers the same flow as the ChatList agent mode: fetch identity prompt → navigate to `/chat/new?folder={workspacePath}` with `{ systemPrompt, defaultPermissions: allAllow, agentAlias }` in location state
 
-### 3.4 — Event Persistence
+### 3.4 — Event Persistence (Schema defined; watcher implementation in Phase 4)
 
-All ingestor events from mcp-secure-proxy should be stored and tracked as they happen, creating a complete audit trail visible in the dashboard.
+All ingestor events from mcp-secure-proxy should be stored and tracked as they happen, creating a complete audit trail visible in the dashboard. The `log_activity` CCUI tool (§3.1) allows agents to manually record events during sessions. The automated event watcher that polls `poll_events` and persists events is implemented in Phase 4.
 
 **Enriched activity entries for events:**
+
 ```typescript
 // When an event arrives (via poll_events in Phase 4, or logged by agent via ccui tool)
 appendActivity(agentAlias, {
   type: "event",
   message: `Event from ${source}: ${eventType}`,
   metadata: {
-    source,           // connection alias (e.g., "discord-bot")
-    eventType,        // e.g., "MESSAGE_CREATE", "push"
-    eventId,          // monotonic ID from proxy ring buffer
-    receivedAt,       // ISO-8601 from proxy
-    data,             // full event payload — stored for audit trail
-    agentAction,      // what the agent did in response (filled after session)
+    source, // connection alias (e.g., "discord-bot")
+    eventType, // e.g., "MESSAGE_CREATE", "push"
+    eventId, // monotonic ID from proxy ring buffer
+    receivedAt, // ISO-8601 from proxy
+    data, // full event payload — stored for audit trail
+    agentAction, // what the agent did in response (filled after session)
   },
 });
 ```
@@ -679,16 +732,17 @@ appendActivity(agentAlias, {
 Uses `node-cron` (or similar) to schedule agent executions:
 
 ```typescript
-export function initScheduler(): void         // On startup: load all active cron jobs
-export function scheduleJob(agentAlias: string, job: CronJob): void
-export function cancelJob(jobId: string): void
-export function pauseJob(jobId: string): void
-export function resumeJob(jobId: string): void
+export function initScheduler(): void; // On startup: load all active cron jobs
+export function scheduleJob(agentAlias: string, job: CronJob): void;
+export function cancelJob(jobId: string): void;
+export function pauseJob(jobId: string): void;
+export function resumeJob(jobId: string): void;
 ```
 
 On fire: calls `executeAgent()` with the job's configured action (folder, prompt template).
 
 Initialize on server startup:
+
 ```typescript
 import { initScheduler } from "./services/cron-scheduler.js";
 initScheduler();
@@ -703,18 +757,19 @@ A heartbeat is a periodic poll that gives the agent a chance to be proactive —
 ```typescript
 export interface HeartbeatConfig {
   enabled: boolean;
-  intervalMinutes: number;      // Default: 30
-  quietHoursStart?: string;     // e.g. "23:00" — no heartbeats during quiet hours
-  quietHoursEnd?: string;       // e.g. "08:00"
+  intervalMinutes: number; // Default: 30
+  quietHoursStart?: string; // e.g. "23:00" — no heartbeats during quiet hours
+  quietHoursEnd?: string; // e.g. "08:00"
 }
 
-export function initHeartbeats(): void           // On startup: load all agents with heartbeats enabled
-export function startHeartbeat(agentAlias: string): void
-export function stopHeartbeat(agentAlias: string): void
-export function updateHeartbeatConfig(agentAlias: string, config: HeartbeatConfig): void
+export function initHeartbeats(): void; // On startup: load all agents with heartbeats enabled
+export function startHeartbeat(agentAlias: string): void;
+export function stopHeartbeat(agentAlias: string): void;
+export function updateHeartbeatConfig(agentAlias: string, config: HeartbeatConfig): void;
 ```
 
 On each heartbeat tick:
+
 1. Check quiet hours — skip if in range
 2. Call `executeAgent()` with the default heartbeat prompt:
    `"Read HEARTBEAT.md if it exists. Follow it. If nothing needs attention, reply HEARTBEAT_OK."`
@@ -723,10 +778,12 @@ On each heartbeat tick:
 5. If the agent takes action, log to activity feed
 
 **Heartbeat vs Cron**:
+
 - **Cron** = precise schedule, specific task, isolated session ("run this report every Monday at 9am")
 - **Heartbeat** = periodic check-in, agent decides what to do, fluid and adaptive ("anything need attention?")
 
 Add `heartbeat` field to `AgentConfig`:
+
 ```typescript
 export interface AgentConfig {
   // ... existing fields ...
@@ -743,14 +800,16 @@ The event watcher is a backend polling loop that periodically calls mcp-secure-p
 **Key insight**: mcp-secure-proxy is the **authoritative source** for what events exist. Users configure connections and ingestors in the proxy's `remote.config.json`. claude-code-ui simply subscribes agents to connections and wakes them when new events arrive. The agent's behavioral response is determined by its personality/guidelines — not by trigger objects with hardcoded conditions.
 
 ```typescript
-export function initEventWatcher(): void      // On startup: begin polling loop
-export function stopEventWatcher(): void
+export function initEventWatcher(): void; // On startup: begin polling loop
+export function stopEventWatcher(): void;
 ```
 
 **Polling loop** (runs every 5-10 seconds):
+
 1. Call `poll_events(after_id)` via the proxy — gets all new events since last cursor
 2. For each event, find agents whose `eventSubscriptions` include the event's `source` (connection alias) and are `enabled: true`
 3. For each matching agent: call `executeAgent()` with a prompt containing the event data:
+
    ```
    New event from {source}:
    Type: {eventType}
@@ -759,16 +818,19 @@ export function stopEventWatcher(): void
 
    Respond according to your guidelines. If this event doesn't require action, reply EVENT_NOTED.
    ```
+
 4. Log to the agent's activity feed (type: `"event"`)
 5. Update cursor for next poll
 
 **What the event watcher does NOT do** (because the agent handles it):
+
 - ❌ Condition matching (no `contains("urgent")`, `channel("#alerts")`, regex patterns)
 - ❌ Action configuration (no prompt templates, folder overrides, maxTurns per trigger)
 - ❌ Event type filtering — the agent receives all events from its subscribed connections and decides relevance
 - ❌ Trigger CRUD — no create/update/delete triggers, just enable/disable connection subscriptions
 
 **What the agent CAN do in response to events**:
+
 - Read the event data and decide it's not relevant → reply `EVENT_NOTED`
 - Post a message to Slack/Discord via `secure_request`
 - Start a complex workflow (read files, make API calls, update memory)
@@ -787,32 +849,36 @@ The event watcher runs in the Express backend — **outside** of any Claude Code
 
 ```typescript
 // Conceptual: event-watcher.ts
-import { HandshakeInitiator, EncryptedChannel } from 'mcp-secure-proxy/shared';
+import { HandshakeInitiator, EncryptedChannel } from "mcp-secure-proxy/shared";
 
 let channel: EncryptedChannel | null = null;
 
 async function pollEvents(afterId?: number): Promise<IngestedEvent[]> {
   if (!channel) channel = await establishChannel(); // handshake
   const request: ProxyRequest = {
-    type: 'proxy_request',
+    type: "proxy_request",
     id: crypto.randomUUID(),
-    toolName: 'poll_events',
+    toolName: "poll_events",
     toolInput: { after_id: afterId },
     timestamp: Date.now(),
   };
   const encrypted = channel.encryptJSON(request);
   const resp = await fetch(`${remoteUrl}/request`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream', 'X-Session-Id': channel.sessionId },
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream", "X-Session-Id": channel.sessionId },
     body: new Uint8Array(encrypted),
   });
-  if (resp.status === 401) { channel = null; return pollEvents(afterId); } // re-auth
+  if (resp.status === 401) {
+    channel = null;
+    return pollEvents(afterId);
+  } // re-auth
   const decrypted = channel.decryptJSON(await resp.arrayBuffer()) as ProxyResponse;
   return decrypted.result as IngestedEvent[];
 }
 ```
 
 **Caller configuration** in `remote.config.json`:
+
 ```json
 {
   "callers": {
@@ -835,11 +901,13 @@ Events can be lost if the event watcher doesn't consume them fast enough:
 - When the buffer is full, the oldest event is silently evicted on each new push
 
 **Risk scenarios**:
+
 - High-traffic Discord guild: 500+ events/min → buffer fills in <30 seconds at default size
 - If event watcher polls every 10 seconds with buffer size 200, it can handle ~20 events/sec safely
 - If the watcher stalls for 60+ seconds (e.g., too many agent wake-ups blocking the loop), events may be lost
 
 **Mitigations**:
+
 - Poll every 5 seconds (12 requests/min — well within rate limits)
 - Increase `bufferSize` to 500-1000 for high-traffic connections via `ingestorOverrides`
 - Wake agents asynchronously (don't block the poll loop waiting for `executeAgent()` to complete)
@@ -855,12 +923,14 @@ When the proxy remote server is unavailable:
 - If the remote server is actually down, ingestors stop receiving events too — so no data loss from the watcher's perspective
 
 **Degradation behavior**:
+
 - Agent sessions started manually (via dashboard chat) still work — they connect to the proxy independently
 - Event-based and heartbeat-based sessions that rely on `poll_events` won't fire during outage
 - Cron jobs are unaffected (they don't depend on the proxy)
 - On recovery, the watcher resumes from its last cursor — picks up any events still in the buffer
 
 **Monitoring**:
+
 - Log consecutive poll failures; alert after 5+ failures (~25-50 seconds of outage)
 - Exponential backoff on repeated failures (5s → 10s → 20s → 60s max)
 - Dashboard shows event watcher status (healthy / degraded / disconnected) on the Connections page
@@ -897,17 +967,20 @@ When the proxy remote server is unavailable:
 Natural extensions once the core pipeline is working.
 
 ### 5.1 — Agent Memory Auto-Update
+
 - After sessions complete, agent can update its own `MEMORY.md` and daily journals (it already has write access to its workspace)
 - During heartbeats, agent can review recent daily files and curate `MEMORY.md` (like a human reviewing their journal)
 - The workspace protocol in CLAUDE.md already includes guidance for memory maintenance
 
 ### 5.2 — Agent-to-Agent Communication
+
 - Agents can reference and invoke other agents
 - Shared memory pools between related agents
 - Agent orchestration workflows (agent A triggers agent B on completion)
 - Parent/child agent relationships
 
 ### 5.3 — Dashboard Real-Time Updates
+
 - WebSocket or SSE for live activity feed updates
 - Real-time session status across all agents
 - Notification system for pending permission approvals
@@ -915,16 +988,19 @@ Natural extensions once the core pipeline is working.
 - Live proxy ingestor status (event counts updating in real-time)
 
 ### 5.4 — Agent Templates
+
 - Pre-built agent configurations for common use cases
 - "Code Reviewer", "CI Monitor", "Discord Bot", "Documentation Writer"
 - Import/export full agent workspaces as archives
 
 ### 5.5 — Multi-Session Management
+
 - Agent can run multiple concurrent sessions
 - Session pool with configurable concurrency limits
 - Queue system for excess requests when at capacity
 
 ### 5.6 — Advanced Proxy Integration
+
 - Per-agent proxy caller profiles (different agents get different connection access via separate callers in `remote.config.json`)
 - Per-agent ingestor overrides (different event filters, buffer sizes per agent/caller)
 - Dashboard UI for managing proxy `remote.config.json` (add connections, manage callers, configure ingestor overrides)
@@ -1019,6 +1095,7 @@ Natural extensions once the core pipeline is working.
 ```
 
 **Two-Layer Prompt Architecture:**
+
 ```
                 SDK systemPrompt.append              SDK settingSources: ["project"]
                 ┌──────────────────────┐             ┌─────────────────────────────┐
@@ -1043,6 +1120,7 @@ Natural extensions once the core pipeline is working.
 ```
 
 **Event Flow (Event Watcher Pipeline):**
+
 ```
 External Service          mcp-secure-proxy              claude-code-ui
                           (remote server)               (event watcher)
@@ -1103,19 +1181,18 @@ Phase 2 ✅  Workspace & Memory
     │       - §2.7: ✅ CreateAgent form expansion (structured identity fields)
     │
     ▼
-Phase 3     Custom Tools & Session Integration
-    │       - §3.1: agent-tools.ts — custom MCP server (createSdkMcpServer) with CCUI tools:
+Phase 3 ✅  Custom Tools & Session Integration
+    │       - §3.1: ✅ agent-tools.ts — custom MCP server (createSdkMcpServer) with 11 CCUI tools:
     │               start_agent_session, get_session_status, read_session_messages,
     │               list/create/update/delete_cron_job, get/log_activity, list_agents, get_agent_info
-    │       - §3.2: Inject custom tools into sendMessage() via agentAlias option
+    │       - §3.2: ✅ Inject custom tools into sendMessage() via agentAlias option
     │               Async generator prompt format for MCP server compatibility
-    │       - §3.3: Session ownership — agentAlias in chat metadata, agent badge in ChatList
+    │       - §3.3: ✅ Session ownership — agentAlias in chat metadata, agent badge in ChatList
     │               Dashboard Chat page → agent's real conversations (no mock)
-    │       - §3.4: Event persistence — all ingestor events stored in activity log
-    │       - No separate agent chat routes — uses existing /api/stream/*
-    │       - No separate session storage — tags standard chat metadata
-    │       - Always runs in agent workspace folder (no override)
-    │       Depends on: Phase 2 (workspace, activity logging)
+    │       - §3.4: Event persistence schema defined (watcher implementation in Phase 4)
+    │       - ✅ No separate agent chat routes — uses existing /api/stream/*
+    │       - ✅ No separate session storage — tags standard chat metadata
+    │       - ✅ Always runs in agent workspace folder (no override)
     │
     ▼
 Phase 4     Event Watcher & Automation

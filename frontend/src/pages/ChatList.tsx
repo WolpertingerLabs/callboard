@@ -188,7 +188,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     setShowNew(false);
     setSelectedAgent(null);
     navigate(`/chat/new?folder=${encodeURIComponent(selectedAgent.workspacePath)}`, {
-      state: { defaultPermissions: agentPermissions, systemPrompt },
+      state: { defaultPermissions: agentPermissions, systemPrompt, agentAlias: selectedAgent.alias },
     });
   };
 

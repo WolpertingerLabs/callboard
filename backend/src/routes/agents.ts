@@ -1,10 +1,17 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { mkdirSync, existsSync, rmSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { existsSync, rmSync } from "fs";
 import type { AgentConfig } from "shared";
-import { createAgent, listAgents, getAgent, deleteAgent, agentExists, isValidAlias } from "../services/agent-file-service.js";
+import {
+  createAgent,
+  listAgents,
+  getAgent,
+  deleteAgent,
+  agentExists,
+  isValidAlias,
+  getAgentWorkspacePath,
+  ensureAgentWorkspaceDir,
+} from "../services/agent-file-service.js";
 import { compileIdentityPrompt, scaffoldWorkspace } from "../services/claude-compiler.js";
 import { agentWorkspaceRouter } from "./agent-workspace.js";
 import { agentMemoryRouter } from "./agent-memory.js";
@@ -19,21 +26,8 @@ agentsRouter.use("/:alias/memory", agentMemoryRouter);
 agentsRouter.use("/:alias/cron-jobs", agentCronJobsRouter);
 agentsRouter.use("/:alias/activity", agentActivityRouter);
 
-function getAgentWorkspacePath(alias: string): string {
-  const baseDir = process.env.CCUI_AGENTS_DIR || join(homedir(), ".ccui-agents");
-  return join(baseDir, alias);
-}
-
-function ensureWorkspaceDir(alias: string): string {
-  const workspacePath = getAgentWorkspacePath(alias);
-  if (!existsSync(workspacePath)) {
-    mkdirSync(workspacePath, { recursive: true });
-  }
-  return workspacePath;
-}
-
 function withWorkspacePath(agent: AgentConfig): AgentConfig & { workspacePath: string } {
-  const workspacePath = ensureWorkspaceDir(agent.alias);
+  const workspacePath = ensureAgentWorkspaceDir(agent.alias);
   return { ...agent, workspacePath };
 }
 
@@ -92,7 +86,7 @@ agentsRouter.post("/", (req: Request, res: Response): void => {
   createAgent(config);
 
   // Ensure workspace directory exists and scaffold initial files
-  const workspacePath = ensureWorkspaceDir(config.alias);
+  const workspacePath = ensureAgentWorkspaceDir(config.alias);
   scaffoldWorkspace(workspacePath);
 
   res.status(201).json({ agent: { ...config, workspacePath } });
@@ -185,7 +179,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
   // Persist (createAgent acts as upsert — mkdirSync with recursive is a no-op)
   createAgent(updated);
 
-  const workspacePath = ensureWorkspaceDir(alias);
+  const workspacePath = ensureAgentWorkspaceDir(alias);
   res.json({ agent: { ...updated, workspacePath } });
 });
 
