@@ -10,6 +10,8 @@ This two-layer approach gives clean separation: workspace protocol lives in file
 
 **Identity model**: Agent identity lives as structured fields in `agent.json` (stored in `data/agents/{alias}/`) — editable via dashboard form fields. No separate `IDENTITY.md` file. The backend compiles these settings into a system prompt append string, giving users a form-based editing experience while producing the rich context the agent needs.
 
+**Connections & triggers model**: External service connections (Discord, GitHub, Slack, Stripe, etc.) and real-time event ingestion are handled entirely by `mcp-secure-proxy` — a separate MCP server that runs as a plugin. The proxy manages authenticated API access, secret storage, and event buffering (WebSocket, webhooks, polling). Agents access these capabilities via MCP tools (`secure_request`, `poll_events`, `list_routes`, `ingestor_status`) that are automatically available when the plugin is enabled. **claude-code-ui does NOT duplicate this infrastructure** — it stores lightweight references to proxy connections (for display/trigger matching), not credentials or connection state.
+
 ---
 
 ## Current State (Phase 1 + Early Phase 2 — In Progress)
@@ -133,6 +135,113 @@ On agent creation, all 6 files are copied to the workspace, plus AGENTS.md → C
 
 ---
 
+## mcp-secure-proxy: What It Provides (and What We Don't Need to Build)
+
+`mcp-secure-proxy` is a companion project (`../mcp-secure-proxy`) that runs as an MCP plugin alongside Claude Code sessions. It provides:
+
+### Deployment Model
+
+mcp-secure-proxy runs as a **two-server system**:
+
+1. **Local MCP Proxy** (runs on the same machine as claude-code-ui):
+   - Spawned as a stdio child process by Claude Code sessions
+   - Holds only its own Ed25519 + X25519 keypair — **no secrets**
+   - Encrypts requests, forwards to the remote server via HTTP
+   - Auto-discovered via `.mcp.json` in the proxy repo, or installed as a plugin
+
+2. **Remote Secure Server** (runs on a separate machine / cloud VM):
+   - Express HTTP server (default port 9999, configurable)
+   - Holds all API secrets in environment variables — **secrets never leave this server**
+   - Authenticates callers via Ed25519 signature verification
+   - Manages ingestors (Discord WebSocket, GitHub webhooks, etc.)
+   - Rate-limited per session (default 60 requests/min, configurable via `rateLimitPerMinute`)
+   - Session TTL: 30 minutes (auto-reestablishes on 401)
+
+**Security model**: Mutual authentication via Ed25519 signatures (Noise NK-inspired handshake), AES-256-GCM encrypted channel with session keys derived via X25519 ECDH + HKDF-SHA256. Monotonic counters prevent replay/reorder attacks.
+
+### Per-Caller Access Control
+
+Each caller is defined in `remote.config.json` with:
+- **`peerKeyDir`**: Path to the caller's Ed25519 public key (for authentication)
+- **`connections`**: Array of connection aliases the caller can access (e.g., `["github", "discord-bot"]`)
+- **`env`**: Optional per-caller environment variable overrides — allows different secrets for the same connection across callers (e.g., Alice uses her GitHub token, Bob uses his)
+- **`ingestorOverrides`**: Per-caller ingestor configuration:
+  - `guildIds`, `channelIds`: Filter events to specific Discord guilds/channels
+  - `eventFilter`: Only receive specific event types (e.g., `["MESSAGE_CREATE", "REACTION_ADD"]`)
+  - `bufferSize`: Override ring buffer capacity (default 200, max 1000)
+  - `disabled`: Disable ingestor entirely for this caller
+
+### Already Built — Available via MCP Tools
+
+**Authenticated API Access** (`secure_request` tool):
+- 15 pre-configured connection templates: Discord Bot, Discord OAuth, GitHub, Slack, Stripe, Notion, Linear, Trello, Google, Google AI, OpenAI, Anthropic, OpenRouter, Hex, Devin
+- Each template defines: allowed endpoint patterns (globs), auto-injected auth headers, required secret names
+- Secrets never leave the remote server — zero-knowledge proxy architecture
+- Custom connectors can be defined in `remote.config.json`
+- The agent calls `secure_request({ method, url, body })` and auth is handled transparently
+
+**Real-Time Event Ingestion** (ingestors):
+- **WebSocket ingestors**: Discord Gateway (full implementation with heartbeat, resume, reconnect), Slack Socket Mode
+- **Webhook ingestors**: GitHub (HMAC-SHA256), Stripe (with timestamp replay protection), Trello
+- **Poll ingestors**: Notion, Linear (interval-based with deduplication)
+- Per-caller ring buffers (default 200 events, max 1000) with cursor-based consumption
+- Configurable event filtering per caller (by guild, channel, user, event type)
+- **Ring buffer eviction**: When full, oldest events are silently evicted on new push. High-traffic sources (e.g., busy Discord guild) can evict events in seconds if the buffer is too small or consumers poll too infrequently.
+
+**Event Consumption** (`poll_events` tool):
+- `poll_events(connection?, after_id?)` → returns `IngestedEvent[]`
+- Each event has the structure:
+  ```typescript
+  interface IngestedEvent {
+    id: number;           // Monotonically increasing per ingestor (survives evictions)
+    receivedAt: string;   // ISO-8601 timestamp
+    source: string;       // Connection alias (e.g., "discord-bot", "github")
+    eventType: string;    // Source-specific type (e.g., "MESSAGE_CREATE", "push")
+    data: unknown;        // Raw payload from external service (structure varies by source)
+  }
+  ```
+- Cursor-based — consumers track their own `after_id` and retrieve only events with `id > after_id`
+
+**Status Monitoring** (`list_routes`, `ingestor_status` tools):
+- `list_routes()` → all available connections with endpoint patterns, docs URLs, secret placeholder names (not values), and auto-injected header names
+- `ingestor_status()` → live state of all ingestors (connected/reconnecting/error, buffer sizes, total event counts, last event timestamps)
+
+### Wire Protocol (Important for Trigger Engine)
+
+The MCP proxy communicates with the remote server via standard HTTP — **not** via the MCP stdio transport. The protocol is:
+
+1. **Handshake**: `POST /handshake/init` → `POST /handshake/finish` (establishes encrypted session)
+2. **Requests**: `POST /request` with encrypted body (`ProxyRequest` → `ProxyResponse`)
+3. **Session management**: `X-Session-Id` header, 401 on expiry → re-handshake
+
+This means **any process** with the right keypair can talk to the remote server — it doesn't need to be inside a Claude Code session. The trigger engine can use the same handshake + encrypted request protocol directly. See Phase 4.3 for details.
+
+### What This Means for the Agents Plan
+
+**ELIMINATED from claude-code-ui (mcp-secure-proxy handles these):**
+- ❌ `agent-connections.ts` service — no CRUD for connections in our data layer
+- ❌ `connections.json` per agent — no credential storage or connection state
+- ❌ `agent-connections.ts` routes — no connection management API
+- ❌ `Connection` interface — not our data to model; we query the proxy live
+- ❌ OAuth flows & encrypted credential storage — proxy handles all auth securely
+- ❌ Connection health monitoring — `ingestor_status` provides this live
+- ❌ Custom event ingestion (`event-poller.ts` with its own WebSocket/webhook/poll infrastructure) — proxy already buffers events from all sources; trigger engine just calls `poll_events`
+
+**SIMPLIFIED:**
+- **Connections page** → becomes a **read-only status view** that calls `list_routes` and `ingestor_status` via the proxy to show which external services are available and their live status. No CRUD — connections are configured in `mcp-secure-proxy`'s `remote.config.json`.
+- **Triggers** → simplified: a trigger matches `poll_events` data against conditions, then calls `executeAgent()`. No need to build our own event ingestion pipeline — we consume the proxy's buffer.
+- **Connection type in `AgentConfig`** → not needed. The agent simply has the mcp-secure-proxy plugin enabled, which gives it access to all connections configured for that caller.
+
+**KEPT (still needed in claude-code-ui):**
+- ✅ Trigger CRUD — defining what events should wake an agent (conditions + actions)
+- ✅ Cron job CRUD — scheduled tasks independent of external events
+- ✅ Activity logging — recording what happened (trigger fires, cron executions, sessions)
+- ✅ Trigger engine — the backend loop that calls `poll_events` and matches against trigger conditions
+- ✅ Dashboard UI for viewing connection status (read-only, from proxy)
+- ✅ Dashboard UI for managing triggers and cron jobs (CRUD)
+
+---
+
 ## Phase 2: Agent Workspace & Memory (Remaining Work)
 
 **Goal**: Complete the workspace-based architecture. Early Phase 2 items (workspace scaffolding, identity compilation, system prompt injection) are done. Remaining work: operational data services, workspace file editing, and wiring the dashboard to real APIs.
@@ -176,49 +285,31 @@ The `AgentConfig` interface holds comprehensive structured identity settings alo
 - `scaffoldWorkspace(workspacePath)` copies template files on agent creation
 - Identity is injected via SDK `systemPrompt: { type: 'preset', preset: 'claude_code', append }` — not written to CLAUDE.md
 
-### 2.4 — Revised Shared Types
+### 2.4 — Revised Shared Types ✅
 
-**`shared/types/agentFeatures.ts`** — Keep operational types, drop `MemoryItem`:
+**`shared/types/agentFeatures.ts`** — Simplified to match the mcp-secure-proxy model:
 
-```typescript
-// Keep as-is (used by cron, triggers, connections, activity)
-export interface CronJob { /* ... existing fields ... */
-  action: TriggerAction;
-}
+- **Added** `TriggerAction` interface (`type`, `prompt`, `folder`, `maxTurns`, `permissions: DefaultPermissions`)
+- **Updated** `CronJob` — added `action: TriggerAction`
+- **Updated** `Trigger` — added `action: TriggerAction`, `source` now references mcp-secure-proxy connection aliases (e.g., `"discord-bot"`, `"github"`), `event` references ingestor event types (e.g., `"MESSAGE_CREATE"`, `"webhook:github"`)
+- **Updated** `ActivityEntry` — added optional `metadata?: Record<string, unknown>`
+- **Removed** `ChatMessage` — not needed; messages come from Claude SDK sessions
+- **Removed** `MemoryItem` — memory is now markdown files in the agent workspace, not key-value pairs
+- **Removed** `Connection` — connections are managed by mcp-secure-proxy, not us; we query the proxy live via `list_routes` + `ingestor_status`
 
-export interface Trigger { /* ... existing fields ... */
-  action: TriggerAction;
-}
+**`shared/types/index.ts`** — Updated exports: `TriggerAction, CronJob, Trigger, ActivityEntry`
 
-export interface Connection { /* ... existing fields ... */
-  config?: Record<string, unknown>;
-}
+**`frontend/.../mockData.ts`** — Removed types now define local mock equivalents (`MockChatMessage`, `MockConnection`, `MockMemoryItem`) used only by the still-mock dashboard pages. Mock triggers and cron jobs updated with `action` fields and mcp-secure-proxy connection aliases. These local mock types will be removed entirely in §2.7 when the dashboard pages are wired to real APIs.
 
-export interface ActivityEntry { /* ... existing fields ... */
-  metadata?: Record<string, unknown>;
-}
-
-// NEW — defines what happens when a trigger/cron fires
-export interface TriggerAction {
-  type: "start_session" | "send_message";
-  prompt?: string;           // Message template (can use {{event}} placeholders)
-  folder?: string;           // Override agent's defaultFolder
-  maxTurns?: number;
-  permissions?: DefaultPermissions;
-}
-
-// REMOVE MemoryItem — memory is now markdown files, not key-value pairs
-// The dashboard Memory page becomes a file editor (see Phase 2.7)
-```
+**Frontend dashboard components** — Updated imports to use local mock types (`MockChatMessage` in `Chat.tsx`, `MockConnection` in `Connections.tsx`). No functional changes — these components still render mock data and will be overhauled in §2.7.
 
 ### 2.5 — Backend Services for Operational Data
 
-These still use JSON files, stored in the app's data directory (not the agent workspace), since they're managed by the app, not the agent:
+Significantly reduced scope — no connections service needed:
 
 ```
 data/agents/{alias}/
 ├── agent.json         # AgentConfig (already exists)
-├── connections.json   # Connection[]
 ├── triggers.json      # Trigger[]
 ├── cron-jobs.json     # CronJob[]
 ├── activity.jsonl     # ActivityEntry[] (append-only log)
@@ -230,10 +321,11 @@ Create file-based services following the existing `chat-file-service.ts` pattern
 
 | New File | Responsibility |
 |---|---|
-| `backend/src/services/agent-connections.ts` | CRUD for agent connections |
 | `backend/src/services/agent-triggers.ts` | CRUD for agent triggers |
 | `backend/src/services/agent-cron-jobs.ts` | CRUD for agent cron jobs |
 | `backend/src/services/agent-activity.ts` | Append-only activity log (JSONL) |
+
+**Removed:** `agent-connections.ts` — connections are managed by mcp-secure-proxy, not us.
 
 ### 2.6 — Backend Routes (Remaining)
 
@@ -243,10 +335,19 @@ Mount sub-routes under the existing agents router:
 |---|---|
 | `backend/src/routes/agent-workspace.ts` | `GET/PUT /api/agents/:alias/workspace/:filename` — read/write markdown files |
 | `backend/src/routes/agent-memory.ts` | `GET /api/agents/:alias/memory` — list dates + read daily/long-term memory; `PUT` to update |
-| `backend/src/routes/agent-connections.ts` | `GET/POST/PUT/DELETE /api/agents/:alias/connections` |
 | `backend/src/routes/agent-triggers.ts` | `GET/POST/PUT/DELETE /api/agents/:alias/triggers` |
 | `backend/src/routes/agent-cron-jobs.ts` | `GET/POST/PUT/DELETE /api/agents/:alias/cron-jobs` |
 | `backend/src/routes/agent-activity.ts` | `GET /api/agents/:alias/activity` (with type filter) |
+
+**Removed:** `agent-connections.ts` routes — no connection CRUD needed.
+
+**New proxy passthrough route** (optional, for dashboard convenience):
+
+| New File | Endpoints |
+|---|---|
+| `backend/src/routes/agent-proxy-status.ts` | `GET /api/proxy/routes` — proxies `list_routes` from mcp-secure-proxy; `GET /api/proxy/ingestors` — proxies `ingestor_status` |
+
+This is optional — the frontend could also call the proxy MCP tools directly via the existing plugin infrastructure. But a thin REST passthrough makes the dashboard simpler (no MCP session needed for read-only status checks).
 
 ### 2.7 — Frontend: Dashboard Overhaul
 
@@ -260,7 +361,7 @@ The dashboard sub-pages need significant rework to match the new model:
   - Guidelines: list editor (add/remove/reorder bullet points)
   - Execution: defaultFolder, maxTurns, defaultPermissions, activePlugins
 - Saves to `PUT /api/agents/:alias` → updates `agent.json`
-- Stat cards: active connections, cron jobs, triggers (from real APIs)
+- Stat cards: active triggers, cron jobs (from real APIs), proxy connections (from proxy status)
 - Recent activity from real activity log
 
 **Memory page** → Becomes a **workspace file editor**:
@@ -270,9 +371,17 @@ The dashboard sub-pages need significant rework to match the new model:
 - Below or in a tab: daily memory timeline (`memory/YYYY-MM-DD.md`) — read-only viewer with date picker
 - `MEMORY.md` section: editable curated long-term memory
 
-**Connections, CronJobs, Triggers, Activity** → Wire to real APIs:
+**Connections page** → **Read-only proxy status view**:
+- Fetches available connections from `list_routes` (via proxy passthrough or MCP)
+- Shows live ingestor status from `ingestor_status` (connected/reconnecting/error, buffer sizes, last event time)
+- Each connection card: name, description, docs link, allowed endpoints, ingestor state
+- No create/edit/delete — connections are configured in mcp-secure-proxy's `remote.config.json`
+- Helper text explaining where to configure new connections
+
+**Triggers, CronJobs, Activity** → Wire to real APIs:
 - Replace mock data imports with `useEffect` + `useState` API calls
 - Wire create/update/delete buttons to real API calls
+- Trigger creation form includes: source dropdown (populated from `list_routes`), event type, condition, action config
 - Add loading spinners and error states
 
 **Chat page** → Stays mock for now (wired in Phase 3)
@@ -294,7 +403,8 @@ Remove `mockData.ts` when all pages are wired up.
 - All workspace files are readable/editable via API and dashboard
 - Overview page shows all identity fields in form format, saves correctly
 - Daily memory files can be viewed by date
-- Connections, triggers, cron jobs persist via JSON APIs
+- Connections page shows live status from mcp-secure-proxy (routes + ingestors)
+- Triggers and cron jobs persist via JSON APIs
 - Activity log records entries
 - `mockData.ts` is fully removed
 - Deleting an agent removes both workspace and data directories
@@ -340,6 +450,15 @@ Key responsibilities:
 - ~~Write to CLAUDE.md~~ → CLAUDE.md is the static workspace protocol, not dynamically compiled
 - ~~Format memory items~~ → Agent reads `MEMORY.md` and daily journals itself per workspace protocol in CLAUDE.md
 
+**mcp-secure-proxy in agent sessions**: The executor ensures `activePlugins` includes the mcp-secure-proxy plugin so agents can call `secure_request`, `poll_events`, etc. during their sessions. The agent gets the same external service access as a regular Claude Code session — no special wiring needed.
+
+Plugin loading for agents:
+- mcp-secure-proxy is auto-discovered via `.mcp.json` in its repo, or installed globally as a plugin (`/plugin install mcp-secure-proxy`)
+- The SDK spawns the local MCP proxy as a stdio child process when the session starts
+- The proxy handles handshake + encrypted communication to the remote server transparently
+- All 4 proxy tools (`secure_request`, `poll_events`, `list_routes`, `ingestor_status`) become available in the agent's tool palette
+- The agent's identity prompt can reference these tools (e.g., guidelines like "Check Discord for new messages using poll_events")
+
 ### 3.2 — Agent Chat Routes
 
 **New file: `backend/src/routes/agent-chat.ts`**
@@ -373,6 +492,7 @@ Add an `agentAlias` field to the chat metadata so the main ChatList can display 
 - Start a Claude Code session from the agent dashboard chat
 - Agent's identity is injected (verify by checking that it follows personality settings)
 - Agent reads its own memory files during the session (per CLAUDE.md workspace protocol)
+- Agent can call mcp-secure-proxy tools (secure_request, poll_events) during sessions
 - Session appears in both the agent view and the main chat list
 - Activity log records session lifecycle events
 - Daily memory updated after session completes
@@ -381,7 +501,7 @@ Add an `agentAlias` field to the chat metadata so the main ChatList can display 
 
 ## Phase 4: Triggers & Automation
 
-**Goal**: Agents respond to scheduled tasks, heartbeat polls, and external events without human intervention.
+**Goal**: Agents respond to scheduled tasks, heartbeat polls, and external events without human intervention. External events come from mcp-secure-proxy's ingestors — the trigger engine consumes them via `poll_events`.
 
 ### 4.1 — Cron Scheduler
 
@@ -445,64 +565,155 @@ export interface AgentConfig {
 }
 ```
 
-### 4.3 — Event Poller
-
-**New file: `backend/src/services/event-poller.ts`**
-
-Periodically calls the `mcp-secure-proxy` `poll_events` endpoint to ingest external events (Discord messages, GitHub webhooks, Slack messages, etc.):
-
-```typescript
-export function startPolling(interval?: number): void  // Default: 5 seconds
-export function stopPolling(): void
-```
-
-Maintains a cursor (`after_id`) for incremental polling. Dispatches events to the trigger engine.
-
-### 4.4 — Trigger Engine
+### 4.3 — Trigger Engine (Consuming mcp-secure-proxy Events)
 
 **New file: `backend/src/services/trigger-engine.ts`**
 
-Evaluates incoming events against all active triggers across all agents:
+The trigger engine is a backend polling loop that periodically calls mcp-secure-proxy's `poll_events` and matches incoming events against all active triggers across all agents.
+
+**Key insight**: The trigger engine does NOT need its own WebSocket connections, webhook receivers, or polling infrastructure — mcp-secure-proxy already buffers events from Discord, GitHub, Slack, Stripe, etc. The engine simply consumes the buffer.
 
 ```typescript
-export function initTriggerEngine(): void
-export function evaluateTrigger(trigger: Trigger, event: IncomingEvent): boolean
-export function processEvent(event: IncomingEvent): Promise<void>
+export function initTriggerEngine(): void      // On startup: begin polling loop
+export function stopTriggerEngine(): void
 ```
 
-When a trigger matches:
-1. Extract event data (sender, message content, channel, etc.)
-2. Interpolate `{{event.*}}` placeholders in the trigger's prompt template
-3. Call `executeAgent()` with the trigger's action config
-4. Log to the agent's activity feed
+**Polling loop** (runs every 5-10 seconds):
+1. Call `poll_events(after_id)` via the proxy — gets all new events since last cursor
+2. For each event, iterate all agents' active triggers
+3. Match event against trigger conditions: `source` (connection alias), `event` (event type), `condition` (keyword/regex/channel filter)
+4. On match: call `executeAgent()` with the trigger's action config, interpolating `{{event.*}}` placeholders in the prompt template
+5. Log to the agent's activity feed
+6. Update cursor for next poll
 
-### 4.5 — Trigger Condition Language
+#### 4.3.1 — How the Trigger Engine Talks to the Proxy
+
+The trigger engine runs in the Express backend — **outside** of any Claude Code session. It cannot use MCP tools directly (those are only available inside SDK sessions via stdio transport). Instead, it communicates with the proxy's remote server using the **same HTTP wire protocol** that the MCP proxy itself uses:
+
+1. **Handshake**: `POST {remoteUrl}/handshake/init` + `POST {remoteUrl}/handshake/finish` — establishes an encrypted session using Ed25519 + X25519 key exchange
+2. **Encrypted requests**: `POST {remoteUrl}/request` with `X-Session-Id` header — sends `ProxyRequest` (tool name + input), receives `ProxyResponse`
+3. **Session management**: 30-minute TTL, 401 on expiry → re-handshake automatically
+
+**Implementation**: Import `HandshakeInitiator`, `EncryptedChannel`, and `ProxyRequest`/`ProxyResponse` types from the proxy's shared libraries (or vendor a lightweight client). The trigger engine authenticates as its own **dedicated caller** (e.g., `"trigger-engine"`) configured in `remote.config.json` with access to all connections that have ingestors.
+
+```typescript
+// Conceptual: trigger-engine.ts
+import { HandshakeInitiator, EncryptedChannel } from 'mcp-secure-proxy/shared';
+
+let channel: EncryptedChannel | null = null;
+
+async function pollEvents(afterId?: number): Promise<IngestedEvent[]> {
+  if (!channel) channel = await establishChannel(); // handshake
+  const request: ProxyRequest = {
+    type: 'proxy_request',
+    id: crypto.randomUUID(),
+    toolName: 'poll_events',
+    toolInput: { after_id: afterId },
+    timestamp: Date.now(),
+  };
+  const encrypted = channel.encryptJSON(request);
+  const resp = await fetch(`${remoteUrl}/request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Session-Id': channel.sessionId },
+    body: new Uint8Array(encrypted),
+  });
+  if (resp.status === 401) { channel = null; return pollEvents(afterId); } // re-auth
+  const decrypted = channel.decryptJSON(await resp.arrayBuffer()) as ProxyResponse;
+  return decrypted.result as IngestedEvent[];
+}
+```
+
+**Caller configuration** in `remote.config.json`:
+```json
+{
+  "callers": {
+    "trigger-engine": {
+      "peerKeyDir": "/path/to/keys/peers/trigger-engine",
+      "connections": ["discord-bot", "github", "slack", "stripe"]
+    }
+  }
+}
+```
+
+**Rate limiting**: The trigger engine polling loop (every 5-10s) consumes ~6-12 requests/min, well under the default 60/min rate limit. If the engine also needs to call `ingestor_status` or `list_routes` for dashboard passthrough, that adds a few more but stays well within limits.
+
+#### 4.3.2 — Ring Buffer Eviction & Event Loss
+
+Events can be lost if the trigger engine doesn't consume them fast enough:
+
+- Default ring buffer: **200 events** per (caller, connection) pair
+- Max configurable: **1000 events** via `ingestorOverrides.bufferSize`
+- When the buffer is full, the oldest event is silently evicted on each new push
+
+**Risk scenarios**:
+- High-traffic Discord guild: 500+ events/min → buffer fills in <30 seconds at default size
+- If trigger engine polls every 10 seconds with buffer size 200, it can handle ~20 events/sec safely
+- If the engine stalls for 60+ seconds (e.g., processing a trigger match that calls `executeAgent()`), events may be lost
+
+**Mitigations**:
+- Poll every 5 seconds (12 requests/min — well within rate limits)
+- Increase `bufferSize` to 500-1000 for high-traffic connections via `ingestorOverrides`
+- Process trigger matches asynchronously (don't block the poll loop waiting for `executeAgent()` to complete)
+- Monitor buffer utilization via `ingestor_status` — alert when `bufferedEvents` approaches capacity
+
+#### 4.3.3 — Trigger Engine Resilience
+
+When the proxy remote server is unavailable:
+
+- Poll requests fail with network errors or timeouts
+- The engine catches exceptions, logs a warning, and retries on the next cycle
+- Events continue buffering on the remote server (if it's running but the trigger engine can't reach it)
+- If the remote server is actually down, ingestors stop receiving events too — so no data loss from the engine's perspective
+
+**Degradation behavior**:
+- Agent sessions started manually (via dashboard chat) still work — they connect to the proxy independently
+- Trigger-based and heartbeat-based sessions that rely on `poll_events` won't fire during outage
+- Cron jobs are unaffected (they don't depend on the proxy)
+- On recovery, the engine resumes from its last cursor — picks up any events still in the buffer
+
+**Monitoring**:
+- Log consecutive poll failures; alert after 5+ failures (~25-50 seconds of outage)
+- Exponential backoff on repeated failures (5s → 10s → 20s → 60s max)
+- Dashboard shows trigger engine status (healthy / degraded / disconnected) on the Connections page
+
+### 4.4 — Trigger Condition Language
 
 Start simple, expand later:
-- **Keyword match**: `contains("deploy")` — message body contains keyword
-- **Source filter**: `from("user-123")` — filter by sender
-- **Channel filter**: `channel("#alerts")` — filter by channel/room
+- **Source filter**: `source = "discord-bot"` — match by mcp-secure-proxy connection alias
+- **Event type**: `eventType = "MESSAGE_CREATE"` — match by event type from ingestor
+- **Keyword match**: `contains("deploy")` — event data contains keyword
+- **Channel filter**: `channel("#alerts")` — filter by channel/room in event data
 - **Regex**: `matches(/^!bot\s+/)` — regex match on message body
 - **Compound**: `contains("deploy") AND channel("#ops")` — AND/OR combinators
 
-### 4.6 — Frontend Wiring
+### 4.5 — Frontend Wiring
 
 - **CronJobs page**: "New Job" button opens a form to configure schedule, prompt template, folder → calls backend CRUD
-- **Triggers page**: "New Trigger" button opens a form to configure source, event, condition, action → calls backend CRUD
+- **Triggers page**: "New Trigger" button opens a form:
+  - Source dropdown populated from `list_routes` (live connection list from proxy)
+  - Event type selector based on the selected source's ingestor type
+  - Condition builder (keyword, regex, channel filter)
+  - Action config (prompt template with `{{event.*}}` placeholders, folder, maxTurns)
+  - Calls backend trigger CRUD
 - **Overview page**: Heartbeat toggle + interval config in agent settings section
 - Both pages show real-time status (last triggered, next run) from persisted data
 - Activity page shows trigger/cron/heartbeat executions
 
-### 4.7 — Verification
+### 4.6 — Verification
 
+- Trigger engine authenticates to proxy remote server as its own caller and polls events
 - Cron jobs execute on schedule and create Claude Code sessions
 - Heartbeat polls fire at configured intervals, agent reads HEARTBEAT.md and acts or replies HEARTBEAT_OK
 - Quiet hours respected for heartbeats
-- Discord messages (via mcp-secure-proxy) trigger agents
+- Discord messages (buffered by mcp-secure-proxy) trigger agents via the trigger engine
+- GitHub webhooks (received by mcp-secure-proxy) trigger agents
 - Trigger conditions filter events correctly
-- Activity log shows all trigger/cron/heartbeat executions
+- Activity log shows all trigger/cron/heartbeat executions with event metadata
 - Multiple agents can fire concurrently without interference
-- Pausing a cron job / trigger / heartbeat stops it from firing
+- Pausing a trigger / cron job / heartbeat stops it from firing
+- Trigger engine gracefully handles proxy being unavailable (backoff, resume from cursor)
+- Ring buffer eviction doesn't cause silent failures — monitored via ingestor_status
+- Rate limiting doesn't throttle the trigger engine's polling loop (stays under 60/min)
 
 ---
 
@@ -515,33 +726,35 @@ Natural extensions once the core pipeline is working.
 - During heartbeats, agent can review recent daily files and curate `MEMORY.md` (like a human reviewing their journal)
 - The workspace protocol in CLAUDE.md already includes guidance for memory maintenance
 
-### 5.2 — Connection Management
-- Real OAuth flows for Google, Slack, Discord, etc.
-- Encrypted credential storage (separate from agent workspace)
-- Connection health monitoring with auto-reconnect
-- Connection status feeds into agent activity
-
-### 5.3 — Agent-to-Agent Communication
+### 5.2 — Agent-to-Agent Communication
 - Agents can reference and invoke other agents
 - Shared memory pools between related agents
 - Agent orchestration workflows (agent A triggers agent B on completion)
 - Parent/child agent relationships
 
-### 5.4 — Dashboard Real-Time Updates
+### 5.3 — Dashboard Real-Time Updates
 - WebSocket or SSE for live activity feed updates
 - Real-time session status across all agents
 - Notification system for pending permission approvals
 - Agent status indicators (idle, running, heartbeat active, waiting for approval)
+- Live proxy ingestor status (event counts updating in real-time)
 
-### 5.5 — Agent Templates
+### 5.4 — Agent Templates
 - Pre-built agent configurations for common use cases
 - "Code Reviewer", "CI Monitor", "Discord Bot", "Documentation Writer"
 - Import/export full agent workspaces as archives
 
-### 5.6 — Multi-Session Management
+### 5.5 — Multi-Session Management
 - Agent can run multiple concurrent sessions
 - Session pool with configurable concurrency limits
 - Queue system for excess requests when at capacity
+
+### 5.6 — Advanced Proxy Integration
+- Per-agent proxy caller profiles (different agents get different connection access via separate callers in `remote.config.json`)
+- Per-agent ingestor overrides (different event filters, buffer sizes per agent/caller)
+- Dashboard UI for managing proxy `remote.config.json` (add connections, manage callers, configure ingestor overrides)
+- Proxy connection health alerts in agent activity feed (ingestor disconnections, buffer near-full warnings)
+- Proxy rate limit monitoring (track requests/min per session, alert on throttling)
 
 ---
 
@@ -558,26 +771,13 @@ Natural extensions once the core pipeline is working.
 │  /chat/:id    │  └──────────────────────────────────────────┘   │
 │               │  /agents/:alias/*                                │
 │  New chat:    │                                                  │
-│  Claude Code  │  Overview page = identity settings form:         │
-│  | Agent      │  ┌──────────────────────────────────────────┐   │
-│  (toggle)     │  │ Name: [Hex    ] Emoji: [🔮]  Role: [...] │   │
-│               │  │ Tone: [Casual ▾]  Pronouns: [they/them] │   │
-│  Agent mode:  │  │ Guidelines: [+ Add rule]                 │   │
-│  select agent │  │ User: [Ben] TZ: [America/New_York ▾]    │   │
-│  → Start Chat │  └──────────────────────────────────────────┘   │
-│  (fetches     │                                                  │
-│  identity     │  Memory page = workspace file editor:            │
-│  prompt →     │  ┌─────────┬────────────────────────────────┐   │
-│  navigates to │  │ Files   │ Markdown Editor                │   │
-│  /chat/new)   │  │─────────│                                │   │
-│               │  │ SOUL    │ # Soul                         │   │
-│               │  │ USER    │ Be genuinely helpful, not      │   │
-│               │  │ TOOLS   │ performatively helpful...      │   │
-│               │  │ HEART.. │                                │   │
-│               │  │─────────│                                │   │
-│               │  │ Daily   │                                │   │
-│               │  │ MEMORY  │                                │   │
-│               │  └─────────┴────────────────────────────────┘   │
+│  Claude Code  │  Overview page = identity settings form          │
+│  | Agent      │  Memory page = workspace file editor             │
+│  (toggle)     │  Connections page = read-only proxy status       │
+│               │  Triggers page = CRUD (consumes proxy events)    │
+│  Agent mode:  │  CronJobs page = CRUD (independent schedules)    │
+│  select agent │  Activity page = audit log                       │
+│  → Start Chat │                                                  │
 ├───────────────┴──────────────────────────────────────────────────┤
 │                     Express Backend (API)                         │
 ├──────────────────────────────────────────────────────────────────┤
@@ -585,40 +785,60 @@ Natural extensions once the core pipeline is working.
 │  (SSE — accepts    │  (agent CRUD +         │  /identity-prompt  │
 │   systemPrompt)    │   PUT updates)         │  /workspace/:file  │
 │                    │                        │  /memory            │
-│                    │                        │  /connections       │
 │                    │                        │  /triggers          │
 │                    │                        │  /cron-jobs         │
 │                    │                        │  /activity          │
 │                    │                        │  /chat              │
 │                    │                        │  /sessions          │
+│                    │                        │                     │
+│  /api/proxy/*      │                        │                     │
+│  (passthrough to   │                        │                     │
+│   mcp-secure-proxy │                        │                     │
+│   for dashboard)   │                        │                     │
 ├──────────────────────────────────────────────────────────────────┤
 │                       Services Layer                              │
-├──────────┬───────────┬──────────┬─────────┬──────────┬───────────┤
-│ claude.ts│ agent-    │ claude-  │ cron-   │ heart-  │ trigger- │
-│ (SDK)    │ executor  │ compiler │ sched.  │ beat    │ engine   │
-│          │           │          │         │         │          │
-│ sendMsg()│ identity  │ compile  │ node-   │ periodic│ matches  │
-│ SSE      │ + folder  │ Identity │ cron    │ open-   │ events → │
-│ perms    │ + config  │ Prompt() │ specific│ ended   │ triggers │
-│ system-  │ → sendMsg │ scaffold │ tasks   │ check-in│ →executor│
-│ Prompt   │           │ Wkspace()│→executor│→executor│          │
-├──────────┴───────────┴──────────┴─────────┴──────────┴───────────┤
+├──────────┬───────────┬──────────┬─────────┬──────────────────────┤
+│ claude.ts│ agent-    │ claude-  │ cron-   │ trigger-engine       │
+│ (SDK)    │ executor  │ compiler │ sched.  │                      │
+│          │           │          │         │ polls mcp-secure-    │
+│ sendMsg()│ identity  │ compile  │ node-   │ proxy poll_events    │
+│ SSE      │ + folder  │ Identity │ cron    │ → matches triggers   │
+│ perms    │ + config  │ Prompt() │ specific│ → executeAgent()     │
+│ system-  │ + plugins │ scaffold │ tasks   │                      │
+│ Prompt   │ → sendMsg │ Wkspace()│→executor│ heartbeat.ts         │
+│          │           │          │         │ periodic check-ins   │
+│          │           │          │         │ → executeAgent()     │
+├──────────┴───────────┴──────────┴─────────┴──────────────────────┤
 │                       Storage                                     │
 ├─────────────────────────────┬────────────────────────────────────┤
 │  App Data (data/)           │  Agent Workspaces (~/.ccui-agents/) │
 │  ├── chats/ (existing)      │  └── {alias}/                      │
 │  └── agents/{alias}/        │      ├── CLAUDE.md  ← AGENTS.md   │
 │      ├── agent.json         │      ├── AGENTS.md  (protocol)    │
-│      ├── connections.json   │      ├── SOUL.md                   │
-│      ├── triggers.json      │      ├── USER.md                   │
-│      ├── cron-jobs.json     │      ├── TOOLS.md                  │
-│      ├── activity.jsonl     │      ├── HEARTBEAT.md              │
-│      └── sessions/          │      ├── MEMORY.md                 │
+│      ├── triggers.json      │      ├── SOUL.md                   │
+│      ├── cron-jobs.json     │      ├── USER.md                   │
+│      ├── activity.jsonl     │      ├── TOOLS.md                  │
+│      └── sessions/          │      ├── HEARTBEAT.md              │
+│                             │      ├── MEMORY.md                 │
 │                             │      └── memory/                   │
 │                             │          └── YYYY-MM-DD.md         │
 ├─────────────────────────────┴────────────────────────────────────┤
-│              External Services (via mcp-secure-proxy)             │
-│  Discord │ Slack │ GitHub │ Gmail │ Webhooks │ ...               │
+│                     mcp-secure-proxy (MCP Plugin)                 │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  Runs as MCP server alongside Claude Code sessions          │ │
+│  │  Provides: secure_request, poll_events, list_routes,        │ │
+│  │            ingestor_status                                   │ │
+│  │                                                              │ │
+│  │  Manages (remote server):                                    │ │
+│  │  - Authenticated API access (15+ services)                  │ │
+│  │  - Secret storage (zero-knowledge, never leaves remote)     │ │
+│  │  - Real-time event ingestion:                               │ │
+│  │    • WebSocket: Discord Gateway, Slack Socket Mode          │ │
+│  │    • Webhooks: GitHub, Stripe, Trello (HMAC verified)       │ │
+│  │    • Polling: Notion, Linear (interval + dedup)             │ │
+│  │  - Per-caller ring buffers (200-1000 events)                │ │
+│  │  - Cursor-based event consumption via poll_events           │ │
+│  └─────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -641,7 +861,42 @@ Natural extensions once the core pipeline is working.
                 │  + appended identity (systemPrompt.append)           │
                 │  + CLAUDE.md workspace protocol (settingSources)     │
                 │  + cwd = ~/.ccui-agents/{alias}/                     │
+                │  + mcp-secure-proxy plugin (secure_request,          │
+                │    poll_events, list_routes, ingestor_status)        │
                 └──────────────────────────────────────────────────────┘
+```
+
+**Event Flow (Trigger Pipeline):**
+```
+External Service          mcp-secure-proxy              claude-code-ui
+                          (remote server)               (trigger engine)
+
+Discord msg ──────────►  Discord Gateway     ──┐
+GitHub webhook ────────►  GitHub Webhook      ──┼──► Ring Buffer (per caller)
+Stripe event ──────────►  Stripe Webhook      ──┤         │
+Notion update ─────────►  Notion Poller       ──┘         │
+                                                          │ poll_events(after_id)
+                                                          ◄─────────────────────
+                                                          │
+                                                    IngestedEvent[]
+                                                          │
+                                              ┌───────────▼───────────┐
+                                              │   Trigger Engine      │
+                                              │   Match events vs     │
+                                              │   all agents' triggers│
+                                              └───────────┬───────────┘
+                                                          │ match found
+                                              ┌───────────▼───────────┐
+                                              │   executeAgent()      │
+                                              │   identity + prompt   │
+                                              │   + event context     │
+                                              └───────────┬───────────┘
+                                                          │
+                                              ┌───────────▼───────────┐
+                                              │   Claude Code Session │
+                                              │   (agent responds to  │
+                                              │    the trigger event) │
+                                              └───────────────────────┘
 ```
 
 ---
@@ -663,15 +918,18 @@ Phase 1 ✅  Foundation (agent CRUD, dashboard UI, navigation)
     │
     ▼
 Phase 2     Workspace & Memory (remaining)
-    │       - Operational data services (connections, triggers, cron, activity)
+    │       - Revised types (drop Connection/MemoryItem/ChatMessage, add TriggerAction)
+    │       - Operational data services (triggers, cron, activity — NO connections)
     │       - Workspace file read/write API endpoints
     │       - Dashboard: Overview → settings form, Memory → file editor
+    │       - Dashboard: Connections → read-only proxy status (list_routes + ingestor_status)
     │       - Wire dashboard pages to real APIs, remove mockData.ts
     │       - CreateAgent form expansion (structured identity fields)
     │
     ▼
 Phase 3     Execution Engine
     │       - Thin executor: compileIdentityPrompt() + folder + config → sendMessage()
+    │       - Ensures mcp-secure-proxy plugin is active for agent sessions
     │       - Agent chat routes + SSE streaming
     │       - Frontend chat wired to real sessions
     │       - Session ownership (agent badge in main chat list)
@@ -681,13 +939,19 @@ Phase 3     Execution Engine
 Phase 4     Triggers & Automation
     │       - Cron scheduler (specific scheduled tasks)
     │       - Heartbeat system (periodic open-ended check-ins)
-    │       - Event poller (mcp-secure-proxy → trigger engine)
-    │       - Trigger condition matching + action execution
+    │       - Trigger engine: dedicated caller in remote.config.json
+    │         → authenticates via same HTTP wire protocol as MCP proxy
+    │         → polls poll_events(after_id) every 5s
+    │         → matches events against all agents' triggers → executeAgent()
+    │       - Trigger condition language (source, event type, keyword, regex, channel)
+    │       - Ring buffer monitoring & resilience (backoff, cursor tracking)
+    │       - NO custom event ingestion — mcp-secure-proxy handles all of that
     │       Depends on: Phase 3 (executeAgent)
     │
     ▼
 Phase 5     Advanced Features
-            - Memory auto-update, OAuth, agent-to-agent, templates
+            - Memory auto-update, agent-to-agent, templates, real-time dashboard
+            - Advanced proxy integration (per-agent caller profiles, config UI)
             Depends on: Phase 4 (working automation pipeline)
 ```
 

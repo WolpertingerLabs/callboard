@@ -3,7 +3,7 @@ import { useOutletContext } from "react-router-dom";
 import { Send, Bot, User } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { mockMessages } from "./mockData";
-import type { ChatMessage } from "./mockData";
+import type { MockChatMessage } from "./mockData";
 import type { AgentConfig } from "shared";
 
 function formatTime(ts: number): string {
@@ -21,7 +21,7 @@ function formatTime(ts: number): string {
 export default function Chat() {
   const { agent } = useOutletContext<{ agent: AgentConfig }>();
   const isMobile = useIsMobile();
-  const [messages, setMessages] = useState<ChatMessage[]>(mockMessages);
+  const [messages, setMessages] = useState<MockChatMessage[]>(mockMessages);
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -49,7 +49,7 @@ export default function Chat() {
     const text = input.trim();
     if (!text) return;
 
-    const userMsg: ChatMessage = {
+    const userMsg: MockChatMessage = {
       id: `m-${Date.now()}`,
       role: "user",
       content: text,
@@ -62,7 +62,7 @@ export default function Chat() {
 
     // Mock auto-reply
     setTimeout(() => {
-      const reply: ChatMessage = {
+      const reply: MockChatMessage = {
         id: `m-${Date.now()}-reply`,
         role: "assistant",
         content: mockReplies[Math.floor(Math.random() * mockReplies.length)],

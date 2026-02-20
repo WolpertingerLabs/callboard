@@ -3,7 +3,7 @@ import { useOutletContext } from "react-router-dom";
 import { Plus, Wifi, WifiOff, AlertTriangle, MessageCircle, Hash, Mail, Cpu, LayoutGrid, MessagesSquare } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { mockConnections } from "./mockData";
-import type { Connection } from "./mockData";
+import type { MockConnection } from "./mockData";
 import type { AgentConfig } from "shared";
 
 const serviceIcons: Record<string, typeof MessageCircle> = {
@@ -41,7 +41,7 @@ function timeAgo(ts: number): string {
 export default function Connections() {
   useOutletContext<{ agent: AgentConfig }>();
   const isMobile = useIsMobile();
-  const [connections, setConnections] = useState<Connection[]>(mockConnections);
+  const [connections, setConnections] = useState<MockConnection[]>(mockConnections);
 
   const toggleConnection = (id: string) => {
     setConnections((prev) =>
