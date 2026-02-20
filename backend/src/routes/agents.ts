@@ -1,12 +1,33 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { mkdirSync, existsSync, rmSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 import type { AgentConfig } from "shared";
 import { createAgent, listAgents, getAgent, deleteAgent, agentExists, isValidAlias } from "../services/agent-file-service.js";
 
 export const agentsRouter = Router();
 
+function getAgentWorkspacePath(alias: string): string {
+  const baseDir = process.env.CCUI_AGENTS_DIR || join(homedir(), ".ccui-agents");
+  return join(baseDir, alias);
+}
+
+function ensureWorkspaceDir(alias: string): string {
+  const workspacePath = getAgentWorkspacePath(alias);
+  if (!existsSync(workspacePath)) {
+    mkdirSync(workspacePath, { recursive: true });
+  }
+  return workspacePath;
+}
+
+function withWorkspacePath(agent: AgentConfig): AgentConfig & { workspacePath: string } {
+  const workspacePath = ensureWorkspaceDir(agent.alias);
+  return { ...agent, workspacePath };
+}
+
 agentsRouter.get("/", (_req: Request, res: Response): void => {
-  const agents = listAgents();
+  const agents = listAgents().map(withWorkspacePath);
   res.json({ agents });
 });
 
@@ -54,7 +75,11 @@ agentsRouter.post("/", (req: Request, res: Response): void => {
   };
 
   createAgent(config);
-  res.status(201).json({ agent: config });
+
+  // Ensure workspace directory exists
+  const workspacePath = ensureWorkspaceDir(config.alias);
+
+  res.status(201).json({ agent: { ...config, workspacePath } });
 });
 
 agentsRouter.get("/:alias", (req: Request, res: Response): void => {
@@ -66,7 +91,7 @@ agentsRouter.get("/:alias", (req: Request, res: Response): void => {
     return;
   }
 
-  res.json({ agent });
+  res.json({ agent: withWorkspacePath(agent) });
 });
 
 agentsRouter.delete("/:alias", (req: Request, res: Response): void => {
@@ -76,6 +101,12 @@ agentsRouter.delete("/:alias", (req: Request, res: Response): void => {
   if (!deleted) {
     res.status(404).json({ error: "Agent not found" });
     return;
+  }
+
+  // Clean up workspace directory
+  const workspacePath = getAgentWorkspacePath(alias);
+  if (existsSync(workspacePath)) {
+    rmSync(workspacePath, { recursive: true, force: true });
   }
 
   res.json({ ok: true });
