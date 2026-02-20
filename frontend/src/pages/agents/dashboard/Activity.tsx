@@ -7,7 +7,7 @@ import type { AgentConfig } from "shared";
 
 const typeColors: Record<string, string> = {
   chat: "var(--accent)",
-  trigger: "var(--warning)",
+  event: "var(--warning)",
   cron: "var(--success)",
   connection: "#58a6ff",
   system: "var(--text-muted)",
@@ -15,13 +15,13 @@ const typeColors: Record<string, string> = {
 
 const typeLabels: Record<string, string> = {
   chat: "Chat",
-  trigger: "Trigger",
+  event: "Event",
   cron: "Cron",
   connection: "Connection",
   system: "System",
 };
 
-const filterOptions = ["all", "chat", "trigger", "cron", "connection", "system"] as const;
+const filterOptions = ["all", "chat", "event", "cron", "connection", "system"] as const;
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);

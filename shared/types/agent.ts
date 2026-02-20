@@ -1,3 +1,5 @@
+import type { EventSubscription } from "./agentFeatures.js";
+
 export interface AgentConfig {
   // Core
   name: string;
@@ -21,4 +23,8 @@ export interface AgentConfig {
   userTimezone?: string;
   userLocation?: string;
   userContext?: string;
+
+  // Event subscriptions — which mcp-secure-proxy connections this agent monitors
+  // The event watcher wakes the agent when new events arrive from subscribed connections
+  eventSubscriptions?: EventSubscription[];
 }

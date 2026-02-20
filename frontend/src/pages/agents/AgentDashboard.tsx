@@ -6,7 +6,7 @@ import {
   MessageSquare,
   Clock,
   Plug,
-  Zap,
+  Radio,
   Activity,
   Brain,
   Bot,
@@ -20,7 +20,7 @@ const navItems = [
   { key: "chat", label: "Chat", icon: MessageSquare },
   { key: "cron", label: "Cron Jobs", icon: Clock },
   { key: "connections", label: "Connections", icon: Plug },
-  { key: "triggers", label: "Triggers", icon: Zap },
+  { key: "events", label: "Events", icon: Radio },
   { key: "activity", label: "Activity", icon: Activity },
   { key: "memory", label: "Memory", icon: Brain },
 ];

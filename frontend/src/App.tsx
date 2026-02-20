@@ -9,7 +9,7 @@ import Overview from "./pages/agents/dashboard/Overview";
 import AgentChat from "./pages/agents/dashboard/Chat";
 import CronJobs from "./pages/agents/dashboard/CronJobs";
 import Connections from "./pages/agents/dashboard/Connections";
-import Triggers from "./pages/agents/dashboard/Triggers";
+import Events from "./pages/agents/dashboard/Events";
 import AgentActivity from "./pages/agents/dashboard/Activity";
 import Memory from "./pages/agents/dashboard/Memory";
 
@@ -55,7 +55,7 @@ export default function App() {
           <Route path="chat" element={<AgentChat />} />
           <Route path="cron" element={<CronJobs />} />
           <Route path="connections" element={<Connections />} />
-          <Route path="triggers" element={<Triggers />} />
+          <Route path="events" element={<Events />} />
           <Route path="activity" element={<AgentActivity />} />
           <Route path="memory" element={<Memory />} />
         </Route>
