@@ -101,11 +101,11 @@ export interface StoredEvent {
    * (e.g., GitHub delivery ID, Stripe event ID, Slack envelope ID).
    * Falls back to `${source}:${id}` for services without natural keys.
    */
-  idempotencyKey: string;
+  idempotencyKey?: string;
   /** ISO-8601 timestamp from the proxy */
   receivedAt: string;
   /** Unix timestamp (ms) when the event was received by the ingestor */
-  receivedAtMs: number;
+  receivedAtMs?: number;
   /** Connection alias / route name (e.g. "discord-bot", "github") */
   source: string;
   /** Source-specific event type (e.g. "MESSAGE_CREATE", "push") */
@@ -139,9 +139,9 @@ function ensureConnectionDir(source: string): void {
  */
 export function appendEvent(event: {
   id: number;
-  idempotencyKey: string;
+  idempotencyKey?: string;
   receivedAt: string;
-  receivedAtMs: number;
+  receivedAtMs?: number;
   source: string;
   eventType: string;
   data: unknown;
@@ -149,10 +149,13 @@ export function appendEvent(event: {
   // Lazy-seed the dedup set from existing logs on first call
   seedSeenKeys();
 
-  // Deduplicate by idempotency key
-  if (seenKeys.has(event.idempotencyKey)) {
+  // Deduplicate by idempotency key (only when present and non-empty).
+  // Events without a meaningful key (undefined, empty, or falsy) are
+  // always stored — we can't deduplicate without a stable identifier.
+  const key = event.idempotencyKey;
+  if (key && seenKeys.has(key)) {
     log.debug(
-      `Duplicate event skipped: ${event.source}:${event.eventType} (key: ${event.idempotencyKey})`,
+      `Duplicate event skipped: ${event.source}:${event.eventType} (key: ${key})`,
     );
     return null;
   }
@@ -164,10 +167,12 @@ export function appendEvent(event: {
   };
   appendFileSync(eventsPath(event.source), JSON.stringify(stored) + "\n");
 
-  // Track for future dedup
-  seenKeys.add(event.idempotencyKey);
-  if (seenKeys.size > MAX_SEEN_KEYS) {
-    pruneSeenKeys();
+  // Track for future dedup (only meaningful keys)
+  if (key) {
+    seenKeys.add(key);
+    if (seenKeys.size > MAX_SEEN_KEYS) {
+      pruneSeenKeys();
+    }
   }
 
   return stored;

@@ -606,9 +606,9 @@ export async function getProxyIngestors(alias?: string): Promise<{ ingestors: In
 
 export interface StoredEvent {
   id: number;
-  idempotencyKey: string;
+  idempotencyKey?: string;
   receivedAt: string;
-  receivedAtMs: number;
+  receivedAtMs?: number;
   source: string;
   eventType: string;
   data: unknown;

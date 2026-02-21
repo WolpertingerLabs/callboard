@@ -26,9 +26,9 @@ const MAX_BACKOFF = 60_000; // 60 seconds
 
 interface IngestedEvent {
   id: number; // Monotonically increasing per ingestor
-  idempotencyKey: string; // Service-specific unique key for deduplication
+  idempotencyKey?: string; // Service-specific unique key for deduplication
   receivedAt: string; // ISO-8601 timestamp
-  receivedAtMs: number; // Unix timestamp (ms) when received by ingestor
+  receivedAtMs?: number; // Unix timestamp (ms) when received by ingestor
   source: string; // Connection alias (e.g., "discord-bot", "github")
   eventType: string; // Source-specific type (e.g., "MESSAGE_CREATE", "push")
   data: unknown; // Raw payload from external service
