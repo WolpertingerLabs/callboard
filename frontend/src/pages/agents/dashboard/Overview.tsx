@@ -69,7 +69,7 @@ export default function Overview() {
       });
 
     // Fetch ingestor stats
-    getProxyIngestors()
+    getProxyIngestors(agent.mcpKeyAlias)
       .then((data) => {
         setIngestorCount(data.ingestors.length);
         setConnectedIngestors(data.ingestors.filter((i) => i.state === "connected").length);
@@ -88,7 +88,7 @@ export default function Overview() {
     getKeyAliases()
       .then(setAvailableKeys)
       .catch(() => setAvailableKeys([]));
-  }, [agent.alias]);
+  }, [agent.alias, agent.mcpKeyAlias]);
 
   const handleSave = async () => {
     setSaving(true);

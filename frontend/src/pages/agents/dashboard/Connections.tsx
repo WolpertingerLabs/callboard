@@ -20,14 +20,14 @@ export default function Connections() {
 
   useEffect(() => {
     if (!hasKeys) return;
-    getProxyRoutes()
+    getProxyRoutes(agent.mcpKeyAlias)
       .then((data) => {
         setRoutes(data.routes);
         setConfigured(data.configured);
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [hasKeys]);
+  }, [hasKeys, agent.mcpKeyAlias]);
 
   // Guard: no key aliases assigned
   if (!hasKeys) {

@@ -54,7 +54,7 @@ export default function Events() {
   // Manual refresh handler (with spinner)
   const refreshIngestors = () => {
     setRefreshingIngestors(true);
-    getProxyIngestors()
+    getProxyIngestors(agent.mcpKeyAlias)
       .then((data) => setIngestors(data.ingestors))
       .catch(() => setIngestors([]))
       .finally(() => setRefreshingIngestors(false));
@@ -63,10 +63,10 @@ export default function Events() {
   // Initial fetch on mount
   useEffect(() => {
     if (!hasKeys) return;
-    getProxyIngestors()
+    getProxyIngestors(agent.mcpKeyAlias)
       .then((data) => setIngestors(data.ingestors))
       .catch(() => setIngestors([]));
-  }, [hasKeys]);
+  }, [hasKeys, agent.mcpKeyAlias]);
 
   // Poll events on interval
   useEffect(() => {
