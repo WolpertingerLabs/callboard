@@ -48,7 +48,7 @@ function getSendMessage(): MessageSender {
 export interface ExecuteAgentOptions {
   agentAlias: string;
   prompt: string;
-  triggeredBy: "cron" | "heartbeat" | "event" | "trigger";
+  triggeredBy: "cron" | "heartbeat" | "event" | "trigger" | "consolidation";
   metadata?: Record<string, unknown>;
   maxTurns?: number;
 }
@@ -120,7 +120,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
     log.info(`[${triggeredBy}] Started session ${chatId} for agent ${agentAlias}`);
 
     // Log activity
-    const activityType: ActivityEntry["type"] = triggeredBy === "heartbeat" ? "system" : triggeredBy;
+    const activityType: ActivityEntry["type"] = triggeredBy === "heartbeat" || triggeredBy === "consolidation" ? "system" : triggeredBy;
     appendActivity(agentAlias, {
       type: activityType,
       message: `${triggeredBy} session started`,

@@ -24,6 +24,7 @@ import { createLogger } from "./utils/logger.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initHeartbeats, shutdownHeartbeats } from "./services/heartbeat.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
+import { initMemoryConsolidation, shutdownConsolidation } from "./services/memory-consolidation.js";
 
 const log = createLogger("server");
 
@@ -132,6 +133,11 @@ app.listen(PORT, () => {
   } catch (err: any) {
     log.error(`Event watcher init failed: ${err.message}`);
   }
+  try {
+    initMemoryConsolidation();
+  } catch (err: any) {
+    log.error(`Memory consolidation init failed: ${err.message}`);
+  }
 });
 
 // Graceful shutdown
@@ -140,6 +146,7 @@ process.on("SIGTERM", () => {
   shutdownScheduler();
   shutdownHeartbeats();
   shutdownEventWatchers();
+  shutdownConsolidation();
   process.exit(0);
 });
 
@@ -148,5 +155,6 @@ process.on("SIGINT", () => {
   shutdownScheduler();
   shutdownHeartbeats();
   shutdownEventWatchers();
+  shutdownConsolidation();
   process.exit(0);
 });

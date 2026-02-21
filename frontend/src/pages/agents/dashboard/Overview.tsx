@@ -45,6 +45,9 @@ export default function Overview() {
   const [quietStart, setQuietStart] = useState(agent.heartbeat?.quietHoursStart || "");
   const [quietEnd, setQuietEnd] = useState(agent.heartbeat?.quietHoursEnd || "");
   const [autoJournal, setAutoJournal] = useState(agent.autoJournal !== false); // default: true
+  const [consolidationEnabled, setConsolidationEnabled] = useState(agent.memoryConsolidation?.enabled || false);
+  const [consolidationTime, setConsolidationTime] = useState(agent.memoryConsolidation?.timeOfDay || "03:00");
+  const [consolidationRetention, setConsolidationRetention] = useState(agent.memoryConsolidation?.retentionDays || 14);
   const [selectedKeyAlias, setSelectedKeyAlias] = useState<string | undefined>(agent.mcpKeyAlias);
   const [availableKeys, setAvailableKeys] = useState<KeyAliasInfo[]>([]);
   const [saving, setSaving] = useState(false);
@@ -112,6 +115,11 @@ export default function Overview() {
           quietHoursEnd: quietEnd || undefined,
         },
         autoJournal,
+        memoryConsolidation: {
+          enabled: consolidationEnabled,
+          timeOfDay: consolidationTime,
+          retentionDays: consolidationRetention,
+        },
         mcpKeyAlias: selectedKeyAlias || undefined,
       });
       onAgentUpdate?.(updated);
@@ -481,6 +489,58 @@ export default function Overview() {
             >
               {autoJournal ? "On" : "Off"}
             </button>
+          </div>
+
+          {/* Memory Consolidation section */}
+          <div style={{ gridColumn: isMobile ? undefined : "1 / -1", borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 4 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+              Memory Consolidation
+            </p>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+              Daily review of journal entries. The agent distills insights into MEMORY.md and updates SOUL.md, USER.md, and TOOLS.md as needed.
+            </p>
+          </div>
+          <div>
+            <label style={labelStyle}>Enabled</label>
+            <button
+              type="button"
+              onClick={() => setConsolidationEnabled(!consolidationEnabled)}
+              style={{
+                padding: "8px 18px",
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 500,
+                background: consolidationEnabled ? "var(--success)" : "var(--bg)",
+                color: consolidationEnabled ? "#fff" : "var(--text-muted)",
+                border: consolidationEnabled ? "1px solid var(--success)" : "1px solid var(--border)",
+                cursor: "pointer",
+                transition: "all 0.15s",
+              }}
+            >
+              {consolidationEnabled ? "On" : "Off"}
+            </button>
+          </div>
+          <div>
+            <label style={labelStyle}>Time of Day</label>
+            <input
+              type="time"
+              value={consolidationTime}
+              onChange={(e) => setConsolidationTime(e.target.value)}
+              disabled={!consolidationEnabled}
+              style={{ ...inputStyle, opacity: consolidationEnabled ? 1 : 0.5 }}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Review Window (days)</label>
+            <input
+              type="number"
+              value={consolidationRetention}
+              onChange={(e) => setConsolidationRetention(parseInt(e.target.value) || 14)}
+              min={3}
+              max={365}
+              disabled={!consolidationEnabled}
+              style={{ ...inputStyle, opacity: consolidationEnabled ? 1 : 0.5 }}
+            />
           </div>
 
           {/* Proxy Key Aliases section */}

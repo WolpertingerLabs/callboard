@@ -19,6 +19,7 @@ import { agentCronJobsRouter } from "./agent-cron-jobs.js";
 import { agentActivityRouter } from "./agent-activity.js";
 import { agentTriggersRouter } from "./agent-triggers.js";
 import { updateHeartbeatConfig, stopHeartbeat } from "../services/heartbeat.js";
+import { updateConsolidationConfig, stopConsolidation } from "../services/memory-consolidation.js";
 import { cancelAllJobsForAgent } from "../services/cron-scheduler.js";
 
 export const agentsRouter = Router();
@@ -151,6 +152,8 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     userContext,
     eventSubscriptions,
     heartbeat,
+    autoJournal,
+    memoryConsolidation,
     mcpKeyAlias,
   } = req.body as Partial<AgentConfig>;
 
@@ -173,6 +176,8 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     ...(userContext !== undefined && { userContext: userContext?.trim() || undefined }),
     ...(eventSubscriptions !== undefined && { eventSubscriptions }),
     ...(heartbeat !== undefined && { heartbeat }),
+    ...(autoJournal !== undefined && { autoJournal }),
+    ...(memoryConsolidation !== undefined && { memoryConsolidation }),
     ...(mcpKeyAlias !== undefined && { mcpKeyAlias }),
   };
 
@@ -195,6 +200,11 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     updateHeartbeatConfig(alias, heartbeat || { enabled: false, intervalMinutes: 30 });
   }
 
+  // Sync memory consolidation system if config changed
+  if (memoryConsolidation !== undefined) {
+    updateConsolidationConfig(alias, memoryConsolidation || { enabled: false, timeOfDay: "03:00", retentionDays: 14 });
+  }
+
   const workspacePath = ensureAgentWorkspaceDir(alias);
   res.json({ agent: { ...updated, workspacePath } });
 });
@@ -202,8 +212,9 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
 agentsRouter.delete("/:alias", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
 
-  // Stop heartbeat and cancel all cron jobs before deleting
+  // Stop heartbeat, consolidation, and cancel all cron jobs before deleting
   stopHeartbeat(alias);
+  stopConsolidation(alias);
   cancelAllJobsForAgent(alias);
 
   const deleted = deleteAgent(alias);

@@ -7,6 +7,12 @@ export interface HeartbeatConfig {
   quietHoursEnd?: string; // "HH:MM" format, e.g. "07:00"
 }
 
+export interface MemoryConsolidationConfig {
+  enabled: boolean;
+  timeOfDay: string; // "HH:MM" format, e.g. "03:00" — when to run daily
+  retentionDays: number; // How many days of journals to review (default: 14)
+}
+
 export interface AgentConfig {
   // Core
   name: string;
@@ -42,6 +48,11 @@ export interface AgentConfig {
   // When enabled (default), the agent is prompted to update its daily journal and
   // any other workspace files (MEMORY.md, SOUL.md, USER.md, etc.) at the end of each turn.
   autoJournal?: boolean; // default: true
+
+  // Memory consolidation — daily distillation of journal entries into MEMORY.md.
+  // Runs once daily per agent at a configurable time, reviewing recent journals
+  // and updating long-term memory files.
+  memoryConsolidation?: MemoryConsolidationConfig;
 
   // MCP key alias — which mcp-secure-proxy local identity this agent uses.
   // Corresponds to a subdirectory under {mcpConfigDir}/keys/local/.
