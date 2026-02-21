@@ -13,7 +13,8 @@ import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { appendActivity } from "./agent-activity.js";
-import { getAgent } from "./agent-file-service.js";
+import { getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
+import { buildAutoJournalStopHook } from "../hooks/auto-journal-hook.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -590,6 +591,20 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     },
   };
   log.debug(`SDK query options — cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);
+
+  // Auto-journal: inject Stop hook for agent sessions with autoJournal enabled (default: on)
+  if (opts.agentAlias) {
+    const journalConfig = getAgent(opts.agentAlias);
+    if (journalConfig && journalConfig.autoJournal !== false) {
+      const agentWorkspace = getAgentWorkspacePath(opts.agentAlias);
+      const stopHook = buildAutoJournalStopHook(opts.agentAlias, agentWorkspace);
+      queryOpts.options.hooks = {
+        ...queryOpts.options.hooks,
+        Stop: [{ hooks: [stopHook] }],
+      };
+      log.debug(`Auto-journal Stop hook injected for agent="${opts.agentAlias}"`);
+    }
+  }
 
   (async () => {
     try {
