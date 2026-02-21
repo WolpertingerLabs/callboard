@@ -1,19 +1,18 @@
 /**
- * Event watcher.
+ * Per-alias event watchers.
  *
- * Polls mcp-secure-proxy for new events every few seconds and persists them
- * to per-connection JSONL logs. Events are stored by connection alias (the
- * proxy route name), which maps to API key / IAM-like profiles.
- *
- * This is a pure ingest loop — no agent matching or subscription filtering.
- * All events from all ingestors are captured unconditionally.
+ * Each mcp-secure-proxy key alias gets its own independent polling loop.
+ * On startup, all agents are scanned for unique mcpKeyAlias values and a
+ * watcher is started for each. Events are stored in the shared event log
+ * and dispatched to the trigger system as before.
  *
  * Configuration via environment variables:
  *   EVENT_WATCHER_POLL_INTERVAL — poll interval in ms (default: 3000)
  */
 import { appendEvent } from "./event-log.js";
 import { dispatchEvent } from "./trigger-dispatcher.js";
-import { getSharedProxyClient } from "./proxy-singleton.js";
+import { getProxyClient, resetClient } from "./proxy-singleton.js";
+import { listAgents } from "./agent-file-service.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("event-watcher");
@@ -33,73 +32,133 @@ interface IngestedEvent {
   data: unknown; // Raw payload from external service
 }
 
-// ── State ───────────────────────────────────────────────────────────
+// ── Per-alias watcher state ─────────────────────────────────────────
 
-let pollTimer: ReturnType<typeof setTimeout> | null = null;
-let afterId = -1; // Cursor: fetch events with id > afterId
-let currentBackoff = BASE_POLL_INTERVAL;
-let consecutiveFailures = 0;
+interface WatcherState {
+  alias: string;
+  pollTimer: ReturnType<typeof setTimeout> | null;
+  afterId: number;
+  currentBackoff: number;
+  consecutiveFailures: number;
+}
+
+const watchers = new Map<string, WatcherState>();
 
 // ── Public API ──────────────────────────────────────────────────────
 
 /**
- * Initialize the event watcher.
- * Starts automatically if the proxy is configured (keys exist).
+ * Initialize event watchers for all agents that have an mcpKeyAlias.
+ * Collects unique aliases and starts one watcher per alias.
  */
-export function initEventWatcher(): void {
-  const client = getSharedProxyClient();
-  if (!client) {
-    log.info("Event watcher not started — proxy client unavailable (keys missing?)");
+export function initEventWatchers(): void {
+  const agents = listAgents();
+  const aliases = new Set<string>();
+
+  for (const agent of agents) {
+    if (agent.mcpKeyAlias) {
+      aliases.add(agent.mcpKeyAlias);
+    }
+  }
+
+  if (aliases.size === 0) {
+    log.info("No agents with mcpKeyAlias found — no event watchers started");
     return;
   }
 
-  log.info(`Starting event watcher — interval=${BASE_POLL_INTERVAL}ms`);
-  schedulePoll();
-  log.info("Event watcher started");
+  log.info(`Starting event watchers for ${aliases.size} alias(es): ${[...aliases].join(", ")}`);
+
+  for (const alias of aliases) {
+    startWatcherForAlias(alias);
+  }
 }
 
 /**
- * Graceful shutdown: stop polling.
+ * Graceful shutdown: stop all watchers.
  */
-export function shutdownEventWatcher(): void {
-  if (pollTimer) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
+export function shutdownEventWatchers(): void {
+  for (const [alias, state] of watchers) {
+    if (state.pollTimer) {
+      clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+    }
+    log.info(`Event watcher stopped for alias "${alias}"`);
   }
-  log.info("Event watcher shut down");
+  watchers.clear();
+  log.info("All event watchers shut down");
+}
+
+/**
+ * Start (or restart) a watcher for a specific alias.
+ */
+export function startWatcherForAlias(alias: string): void {
+  // Stop existing watcher if running
+  stopWatcherForAlias(alias);
+
+  const client = getProxyClient(alias);
+  if (!client) {
+    log.info(`Event watcher not started for alias "${alias}" — proxy client unavailable`);
+    return;
+  }
+
+  const state: WatcherState = {
+    alias,
+    pollTimer: null,
+    afterId: -1,
+    currentBackoff: BASE_POLL_INTERVAL,
+    consecutiveFailures: 0,
+  };
+
+  watchers.set(alias, state);
+  schedulePoll(state);
+  log.info(`Event watcher started for alias "${alias}" — interval=${BASE_POLL_INTERVAL}ms`);
+}
+
+/**
+ * Stop a watcher for a specific alias.
+ */
+export function stopWatcherForAlias(alias: string): void {
+  const state = watchers.get(alias);
+  if (!state) return;
+
+  if (state.pollTimer) {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+  watchers.delete(alias);
+  log.info(`Event watcher stopped for alias "${alias}"`);
 }
 
 // ── Internal ────────────────────────────────────────────────────────
 
 /**
- * Schedule the next poll with the current backoff interval.
+ * Schedule the next poll for a watcher.
  */
-function schedulePoll(): void {
-  pollTimer = setTimeout(pollLoop, currentBackoff);
+function schedulePoll(state: WatcherState): void {
+  state.pollTimer = setTimeout(() => pollLoop(state), state.currentBackoff);
 }
 
 /**
- * The main polling loop.
+ * The main polling loop for one alias.
  */
-async function pollLoop(): Promise<void> {
+async function pollLoop(state: WatcherState): Promise<void> {
   try {
-    const proxyClient = getSharedProxyClient();
+    const proxyClient = getProxyClient(state.alias);
     if (!proxyClient) return;
 
     // Call poll_events via the encrypted channel
     const result = (await proxyClient.callTool("poll_events", {
-      after_id: afterId,
+      after_id: state.afterId,
     })) as IngestedEvent[] | { events?: IngestedEvent[] };
 
     // poll_events may return an array directly or wrapped in { events: [] }
     const events: IngestedEvent[] = Array.isArray(result) ? result : result?.events || [];
 
     if (events.length > 0) {
-      log.debug(`Received ${events.length} events`);
+      log.debug(`[${state.alias}] Received ${events.length} events`);
 
       // Update cursor to the max event ID
       const maxId = Math.max(...events.map((e) => e.id));
-      if (maxId > afterId) afterId = maxId;
+      if (maxId > state.afterId) state.afterId = maxId;
 
       // Store each event in its per-connection log and dispatch to triggers
       for (const event of events) {
@@ -110,7 +169,7 @@ async function pollLoop(): Promise<void> {
           eventType: event.eventType,
           data: event.data,
         });
-        log.debug(`Stored ${event.source}:${event.eventType} (event ${event.id})`);
+        log.debug(`[${state.alias}] Stored ${event.source}:${event.eventType} (event ${event.id})`);
 
         // Dispatch to trigger system (matching is sync, execution is async)
         dispatchEvent(stored);
@@ -118,20 +177,20 @@ async function pollLoop(): Promise<void> {
     }
 
     // Reset backoff on success
-    consecutiveFailures = 0;
-    currentBackoff = BASE_POLL_INTERVAL;
+    state.consecutiveFailures = 0;
+    state.currentBackoff = BASE_POLL_INTERVAL;
   } catch (err: any) {
-    consecutiveFailures++;
-    currentBackoff = Math.min(BASE_POLL_INTERVAL * Math.pow(2, consecutiveFailures), MAX_BACKOFF);
-    log.warn(`Event poll failed (attempt ${consecutiveFailures}, next in ${currentBackoff}ms): ${err.message}`);
+    state.consecutiveFailures++;
+    state.currentBackoff = Math.min(BASE_POLL_INTERVAL * Math.pow(2, state.consecutiveFailures), MAX_BACKOFF);
+    log.warn(`[${state.alias}] Event poll failed (attempt ${state.consecutiveFailures}, next in ${state.currentBackoff}ms): ${err.message}`);
 
     // Auto-reset session on auth failure
     if (err.message?.includes("401") || err.message?.includes("Session expired")) {
-      log.info("Resetting proxy client for rehandshake...");
-      getSharedProxyClient()?.reset();
+      log.info(`[${state.alias}] Resetting proxy client for rehandshake...`);
+      resetClient(state.alias);
     }
   }
 
   // Schedule next poll (always, even after failure)
-  schedulePoll();
+  schedulePoll(state);
 }

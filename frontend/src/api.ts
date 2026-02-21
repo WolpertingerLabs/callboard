@@ -588,14 +588,16 @@ export interface IngestorStatus {
   error?: string;
 }
 
-export async function getProxyRoutes(): Promise<{ routes: ProxyRoute[]; configured: boolean }> {
-  const res = await fetch(`${BASE}/proxy/routes`, { credentials: "include" });
+export async function getProxyRoutes(alias?: string): Promise<{ routes: ProxyRoute[]; configured: boolean }> {
+  const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
+  const res = await fetch(`${BASE}/proxy/routes${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get proxy routes");
   return res.json();
 }
 
-export async function getProxyIngestors(): Promise<{ ingestors: IngestorStatus[]; configured: boolean }> {
-  const res = await fetch(`${BASE}/proxy/ingestors`, { credentials: "include" });
+export async function getProxyIngestors(alias?: string): Promise<{ ingestors: IngestorStatus[]; configured: boolean }> {
+  const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
+  const res = await fetch(`${BASE}/proxy/ingestors${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get ingestor status");
   return res.json();
 }

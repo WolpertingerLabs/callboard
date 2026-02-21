@@ -23,7 +23,7 @@ import { existsSync, readFileSync } from "fs";
 import { createLogger } from "./utils/logger.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initHeartbeats, shutdownHeartbeats } from "./services/heartbeat.js";
-import { initEventWatcher, shutdownEventWatcher } from "./services/event-watcher.js";
+import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 
 const log = createLogger("server");
 
@@ -128,7 +128,7 @@ app.listen(PORT, () => {
     log.error(`Heartbeat init failed: ${err.message}`);
   }
   try {
-    initEventWatcher();
+    initEventWatchers();
   } catch (err: any) {
     log.error(`Event watcher init failed: ${err.message}`);
   }
@@ -139,7 +139,7 @@ process.on("SIGTERM", () => {
   log.info("SIGTERM received, shutting down gracefully");
   shutdownScheduler();
   shutdownHeartbeats();
-  shutdownEventWatcher();
+  shutdownEventWatchers();
   process.exit(0);
 });
 
@@ -147,6 +147,6 @@ process.on("SIGINT", () => {
   log.info("SIGINT received, shutting down gracefully");
   shutdownScheduler();
   shutdownHeartbeats();
-  shutdownEventWatcher();
+  shutdownEventWatchers();
   process.exit(0);
 });
