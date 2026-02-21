@@ -53,6 +53,11 @@ export function compileIdentityPrompt(config: AgentConfig): string {
     sections.push(`## Guidelines\n\n${guidelineLines}`);
   }
 
+  // --- Custom system prompt section ---
+  if (config.systemPrompt && config.systemPrompt.trim()) {
+    sections.push(`## Custom Instructions\n\n${config.systemPrompt.trim()}`);
+  }
+
   return sections.join("\n\n");
 }
 

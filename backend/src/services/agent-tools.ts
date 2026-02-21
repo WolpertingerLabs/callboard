@@ -16,7 +16,7 @@ import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { readFileSync } from "fs";
 import { listAgents, getAgent, getAgentWorkspacePath, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir } from "./agent-file-service.js";
-import { compileIdentityPrompt, scaffoldWorkspace } from "./claude-compiler.js";
+import { compileIdentityPrompt, compileWorkspaceContext, scaffoldWorkspace } from "./claude-compiler.js";
 import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./agent-cron-jobs.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "./agent-triggers.js";
 import { getActivity, appendActivity } from "./agent-activity.js";
@@ -132,6 +132,8 @@ export function buildAgentToolsServer(agentAlias: string) {
 
             const identityPrompt = compileIdentityPrompt(config);
             const workspacePath = getAgentWorkspacePath(args.targetAgent);
+            const workspaceContext = compileWorkspaceContext(workspacePath);
+            const fullSystemPrompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
             const sendMessage = getSendMessage();
 
             // Build async generator prompt (required when MCP servers are present)
@@ -145,7 +147,7 @@ export function buildAgentToolsServer(agentAlias: string) {
             const emitter = await sendMessage({
               prompt: promptIterable,
               folder: workspacePath,
-              systemPrompt: identityPrompt,
+              systemPrompt: fullSystemPrompt,
               agentAlias: args.targetAgent,
               maxTurns: args.maxTurns,
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
