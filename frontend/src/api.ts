@@ -199,6 +199,16 @@ export async function createDraft(chatId: string | null, message: string, folder
   return res.json();
 }
 
+export async function updateDraft(id: string, message: string): Promise<QueueItem> {
+  const res = await fetch(`${BASE}/queue/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_message: message }),
+  });
+  await assertOk(res, "Failed to update draft");
+  return res.json();
+}
+
 export async function deleteDraft(id: string): Promise<void> {
   const res = await fetch(`${BASE}/queue/${id}`, { method: "DELETE" });
   await assertOk(res, "Failed to delete draft");
