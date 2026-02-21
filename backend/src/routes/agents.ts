@@ -20,7 +20,8 @@ import { agentActivityRouter } from "./agent-activity.js";
 import { agentTriggersRouter } from "./agent-triggers.js";
 import { updateHeartbeatConfig, stopHeartbeat } from "../services/heartbeat.js";
 import { updateConsolidationConfig, stopConsolidation } from "../services/memory-consolidation.js";
-import { cancelAllJobsForAgent } from "../services/cron-scheduler.js";
+import { cancelAllJobsForAgent, scheduleJob } from "../services/cron-scheduler.js";
+import { ensureDefaultCronJobs } from "../services/agent-cron-jobs.js";
 
 export const agentsRouter = Router();
 
@@ -93,6 +94,14 @@ agentsRouter.post("/", (req: Request, res: Response): void => {
   // Ensure workspace directory exists and scaffold initial files
   const workspacePath = ensureAgentWorkspaceDir(config.alias);
   scaffoldWorkspace(workspacePath);
+
+  // Create default cron jobs (e.g., heartbeat) and schedule them
+  const defaultJobs = ensureDefaultCronJobs(config.alias);
+  for (const job of defaultJobs) {
+    if (job.status === "active") {
+      scheduleJob(config.alias, job);
+    }
+  }
 
   res.status(201).json({ agent: { ...config, workspacePath } });
 });

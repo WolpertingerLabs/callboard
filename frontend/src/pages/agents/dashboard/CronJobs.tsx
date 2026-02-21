@@ -340,7 +340,26 @@ export default function CronJobs() {
                     flexWrap: "wrap",
                   }}
                 >
-                  <h3 style={{ fontSize: 15, fontWeight: 600 }}>{job.name}</h3>
+                  <h3 style={{ fontSize: 15, fontWeight: 600 }}>
+                    {job.name}
+                    {job.isDefault && (
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: 10,
+                          fontWeight: 500,
+                          color: "var(--text-muted)",
+                          background: "var(--bg)",
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          border: "1px solid var(--border)",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        Default
+                      </span>
+                    )}
+                  </h3>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <span
                       style={{

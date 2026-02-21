@@ -2,7 +2,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { DATA_DIR } from "../utils/paths.js";
+import { createLogger } from "../utils/logger.js";
 import type { CronJob } from "shared";
+
+const log = createLogger("agent-cron-jobs");
 
 const AGENTS_DIR = join(DATA_DIR, "agents");
 
@@ -73,4 +76,46 @@ export function deleteCronJob(alias: string, jobId: string): boolean {
   jobs.splice(index, 1);
   writeJobs(alias, jobs);
   return true;
+}
+
+// ── Default Cron Jobs ──────────────────────────────────
+
+const HEARTBEAT_PROMPT =
+  "Read HEARTBEAT.md if it exists in your workspace. Follow any instructions in it. " + "If nothing needs attention, reply HEARTBEAT_OK.";
+
+const DEFAULT_CRON_JOBS: Array<Omit<CronJob, "id">> = [
+  {
+    name: "Heartbeat",
+    schedule: "*/30 * * * *",
+    type: "recurring",
+    status: "active",
+    description: "Periodic check-in: reads HEARTBEAT.md and acts on any instructions.",
+    action: {
+      type: "start_session",
+      prompt: HEARTBEAT_PROMPT,
+    },
+    isDefault: true,
+  },
+];
+
+/**
+ * Ensure all default cron jobs exist for the given agent.
+ * Checks by the `isDefault` flag and name to avoid duplicates.
+ * Returns the list of newly created jobs (empty if all already exist).
+ */
+export function ensureDefaultCronJobs(alias: string): CronJob[] {
+  const existingJobs = readJobs(alias);
+  const created: CronJob[] = [];
+
+  for (const defaultJob of DEFAULT_CRON_JOBS) {
+    const exists = existingJobs.some((j) => j.isDefault === true && j.name === defaultJob.name);
+
+    if (!exists) {
+      const newJob = createCronJob(alias, defaultJob);
+      log.info(`Created default cron job "${defaultJob.name}" for agent ${alias}`);
+      created.push(newJob);
+    }
+  }
+
+  return created;
 }

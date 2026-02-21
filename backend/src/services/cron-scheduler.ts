@@ -8,7 +8,7 @@
 import cron from "node-cron";
 import { CronExpressionParser } from "cron-parser";
 import { listAgents } from "./agent-file-service.js";
-import { listCronJobs, updateCronJob } from "./agent-cron-jobs.js";
+import { listCronJobs, updateCronJob, ensureDefaultCronJobs } from "./agent-cron-jobs.js";
 import { executeAgent } from "./agent-executor.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -32,6 +32,9 @@ export function initScheduler(): void {
   let totalScheduled = 0;
 
   for (const agent of agents) {
+    // Ensure default cron jobs (e.g., heartbeat) exist for every agent
+    ensureDefaultCronJobs(agent.alias);
+
     const jobs = listCronJobs(agent.alias);
     for (const job of jobs) {
       if (job.status === "active") {

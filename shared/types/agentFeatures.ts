@@ -22,6 +22,7 @@ export interface CronJob {
   nextRun?: number;
   description: string;
   action: CronAction;
+  isDefault?: boolean; // Marks system-created default jobs (e.g., heartbeat)
 }
 
 // ── Event Subscriptions ───────────────────────────────
