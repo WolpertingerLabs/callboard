@@ -34,12 +34,29 @@ interface IngestedEvent {
   data: unknown; // Raw payload from external service
 }
 
+// ── Ingestor status entry (from ingestor_status tool) ───────────────
+
+interface IngestorStatusEntry {
+  connection: string;
+  type: string;
+  state: string;
+  bufferedEvents: number;
+  totalEventsReceived: number;
+  lastEventAt: string | null;
+  error?: string;
+}
+
 // ── Per-alias watcher state ─────────────────────────────────────────
 
 interface WatcherState {
   alias: string;
   pollTimer: ReturnType<typeof setTimeout> | null;
-  afterId: number;
+  /**
+   * Per-connection cursors. Event IDs are per-ingestor (not global),
+   * so each connection needs its own cursor to avoid one high-volume
+   * source advancing the cursor past another source's events.
+   */
+  cursors: Map<string, number>;
   currentBackoff: number;
   consecutiveFailures: number;
 }
@@ -105,7 +122,7 @@ export function startWatcherForAlias(alias: string): void {
   const state: WatcherState = {
     alias,
     pollTimer: null,
-    afterId: -1,
+    cursors: new Map(),
     currentBackoff: BASE_POLL_INTERVAL,
     consecutiveFailures: 0,
   };
@@ -140,49 +157,82 @@ function schedulePoll(state: WatcherState): void {
 }
 
 /**
+ * Poll a single connection and process its events.
+ * Each connection has its own cursor since event IDs are per-ingestor.
+ */
+async function pollConnection(state: WatcherState, proxyClient: ReturnType<typeof getProxyClient> & object, connection: string): Promise<void> {
+  const cursor = state.cursors.get(connection) ?? -1;
+
+  const result = (await proxyClient.callTool("poll_events", {
+    after_id: cursor,
+    connection,
+  })) as IngestedEvent[] | { events?: IngestedEvent[] };
+
+  // poll_events may return an array directly or wrapped in { events: [] }
+  const events: IngestedEvent[] = Array.isArray(result) ? result : result?.events || [];
+
+  if (events.length === 0) return;
+
+  log.debug(`[${state.alias}/${connection}] Received ${events.length} events`);
+
+  // Update per-connection cursor to the max event ID
+  const maxId = Math.max(...events.map((e) => e.id));
+  if (maxId > cursor) state.cursors.set(connection, maxId);
+
+  // Store each event in its per-connection log and dispatch to triggers.
+  // appendEvent() returns null for duplicates (same idempotency key),
+  // so we only dispatch events that were actually stored.
+  for (const event of events) {
+    const stored = appendEvent({
+      id: event.id,
+      idempotencyKey: event.idempotencyKey,
+      receivedAt: event.receivedAt,
+      receivedAtMs: event.receivedAtMs,
+      source: event.source,
+      eventType: event.eventType,
+      data: event.data,
+    });
+
+    if (stored) {
+      log.debug(`[${state.alias}/${connection}] Stored ${event.source}:${event.eventType} (event ${event.id})`);
+      // Dispatch to trigger system (matching is sync, execution is async)
+      dispatchEvent(stored);
+    }
+  }
+}
+
+/**
  * The main polling loop for one alias.
+ *
+ * Discovers active connections via ingestor_status, then polls each
+ * connection independently in parallel. This ensures per-ingestor
+ * event IDs don't interfere across connections — a high-volume source
+ * (e.g. Discord) won't advance the cursor past a lower-volume source
+ * (e.g. Slack).
  */
 async function pollLoop(state: WatcherState): Promise<void> {
   try {
     const proxyClient = getProxyClient(state.alias);
     if (!proxyClient) return;
 
-    // Call poll_events via the encrypted channel
-    const result = (await proxyClient.callTool("poll_events", {
-      after_id: state.afterId,
-    })) as IngestedEvent[] | { events?: IngestedEvent[] };
+    // Discover active connections via ingestor_status
+    const statusResult = await proxyClient.callTool("ingestor_status");
+    const ingestors: IngestorStatusEntry[] = Array.isArray(statusResult) ? statusResult : [];
 
-    // poll_events may return an array directly or wrapped in { events: [] }
-    const events: IngestedEvent[] = Array.isArray(result) ? result : result?.events || [];
+    if (ingestors.length === 0) {
+      state.consecutiveFailures = 0;
+      state.currentBackoff = BASE_POLL_INTERVAL;
+      schedulePoll(state);
+      return;
+    }
 
-    if (events.length > 0) {
-      log.debug(`[${state.alias}] Received ${events.length} events`);
+    // Poll each connection in parallel, each with its own cursor.
+    // Individual connection failures are logged but don't fail the whole cycle.
+    const results = await Promise.allSettled(ingestors.map((ingestor) => pollConnection(state, proxyClient, ingestor.connection)));
 
-      // Update cursor to the max event ID
-      const maxId = Math.max(...events.map((e) => e.id));
-      if (maxId > state.afterId) state.afterId = maxId;
-
-      // Store each event in its per-connection log and dispatch to triggers.
-      // appendEvent() returns null for duplicates (same idempotency key),
-      // so we only dispatch events that were actually stored.
-      for (const event of events) {
-        const stored = appendEvent({
-          id: event.id,
-          idempotencyKey: event.idempotencyKey,
-          receivedAt: event.receivedAt,
-          receivedAtMs: event.receivedAtMs,
-          source: event.source,
-          eventType: event.eventType,
-          data: event.data,
-        });
-
-	log.debug(`[${state.alias}] Stored ${event.source}:${event.eventType} (event ${event.id})`);
-
-        if (stored) {
-          log.debug(`Stored ${event.source}:${event.eventType} (event ${event.id})`);
-          // Dispatch to trigger system (matching is sync, execution is async)
-          dispatchEvent(stored);
-        }
+    for (const result of results) {
+      if (result.status === "rejected") {
+        log.warn(`[${state.alias}] Per-connection poll failed: ${result.reason?.message || result.reason}`);
       }
     }
 
