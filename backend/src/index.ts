@@ -19,6 +19,9 @@ import { agentsRouter } from "./routes/agents.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
 import { existsSync, readFileSync } from "fs";
 import { createLogger } from "./utils/logger.js";
+import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
+import { initHeartbeats, shutdownHeartbeats } from "./services/heartbeat.js";
+import { initEventWatcher, shutdownEventWatcher } from "./services/event-watcher.js";
 
 const log = createLogger("server");
 
@@ -108,15 +111,38 @@ app.get("*", (_req, res) => {
 app.listen(PORT, () => {
   log.info(`Backend running on http://localhost:${PORT}`);
   log.info(`Log level: ${process.env.LOG_LEVEL || "info"}`);
+
+  // Initialize automation systems (non-blocking, log errors but don't crash)
+  try {
+    initScheduler();
+  } catch (err: any) {
+    log.error(`Scheduler init failed: ${err.message}`);
+  }
+  try {
+    initHeartbeats();
+  } catch (err: any) {
+    log.error(`Heartbeat init failed: ${err.message}`);
+  }
+  try {
+    initEventWatcher();
+  } catch (err: any) {
+    log.error(`Event watcher init failed: ${err.message}`);
+  }
 });
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
   log.info("SIGTERM received, shutting down gracefully");
+  shutdownScheduler();
+  shutdownHeartbeats();
+  shutdownEventWatcher();
   process.exit(0);
 });
 
 process.on("SIGINT", () => {
   log.info("SIGINT received, shutting down gracefully");
+  shutdownScheduler();
+  shutdownHeartbeats();
+  shutdownEventWatcher();
   process.exit(0);
 });

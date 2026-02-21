@@ -652,3 +652,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
 // Register sendMessage as the message sender for agent-tools.ts (breaks circular dependency)
 setMessageSender(sendMessage);
+
+// Register sendMessage for the shared agent executor (cron scheduler, heartbeats, event watcher)
+import { setExecutorMessageSender } from "./agent-executor.js";
+setExecutorMessageSender(sendMessage);

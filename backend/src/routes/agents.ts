@@ -17,6 +17,8 @@ import { agentWorkspaceRouter } from "./agent-workspace.js";
 import { agentMemoryRouter } from "./agent-memory.js";
 import { agentCronJobsRouter } from "./agent-cron-jobs.js";
 import { agentActivityRouter } from "./agent-activity.js";
+import { updateHeartbeatConfig, stopHeartbeat } from "../services/heartbeat.js";
+import { cancelAllJobsForAgent } from "../services/cron-scheduler.js";
 
 export const agentsRouter = Router();
 
@@ -143,6 +145,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     userLocation,
     userContext,
     eventSubscriptions,
+    heartbeat,
   } = req.body as Partial<AgentConfig>;
 
   // Build updated config — only override fields present in request body
@@ -163,6 +166,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     ...(userLocation !== undefined && { userLocation: userLocation?.trim() || undefined }),
     ...(userContext !== undefined && { userContext: userContext?.trim() || undefined }),
     ...(eventSubscriptions !== undefined && { eventSubscriptions }),
+    ...(heartbeat !== undefined && { heartbeat }),
   };
 
   // Validate required fields
@@ -179,12 +183,22 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
   // Persist (createAgent acts as upsert — mkdirSync with recursive is a no-op)
   createAgent(updated);
 
+  // Sync heartbeat system if heartbeat config changed
+  if (heartbeat !== undefined) {
+    updateHeartbeatConfig(alias, heartbeat || { enabled: false, intervalMinutes: 30 });
+  }
+
   const workspacePath = ensureAgentWorkspaceDir(alias);
   res.json({ agent: { ...updated, workspacePath } });
 });
 
 agentsRouter.delete("/:alias", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
+
+  // Stop heartbeat and cancel all cron jobs before deleting
+  stopHeartbeat(alias);
+  cancelAllJobsForAgent(alias);
+
   const deleted = deleteAgent(alias);
 
   if (!deleted) {

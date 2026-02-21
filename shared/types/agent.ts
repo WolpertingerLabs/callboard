@@ -1,5 +1,12 @@
 import type { EventSubscription } from "./agentFeatures.js";
 
+export interface HeartbeatConfig {
+  enabled: boolean;
+  intervalMinutes: number; // Default: 30
+  quietHoursStart?: string; // "HH:MM" format, e.g. "23:00"
+  quietHoursEnd?: string; // "HH:MM" format, e.g. "07:00"
+}
+
 export interface AgentConfig {
   // Core
   name: string;
@@ -27,4 +34,7 @@ export interface AgentConfig {
   // Event subscriptions — which mcp-secure-proxy connections this agent monitors
   // The event watcher wakes the agent when new events arrive from subscribed connections
   eventSubscriptions?: EventSubscription[];
+
+  // Heartbeat — periodic open-ended check-ins
+  heartbeat?: HeartbeatConfig;
 }

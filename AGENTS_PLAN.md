@@ -15,9 +15,9 @@ This two-layer approach gives clean separation: workspace protocol lives in file
 
 ---
 
-## Current State (Phase 1 + Phase 2 + Phase 3 — Complete)
+## Current State (Phase 1 + Phase 2 + Phase 3 + Phase 4 — Complete)
 
-Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and navigation. Phase 2 added workspace scaffolding, identity compilation, system prompt injection, agent chat flow, operational data services (cron jobs, activity logs), workspace file editing, and wired all dashboard pages to real APIs (removing all mock data). Phase 3 added custom CCUI tools via an in-process MCP server (`createSdkMcpServer`), giving agents programmatic access to the platform — orchestrating other agents, managing cron jobs, querying activity, and discovering agents. Agent sessions are tagged with `agentAlias` in chat metadata for ownership tracking, and the dashboard Chat page shows real conversations.
+Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and navigation. Phase 2 added workspace scaffolding, identity compilation, system prompt injection, agent chat flow, operational data services (cron jobs, activity logs), workspace file editing, and wired all dashboard pages to real APIs (removing all mock data). Phase 3 added custom CCUI tools via an in-process MCP server (`createSdkMcpServer`), giving agents programmatic access to the platform — orchestrating other agents, managing cron jobs, querying activity, and discovering agents. Agent sessions are tagged with `agentAlias` in chat metadata for ownership tracking, and the dashboard Chat page shows real conversations. Phase 4 made agents autonomous — cron jobs now execute on schedule via `node-cron`, heartbeat check-ins fire at configured intervals with quiet hours support, and the event watcher polls `mcp-secure-proxy`'s `poll_events` to wake agents when new events arrive from subscribed connections. All three systems share a central `executeAgent()` helper and initialize/shutdown gracefully with the server.
 
 ### What Exists Today
 
@@ -52,10 +52,14 @@ Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and
 
     // Event subscriptions
     eventSubscriptions?: EventSubscription[];
+
+    // Heartbeat (Phase 4)
+    heartbeat?: HeartbeatConfig;
   }
   ```
 
 - `agentFeatures.ts` — `CronJob`, `CronAction`, `EventSubscription`, `ActivityEntry` interfaces (ChatMessage, Connection, MemoryItem, Trigger removed — see §2.4)
+- `agent.ts` — `HeartbeatConfig` interface (Phase 4): `{ enabled, intervalMinutes, quietHoursStart?, quietHoursEnd? }`
 
 **Backend** (`backend/src/`)
 
@@ -118,6 +122,41 @@ Phase 1 established the foundation: agent CRUD, the full dashboard UI shell, and
     - **Discovery**: `list_agents`, `get_agent_info`
   - Uses `setMessageSender()` callback pattern to break circular dependency with `claude.ts`
   - Scoped tools (cron, activity) only access the owning agent's data; orchestration tools can target any agent
+- `services/agent-executor.ts` — Central `executeAgent()` function (Phase 4):
+  - Shared by cron scheduler, heartbeat system, and event watcher
+  - Loads agent config → compiles identity → gets workspace path → calls `sendMessage()`
+  - Waits for `chat_created` event (30s timeout) to get chatId
+  - Logs to activity feed with type mapping (cron→"cron", event→"event", heartbeat→"system")
+  - Uses same lazy `setMessageSender` pattern as agent-tools.ts to break circular dep with claude.ts
+  - Returns `{ chatId }` or null on failure (never throws)
+- `services/cron-scheduler.ts` — Cron job scheduler (Phase 4):
+  - Uses `node-cron` to schedule stored cron jobs
+  - `initScheduler()` loads all agents' jobs on startup
+  - `scheduleJob(alias, job)` validates cron expression, creates task
+  - On fire: updates lastRun, calls executeAgent(), marks one-off jobs as completed
+  - `computeAndStoreNextRun()` uses `cron-parser`'s `CronExpressionParser.parse()`
+  - `cancelAllJobsForAgent(alias)` for agent deletion cleanup
+  - In-memory maps: `scheduledTasks` (jobId→ScheduledTask), `jobAgentMap` (jobId→agentAlias)
+- `services/heartbeat.ts` — Heartbeat system (Phase 4):
+  - Uses `setInterval` for periodic agent check-ins
+  - `initHeartbeats()` loads all agents on startup
+  - Heartbeat prompt: "Read HEARTBEAT.md if it exists. Follow any instructions in it. If nothing needs attention, reply HEARTBEAT_OK."
+  - `isQuietHours()` uses `Intl.DateTimeFormat` for timezone-aware quiet hours (handles overnight ranges)
+  - `updateHeartbeatConfig()` syncs when agent settings change
+- `services/proxy-client.ts` — Vendored mcp-secure-proxy client (Phase 4):
+  - Self-contained (~370 lines) using only Node.js native `crypto` module
+  - Vendors: key loading, EncryptedChannel, deriveSessionKeys, HandshakeInitiator, message types
+  - `ProxyClient` class: `handshake()`, `callTool(toolName, toolInput)`, `reset()`
+  - Ed25519 signing + X25519 ECDH → AES-256-GCM encrypted channel with monotonic counters
+  - Auto-rehandshake on 401 (session expired, 30min TTL)
+  - Reuses existing MCP proxy keypair at `~/.mcp-secure-proxy/keys/local/`
+- `services/event-watcher.ts` — Event polling loop (Phase 4):
+  - Opt-in via `EVENT_WATCHER_ENABLED=true` env var (default: disabled)
+  - Config: `EVENT_WATCHER_KEYS_DIR`, `EVENT_WATCHER_REMOTE_KEYS_DIR`, `EVENT_WATCHER_REMOTE_URL`, `EVENT_WATCHER_POLL_INTERVAL`
+  - Polls `poll_events(after_id)` via ProxyClient encrypted channel
+  - Matches events to agents by `eventSubscriptions` containing matching `connectionAlias` + `enabled: true`
+  - Fire-and-forget `executeAgent()` for each matching agent
+  - Exponential backoff on failure (5s → 60s max), reset on success
 
 **Scaffold Templates** (`backend/src/scaffold/`)
 
@@ -143,7 +182,7 @@ On agent creation, all 6 files are copied to the workspace, plus AGENTS.md → C
 - `agents/CreateAgent.tsx` — Agent creation form with structured identity fields (name, alias auto-gen, description, emoji, role, personality, tone)
 - `agents/AgentDashboard.tsx` — Dashboard layout with sidebar nav (desktop) / bottom tab bar (mobile); passes `onAgentUpdate` via outlet context for child pages to sync state
 - `agents/dashboard/` — All sub-pages wired to real APIs (no mock data):
-  - `Overview.tsx` — Identity settings form (emoji, role, personality, tone, pronouns, user context) + stats cards (cron jobs, event subscriptions) + recent activity
+  - `Overview.tsx` — Identity settings form (emoji, role, personality, tone, pronouns, user context) + heartbeat config (toggle, interval, quiet hours) + stats cards (cron jobs, event subscriptions) + recent activity
   - `Chat.tsx` — Agent conversations list filtered by `agentAlias` in chat metadata, with "New Chat" button that navigates to the main chat view with agent identity + CCUI tools
   - `CronJobs.tsx` — Full CRUD: create form with name/schedule/type/description/prompt, pause/resume, delete
   - `Connections.tsx` — Read-only proxy status view showing known mcp-secure-proxy connections
@@ -721,11 +760,11 @@ appendActivity(agentAlias, {
 
 ---
 
-## Phase 4: Event Watcher & Automation
+## Phase 4: Event Watcher & Automation ✅
 
 **Goal**: Agents respond to scheduled tasks, heartbeat polls, and external events without human intervention. External events come from mcp-secure-proxy's ingestors — the **event watcher** polls `poll_events` and wakes agents that have subscriptions to connections with new events. The agent itself decides what to do — no hardcoded conditions or actions.
 
-### 4.1 — Cron Scheduler
+### 4.1 — Cron Scheduler ✅
 
 **New file: `backend/src/services/cron-scheduler.ts`**
 
@@ -748,7 +787,7 @@ import { initScheduler } from "./services/cron-scheduler.js";
 initScheduler();
 ```
 
-### 4.2 — Heartbeat System
+### 4.2 — Heartbeat System ✅
 
 **New file: `backend/src/services/heartbeat.ts`**
 
@@ -791,7 +830,7 @@ export interface AgentConfig {
 }
 ```
 
-### 4.3 — Event Watcher (Consuming mcp-secure-proxy Events)
+### 4.3 — Event Watcher (Consuming mcp-secure-proxy Events) ✅
 
 **New file: `backend/src/services/event-watcher.ts`**
 
@@ -935,7 +974,7 @@ When the proxy remote server is unavailable:
 - Exponential backoff on repeated failures (5s → 10s → 20s → 60s max)
 - Dashboard shows event watcher status (healthy / degraded / disconnected) on the Connections page
 
-### 4.4 — Frontend Wiring
+### 4.4 — Frontend Wiring ✅
 
 - **CronJobs page**: "New Job" button opens a form to configure schedule, prompt template, folder → calls backend CRUD
 - **Event Subscriptions** (on Events page): Toggle switches for each available connection (from `list_routes`), saves to `AgentConfig.eventSubscriptions` via `PUT /api/agents/:alias`
@@ -943,7 +982,7 @@ When the proxy remote server is unavailable:
 - CronJobs page shows real-time status (last triggered, next run) from persisted data
 - Activity page shows event/cron/heartbeat executions with source and event data
 
-### 4.5 — Verification
+### 4.5 — Verification (Partial)
 
 - Event watcher authenticates to proxy remote server as its own caller and polls events
 - Cron jobs execute on schedule and create Claude Code sessions
@@ -959,6 +998,12 @@ When the proxy remote server is unavailable:
 - Event watcher gracefully handles proxy being unavailable (backoff, resume from cursor)
 - Ring buffer eviction doesn't cause silent failures — monitored via ingestor_status
 - Rate limiting doesn't throttle the event watcher's polling loop (stays under 60/min)
+
+**Verified so far:**
+
+- ✅ Full build succeeds (shared → backend → frontend)
+- ✅ Lint passes (0 errors in Phase 4 files)
+- Remaining items require runtime testing with a running server + mcp-secure-proxy
 
 ---
 
@@ -1195,19 +1240,20 @@ Phase 3 ✅  Custom Tools & Session Integration
     │       - ✅ Always runs in agent workspace folder (no override)
     │
     ▼
-Phase 4     Event Watcher & Automation
-    │       - Cron scheduler (specific scheduled tasks)
-    │       - Heartbeat system (periodic open-ended check-ins)
-    │       - Event watcher: dedicated caller in remote.config.json
-    │         → authenticates via same HTTP wire protocol as MCP proxy
-    │         → polls poll_events(after_id) every 5s
-    │         → finds agents with matching event subscriptions
-    │         → executeAgent() with full event data — agent decides response
+Phase 4 ✅  Event Watcher & Automation
+    │       - §4.1: ✅ Cron scheduler (cron-scheduler.ts) — node-cron scheduling, nextRun via cron-parser
+    │       - §4.2: ✅ Heartbeat system (heartbeat.ts) — setInterval, quiet hours, timezone-aware
+    │       - §4.3: ✅ Event watcher (event-watcher.ts) — opt-in via EVENT_WATCHER_ENABLED env var
+    │               Vendored proxy client (proxy-client.ts) — Ed25519/X25519 handshake, AES-256-GCM
+    │               Reuses existing MCP proxy keypair (~/.mcp-secure-proxy/keys/local/)
+    │               Polls poll_events(after_id) every 5s, exponential backoff on failure
+    │               Matches events to agents by eventSubscriptions, fire-and-forget executeAgent()
+    │       - §4.4: ✅ Frontend heartbeat config UI in Overview.tsx (toggle, interval, quiet hours)
+    │       - ✅ Central agent-executor.ts shared by all three automation systems
+    │       - ✅ Route integration: scheduler syncs on cron CRUD, agent delete cleans up
+    │       - ✅ Server init/shutdown hooks for all three systems in index.ts
     │       - NO condition language — agent personality defines behavior
     │       - NO trigger CRUD — just enable/disable event subscriptions
-    │       - Ring buffer monitoring & resilience (backoff, cursor tracking)
-    │       - NO custom event ingestion — mcp-secure-proxy handles all of that
-    │       Depends on: Phase 3 (custom tools, sendMessage agent integration)
     │
     ▼
 Phase 5     Advanced Features

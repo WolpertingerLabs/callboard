@@ -1,15 +1,6 @@
 import { useState, useEffect } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
-import {
-  MessageSquare,
-  Plug,
-  Clock,
-  Radio,
-  ChevronRight,
-  Bot,
-  Save,
-  Check,
-} from "lucide-react";
+import { MessageSquare, Plug, Clock, Radio, ChevronRight, Bot, Save, Check } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { updateAgent, getAgentCronJobs, getAgentActivity } from "../../../api";
 import type { AgentConfig, ActivityEntry } from "../../../api";
@@ -48,6 +39,10 @@ export default function Overview() {
   const [userTimezone, setUserTimezone] = useState(agent.userTimezone || "");
   const [userLocation, setUserLocation] = useState(agent.userLocation || "");
   const [userContext, setUserContext] = useState(agent.userContext || "");
+  const [heartbeatEnabled, setHeartbeatEnabled] = useState(agent.heartbeat?.enabled || false);
+  const [heartbeatInterval, setHeartbeatInterval] = useState(agent.heartbeat?.intervalMinutes || 30);
+  const [quietStart, setQuietStart] = useState(agent.heartbeat?.quietHoursStart || "");
+  const [quietEnd, setQuietEnd] = useState(agent.heartbeat?.quietHoursEnd || "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -66,7 +61,10 @@ export default function Overview() {
         setCronTotal(jobs.length);
         setCronCount(jobs.filter((j) => j.status === "active").length);
       })
-      .catch(() => { setCronTotal(0); setCronCount(0); });
+      .catch(() => {
+        setCronTotal(0);
+        setCronCount(0);
+      });
 
     // Fetch recent activity
     getAgentActivity(agent.alias, undefined, 5)
@@ -87,6 +85,12 @@ export default function Overview() {
         userTimezone: userTimezone || undefined,
         userLocation: userLocation || undefined,
         userContext: userContext || undefined,
+        heartbeat: {
+          enabled: heartbeatEnabled,
+          intervalMinutes: heartbeatInterval,
+          quietHoursStart: quietStart || undefined,
+          quietHoursEnd: quietEnd || undefined,
+        },
       });
       onAgentUpdate?.(updated);
       setSaved(true);
@@ -145,7 +149,8 @@ export default function Overview() {
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 700 }}>{agent.name}</h1>
             <p style={{ fontSize: 14, color: "var(--text-muted)", marginTop: 2 }}>
-              {agent.role ? `${agent.role} — ` : ""}{agent.description}
+              {agent.role ? `${agent.role} — ` : ""}
+              {agent.description}
             </p>
           </div>
         </div>
@@ -192,13 +197,9 @@ export default function Overview() {
               <div>
                 <div style={{ fontSize: 22, fontWeight: 700 }}>
                   {stat.value}
-                  <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>
-                    /{stat.total}
-                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>/{stat.total}</span>
                 </div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  Active {stat.label}
-                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Active {stat.label}</div>
               </div>
             </div>
           );
@@ -279,9 +280,7 @@ export default function Overview() {
       {/* Identity Settings */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Identity Settings
-          </h2>
+          <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Identity Settings</h2>
           <button
             onClick={handleSave}
             disabled={saving}
@@ -323,7 +322,13 @@ export default function Overview() {
           </div>
           <div style={{ gridColumn: isMobile ? undefined : "1 / -1" }}>
             <label style={labelStyle}>Personality</label>
-            <textarea value={personality} onChange={(e) => setPersonality(e.target.value)} placeholder="Describe the agent's personality..." rows={2} style={{ ...inputStyle, resize: "vertical" }} />
+            <textarea
+              value={personality}
+              onChange={(e) => setPersonality(e.target.value)}
+              placeholder="Describe the agent's personality..."
+              rows={2}
+              style={{ ...inputStyle, resize: "vertical" }}
+            />
           </div>
           <div>
             <label style={labelStyle}>Tone</label>
@@ -354,7 +359,75 @@ export default function Overview() {
           </div>
           <div style={{ gridColumn: isMobile ? undefined : "1 / -1" }}>
             <label style={labelStyle}>Additional Context</label>
-            <textarea value={userContext} onChange={(e) => setUserContext(e.target.value)} placeholder="Anything else the agent should know about you..." rows={2} style={{ ...inputStyle, resize: "vertical" }} />
+            <textarea
+              value={userContext}
+              onChange={(e) => setUserContext(e.target.value)}
+              placeholder="Anything else the agent should know about you..."
+              rows={2}
+              style={{ ...inputStyle, resize: "vertical" }}
+            />
+          </div>
+
+          {/* Heartbeat section */}
+          <div style={{ gridColumn: isMobile ? undefined : "1 / -1", borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 4 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+              Heartbeat
+            </p>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+              Periodic check-ins where the agent reads HEARTBEAT.md and decides what to do.
+            </p>
+          </div>
+          <div>
+            <label style={labelStyle}>Enabled</label>
+            <button
+              type="button"
+              onClick={() => setHeartbeatEnabled(!heartbeatEnabled)}
+              style={{
+                padding: "8px 18px",
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 500,
+                background: heartbeatEnabled ? "var(--success)" : "var(--bg)",
+                color: heartbeatEnabled ? "#fff" : "var(--text-muted)",
+                border: heartbeatEnabled ? "1px solid var(--success)" : "1px solid var(--border)",
+                cursor: "pointer",
+                transition: "all 0.15s",
+              }}
+            >
+              {heartbeatEnabled ? "On" : "Off"}
+            </button>
+          </div>
+          <div>
+            <label style={labelStyle}>Interval (minutes)</label>
+            <input
+              type="number"
+              value={heartbeatInterval}
+              onChange={(e) => setHeartbeatInterval(parseInt(e.target.value) || 30)}
+              min={5}
+              max={1440}
+              disabled={!heartbeatEnabled}
+              style={{ ...inputStyle, opacity: heartbeatEnabled ? 1 : 0.5 }}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Quiet Hours Start</label>
+            <input
+              type="time"
+              value={quietStart}
+              onChange={(e) => setQuietStart(e.target.value)}
+              disabled={!heartbeatEnabled}
+              style={{ ...inputStyle, opacity: heartbeatEnabled ? 1 : 0.5 }}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Quiet Hours End</label>
+            <input
+              type="time"
+              value={quietEnd}
+              onChange={(e) => setQuietEnd(e.target.value)}
+              disabled={!heartbeatEnabled}
+              style={{ ...inputStyle, opacity: heartbeatEnabled ? 1 : 0.5 }}
+            />
           </div>
         </div>
       </div>
@@ -369,9 +442,7 @@ export default function Overview() {
             marginBottom: 12,
           }}
         >
-          <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Recent Activity
-          </h2>
+          <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Recent Activity</h2>
           <button
             onClick={() => navigate(`${basePath}/activity`)}
             style={{
@@ -444,9 +515,7 @@ export default function Overview() {
                     {entry.message}
                   </p>
                 </div>
-                <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>
-                  {timeAgo(entry.timestamp)}
-                </span>
+                <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{timeAgo(entry.timestamp)}</span>
               </div>
             ))}
           </div>

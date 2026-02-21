@@ -1,13 +1,8 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { agentExists } from "../services/agent-file-service.js";
-import {
-  listCronJobs,
-  getCronJob,
-  createCronJob,
-  updateCronJob,
-  deleteCronJob,
-} from "../services/agent-cron-jobs.js";
+import { listCronJobs, getCronJob, createCronJob, updateCronJob, deleteCronJob } from "../services/agent-cron-jobs.js";
+import { scheduleJob, cancelJob } from "../services/cron-scheduler.js";
 import type { CronJob, CronAction } from "shared";
 
 export const agentCronJobsRouter = Router({ mergeParams: true });
@@ -77,6 +72,11 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
     action: cronAction,
   });
 
+  // Sync scheduler: schedule the job if it's active
+  if (job.status === "active") {
+    scheduleJob(alias, job);
+  }
+
   res.status(201).json({ job });
 });
 
@@ -98,6 +98,12 @@ agentCronJobsRouter.put("/:jobId", (req: Request, res: Response): void => {
     return;
   }
 
+  // Sync scheduler: cancel old schedule, re-schedule if active
+  cancelJob(jobId);
+  if (job.status === "active") {
+    scheduleJob(alias, job);
+  }
+
   res.json({ job });
 });
 
@@ -110,6 +116,9 @@ agentCronJobsRouter.delete("/:jobId", (req: Request, res: Response): void => {
     res.status(404).json({ error: "Agent not found" });
     return;
   }
+
+  // Cancel from scheduler before deleting
+  cancelJob(jobId);
 
   const deleted = deleteCronJob(alias, jobId);
   if (!deleted) {
