@@ -373,12 +373,22 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       tool(
         "create_trigger",
-        "Create a new event trigger. When events matching the filter arrive, a session starts with the prompt template. Use {{event.source}}, {{event.eventType}}, {{event.data}}, {{event.data.fieldPath}} in the prompt.",
+        "Create a new event trigger. When events matching the filter arrive, a session starts with the prompt template. Use {{event.source}}, {{event.eventType}}, {{event.data}}, {{event.data.fieldPath}} in the prompt. You can add conditions to filter on specific data fields (AND logic).",
         {
           name: z.string().describe("Human-readable name for the trigger"),
           description: z.string().optional().describe("What this trigger does"),
           source: z.string().optional().describe("Connection alias to filter (e.g. 'discord-bot'). Omit for any source."),
           eventType: z.string().optional().describe("Event type to filter (e.g. 'MESSAGE_CREATE'). Omit for any type."),
+          conditions: z
+            .array(
+              z.object({
+                field: z.string().describe("Dot-notation path into event.data (e.g. 'author.username')"),
+                operator: z.enum(["equals", "contains", "matches", "exists", "not_exists"]).describe("Comparison operator"),
+                value: z.string().optional().describe("Value to compare against. Not needed for exists/not_exists. For 'matches', use a regex pattern."),
+              }),
+            )
+            .optional()
+            .describe("Data field conditions (AND logic). Each condition checks a field in the event data."),
           prompt: z.string().describe("Prompt template. Use {{event.source}}, {{event.eventType}}, {{event.data}}, {{event.data.fieldPath}} for event data."),
         },
         async (args) => {
@@ -390,6 +400,7 @@ export function buildAgentToolsServer(agentAlias: string) {
               filter: {
                 ...(args.source && { source: args.source }),
                 ...(args.eventType && { eventType: args.eventType }),
+                ...(args.conditions?.length && { conditions: args.conditions }),
               },
               action: { type: "start_session", prompt: args.prompt },
               triggerCount: 0,
@@ -411,13 +422,23 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       tool(
         "update_trigger",
-        "Update an existing event trigger. You can change the name, status, filter source/eventType, or prompt.",
+        "Update an existing event trigger. You can change the name, status, filter source/eventType/conditions, or prompt.",
         {
           triggerId: z.string().describe("The ID of the trigger to update"),
           name: z.string().optional().describe("New name"),
           status: z.enum(["active", "paused"]).optional().describe("New status"),
           source: z.string().optional().describe("New source filter (connection alias)"),
           eventType: z.string().optional().describe("New event type filter"),
+          conditions: z
+            .array(
+              z.object({
+                field: z.string().describe("Dot-notation path into event.data (e.g. 'author.username')"),
+                operator: z.enum(["equals", "contains", "matches", "exists", "not_exists"]).describe("Comparison operator"),
+                value: z.string().optional().describe("Value to compare against. Not needed for exists/not_exists. For 'matches', use a regex pattern."),
+              }),
+            )
+            .optional()
+            .describe("New data field conditions (AND logic). Pass empty array to remove all conditions."),
           prompt: z.string().optional().describe("New prompt template"),
         },
         async (args) => {
@@ -426,12 +447,13 @@ export function buildAgentToolsServer(agentAlias: string) {
             if (args.name !== undefined) updates.name = args.name;
             if (args.status !== undefined) updates.status = args.status;
 
-            if (args.source !== undefined || args.eventType !== undefined) {
+            if (args.source !== undefined || args.eventType !== undefined || args.conditions !== undefined) {
               const existing = getTrigger(agentAlias, args.triggerId);
               updates.filter = {
                 ...(existing?.filter || {}),
                 ...(args.source !== undefined && { source: args.source || undefined }),
                 ...(args.eventType !== undefined && { eventType: args.eventType || undefined }),
+                ...(args.conditions !== undefined && { conditions: args.conditions.length ? args.conditions : undefined }),
               };
             }
 
