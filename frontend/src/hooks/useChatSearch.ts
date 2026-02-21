@@ -9,22 +9,18 @@ interface UseChatSearchResult {
 }
 
 export function useChatSearch(query: string, debounceMs: number = 500): UseChatSearchResult {
-  const [matchingChatIds, setMatchingChatIds] = useState<Set<string> | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
+  const [results, setResults] = useState<{ query: string; ids: Set<string> } | null>(null);
   const requestIdRef = useRef(0);
 
-  useEffect(() => {
-    const trimmed = query.trim();
+  const trimmed = query.trim();
 
-    // Empty query → no search active
+  useEffect(() => {
+    // Empty query → invalidate in-flight requests, no async work needed
     if (!trimmed) {
-      setMatchingChatIds(null);
-      setIsSearching(false);
       requestIdRef.current++;
       return;
     }
 
-    setIsSearching(true);
     const currentRequestId = ++requestIdRef.current;
 
     const timer = setTimeout(async () => {
@@ -33,20 +29,27 @@ export function useChatSearch(query: string, debounceMs: number = 500): UseChatS
 
         // Only update if this is still the latest request
         if (currentRequestId === requestIdRef.current) {
-          setMatchingChatIds(new Set(result.chatIds));
-          setIsSearching(false);
+          setResults({ query: trimmed, ids: new Set(result.chatIds) });
         }
       } catch (err) {
         console.error("Chat search failed:", err);
         if (currentRequestId === requestIdRef.current) {
-          setMatchingChatIds(new Set());
-          setIsSearching(false);
+          setResults({ query: trimmed, ids: new Set() });
         }
       }
     }, debounceMs);
 
     return () => clearTimeout(timer);
-  }, [query, debounceMs]);
+  }, [trimmed, debounceMs]);
 
-  return { matchingChatIds, isSearching };
+  // Derive return values from current query + stored results (no synchronous setState in effect)
+  if (!trimmed) {
+    return { matchingChatIds: null, isSearching: false };
+  }
+
+  const hasMatchingResults = results !== null && results.query === trimmed;
+  return {
+    matchingChatIds: hasMatchingResults ? results.ids : null,
+    isSearching: !hasMatchingResults,
+  };
 }
