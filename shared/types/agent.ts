@@ -38,6 +38,11 @@ export interface AgentConfig {
   // Heartbeat — periodic open-ended check-ins
   heartbeat?: HeartbeatConfig;
 
+  // Auto-journal — automatically update memory files after each conversation turn.
+  // When enabled (default), the agent is prompted to update its daily journal and
+  // any other workspace files (MEMORY.md, SOUL.md, USER.md, etc.) at the end of each turn.
+  autoJournal?: boolean; // default: true
+
   // MCP key alias — which mcp-secure-proxy local identity this agent uses.
   // Corresponds to a subdirectory under {mcpConfigDir}/keys/local/.
   // If undefined, proxy features (connections, events) are disabled for this agent.
