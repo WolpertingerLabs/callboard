@@ -12,6 +12,7 @@
  *   EVENT_WATCHER_POLL_INTERVAL — poll interval in ms (default: 3000)
  */
 import { appendEvent } from "./event-log.js";
+import { dispatchEvent } from "./trigger-dispatcher.js";
 import { getSharedProxyClient } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -100,9 +101,9 @@ async function pollLoop(): Promise<void> {
       const maxId = Math.max(...events.map((e) => e.id));
       if (maxId > afterId) afterId = maxId;
 
-      // Store each event in its per-connection log
+      // Store each event in its per-connection log and dispatch to triggers
       for (const event of events) {
-        appendEvent({
+        const stored = appendEvent({
           id: event.id,
           receivedAt: event.receivedAt,
           source: event.source,
@@ -110,6 +111,9 @@ async function pollLoop(): Promise<void> {
           data: event.data,
         });
         log.debug(`Stored ${event.source}:${event.eventType} (event ${event.id})`);
+
+        // Dispatch to trigger system (matching is sync, execution is async)
+        dispatchEvent(stored);
       }
     }
 
