@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { agentExists } from "../services/agent-file-service.js";
+import { appendActivity } from "../services/agent-activity.js";
 import {
   listTriggers,
   getTrigger,
@@ -101,6 +102,12 @@ agentTriggersRouter.post("/", (req: Request, res: Response): void => {
     triggerCount: 0,
   });
 
+  appendActivity(alias, {
+    type: "trigger",
+    message: `Trigger "${trigger.name}" created`,
+    metadata: { triggerId: trigger.id, action: "created" },
+  });
+
   res.status(201).json({ trigger });
 });
 
@@ -122,6 +129,12 @@ agentTriggersRouter.put("/:triggerId", (req: Request, res: Response): void => {
     return;
   }
 
+  appendActivity(alias, {
+    type: "trigger",
+    message: `Trigger "${trigger.name}" updated`,
+    metadata: { triggerId: trigger.id, action: "updated" },
+  });
+
   res.json({ trigger });
 });
 
@@ -135,11 +148,18 @@ agentTriggersRouter.delete("/:triggerId", (req: Request, res: Response): void =>
     return;
   }
 
+  const existing = getTrigger(alias, triggerId);
   const deleted = deleteTrigger(alias, triggerId);
   if (!deleted) {
     res.status(404).json({ error: "Trigger not found" });
     return;
   }
+
+  appendActivity(alias, {
+    type: "trigger",
+    message: `Trigger "${existing?.name || triggerId}" deleted`,
+    metadata: { triggerId, action: "deleted" },
+  });
 
   res.json({ ok: true });
 });

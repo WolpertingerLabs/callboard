@@ -21,7 +21,7 @@ agentActivityRouter.get("/", (req: Request, res: Response): void => {
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
   const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
 
-  const validTypes = ["chat", "event", "cron", "connection", "system"];
+  const validTypes = ["chat", "event", "cron", "connection", "system", "trigger"];
   if (type && !validTypes.includes(type)) {
     res.status(400).json({ error: `type must be one of: ${validTypes.join(", ")}` });
     return;
@@ -80,7 +80,7 @@ agentActivityRouter.post("/", (req: Request, res: Response): void => {
     return;
   }
 
-  const validTypes = ["chat", "event", "cron", "connection", "system"];
+  const validTypes = ["chat", "event", "cron", "connection", "system", "trigger"];
   if (!validTypes.includes(type)) {
     res.status(400).json({ error: `type must be one of: ${validTypes.join(", ")}` });
     return;

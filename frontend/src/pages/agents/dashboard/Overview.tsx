@@ -22,6 +22,7 @@ const typeColors: Record<string, string> = {
   cron: "var(--success)",
   connection: "#58a6ff",
   system: "var(--text-muted)",
+  trigger: "#a78bfa",
 };
 
 export default function Overview() {

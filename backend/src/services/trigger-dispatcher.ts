@@ -51,7 +51,7 @@ export function dispatchEvent(event: StoredEvent): void {
       executeAgent({
         agentAlias: agent.alias,
         prompt,
-        triggeredBy: "event",
+        triggeredBy: "trigger",
         metadata: {
           triggerId: trigger.id,
           triggerName: trigger.name,

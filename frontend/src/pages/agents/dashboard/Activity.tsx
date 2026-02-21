@@ -10,6 +10,7 @@ const typeColors: Record<string, string> = {
   cron: "var(--success)",
   connection: "#58a6ff",
   system: "var(--text-muted)",
+  trigger: "#a78bfa",
 };
 
 const typeLabels: Record<string, string> = {
@@ -18,9 +19,10 @@ const typeLabels: Record<string, string> = {
   cron: "Cron",
   connection: "Connection",
   system: "System",
+  trigger: "Trigger",
 };
 
-const filterOptions = ["all", "chat", "event", "cron", "connection", "system"] as const;
+const filterOptions = ["all", "chat", "event", "cron", "connection", "system", "trigger"] as const;
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);

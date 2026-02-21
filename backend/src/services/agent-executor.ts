@@ -48,7 +48,7 @@ function getSendMessage(): MessageSender {
 export interface ExecuteAgentOptions {
   agentAlias: string;
   prompt: string;
-  triggeredBy: "cron" | "heartbeat" | "event";
+  triggeredBy: "cron" | "heartbeat" | "event" | "trigger";
   metadata?: Record<string, unknown>;
   maxTurns?: number;
 }

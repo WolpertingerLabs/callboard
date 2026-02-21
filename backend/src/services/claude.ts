@@ -12,6 +12,7 @@ import { migratePermissions } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
+import { appendActivity } from "./agent-activity.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -608,6 +609,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               chatId: sessionId,
               chat: { ...chat, session_id: sessionId },
             } as StreamEvent);
+
+            // Log chat activity for agent sessions
+            if (initialMetadata.agentAlias) {
+              appendActivity(initialMetadata.agentAlias as string, {
+                type: "chat",
+                message: "Chat session started",
+                metadata: { chatId: sessionId },
+              });
+            }
           } else {
             // Existing chat: append session_id to metadata
             const ids: string[] = initialMetadata.session_ids || [];
