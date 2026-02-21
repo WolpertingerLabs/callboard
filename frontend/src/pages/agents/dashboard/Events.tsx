@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Radio, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { Radio, Loader2, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { getProxyEvents, getProxyIngestors } from "../../../api";
 import type { StoredEvent, IngestorStatus } from "../../../api";
@@ -43,10 +43,20 @@ export default function Events() {
   const [activeSource, setActiveSource] = useState<string | null>(null); // null = all
   const [loading, setLoading] = useState(true);
   const [ingestors, setIngestors] = useState<IngestorStatus[]>([]);
+  const [refreshingIngestors, setRefreshingIngestors] = useState(false);
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Fetch ingestors once for the status header
+  // Manual refresh handler (with spinner)
+  const refreshIngestors = () => {
+    setRefreshingIngestors(true);
+    getProxyIngestors()
+      .then((data) => setIngestors(data.ingestors))
+      .catch(() => setIngestors([]))
+      .finally(() => setRefreshingIngestors(false));
+  };
+
+  // Initial fetch on mount
   useEffect(() => {
     getProxyIngestors()
       .then((data) => setIngestors(data.ingestors))
@@ -90,29 +100,71 @@ export default function Events() {
         <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Live event feed from all proxy ingestors — polled every 3 seconds</p>
       </div>
 
-      {/* Ingestor status row */}
+      {/* Ingestor status cards */}
       {ingestors.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
-          {ingestors.map((ing) => (
-            <div
-              key={ing.connection}
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>
+              Ingestors
+            </h2>
+            <button
+              onClick={refreshIngestors}
+              disabled={refreshingIngestors}
               style={{
+                background: "none",
+                border: "none",
+                padding: 2,
+                cursor: refreshingIngestors ? "not-allowed" : "pointer",
+                color: "var(--text-muted)",
                 display: "flex",
                 alignItems: "center",
-                gap: 6,
-                padding: "6px 12px",
-                background: "var(--surface)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                fontSize: 12,
+                opacity: refreshingIngestors ? 0.4 : 0.7,
+                transition: "opacity 0.15s",
               }}
+              onMouseEnter={(e) => !refreshingIngestors && (e.currentTarget.style.opacity = "1")}
+              onMouseLeave={(e) => (e.currentTarget.style.opacity = refreshingIngestors ? "0.4" : "0.7")}
+              title="Refresh ingestor status"
             >
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: stateColor(ing.state), flexShrink: 0 }} />
-              <span style={{ fontWeight: 600, fontFamily: "monospace" }}>{ing.connection}</span>
-              <span style={{ color: "var(--text-muted)" }}>{ing.state}</span>
-              <span style={{ color: "var(--text-muted)" }}>&middot; {ing.totalEventsReceived} events</span>
-            </div>
-          ))}
+              <RefreshCw size={13} style={refreshingIngestors ? { animation: "spin 1s linear infinite" } : undefined} />
+            </button>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+            {ingestors.map((ing) => (
+              <div
+                key={ing.connection}
+                style={{
+                  padding: "10px 14px",
+                  background: "var(--surface)",
+                  border: `1px solid ${ing.state === "connected" ? "color-mix(in srgb, var(--success) 30%, var(--border))" : "var(--border)"}`,
+                  borderRadius: 10,
+                  fontSize: 12,
+                  minWidth: 180,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: stateColor(ing.state), flexShrink: 0 }} />
+                  <span style={{ fontWeight: 700, fontFamily: "monospace", fontSize: 13 }}>{ing.connection}</span>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, color: "var(--text-muted)", fontSize: 11 }}>
+                  <span
+                    style={{
+                      padding: "1px 6px",
+                      borderRadius: 4,
+                      background: "var(--bg-secondary)",
+                      fontWeight: 500,
+                      color: stateColor(ing.state),
+                    }}
+                  >
+                    {ing.state}
+                  </span>
+                  <span>{ing.type}</span>
+                  <span>{ing.totalEventsReceived} events</span>
+                  {ing.lastEventAt && <span>last: {timeAgo(new Date(ing.lastEventAt).getTime())}</span>}
+                </div>
+                {ing.error && <div style={{ fontSize: 11, color: "var(--error)", marginTop: 4 }}>{ing.error}</div>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
