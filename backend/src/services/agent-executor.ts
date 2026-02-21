@@ -77,10 +77,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
 
     const identityPrompt = compileIdentityPrompt(config);
     const workspacePath = getAgentWorkspacePath(agentAlias);
-    const workspaceContext = compileWorkspaceContext(workspacePath, {
-      isMainSession: false,
-      isHeartbeat: triggeredBy === "heartbeat",
-    });
+    const workspaceContext = compileWorkspaceContext(workspacePath);
     const fullSystemPrompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
     const sendMessage = getSendMessage();
 

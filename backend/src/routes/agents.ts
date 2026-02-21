@@ -108,7 +108,7 @@ agentsRouter.get("/:alias/identity-prompt", (req: Request, res: Response): void 
 
   const identityPrompt = compileIdentityPrompt(agent);
   const workspacePath = getAgentWorkspacePath(alias);
-  const workspaceContext = compileWorkspaceContext(workspacePath, { isMainSession: true });
+  const workspaceContext = compileWorkspaceContext(workspacePath);
   const prompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
   res.json({ prompt });
 });

@@ -4,7 +4,7 @@ import type { AgentConfig } from "shared";
 
 const SCAFFOLD_DIR = join(process.cwd(), "backend", "src", "scaffold");
 
-const SCAFFOLD_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md"];
+const SCAFFOLD_FILES = ["CLAUDE.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md"];
 
 /**
  * Compile the agent's identity and user context into a markdown string
@@ -58,26 +58,17 @@ export function compileIdentityPrompt(config: AgentConfig): string {
 
 /**
  * Scaffold a new agent workspace with template files.
- * Copies scaffold files into the workspace, creates CLAUDE.md from AGENTS.md,
- * and creates the memory/ subdirectory.
+ * Copies scaffold files into the workspace and creates the memory/ subdirectory.
  *
  * Skips files that already exist in the workspace.
  */
 export function scaffoldWorkspace(workspacePath: string): void {
-  // Copy scaffold template files
   for (const file of SCAFFOLD_FILES) {
     const src = join(SCAFFOLD_DIR, file);
     const dest = join(workspacePath, file);
     if (existsSync(src) && !existsSync(dest)) {
       copyFileSync(src, dest);
     }
-  }
-
-  // Copy AGENTS.md as CLAUDE.md (the SDK-loaded behavioral protocol)
-  const agentsSrc = join(SCAFFOLD_DIR, "AGENTS.md");
-  const claudeDest = join(workspacePath, "CLAUDE.md");
-  if (existsSync(agentsSrc) && !existsSync(claudeDest)) {
-    copyFileSync(agentsSrc, claudeDest);
   }
 
   // Create memory subdirectory
@@ -109,19 +100,13 @@ function formatDateForMemory(date: Date): string {
 /**
  * Pre-load workspace files into a string suitable for inclusion in the system prompt.
  *
- * Reads the files that agents are normally instructed to read at session startup
- * (SOUL.md, USER.md, TOOLS.md, memory journals) and concatenates them, prefacing
- * each with "This is the current content of [filename]".
- *
- * Options:
- * - isMainSession: include MEMORY.md (direct human chat — contains personal context)
- * - isHeartbeat: include HEARTBEAT.md (periodic check-in tasks)
+ * Reads workspace files (SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md, MEMORY.md,
+ * and recent memory journals) and concatenates them for context injection.
  */
-export function compileWorkspaceContext(workspacePath: string, opts?: { isMainSession?: boolean; isHeartbeat?: boolean }): string {
+export function compileWorkspaceContext(workspacePath: string): string {
   const sections: string[] = [];
 
-  // Always include core workspace files
-  const coreFiles = ["SOUL.md", "USER.md", "TOOLS.md"];
+  const coreFiles = ["SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md"];
   for (const filename of coreFiles) {
     const content = readWorkspaceFile(workspacePath, filename);
     if (content && content.trim()) {
@@ -139,22 +124,6 @@ export function compileWorkspaceContext(workspacePath: string, opts?: { isMainSe
     const content = readWorkspaceFile(workspacePath, memFile);
     if (content && content.trim()) {
       sections.push(`This is the current content of ${memFile}:\n${content.trim()}`);
-    }
-  }
-
-  // Main sessions: include long-term memory (contains personal context)
-  if (opts?.isMainSession) {
-    const content = readWorkspaceFile(workspacePath, "MEMORY.md");
-    if (content && content.trim()) {
-      sections.push(`This is the current content of MEMORY.md:\n${content.trim()}`);
-    }
-  }
-
-  // Heartbeat sessions: include heartbeat checklist
-  if (opts?.isHeartbeat) {
-    const content = readWorkspaceFile(workspacePath, "HEARTBEAT.md");
-    if (content && content.trim()) {
-      sections.push(`This is the current content of HEARTBEAT.md:\n${content.trim()}`);
     }
   }
 

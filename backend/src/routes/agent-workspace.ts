@@ -8,15 +8,7 @@ import { agentExists } from "../services/agent-file-service.js";
 export const agentWorkspaceRouter = Router({ mergeParams: true });
 
 /** Workspace files that are editable via the dashboard */
-const ALLOWED_FILES = new Set([
-  "SOUL.md",
-  "USER.md",
-  "TOOLS.md",
-  "HEARTBEAT.md",
-  "MEMORY.md",
-  "AGENTS.md",
-  "CLAUDE.md",
-]);
+const ALLOWED_FILES = new Set(["SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md", "CLAUDE.md"]);
 
 function getAgentWorkspacePath(alias: string): string {
   const baseDir = process.env.CCUI_AGENTS_DIR || join(homedir(), ".ccui-agents");
@@ -39,9 +31,7 @@ agentWorkspaceRouter.get("/", (req: Request, res: Response): void => {
   }
 
   const entries = readdirSync(workspacePath, { withFileTypes: true });
-  const files = entries
-    .filter((e) => e.isFile() && ALLOWED_FILES.has(e.name))
-    .map((e) => e.name);
+  const files = entries.filter((e) => e.isFile() && ALLOWED_FILES.has(e.name)).map((e) => e.name);
 
   res.json({ files });
 });

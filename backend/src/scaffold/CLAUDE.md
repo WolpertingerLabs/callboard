@@ -1,16 +1,10 @@
-# AGENTS.md - Your Workspace
+# CLAUDE.md - Your Workspace
 
 This folder is home. Treat it that way.
 
-## Every Session
-
-Your workspace files (SOUL.md, USER.md, TOOLS.md, memory journals, etc.) are pre-loaded into your system prompt at session start. You do not need to read them again unless you want to check for updates made during this session.
-
-If you need to update these files, read the current version first to avoid overwriting mid-session changes.
-
 ## Memory
 
-You wake up fresh each session. These files are your continuity:
+You wake up fresh each session. Your workspace files are your continuity — they're loaded into your context automatically at session start. If you need to update a file, read it first to avoid overwriting mid-session changes.
 
 - **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened
 - **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory
@@ -19,10 +13,7 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 
 ### MEMORY.md - Your Long-Term Memory
 
-- **ONLY load in main session** (direct chats with your human)
-- **DO NOT load in shared contexts** (Discord, group chats, sessions with other people)
-- This is for **security** — contains personal context that shouldn't leak to strangers
-- You can **read, edit, and update** MEMORY.md freely in main sessions
+- You can **read, edit, and update** MEMORY.md freely
 - Write significant events, thoughts, decisions, opinions, lessons learned
 - This is your curated memory — the distilled essence, not raw logs
 - Over time, review your daily files and update MEMORY.md with what's worth keeping
@@ -32,7 +23,7 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 - **Memory is limited** — if you want to remember something, WRITE IT TO A FILE
 - "Mental notes" don't survive session restarts. Files do.
 - When someone says "remember this" → update `memory/YYYY-MM-DD.md` or relevant file
-- When you learn a lesson → update AGENTS.md, TOOLS.md, or the relevant skill
+- When you learn a lesson → update CLAUDE.md, TOOLS.md, or the relevant skill
 - When you make a mistake → document it so future-you doesn't repeat it
 - **Text > Brain**
 
