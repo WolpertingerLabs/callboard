@@ -103,10 +103,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
 
     // Wait for chat_created event to get chatId
     const chatId = await new Promise<string>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("Timed out waiting for session to start")),
-        30_000,
-      );
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for session to start")), 30_000);
       emitter.on("event", (event: any) => {
         if (event.type === "chat_created" && event.chatId) {
           clearTimeout(timeout);
@@ -124,7 +121,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
     const activityType: ActivityEntry["type"] = triggeredBy === "heartbeat" ? "system" : triggeredBy;
     appendActivity(agentAlias, {
       type: activityType,
-      message: `${triggeredBy} triggered session`,
+      message: `${triggeredBy} session started`,
       metadata: {
         chatId,
         triggeredBy,

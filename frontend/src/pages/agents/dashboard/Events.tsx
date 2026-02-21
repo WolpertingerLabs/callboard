@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { Radio, CircleOff } from "lucide-react";
+import { Radio, CircleOff, Loader2 } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { updateAgent, getAgentActivity } from "../../../api";
-import type { AgentConfig, ActivityEntry } from "../../../api";
+import { updateAgent, getAgentActivity, getProxyIngestors } from "../../../api";
+import type { AgentConfig, ActivityEntry, IngestorStatus } from "../../../api";
 import type { EventSubscription } from "shared";
 
 function timeAgo(ts: number): string {
@@ -17,37 +17,40 @@ function timeAgo(ts: number): string {
   return `${days}d ago`;
 }
 
-// Default connections available via mcp-secure-proxy
-const DEFAULT_CONNECTIONS = [
-  "discord-bot",
-  "github",
-  "slack",
-  "stripe",
-  "trello",
-  "notion",
-  "linear",
-];
-
 export default function Events() {
   const { agent, onAgentUpdate } = useOutletContext<{ agent: AgentConfig; onAgentUpdate?: (agent: AgentConfig) => void }>();
   const isMobile = useIsMobile();
   const [subscriptions, setSubscriptions] = useState<EventSubscription[]>([]);
   const [eventActivity, setEventActivity] = useState<ActivityEntry[]>([]);
   const [saving, setSaving] = useState(false);
+  const [loadingIngestors, setLoadingIngestors] = useState(true);
+  const [ingestors, setIngestors] = useState<IngestorStatus[]>([]);
 
-  // Initialize subscriptions from agent config, filling in defaults
+  // Fetch live ingestor connections from mcp-secure-proxy
   useEffect(() => {
+    setLoadingIngestors(true);
+    getProxyIngestors()
+      .then((data) => setIngestors(data.ingestors))
+      .catch(() => setIngestors([]))
+      .finally(() => setLoadingIngestors(false));
+  }, []);
+
+  // Merge agent subscriptions with live ingestor connections
+  useEffect(() => {
+    if (loadingIngestors) return;
+
     const existing = agent.eventSubscriptions || [];
     const existingAliases = new Set(existing.map((s) => s.connectionAlias));
 
+    // Get unique connection aliases from ingestors
+    const ingestorAliases = [...new Set(ingestors.map((i) => i.connection))];
+
     const merged = [
       ...existing,
-      ...DEFAULT_CONNECTIONS
-        .filter((alias) => !existingAliases.has(alias))
-        .map((alias) => ({ connectionAlias: alias, enabled: false })),
+      ...ingestorAliases.filter((alias) => !existingAliases.has(alias)).map((alias) => ({ connectionAlias: alias, enabled: false })),
     ];
     setSubscriptions(merged);
-  }, [agent.eventSubscriptions]);
+  }, [agent.eventSubscriptions, ingestors, loadingIngestors]);
 
   // Load event activity
   useEffect(() => {
@@ -57,9 +60,7 @@ export default function Events() {
   }, [agent.alias]);
 
   const toggleSubscription = async (alias: string) => {
-    const updated = subscriptions.map((s) =>
-      s.connectionAlias === alias ? { ...s, enabled: !s.enabled } : s,
-    );
+    const updated = subscriptions.map((s) => (s.connectionAlias === alias ? { ...s, enabled: !s.enabled } : s));
     setSubscriptions(updated);
 
     setSaving(true);
@@ -73,6 +74,15 @@ export default function Events() {
     }
   };
 
+  // Build a lookup for ingestor info
+  const ingestorByConnection = new Map<string, IngestorStatus>();
+  for (const ing of ingestors) {
+    // Keep first per connection (they're unique in practice)
+    if (!ingestorByConnection.has(ing.connection)) {
+      ingestorByConnection.set(ing.connection, ing);
+    }
+  }
+
   const enabledCount = subscriptions.filter((s) => s.enabled).length;
 
   return (
@@ -80,9 +90,7 @@ export default function Events() {
       {/* Header */}
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700 }}>Events</h1>
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
-          Connections this agent monitors for new events
-        </p>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Connections this agent monitors for new events</p>
       </div>
 
       {/* Event Subscriptions */}
@@ -97,99 +105,136 @@ export default function Events() {
             letterSpacing: "0.05em",
           }}
         >
-          Subscriptions ({enabledCount}/{subscriptions.length})
-          {saving && <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 8 }}>Saving...</span>}
+          Subscriptions ({enabledCount}/{subscriptions.length}){saving && <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 8 }}>Saving...</span>}
         </h2>
-        <div
-          style={{
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            overflow: "hidden",
-          }}
-        >
-          {subscriptions.map((sub, i) => (
-            <div
-              key={sub.connectionAlias}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: isMobile ? "12px 14px" : "14px 20px",
-                borderBottom: i < subscriptions.length - 1 ? "1px solid var(--border)" : "none",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+
+        {loadingIngestors ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "32px 20px",
+              color: "var(--text-muted)",
+              fontSize: 13,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+            }}
+          >
+            <Loader2 size={20} style={{ animation: "spin 1s linear infinite", marginBottom: 8 }} />
+            <p>Loading ingestors from proxy...</p>
+          </div>
+        ) : subscriptions.length === 0 ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "32px 20px",
+              color: "var(--text-muted)",
+              fontSize: 13,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+            }}
+          >
+            No ingestors configured in mcp-secure-proxy. Add event sources to the proxy to enable subscriptions.
+          </div>
+        ) : (
+          <div
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              overflow: "hidden",
+            }}
+          >
+            {subscriptions.map((sub, i) => {
+              const ingStatus = ingestorByConnection.get(sub.connectionAlias);
+              return (
                 <div
+                  key={sub.connectionAlias}
                   style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    background: sub.enabled
-                      ? "color-mix(in srgb, var(--success) 12%, transparent)"
-                      : "var(--bg-secondary)",
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
+                    justifyContent: "space-between",
+                    padding: isMobile ? "12px 14px" : "14px 20px",
+                    borderBottom: i < subscriptions.length - 1 ? "1px solid var(--border)" : "none",
                   }}
                 >
-                  {sub.enabled ? (
-                    <Radio size={16} style={{ color: "var(--success)" }} />
-                  ) : (
-                    <CircleOff size={16} style={{ color: "var(--text-muted)" }} />
-                  )}
-                </div>
-                <div>
-                  <span
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 600,
-                      fontFamily: "monospace",
-                    }}
-                  >
-                    {sub.connectionAlias}
-                  </span>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 500,
-                      marginTop: 2,
-                      color: sub.enabled ? "var(--success)" : "var(--text-muted)",
-                    }}
-                  >
-                    {sub.enabled ? "Listening" : "Disabled"}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
+                        background: sub.enabled ? "color-mix(in srgb, var(--success) 12%, transparent)" : "var(--bg-secondary)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {sub.enabled ? <Radio size={16} style={{ color: "var(--success)" }} /> : <CircleOff size={16} style={{ color: "var(--text-muted)" }} />}
+                    </div>
+                    <div>
+                      <span
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          fontFamily: "monospace",
+                        }}
+                      >
+                        {sub.connectionAlias}
+                      </span>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 500,
+                          marginTop: 2,
+                          color: sub.enabled ? "var(--success)" : "var(--text-muted)",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        {sub.enabled ? "Listening" : "Disabled"}
+                        {ingStatus && (
+                          <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
+                            &middot; {ingStatus.type} &middot; {ingStatus.totalEventsReceived} events
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   </div>
+                  <button
+                    onClick={() => toggleSubscription(sub.connectionAlias)}
+                    disabled={saving}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 6,
+                      fontSize: 12,
+                      fontWeight: 500,
+                      background: "transparent",
+                      color: sub.enabled ? "var(--warning)" : "var(--success)",
+                      border: `1px solid color-mix(in srgb, ${sub.enabled ? "var(--warning)" : "var(--success)"} 30%, transparent)`,
+                      transition: "background 0.15s",
+                      cursor: saving ? "not-allowed" : "pointer",
+                      opacity: saving ? 0.6 : 1,
+                    }}
+                    onMouseEnter={(e) =>
+                      !saving &&
+                      (e.currentTarget.style.background = `color-mix(in srgb, ${sub.enabled ? "var(--warning)" : "var(--success)"} 10%, transparent)`)
+                    }
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    {sub.enabled ? "Disable" : "Enable"}
+                  </button>
                 </div>
-              </div>
-              <button
-                onClick={() => toggleSubscription(sub.connectionAlias)}
-                disabled={saving}
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  fontWeight: 500,
-                  background: "transparent",
-                  color: sub.enabled ? "var(--warning)" : "var(--success)",
-                  border: `1px solid color-mix(in srgb, ${sub.enabled ? "var(--warning)" : "var(--success)"} 30%, transparent)`,
-                  transition: "background 0.15s",
-                  cursor: saving ? "not-allowed" : "pointer",
-                  opacity: saving ? 0.6 : 1,
-                }}
-                onMouseEnter={(e) =>
-                  !saving && (e.currentTarget.style.background = `color-mix(in srgb, ${sub.enabled ? "var(--warning)" : "var(--success)"} 10%, transparent)`)
-                }
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              >
-                {sub.enabled ? "Disable" : "Enable"}
-              </button>
-            </div>
-          ))}
-        </div>
+              );
+            })}
+          </div>
+        )}
         <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8, lineHeight: 1.5 }}>
-          The agent receives all events from enabled connections and decides how to respond based on its
-          personality and guidelines. Connections are configured in mcp-secure-proxy.
+          The agent receives all events from enabled connections and decides how to respond based on its personality and guidelines. Connections are configured
+          in mcp-secure-proxy.
         </p>
       </div>
 
@@ -263,9 +308,7 @@ export default function Events() {
                     {entry.message}
                   </p>
                 </div>
-                <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>
-                  {timeAgo(entry.timestamp)}
-                </span>
+                <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{timeAgo(entry.timestamp)}</span>
               </div>
             ))}
           </div>

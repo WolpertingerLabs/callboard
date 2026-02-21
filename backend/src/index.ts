@@ -16,6 +16,7 @@ import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
 import { appPluginsRouter } from "./routes/app-plugins.js";
 import { agentsRouter } from "./routes/agents.js";
+import { proxyRouter } from "./routes/proxy.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
 import { existsSync, readFileSync } from "fs";
 import { createLogger } from "./utils/logger.js";
@@ -100,6 +101,7 @@ app.use("/api/folders", foldersRouter);
 app.use("/api/git", gitRouter);
 app.use("/api/app-plugins", appPluginsRouter);
 app.use("/api/agents", agentsRouter);
+app.use("/api/proxy", proxyRouter);
 
 // Serve frontend static files in production
 const frontendDist = path.join(process.cwd(), "frontend/dist");
