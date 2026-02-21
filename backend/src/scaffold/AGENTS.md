@@ -4,14 +4,9 @@ This folder is home. Treat it that way.
 
 ## Every Session
 
-Before doing anything else:
+Your workspace files (SOUL.md, USER.md, TOOLS.md, memory journals, etc.) are pre-loaded into your system prompt at session start. You do not need to read them again unless you want to check for updates made during this session.
 
-1. Read `SOUL.md` — this is who you are
-2. Read `USER.md` — this is who you're helping
-3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
-4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
-
-Don't ask permission. Just do it.
+If you need to update these files, read the current version first to avoid overwriting mid-session changes.
 
 ## Memory
 
