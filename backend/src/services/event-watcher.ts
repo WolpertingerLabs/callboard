@@ -13,10 +13,10 @@
  *   EVENT_WATCHER_REMOTE_URL    — remote server URL (default: http://127.0.0.1:9999)
  *   EVENT_WATCHER_POLL_INTERVAL — poll interval in ms (default: 5000)
  */
-import { homedir } from "os";
 import { listAgents } from "./agent-file-service.js";
 import { executeAgent } from "./agent-executor.js";
-import { ProxyClient } from "./proxy-client.js";
+import { appendActivity } from "./agent-activity.js";
+import { getSharedProxyClient } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("event-watcher");
@@ -24,9 +24,6 @@ const log = createLogger("event-watcher");
 // ── Configuration ───────────────────────────────────────────────────
 
 const ENABLED = process.env.EVENT_WATCHER_ENABLED === "true";
-const KEYS_DIR = process.env.EVENT_WATCHER_KEYS_DIR || `${homedir()}/.mcp-secure-proxy/keys/local`;
-const REMOTE_KEYS_DIR = process.env.EVENT_WATCHER_REMOTE_KEYS_DIR || `${homedir()}/.mcp-secure-proxy/keys/peers/remote-server`;
-const REMOTE_URL = process.env.EVENT_WATCHER_REMOTE_URL || "http://127.0.0.1:9999";
 const BASE_POLL_INTERVAL = parseInt(process.env.EVENT_WATCHER_POLL_INTERVAL || "5000", 10);
 const MAX_BACKOFF = 60_000; // 60 seconds
 
@@ -46,7 +43,6 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let afterId = -1; // Cursor: fetch events with id > afterId
 let currentBackoff = BASE_POLL_INTERVAL;
 let consecutiveFailures = 0;
-let proxyClient: ProxyClient | null = null;
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -60,15 +56,16 @@ export function initEventWatcher(): void {
     return;
   }
 
-  log.info(`Initializing event watcher — remote=${REMOTE_URL}, interval=${BASE_POLL_INTERVAL}ms`);
+  log.info(`Initializing event watcher — interval=${BASE_POLL_INTERVAL}ms`);
 
-  try {
-    proxyClient = new ProxyClient(REMOTE_URL, KEYS_DIR, REMOTE_KEYS_DIR);
-    schedulePoll();
-    log.info("Event watcher started");
-  } catch (err: any) {
-    log.error(`Failed to initialize event watcher: ${err.message}`);
+  const client = getSharedProxyClient();
+  if (!client) {
+    log.error("Event watcher cannot start — proxy client unavailable (keys missing?)");
+    return;
   }
+
+  schedulePoll();
+  log.info("Event watcher started");
 }
 
 /**
@@ -79,7 +76,6 @@ export function shutdownEventWatcher(): void {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
-  proxyClient = null;
   log.info("Event watcher shut down");
 }
 
@@ -97,6 +93,7 @@ function schedulePoll(): void {
  */
 async function pollLoop(): Promise<void> {
   try {
+    const proxyClient = getSharedProxyClient();
     if (!proxyClient) return;
 
     // Call poll_events via the encrypted channel
@@ -105,9 +102,7 @@ async function pollLoop(): Promise<void> {
     })) as IngestedEvent[] | { events?: IngestedEvent[] };
 
     // poll_events may return an array directly or wrapped in { events: [] }
-    const events: IngestedEvent[] = Array.isArray(result)
-      ? result
-      : (result?.events || []);
+    const events: IngestedEvent[] = Array.isArray(result) ? result : result?.events || [];
 
     if (events.length > 0) {
       log.debug(`Received ${events.length} events`);
@@ -121,15 +116,24 @@ async function pollLoop(): Promise<void> {
 
       // For each event, find agents with matching subscriptions
       for (const event of events) {
-        const matchingAgents = agents.filter((agent) =>
-          agent.eventSubscriptions?.some(
-            (sub) => sub.connectionAlias === event.source && sub.enabled,
-          ),
-        );
+        const matchingAgents = agents.filter((agent) => agent.eventSubscriptions?.some((sub) => sub.connectionAlias === event.source && sub.enabled));
 
         // Fire-and-forget: don't block the poll loop waiting for agent execution
         for (const agent of matchingAgents) {
           log.info(`Waking agent ${agent.alias} for ${event.source}:${event.eventType} (event ${event.id})`);
+
+          // Log event arrival to activity (independent of session outcome)
+          appendActivity(agent.alias, {
+            type: "event",
+            message: `${event.source}:${event.eventType} — event ${event.id}`,
+            metadata: {
+              eventId: event.id,
+              eventSource: event.source,
+              eventType: event.eventType,
+              receivedAt: event.receivedAt,
+              eventData: typeof event.data === "string" ? event.data.slice(0, 500) : JSON.stringify(event.data).slice(0, 500),
+            },
+          });
 
           const eventPrompt = buildEventPrompt(event);
 
@@ -155,18 +159,13 @@ async function pollLoop(): Promise<void> {
     currentBackoff = BASE_POLL_INTERVAL;
   } catch (err: any) {
     consecutiveFailures++;
-    currentBackoff = Math.min(
-      BASE_POLL_INTERVAL * Math.pow(2, consecutiveFailures),
-      MAX_BACKOFF,
-    );
-    log.warn(
-      `Event poll failed (attempt ${consecutiveFailures}, next in ${currentBackoff}ms): ${err.message}`,
-    );
+    currentBackoff = Math.min(BASE_POLL_INTERVAL * Math.pow(2, consecutiveFailures), MAX_BACKOFF);
+    log.warn(`Event poll failed (attempt ${consecutiveFailures}, next in ${currentBackoff}ms): ${err.message}`);
 
     // Auto-reset session on auth failure
     if (err.message?.includes("401") || err.message?.includes("Session expired")) {
       log.info("Resetting proxy client for rehandshake...");
-      proxyClient?.reset();
+      getSharedProxyClient()?.reset();
     }
   }
 
@@ -178,8 +177,7 @@ async function pollLoop(): Promise<void> {
  * Build a prompt string from an ingested event.
  */
 function buildEventPrompt(event: IngestedEvent): string {
-  const dataStr =
-    typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2);
+  const dataStr = typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2);
 
   return [
     `An event arrived from the "${event.source}" connection.`,

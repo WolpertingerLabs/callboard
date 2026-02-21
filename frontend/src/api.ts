@@ -357,7 +357,16 @@ export async function getAgent(alias: string): Promise<AgentConfig> {
   return data.agent;
 }
 
-export async function createAgent(agent: { name: string; alias: string; description: string; systemPrompt?: string; emoji?: string; personality?: string; role?: string; tone?: string }): Promise<AgentConfig> {
+export async function createAgent(agent: {
+  name: string;
+  alias: string;
+  description: string;
+  systemPrompt?: string;
+  emoji?: string;
+  personality?: string;
+  role?: string;
+  tone?: string;
+}): Promise<AgentConfig> {
   const res = await fetch(`${BASE}/agents`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -476,6 +485,43 @@ export async function deleteAgentCronJob(alias: string, jobId: string): Promise<
     credentials: "include",
   });
   await assertOk(res, "Failed to delete cron job");
+}
+
+// Agent activity API functions
+
+// Proxy API functions
+
+export interface ProxyRoute {
+  index: number;
+  name?: string;
+  description?: string;
+  docsUrl?: string;
+  openApiUrl?: string;
+  allowedEndpoints: string[];
+  secretNames: string[];
+  autoHeaders: string[];
+}
+
+export interface IngestorStatus {
+  connection: string;
+  type: "websocket" | "webhook" | "poll";
+  state: string;
+  bufferedEvents: number;
+  totalEventsReceived: number;
+  lastEventAt: string | null;
+  error?: string;
+}
+
+export async function getProxyRoutes(): Promise<{ routes: ProxyRoute[]; configured: boolean }> {
+  const res = await fetch(`${BASE}/proxy/routes`, { credentials: "include" });
+  await assertOk(res, "Failed to get proxy routes");
+  return res.json();
+}
+
+export async function getProxyIngestors(): Promise<{ ingestors: IngestorStatus[]; configured: boolean }> {
+  const res = await fetch(`${BASE}/proxy/ingestors`, { credentials: "include" });
+  await assertOk(res, "Failed to get ingestor status");
+  return res.json();
 }
 
 // Agent activity API functions
