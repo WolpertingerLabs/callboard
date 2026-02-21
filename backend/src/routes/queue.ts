@@ -83,6 +83,44 @@ queueRouter.get("/:id", (req, res) => {
   res.json(item);
 });
 
+// Update a draft
+queueRouter.put("/:id", (req, res) => {
+  // #swagger.tags = ['Drafts']
+  // #swagger.summary = 'Update a draft message'
+  // #swagger.description = 'Update the message content of an existing draft.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Draft item ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["user_message"],
+          properties: {
+            user_message: { type: "string", description: "The updated message" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Draft updated" } */
+  /* #swagger.responses[400] = { description: "Missing required fields" } */
+  /* #swagger.responses[404] = { description: "Draft not found" } */
+  const { user_message } = req.body;
+
+  if (!user_message || !user_message.trim()) {
+    return res.status(400).json({ error: "user_message is required" });
+  }
+
+  const updated = queueFileService.updateQueueItem(req.params.id, { user_message: user_message.trim() });
+  if (!updated) {
+    return res.status(404).json({ error: "Draft not found" });
+  }
+
+  const item = queueFileService.getQueueItem(req.params.id);
+  res.json(item);
+});
+
 // Delete a draft
 queueRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Drafts']
