@@ -15,8 +15,9 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { readFileSync } from "fs";
-import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir } from "./agent-file-service.js";
-import { scaffoldWorkspace } from "./claude-compiler.js";
+import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir, getAgentWorkspacePath } from "./agent-file-service.js";
+import { scaffoldWorkspace, compileIdentityPrompt, compileWorkspaceContext } from "./claude-compiler.js";
+import { executeAgent } from "./agent-executor.js";
 import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./agent-cron-jobs.js";
 import { scheduleJob, cancelJob } from "./cron-scheduler.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "./agent-triggers.js";
@@ -39,6 +40,7 @@ const log = createLogger("agent-tools");
 
 type MessageSender = (opts: {
   prompt: string | AsyncIterable<any>;
+  chatId?: string;
   folder?: string;
   systemPrompt?: string;
   agentAlias?: string;
@@ -245,6 +247,268 @@ export function buildAgentToolsServer(agentAlias: string) {
             return { content: [{ type: "text" as const, text: messages.join("\n\n") }] };
           } catch (err: any) {
             return { content: [{ type: "text" as const, text: `Error reading messages: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "continue_chat",
+        "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. Set waitForCompletion=true to block until the response is ready.",
+        {
+          chatId: z.string().describe("The chat/session ID to continue"),
+          prompt: z.string().describe("The follow-up message to send"),
+          maxTurns: z.number().optional().describe("Maximum agentic turns for this continuation (default: 200)"),
+          waitForCompletion: z
+            .boolean()
+            .optional()
+            .describe("If true, wait for the session to complete and return the response text. Default: false (returns immediately)"),
+        },
+        async (args) => {
+          try {
+            // 1. Verify the chat exists
+            const chat = findChat(args.chatId, false);
+            if (!chat) {
+              return { content: [{ type: "text" as const, text: `Chat "${args.chatId}" not found` }] };
+            }
+
+            // 2. Check if session is currently active
+            const activeSession = getActiveSession(args.chatId);
+            if (activeSession) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Chat "${args.chatId}" already has an active session — wait for it to complete or stop it first`,
+                  },
+                ],
+              };
+            }
+
+            const sendMessage = getSendMessage();
+
+            // 3. Build async generator prompt (required when MCP servers are present)
+            const promptIterable = (async function* () {
+              yield {
+                type: "user" as const,
+                message: { role: "user" as const, content: args.prompt },
+              };
+            })();
+
+            // 4. Send the continuation message
+            const emitter = await sendMessage({
+              chatId: args.chatId,
+              prompt: promptIterable,
+              maxTurns: args.maxTurns ?? 200,
+            });
+
+            // 5. If not waiting, return immediately after session starts
+            if (!args.waitForCompletion) {
+              log.info(`Agent ${agentAlias} continued chat ${args.chatId} (async)`);
+              appendActivity(agentAlias, {
+                type: "system",
+                message: `Continued chat session ${args.chatId}`,
+                metadata: { chatId: args.chatId },
+              });
+
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({ chatId: args.chatId, status: "continued", waitForCompletion: false }),
+                  },
+                ],
+              };
+            }
+
+            // 6. Wait for completion and collect response
+            const responseTexts: string[] = [];
+            await new Promise<void>((resolve, reject) => {
+              const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety
+
+              emitter.on("event", (event: any) => {
+                if (event.type === "text" && event.content) {
+                  responseTexts.push(event.content);
+                } else if (event.type === "done") {
+                  clearTimeout(timeout);
+                  resolve();
+                } else if (event.type === "error") {
+                  clearTimeout(timeout);
+                  reject(new Error(event.content || "Session errored"));
+                }
+              });
+            });
+
+            log.info(`Agent ${agentAlias} continued chat ${args.chatId} (sync, complete)`);
+            appendActivity(agentAlias, {
+              type: "system",
+              message: `Continued chat session ${args.chatId} (waited for completion)`,
+              metadata: { chatId: args.chatId },
+            });
+
+            const response = responseTexts.join("") || "(No text response)";
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ chatId: args.chatId, status: "complete", response }) }],
+            };
+          } catch (err: any) {
+            log.error(`continue_chat failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error continuing chat: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── Agent Orchestration ────────────────────────────────────
+
+      tool(
+        "talk_to_agent",
+        "Send a message to another agent and wait for their response. The target agent runs in its own workspace with its own identity and tools. Use this for inter-agent conversation where you need the result. For fire-and-forget, use deploy_agent instead.",
+        {
+          targetAlias: z.string().describe("Alias of the agent to talk to"),
+          message: z.string().describe("The message to send to the target agent"),
+          maxTurns: z.number().optional().describe("Maximum agentic turns for the target agent (default: 50)"),
+        },
+        async (args) => {
+          try {
+            // 1. Validate target agent exists
+            const targetConfig = getAgent(args.targetAlias);
+            if (!targetConfig) {
+              return { content: [{ type: "text" as const, text: `Agent "${args.targetAlias}" not found` }] };
+            }
+
+            // 2. Prevent self-talk
+            if (args.targetAlias === agentAlias) {
+              return { content: [{ type: "text" as const, text: "Error: An agent cannot talk to itself" }] };
+            }
+
+            // 3. Compile target agent's identity and workspace context
+            const identityPrompt = compileIdentityPrompt(targetConfig);
+            const workspacePath = getAgentWorkspacePath(args.targetAlias);
+            const workspaceContext = compileWorkspaceContext(workspacePath);
+            const fullSystemPrompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
+
+            // 4. Build prompt with caller context
+            const callerConfig = getAgent(agentAlias);
+            const callerName = callerConfig?.name || agentAlias;
+            const contextualPrompt = `[Message from ${callerName} (${agentAlias})]\n\n${args.message}`;
+
+            const sendMessage = getSendMessage();
+
+            // 5. Build async generator prompt
+            const promptIterable = (async function* () {
+              yield {
+                type: "user" as const,
+                message: { role: "user" as const, content: contextualPrompt },
+              };
+            })();
+
+            // 6. Start target agent session
+            const emitter = await sendMessage({
+              prompt: promptIterable,
+              folder: workspacePath,
+              systemPrompt: fullSystemPrompt,
+              agentAlias: args.targetAlias,
+              maxTurns: args.maxTurns ?? 50,
+              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+            });
+
+            // 7. Wait for chat_created to get chatId
+            const chatId = await new Promise<string>((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error("Timed out waiting for target agent session to start")), 30_000);
+              emitter.on("event", (event: any) => {
+                if (event.type === "chat_created" && event.chatId) {
+                  clearTimeout(timeout);
+                  resolve(event.chatId);
+                } else if (event.type === "error") {
+                  clearTimeout(timeout);
+                  reject(new Error(event.content || "Target agent session failed to start"));
+                }
+              });
+            });
+
+            // 8. Collect text output and wait for completion
+            const responseTexts: string[] = [];
+            await new Promise<void>((resolve, reject) => {
+              const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety timeout
+
+              emitter.on("event", (event: any) => {
+                if (event.type === "text" && event.content) {
+                  responseTexts.push(event.content);
+                } else if (event.type === "done") {
+                  clearTimeout(timeout);
+                  resolve();
+                } else if (event.type === "error") {
+                  clearTimeout(timeout);
+                  reject(new Error(event.content || "Target agent session errored"));
+                }
+              });
+            });
+
+            // 9. Log activity
+            log.info(`Agent ${agentAlias} talked to ${args.targetAlias}, session ${chatId}`);
+            appendActivity(agentAlias, {
+              type: "system",
+              message: `Talked to agent ${args.targetAlias}`,
+              metadata: { chatId, targetAlias: args.targetAlias },
+            });
+
+            // 10. Return the collected response
+            const response = responseTexts.join("") || "(No text response from target agent)";
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ chatId, targetAlias: args.targetAlias, response }) }],
+            };
+          } catch (err: any) {
+            log.error(`talk_to_agent failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error talking to agent: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "deploy_agent",
+        "Start a new session AS another agent. The agent runs in its own workspace with its own identity, system prompt, and tools. The session runs asynchronously — use get_session_status and read_session_messages to monitor it. Unlike talk_to_agent, this does NOT wait for completion.",
+        {
+          targetAlias: z.string().describe("Alias of the agent to deploy (start a session as)"),
+          prompt: z.string().describe("The task or message to give the agent"),
+          maxTurns: z.number().optional().describe("Maximum agentic turns (default: 200)"),
+        },
+        async (args) => {
+          try {
+            // 1. Validate target agent exists
+            const targetConfig = getAgent(args.targetAlias);
+            if (!targetConfig) {
+              return { content: [{ type: "text" as const, text: `Agent "${args.targetAlias}" not found` }] };
+            }
+
+            // 2. Execute the agent using the shared helper
+            const result = await executeAgent({
+              agentAlias: args.targetAlias,
+              prompt: args.prompt,
+              triggeredBy: "tool",
+              metadata: { deployedBy: agentAlias },
+              maxTurns: args.maxTurns,
+            });
+
+            if (!result) {
+              return { content: [{ type: "text" as const, text: `Failed to deploy agent "${args.targetAlias}" — check agent config` }] };
+            }
+
+            log.info(`Agent ${agentAlias} deployed agent ${args.targetAlias}, session ${result.chatId}`);
+            appendActivity(agentAlias, {
+              type: "system",
+              message: `Deployed agent ${args.targetAlias}`,
+              metadata: { chatId: result.chatId, targetAlias: args.targetAlias },
+            });
+
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ chatId: result.chatId, status: "started", targetAlias: args.targetAlias }),
+                },
+              ],
+            };
+          } catch (err: any) {
+            log.error(`deploy_agent failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error deploying agent: ${err.message}` }] };
           }
         },
       ),
@@ -773,6 +1037,36 @@ export function buildAgentToolsServer(agentAlias: string) {
             log.error(`update_agent failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error updating agent: ${err.message}` }] };
           }
+        },
+      ),
+
+      // ── Utilities ──────────────────────────────────────────────
+
+      tool(
+        "wait",
+        "Pause execution for the specified number of seconds (1-300). Useful for waiting between polling operations, giving other processes time to complete, or adding delays between actions. Include a fun, cute flavor description of what you're 'doing' while you wait.",
+        {
+          seconds: z.number().min(1).max(300).describe("Number of seconds to wait (1-300)"),
+          flavor: z.string().describe("A fun, cute flavor description of what you're doing while waiting (e.g. 'Contemplating the meaning of semicolons')"),
+          reason: z.string().optional().describe("Optional actual reason for waiting (for your own logging)"),
+        },
+        async (args) => {
+          const seconds = Math.min(Math.max(1, Math.round(args.seconds)), 300);
+
+          await new Promise<void>((resolve) => setTimeout(resolve, seconds * 1000));
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  waited: seconds,
+                  flavor: args.flavor,
+                  ...(args.reason && { reason: args.reason }),
+                }),
+              },
+            ],
+          };
         },
       ),
     ],
