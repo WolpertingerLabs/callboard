@@ -58,6 +58,7 @@ export function dispatchEvent(event: StoredEvent): void {
           eventSource: event.source,
           eventType: event.eventType,
           eventId: event.id,
+          idempotencyKey: event.idempotencyKey,
         },
         maxTurns: trigger.action.maxTurns,
       }).catch((err) => {

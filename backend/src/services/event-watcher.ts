@@ -26,7 +26,9 @@ const MAX_BACKOFF = 60_000; // 60 seconds
 
 interface IngestedEvent {
   id: number; // Monotonically increasing per ingestor
+  idempotencyKey: string; // Service-specific unique key for deduplication
   receivedAt: string; // ISO-8601 timestamp
+  receivedAtMs: number; // Unix timestamp (ms) when received by ingestor
   source: string; // Connection alias (e.g., "discord-bot", "github")
   eventType: string; // Source-specific type (e.g., "MESSAGE_CREATE", "push")
   data: unknown; // Raw payload from external service
@@ -160,19 +162,27 @@ async function pollLoop(state: WatcherState): Promise<void> {
       const maxId = Math.max(...events.map((e) => e.id));
       if (maxId > state.afterId) state.afterId = maxId;
 
-      // Store each event in its per-connection log and dispatch to triggers
+      // Store each event in its per-connection log and dispatch to triggers.
+      // appendEvent() returns null for duplicates (same idempotency key),
+      // so we only dispatch events that were actually stored.
       for (const event of events) {
         const stored = appendEvent({
           id: event.id,
+          idempotencyKey: event.idempotencyKey,
           receivedAt: event.receivedAt,
+          receivedAtMs: event.receivedAtMs,
           source: event.source,
           eventType: event.eventType,
           data: event.data,
         });
-        log.debug(`[${state.alias}] Stored ${event.source}:${event.eventType} (event ${event.id})`);
 
-        // Dispatch to trigger system (matching is sync, execution is async)
-        dispatchEvent(stored);
+	log.debug(`[${state.alias}] Stored ${event.source}:${event.eventType} (event ${event.id})`);
+
+        if (stored) {
+          log.debug(`Stored ${event.source}:${event.eventType} (event ${event.id})`);
+          // Dispatch to trigger system (matching is sync, execution is async)
+          dispatchEvent(stored);
+        }
       }
     }
 
