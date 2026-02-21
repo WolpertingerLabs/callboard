@@ -18,6 +18,7 @@ import { readFileSync } from "fs";
 import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir } from "./agent-file-service.js";
 import { scaffoldWorkspace } from "./claude-compiler.js";
 import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./agent-cron-jobs.js";
+import { scheduleJob, cancelJob } from "./cron-scheduler.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "./agent-triggers.js";
 import { getActivity, appendActivity } from "./agent-activity.js";
 import { getActiveSession } from "./claude.js";
@@ -283,6 +284,11 @@ export function buildAgentToolsServer(agentAlias: string) {
               },
             } as Omit<CronJob, "id">);
 
+            // Sync scheduler: register with node-cron so it actually fires
+            if (job.status === "active") {
+              scheduleJob(agentAlias, job);
+            }
+
             log.info(`Agent ${agentAlias} created cron job: ${job.id} — ${args.name}`);
             appendActivity(agentAlias, {
               type: "cron",
@@ -324,6 +330,12 @@ export function buildAgentToolsServer(agentAlias: string) {
               return { content: [{ type: "text" as const, text: `Cron job "${args.jobId}" not found` }] };
             }
 
+            // Sync scheduler: cancel old schedule, re-schedule if active
+            cancelJob(args.jobId);
+            if (updated.status === "active") {
+              scheduleJob(agentAlias, updated);
+            }
+
             log.info(`Agent ${agentAlias} updated cron job: ${args.jobId}`);
             return { content: [{ type: "text" as const, text: JSON.stringify(updated, null, 2) }] };
           } catch (err: any) {
@@ -340,6 +352,9 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
         async (args) => {
           try {
+            // Cancel from scheduler before deleting
+            cancelJob(args.jobId);
+
             const deleted = deleteCronJob(agentAlias, args.jobId);
             if (!deleted) {
               return { content: [{ type: "text" as const, text: `Cron job "${args.jobId}" not found` }] };
