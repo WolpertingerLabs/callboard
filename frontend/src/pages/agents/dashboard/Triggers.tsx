@@ -205,6 +205,7 @@ export default function Triggers() {
   const inputStyle: React.CSSProperties = {
     width: "100%",
     background: "var(--bg)",
+    color: "var(--text)",
     border: "1px solid var(--border)",
     borderRadius: 8,
     padding: "10px 12px",
