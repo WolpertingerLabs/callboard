@@ -457,6 +457,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     folder = chat.folder;
     resumeSessionId = chat.session_id;
     initialMetadata = JSON.parse(chat.metadata || "{}");
+    // Recover agentAlias from chat metadata when not explicitly provided.
+    // This ensures CCUI tools are re-injected when resuming an agent session.
+    if (!opts.agentAlias && initialMetadata.agentAlias) {
+      opts.agentAlias = initialMetadata.agentAlias;
+      log.debug(`Recovered agentAlias="${opts.agentAlias}" from chat metadata for chatId=${opts.chatId}`);
+    }
     stopSession(opts.chatId);
   } else if (opts.folder) {
     // New chat flow — store the actual working directory (may be a worktree).
@@ -517,10 +523,20 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       log.debug(`Set MCP_KEY_ALIAS="${agentMcpKeyAlias}" for agent=${opts.agentAlias}`);
     }
 
-    const ccuiServer = buildAgentToolsServer(opts.agentAlias);
-    mcpServers["ccui"] = ccuiServer;
-    allowedTools.push("mcp__ccui__*");
-    log.debug(`Injected CCUI agent tools for agent=${opts.agentAlias}`);
+    try {
+      const ccuiServer = buildAgentToolsServer(opts.agentAlias);
+      if (ccuiServer && ccuiServer.type === "sdk" && ccuiServer.instance) {
+        mcpServers["ccui"] = ccuiServer;
+        allowedTools.push("mcp__ccui__*");
+        log.info(`Injected CCUI agent tools for agent="${opts.agentAlias}" — type=${ccuiServer.type}, name=${ccuiServer.name}`);
+      } else {
+        log.error(
+          `buildAgentToolsServer returned invalid server for agent="${opts.agentAlias}": ${JSON.stringify({ type: ccuiServer?.type, name: ccuiServer?.name, hasInstance: !!ccuiServer?.instance })}`,
+        );
+      }
+    } catch (err: any) {
+      log.error(`Failed to build CCUI agent tools for agent="${opts.agentAlias}": ${err.message}`);
+    }
 
     // Append CCUI tool docs to system prompt so the agent knows about its platform tools
     const ccuiDocs = compileCcuiToolsDocs();
@@ -539,6 +555,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         message: { role: "user" as const, content: formattedPrompt },
       };
     })();
+  }
+
+  // Log MCP server configuration for debugging
+  if (hasMcpServers) {
+    const serverSummary = Object.entries(mcpServers)
+      .map(([key, val]: [string, any]) => `${key}(${val.type || "stdio"})`)
+      .join(", ");
+    log.info(`MCP servers for session: [${serverSummary}], allowedTools: [${allowedTools.join(", ")}]`);
   }
 
   const queryOpts: any = {
