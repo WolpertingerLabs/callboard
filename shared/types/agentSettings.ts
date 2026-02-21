@@ -4,7 +4,7 @@ export interface AgentSettings {
 }
 
 export interface KeyAliasInfo {
-  /** Directory name under keys/peers/ */
+  /** Directory name under keys/local/ */
   alias: string;
   /** Whether signing.pub.pem exists in the alias directory */
   hasSigningPub: boolean;
