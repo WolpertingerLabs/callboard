@@ -14,7 +14,6 @@ import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
-import { compileCcuiToolsDocs } from "./claude-compiler.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -537,10 +536,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     } catch (err: any) {
       log.error(`Failed to build CCUI agent tools for agent="${opts.agentAlias}": ${err.message}`);
     }
-
-    // Append CCUI tool docs to system prompt so the agent knows about its platform tools
-    const ccuiDocs = compileCcuiToolsDocs();
-    opts.systemPrompt = opts.systemPrompt ? `${opts.systemPrompt}\n\n${ccuiDocs}` : ccuiDocs;
   }
 
   const hasMcpServers = Object.keys(mcpServers).length > 0;
