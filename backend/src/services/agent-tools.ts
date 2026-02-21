@@ -526,7 +526,7 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       tool(
         "create_cron_job",
-        "Create a new scheduled cron job for your agent. The job will execute on the specified schedule. IMPORTANT: All cron expressions run in UTC. You MUST ask the user for their timezone (or infer it from context) and convert their desired local time to UTC before creating the cron expression. For example, if a user in US Eastern (EST/UTC-5) wants 3:00 PM, use hour 20 (15+5) in the cron expression. Always confirm the UTC conversion with the user.",
+        "Create a new scheduled cron job for your agent. The job will execute on the specified schedule using local system time.",
         {
           name: z.string().describe("Human-readable name for the job"),
           schedule: z.string().describe("Cron expression (e.g., '0 9 * * *' for daily at 9am, '*/30 * * * *' for every 30 min)"),
