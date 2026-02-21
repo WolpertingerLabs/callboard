@@ -107,6 +107,41 @@ function formatDateForMemory(date: Date): string {
 }
 
 /**
+ * Generate documentation for the CCUI platform tools so agents know what's available.
+ * Injected into the system prompt whenever an agent session is started.
+ */
+export function compileCcuiToolsDocs(): string {
+  return `# Platform Tools (CCUI)
+
+You have access to these platform tools via the \`ccui\` MCP server. They are prefixed with \`mcp__ccui__\` in your tool list.
+
+## Agent Orchestration
+- **start_agent_session** — Start a new Claude Code session for any agent (including yourself). Pass \`targetAgent\` (alias), \`prompt\`, and optional \`maxTurns\`. Returns a \`chatId\` to track it.
+- **get_session_status** — Check if a session is active, complete, or not found. Pass \`chatId\`.
+- **read_session_messages** — Read conversation messages from a session. Pass \`chatId\` and optional \`limit\`.
+
+## Cron Job Management
+- **list_cron_jobs** — List all your scheduled cron jobs.
+- **create_cron_job** — Create a new cron job. Pass \`name\`, \`schedule\` (cron expression), \`prompt\`, optional \`type\` and \`description\`.
+- **update_cron_job** — Update an existing cron job by \`jobId\`.
+- **delete_cron_job** — Delete a cron job by \`jobId\`.
+
+## Event Trigger Management
+- **list_triggers** — List all your event triggers.
+- **create_trigger** — Create a trigger that auto-starts sessions on matching events. Supports template placeholders like \`{{event.data.fieldPath}}\` in the prompt. Pass \`name\`, \`prompt\`, optional \`source\` and \`eventType\`.
+- **update_trigger** — Update an existing trigger by \`triggerId\`.
+- **delete_trigger** — Delete a trigger by \`triggerId\`.
+
+## Activity Log
+- **get_activity** — Query your activity log. Optional \`type\` filter and \`limit\`.
+- **log_activity** — Record an activity entry. Pass \`activityType\`, \`message\`, optional \`metadata\`.
+
+## Agent Discovery
+- **list_agents** — List all agents on the platform (alias, name, role, description).
+- **get_agent_info** — Get detailed info about another agent by \`alias\`.`;
+}
+
+/**
  * Pre-load workspace files into a string suitable for inclusion in the system prompt.
  *
  * Reads the files that agents are normally instructed to read at session startup
