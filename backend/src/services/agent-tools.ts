@@ -15,8 +15,8 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { readFileSync } from "fs";
-import { listAgents, getAgent, getAgentWorkspacePath, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir } from "./agent-file-service.js";
-import { compileIdentityPrompt, compileWorkspaceContext, scaffoldWorkspace } from "./claude-compiler.js";
+import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir } from "./agent-file-service.js";
+import { scaffoldWorkspace } from "./claude-compiler.js";
 import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./agent-cron-jobs.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "./agent-triggers.js";
 import { getActivity, appendActivity } from "./agent-activity.js";
@@ -113,27 +113,18 @@ export function buildAgentToolsServer(agentAlias: string) {
     name: "ccui",
     version: "1.0.0",
     tools: [
-      // ── Agent Orchestration ──────────────────────────────────
+      // ── Chat Sessions ────────────────────────────────────────
 
       tool(
-        "start_agent_session",
-        "Start a new Claude Code session for any agent (including yourself). The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session.",
+        "start_chat_session",
+        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session.",
         {
-          targetAgent: z.string().describe("Alias of the agent to start a session for (use your own alias to start a session for yourself)"),
-          prompt: z.string().describe("The task or message for the agent session"),
+          prompt: z.string().describe("The task or message for the chat session"),
+          folder: z.string().describe("Absolute path to the working directory for the session"),
           maxTurns: z.number().optional().describe("Maximum agentic turns before stopping (default: 200)"),
         },
         async (args) => {
           try {
-            const config = getAgent(args.targetAgent);
-            if (!config) {
-              return { content: [{ type: "text" as const, text: `Error: Agent "${args.targetAgent}" not found` }] };
-            }
-
-            const identityPrompt = compileIdentityPrompt(config);
-            const workspacePath = getAgentWorkspacePath(args.targetAgent);
-            const workspaceContext = compileWorkspaceContext(workspacePath);
-            const fullSystemPrompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
             const sendMessage = getSendMessage();
 
             // Build async generator prompt (required when MCP servers are present)
@@ -146,10 +137,8 @@ export function buildAgentToolsServer(agentAlias: string) {
 
             const emitter = await sendMessage({
               prompt: promptIterable,
-              folder: workspacePath,
-              systemPrompt: fullSystemPrompt,
-              agentAlias: args.targetAgent,
-              maxTurns: args.maxTurns,
+              folder: args.folder,
+              maxTurns: args.maxTurns ?? 200,
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
             });
 
@@ -167,17 +156,17 @@ export function buildAgentToolsServer(agentAlias: string) {
               });
             });
 
-            log.info(`Agent ${agentAlias} started session ${chatId} for agent ${args.targetAgent}`);
+            log.info(`Agent ${agentAlias} started chat session ${chatId} in ${args.folder}`);
 
-            appendActivity(args.targetAgent, {
+            appendActivity(agentAlias, {
               type: "system",
-              message: `Session started by agent ${agentAlias}`,
-              metadata: { chatId, triggeredBy: agentAlias },
+              message: `Started chat session in ${args.folder}`,
+              metadata: { chatId, folder: args.folder },
             });
 
-            return { content: [{ type: "text" as const, text: JSON.stringify({ chatId, status: "started", agent: args.targetAgent }) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify({ chatId, status: "started", folder: args.folder }) }] };
           } catch (err: any) {
-            log.error(`start_agent_session failed: ${err.message}`);
+            log.error(`start_chat_session failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error starting session: ${err.message}` }] };
           }
         },
