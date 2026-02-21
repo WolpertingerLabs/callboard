@@ -49,7 +49,7 @@ export default function Events() {
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const hasKeys = agent.mcpKeyAliases && agent.mcpKeyAliases.length > 0;
+  const hasKeys = !!agent.mcpKeyAlias;
 
   // Manual refresh handler (with spinner)
   const refreshIngestors = () => {

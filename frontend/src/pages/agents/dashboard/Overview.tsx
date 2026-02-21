@@ -43,7 +43,7 @@ export default function Overview() {
   const [heartbeatInterval, setHeartbeatInterval] = useState(agent.heartbeat?.intervalMinutes || 30);
   const [quietStart, setQuietStart] = useState(agent.heartbeat?.quietHoursStart || "");
   const [quietEnd, setQuietEnd] = useState(agent.heartbeat?.quietHoursEnd || "");
-  const [selectedKeyAliases, setSelectedKeyAliases] = useState<string[]>(agent.mcpKeyAliases || []);
+  const [selectedKeyAlias, setSelectedKeyAlias] = useState<string | undefined>(agent.mcpKeyAlias);
   const [availableKeys, setAvailableKeys] = useState<KeyAliasInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -109,7 +109,7 @@ export default function Overview() {
           quietHoursStart: quietStart || undefined,
           quietHoursEnd: quietEnd || undefined,
         },
-        mcpKeyAliases: selectedKeyAliases.length > 0 ? selectedKeyAliases : undefined,
+        mcpKeyAlias: selectedKeyAlias || undefined,
       });
       onAgentUpdate?.(updated);
       setSaved(true);
@@ -452,10 +452,10 @@ export default function Overview() {
           {/* Proxy Key Aliases section */}
           <div style={{ gridColumn: isMobile ? undefined : "1 / -1", borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 4 }}>
             <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
-              Proxy Key Aliases
+              Proxy Key Alias
             </p>
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-              Assign mcp-secure-proxy key identities to this agent. Without assigned keys, Connections and Events are disabled.
+              Assign a local mcp-secure-proxy identity to this agent. Without an assigned key, Connections and Events are disabled.
             </p>
           </div>
           {availableKeys.length === 0 ? (
@@ -465,13 +465,13 @@ export default function Overview() {
           ) : (
             <div style={{ gridColumn: isMobile ? undefined : "1 / -1", display: "flex", flexWrap: "wrap", gap: 8 }}>
               {availableKeys.map((ka) => {
-                const isSelected = selectedKeyAliases.includes(ka.alias);
+                const isSelected = selectedKeyAlias === ka.alias;
                 return (
                   <button
                     key={ka.alias}
                     type="button"
                     onClick={() => {
-                      setSelectedKeyAliases((prev) => (isSelected ? prev.filter((a) => a !== ka.alias) : [...prev, ka.alias]));
+                      setSelectedKeyAlias(isSelected ? undefined : ka.alias);
                     }}
                     style={{
                       padding: "6px 14px",

@@ -16,7 +16,7 @@ export default function Connections() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const hasKeys = agent.mcpKeyAliases && agent.mcpKeyAliases.length > 0;
+  const hasKeys = !!agent.mcpKeyAlias;
 
   useEffect(() => {
     if (!hasKeys) return;

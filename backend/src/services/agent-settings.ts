@@ -49,9 +49,9 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
 }
 
 /**
- * Discover key aliases from {mcpConfigDir}/keys/peers/.
+ * Discover key aliases from {mcpConfigDir}/keys/local/.
  *
- * Each subdirectory under keys/peers/ represents a named key set (identity).
+ * Each subdirectory under keys/local/ represents a named local identity.
  * Returns info about what key files exist in each alias directory so the
  * frontend can show which aliases are usable.
  */
@@ -59,23 +59,23 @@ export function discoverKeyAliases(): KeyAliasInfo[] {
   const settings = loadSettings();
   if (!settings.mcpConfigDir) return [];
 
-  const peersDir = join(settings.mcpConfigDir, "keys", "peers");
-  if (!existsSync(peersDir)) {
-    log.debug(`Peers directory not found: ${peersDir}`);
+  const localKeysDir = join(settings.mcpConfigDir, "keys", "local");
+  if (!existsSync(localKeysDir)) {
+    log.debug(`Local keys directory not found: ${localKeysDir}`);
     return [];
   }
 
   try {
-    const entries = readdirSync(peersDir, { withFileTypes: true });
+    const entries = readdirSync(localKeysDir, { withFileTypes: true });
     return entries
       .filter((e) => e.isDirectory())
       .map((e) => ({
         alias: e.name,
-        hasSigningPub: existsSync(join(peersDir, e.name, "signing.pub.pem")),
-        hasExchangePub: existsSync(join(peersDir, e.name, "exchange.pub.pem")),
+        hasSigningPub: existsSync(join(localKeysDir, e.name, "signing.pub.pem")),
+        hasExchangePub: existsSync(join(localKeysDir, e.name, "exchange.pub.pem")),
       }));
   } catch (err: any) {
-    log.warn(`Failed to discover key aliases from ${peersDir}: ${err.message}`);
+    log.warn(`Failed to discover key aliases from ${localKeysDir}: ${err.message}`);
     return [];
   }
 }

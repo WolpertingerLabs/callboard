@@ -135,7 +135,7 @@ export default function AgentSettingsPage() {
                   borderRadius: 4,
                 }}
               >
-                keys/peers/
+                keys/local/
               </code>{" "}
               subdirectories.
             </div>
@@ -238,9 +238,7 @@ export default function AgentSettingsPage() {
                       }}
                     >
                       {ka.alias}
-                      {(!ka.hasSigningPub || !ka.hasExchangePub) && (
-                        <span style={{ color: "var(--warning)", marginLeft: 4 }}>(missing keys)</span>
-                      )}
+                      {(!ka.hasSigningPub || !ka.hasExchangePub) && <span style={{ color: "var(--warning)", marginLeft: 4 }}>(missing keys)</span>}
                     </span>
                   ))}
                 </div>
@@ -259,7 +257,7 @@ export default function AgentSettingsPage() {
                       borderRadius: 4,
                     }}
                   >
-                    {settings.mcpConfigDir}/keys/peers/
+                    {settings.mcpConfigDir}/keys/local/
                   </code>
                 </div>
               </div>
