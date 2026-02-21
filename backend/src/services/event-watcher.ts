@@ -1,21 +1,17 @@
 /**
  * Event watcher.
  *
- * Polls mcp-secure-proxy's remote server for new events via the encrypted
- * HTTP wire protocol and wakes agents with matching event subscriptions.
+ * Polls mcp-secure-proxy for new events every few seconds and persists them
+ * to per-connection JSONL logs. Events are stored by connection alias (the
+ * proxy route name), which maps to API key / IAM-like profiles.
  *
- * The agent itself decides how to respond — no hardcoded conditions or actions.
+ * This is a pure ingest loop — no agent matching or subscription filtering.
+ * All events from all ingestors are captured unconditionally.
  *
  * Configuration via environment variables:
- *   EVENT_WATCHER_ENABLED       — "true" to enable (default: "false")
- *   EVENT_WATCHER_KEYS_DIR      — path to own keypair (default: ~/.mcp-secure-proxy/keys/local)
- *   EVENT_WATCHER_REMOTE_KEYS_DIR — path to remote server public keys
- *   EVENT_WATCHER_REMOTE_URL    — remote server URL (default: http://127.0.0.1:9999)
- *   EVENT_WATCHER_POLL_INTERVAL — poll interval in ms (default: 5000)
+ *   EVENT_WATCHER_POLL_INTERVAL — poll interval in ms (default: 3000)
  */
-import { listAgents } from "./agent-file-service.js";
-import { executeAgent } from "./agent-executor.js";
-import { appendActivity } from "./agent-activity.js";
+import { appendEvent } from "./event-log.js";
 import { getSharedProxyClient } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -23,8 +19,7 @@ const log = createLogger("event-watcher");
 
 // ── Configuration ───────────────────────────────────────────────────
 
-const ENABLED = process.env.EVENT_WATCHER_ENABLED === "true";
-const BASE_POLL_INTERVAL = parseInt(process.env.EVENT_WATCHER_POLL_INTERVAL || "5000", 10);
+const BASE_POLL_INTERVAL = parseInt(process.env.EVENT_WATCHER_POLL_INTERVAL || "3000", 10);
 const MAX_BACKOFF = 60_000; // 60 seconds
 
 // ── Event shape from mcp-secure-proxy's poll_events ─────────────────
@@ -48,22 +43,16 @@ let consecutiveFailures = 0;
 
 /**
  * Initialize the event watcher.
- * Only starts if EVENT_WATCHER_ENABLED=true.
+ * Starts automatically if the proxy is configured (keys exist).
  */
 export function initEventWatcher(): void {
-  if (!ENABLED) {
-    log.info("Event watcher disabled (set EVENT_WATCHER_ENABLED=true to enable)");
-    return;
-  }
-
-  log.info(`Initializing event watcher — interval=${BASE_POLL_INTERVAL}ms`);
-
   const client = getSharedProxyClient();
   if (!client) {
-    log.error("Event watcher cannot start — proxy client unavailable (keys missing?)");
+    log.info("Event watcher not started — proxy client unavailable (keys missing?)");
     return;
   }
 
+  log.info(`Starting event watcher — interval=${BASE_POLL_INTERVAL}ms`);
   schedulePoll();
   log.info("Event watcher started");
 }
@@ -111,46 +100,16 @@ async function pollLoop(): Promise<void> {
       const maxId = Math.max(...events.map((e) => e.id));
       if (maxId > afterId) afterId = maxId;
 
-      // Load all agents once per poll cycle (cheap for small agent counts)
-      const agents = listAgents();
-
-      // For each event, find agents with matching subscriptions
+      // Store each event in its per-connection log
       for (const event of events) {
-        const matchingAgents = agents.filter((agent) => agent.eventSubscriptions?.some((sub) => sub.connectionAlias === event.source && sub.enabled));
-
-        // Fire-and-forget: don't block the poll loop waiting for agent execution
-        for (const agent of matchingAgents) {
-          log.info(`Waking agent ${agent.alias} for ${event.source}:${event.eventType} (event ${event.id})`);
-
-          // Log event arrival to activity (independent of session outcome)
-          appendActivity(agent.alias, {
-            type: "event",
-            message: `${event.source}:${event.eventType} — event ${event.id}`,
-            metadata: {
-              eventId: event.id,
-              eventSource: event.source,
-              eventType: event.eventType,
-              receivedAt: event.receivedAt,
-              eventData: typeof event.data === "string" ? event.data.slice(0, 500) : JSON.stringify(event.data).slice(0, 500),
-            },
-          });
-
-          const eventPrompt = buildEventPrompt(event);
-
-          executeAgent({
-            agentAlias: agent.alias,
-            prompt: eventPrompt,
-            triggeredBy: "event",
-            metadata: {
-              eventId: event.id,
-              eventSource: event.source,
-              eventType: event.eventType,
-              receivedAt: event.receivedAt,
-            },
-          }).catch((err) => {
-            log.error(`Failed to execute agent ${agent.alias} for event ${event.id}: ${err.message}`);
-          });
-        }
+        appendEvent({
+          id: event.id,
+          receivedAt: event.receivedAt,
+          source: event.source,
+          eventType: event.eventType,
+          data: event.data,
+        });
+        log.debug(`Stored ${event.source}:${event.eventType} (event ${event.id})`);
       }
     }
 
@@ -171,26 +130,4 @@ async function pollLoop(): Promise<void> {
 
   // Schedule next poll (always, even after failure)
   schedulePoll();
-}
-
-/**
- * Build a prompt string from an ingested event.
- */
-function buildEventPrompt(event: IngestedEvent): string {
-  const dataStr = typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2);
-
-  return [
-    `An event arrived from the "${event.source}" connection.`,
-    `Event type: ${event.eventType}`,
-    `Event ID: ${event.id}`,
-    `Received at: ${event.receivedAt}`,
-    "",
-    "Event data:",
-    "```json",
-    dataStr,
-    "```",
-    "",
-    "Review this event and respond appropriately based on your guidelines.",
-    "If this event doesn't require action, reply EVENT_NOTED.",
-  ].join("\n");
 }

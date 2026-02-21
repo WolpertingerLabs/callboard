@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import { MessageSquare, Plug, Clock, Radio, ChevronRight, Bot, Save, Check } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { updateAgent, getAgentCronJobs, getAgentActivity } from "../../../api";
+import { updateAgent, getAgentCronJobs, getAgentActivity, getProxyIngestors } from "../../../api";
 import type { AgentConfig, ActivityEntry } from "../../../api";
 
 function timeAgo(ts: number): string {
@@ -51,8 +51,8 @@ export default function Overview() {
   const [cronTotal, setCronTotal] = useState(0);
   const [recentActivity, setRecentActivity] = useState<ActivityEntry[]>([]);
 
-  const eventSubs = agent.eventSubscriptions || [];
-  const activeSubscriptions = eventSubs.filter((s) => s.enabled).length;
+  const [ingestorCount, setIngestorCount] = useState(0);
+  const [connectedIngestors, setConnectedIngestors] = useState(0);
 
   useEffect(() => {
     // Fetch real cron job stats
@@ -64,6 +64,17 @@ export default function Overview() {
       .catch(() => {
         setCronTotal(0);
         setCronCount(0);
+      });
+
+    // Fetch ingestor stats
+    getProxyIngestors()
+      .then((data) => {
+        setIngestorCount(data.ingestors.length);
+        setConnectedIngestors(data.ingestors.filter((i) => i.state === "connected").length);
+      })
+      .catch(() => {
+        setIngestorCount(0);
+        setConnectedIngestors(0);
       });
 
     // Fetch recent activity
@@ -104,7 +115,7 @@ export default function Overview() {
 
   const stats = [
     { label: "Cron Jobs", value: cronCount, total: cronTotal, icon: Clock, color: "var(--success)" },
-    { label: "Events", value: activeSubscriptions, total: eventSubs.length, icon: Radio, color: "var(--warning)" },
+    { label: "Events", value: connectedIngestors, total: ingestorCount, icon: Radio, color: "var(--warning)" },
   ];
 
   const basePath = `/agents/${agent.alias}`;

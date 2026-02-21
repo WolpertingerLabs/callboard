@@ -1,15 +1,17 @@
-import { useState, useEffect } from "react";
-import { useOutletContext } from "react-router-dom";
-import { Radio, CircleOff, Loader2 } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Radio, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { updateAgent, getAgentActivity, getProxyIngestors } from "../../../api";
-import type { AgentConfig, ActivityEntry, IngestorStatus } from "../../../api";
-import type { EventSubscription } from "shared";
+import { getProxyEvents, getProxyIngestors } from "../../../api";
+import type { StoredEvent, IngestorStatus } from "../../../api";
+
+const POLL_INTERVAL = 5_000; // refresh event list every 5s
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 10) return "Just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
@@ -17,303 +19,301 @@ function timeAgo(ts: number): string {
   return `${days}d ago`;
 }
 
-export default function Events() {
-  const { agent, onAgentUpdate } = useOutletContext<{ agent: AgentConfig; onAgentUpdate?: (agent: AgentConfig) => void }>();
-  const isMobile = useIsMobile();
-  const [subscriptions, setSubscriptions] = useState<EventSubscription[]>([]);
-  const [eventActivity, setEventActivity] = useState<ActivityEntry[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [loadingIngestors, setLoadingIngestors] = useState(true);
-  const [ingestors, setIngestors] = useState<IngestorStatus[]>([]);
+/** Color for an ingestor state badge */
+function stateColor(state: string): string {
+  switch (state) {
+    case "connected":
+      return "var(--success)";
+    case "starting":
+    case "reconnecting":
+      return "var(--warning)";
+    case "stopped":
+      return "var(--text-muted)";
+    case "error":
+      return "var(--error)";
+    default:
+      return "var(--text-muted)";
+  }
+}
 
-  // Fetch live ingestor connections from mcp-secure-proxy
+export default function Events() {
+  const isMobile = useIsMobile();
+  const [events, setEvents] = useState<StoredEvent[]>([]);
+  const [sources, setSources] = useState<string[]>([]);
+  const [activeSource, setActiveSource] = useState<string | null>(null); // null = all
+  const [loading, setLoading] = useState(true);
+  const [ingestors, setIngestors] = useState<IngestorStatus[]>([]);
+  const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Fetch ingestors once for the status header
   useEffect(() => {
-    setLoadingIngestors(true);
     getProxyIngestors()
       .then((data) => setIngestors(data.ingestors))
-      .catch(() => setIngestors([]))
-      .finally(() => setLoadingIngestors(false));
+      .catch(() => setIngestors([]));
   }, []);
 
-  // Merge agent subscriptions with live ingestor connections
+  // Poll events on interval
   useEffect(() => {
-    if (loadingIngestors) return;
+    const fetchEvents = () => {
+      getProxyEvents(100)
+        .then((data) => {
+          setEvents(data.events);
+          setSources(data.sources);
+          setLoading(false);
+        })
+        .catch(() => setLoading(false));
+    };
 
-    const existing = agent.eventSubscriptions || [];
-    const existingAliases = new Set(existing.map((s) => s.connectionAlias));
+    fetchEvents();
+    intervalRef.current = setInterval(fetchEvents, POLL_INTERVAL);
 
-    // Get unique connection aliases from ingestors
-    const ingestorAliases = [...new Set(ingestors.map((i) => i.connection))];
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
 
-    const merged = [
-      ...existing,
-      ...ingestorAliases.filter((alias) => !existingAliases.has(alias)).map((alias) => ({ connectionAlias: alias, enabled: false })),
-    ];
-    setSubscriptions(merged);
-  }, [agent.eventSubscriptions, ingestors, loadingIngestors]);
+  // Filter events by active source
+  const filteredEvents = activeSource ? events.filter((e) => e.source === activeSource) : events;
 
-  // Load event activity
-  useEffect(() => {
-    getAgentActivity(agent.alias, "event", 20)
-      .then(setEventActivity)
-      .catch(() => setEventActivity([]));
-  }, [agent.alias]);
-
-  const toggleSubscription = async (alias: string) => {
-    const updated = subscriptions.map((s) => (s.connectionAlias === alias ? { ...s, enabled: !s.enabled } : s));
-    setSubscriptions(updated);
-
-    setSaving(true);
-    try {
-      const updatedAgent = await updateAgent(agent.alias, { eventSubscriptions: updated });
-      onAgentUpdate?.(updatedAgent);
-    } catch {
-      setSubscriptions(subscriptions);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Build a lookup for ingestor info
-  const ingestorByConnection = new Map<string, IngestorStatus>();
+  // Build ingestor lookup
+  const ingestorMap = new Map<string, IngestorStatus>();
   for (const ing of ingestors) {
-    // Keep first per connection (they're unique in practice)
-    if (!ingestorByConnection.has(ing.connection)) {
-      ingestorByConnection.set(ing.connection, ing);
-    }
+    if (!ingestorMap.has(ing.connection)) ingestorMap.set(ing.connection, ing);
   }
 
-  const enabledCount = subscriptions.filter((s) => s.enabled).length;
-
   return (
-    <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 800, margin: "0 auto" }}>
+    <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 900, margin: "0 auto" }}>
       {/* Header */}
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700 }}>Events</h1>
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Connections this agent monitors for new events</p>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Live event feed from all proxy ingestors — polled every 3 seconds</p>
       </div>
 
-      {/* Event Subscriptions */}
-      <div style={{ marginBottom: 32 }}>
-        <h2
+      {/* Ingestor status row */}
+      {ingestors.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+          {ingestors.map((ing) => (
+            <div
+              key={ing.connection}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "6px 12px",
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                fontSize: 12,
+              }}
+            >
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: stateColor(ing.state), flexShrink: 0 }} />
+              <span style={{ fontWeight: 600, fontFamily: "monospace" }}>{ing.connection}</span>
+              <span style={{ color: "var(--text-muted)" }}>{ing.state}</span>
+              <span style={{ color: "var(--text-muted)" }}>&middot; {ing.totalEventsReceived} events</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Source filter pills */}
+      {sources.length > 1 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+          <button
+            onClick={() => setActiveSource(null)}
+            style={{
+              padding: "5px 12px",
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 500,
+              background: activeSource === null ? "var(--accent)" : "var(--surface)",
+              color: activeSource === null ? "#fff" : "var(--text)",
+              border: activeSource === null ? "1px solid var(--accent)" : "1px solid var(--border)",
+              cursor: "pointer",
+            }}
+          >
+            All ({events.length})
+          </button>
+          {sources.map((src) => {
+            const count = events.filter((e) => e.source === src).length;
+            return (
+              <button
+                key={src}
+                onClick={() => setActiveSource(src)}
+                style={{
+                  padding: "5px 12px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  fontFamily: "monospace",
+                  background: activeSource === src ? "var(--accent)" : "var(--surface)",
+                  color: activeSource === src ? "#fff" : "var(--text)",
+                  border: activeSource === src ? "1px solid var(--accent)" : "1px solid var(--border)",
+                  cursor: "pointer",
+                }}
+              >
+                {src} ({count})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Event list */}
+      {loading ? (
+        <div
           style={{
-            fontSize: 14,
-            fontWeight: 600,
+            textAlign: "center",
+            padding: "48px 20px",
             color: "var(--text-muted)",
-            marginBottom: 12,
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
+            fontSize: 13,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
           }}
         >
-          Subscriptions ({enabledCount}/{subscriptions.length}){saving && <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 8 }}>Saving...</span>}
-        </h2>
+          <Loader2 size={20} style={{ animation: "spin 1s linear infinite", marginBottom: 8 }} />
+          <p>Loading events...</p>
+        </div>
+      ) : filteredEvents.length === 0 ? (
+        <div
+          style={{
+            textAlign: "center",
+            padding: "48px 20px",
+            color: "var(--text-muted)",
+            fontSize: 14,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+          }}
+        >
+          <Radio size={24} style={{ marginBottom: 8, opacity: 0.4 }} />
+          <p>No events yet</p>
+          <p style={{ fontSize: 12, marginTop: 4 }}>Events from proxy ingestors will appear here as they arrive.</p>
+        </div>
+      ) : (
+        <div
+          style={{
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            overflow: "hidden",
+          }}
+        >
+          {filteredEvents.map((event, i) => {
+            const isExpanded = expandedEvent === event.id;
+            const dataPreview = typeof event.data === "string" ? event.data.slice(0, 120) : JSON.stringify(event.data).slice(0, 120);
 
-        {loadingIngestors ? (
-          <div
-            style={{
-              textAlign: "center",
-              padding: "32px 20px",
-              color: "var(--text-muted)",
-              fontSize: 13,
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-            }}
-          >
-            <Loader2 size={20} style={{ animation: "spin 1s linear infinite", marginBottom: 8 }} />
-            <p>Loading ingestors from proxy...</p>
-          </div>
-        ) : subscriptions.length === 0 ? (
-          <div
-            style={{
-              textAlign: "center",
-              padding: "32px 20px",
-              color: "var(--text-muted)",
-              fontSize: 13,
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-            }}
-          >
-            No ingestors configured in mcp-secure-proxy. Add event sources to the proxy to enable subscriptions.
-          </div>
-        ) : (
-          <div
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              overflow: "hidden",
-            }}
-          >
-            {subscriptions.map((sub, i) => {
-              const ingStatus = ingestorByConnection.get(sub.connectionAlias);
-              return (
+            return (
+              <div
+                key={`${event.source}-${event.id}`}
+                style={{
+                  borderBottom: i < filteredEvents.length - 1 ? "1px solid var(--border)" : "none",
+                }}
+              >
+                {/* Event row */}
                 <div
-                  key={sub.connectionAlias}
+                  onClick={() => setExpandedEvent(isExpanded ? null : event.id)}
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: isMobile ? "12px 14px" : "14px 20px",
-                    borderBottom: i < subscriptions.length - 1 ? "1px solid var(--border)" : "none",
+                    gap: 10,
+                    padding: isMobile ? "10px 12px" : "12px 16px",
+                    cursor: "pointer",
+                    transition: "background 0.1s",
                   }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div
-                      style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: 8,
-                        background: sub.enabled ? "color-mix(in srgb, var(--success) 12%, transparent)" : "var(--bg-secondary)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {sub.enabled ? <Radio size={16} style={{ color: "var(--success)" }} /> : <CircleOff size={16} style={{ color: "var(--text-muted)" }} />}
-                    </div>
-                    <div>
-                      <span
-                        style={{
-                          fontSize: 14,
-                          fontWeight: 600,
-                          fontFamily: "monospace",
-                        }}
-                      >
-                        {sub.connectionAlias}
-                      </span>
-                      <div
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 500,
-                          marginTop: 2,
-                          color: sub.enabled ? "var(--success)" : "var(--text-muted)",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                        }}
-                      >
-                        {sub.enabled ? "Listening" : "Disabled"}
-                        {ingStatus && (
-                          <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
-                            &middot; {ingStatus.type} &middot; {ingStatus.totalEventsReceived} events
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => toggleSubscription(sub.connectionAlias)}
-                    disabled={saving}
-                    style={{
-                      padding: "6px 14px",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      fontWeight: 500,
-                      background: "transparent",
-                      color: sub.enabled ? "var(--warning)" : "var(--success)",
-                      border: `1px solid color-mix(in srgb, ${sub.enabled ? "var(--warning)" : "var(--success)"} 30%, transparent)`,
-                      transition: "background 0.15s",
-                      cursor: saving ? "not-allowed" : "pointer",
-                      opacity: saving ? 0.6 : 1,
-                    }}
-                    onMouseEnter={(e) =>
-                      !saving &&
-                      (e.currentTarget.style.background = `color-mix(in srgb, ${sub.enabled ? "var(--warning)" : "var(--success)"} 10%, transparent)`)
-                    }
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    {sub.enabled ? "Disable" : "Enable"}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8, lineHeight: 1.5 }}>
-          The agent receives all events from enabled connections and decides how to respond based on its personality and guidelines. Connections are configured
-          in mcp-secure-proxy.
-        </p>
-      </div>
+                  {isExpanded ? (
+                    <ChevronDown size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                  ) : (
+                    <ChevronRight size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                  )}
 
-      {/* Event Activity Feed */}
-      <div>
-        <h2
-          style={{
-            fontSize: 14,
-            fontWeight: 600,
-            color: "var(--text-muted)",
-            marginBottom: 12,
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-          }}
-        >
-          Recent Event Activity
-        </h2>
-        {eventActivity.length === 0 ? (
-          <div
-            style={{
-              textAlign: "center",
-              padding: "48px 20px",
-              color: "var(--text-muted)",
-              fontSize: 14,
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-            }}
-          >
-            No event activity yet. Events will appear here when the agent responds to external events.
-          </div>
-        ) : (
-          <div
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              overflow: "hidden",
-            }}
-          >
-            {eventActivity.map((entry, i) => (
-              <div
-                key={entry.id}
-                style={{
-                  padding: "12px 16px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  borderBottom: i < eventActivity.length - 1 ? "1px solid var(--border)" : "none",
-                }}
-              >
-                <div
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: "var(--warning)",
-                    flexShrink: 0,
-                  }}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p
+                  {/* Source badge */}
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      fontFamily: "monospace",
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                      background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                      color: "var(--accent)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {event.source}
+                  </span>
+
+                  {/* Event type */}
+                  <span
                     style={{
                       fontSize: 13,
-                      lineHeight: 1.5,
+                      fontWeight: 500,
+                      fontFamily: "monospace",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {event.eventType}
+                  </span>
+
+                  {/* Data preview */}
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-muted)",
+                      flex: 1,
+                      minWidth: 0,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {entry.message}
-                  </p>
+                    {dataPreview}
+                  </span>
+
+                  {/* Timestamp */}
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>{timeAgo(event.storedAt)}</span>
                 </div>
-                <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{timeAgo(entry.timestamp)}</span>
+
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div
+                    style={{
+                      padding: "0 16px 14px 40px",
+                      fontSize: 12,
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 16, marginBottom: 8, color: "var(--text-muted)" }}>
+                      <span>ID: {event.id}</span>
+                      <span>Received: {new Date(event.receivedAt).toLocaleString()}</span>
+                      <span>Stored: {new Date(event.storedAt).toLocaleString()}</span>
+                    </div>
+                    <pre
+                      style={{
+                        background: "var(--bg-secondary)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 6,
+                        padding: 12,
+                        fontSize: 11,
+                        fontFamily: "monospace",
+                        overflow: "auto",
+                        maxHeight: 300,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all",
+                      }}
+                    >
+                      {typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2)}
+                    </pre>
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

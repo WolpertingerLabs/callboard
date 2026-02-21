@@ -524,6 +524,37 @@ export async function getProxyIngestors(): Promise<{ ingestors: IngestorStatus[]
   return res.json();
 }
 
+// Stored event log types
+
+export interface StoredEvent {
+  id: number;
+  receivedAt: string;
+  source: string;
+  eventType: string;
+  data: unknown;
+  storedAt: number;
+}
+
+export async function getProxyEvents(limit?: number, offset?: number): Promise<{ events: StoredEvent[]; sources: string[] }> {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.append("limit", limit.toString());
+  if (offset !== undefined) params.append("offset", offset.toString());
+
+  const res = await fetch(`${BASE}/proxy/events${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to get proxy events");
+  return res.json();
+}
+
+export async function getProxyEventsBySource(source: string, limit?: number, offset?: number): Promise<{ events: StoredEvent[] }> {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.append("limit", limit.toString());
+  if (offset !== undefined) params.append("offset", offset.toString());
+
+  const res = await fetch(`${BASE}/proxy/events/${encodeURIComponent(source)}${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to get proxy events for source");
+  return res.json();
+}
+
 // Agent activity API functions
 
 export async function getAgentActivity(alias: string, type?: string, limit?: number, offset?: number): Promise<ActivityEntry[]> {
