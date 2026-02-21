@@ -12,7 +12,7 @@ import {
   getAgentWorkspacePath,
   ensureAgentWorkspaceDir,
 } from "../services/agent-file-service.js";
-import { compileIdentityPrompt, scaffoldWorkspace } from "../services/claude-compiler.js";
+import { compileIdentityPrompt, compileWorkspaceContext, scaffoldWorkspace } from "../services/claude-compiler.js";
 import { agentWorkspaceRouter } from "./agent-workspace.js";
 import { agentMemoryRouter } from "./agent-memory.js";
 import { agentCronJobsRouter } from "./agent-cron-jobs.js";
@@ -96,7 +96,7 @@ agentsRouter.post("/", (req: Request, res: Response): void => {
   res.status(201).json({ agent: { ...config, workspacePath } });
 });
 
-// Identity prompt — returns compiled identity string for SDK systemPrompt.append
+// Identity prompt — returns compiled identity + pre-loaded workspace context for SDK systemPrompt.append
 agentsRouter.get("/:alias/identity-prompt", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const agent = getAgent(alias);
@@ -106,7 +106,10 @@ agentsRouter.get("/:alias/identity-prompt", (req: Request, res: Response): void 
     return;
   }
 
-  const prompt = compileIdentityPrompt(agent);
+  const identityPrompt = compileIdentityPrompt(agent);
+  const workspacePath = getAgentWorkspacePath(alias);
+  const workspaceContext = compileWorkspaceContext(workspacePath, { isMainSession: true });
+  const prompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
   res.json({ prompt });
 });
 

@@ -95,3 +95,75 @@ export function readWorkspaceFile(workspacePath: string, filename: string): stri
   if (!existsSync(filePath)) return undefined;
   return readFileSync(filePath, "utf-8");
 }
+
+/**
+ * Format a Date as YYYY-MM-DD for memory file lookups.
+ */
+function formatDateForMemory(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Pre-load workspace files into a string suitable for inclusion in the system prompt.
+ *
+ * Reads the files that agents are normally instructed to read at session startup
+ * (SOUL.md, USER.md, TOOLS.md, memory journals) and concatenates them, prefacing
+ * each with "This is the current content of [filename]".
+ *
+ * Options:
+ * - isMainSession: include MEMORY.md (direct human chat — contains personal context)
+ * - isHeartbeat: include HEARTBEAT.md (periodic check-in tasks)
+ */
+export function compileWorkspaceContext(workspacePath: string, opts?: { isMainSession?: boolean; isHeartbeat?: boolean }): string {
+  const sections: string[] = [];
+
+  // Always include core workspace files
+  const coreFiles = ["SOUL.md", "USER.md", "TOOLS.md"];
+  for (const filename of coreFiles) {
+    const content = readWorkspaceFile(workspacePath, filename);
+    if (content && content.trim()) {
+      sections.push(`This is the current content of ${filename}:\n${content.trim()}`);
+    }
+  }
+
+  // Memory journal files: today and yesterday
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const memoryFiles = [`memory/${formatDateForMemory(today)}.md`, `memory/${formatDateForMemory(yesterday)}.md`];
+  for (const memFile of memoryFiles) {
+    const content = readWorkspaceFile(workspacePath, memFile);
+    if (content && content.trim()) {
+      sections.push(`This is the current content of ${memFile}:\n${content.trim()}`);
+    }
+  }
+
+  // Main sessions: include long-term memory (contains personal context)
+  if (opts?.isMainSession) {
+    const content = readWorkspaceFile(workspacePath, "MEMORY.md");
+    if (content && content.trim()) {
+      sections.push(`This is the current content of MEMORY.md:\n${content.trim()}`);
+    }
+  }
+
+  // Heartbeat sessions: include heartbeat checklist
+  if (opts?.isHeartbeat) {
+    const content = readWorkspaceFile(workspacePath, "HEARTBEAT.md");
+    if (content && content.trim()) {
+      sections.push(`This is the current content of HEARTBEAT.md:\n${content.trim()}`);
+    }
+  }
+
+  if (sections.length === 0) return "";
+
+  const header =
+    "# Pre-loaded Workspace Files\n\n" +
+    "The following files from your workspace have been pre-loaded into your context. " +
+    "You do not need to read them again unless checking for updates made during this session.";
+
+  return header + "\n\n---\n\n" + sections.join("\n\n---\n\n");
+}
