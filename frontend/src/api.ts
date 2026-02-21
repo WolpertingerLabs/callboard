@@ -29,6 +29,8 @@ import type {
   Trigger,
   TriggerFilter,
   FilterCondition,
+  AgentSettings,
+  KeyAliasInfo,
 } from "shared/types/index.js";
 
 export type {
@@ -62,6 +64,8 @@ export type {
   Trigger,
   TriggerFilter,
   FilterCondition,
+  AgentSettings,
+  KeyAliasInfo,
 };
 
 const BASE = "/api";
@@ -625,6 +629,32 @@ export async function getProxyEventsBySource(source: string, limit?: number, off
   const res = await fetch(`${BASE}/proxy/events/${encodeURIComponent(source)}${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
   await assertOk(res, "Failed to get proxy events for source");
   return res.json();
+}
+
+// Agent settings API functions
+
+export async function getAgentSettings(): Promise<AgentSettings> {
+  const res = await fetch(`${BASE}/agent-settings`, { credentials: "include" });
+  await assertOk(res, "Failed to get agent settings");
+  return res.json();
+}
+
+export async function updateAgentSettings(settings: Partial<AgentSettings>): Promise<AgentSettings> {
+  const res = await fetch(`${BASE}/agent-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(settings),
+  });
+  await assertOk(res, "Failed to update agent settings");
+  return res.json();
+}
+
+export async function getKeyAliases(): Promise<KeyAliasInfo[]> {
+  const res = await fetch(`${BASE}/agent-settings/key-aliases`, { credentials: "include" });
+  await assertOk(res, "Failed to get key aliases");
+  const data = await res.json();
+  return data.aliases;
 }
 
 // Agent activity API functions

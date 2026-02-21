@@ -9,14 +9,17 @@ import type { ProxyRoute, AgentConfig } from "../../../api";
 // This page fetches live route data from the proxy via GET /api/proxy/routes.
 
 export default function Connections() {
-  useOutletContext<{ agent: AgentConfig }>();
+  const { agent } = useOutletContext<{ agent: AgentConfig }>();
   const isMobile = useIsMobile();
   const [routes, setRoutes] = useState<ProxyRoute[]>([]);
   const [configured, setConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const hasKeys = agent.mcpKeyAliases && agent.mcpKeyAliases.length > 0;
+
   useEffect(() => {
+    if (!hasKeys) return;
     getProxyRoutes()
       .then((data) => {
         setRoutes(data.routes);
@@ -24,7 +27,34 @@ export default function Connections() {
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [hasKeys]);
+
+  // Guard: no key aliases assigned
+  if (!hasKeys) {
+    return (
+      <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 800, margin: "0 auto" }}>
+        <div style={{ marginBottom: 20 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 700 }}>Connections</h1>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>External services available via mcp-secure-proxy</p>
+        </div>
+        <div
+          style={{
+            textAlign: "center",
+            padding: "48px 20px",
+            color: "var(--text-muted)",
+            fontSize: 14,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+          }}
+        >
+          <WifiOff size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
+          <p style={{ fontWeight: 600, marginBottom: 4 }}>No proxy key assigned</p>
+          <p style={{ fontSize: 12 }}>Assign an MCP key alias to this agent in the Overview tab to enable connections.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 800, margin: "0 auto" }}>

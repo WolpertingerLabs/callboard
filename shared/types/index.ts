@@ -26,3 +26,5 @@ export type { SessionStatus } from "./session.js";
 export type { AgentConfig, HeartbeatConfig } from "./agent.js";
 
 export type { CronAction, CronJob, EventSubscription, ActivityEntry, Trigger, TriggerFilter, FilterCondition } from "./agentFeatures.js";
+
+export type { AgentSettings, KeyAliasInfo } from "./agentSettings.js";

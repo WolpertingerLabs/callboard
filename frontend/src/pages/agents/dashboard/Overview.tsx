@@ -2,8 +2,8 @@ import { useState, useEffect } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import { MessageSquare, Plug, Clock, Radio, ChevronRight, Bot, Save, Check } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { updateAgent, getAgentCronJobs, getAgentActivity, getProxyIngestors } from "../../../api";
-import type { AgentConfig, ActivityEntry } from "../../../api";
+import { updateAgent, getAgentCronJobs, getAgentActivity, getProxyIngestors, getKeyAliases } from "../../../api";
+import type { AgentConfig, ActivityEntry, KeyAliasInfo } from "../../../api";
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -43,6 +43,8 @@ export default function Overview() {
   const [heartbeatInterval, setHeartbeatInterval] = useState(agent.heartbeat?.intervalMinutes || 30);
   const [quietStart, setQuietStart] = useState(agent.heartbeat?.quietHoursStart || "");
   const [quietEnd, setQuietEnd] = useState(agent.heartbeat?.quietHoursEnd || "");
+  const [selectedKeyAliases, setSelectedKeyAliases] = useState<string[]>(agent.mcpKeyAliases || []);
+  const [availableKeys, setAvailableKeys] = useState<KeyAliasInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -81,6 +83,11 @@ export default function Overview() {
     getAgentActivity(agent.alias, undefined, 5)
       .then(setRecentActivity)
       .catch(() => setRecentActivity([]));
+
+    // Fetch available key aliases
+    getKeyAliases()
+      .then(setAvailableKeys)
+      .catch(() => setAvailableKeys([]));
   }, [agent.alias]);
 
   const handleSave = async () => {
@@ -102,6 +109,7 @@ export default function Overview() {
           quietHoursStart: quietStart || undefined,
           quietHoursEnd: quietEnd || undefined,
         },
+        mcpKeyAliases: selectedKeyAliases.length > 0 ? selectedKeyAliases : undefined,
       });
       onAgentUpdate?.(updated);
       setSaved(true);
@@ -440,6 +448,50 @@ export default function Overview() {
               style={{ ...inputStyle, opacity: heartbeatEnabled ? 1 : 0.5 }}
             />
           </div>
+
+          {/* Proxy Key Aliases section */}
+          <div style={{ gridColumn: isMobile ? undefined : "1 / -1", borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 4 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+              Proxy Key Aliases
+            </p>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+              Assign mcp-secure-proxy key identities to this agent. Without assigned keys, Connections and Events are disabled.
+            </p>
+          </div>
+          {availableKeys.length === 0 ? (
+            <div style={{ gridColumn: isMobile ? undefined : "1 / -1" }}>
+              <p style={{ fontSize: 12, color: "var(--text-muted)" }}>No key aliases found. Configure the MCP Config Directory in Agent Settings.</p>
+            </div>
+          ) : (
+            <div style={{ gridColumn: isMobile ? undefined : "1 / -1", display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {availableKeys.map((ka) => {
+                const isSelected = selectedKeyAliases.includes(ka.alias);
+                return (
+                  <button
+                    key={ka.alias}
+                    type="button"
+                    onClick={() => {
+                      setSelectedKeyAliases((prev) => (isSelected ? prev.filter((a) => a !== ka.alias) : [...prev, ka.alias]));
+                    }}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontWeight: 500,
+                      fontFamily: "monospace",
+                      background: isSelected ? "var(--accent)" : "var(--bg)",
+                      color: isSelected ? "#fff" : "var(--text-muted)",
+                      border: isSelected ? "1px solid var(--accent)" : "1px solid var(--border)",
+                      cursor: "pointer",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    {ka.alias}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 

@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
+import { useOutletContext } from "react-router-dom";
 import { Radio, Loader2, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { getProxyEvents, getProxyIngestors } from "../../../api";
-import type { StoredEvent, IngestorStatus } from "../../../api";
+import type { StoredEvent, IngestorStatus, AgentConfig } from "../../../api";
 
 const POLL_INTERVAL = 5_000; // refresh event list every 5s
 
@@ -37,6 +38,7 @@ function stateColor(state: string): string {
 }
 
 export default function Events() {
+  const { agent } = useOutletContext<{ agent: AgentConfig }>();
   const isMobile = useIsMobile();
   const [events, setEvents] = useState<StoredEvent[]>([]);
   const [sources, setSources] = useState<string[]>([]);
@@ -46,6 +48,8 @@ export default function Events() {
   const [refreshingIngestors, setRefreshingIngestors] = useState(false);
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const hasKeys = agent.mcpKeyAliases && agent.mcpKeyAliases.length > 0;
 
   // Manual refresh handler (with spinner)
   const refreshIngestors = () => {
@@ -58,13 +62,15 @@ export default function Events() {
 
   // Initial fetch on mount
   useEffect(() => {
+    if (!hasKeys) return;
     getProxyIngestors()
       .then((data) => setIngestors(data.ingestors))
       .catch(() => setIngestors([]));
-  }, []);
+  }, [hasKeys]);
 
   // Poll events on interval
   useEffect(() => {
+    if (!hasKeys) return;
     const fetchEvents = () => {
       getProxyEvents(100)
         .then((data) => {
@@ -81,7 +87,7 @@ export default function Events() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, []);
+  }, [hasKeys]);
 
   // Filter events by active source
   const filteredEvents = activeSource ? events.filter((e) => e.source === activeSource) : events;
@@ -90,6 +96,33 @@ export default function Events() {
   const ingestorMap = new Map<string, IngestorStatus>();
   for (const ing of ingestors) {
     if (!ingestorMap.has(ing.connection)) ingestorMap.set(ing.connection, ing);
+  }
+
+  // Guard: no key aliases assigned
+  if (!hasKeys) {
+    return (
+      <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 900, margin: "0 auto" }}>
+        <div style={{ marginBottom: 24 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 700 }}>Events</h1>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Live event feed from all proxy ingestors</p>
+        </div>
+        <div
+          style={{
+            textAlign: "center",
+            padding: "48px 20px",
+            color: "var(--text-muted)",
+            fontSize: 14,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+          }}
+        >
+          <Radio size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
+          <p style={{ fontWeight: 600, marginBottom: 4 }}>No proxy key assigned</p>
+          <p style={{ fontSize: 12 }}>Assign an MCP key alias to this agent in the Overview tab to enable event monitoring.</p>
+        </div>
+      </div>
+    );
   }
 
   return (

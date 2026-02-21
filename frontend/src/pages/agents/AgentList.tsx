@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Trash2, Bot, ChevronRight, MessageSquare } from "lucide-react";
+import { Plus, Trash2, Bot, ChevronRight, MessageSquare, Settings } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { listAgents, deleteAgent } from "../../api";
 import type { AgentConfig } from "shared";
@@ -71,6 +71,22 @@ export default function AgentList() {
           >
             <Plus size={16} />
             {!isMobile && "New Agent"}
+          </button>
+          <button
+            onClick={() => navigate("/agents/settings")}
+            style={{
+              background: "var(--bg-secondary)",
+              color: "var(--text)",
+              padding: "10px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Agent Settings"
+          >
+            <Settings size={18} />
           </button>
           <button
             onClick={() => navigate("/")}

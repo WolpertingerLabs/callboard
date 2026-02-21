@@ -37,4 +37,9 @@ export interface AgentConfig {
 
   // Heartbeat — periodic open-ended check-ins
   heartbeat?: HeartbeatConfig;
+
+  // MCP key aliases — which mcp-secure-proxy key sets this agent can use.
+  // Each alias corresponds to a subdirectory under {mcpConfigDir}/keys/peers/.
+  // If empty/undefined, proxy features (connections, events) are disabled for this agent.
+  mcpKeyAliases?: string[];
 }

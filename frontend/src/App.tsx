@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import SplitLayout from "./components/SplitLayout";
 import Login from "./pages/Login";
 import AgentList from "./pages/agents/AgentList";
+import AgentSettings from "./pages/agents/AgentSettings";
 import CreateAgent from "./pages/agents/CreateAgent";
 import AgentDashboard from "./pages/agents/AgentDashboard";
 import Overview from "./pages/agents/dashboard/Overview";
@@ -51,6 +52,7 @@ export default function App() {
         {/* Agent/controller routes */}
         <Route path="/agents" element={<AgentList />} />
         <Route path="/agents/new" element={<CreateAgent />} />
+        <Route path="/agents/settings" element={<AgentSettings />} />
         <Route path="/agents/:alias" element={<AgentDashboard />}>
           <Route index element={<Overview />} />
           <Route path="chat" element={<AgentChat />} />

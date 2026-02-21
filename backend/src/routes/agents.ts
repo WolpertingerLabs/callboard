@@ -148,6 +148,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     userContext,
     eventSubscriptions,
     heartbeat,
+    mcpKeyAliases,
   } = req.body as Partial<AgentConfig>;
 
   // Build updated config — only override fields present in request body
@@ -169,6 +170,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     ...(userContext !== undefined && { userContext: userContext?.trim() || undefined }),
     ...(eventSubscriptions !== undefined && { eventSubscriptions }),
     ...(heartbeat !== undefined && { heartbeat }),
+    ...(mcpKeyAliases !== undefined && { mcpKeyAliases }),
   };
 
   // Validate required fields
