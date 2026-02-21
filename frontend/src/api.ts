@@ -26,6 +26,9 @@ import type {
   AgentConfig,
   CronJob,
   ActivityEntry,
+  Trigger,
+  TriggerFilter,
+  FilterCondition,
 } from "shared/types/index.js";
 
 export type {
@@ -56,6 +59,9 @@ export type {
   AgentConfig,
   CronJob,
   ActivityEntry,
+  Trigger,
+  TriggerFilter,
+  FilterCondition,
 };
 
 const BASE = "/api";
@@ -497,7 +503,63 @@ export async function deleteAgentCronJob(alias: string, jobId: string): Promise<
   await assertOk(res, "Failed to delete cron job");
 }
 
-// Agent activity API functions
+// Agent trigger API functions
+
+export interface BacktestResult {
+  totalScanned: number;
+  matchCount: number;
+  matches: StoredEvent[];
+}
+
+export async function getAgentTriggers(alias: string): Promise<Trigger[]> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers`, { credentials: "include" });
+  await assertOk(res, "Failed to list triggers");
+  const data = await res.json();
+  return data.triggers;
+}
+
+export async function createAgentTrigger(alias: string, trigger: Omit<Trigger, "id">): Promise<Trigger> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(trigger),
+  });
+  await assertOk(res, "Failed to create trigger");
+  const data = await res.json();
+  return data.trigger;
+}
+
+export async function updateAgentTrigger(alias: string, triggerId: string, updates: Partial<Trigger>): Promise<Trigger> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/${encodeURIComponent(triggerId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update trigger");
+  const data = await res.json();
+  return data.trigger;
+}
+
+export async function deleteAgentTrigger(alias: string, triggerId: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/${encodeURIComponent(triggerId)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete trigger");
+}
+
+export async function backtestTriggerFilter(alias: string, filter: TriggerFilter, limit?: number): Promise<BacktestResult> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/backtest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ filter, limit }),
+  });
+  await assertOk(res, "Failed to backtest filter");
+  return res.json();
+}
 
 // Proxy API functions
 

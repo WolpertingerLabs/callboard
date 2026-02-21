@@ -35,6 +35,35 @@ export interface EventSubscription {
   enabled: boolean; // toggle without removing
 }
 
+// ── Event Triggers ──────────────────────────────────────
+// User-defined rules that match incoming events from mcp-secure-proxy
+// and dispatch agent sessions when filters match. Like cron jobs but
+// fired by events instead of schedules. Prompt templates can reference
+// event data via {{event.*}} placeholders.
+
+export interface FilterCondition {
+  field: string; // Dot-notation path into event.data (e.g., "author.username")
+  operator: "equals" | "contains" | "matches" | "exists" | "not_exists";
+  value?: string; // Not needed for exists/not_exists. "matches" = regex pattern
+}
+
+export interface TriggerFilter {
+  source?: string; // Connection alias (exact match). Omit = any source
+  eventType?: string; // Event type (exact match). Omit = any type
+  conditions?: FilterCondition[]; // Data field conditions (AND logic)
+}
+
+export interface Trigger {
+  id: string;
+  name: string;
+  description: string;
+  status: "active" | "paused";
+  filter: TriggerFilter;
+  action: CronAction; // Reuse from cron jobs
+  lastTriggered?: number;
+  triggerCount: number;
+}
+
 // ── Activity Log ──────────────────────────────────────
 // Append-only audit log for agent operations.
 
@@ -51,8 +80,3 @@ export interface ActivityEntry {
 // MemoryItem     — memory is now markdown files in the agent workspace, not key-value pairs
 // Connection     — connections are managed by mcp-secure-proxy, not us;
 //                  we query the proxy live via list_routes + ingestor_status
-// Trigger        — eliminated as a CRUD concept; replaced by EventSubscription
-//                  on AgentConfig. mcp-secure-proxy is the authoritative source
-//                  for events. The agent decides behavioral response via its
-//                  personality/guidelines, not via trigger condition matching.
-// TriggerAction  — replaced by CronAction (simpler, no event placeholders)

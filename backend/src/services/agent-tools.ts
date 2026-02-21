@@ -18,13 +18,14 @@ import { readFileSync } from "fs";
 import { listAgents, getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
 import { compileIdentityPrompt } from "./claude-compiler.js";
 import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./agent-cron-jobs.js";
+import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "./agent-triggers.js";
 import { getActivity, appendActivity } from "./agent-activity.js";
 import { getActiveSession } from "./claude.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { createLogger } from "../utils/logger.js";
 
-import type { CronJob } from "shared";
+import type { CronJob, Trigger } from "shared";
 
 const log = createLogger("agent-tools");
 
@@ -64,7 +65,9 @@ function readSessionMessages(sessionId: string, limit: number = 50): string[] {
   if (!logPath) return [];
 
   try {
-    const lines = readFileSync(logPath, "utf-8").split("\n").filter((l) => l.trim());
+    const lines = readFileSync(logPath, "utf-8")
+      .split("\n")
+      .filter((l) => l.trim());
     const textMessages: string[] = [];
 
     for (const line of lines) {
@@ -198,14 +201,16 @@ export function buildAgentToolsServer(agentAlias: string) {
 
             // Session exists but not active — it's complete
             return {
-              content: [{
-                type: "text" as const,
-                text: JSON.stringify({
-                  status: "complete",
-                  chatId: args.chatId,
-                  lastActivity: chat.updated_at,
-                }),
-              }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    status: "complete",
+                    chatId: args.chatId,
+                    lastActivity: chat.updated_at,
+                  }),
+                },
+              ],
             };
           } catch (err: any) {
             return { content: [{ type: "text" as const, text: `Error checking status: ${err.message}` }] };
@@ -252,19 +257,14 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Cron Job Management ──────────────────────────────────
 
-      tool(
-        "list_cron_jobs",
-        "List all scheduled cron jobs for your agent.",
-        {},
-        async () => {
-          try {
-            const jobs = listCronJobs(agentAlias);
-            return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
-          } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error listing cron jobs: ${err.message}` }] };
-          }
-        },
-      ),
+      tool("list_cron_jobs", "List all scheduled cron jobs for your agent.", {}, async () => {
+        try {
+          const jobs = listCronJobs(agentAlias);
+          return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error listing cron jobs: ${err.message}` }] };
+        }
+      }),
 
       tool(
         "create_cron_job",
@@ -360,6 +360,119 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
+      // ── Trigger Management ──────────────────────────────────
+
+      tool("list_triggers", "List all event triggers for your agent. Triggers automatically start sessions when matching events arrive.", {}, async () => {
+        try {
+          const triggers = listTriggers(agentAlias);
+          return { content: [{ type: "text" as const, text: JSON.stringify(triggers, null, 2) }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error listing triggers: ${err.message}` }] };
+        }
+      }),
+
+      tool(
+        "create_trigger",
+        "Create a new event trigger. When events matching the filter arrive, a session starts with the prompt template. Use {{event.source}}, {{event.eventType}}, {{event.data}}, {{event.data.fieldPath}} in the prompt.",
+        {
+          name: z.string().describe("Human-readable name for the trigger"),
+          description: z.string().optional().describe("What this trigger does"),
+          source: z.string().optional().describe("Connection alias to filter (e.g. 'discord-bot'). Omit for any source."),
+          eventType: z.string().optional().describe("Event type to filter (e.g. 'MESSAGE_CREATE'). Omit for any type."),
+          prompt: z.string().describe("Prompt template. Use {{event.source}}, {{event.eventType}}, {{event.data}}, {{event.data.fieldPath}} for event data."),
+        },
+        async (args) => {
+          try {
+            const trigger = createTrigger(agentAlias, {
+              name: args.name,
+              description: args.description || "",
+              status: "active",
+              filter: {
+                ...(args.source && { source: args.source }),
+                ...(args.eventType && { eventType: args.eventType }),
+              },
+              action: { type: "start_session", prompt: args.prompt },
+              triggerCount: 0,
+            });
+
+            log.info(`Agent ${agentAlias} created trigger: ${trigger.id} — ${args.name}`);
+            appendActivity(agentAlias, {
+              type: "event",
+              message: `Created trigger: ${args.name}`,
+              metadata: { triggerId: trigger.id },
+            });
+
+            return { content: [{ type: "text" as const, text: JSON.stringify(trigger, null, 2) }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error creating trigger: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "update_trigger",
+        "Update an existing event trigger. You can change the name, status, filter source/eventType, or prompt.",
+        {
+          triggerId: z.string().describe("The ID of the trigger to update"),
+          name: z.string().optional().describe("New name"),
+          status: z.enum(["active", "paused"]).optional().describe("New status"),
+          source: z.string().optional().describe("New source filter (connection alias)"),
+          eventType: z.string().optional().describe("New event type filter"),
+          prompt: z.string().optional().describe("New prompt template"),
+        },
+        async (args) => {
+          try {
+            const updates: Partial<Trigger> = {};
+            if (args.name !== undefined) updates.name = args.name;
+            if (args.status !== undefined) updates.status = args.status;
+
+            if (args.source !== undefined || args.eventType !== undefined) {
+              const existing = getTrigger(agentAlias, args.triggerId);
+              updates.filter = {
+                ...(existing?.filter || {}),
+                ...(args.source !== undefined && { source: args.source || undefined }),
+                ...(args.eventType !== undefined && { eventType: args.eventType || undefined }),
+              };
+            }
+
+            if (args.prompt !== undefined) {
+              updates.action = { type: "start_session", prompt: args.prompt };
+            }
+
+            const updated = updateTrigger(agentAlias, args.triggerId, updates);
+            if (!updated) {
+              return { content: [{ type: "text" as const, text: `Trigger "${args.triggerId}" not found` }] };
+            }
+
+            log.info(`Agent ${agentAlias} updated trigger: ${args.triggerId}`);
+            return { content: [{ type: "text" as const, text: JSON.stringify(updated, null, 2) }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error updating trigger: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "delete_trigger",
+        "Delete an event trigger by its ID.",
+        {
+          triggerId: z.string().describe("The ID of the trigger to delete"),
+        },
+        async (args) => {
+          try {
+            const deleted = deleteTrigger(agentAlias, args.triggerId);
+            if (!deleted) {
+              return { content: [{ type: "text" as const, text: `Trigger "${args.triggerId}" not found` }] };
+            }
+
+            log.info(`Agent ${agentAlias} deleted trigger: ${args.triggerId}`);
+            return { content: [{ type: "text" as const, text: `Trigger "${args.triggerId}" deleted successfully` }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error deleting trigger: ${err.message}` }] };
+          }
+        },
+      ),
+
       // ── Activity & Events ────────────────────────────────────
 
       tool(
@@ -406,26 +519,21 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Agent Discovery ──────────────────────────────────────
 
-      tool(
-        "list_agents",
-        "List all agents on the platform. Returns basic info: alias, name, emoji, role, and description.",
-        {},
-        async () => {
-          try {
-            const agents = listAgents();
-            const summaries = agents.map((a) => ({
-              alias: a.alias,
-              name: a.name,
-              emoji: a.emoji || null,
-              role: a.role || null,
-              description: a.description,
-            }));
-            return { content: [{ type: "text" as const, text: JSON.stringify(summaries, null, 2) }] };
-          } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error listing agents: ${err.message}` }] };
-          }
-        },
-      ),
+      tool("list_agents", "List all agents on the platform. Returns basic info: alias, name, emoji, role, and description.", {}, async () => {
+        try {
+          const agents = listAgents();
+          const summaries = agents.map((a) => ({
+            alias: a.alias,
+            name: a.name,
+            emoji: a.emoji || null,
+            role: a.role || null,
+            description: a.description,
+          }));
+          return { content: [{ type: "text" as const, text: JSON.stringify(summaries, null, 2) }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error listing agents: ${err.message}` }] };
+        }
+      }),
 
       tool(
         "get_agent_info",

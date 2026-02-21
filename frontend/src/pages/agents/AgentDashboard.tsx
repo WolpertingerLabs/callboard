@@ -1,16 +1,6 @@
 import { useState, useEffect } from "react";
 import { Outlet, useParams, useNavigate, useLocation } from "react-router-dom";
-import {
-  ArrowLeft,
-  LayoutDashboard,
-  MessageSquare,
-  Clock,
-  Plug,
-  Radio,
-  Activity,
-  Brain,
-  Bot,
-} from "lucide-react";
+import { ArrowLeft, LayoutDashboard, MessageSquare, Clock, Zap, Plug, Radio, Activity, Brain, Bot } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { getAgent as fetchAgent } from "../../api";
 import type { AgentConfig } from "shared";
@@ -19,6 +9,7 @@ const navItems = [
   { key: "", label: "Overview", icon: LayoutDashboard },
   { key: "chat", label: "Chat", icon: MessageSquare },
   { key: "cron", label: "Cron Jobs", icon: Clock },
+  { key: "triggers", label: "Triggers", icon: Zap },
   { key: "connections", label: "Connections", icon: Plug },
   { key: "events", label: "Events", icon: Radio },
   { key: "activity", label: "Activity", icon: Activity },
@@ -247,9 +238,7 @@ export default function AgentDashboard() {
                   borderRadius: 8,
                   fontSize: 14,
                   fontWeight: isActive ? 600 : 400,
-                  background: isActive
-                    ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-                    : "transparent",
+                  background: isActive ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "transparent",
                   color: isActive ? "var(--accent)" : "var(--text-muted)",
                   transition: "background 0.15s, color 0.15s",
                   textAlign: "left",

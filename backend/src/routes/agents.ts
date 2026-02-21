@@ -17,6 +17,7 @@ import { agentWorkspaceRouter } from "./agent-workspace.js";
 import { agentMemoryRouter } from "./agent-memory.js";
 import { agentCronJobsRouter } from "./agent-cron-jobs.js";
 import { agentActivityRouter } from "./agent-activity.js";
+import { agentTriggersRouter } from "./agent-triggers.js";
 import { updateHeartbeatConfig, stopHeartbeat } from "../services/heartbeat.js";
 import { cancelAllJobsForAgent } from "../services/cron-scheduler.js";
 
@@ -27,6 +28,7 @@ agentsRouter.use("/:alias/workspace", agentWorkspaceRouter);
 agentsRouter.use("/:alias/memory", agentMemoryRouter);
 agentsRouter.use("/:alias/cron-jobs", agentCronJobsRouter);
 agentsRouter.use("/:alias/activity", agentActivityRouter);
+agentsRouter.use("/:alias/triggers", agentTriggersRouter);
 
 function withWorkspacePath(agent: AgentConfig): AgentConfig & { workspacePath: string } {
   const workspacePath = ensureAgentWorkspaceDir(agent.alias);
