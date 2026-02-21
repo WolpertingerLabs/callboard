@@ -9,6 +9,7 @@ data/
 .env
 .env.local
 .claude/settings.local.json
+.claude/worktrees/
 *.log
 logs/
 **/logs/
