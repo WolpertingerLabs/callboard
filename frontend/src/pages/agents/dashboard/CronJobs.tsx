@@ -33,6 +33,99 @@ const statusConfig: Record<string, { color: string; icon: typeof Play; label: st
   completed: { color: "var(--text-muted)", icon: CheckCircle, label: "Completed" },
 };
 
+/**
+ * Lightweight cron-expression → human-readable string converter.
+ * Handles common patterns; falls back to the raw expression for exotic ones.
+ */
+function describeCron(expr: string): string {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return expr;
+
+  const [minute, hour, dom, month, dow] = parts;
+
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  const formatTime = (h: string, m: string): string | null => {
+    const hi = parseInt(h);
+    const mi = parseInt(m);
+    if (isNaN(hi) || isNaN(mi)) return null;
+    const period = hi >= 12 ? "PM" : "AM";
+    const h12 = hi === 0 ? 12 : hi > 12 ? hi - 12 : hi;
+    return `${h12}:${mi.toString().padStart(2, "0")} ${period}`;
+  };
+
+  const ordinal = (n: number): string => {
+    const s = n % 100;
+    if (s === 11 || s === 12 || s === 13) return `${n}th`;
+    if (s % 10 === 1) return `${n}st`;
+    if (s % 10 === 2) return `${n}nd`;
+    if (s % 10 === 3) return `${n}rd`;
+    return `${n}th`;
+  };
+
+  // Every minute
+  if (minute === "*" && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+    return "Every minute";
+  }
+
+  // Every N minutes
+  if (minute.startsWith("*/") && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+    return `Every ${minute.slice(2)} minutes`;
+  }
+
+  // Every hour (at minute 0 or specific minute)
+  if (hour === "*" && dom === "*" && month === "*" && dow === "*") {
+    if (minute === "0") return "Every hour";
+    return `Every hour at :${minute.padStart(2, "0")}`;
+  }
+
+  // Every N hours
+  if (hour.startsWith("*/") && dom === "*" && month === "*" && dow === "*") {
+    const n = hour.slice(2);
+    return minute === "0" ? `Every ${n} hours` : `Every ${n} hours at :${minute.padStart(2, "0")}`;
+  }
+
+  // From here we need a concrete hour — bail on wildcards / step values in hour
+  if (hour.includes("*") || hour.includes("/")) return expr;
+
+  const timeStr = formatTime(hour, minute);
+  if (!timeStr) return expr;
+
+  // Daily
+  if (dom === "*" && month === "*" && dow === "*") {
+    return `Daily at ${timeStr} UTC`;
+  }
+
+  // Day-of-week patterns
+  if (dom === "*" && month === "*" && dow !== "*") {
+    if (dow === "1-5" || dow.toUpperCase() === "MON-FRI") return `Weekdays at ${timeStr} UTC`;
+    if (dow === "0,6" || dow.toUpperCase() === "SAT,SUN") return `Weekends at ${timeStr} UTC`;
+
+    const names = dow.split(",").map((d) => {
+      const i = parseInt(d);
+      return isNaN(i) ? d : dayNames[i] || d;
+    });
+    return `${names.join(", ")} at ${timeStr} UTC`;
+  }
+
+  // Specific month + day (e.g. Feb 21)
+  if (dom !== "*" && month !== "*" && dow === "*") {
+    const mi = parseInt(month);
+    const monthName = isNaN(mi) ? month : monthNames[mi - 1] || month;
+    return `${monthName} ${dom} at ${timeStr} UTC`;
+  }
+
+  // Day of month, every month
+  if (dom !== "*" && month === "*" && dow === "*") {
+    const d = parseInt(dom);
+    return isNaN(d) ? expr : `${ordinal(d)} of every month at ${timeStr} UTC`;
+  }
+
+  // Fallback: show time + raw expression
+  return `${timeStr} UTC — ${expr}`;
+}
+
 const typeConfig: Record<string, { color: string; icon: typeof Clock }> = {
   "one-off": { color: "var(--accent)", icon: Calendar },
   recurring: { color: "var(--success)", icon: RotateCcw },
@@ -133,9 +226,7 @@ export default function CronJobs() {
       >
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>Cron Jobs</h1>
-          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
-            Scheduled tasks and timed events
-          </p>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Scheduled tasks and timed events</p>
         </div>
         <button
           onClick={() => setShowForm(!showForm)}
@@ -174,12 +265,14 @@ export default function CronJobs() {
           }}
         >
           <input type="text" value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="Job name" style={inputStyle} />
-          <input type="text" value={formSchedule} onChange={(e) => setFormSchedule(e.target.value)} placeholder="Schedule (e.g. Every weekday at 9:00 AM)" style={inputStyle} />
-          <select
-            value={formType}
-            onChange={(e) => setFormType(e.target.value as CronJob["type"])}
-            style={{ ...inputStyle, cursor: "pointer" }}
-          >
+          <input
+            type="text"
+            value={formSchedule}
+            onChange={(e) => setFormSchedule(e.target.value)}
+            placeholder="Schedule (e.g. Every weekday at 9:00 AM)"
+            style={inputStyle}
+          />
+          <select value={formType} onChange={(e) => setFormType(e.target.value as CronJob["type"])} style={{ ...inputStyle, cursor: "pointer" }}>
             <option value="recurring">Recurring</option>
             <option value="one-off">One-off</option>
             <option value="indefinite">Indefinite</option>
@@ -212,9 +305,7 @@ export default function CronJobs() {
 
       {/* Job list */}
       {loading ? (
-        <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)", fontSize: 14 }}>
-          Loading cron jobs...
-        </div>
+        <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)", fontSize: 14 }}>Loading cron jobs...</div>
       ) : jobs.length === 0 ? (
         <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)", fontSize: 14 }}>
           No cron jobs yet. Create one to schedule automated tasks.
@@ -298,13 +389,12 @@ export default function CronJobs() {
                   }}
                 >
                   <Clock size={13} />
-                  {job.schedule}
+                  <span>{describeCron(job.schedule)}</span>
+                  <span style={{ opacity: 0.5 }}>({job.schedule})</span>
                 </div>
 
                 {/* Description */}
-                <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 10 }}>
-                  {job.description}
-                </p>
+                <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 10 }}>{job.description}</p>
 
                 {/* Footer */}
                 <div
@@ -320,9 +410,7 @@ export default function CronJobs() {
                 >
                   <div style={{ display: "flex", gap: 16, fontSize: 12, color: "var(--text-muted)" }}>
                     {job.lastRun && <span>Last run: {timeAgo(job.lastRun)}</span>}
-                    {job.nextRun && (
-                      <span style={{ color: "var(--text)" }}>Next run: {timeUntil(job.nextRun)}</span>
-                    )}
+                    {job.nextRun && <span style={{ color: "var(--text)" }}>Next run: {timeUntil(job.nextRun)}</span>}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     {canToggle && (
