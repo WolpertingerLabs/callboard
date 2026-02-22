@@ -18,6 +18,11 @@ interface LocalStorageData {
   showTriggeredChats?: boolean;
 }
 
+/** Check if a path is inside the ccui-agents workspace directory (excluded from recommended folders). */
+function isCcuiAgentsPath(path: string): boolean {
+  return path.includes("/.ccui-agents/") || path.endsWith("/.ccui-agents");
+}
+
 const DEFAULT_PERMISSIONS: DefaultPermissions = {
   fileRead: "ask",
   fileWrite: "ask",
@@ -71,7 +76,7 @@ export function saveMaxTurns(value: number): void {
 
 export function getRecentDirectories(): RecentDirectory[] {
   const data = getStorageData();
-  return data.recentDirectories || [];
+  return (data.recentDirectories || []).filter((dir) => !isCcuiAgentsPath(dir.path));
 }
 
 export function addRecentDirectory(path: string): void {
@@ -125,8 +130,8 @@ export function initializeSuggestedDirectories(chatDirectories: string[]): void 
   if (existing.length === 0 && chatDirectories.length > 0) {
     const data = getStorageData();
 
-    // Take first three unique directories
-    const uniqueDirs = [...new Set(chatDirectories)];
+    // Take first three unique directories, excluding ccui-agents workspace paths
+    const uniqueDirs = [...new Set(chatDirectories)].filter((dir) => !isCcuiAgentsPath(dir));
     const suggestedDirs = uniqueDirs.slice(0, 3).map((path) => ({
       path,
       lastUsed: new Date().toISOString(),
