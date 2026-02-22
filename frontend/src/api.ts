@@ -31,6 +31,7 @@ import type {
   FilterCondition,
   AgentSettings,
   KeyAliasInfo,
+  ConnectionStatus,
 } from "shared/types/index.js";
 
 export type {
@@ -66,6 +67,7 @@ export type {
   FilterCondition,
   AgentSettings,
   KeyAliasInfo,
+  ConnectionStatus,
 };
 
 const BASE = "/api";
@@ -690,4 +692,39 @@ export async function getAgentActivity(alias: string, type?: string, limit?: num
   await assertOk(res, "Failed to get agent activity");
   const data = await res.json();
   return data.entries;
+}
+
+// Connection management API functions
+
+export interface ConnectionsListResponse {
+  templates: ConnectionStatus[];
+  localModeActive: boolean;
+}
+
+export async function getConnections(): Promise<ConnectionsListResponse> {
+  const res = await fetch(`${BASE}/connections`, { credentials: "include" });
+  await assertOk(res, "Failed to get connections");
+  return res.json();
+}
+
+export async function setConnectionEnabled(alias: string, enabled: boolean): Promise<{ alias: string; enabled: boolean }> {
+  const res = await fetch(`${BASE}/connections/${encodeURIComponent(alias)}/enable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ enabled }),
+  });
+  await assertOk(res, "Failed to toggle connection");
+  return res.json();
+}
+
+export async function setConnectionSecrets(alias: string, secrets: Record<string, string>): Promise<{ secretsSet: Record<string, boolean> }> {
+  const res = await fetch(`${BASE}/connections/${encodeURIComponent(alias)}/secrets`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ secrets }),
+  });
+  await assertOk(res, "Failed to set connection secrets");
+  return res.json();
 }
