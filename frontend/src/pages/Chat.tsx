@@ -1227,6 +1227,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             borderBottom: "1px solid var(--border)",
             display: "flex",
             alignItems: "center",
+            justifyContent: "flex-end",
             gap: 8,
             flexShrink: 0,
           }}
