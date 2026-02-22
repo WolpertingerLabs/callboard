@@ -28,3 +28,5 @@ export type { AgentConfig, HeartbeatConfig, MemoryConsolidationConfig } from "./
 export type { CronAction, CronJob, EventSubscription, ActivityEntry, Trigger, TriggerFilter, FilterCondition } from "./agentFeatures.js";
 
 export type { AgentSettings, KeyAliasInfo } from "./agentSettings.js";
+
+export type { ConnectionStatus } from "./connections.js";

@@ -18,6 +18,7 @@ import { appPluginsRouter } from "./routes/app-plugins.js";
 import { agentsRouter } from "./routes/agents.js";
 import { agentSettingsRouter } from "./routes/agent-settings.js";
 import { proxyRouter } from "./routes/proxy.js";
+import { connectionsRouter } from "./routes/connections.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
 import { existsSync, readFileSync } from "fs";
 import { createLogger } from "./utils/logger.js";
@@ -28,6 +29,7 @@ import { initMemoryConsolidation, shutdownConsolidation } from "./services/memor
 import { LocalProxy } from "./services/local-proxy.js";
 import { getAgentSettings } from "./services/agent-settings.js";
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
+import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 
 const log = createLogger("server");
 
@@ -108,6 +110,7 @@ app.use("/api/app-plugins", appPluginsRouter);
 app.use("/api/agents", agentsRouter);
 app.use("/api/agent-settings", agentSettingsRouter);
 app.use("/api/proxy", proxyRouter);
+app.use("/api/connections", connectionsRouter);
 
 // Webhook route for local proxy mode (ingestor event ingestion)
 app.post("/webhooks/:path", (req, res) => {
@@ -163,6 +166,10 @@ app.listen(PORT, () => {
   // Start local proxy if configured
   const settings = getAgentSettings();
   if (settings.proxyMode === "local" && settings.mcpConfigDir) {
+    // Sync MCP_CONFIG_DIR and load secrets before creating LocalProxy
+    process.env.MCP_CONFIG_DIR = settings.mcpConfigDir;
+    loadMcpEnvIntoProcess();
+
     try {
       const localProxy = new LocalProxy(settings.mcpConfigDir, "default");
       localProxy
