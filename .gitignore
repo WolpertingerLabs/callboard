@@ -10,6 +10,7 @@ data/
 .env.local
 .claude/settings.local.json
 .claude/worktrees/
+.playwright-cli/
 *.log
 logs/
 **/logs/
