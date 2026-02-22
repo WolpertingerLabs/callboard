@@ -81,6 +81,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Mode detection: no id means we're on /chat/new (new chat mode)
   const folder = searchParams.get("folder") || "";
   const defaultPermissions = (location.state as any)?.defaultPermissions as DefaultPermissions | undefined;
+  const agentSystemPrompt = (location.state as any)?.systemPrompt as string | undefined;
+  const agentAlias = (location.state as any)?.agentAlias as string | undefined;
 
   const [chat, setChat] = useState<ChatType | null>(null);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
@@ -649,6 +651,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree) {
             requestBody.branchConfig = branchConfig;
           }
+          if (agentSystemPrompt) {
+            requestBody.systemPrompt = agentSystemPrompt;
+          }
+          if (agentAlias) {
+            requestBody.agentAlias = agentAlias;
+          }
 
           res = await fetch("/api/chats/new/message", {
             method: "POST",
@@ -719,7 +727,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     },
-    [id, folder, defaultPermissions, readSSE, activePluginIds, chat, branchConfig],
+    [id, folder, defaultPermissions, agentSystemPrompt, agentAlias, readSSE, activePluginIds, chat, branchConfig],
   );
 
   // Keep ref in sync so readSSE can call handleSend without stale closure

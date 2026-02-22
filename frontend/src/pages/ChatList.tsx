@@ -1,7 +1,18 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ClipboardList, X, Plus, Settings } from "lucide-react";
-import { listChats, deleteChat, toggleBookmark, getSessionStatus, type Chat, type SessionStatus, type DefaultPermissions } from "../api";
+import { ClipboardList, X, Plus, Settings, Bot } from "lucide-react";
+import {
+  listChats,
+  deleteChat,
+  toggleBookmark,
+  getSessionStatus,
+  listAgents,
+  getAgentIdentityPrompt,
+  type Chat,
+  type SessionStatus,
+  type DefaultPermissions,
+  type AgentConfig,
+} from "../api";
 import ChatListItem from "../components/ChatListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import PermissionSettings from "../components/PermissionSettings";
@@ -16,6 +27,8 @@ import {
   addRecentDirectory,
   removeRecentDirectory,
   initializeSuggestedDirectories,
+  getShowTriggeredChats,
+  saveShowTriggeredChats,
 } from "../utils/localStorage";
 
 interface ChatListProps {
@@ -29,6 +42,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
+  const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [folder, setFolder] = useState("");
@@ -41,6 +55,10 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     chatId: "",
     chatName: "",
   });
+  const [chatMode, setChatMode] = useState<"claude-code" | "agent">("claude-code");
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState<AgentConfig | null>(null);
+  const [agentsLoading, setAgentsLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const isQueueActive = location.pathname === "/queue";
@@ -152,6 +170,41 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     });
   };
 
+  const handleAgentCreate = async () => {
+    if (!selectedAgent?.workspacePath) return;
+
+    const agentPermissions: DefaultPermissions = {
+      fileRead: "allow",
+      fileWrite: "allow",
+      codeExecution: "allow",
+      webAccess: "allow",
+    };
+
+    // Fetch compiled identity prompt for the agent
+    let systemPrompt: string | undefined;
+    try {
+      systemPrompt = await getAgentIdentityPrompt(selectedAgent.alias);
+    } catch {
+      // Continue without identity prompt if fetch fails
+    }
+
+    setShowNew(false);
+    setSelectedAgent(null);
+    navigate(`/chat/new?folder=${encodeURIComponent(selectedAgent.workspacePath)}`, {
+      state: { defaultPermissions: agentPermissions, systemPrompt, agentAlias: selectedAgent.alias },
+    });
+  };
+
+  // Lazy fetch agents when agent mode is first selected
+  useEffect(() => {
+    if (chatMode !== "agent" || agents.length > 0) return;
+    setAgentsLoading(true);
+    listAgents()
+      .then(setAgents)
+      .catch(() => {})
+      .finally(() => setAgentsLoading(false));
+  }, [chatMode, agents.length]);
+
   const handleDelete = (chat: Chat) => {
     let chatPreview: string | undefined;
     try {
@@ -205,9 +258,26 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     load(newFilter);
   };
 
+  const handleToggleTriggered = () => {
+    const newValue = !showTriggered;
+    setShowTriggered(newValue);
+    saveShowTriggeredChats(newValue);
+  };
+
   // Client-side filtering for advanced filters and content search
   const filteredChats = useMemo(() => {
     let result = chats;
+
+    // Hide triggered chats unless toggle is ON
+    if (!showTriggered) {
+      result = result.filter((c) => {
+        try {
+          return !JSON.parse(c.metadata || "{}").triggered;
+        } catch {
+          return true;
+        }
+      });
+    }
 
     // Directory include regex
     if (filters.directoryInclude.active && filters.directoryInclude.value) {
@@ -247,7 +317,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     }
 
     return result;
-  }, [chats, filters, matchingChatIds]);
+  }, [chats, filters, matchingChatIds, showTriggered]);
 
   // Determine the empty state message
   const isFiltered = bookmarkFilter || hasActiveFilters(filters) || matchingChatIds !== null;
@@ -297,6 +367,22 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
             <Plus size={18} />
           </button>
           <button
+            onClick={() => navigate("/agents")}
+            style={{
+              background: "var(--bg-secondary)",
+              color: "var(--text)",
+              padding: "10px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Agents"
+          >
+            <Bot size={18} />
+          </button>
+          <button
             onClick={() => navigate("/settings")}
             style={{
               background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
@@ -318,6 +404,8 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
       <ChatFilterBar
         bookmarkFilter={bookmarkFilter}
         onToggleBookmark={handleToggleBookmarkFilter}
+        showTriggered={showTriggered}
+        onToggleTriggered={handleToggleTriggered}
         filters={filters}
         onFiltersChange={setFilters}
         searchQuery={searchQuery}
@@ -332,92 +420,229 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
             borderBottom: "1px solid var(--border)",
           }}
         >
-          <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />
-
-          {recentDirs.length > 0 && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
-              {recentDirs.map((dir) => (
-                <div
-                  key={dir}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                    marginBottom: 4,
-                  }}
-                >
-                  <button
-                    onClick={() => handleCreate(dir)}
-                    title={dir}
-                    style={{
-                      flex: 1,
-                      textAlign: "left",
-                      background: "var(--surface)",
-                      border: "1px solid var(--border)",
-                      borderRadius: 8,
-                      padding: "10px 12px",
-                      fontSize: 14,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      direction: "rtl",
-                    }}
-                  >
-                    {dir}
-                  </button>
-                  <button
-                    onClick={() => handleRemoveRecentDir(dir)}
-                    style={{
-                      background: "var(--surface)",
-                      border: "1px solid var(--border)",
-                      borderRadius: 6,
-                      padding: "8px",
-                      fontSize: 12,
-                      color: "var(--text-muted)",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      minWidth: 28,
-                      height: 28,
-                    }}
-                    title={`Remove ${dir} from recent directories`}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "var(--text-muted)",
-                  margin: "10px 0 6px",
-                }}
-              >
-                Or enter a new path
-              </div>
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" autoFocus />
-            </div>
+          {/* Mode Toggle */}
+          <div style={{ display: "flex", marginBottom: 12 }}>
             <button
-              onClick={() => handleCreate()}
-              disabled={!folder.trim()}
+              onClick={() => {
+                setChatMode("claude-code");
+                setSelectedAgent(null);
+              }}
               style={{
-                background: folder.trim() ? "var(--accent)" : "var(--border)",
-                color: "#fff",
+                flex: 1,
                 padding: "10px 16px",
-                borderRadius: 8,
                 fontSize: 14,
-                alignSelf: "flex-start",
+                fontWeight: 500,
+                borderRadius: "8px 0 0 8px",
+                border: chatMode === "claude-code" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: chatMode === "claude-code" ? "var(--accent)" : "var(--bg-secondary)",
+                color: chatMode === "claude-code" ? "#fff" : "var(--text)",
+                cursor: "pointer",
+                transition: "all 0.15s",
               }}
             >
-              Create
+              Claude Code
+            </button>
+            <button
+              onClick={() => setChatMode("agent")}
+              style={{
+                flex: 1,
+                padding: "10px 16px",
+                fontSize: 14,
+                fontWeight: 500,
+                borderRadius: "0 8px 8px 0",
+                border: chatMode === "agent" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                borderLeft: "none",
+                background: chatMode === "agent" ? "var(--accent)" : "var(--bg-secondary)",
+                color: chatMode === "agent" ? "#fff" : "var(--text)",
+                cursor: "pointer",
+                transition: "all 0.15s",
+              }}
+            >
+              Agent
             </button>
           </div>
+
+          {chatMode === "claude-code" ? (
+            <>
+              <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />
+
+              {recentDirs.length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
+                  {recentDirs.map((dir) => (
+                    <div
+                      key={dir}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        marginBottom: 4,
+                      }}
+                    >
+                      <button
+                        onClick={() => handleCreate(dir)}
+                        title={dir}
+                        style={{
+                          flex: 1,
+                          textAlign: "left",
+                          background: "var(--surface)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          padding: "10px 12px",
+                          fontSize: 14,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          direction: "rtl",
+                        }}
+                      >
+                        {dir}
+                      </button>
+                      <button
+                        onClick={() => handleRemoveRecentDir(dir)}
+                        style={{
+                          background: "var(--surface)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 6,
+                          padding: "8px",
+                          fontSize: 12,
+                          color: "var(--text-muted)",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          minWidth: 28,
+                          height: 28,
+                        }}
+                        title={`Remove ${dir} from recent directories`}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-muted)",
+                      margin: "10px 0 6px",
+                    }}
+                  >
+                    Or enter a new path
+                  </div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" autoFocus />
+                </div>
+                <button
+                  onClick={() => handleCreate()}
+                  disabled={!folder.trim()}
+                  style={{
+                    background: folder.trim() ? "var(--accent)" : "var(--border)",
+                    color: "#fff",
+                    padding: "10px 16px",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    alignSelf: "flex-start",
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {agentsLoading ? (
+                <div style={{ padding: "20px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>Loading agents...</div>
+              ) : agents.length === 0 ? (
+                <div style={{ padding: "20px 0", textAlign: "center" }}>
+                  <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 12 }}>No agents yet.</p>
+                  <button
+                    onClick={() => navigate("/agents/new")}
+                    style={{
+                      background: "var(--accent)",
+                      color: "#fff",
+                      padding: "8px 16px",
+                      borderRadius: 8,
+                      fontSize: 14,
+                      fontWeight: 500,
+                    }}
+                  >
+                    Create Agent
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 2 }}>Select an agent</div>
+                  {agents.map((agent) => (
+                    <button
+                      key={agent.alias}
+                      onClick={() => setSelectedAgent(selectedAgent?.alias === agent.alias ? null : agent)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        textAlign: "left",
+                        background: selectedAgent?.alias === agent.alias ? "color-mix(in srgb, var(--accent) 15%, var(--surface))" : "var(--surface)",
+                        border: selectedAgent?.alias === agent.alias ? "1.5px solid var(--accent)" : "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "10px 12px",
+                        cursor: "pointer",
+                        transition: "border-color 0.15s",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: "50%",
+                          background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Bot size={16} style={{ color: "var(--accent)" }} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 500 }}>{agent.name}</div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "var(--text-muted)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {agent.description}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+
+                  <button
+                    onClick={handleAgentCreate}
+                    disabled={!selectedAgent}
+                    style={{
+                      marginTop: 6,
+                      background: selectedAgent ? "var(--accent)" : "var(--border)",
+                      color: "#fff",
+                      padding: "10px 16px",
+                      borderRadius: 8,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      transition: "background 0.15s",
+                    }}
+                  >
+                    Start Chat
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 

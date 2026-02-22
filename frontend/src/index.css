@@ -19,6 +19,8 @@
   --code-bg: #0d1117;
   --danger: #f85149;
   --error: #f85149;
+  --success: #3fb950;
+  --warning: #d29922;
   --bg-secondary: #1c2128;
   --text-secondary: #8b949e;
   --border-light: #21262d;
@@ -49,6 +51,8 @@
     --code-bg: #f1f5f9;
     --danger: #ef4444;
     --error: #cf222e;
+    --success: #16a34a;
+    --warning: #ca8a04;
     --bg-secondary: #f0f4f8;
     --text-secondary: #64748b;
     --border-light: #e2e8f0;
@@ -411,4 +415,10 @@ pre {
   .diff-line-hunk {
     background: rgba(124, 106, 239, 0.06);
   }
+}
+
+/* Fix native <option> elements being unreadable in dark mode */
+select option {
+  background: var(--bg);
+  color: var(--text);
 }

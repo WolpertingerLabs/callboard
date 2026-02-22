@@ -23,6 +23,14 @@ import type {
   PluginScanRoot,
   AppPluginsData,
   ScanResult,
+  AgentConfig,
+  CronJob,
+  ActivityEntry,
+  Trigger,
+  TriggerFilter,
+  FilterCondition,
+  AgentSettings,
+  KeyAliasInfo,
 } from "shared/types/index.js";
 
 export type {
@@ -50,6 +58,14 @@ export type {
   PluginScanRoot,
   AppPluginsData,
   ScanResult,
+  AgentConfig,
+  CronJob,
+  ActivityEntry,
+  Trigger,
+  TriggerFilter,
+  FilterCondition,
+  AgentSettings,
+  KeyAliasInfo,
 };
 
 const BASE = "/api";
@@ -193,6 +209,16 @@ export async function createDraft(chatId: string | null, message: string, folder
   return res.json();
 }
 
+export async function updateDraft(id: string, message: string): Promise<QueueItem> {
+  const res = await fetch(`${BASE}/queue/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_message: message }),
+  });
+  await assertOk(res, "Failed to update draft");
+  return res.json();
+}
+
 export async function deleteDraft(id: string): Promise<void> {
   const res = await fetch(`${BASE}/queue/${id}`, { method: "DELETE" });
   await assertOk(res, "Failed to delete draft");
@@ -333,4 +359,318 @@ export async function updateMcpServerEnv(serverId: string, env: Record<string, s
     body: JSON.stringify({ env }),
   });
   await assertOk(res, "Failed to update MCP server env");
+}
+
+// Agent API functions
+
+export async function listAgents(): Promise<AgentConfig[]> {
+  const res = await fetch(`${BASE}/agents`, { credentials: "include" });
+  await assertOk(res, "Failed to list agents");
+  const data = await res.json();
+  return data.agents;
+}
+
+export async function getAgent(alias: string): Promise<AgentConfig> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get agent");
+  const data = await res.json();
+  return data.agent;
+}
+
+export async function createAgent(agent: {
+  name: string;
+  alias: string;
+  description: string;
+  systemPrompt?: string;
+  emoji?: string;
+  personality?: string;
+  role?: string;
+  tone?: string;
+}): Promise<AgentConfig> {
+  const res = await fetch(`${BASE}/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(agent),
+  });
+  await assertOk(res, "Failed to create agent");
+  const data = await res.json();
+  return data.agent;
+}
+
+export async function updateAgent(alias: string, updates: Partial<AgentConfig>): Promise<AgentConfig> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update agent");
+  const data = await res.json();
+  return data.agent;
+}
+
+export async function deleteAgent(alias: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete agent");
+}
+
+export async function getAgentIdentityPrompt(alias: string): Promise<string> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/identity-prompt`, { credentials: "include" });
+  await assertOk(res, "Failed to get agent identity prompt");
+  const data = await res.json();
+  return data.prompt;
+}
+
+// Agent workspace file API functions
+
+export async function getWorkspaceFiles(alias: string): Promise<string[]> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/workspace`, { credentials: "include" });
+  await assertOk(res, "Failed to list workspace files");
+  const data = await res.json();
+  return data.files;
+}
+
+export async function getWorkspaceFile(alias: string, filename: string): Promise<string> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/workspace/${encodeURIComponent(filename)}`, { credentials: "include" });
+  await assertOk(res, "Failed to read workspace file");
+  const data = await res.json();
+  return data.content;
+}
+
+export async function updateWorkspaceFile(alias: string, filename: string, content: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/workspace/${encodeURIComponent(filename)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ content }),
+  });
+  await assertOk(res, "Failed to update workspace file");
+}
+
+// Agent memory API functions
+
+export async function getAgentMemory(alias: string): Promise<{ curatedMemory: string; dailyFiles: string[] }> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/memory`, { credentials: "include" });
+  await assertOk(res, "Failed to get agent memory");
+  return res.json();
+}
+
+export async function getAgentDailyMemory(alias: string, date: string): Promise<string> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/memory/${encodeURIComponent(date)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get daily memory");
+  const data = await res.json();
+  return data.content;
+}
+
+// Agent cron jobs API functions
+
+export async function getAgentCronJobs(alias: string): Promise<CronJob[]> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs`, { credentials: "include" });
+  await assertOk(res, "Failed to list cron jobs");
+  const data = await res.json();
+  return data.jobs;
+}
+
+export async function createAgentCronJob(alias: string, job: Omit<CronJob, "id">): Promise<CronJob> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(job),
+  });
+  await assertOk(res, "Failed to create cron job");
+  const data = await res.json();
+  return data.job;
+}
+
+export async function updateAgentCronJob(alias: string, jobId: string, updates: Partial<CronJob>): Promise<CronJob> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs/${encodeURIComponent(jobId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update cron job");
+  const data = await res.json();
+  return data.job;
+}
+
+export async function deleteAgentCronJob(alias: string, jobId: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete cron job");
+}
+
+// Agent trigger API functions
+
+export interface BacktestResult {
+  totalScanned: number;
+  matchCount: number;
+  matches: StoredEvent[];
+}
+
+export async function getAgentTriggers(alias: string): Promise<Trigger[]> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers`, { credentials: "include" });
+  await assertOk(res, "Failed to list triggers");
+  const data = await res.json();
+  return data.triggers;
+}
+
+export async function createAgentTrigger(alias: string, trigger: Omit<Trigger, "id">): Promise<Trigger> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(trigger),
+  });
+  await assertOk(res, "Failed to create trigger");
+  const data = await res.json();
+  return data.trigger;
+}
+
+export async function updateAgentTrigger(alias: string, triggerId: string, updates: Partial<Trigger>): Promise<Trigger> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/${encodeURIComponent(triggerId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update trigger");
+  const data = await res.json();
+  return data.trigger;
+}
+
+export async function deleteAgentTrigger(alias: string, triggerId: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/${encodeURIComponent(triggerId)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete trigger");
+}
+
+export async function backtestTriggerFilter(alias: string, filter: TriggerFilter, limit?: number): Promise<BacktestResult> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/backtest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ filter, limit }),
+  });
+  await assertOk(res, "Failed to backtest filter");
+  return res.json();
+}
+
+// Proxy API functions
+
+export interface ProxyRoute {
+  index: number;
+  name?: string;
+  description?: string;
+  docsUrl?: string;
+  openApiUrl?: string;
+  allowedEndpoints: string[];
+  secretNames: string[];
+  autoHeaders: string[];
+}
+
+export interface IngestorStatus {
+  connection: string;
+  type: "websocket" | "webhook" | "poll";
+  state: string;
+  bufferedEvents: number;
+  totalEventsReceived: number;
+  lastEventAt: string | null;
+  error?: string;
+}
+
+export async function getProxyRoutes(alias?: string): Promise<{ routes: ProxyRoute[]; configured: boolean }> {
+  const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
+  const res = await fetch(`${BASE}/proxy/routes${params}`, { credentials: "include" });
+  await assertOk(res, "Failed to get proxy routes");
+  return res.json();
+}
+
+export async function getProxyIngestors(alias?: string): Promise<{ ingestors: IngestorStatus[]; configured: boolean }> {
+  const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
+  const res = await fetch(`${BASE}/proxy/ingestors${params}`, { credentials: "include" });
+  await assertOk(res, "Failed to get ingestor status");
+  return res.json();
+}
+
+// Stored event log types
+
+export interface StoredEvent {
+  id: number;
+  idempotencyKey?: string;
+  receivedAt: string;
+  receivedAtMs?: number;
+  source: string;
+  eventType: string;
+  data: unknown;
+  storedAt: number;
+}
+
+export async function getProxyEvents(limit?: number, offset?: number): Promise<{ events: StoredEvent[]; sources: string[] }> {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.append("limit", limit.toString());
+  if (offset !== undefined) params.append("offset", offset.toString());
+
+  const res = await fetch(`${BASE}/proxy/events${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to get proxy events");
+  return res.json();
+}
+
+export async function getProxyEventsBySource(source: string, limit?: number, offset?: number): Promise<{ events: StoredEvent[] }> {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.append("limit", limit.toString());
+  if (offset !== undefined) params.append("offset", offset.toString());
+
+  const res = await fetch(`${BASE}/proxy/events/${encodeURIComponent(source)}${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to get proxy events for source");
+  return res.json();
+}
+
+// Agent settings API functions
+
+export async function getAgentSettings(): Promise<AgentSettings> {
+  const res = await fetch(`${BASE}/agent-settings`, { credentials: "include" });
+  await assertOk(res, "Failed to get agent settings");
+  return res.json();
+}
+
+export async function updateAgentSettings(settings: Partial<AgentSettings>): Promise<AgentSettings> {
+  const res = await fetch(`${BASE}/agent-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(settings),
+  });
+  await assertOk(res, "Failed to update agent settings");
+  return res.json();
+}
+
+export async function getKeyAliases(): Promise<KeyAliasInfo[]> {
+  const res = await fetch(`${BASE}/agent-settings/key-aliases`, { credentials: "include" });
+  await assertOk(res, "Failed to get key aliases");
+  const data = await res.json();
+  return data.aliases;
+}
+
+// Agent activity API functions
+
+export async function getAgentActivity(alias: string, type?: string, limit?: number, offset?: number): Promise<ActivityEntry[]> {
+  const params = new URLSearchParams();
+  if (type) params.append("type", type);
+  if (limit !== undefined) params.append("limit", limit.toString());
+  if (offset !== undefined) params.append("offset", offset.toString());
+
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/activity${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to get agent activity");
+  const data = await res.json();
+  return data.entries;
 }

@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, RotateCw, Loader } from "lucide-react";
+import { ChevronLeft, RotateCw, Loader, Pencil } from "lucide-react";
 import { getDrafts, deleteDraft, executeDraft, type QueueItem } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
+import EditDraftModal from "../components/EditDraftModal";
 
 export default function Queue() {
   const navigate = useNavigate();
@@ -11,6 +12,7 @@ export default function Queue() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [executingId, setExecutingId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState<QueueItem | null>(null);
 
   const loadDrafts = useCallback(async () => {
     try {
@@ -178,6 +180,25 @@ export default function Queue() {
                       )}
                     </button>
                     <button
+                      onClick={() => setEditingDraft(item)}
+                      disabled={executingId === item.id}
+                      style={{
+                        background: "var(--bg-secondary)",
+                        color: "var(--text)",
+                        padding: "6px 12px",
+                        borderRadius: 4,
+                        fontSize: 12,
+                        border: "1px solid var(--border)",
+                        cursor: executingId === item.id ? "default" : "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <Pencil size={12} />
+                      Edit
+                    </button>
+                    <button
                       onClick={() => handleDelete(item.id)}
                       disabled={executingId === item.id}
                       style={{
@@ -215,6 +236,13 @@ export default function Queue() {
           </div>
         )}
       </div>
+
+      <EditDraftModal
+        isOpen={editingDraft !== null}
+        onClose={() => setEditingDraft(null)}
+        draft={editingDraft}
+        onSaved={loadDrafts}
+      />
     </div>
   );
 }
