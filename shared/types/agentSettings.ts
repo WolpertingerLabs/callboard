@@ -1,6 +1,12 @@
 export interface AgentSettings {
-  /** Absolute path to the .mcp-secure-proxy/ directory containing keys and identity */
+  /** @deprecated Use localMcpConfigDir / remoteMcpConfigDir instead. Kept as fallback. */
   mcpConfigDir?: string;
+
+  /** Absolute path to the .mcp-secure-proxy/ directory for local mode */
+  localMcpConfigDir?: string;
+
+  /** Absolute path to the .mcp-secure-proxy/ directory for remote mode */
+  remoteMcpConfigDir?: string;
 
   /** Proxy mode: 'local' runs in-process, 'remote' connects to external server */
   proxyMode?: "local" | "remote";

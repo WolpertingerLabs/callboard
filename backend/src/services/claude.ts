@@ -13,7 +13,7 @@ import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { buildProxyToolsServer } from "./proxy-tools.js";
-import { getAgentSettings } from "./agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { createLogger } from "../utils/logger.js";
@@ -509,7 +509,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
   const agentSettings = getAgentSettings();
-  if (agentSettings.proxyMode && agentSettings.mcpConfigDir) {
+  const activeMcpConfigDir = getActiveMcpConfigDir();
+  if (agentSettings.proxyMode && activeMcpConfigDir) {
     // Determine key alias: agent's alias if available, otherwise "default"
     const proxyKeyAlias = opts.agentAlias ? (getAgent(opts.agentAlias)?.mcpKeyAlias ?? "default") : "default";
 

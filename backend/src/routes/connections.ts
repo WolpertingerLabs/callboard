@@ -20,7 +20,7 @@ import {
   createCallerAlias,
   deleteCallerAlias,
 } from "../services/connection-manager.js";
-import { getAgentSettings } from "../services/agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir } from "../services/agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("connections-routes");
@@ -40,7 +40,7 @@ export const connectionsRouter = Router();
 connectionsRouter.get("/callers", (_req: Request, res: Response): void => {
   try {
     const settings = getAgentSettings();
-    if (settings.proxyMode !== "local" || !settings.mcpConfigDir) {
+    if (settings.proxyMode !== "local" || !getActiveMcpConfigDir()) {
       res.json({ callers: [] });
       return;
     }
@@ -147,7 +147,7 @@ connectionsRouter.delete("/callers/:callerAlias", async (req: Request, res: Resp
 connectionsRouter.get("/", (req: Request, res: Response): void => {
   try {
     const settings = getAgentSettings();
-    const localModeActive = settings.proxyMode === "local" && !!settings.mcpConfigDir;
+    const localModeActive = settings.proxyMode === "local" && !!getActiveMcpConfigDir();
 
     if (!localModeActive) {
       res.json({ templates: [], callers: [], localModeActive: false });

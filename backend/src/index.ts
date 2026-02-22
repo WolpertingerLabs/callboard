@@ -27,7 +27,7 @@ import { initHeartbeats, shutdownHeartbeats } from "./services/heartbeat.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { initMemoryConsolidation, shutdownConsolidation } from "./services/memory-consolidation.js";
 import { LocalProxy } from "./services/local-proxy.js";
-import { getAgentSettings } from "./services/agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir } from "./services/agent-settings.js";
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 
@@ -165,13 +165,14 @@ app.listen(PORT, () => {
 
   // Start local proxy if configured
   const settings = getAgentSettings();
-  if (settings.proxyMode === "local" && settings.mcpConfigDir) {
+  const activeMcpConfigDir = getActiveMcpConfigDir();
+  if (settings.proxyMode === "local" && activeMcpConfigDir) {
     // Sync MCP_CONFIG_DIR and load secrets before creating LocalProxy
-    process.env.MCP_CONFIG_DIR = settings.mcpConfigDir;
+    process.env.MCP_CONFIG_DIR = activeMcpConfigDir;
     loadMcpEnvIntoProcess();
 
     try {
-      const localProxy = new LocalProxy(settings.mcpConfigDir, "default");
+      const localProxy = new LocalProxy(activeMcpConfigDir, "default");
       localProxy
         .start()
         .then(() => {

@@ -21,7 +21,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
 import { LocalProxy } from "./local-proxy.js";
-import { getAgentSettings, discoverKeyAliases } from "./agent-settings.js";
+import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy-manager");
@@ -57,11 +57,11 @@ const failedAliases = new Set<string>();
  * Returns null if mcpConfigDir is not set or key files don't exist.
  */
 function resolveKeyPaths(alias: string): { keysDir: string; remoteKeysDir: string } | null {
-  const settings = getAgentSettings();
-  if (!settings.mcpConfigDir) return null;
+  const configDir = getActiveMcpConfigDir();
+  if (!configDir) return null;
 
-  const keysDir = join(settings.mcpConfigDir, "keys", "local", alias);
-  const remoteKeysDir = join(settings.mcpConfigDir, "keys", "peers", "remote-server");
+  const keysDir = join(configDir, "keys", "local", alias);
+  const remoteKeysDir = join(configDir, "keys", "peers", "remote-server");
 
   // Verify both directories exist with required key files
   if (
@@ -135,9 +135,10 @@ export function getProxyClient(alias: string): ProxyClient | null {
  */
 export function isProxyConfigured(): boolean {
   const settings = getAgentSettings();
-  if (!settings.mcpConfigDir) return false;
+  const configDir = getActiveMcpConfigDir();
+  if (!configDir) return false;
 
-  // In local mode, proxy is configured if mcpConfigDir is set and mode is "local"
+  // In local mode, proxy is configured if config dir is set and mode is "local"
   if (settings.proxyMode === "local") return true;
 
   // In remote mode, check for usable key aliases

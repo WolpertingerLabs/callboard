@@ -19,7 +19,7 @@ import { join } from "path";
 import dotenv from "dotenv";
 import { listConnectionTemplates } from "mcp-secure-proxy/shared/connections";
 import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "mcp-secure-proxy/shared/config";
-import { getAgentSettings } from "./agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
 import { getLocalProxyInstance } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 import type { ConnectionStatus, CallerInfo } from "shared";
@@ -34,10 +34,10 @@ const log = createLogger("connection-manager");
  * loadRemoteConfig() / saveRemoteConfig() use the correct directory.
  */
 function syncConfigDir(): string | null {
-  const settings = getAgentSettings();
-  if (!settings.mcpConfigDir) return null;
-  process.env.MCP_CONFIG_DIR = settings.mcpConfigDir;
-  return settings.mcpConfigDir;
+  const configDir = getActiveMcpConfigDir();
+  if (!configDir) return null;
+  process.env.MCP_CONFIG_DIR = configDir;
+  return configDir;
 }
 
 // ── Env var prefix utilities ────────────────────────────────────────

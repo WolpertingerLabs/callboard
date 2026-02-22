@@ -11,6 +11,8 @@ export default function AgentSettingsPage() {
   const isMobile = useIsMobile();
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [mcpConfigDir, setMcpConfigDir] = useState("");
+  const [localMcpConfigDir, setLocalMcpConfigDir] = useState("");
+  const [remoteMcpConfigDir, setRemoteMcpConfigDir] = useState("");
   const [proxyMode, setProxyMode] = useState<"local" | "remote" | undefined>(undefined);
   const [remoteServerUrl, setRemoteServerUrl] = useState("");
   const [keyAliases, setKeyAliases] = useState<KeyAliasInfo[]>([]);
@@ -27,6 +29,8 @@ export default function AgentSettingsPage() {
       .then((s) => {
         setSettings(s);
         setMcpConfigDir(s.mcpConfigDir || "");
+        setLocalMcpConfigDir(s.localMcpConfigDir || "");
+        setRemoteMcpConfigDir(s.remoteMcpConfigDir || "");
         setProxyMode(s.proxyMode || undefined);
         setRemoteServerUrl(s.remoteServerUrl || "");
       })
@@ -34,22 +38,39 @@ export default function AgentSettingsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Load key aliases when settings have an MCP config dir
+  // Resolve the active config dir based on current proxy mode
+  const displayedConfigDir = (() => {
+    if (proxyMode === "local") return localMcpConfigDir || mcpConfigDir;
+    if (proxyMode === "remote") return remoteMcpConfigDir || mcpConfigDir;
+    return mcpConfigDir;
+  })();
+
+  // Load key aliases when the active MCP config dir changes
   useEffect(() => {
-    if (settings?.mcpConfigDir) {
+    // Resolve from saved settings (not local state) to match what backend uses
+    const activeDir = (() => {
+      if (!settings) return null;
+      if (settings.proxyMode === "local") return settings.localMcpConfigDir || settings.mcpConfigDir;
+      if (settings.proxyMode === "remote") return settings.remoteMcpConfigDir || settings.mcpConfigDir;
+      return settings.mcpConfigDir;
+    })();
+
+    if (activeDir) {
       getKeyAliases()
         .then(setKeyAliases)
         .catch(() => setKeyAliases([]));
     } else {
       setKeyAliases([]);
     }
-  }, [settings?.mcpConfigDir]);
+  }, [settings?.mcpConfigDir, settings?.localMcpConfigDir, settings?.remoteMcpConfigDir, settings?.proxyMode]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
       const updated = await updateAgentSettings({
         mcpConfigDir: mcpConfigDir || undefined,
+        localMcpConfigDir: localMcpConfigDir || undefined,
+        remoteMcpConfigDir: remoteMcpConfigDir || undefined,
         proxyMode: proxyMode || undefined,
         remoteServerUrl: remoteServerUrl || undefined,
       });
@@ -68,7 +89,13 @@ export default function AgentSettingsPage() {
   };
 
   const handleFolderSelect = (path: string) => {
-    setMcpConfigDir(path);
+    if (proxyMode === "local") {
+      setLocalMcpConfigDir(path);
+    } else if (proxyMode === "remote") {
+      setRemoteMcpConfigDir(path);
+    } else {
+      setMcpConfigDir(path);
+    }
     setShowFolderBrowser(false);
     setSaved(false);
   };
@@ -149,7 +176,10 @@ export default function AgentSettingsPage() {
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
               <KeyRound size={16} style={{ color: "var(--accent)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600 }}>MCP Config Directory</span>
+              <span style={{ fontSize: 14, fontWeight: 600 }}>
+                MCP Config Directory
+                {proxyMode && <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginLeft: 6 }}>({proxyMode} mode)</span>}
+              </span>
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
               Path to the{" "}
@@ -181,9 +211,16 @@ export default function AgentSettingsPage() {
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
               <input
                 type="text"
-                value={mcpConfigDir}
+                value={displayedConfigDir}
                 onChange={(e) => {
-                  setMcpConfigDir(e.target.value);
+                  const val = e.target.value;
+                  if (proxyMode === "local") {
+                    setLocalMcpConfigDir(val);
+                  } else if (proxyMode === "remote") {
+                    setRemoteMcpConfigDir(val);
+                  } else {
+                    setMcpConfigDir(val);
+                  }
                   setSaved(false);
                 }}
                 placeholder="e.g. /home/user/.mcp-secure-proxy"
@@ -259,7 +296,7 @@ export default function AgentSettingsPage() {
               </div>
             )}
 
-            {settings?.mcpConfigDir && keyAliases.length === 0 && (
+            {displayedConfigDir && keyAliases.length === 0 && (
               <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
                 <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   No key aliases found in{" "}
@@ -271,7 +308,7 @@ export default function AgentSettingsPage() {
                       borderRadius: 4,
                     }}
                   >
-                    {settings.mcpConfigDir}/keys/local/
+                    {displayedConfigDir}/keys/local/
                   </code>
                 </div>
               </div>
@@ -461,12 +498,7 @@ export default function AgentSettingsPage() {
                           : testResult.status === "handshake_failed"
                             ? "color-mix(in srgb, #f59e0b 8%, transparent)"
                             : "color-mix(in srgb, #ef4444 8%, transparent)",
-                      color:
-                        testResult.status === "connected"
-                          ? "#22c55e"
-                          : testResult.status === "handshake_failed"
-                            ? "#f59e0b"
-                            : "#ef4444",
+                      color: testResult.status === "connected" ? "#22c55e" : testResult.status === "handshake_failed" ? "#f59e0b" : "#ef4444",
                     }}
                   >
                     {testResult.status === "connected" ? (
@@ -478,11 +510,7 @@ export default function AgentSettingsPage() {
                     )}
                     <div>
                       <div style={{ fontWeight: 600, marginBottom: 2 }}>
-                        {testResult.status === "connected"
-                          ? "Connected"
-                          : testResult.status === "handshake_failed"
-                            ? "Handshake Failed"
-                            : "Unreachable"}
+                        {testResult.status === "connected" ? "Connected" : testResult.status === "handshake_failed" ? "Handshake Failed" : "Unreachable"}
                       </div>
                       <div style={{ opacity: 0.85 }}>{testResult.message}</div>
                     </div>
@@ -518,7 +546,12 @@ export default function AgentSettingsPage() {
         </div>
       </div>
 
-      <FolderBrowser isOpen={showFolderBrowser} onClose={() => setShowFolderBrowser(false)} onSelect={handleFolderSelect} initialPath={mcpConfigDir || "/"} />
+      <FolderBrowser
+        isOpen={showFolderBrowser}
+        onClose={() => setShowFolderBrowser(false)}
+        onSelect={handleFolderSelect}
+        initialPath={displayedConfigDir || "/"}
+      />
     </div>
   );
 }

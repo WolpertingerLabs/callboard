@@ -39,13 +39,32 @@ export function getAgentSettings(): AgentSettings {
   return loadSettings();
 }
 
+/**
+ * Resolve the active MCP config directory based on the current proxy mode.
+ *
+ * Resolution:
+ *   proxyMode === "local"  -> localMcpConfigDir ?? mcpConfigDir
+ *   proxyMode === "remote" -> remoteMcpConfigDir ?? mcpConfigDir
+ *   no proxyMode           -> mcpConfigDir
+ */
+export function getActiveMcpConfigDir(): string | undefined {
+  const settings = loadSettings();
+  if (settings.proxyMode === "local") {
+    return settings.localMcpConfigDir ?? settings.mcpConfigDir;
+  }
+  if (settings.proxyMode === "remote") {
+    return settings.remoteMcpConfigDir ?? settings.mcpConfigDir;
+  }
+  return settings.mcpConfigDir;
+}
+
 /** Merge updates into current settings and persist. */
 export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSettings {
   const current = loadSettings();
   const updated = { ...current, ...updates };
   saveSettings(updated);
   log.info(
-    `Agent settings updated — mcpConfigDir=${updated.mcpConfigDir ?? "(unset)"}, proxyMode=${updated.proxyMode ?? "(unset)"}, remoteServerUrl=${updated.remoteServerUrl ?? "(unset)"}`,
+    `Agent settings updated — proxyMode=${updated.proxyMode ?? "(unset)"}, localMcpConfigDir=${updated.localMcpConfigDir ?? "(unset)"}, remoteMcpConfigDir=${updated.remoteMcpConfigDir ?? "(unset)"}, mcpConfigDir=${updated.mcpConfigDir ?? "(unset)"}, remoteServerUrl=${updated.remoteServerUrl ?? "(unset)"}`,
   );
   return updated;
 }
@@ -58,10 +77,10 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
  * frontend can show which aliases are usable.
  */
 export function discoverKeyAliases(): KeyAliasInfo[] {
-  const settings = loadSettings();
-  if (!settings.mcpConfigDir) return [];
+  const configDir = getActiveMcpConfigDir();
+  if (!configDir) return [];
 
-  const localKeysDir = join(settings.mcpConfigDir, "keys", "local");
+  const localKeysDir = join(configDir, "keys", "local");
   if (!existsSync(localKeysDir)) {
     log.debug(`Local keys directory not found: ${localKeysDir}`);
     return [];
