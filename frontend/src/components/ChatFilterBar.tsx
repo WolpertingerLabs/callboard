@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Bookmark, SlidersHorizontal, Search, Loader2 } from "lucide-react";
+import { Bookmark, SlidersHorizontal, Search, Loader2, Zap } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
 import { hasActiveFilters, type ChatFilters } from "../types/chatFilters";
 
 interface ChatFilterBarProps {
   bookmarkFilter: boolean;
   onToggleBookmark: () => void;
+  showTriggered: boolean;
+  onToggleTriggered: () => void;
   filters: ChatFilters;
   onFiltersChange: (filters: ChatFilters) => void;
   searchQuery: string;
@@ -13,7 +15,17 @@ interface ChatFilterBarProps {
   isSearching: boolean;
 }
 
-export default function ChatFilterBar({ bookmarkFilter, onToggleBookmark, filters, onFiltersChange, searchQuery, onSearchChange, isSearching }: ChatFilterBarProps) {
+export default function ChatFilterBar({
+  bookmarkFilter,
+  onToggleBookmark,
+  showTriggered,
+  onToggleTriggered,
+  filters,
+  onFiltersChange,
+  searchQuery,
+  onSearchChange,
+  isSearching,
+}: ChatFilterBarProps) {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const filtersActive = hasActiveFilters(filters);
 
@@ -46,6 +58,26 @@ export default function ChatFilterBar({ bookmarkFilter, onToggleBookmark, filter
           title={bookmarkFilter ? "Show all chats" : "Show bookmarked chats"}
         >
           <Bookmark size={16} fill={bookmarkFilter ? "currentColor" : "none"} />
+        </button>
+
+        {/* Triggered chats toggle */}
+        <button
+          onClick={onToggleTriggered}
+          style={{
+            background: showTriggered ? "var(--accent)" : "var(--bg-secondary)",
+            color: showTriggered ? "#fff" : "var(--text)",
+            padding: "8px",
+            borderRadius: 6,
+            border: showTriggered ? "none" : "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+          title={showTriggered ? "Hide triggered chats" : "Show triggered chats"}
+        >
+          <Zap size={16} fill={showTriggered ? "currentColor" : "none"} />
         </button>
 
         {/* Filter button */}

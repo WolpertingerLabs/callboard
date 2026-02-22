@@ -15,6 +15,7 @@ interface LocalStorageData {
   recentDirectories?: RecentDirectory[];
   maxTurns?: number;
   useWorktree?: boolean;
+  showTriggeredChats?: boolean;
 }
 
 const DEFAULT_PERMISSIONS: DefaultPermissions = {
@@ -103,6 +104,17 @@ export function getUseWorktree(): boolean {
 export function saveUseWorktree(value: boolean): void {
   const data = getStorageData();
   data.useWorktree = value;
+  setStorageData(data);
+}
+
+export function getShowTriggeredChats(): boolean {
+  const data = getStorageData();
+  return data.showTriggeredChats ?? false;
+}
+
+export function saveShowTriggeredChats(value: boolean): void {
+  const data = getStorageData();
+  data.showTriggeredChats = value;
   setStorageData(data);
 }
 

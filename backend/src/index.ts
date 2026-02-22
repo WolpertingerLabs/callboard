@@ -15,9 +15,16 @@ import { queueRouter } from "./routes/queue.js";
 import { foldersRouter } from "./routes/folders.js";
 import { gitRouter } from "./routes/git.js";
 import { appPluginsRouter } from "./routes/app-plugins.js";
+import { agentsRouter } from "./routes/agents.js";
+import { agentSettingsRouter } from "./routes/agent-settings.js";
+import { proxyRouter } from "./routes/proxy.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
 import { existsSync, readFileSync } from "fs";
 import { createLogger } from "./utils/logger.js";
+import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
+import { initHeartbeats, shutdownHeartbeats } from "./services/heartbeat.js";
+import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
+import { initMemoryConsolidation, shutdownConsolidation } from "./services/memory-consolidation.js";
 
 const log = createLogger("server");
 
@@ -95,6 +102,9 @@ app.use("/api/queue", queueRouter);
 app.use("/api/folders", foldersRouter);
 app.use("/api/git", gitRouter);
 app.use("/api/app-plugins", appPluginsRouter);
+app.use("/api/agents", agentsRouter);
+app.use("/api/agent-settings", agentSettingsRouter);
+app.use("/api/proxy", proxyRouter);
 
 // Serve frontend static files in production
 const frontendDist = path.join(process.cwd(), "frontend/dist");
@@ -106,15 +116,45 @@ app.get("*", (_req, res) => {
 app.listen(PORT, () => {
   log.info(`Backend running on http://localhost:${PORT}`);
   log.info(`Log level: ${process.env.LOG_LEVEL || "info"}`);
+
+  // Initialize automation systems (non-blocking, log errors but don't crash)
+  try {
+    initScheduler();
+  } catch (err: any) {
+    log.error(`Scheduler init failed: ${err.message}`);
+  }
+  try {
+    initHeartbeats();
+  } catch (err: any) {
+    log.error(`Heartbeat init failed: ${err.message}`);
+  }
+  try {
+    initEventWatchers();
+  } catch (err: any) {
+    log.error(`Event watcher init failed: ${err.message}`);
+  }
+  try {
+    initMemoryConsolidation();
+  } catch (err: any) {
+    log.error(`Memory consolidation init failed: ${err.message}`);
+  }
 });
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
   log.info("SIGTERM received, shutting down gracefully");
+  shutdownScheduler();
+  shutdownHeartbeats();
+  shutdownEventWatchers();
+  shutdownConsolidation();
   process.exit(0);
 });
 
 process.on("SIGINT", () => {
   log.info("SIGINT received, shutting down gracefully");
+  shutdownScheduler();
+  shutdownHeartbeats();
+  shutdownEventWatchers();
+  shutdownConsolidation();
   process.exit(0);
 });

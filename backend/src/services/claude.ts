@@ -11,6 +11,9 @@ import type { McpServerConfig } from "shared/types/index.js";
 import { migratePermissions } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
+import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
+import { appendActivity } from "./agent-activity.js";
+import { getAgent } from "./agent-file-service.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -104,10 +107,7 @@ function resolveEnvReferences(env: Record<string, string>): Record<string, strin
  * Resolve ${CLAUDE_PLUGIN_ROOT} and relative paths in MCP server command/args.
  * Uses the server's mcpJsonDir or the parent plugin's path as the base directory.
  */
-function resolveServerPaths(
-  server: McpServerConfig,
-  pluginPath?: string,
-): { command?: string; args?: string[] } {
+function resolveServerPaths(server: McpServerConfig, pluginPath?: string): { command?: string; args?: string[] } {
   const baseDir = server.mcpJsonDir || pluginPath;
   if (!baseDir) return { command: server.command, args: server.args };
 
@@ -418,6 +418,12 @@ interface SendMessageOptions {
   defaultPermissions?: DefaultPermissions;
   /** Maximum number of agent turns before stopping (default: 200) */
   maxTurns?: number;
+  /** Agent identity prompt — appended to Claude Code's preset system prompt */
+  systemPrompt?: string;
+  /** Agent alias — when set, injects CCUI custom tools MCP server into the session */
+  agentAlias?: string;
+  /** Whether this chat was triggered by an automated system (cron, trigger, heartbeat, etc.) */
+  triggered?: boolean;
 }
 
 /**
@@ -452,6 +458,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     folder = chat.folder;
     resumeSessionId = chat.session_id;
     initialMetadata = JSON.parse(chat.metadata || "{}");
+    // Recover agentAlias from chat metadata when not explicitly provided.
+    // This ensures CCUI tools are re-injected when resuming an agent session.
+    if (!opts.agentAlias && initialMetadata.agentAlias) {
+      opts.agentAlias = initialMetadata.agentAlias;
+      log.debug(`Recovered agentAlias="${opts.agentAlias}" from chat metadata for chatId=${opts.chatId}`);
+    }
     stopSession(opts.chatId);
   } else if (opts.folder) {
     // New chat flow — store the actual working directory (may be a worktree).
@@ -460,6 +472,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     resumeSessionId = undefined;
     initialMetadata = {
       ...(defaultPermissions && { defaultPermissions }),
+      ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
+      ...(opts.triggered && { triggered: true }),
     };
   } else {
     throw new Error("Either chatId or folder is required");
@@ -487,8 +501,70 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   const plugins = buildPluginOptions(folder, activePlugins);
   const mcpOpts = buildMcpServerOptions();
 
+  // Build MCP servers map: start with configured servers, add CCUI agent tools if this is an agent session
+  const mcpServers: Record<string, any> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
+  const allowedTools: string[] = mcpOpts ? [...mcpOpts.allowedTools] : [];
+
+  // Resolve the agent's MCP key alias for proxy identity.
+  // When an agent has mcpKeyAlias set, inject MCP_KEY_ALIAS into each MCP server's
+  // env and into the subprocess env so the mcp-secure-proxy plugin uses the correct
+  // local key identity (keys/local/<alias>/).
+  let agentMcpKeyAlias: string | undefined;
+  if (opts.agentAlias) {
+    const agentConfig = getAgent(opts.agentAlias);
+    agentMcpKeyAlias = agentConfig?.mcpKeyAlias;
+
+    if (agentMcpKeyAlias) {
+      // Override MCP_KEY_ALIAS in each MCP server's env that declares it
+      for (const serverName of Object.keys(mcpServers)) {
+        const server = mcpServers[serverName];
+        if (server.env && "MCP_KEY_ALIAS" in server.env) {
+          server.env = { ...server.env, MCP_KEY_ALIAS: agentMcpKeyAlias };
+        }
+      }
+      log.debug(`Set MCP_KEY_ALIAS="${agentMcpKeyAlias}" for agent=${opts.agentAlias}`);
+    }
+
+    try {
+      const ccuiServer = buildAgentToolsServer(opts.agentAlias);
+      if (ccuiServer && ccuiServer.type === "sdk" && ccuiServer.instance) {
+        mcpServers["ccui"] = ccuiServer;
+        allowedTools.push("mcp__ccui__*");
+        log.info(`Injected CCUI agent tools for agent="${opts.agentAlias}" — type=${ccuiServer.type}, name=${ccuiServer.name}`);
+      } else {
+        log.error(
+          `buildAgentToolsServer returned invalid server for agent="${opts.agentAlias}": ${JSON.stringify({ type: ccuiServer?.type, name: ccuiServer?.name, hasInstance: !!ccuiServer?.instance })}`,
+        );
+      }
+    } catch (err: any) {
+      log.error(`Failed to build CCUI agent tools for agent="${opts.agentAlias}": ${err.message}`);
+    }
+  }
+
+  const hasMcpServers = Object.keys(mcpServers).length > 0;
+
+  // When MCP servers are present, the SDK requires an AsyncIterable prompt.
+  // Wrap string/non-iterable prompts in an async generator.
+  let effectivePrompt = formattedPrompt;
+  if (hasMcpServers && typeof formattedPrompt === "string") {
+    effectivePrompt = (async function* () {
+      yield {
+        type: "user" as const,
+        message: { role: "user" as const, content: formattedPrompt },
+      };
+    })();
+  }
+
+  // Log MCP server configuration for debugging
+  if (hasMcpServers) {
+    const serverSummary = Object.entries(mcpServers)
+      .map(([key, val]: [string, any]) => `${key}(${val.type || "stdio"})`)
+      .join(", ");
+    log.info(`MCP servers for session: [${serverSummary}], allowedTools: [${allowedTools.join(", ")}]`);
+  }
+
   const queryOpts: any = {
-    prompt: formattedPrompt,
+    prompt: effectivePrompt,
     options: {
       abortController,
       cwd: folder,
@@ -496,12 +572,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(plugins.length > 0 ? { plugins } : {}),
-      ...(mcpOpts ? { mcpServers: mcpOpts.mcpServers, allowedTools: mcpOpts.allowedTools } : {}),
+      ...(hasMcpServers ? { mcpServers, allowedTools } : {}),
+      ...(opts.systemPrompt ? { systemPrompt: { type: "preset", preset: "claude_code", append: opts.systemPrompt } } : {}),
       env: {
         ...process.env,
         // Propagate resolved MCP server env vars to the CLI subprocess so that plugins
         // loaded by the CLI can resolve ${VAR} templates in their .mcp.json files.
         ...(mcpOpts?.resolvedEnvVars ?? {}),
+        // Propagate agent's MCP key alias so CLI-level re-resolution of ${MCP_KEY_ALIAS}
+        // in .mcp.json templates also picks up the correct identity.
+        ...(agentMcpKeyAlias && { MCP_KEY_ALIAS: agentMcpKeyAlias }),
         // Remove CLAUDECODE to prevent "cannot be launched inside another Claude Code session" errors
         // when the backend was started from within a Claude Code session (e.g. via PM2 redeploy)
         CLAUDECODE: undefined,
@@ -579,6 +659,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               chatId: sessionId,
               chat: { ...chat, session_id: sessionId },
             } as StreamEvent);
+
+            // Log chat activity for agent sessions
+            if (initialMetadata.agentAlias) {
+              appendActivity(initialMetadata.agentAlias as string, {
+                type: "chat",
+                message: "Chat session started",
+                metadata: { chatId: sessionId },
+              });
+            }
           } else {
             // Existing chat: append session_id to metadata
             const ids: string[] = initialMetadata.session_ids || [];
@@ -620,3 +709,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   return emitter;
 }
+
+// Register sendMessage as the message sender for agent-tools.ts (breaks circular dependency)
+setMessageSender(sendMessage);
+
+// Register sendMessage for the shared agent executor (cron scheduler, heartbeats, event watcher)
+import { setExecutorMessageSender } from "./agent-executor.js";
+setExecutorMessageSender(sendMessage);
