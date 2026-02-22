@@ -8,6 +8,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
+import { resetAllClients } from "../services/proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("agent-settings-routes");
@@ -34,6 +35,8 @@ agentSettingsRouter.put("/", (req: Request, res: Response): void => {
       proxyMode: proxyMode ?? undefined,
       remoteServerUrl: remoteServerUrl ?? undefined,
     });
+    // Clear cached proxy clients so they pick up new URL / mode / keys
+    resetAllClients();
     res.json(updated);
   } catch (err: any) {
     log.error(`Error updating agent settings: ${err.message}`);
