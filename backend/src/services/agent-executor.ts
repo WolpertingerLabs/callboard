@@ -27,6 +27,7 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
+  triggered?: boolean;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -96,6 +97,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       systemPrompt: fullSystemPrompt,
       agentAlias,
       maxTurns: maxTurns ?? 200,
+      triggered: true,
       defaultPermissions: {
         fileRead: "allow",
         fileWrite: "allow",

@@ -27,6 +27,8 @@ import {
   addRecentDirectory,
   removeRecentDirectory,
   initializeSuggestedDirectories,
+  getShowTriggeredChats,
+  saveShowTriggeredChats,
 } from "../utils/localStorage";
 
 interface ChatListProps {
@@ -40,6 +42,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
+  const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [folder, setFolder] = useState("");
@@ -255,9 +258,26 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     load(newFilter);
   };
 
+  const handleToggleTriggered = () => {
+    const newValue = !showTriggered;
+    setShowTriggered(newValue);
+    saveShowTriggeredChats(newValue);
+  };
+
   // Client-side filtering for advanced filters and content search
   const filteredChats = useMemo(() => {
     let result = chats;
+
+    // Hide triggered chats unless toggle is ON
+    if (!showTriggered) {
+      result = result.filter((c) => {
+        try {
+          return !JSON.parse(c.metadata || "{}").triggered;
+        } catch {
+          return true;
+        }
+      });
+    }
 
     // Directory include regex
     if (filters.directoryInclude.active && filters.directoryInclude.value) {
@@ -297,7 +317,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     }
 
     return result;
-  }, [chats, filters, matchingChatIds]);
+  }, [chats, filters, matchingChatIds, showTriggered]);
 
   // Determine the empty state message
   const isFiltered = bookmarkFilter || hasActiveFilters(filters) || matchingChatIds !== null;
@@ -384,6 +404,8 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
       <ChatFilterBar
         bookmarkFilter={bookmarkFilter}
         onToggleBookmark={handleToggleBookmarkFilter}
+        showTriggered={showTriggered}
+        onToggleTriggered={handleToggleTriggered}
         filters={filters}
         onFiltersChange={setFilters}
         searchQuery={searchQuery}

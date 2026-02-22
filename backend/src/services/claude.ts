@@ -422,6 +422,8 @@ interface SendMessageOptions {
   systemPrompt?: string;
   /** Agent alias — when set, injects CCUI custom tools MCP server into the session */
   agentAlias?: string;
+  /** Whether this chat was triggered by an automated system (cron, trigger, heartbeat, etc.) */
+  triggered?: boolean;
 }
 
 /**
@@ -471,6 +473,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     initialMetadata = {
       ...(defaultPermissions && { defaultPermissions }),
       ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
+      ...(opts.triggered && { triggered: true }),
     };
   } else {
     throw new Error("Either chatId or folder is required");

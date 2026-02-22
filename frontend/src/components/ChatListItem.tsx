@@ -1,4 +1,4 @@
-import { Globe, Monitor, X, Bookmark, Bot } from "lucide-react";
+import { Globe, Monitor, X, Bookmark, Bot, Zap } from "lucide-react";
 import type { Chat, SessionStatus } from "../api";
 
 interface Props {
@@ -23,11 +23,13 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let preview: string | undefined;
   let isBookmarked = false;
   let agentAlias: string | undefined;
+  let isTriggered = false;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     preview = meta.preview;
     isBookmarked = meta.bookmarked === true;
     agentAlias = meta.agentAlias;
+    isTriggered = meta.triggered === true;
   } catch {}
 
   const displayName = preview ? (preview.length > 60 ? preview.slice(0, 60) + "..." : preview) : folderName;
@@ -67,6 +69,25 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
             >
               <Bot size={10} />
               {agentAlias}
+            </span>
+          )}
+          {isTriggered && (
+            <span
+              title="Triggered (automated)"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: "color-mix(in srgb, #f59e0b 15%, transparent)",
+                color: "#f59e0b",
+                flexShrink: 0,
+              }}
+            >
+              <Zap size={10} />
             </span>
           )}
           <div style={{ fontSize: 15, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
