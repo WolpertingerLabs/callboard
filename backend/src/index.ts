@@ -25,6 +25,9 @@ import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initHeartbeats, shutdownHeartbeats } from "./services/heartbeat.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { initMemoryConsolidation, shutdownConsolidation } from "./services/memory-consolidation.js";
+import { LocalProxy } from "./services/local-proxy.js";
+import { getAgentSettings } from "./services/agent-settings.js";
+import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
 
 const log = createLogger("server");
 
@@ -106,6 +109,24 @@ app.use("/api/agents", agentsRouter);
 app.use("/api/agent-settings", agentSettingsRouter);
 app.use("/api/proxy", proxyRouter);
 
+// Webhook route for local proxy mode (ingestor event ingestion)
+app.post("/webhooks/:path", (req, res) => {
+  const localProxy = getLocalProxyInstance();
+  if (!localProxy) {
+    res.status(404).json({ error: "Local proxy not active" });
+    return;
+  }
+  const ingestors = localProxy.ingestorManager.getWebhookIngestors(req.params.path);
+  if (ingestors.length === 0) {
+    res.status(404).json({ error: "No webhook ingestor for this path" });
+    return;
+  }
+  for (const ingestor of ingestors) {
+    ingestor.handleWebhook(req.headers, req.body);
+  }
+  res.json({ received: true });
+});
+
 // Serve frontend static files in production
 const frontendDist = path.join(process.cwd(), "frontend/dist");
 app.use(express.static(frontendDist));
@@ -138,23 +159,47 @@ app.listen(PORT, () => {
   } catch (err: any) {
     log.error(`Memory consolidation init failed: ${err.message}`);
   }
+
+  // Start local proxy if configured
+  const settings = getAgentSettings();
+  if (settings.proxyMode === "local" && settings.mcpConfigDir) {
+    try {
+      const localProxy = new LocalProxy(settings.mcpConfigDir, "default");
+      localProxy
+        .start()
+        .then(() => {
+          setLocalProxyInstance(localProxy);
+          log.info("Local proxy started");
+        })
+        .catch((err: any) => {
+          log.error(`Failed to start local proxy: ${err.message}`);
+        });
+    } catch (err: any) {
+      log.error(`Failed to initialize local proxy: ${err.message}`);
+    }
+  }
 });
 
 // Graceful shutdown
-process.on("SIGTERM", () => {
-  log.info("SIGTERM received, shutting down gracefully");
+async function gracefulShutdown(signal: string) {
+  log.info(`${signal} received, shutting down gracefully`);
   shutdownScheduler();
   shutdownHeartbeats();
   shutdownEventWatchers();
   shutdownConsolidation();
-  process.exit(0);
-});
 
-process.on("SIGINT", () => {
-  log.info("SIGINT received, shutting down gracefully");
-  shutdownScheduler();
-  shutdownHeartbeats();
-  shutdownEventWatchers();
-  shutdownConsolidation();
+  const localProxy = getLocalProxyInstance();
+  if (localProxy) {
+    try {
+      await localProxy.stop();
+      log.info("Local proxy stopped");
+    } catch (err: any) {
+      log.error(`Failed to stop local proxy: ${err.message}`);
+    }
+  }
+
   process.exit(0);
-});
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

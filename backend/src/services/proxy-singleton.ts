@@ -6,6 +6,10 @@
  * containing the Ed25519/X25519 keypair for that identity. The remote
  * server's public keys are always at {mcpConfigDir}/keys/peers/remote-server/.
  *
+ * In local mode, a shared LocalProxy instance is used instead of per-alias
+ * ProxyClient instances. getProxy() returns the appropriate implementation
+ * based on the configured proxyMode.
+ *
  * Reads mcpConfigDir from agent-settings.json (set via the Agent Settings UI).
  * Falls back to env vars EVENT_WATCHER_KEYS_DIR / EVENT_WATCHER_REMOTE_KEYS_DIR
  * for backwards compatibility.
@@ -16,6 +20,7 @@
 import { join } from "path";
 import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
+import { LocalProxy } from "./local-proxy.js";
 import { getAgentSettings, discoverKeyAliases } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -23,7 +28,26 @@ const log = createLogger("proxy-manager");
 
 const REMOTE_URL = process.env.EVENT_WATCHER_REMOTE_URL || "http://127.0.0.1:9999";
 
-// ── Per-alias client cache ──────────────────────────────────────────
+// ── Shared interface both classes satisfy ────────────────────────────
+
+/** Common interface for LocalProxy and ProxyClient */
+export interface ProxyLike {
+  callTool(toolName: string, toolInput?: Record<string, unknown>): Promise<unknown>;
+}
+
+// ── Singleton LocalProxy instance (shared across all sessions) ──────
+
+let localProxyInstance: LocalProxy | null = null;
+
+export function getLocalProxyInstance(): LocalProxy | null {
+  return localProxyInstance;
+}
+
+export function setLocalProxyInstance(proxy: LocalProxy): void {
+  localProxyInstance = proxy;
+}
+
+// ── Per-alias client cache (remote mode) ────────────────────────────
 
 const clientCache = new Map<string, ProxyClient>();
 const failedAliases = new Set<string>();
@@ -55,7 +79,22 @@ function resolveKeyPaths(alias: string): { keysDir: string; remoteKeysDir: strin
 // ── Public API ──────────────────────────────────────────────────────
 
 /**
- * Get a ProxyClient for a specific key alias.
+ * Get the appropriate proxy for a given alias.
+ * In local mode: returns the shared LocalProxy (ignores alias — single-user).
+ * In remote mode: returns a cached ProxyClient for the alias.
+ */
+export function getProxy(alias: string): ProxyLike | null {
+  const settings = getAgentSettings();
+
+  if (settings.proxyMode === "local") {
+    return localProxyInstance;
+  } else {
+    return getProxyClient(alias); // existing behavior
+  }
+}
+
+/**
+ * Get a ProxyClient for a specific key alias (remote mode).
  * Creates and caches the client on first call. Returns null if keys
  * are missing or client creation fails.
  */
@@ -71,10 +110,13 @@ export function getProxyClient(alias: string): ProxyClient | null {
     return null;
   }
 
+  const settings = getAgentSettings();
+  const remoteUrl = settings.remoteServerUrl || REMOTE_URL;
+
   try {
-    const client = new ProxyClient(REMOTE_URL, paths.keysDir, paths.remoteKeysDir);
+    const client = new ProxyClient(remoteUrl, paths.keysDir, paths.remoteKeysDir);
     clientCache.set(alias, client);
-    log.info(`Proxy client created for alias "${alias}" — remote=${REMOTE_URL}`);
+    log.info(`Proxy client created for alias "${alias}" — remote=${remoteUrl}`);
     return client;
   } catch (err: any) {
     log.error(`Failed to create proxy client for alias "${alias}": ${err.message}`);
@@ -84,11 +126,16 @@ export function getProxyClient(alias: string): ProxyClient | null {
 }
 
 /**
- * Check whether the proxy is configured (mcpConfigDir set with at least one usable alias).
+ * Check whether the proxy is configured (mcpConfigDir set with appropriate mode config).
  */
 export function isProxyConfigured(): boolean {
   const settings = getAgentSettings();
   if (!settings.mcpConfigDir) return false;
+
+  // In local mode, proxy is configured if mcpConfigDir is set and mode is "local"
+  if (settings.proxyMode === "local") return true;
+
+  // In remote mode, check for usable key aliases
   const aliases = discoverKeyAliases();
   return aliases.some((a) => a.hasSigningPub && a.hasExchangePub);
 }

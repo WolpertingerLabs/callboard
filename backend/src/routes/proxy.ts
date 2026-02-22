@@ -9,7 +9,7 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { getProxyClient, isProxyConfigured } from "../services/proxy-singleton.js";
+import { getProxy, isProxyConfigured } from "../services/proxy-singleton.js";
 import { getAllEvents, getEvents, listEventSources } from "../services/event-log.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -26,7 +26,7 @@ proxyRouter.get("/routes", async (req: Request, res: Response): Promise<void> =>
     return;
   }
 
-  const client = getProxyClient(alias);
+  const client = getProxy(alias);
   if (!client) {
     res.json({ routes: [], configured: false });
     return;
@@ -51,7 +51,7 @@ proxyRouter.get("/ingestors", async (req: Request, res: Response): Promise<void>
     return;
   }
 
-  const client = getProxyClient(alias);
+  const client = getProxy(alias);
   if (!client) {
     res.json({ ingestors: [], configured: false });
     return;

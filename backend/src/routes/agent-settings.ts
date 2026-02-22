@@ -27,9 +27,13 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
 
 /** PUT /api/agent-settings — update agent settings */
 agentSettingsRouter.put("/", (req: Request, res: Response): void => {
-  const { mcpConfigDir } = req.body;
+  const { mcpConfigDir, proxyMode, remoteServerUrl } = req.body;
   try {
-    const updated = updateAgentSettings({ mcpConfigDir: mcpConfigDir ?? undefined });
+    const updated = updateAgentSettings({
+      mcpConfigDir: mcpConfigDir ?? undefined,
+      proxyMode: proxyMode ?? undefined,
+      remoteServerUrl: remoteServerUrl ?? undefined,
+    });
     res.json(updated);
   } catch (err: any) {
     log.error(`Error updating agent settings: ${err.message}`);

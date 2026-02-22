@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, FolderOpen, Check, Save, KeyRound } from "lucide-react";
+import { ArrowLeft, FolderOpen, Check, Save, KeyRound, Globe, Monitor } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import FolderBrowser from "../../components/FolderBrowser";
 import { getAgentSettings, updateAgentSettings, getKeyAliases } from "../../api";
@@ -11,6 +11,8 @@ export default function AgentSettingsPage() {
   const isMobile = useIsMobile();
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [mcpConfigDir, setMcpConfigDir] = useState("");
+  const [proxyMode, setProxyMode] = useState<"local" | "remote" | undefined>(undefined);
+  const [remoteServerUrl, setRemoteServerUrl] = useState("");
   const [keyAliases, setKeyAliases] = useState<KeyAliasInfo[]>([]);
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -23,6 +25,8 @@ export default function AgentSettingsPage() {
       .then((s) => {
         setSettings(s);
         setMcpConfigDir(s.mcpConfigDir || "");
+        setProxyMode(s.proxyMode || undefined);
+        setRemoteServerUrl(s.remoteServerUrl || "");
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -42,7 +46,11 @@ export default function AgentSettingsPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const updated = await updateAgentSettings({ mcpConfigDir: mcpConfigDir || undefined });
+      const updated = await updateAgentSettings({
+        mcpConfigDir: mcpConfigDir || undefined,
+        proxyMode: proxyMode || undefined,
+        remoteServerUrl: remoteServerUrl || undefined,
+      });
       setSettings(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -64,6 +72,19 @@ export default function AgentSettingsPage() {
   };
 
   if (loading) return null;
+
+  const radioStyle = (selected: boolean) => ({
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 14px",
+    borderRadius: 8,
+    border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+    background: selected ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "var(--bg)",
+    cursor: "pointer" as const,
+    transition: "all 0.15s",
+    fontSize: 13,
+  });
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -141,7 +162,7 @@ export default function AgentSettingsPage() {
             </div>
 
             {/* Path input + browse */}
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
               <input
                 type="text"
                 value={mcpConfigDir}
@@ -185,32 +206,9 @@ export default function AgentSettingsPage() {
               </button>
             </div>
 
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                background: "var(--accent)",
-                color: "#fff",
-                padding: "10px 20px",
-                borderRadius: 8,
-                fontSize: 14,
-                fontWeight: 500,
-                cursor: saving ? "not-allowed" : "pointer",
-                transition: "background 0.15s",
-              }}
-              onMouseEnter={(e) => !saving && (e.currentTarget.style.background = "var(--accent-hover)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
-            >
-              {saved ? <Check size={14} /> : <Save size={14} />}
-              {saving ? "Saving..." : saved ? "Saved!" : "Save"}
-            </button>
-
             {/* Discovered key aliases readout */}
             {keyAliases.length > 0 && (
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+              <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
                 <div
                   style={{
                     fontSize: 12,
@@ -246,7 +244,7 @@ export default function AgentSettingsPage() {
             )}
 
             {settings?.mcpConfigDir && keyAliases.length === 0 && (
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+              <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
                 <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   No key aliases found in{" "}
                   <code
@@ -263,6 +261,159 @@ export default function AgentSettingsPage() {
               </div>
             )}
           </div>
+
+          {/* Proxy Mode section */}
+          <div
+            style={{
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              padding: 20,
+              background: "var(--surface)",
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <Globe size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>Proxy Mode</span>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+              How proxy tools connect to mcp-secure-proxy. Local mode runs in-process with no separate server. Remote mode connects to an external server over
+              an encrypted channel.
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: proxyMode === "remote" ? 16 : 0 }}>
+              {/* Local option */}
+              <div
+                style={radioStyle(proxyMode === "local")}
+                onClick={() => {
+                  setProxyMode("local");
+                  setSaved(false);
+                }}
+              >
+                <div
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: "50%",
+                    border: `2px solid ${proxyMode === "local" ? "var(--accent)" : "var(--border)"}`,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  {proxyMode === "local" && (
+                    <div
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: "var(--accent)",
+                      }}
+                    />
+                  )}
+                </div>
+                <Monitor size={14} style={{ color: proxyMode === "local" ? "var(--accent)" : "var(--text-muted)", flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontWeight: 500, color: proxyMode === "local" ? "var(--text)" : "var(--text-muted)" }}>Local</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                    Runs in-process, no separate server. Best for single-machine setups.
+                  </div>
+                </div>
+              </div>
+
+              {/* Remote option */}
+              <div
+                style={radioStyle(proxyMode === "remote")}
+                onClick={() => {
+                  setProxyMode("remote");
+                  setSaved(false);
+                }}
+              >
+                <div
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: "50%",
+                    border: `2px solid ${proxyMode === "remote" ? "var(--accent)" : "var(--border)"}`,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  {proxyMode === "remote" && (
+                    <div
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: "var(--accent)",
+                      }}
+                    />
+                  )}
+                </div>
+                <Globe size={14} style={{ color: proxyMode === "remote" ? "var(--accent)" : "var(--text-muted)", flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontWeight: 500, color: proxyMode === "remote" ? "var(--text)" : "var(--text-muted)" }}>Remote</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                    Connect to an external MCP secure proxy server over encrypted channel.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Remote server URL (shown when remote mode selected) */}
+            {proxyMode === "remote" && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Server URL</div>
+                <input
+                  type="text"
+                  value={remoteServerUrl}
+                  onChange={(e) => {
+                    setRemoteServerUrl(e.target.value);
+                    setSaved(false);
+                  }}
+                  placeholder="e.g. https://proxy.example.com:9999"
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    fontSize: 14,
+                    fontFamily: "monospace",
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Save button */}
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "var(--accent)",
+              color: "#fff",
+              padding: "10px 20px",
+              borderRadius: 8,
+              fontSize: 14,
+              fontWeight: 500,
+              cursor: saving ? "not-allowed" : "pointer",
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => !saving && (e.currentTarget.style.background = "var(--accent-hover)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
+          >
+            {saved ? <Check size={14} /> : <Save size={14} />}
+            {saving ? "Saving..." : saved ? "Saved!" : "Save"}
+          </button>
         </div>
       </div>
 

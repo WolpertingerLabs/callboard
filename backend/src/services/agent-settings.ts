@@ -44,7 +44,9 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
   const current = loadSettings();
   const updated = { ...current, ...updates };
   saveSettings(updated);
-  log.info(`Agent settings updated — mcpConfigDir=${updated.mcpConfigDir ?? "(unset)"}`);
+  log.info(
+    `Agent settings updated — mcpConfigDir=${updated.mcpConfigDir ?? "(unset)"}, proxyMode=${updated.proxyMode ?? "(unset)"}, remoteServerUrl=${updated.remoteServerUrl ?? "(unset)"}`,
+  );
   return updated;
 }
 
