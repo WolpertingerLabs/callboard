@@ -34,10 +34,52 @@ const statusConfig: Record<string, { color: string; icon: typeof Play; label: st
 };
 
 /**
+ * Get the browser's timezone abbreviation (e.g., "EST", "PST").
+ */
+function getBrowserTzAbbr(): string {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }).formatToParts(new Date());
+  return parts.find((p) => p.type === "timeZoneName")?.value || Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/**
+ * Convert a time (hour:minute) from a source IANA timezone to the browser's local timezone.
+ * Uses Intl to compute the correct offset, accounting for DST.
+ */
+function convertToLocalTime(cronHour: number, cronMinute: number, sourceTimezone: string): { hour: number; minute: number } {
+  const now = new Date();
+
+  // Start with a UTC date at the cron hour:minute
+  const guessUTC = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), cronHour, cronMinute, 0));
+
+  // See what time this UTC instant shows in the source timezone
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: sourceTimezone,
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(guessUTC);
+  const shownHour = parseInt(parts.find((p) => p.type === "hour")?.value || "0") % 24;
+  const shownMinute = parseInt(parts.find((p) => p.type === "minute")?.value || "0");
+
+  // The difference tells us the adjustment needed so the source timezone reads cronHour:cronMinute
+  const wantedMinutes = cronHour * 60 + cronMinute;
+  const shownMinutes = shownHour * 60 + shownMinute;
+  let diffMinutes = wantedMinutes - shownMinutes;
+  if (diffMinutes > 720) diffMinutes -= 1440;
+  if (diffMinutes < -720) diffMinutes += 1440;
+
+  // Adjust to get the correct UTC instant, then read browser-local time
+  const correctedUTC = new Date(guessUTC.getTime() + diffMinutes * 60000);
+  return { hour: correctedUTC.getHours(), minute: correctedUTC.getMinutes() };
+}
+
+/**
  * Lightweight cron-expression → human-readable string converter.
+ * Converts times from the source (scheduling) timezone to the browser's local timezone.
  * Handles common patterns; falls back to the raw expression for exotic ones.
  */
-function describeCron(expr: string, timezone: string): string {
+function describeCron(expr: string, sourceTimezone: string): string {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return expr;
 
@@ -46,13 +88,10 @@ function describeCron(expr: string, timezone: string): string {
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-  const formatTime = (h: string, m: string): string | null => {
-    const hi = parseInt(h);
-    const mi = parseInt(m);
-    if (isNaN(hi) || isNaN(mi)) return null;
-    const period = hi >= 12 ? "PM" : "AM";
-    const h12 = hi === 0 ? 12 : hi > 12 ? hi - 12 : hi;
-    return `${h12}:${mi.toString().padStart(2, "0")} ${period}`;
+  const formatTime12 = (h: number, m: number): string => {
+    const period = h >= 12 ? "PM" : "AM";
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${h12}:${m.toString().padStart(2, "0")} ${period}`;
   };
 
   const ordinal = (n: number): string => {
@@ -63,6 +102,8 @@ function describeCron(expr: string, timezone: string): string {
     if (s % 10 === 3) return `${n}rd`;
     return `${n}th`;
   };
+
+  // Frequency-based patterns — no timezone conversion needed
 
   // Every minute
   if (minute === "*" && hour === "*" && dom === "*" && month === "*" && dow === "*") {
@@ -89,41 +130,47 @@ function describeCron(expr: string, timezone: string): string {
   // From here we need a concrete hour — bail on wildcards / step values in hour
   if (hour.includes("*") || hour.includes("/")) return expr;
 
-  const timeStr = formatTime(hour, minute);
-  if (!timeStr) return expr;
+  const cronHour = parseInt(hour);
+  const cronMinute = parseInt(minute);
+  if (isNaN(cronHour) || isNaN(cronMinute)) return expr;
+
+  // Convert from source (scheduling) timezone → browser local timezone
+  const local = convertToLocalTime(cronHour, cronMinute, sourceTimezone);
+  const timeStr = formatTime12(local.hour, local.minute);
+  const tzLabel = getBrowserTzAbbr();
 
   // Daily
   if (dom === "*" && month === "*" && dow === "*") {
-    return `Daily at ${timeStr} ${timezone}`;
+    return `Daily at ${timeStr} ${tzLabel}`;
   }
 
   // Day-of-week patterns
   if (dom === "*" && month === "*" && dow !== "*") {
-    if (dow === "1-5" || dow.toUpperCase() === "MON-FRI") return `Weekdays at ${timeStr} ${timezone}`;
-    if (dow === "0,6" || dow.toUpperCase() === "SAT,SUN") return `Weekends at ${timeStr} ${timezone}`;
+    if (dow === "1-5" || dow.toUpperCase() === "MON-FRI") return `Weekdays at ${timeStr} ${tzLabel}`;
+    if (dow === "0,6" || dow.toUpperCase() === "SAT,SUN") return `Weekends at ${timeStr} ${tzLabel}`;
 
     const names = dow.split(",").map((d) => {
       const i = parseInt(d);
       return isNaN(i) ? d : dayNames[i] || d;
     });
-    return `${names.join(", ")} at ${timeStr} ${timezone}`;
+    return `${names.join(", ")} at ${timeStr} ${tzLabel}`;
   }
 
   // Specific month + day (e.g. Feb 21)
   if (dom !== "*" && month !== "*" && dow === "*") {
     const mi = parseInt(month);
     const monthName = isNaN(mi) ? month : monthNames[mi - 1] || month;
-    return `${monthName} ${dom} at ${timeStr} ${timezone}`;
+    return `${monthName} ${dom} at ${timeStr} ${tzLabel}`;
   }
 
   // Day of month, every month
   if (dom !== "*" && month === "*" && dow === "*") {
     const d = parseInt(dom);
-    return isNaN(d) ? expr : `${ordinal(d)} of every month at ${timeStr} ${timezone}`;
+    return isNaN(d) ? expr : `${ordinal(d)} of every month at ${timeStr} ${tzLabel}`;
   }
 
   // Fallback: show time + raw expression
-  return `${timeStr} ${timezone} — ${expr}`;
+  return `${timeStr} ${tzLabel} — ${expr}`;
 }
 
 const typeConfig: Record<string, { color: string; icon: typeof Clock }> = {
@@ -228,7 +275,7 @@ export default function CronJobs() {
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>Cron Jobs</h1>
           <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
             Scheduled tasks and timed events
-            <span style={{ marginLeft: 6, opacity: 0.7 }}>({agent.userTimezone || "UTC"})</span>
+            <span style={{ marginLeft: 6, opacity: 0.7 }}>({getBrowserTzAbbr()})</span>
           </p>
         </div>
         <button
@@ -411,7 +458,7 @@ export default function CronJobs() {
                   }}
                 >
                   <Clock size={13} />
-                  <span>{describeCron(job.schedule, agent.userTimezone || "UTC")}</span>
+                  <span>{describeCron(job.schedule, agent.userTimezone || agent.serverTimezone || "UTC")}</span>
                   <span style={{ opacity: 0.5 }}>({job.schedule})</span>
                 </div>
 

@@ -32,9 +32,11 @@ agentsRouter.use("/:alias/cron-jobs", agentCronJobsRouter);
 agentsRouter.use("/:alias/activity", agentActivityRouter);
 agentsRouter.use("/:alias/triggers", agentTriggersRouter);
 
-function withWorkspacePath(agent: AgentConfig): AgentConfig & { workspacePath: string } {
+const SERVER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function withWorkspacePath(agent: AgentConfig): AgentConfig & { workspacePath: string; serverTimezone: string } {
   const workspacePath = ensureAgentWorkspaceDir(agent.alias);
-  return { ...agent, workspacePath };
+  return { ...agent, workspacePath, serverTimezone: SERVER_TIMEZONE };
 }
 
 agentsRouter.get("/", (_req: Request, res: Response): void => {
@@ -103,7 +105,7 @@ agentsRouter.post("/", (req: Request, res: Response): void => {
     }
   }
 
-  res.status(201).json({ agent: { ...config, workspacePath } });
+  res.status(201).json({ agent: { ...config, workspacePath, serverTimezone: SERVER_TIMEZONE } });
 });
 
 // Identity prompt — returns compiled identity + pre-loaded workspace context for SDK systemPrompt.append
@@ -213,7 +215,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
   }
 
   const workspacePath = ensureAgentWorkspaceDir(alias);
-  res.json({ agent: { ...updated, workspacePath } });
+  res.json({ agent: { ...updated, workspacePath, serverTimezone: SERVER_TIMEZONE } });
 });
 
 agentsRouter.delete("/:alias", (req: Request, res: Response): void => {

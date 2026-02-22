@@ -113,7 +113,7 @@ function readSessionMessages(sessionId: string, limit: number = 50): string[] {
  */
 export function buildAgentToolsServer(agentAlias: string) {
   const agentConfig = getAgent(agentAlias);
-  const agentTimezone = agentConfig?.userTimezone || "UTC";
+  const agentTimezone = agentConfig?.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   return createSdkMcpServer({
     name: "ccui",

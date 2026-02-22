@@ -21,6 +21,7 @@ export interface AgentConfig {
   systemPrompt?: string;
   createdAt: number;
   workspacePath?: string; // Resolved server-side, present in API responses
+  serverTimezone?: string; // Resolved server-side, the server's IANA system timezone
 
   // Identity (compiled into systemPrompt append)
   emoji?: string;
