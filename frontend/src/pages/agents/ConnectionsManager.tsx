@@ -174,7 +174,8 @@ export default function ConnectionsManager() {
       <div
         style={{
           flex: 1,
-          overflow: "auto",
+          overflowX: "hidden",
+          overflowY: "auto",
           padding: isMobile ? "16px" : "24px 32px",
         }}
       >
@@ -385,6 +386,8 @@ function ConnectionCard({
         gap: 12,
         transition: "border-color 0.15s",
         opacity: conn.enabled ? 1 : 0.75,
+        overflow: "hidden",
+        minWidth: 0,
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
