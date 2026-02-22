@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
-import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ArrowDown, MessageSquare, GitBranch, GitFork } from "lucide-react";
+import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ArrowDown, MessageSquare, GitBranch, GitFork, ChevronUp, ChevronDown } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
   getChat,
@@ -801,6 +801,65 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     await checkSessionStatus();
   }, [checkSessionStatus, id]);
 
+  // Compute indices of user text messages for navigation
+  const userMessageIndices = useMemo(() => {
+    const indices: number[] = [];
+    messages.forEach((msg, i) => {
+      if (msg.role === "user" && msg.type === "text") {
+        indices.push(i);
+      }
+    });
+    return indices;
+  }, [messages]);
+
+  // Track which user message we're currently navigated to
+  const [userMsgNavIndex, setUserMsgNavIndex] = useState<number | null>(null);
+
+  // Reset user message nav when messages change (new messages arrive)
+  useEffect(() => {
+    setUserMsgNavIndex(null);
+  }, [messages.length]);
+
+  // Navigate to previous (older) user message
+  const navigatePrevUserMessage = useCallback(() => {
+    if (userMessageIndices.length === 0) return;
+    setAutoScroll(false);
+    const newNavIndex = userMsgNavIndex === null
+      ? userMessageIndices.length - 1
+      : Math.max(0, userMsgNavIndex - 1);
+    setUserMsgNavIndex(newNavIndex);
+    const msgIndex = userMessageIndices[newNavIndex];
+    const el = document.querySelector(`[data-message-index="${msgIndex}"]`) as HTMLElement | null;
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.style.outline = "2px solid var(--accent)";
+      el.style.borderRadius = "8px";
+      setTimeout(() => { el.style.outline = ""; el.style.borderRadius = ""; }, 2000);
+    }
+  }, [userMessageIndices, userMsgNavIndex]);
+
+  // Navigate to next (newer) user message
+  const navigateNextUserMessage = useCallback(() => {
+    if (userMessageIndices.length === 0 || userMsgNavIndex === null) return;
+    const newNavIndex = userMsgNavIndex + 1;
+    if (newNavIndex >= userMessageIndices.length) {
+      // Past the last user message — go to bottom
+      setUserMsgNavIndex(null);
+      setAutoScroll(true);
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+    setUserMsgNavIndex(newNavIndex);
+    const msgIndex = userMessageIndices[newNavIndex];
+    const el = document.querySelector(`[data-message-index="${msgIndex}"]`) as HTMLElement | null;
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.style.outline = "2px solid var(--accent)";
+      el.style.borderRadius = "8px";
+      setTimeout(() => { el.style.outline = ""; el.style.borderRadius = ""; }, 2000);
+    }
+  }, [userMessageIndices, userMsgNavIndex]);
+
   // Check if there are any TodoWrite tool calls in the conversation
   const hasTodoList = useMemo(() => {
     return messages.some((message) => message.type === "tool_use" && message.toolName === "TodoWrite");
@@ -987,6 +1046,50 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           >
             {viewMode === "chat" ? <GitBranch size={16} /> : <MessageSquare size={16} />}
           </button>
+        )}
+
+        {id && userMessageIndices.length > 1 && (
+          <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+            <button
+              onClick={navigatePrevUserMessage}
+              disabled={userMsgNavIndex === 0}
+              style={{
+                background: "var(--bg-secondary, var(--surface))",
+                color: userMsgNavIndex === 0 ? "var(--text-muted)" : "var(--text)",
+                padding: "8px",
+                border: "none",
+                borderRight: "1px solid var(--border)",
+                cursor: userMsgNavIndex === 0 ? "default" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                opacity: userMsgNavIndex === 0 ? 0.4 : 1,
+                transition: "all 0.15s ease",
+              }}
+              title="Previous user message"
+            >
+              <ChevronUp size={16} />
+            </button>
+            <button
+              onClick={navigateNextUserMessage}
+              disabled={userMsgNavIndex === null}
+              style={{
+                background: "var(--bg-secondary, var(--surface))",
+                color: userMsgNavIndex === null ? "var(--text-muted)" : "var(--text)",
+                padding: "8px",
+                border: "none",
+                cursor: userMsgNavIndex === null ? "default" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                opacity: userMsgNavIndex === null ? 0.4 : 1,
+                transition: "all 0.15s ease",
+              }}
+              title="Next user message"
+            >
+              <ChevronDown size={16} />
+            </button>
+          </div>
         )}
 
         {hasTodoList && (
