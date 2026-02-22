@@ -29,4 +29,4 @@ export type { CronAction, CronJob, EventSubscription, ActivityEntry, Trigger, Tr
 
 export type { AgentSettings, KeyAliasInfo } from "./agentSettings.js";
 
-export type { ConnectionStatus } from "./connections.js";
+export type { CallerInfo, ConnectionStatus } from "./connections.js";

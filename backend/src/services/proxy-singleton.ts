@@ -80,14 +80,19 @@ function resolveKeyPaths(alias: string): { keysDir: string; remoteKeysDir: strin
 
 /**
  * Get the appropriate proxy for a given alias.
- * In local mode: returns the shared LocalProxy (ignores alias — single-user).
+ * In local mode: returns a wrapper around the shared LocalProxy that
+ *   routes calls through the specific caller alias's routes.
  * In remote mode: returns a cached ProxyClient for the alias.
  */
 export function getProxy(alias: string): ProxyLike | null {
   const settings = getAgentSettings();
 
   if (settings.proxyMode === "local") {
-    return localProxyInstance;
+    if (!localProxyInstance) return null;
+    // Return a wrapper that passes the caller alias to callTool
+    return {
+      callTool: (toolName: string, toolInput?: Record<string, unknown>) => localProxyInstance!.callTool(toolName, toolInput, alias),
+    };
   } else {
     return getProxyClient(alias); // existing behavior
   }

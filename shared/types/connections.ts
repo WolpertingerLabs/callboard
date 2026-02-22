@@ -1,3 +1,13 @@
+/** A configured caller alias with summary info. */
+export interface CallerInfo {
+  /** Caller alias (e.g., "default", "my-agent"). */
+  alias: string;
+  /** Human-readable name (optional). */
+  name?: string;
+  /** Number of connections enabled for this caller. */
+  connectionCount: number;
+}
+
 /** Connection template enriched with runtime status for the UI. */
 export interface ConnectionStatus {
   /** Template alias / filename (e.g., "github", "slack"). */

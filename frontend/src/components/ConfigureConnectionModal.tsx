@@ -1,33 +1,18 @@
 import { useState } from "react";
-import {
-  X,
-  ExternalLink,
-  Eye,
-  EyeOff,
-  Check,
-  Loader2,
-  Radio,
-  ChevronDown,
-  ChevronRight,
-} from "lucide-react";
+import { X, ExternalLink, Eye, EyeOff, Check, Loader2, Radio, ChevronDown, ChevronRight } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import { setConnectionSecrets } from "../api";
 import type { ConnectionStatus } from "../api";
 
 interface ConfigureConnectionModalProps {
   connection: ConnectionStatus;
+  /** Caller alias to save secrets for (defaults to "default") */
+  caller?: string;
   onClose: () => void;
-  onSecretsUpdated: (
-    alias: string,
-    secretsSet: Record<string, boolean>,
-  ) => void;
+  onSecretsUpdated: (alias: string, secretsSet: Record<string, boolean>) => void;
 }
 
-export default function ConfigureConnectionModal({
-  connection,
-  onClose,
-  onSecretsUpdated,
-}: ConfigureConnectionModalProps) {
+export default function ConfigureConnectionModal({ connection, caller, onClose, onSecretsUpdated }: ConfigureConnectionModalProps) {
   // Track user changes (only modified fields are sent)
   const [changes, setChanges] = useState<Record<string, string>>({});
   const [clearing, setClearing] = useState<Set<string>>(new Set());
@@ -68,8 +53,7 @@ export default function ConfigureConnectionModal({
     });
   };
 
-  const hasChanges =
-    Object.keys(changes).some((k) => changes[k] !== "") || clearing.size > 0;
+  const hasChanges = Object.keys(changes).some((k) => changes[k] !== "") || clearing.size > 0;
 
   const handleSave = async () => {
     if (!hasChanges) {
@@ -90,7 +74,7 @@ export default function ConfigureConnectionModal({
         secrets[name] = "";
       }
 
-      const result = await setConnectionSecrets(connection.alias, secrets);
+      const result = await setConnectionSecrets(connection.alias, secrets, caller);
       onSecretsUpdated(connection.alias, result.secretsSet);
       setSaved(true);
       setTimeout(() => {
@@ -132,9 +116,7 @@ export default function ConfigureConnectionModal({
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>
-              {connection.name}
-            </h2>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{connection.name}</h2>
             {connection.description && (
               <p
                 style={{
@@ -178,8 +160,7 @@ export default function ConfigureConnectionModal({
                     fontSize: 11,
                     padding: "2px 6px",
                     borderRadius: 4,
-                    background:
-                      "color-mix(in srgb, var(--accent) 10%, transparent)",
+                    background: "color-mix(in srgb, var(--accent) 10%, transparent)",
                     color: "var(--accent)",
                     display: "inline-flex",
                     alignItems: "center",
@@ -274,11 +255,7 @@ export default function ConfigureConnectionModal({
                   padding: 0,
                 }}
               >
-                {showOptional ? (
-                  <ChevronDown size={14} />
-                ) : (
-                  <ChevronRight size={14} />
-                )}
+                {showOptional ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 Optional Secrets ({connection.optionalSecrets.length})
               </button>
               {showOptional && (
@@ -307,19 +284,18 @@ export default function ConfigureConnectionModal({
           )}
 
           {/* No secrets */}
-          {connection.requiredSecrets.length === 0 &&
-            connection.optionalSecrets.length === 0 && (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "24px 0",
-                  color: "var(--text-muted)",
-                  fontSize: 14,
-                }}
-              >
-                This connection has no configurable secrets.
-              </div>
-            )}
+          {connection.requiredSecrets.length === 0 && connection.optionalSecrets.length === 0 && (
+            <div
+              style={{
+                textAlign: "center",
+                padding: "24px 0",
+                color: "var(--text-muted)",
+                fontSize: 14,
+              }}
+            >
+              This connection has no configurable secrets.
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -334,9 +310,7 @@ export default function ConfigureConnectionModal({
           }}
         >
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            {error && (
-              <span style={{ color: "var(--error)" }}>{error}</span>
-            )}
+            {error && <span style={{ color: "var(--error)" }}>{error}</span>}
             {saved && !error && (
               <span
                 style={{
@@ -383,12 +357,7 @@ export default function ConfigureConnectionModal({
                 gap: 6,
               }}
             >
-              {saving && (
-                <Loader2
-                  size={14}
-                  style={{ animation: "spin 1s linear infinite" }}
-                />
-              )}
+              {saving && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
               {saved ? "Saved" : saving ? "Saving..." : "Save"}
             </button>
           </div>

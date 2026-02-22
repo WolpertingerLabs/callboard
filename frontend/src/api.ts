@@ -31,6 +31,7 @@ import type {
   FilterCondition,
   AgentSettings,
   KeyAliasInfo,
+  CallerInfo,
   ConnectionStatus,
 } from "shared/types/index.js";
 
@@ -67,6 +68,7 @@ export type {
   FilterCondition,
   AgentSettings,
   KeyAliasInfo,
+  CallerInfo,
   ConnectionStatus,
 };
 
@@ -698,33 +700,62 @@ export async function getAgentActivity(alias: string, type?: string, limit?: num
 
 export interface ConnectionsListResponse {
   templates: ConnectionStatus[];
+  callers: CallerInfo[];
   localModeActive: boolean;
 }
 
-export async function getConnections(): Promise<ConnectionsListResponse> {
-  const res = await fetch(`${BASE}/connections`, { credentials: "include" });
+export async function getConnections(caller?: string): Promise<ConnectionsListResponse> {
+  const params = caller ? `?caller=${encodeURIComponent(caller)}` : "";
+  const res = await fetch(`${BASE}/connections${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get connections");
   return res.json();
 }
 
-export async function setConnectionEnabled(alias: string, enabled: boolean): Promise<{ alias: string; enabled: boolean }> {
+export async function setConnectionEnabled(alias: string, enabled: boolean, caller?: string): Promise<{ alias: string; enabled: boolean }> {
   const res = await fetch(`${BASE}/connections/${encodeURIComponent(alias)}/enable`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify({ enabled, ...(caller && { caller }) }),
   });
   await assertOk(res, "Failed to toggle connection");
   return res.json();
 }
 
-export async function setConnectionSecrets(alias: string, secrets: Record<string, string>): Promise<{ secretsSet: Record<string, boolean> }> {
+export async function setConnectionSecrets(alias: string, secrets: Record<string, string>, caller?: string): Promise<{ secretsSet: Record<string, boolean> }> {
   const res = await fetch(`${BASE}/connections/${encodeURIComponent(alias)}/secrets`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ secrets }),
+    body: JSON.stringify({ secrets, ...(caller && { caller }) }),
   });
   await assertOk(res, "Failed to set connection secrets");
   return res.json();
+}
+
+// Caller alias management
+
+export async function getCallerAliases(): Promise<{ callers: CallerInfo[] }> {
+  const res = await fetch(`${BASE}/connections/callers`, { credentials: "include" });
+  await assertOk(res, "Failed to get caller aliases");
+  return res.json();
+}
+
+export async function createCallerAlias(alias: string, name?: string): Promise<{ caller: CallerInfo }> {
+  const res = await fetch(`${BASE}/connections/callers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ alias, ...(name && { name }) }),
+  });
+  await assertOk(res, "Failed to create caller alias");
+  return res.json();
+}
+
+export async function deleteCallerAlias(callerAlias: string): Promise<void> {
+  const res = await fetch(`${BASE}/connections/callers/${encodeURIComponent(callerAlias)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete caller alias");
 }
