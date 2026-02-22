@@ -1044,9 +1044,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {!id ? folder : chat?.folder}
           </div>
         </div>
-        {/* Desktop: action buttons inline */}
+        {/* Desktop: action buttons inline, right-aligned */}
         {!isMobile && (
-          <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
             {/* Chat / Diff view toggle - only for git repos */}
             {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
               <button
@@ -1173,7 +1173,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 <RotateCw size={16} />
               </button>
             )}
-          </>
+          </div>
         )}
 
         {/* Stop button - always in top bar */}
