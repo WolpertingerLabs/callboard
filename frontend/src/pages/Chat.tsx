@@ -1,6 +1,19 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
-import { RotateCw, CheckSquare, Square, Slash, ArrowLeft, ArrowDown, MessageSquare, GitBranch, GitFork, ChevronUp, ChevronDown } from "lucide-react";
+import {
+  RotateCw,
+  CheckSquare,
+  Square,
+  Slash,
+  ArrowLeft,
+  ArrowDown,
+  MessageSquare,
+  GitBranch,
+  GitFork,
+  ChevronUp,
+  ChevronDown,
+  MoreHorizontal,
+} from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
   getChat,
@@ -104,6 +117,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [compacting, setCompacting] = useState(false);
   const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
   const [viewMode, setViewMode] = useState<"chat" | "diff">("chat");
+  const [showMobileActions, setShowMobileActions] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -824,9 +838,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const navigatePrevUserMessage = useCallback(() => {
     if (userMessageIndices.length === 0) return;
     setAutoScroll(false);
-    const newNavIndex = userMsgNavIndex === null
-      ? userMessageIndices.length - 1
-      : Math.max(0, userMsgNavIndex - 1);
+    const newNavIndex = userMsgNavIndex === null ? userMessageIndices.length - 1 : Math.max(0, userMsgNavIndex - 1);
     setUserMsgNavIndex(newNavIndex);
     const msgIndex = userMessageIndices[newNavIndex];
     const el = document.querySelector(`[data-message-index="${msgIndex}"]`) as HTMLElement | null;
@@ -834,7 +846,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.style.outline = "2px solid var(--accent)";
       el.style.borderRadius = "8px";
-      setTimeout(() => { el.style.outline = ""; el.style.borderRadius = ""; }, 2000);
+      setTimeout(() => {
+        el.style.outline = "";
+        el.style.borderRadius = "";
+      }, 2000);
     }
   }, [userMessageIndices, userMsgNavIndex]);
 
@@ -856,7 +871,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.style.outline = "2px solid var(--accent)";
       el.style.borderRadius = "8px";
-      setTimeout(() => { el.style.outline = ""; el.style.borderRadius = ""; }, 2000);
+      setTimeout(() => {
+        el.style.outline = "";
+        el.style.borderRadius = "";
+      }, 2000);
     }
   }, [userMessageIndices, userMsgNavIndex]);
 
@@ -1026,132 +1044,139 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {!id ? folder : chat?.folder}
           </div>
         </div>
-        {/* Chat / Diff view toggle - only for git repos */}
-        {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
-          <button
-            onClick={() => setViewMode(viewMode === "chat" ? "diff" : "chat")}
-            style={{
-              background: "var(--bg-secondary, var(--surface))",
-              color: "var(--text)",
-              padding: "8px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              transition: "all 0.15s ease",
-            }}
-            title={viewMode === "chat" ? "Show git diff" : "Back to chat"}
-          >
-            {viewMode === "chat" ? <GitBranch size={16} /> : <MessageSquare size={16} />}
-          </button>
+        {/* Desktop: action buttons inline */}
+        {!isMobile && (
+          <>
+            {/* Chat / Diff view toggle - only for git repos */}
+            {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
+              <button
+                onClick={() => setViewMode(viewMode === "chat" ? "diff" : "chat")}
+                style={{
+                  background: "var(--bg-secondary, var(--surface))",
+                  color: "var(--text)",
+                  padding: "8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                }}
+                title={viewMode === "chat" ? "Show git diff" : "Back to chat"}
+              >
+                {viewMode === "chat" ? <GitBranch size={16} /> : <MessageSquare size={16} />}
+              </button>
+            )}
+
+            {id && userMessageIndices.length > 1 && (
+              <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+                <button
+                  onClick={navigatePrevUserMessage}
+                  disabled={userMsgNavIndex === 0}
+                  style={{
+                    background: "var(--bg-secondary, var(--surface))",
+                    color: userMsgNavIndex === 0 ? "var(--text-muted)" : "var(--text)",
+                    padding: "8px",
+                    border: "none",
+                    borderRight: "1px solid var(--border)",
+                    cursor: userMsgNavIndex === 0 ? "default" : "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: userMsgNavIndex === 0 ? 0.4 : 1,
+                    transition: "all 0.15s ease",
+                  }}
+                  title="Previous user message"
+                >
+                  <ChevronUp size={16} />
+                </button>
+                <button
+                  onClick={navigateNextUserMessage}
+                  disabled={userMsgNavIndex === null}
+                  style={{
+                    background: "var(--bg-secondary, var(--surface))",
+                    color: userMsgNavIndex === null ? "var(--text-muted)" : "var(--text)",
+                    padding: "8px",
+                    border: "none",
+                    cursor: userMsgNavIndex === null ? "default" : "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: userMsgNavIndex === null ? 0.4 : 1,
+                    transition: "all 0.15s ease",
+                  }}
+                  title="Next user message"
+                >
+                  <ChevronDown size={16} />
+                </button>
+              </div>
+            )}
+
+            {hasTodoList && (
+              <button
+                onClick={handleTodoListClick}
+                style={{
+                  background: "var(--accent)",
+                  color: "#fff",
+                  padding: "8px",
+                  borderRadius: 6,
+                  border: "none",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                title="Jump to latest to-do list"
+              >
+                <CheckSquare size={16} />
+              </button>
+            )}
+
+            {/* Slash Commands Modal Button */}
+            {slashCommands.length > 0 && (
+              <button
+                onClick={() => setShowSlashCommandsModal(true)}
+                style={{
+                  background: "var(--bg-secondary)",
+                  color: "var(--text)",
+                  padding: "8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                title="View available slash commands"
+              >
+                <Slash size={16} />
+              </button>
+            )}
+
+            {networkError && (
+              <button
+                onClick={handleReconnect}
+                style={{
+                  background: "var(--accent)",
+                  color: "#fff",
+                  padding: "8px",
+                  borderRadius: 6,
+                  border: "none",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                title="Reconnect to stream"
+              >
+                <RotateCw size={16} />
+              </button>
+            )}
+          </>
         )}
 
-        {id && userMessageIndices.length > 1 && (
-          <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
-            <button
-              onClick={navigatePrevUserMessage}
-              disabled={userMsgNavIndex === 0}
-              style={{
-                background: "var(--bg-secondary, var(--surface))",
-                color: userMsgNavIndex === 0 ? "var(--text-muted)" : "var(--text)",
-                padding: "8px",
-                border: "none",
-                borderRight: "1px solid var(--border)",
-                cursor: userMsgNavIndex === 0 ? "default" : "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                opacity: userMsgNavIndex === 0 ? 0.4 : 1,
-                transition: "all 0.15s ease",
-              }}
-              title="Previous user message"
-            >
-              <ChevronUp size={16} />
-            </button>
-            <button
-              onClick={navigateNextUserMessage}
-              disabled={userMsgNavIndex === null}
-              style={{
-                background: "var(--bg-secondary, var(--surface))",
-                color: userMsgNavIndex === null ? "var(--text-muted)" : "var(--text)",
-                padding: "8px",
-                border: "none",
-                cursor: userMsgNavIndex === null ? "default" : "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                opacity: userMsgNavIndex === null ? 0.4 : 1,
-                transition: "all 0.15s ease",
-              }}
-              title="Next user message"
-            >
-              <ChevronDown size={16} />
-            </button>
-          </div>
-        )}
-
-        {hasTodoList && (
-          <button
-            onClick={handleTodoListClick}
-            style={{
-              background: "var(--accent)",
-              color: "#fff",
-              padding: "8px",
-              borderRadius: 6,
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Jump to latest to-do list"
-          >
-            <CheckSquare size={16} />
-          </button>
-        )}
-
-        {/* Slash Commands Modal Button */}
-        {slashCommands.length > 0 && (
-          <button
-            onClick={() => setShowSlashCommandsModal(true)}
-            style={{
-              background: "var(--bg-secondary)",
-              color: "var(--text)",
-              padding: "8px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="View available slash commands"
-          >
-            <Slash size={16} />
-          </button>
-        )}
-
-        {networkError && (
-          <button
-            onClick={handleReconnect}
-            style={{
-              background: "var(--accent)",
-              color: "#fff",
-              padding: "8px",
-              borderRadius: 6,
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Reconnect to stream"
-          >
-            <RotateCw size={16} />
-          </button>
-        )}
+        {/* Stop button - always in top bar */}
         <button
           onClick={handleStop}
           disabled={!streaming}
@@ -1171,7 +1196,169 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         >
           <Square size={14} />
         </button>
+
+        {/* Mobile: toggle button for secondary action bar */}
+        {isMobile && (
+          <button
+            onClick={() => setShowMobileActions(!showMobileActions)}
+            style={{
+              background: showMobileActions ? "var(--accent)" : "var(--bg-secondary)",
+              color: showMobileActions ? "#fff" : "var(--text)",
+              padding: "8px",
+              borderRadius: 6,
+              border: showMobileActions ? "none" : "1px solid var(--border)",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title={showMobileActions ? "Hide actions" : "Show actions"}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+        )}
       </header>
+
+      {/* Mobile: secondary action bar */}
+      {isMobile && showMobileActions && (
+        <div
+          style={{
+            padding: "6px 16px",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexShrink: 0,
+          }}
+        >
+          {/* Chat / Diff view toggle - only for git repos */}
+          {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
+            <button
+              onClick={() => setViewMode(viewMode === "chat" ? "diff" : "chat")}
+              style={{
+                background: "var(--bg-secondary, var(--surface))",
+                color: "var(--text)",
+                padding: "8px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+              title={viewMode === "chat" ? "Show git diff" : "Back to chat"}
+            >
+              {viewMode === "chat" ? <GitBranch size={16} /> : <MessageSquare size={16} />}
+            </button>
+          )}
+
+          {id && userMessageIndices.length > 1 && (
+            <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)", flexShrink: 0 }}>
+              <button
+                onClick={navigatePrevUserMessage}
+                disabled={userMsgNavIndex === 0}
+                style={{
+                  background: "var(--bg-secondary, var(--surface))",
+                  color: userMsgNavIndex === 0 ? "var(--text-muted)" : "var(--text)",
+                  padding: "8px",
+                  border: "none",
+                  borderRight: "1px solid var(--border)",
+                  cursor: userMsgNavIndex === 0 ? "default" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: userMsgNavIndex === 0 ? 0.4 : 1,
+                }}
+                title="Previous user message"
+              >
+                <ChevronUp size={16} />
+              </button>
+              <button
+                onClick={navigateNextUserMessage}
+                disabled={userMsgNavIndex === null}
+                style={{
+                  background: "var(--bg-secondary, var(--surface))",
+                  color: userMsgNavIndex === null ? "var(--text-muted)" : "var(--text)",
+                  padding: "8px",
+                  border: "none",
+                  cursor: userMsgNavIndex === null ? "default" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: userMsgNavIndex === null ? 0.4 : 1,
+                }}
+                title="Next user message"
+              >
+                <ChevronDown size={16} />
+              </button>
+            </div>
+          )}
+
+          {hasTodoList && (
+            <button
+              onClick={handleTodoListClick}
+              style={{
+                background: "var(--accent)",
+                color: "#fff",
+                padding: "8px",
+                borderRadius: 6,
+                border: "none",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+              title="Jump to latest to-do list"
+            >
+              <CheckSquare size={16} />
+            </button>
+          )}
+
+          {slashCommands.length > 0 && (
+            <button
+              onClick={() => setShowSlashCommandsModal(true)}
+              style={{
+                background: "var(--bg-secondary)",
+                color: "var(--text)",
+                padding: "8px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+              title="View available slash commands"
+            >
+              <Slash size={16} />
+            </button>
+          )}
+
+          {networkError && (
+            <button
+              onClick={handleReconnect}
+              style={{
+                background: "var(--accent)",
+                color: "#fff",
+                padding: "8px",
+                borderRadius: 6,
+                border: "none",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+              title="Reconnect to stream"
+            >
+              <RotateCw size={16} />
+            </button>
+          )}
+        </div>
+      )}
 
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         {viewMode === "diff" ? (
