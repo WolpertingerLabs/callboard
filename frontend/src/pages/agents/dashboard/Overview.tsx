@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { MessageSquare, Plug, Clock, Radio, ChevronRight, Bot, Save, Check } from "lucide-react";
+import { Clock, Radio, ChevronRight, Bot, Save, Check } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { updateAgent, getAgentCronJobs, getAgentActivity, getProxyIngestors, getKeyAliases } from "../../../api";
 import type { AgentConfig, ActivityEntry, KeyAliasInfo } from "../../../api";
@@ -231,77 +231,6 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
             </div>
           );
         })}
-      </div>
-
-      {/* Quick actions */}
-      <div style={{ marginBottom: 28 }}>
-        <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-          Quick Actions
-        </h2>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button
-            onClick={() => navigate(`${basePath}/chat`)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              background: "var(--accent)",
-              color: "#fff",
-              padding: "10px 18px",
-              borderRadius: 8,
-              fontSize: 14,
-              fontWeight: 500,
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-hover)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
-          >
-            <MessageSquare size={16} />
-            Open Chat
-          </button>
-          <button
-            onClick={() => navigate(`${basePath}/connections`)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              background: "transparent",
-              color: "var(--text-muted)",
-              padding: "10px 18px",
-              borderRadius: 8,
-              fontSize: 14,
-              fontWeight: 500,
-              border: "1px solid var(--border)",
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-          >
-            <Plug size={16} />
-            View Connections
-          </button>
-          <button
-            onClick={() => navigate(`${basePath}/events`)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              background: "transparent",
-              color: "var(--text-muted)",
-              padding: "10px 18px",
-              borderRadius: 8,
-              fontSize: 14,
-              fontWeight: 500,
-              border: "1px solid var(--border)",
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-          >
-            <Radio size={16} />
-            Manage Events
-          </button>
-        </div>
       </div>
 
       {/* Identity Settings */}

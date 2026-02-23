@@ -1,25 +1,13 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import {
-  ChevronLeft,
-  LayoutDashboard,
-  MessageSquare,
-  Clock,
-  Zap,
-  Plug,
-  Radio,
-  Activity,
-  Brain,
-  Bot,
-  ArrowLeft,
-} from "lucide-react";
+import { ChevronLeft, LayoutDashboard, MessageSquare, Clock, Zap, Plug, Radio, Activity, Brain, Bot, ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { getAgent as fetchAgent } from "../../api";
-import type { AgentConfig } from "shared";
+import { getAgent as fetchAgent, getAgentIdentityPrompt } from "../../api";
+import type { AgentConfig, DefaultPermissions } from "shared";
 
 // Dashboard sub-pages
 import Overview from "./dashboard/Overview";
-import AgentChat from "./dashboard/Chat";
+
 import CronJobs from "./dashboard/CronJobs";
 import Triggers from "./dashboard/Triggers";
 import Connections from "./dashboard/Connections";
@@ -29,7 +17,6 @@ import Memory from "./dashboard/Memory";
 
 const navItems = [
   { key: "", label: "Overview", icon: LayoutDashboard },
-  { key: "chat", label: "Chat", icon: MessageSquare },
   { key: "cron", label: "Cron Jobs", icon: Clock },
   { key: "triggers", label: "Triggers", icon: Zap },
   { key: "connections", label: "Connections", icon: Plug },
@@ -63,8 +50,6 @@ export default function AgentDashboard() {
   const renderSubPage = () => {
     if (!agent) return null;
     switch (subPath) {
-      case "chat":
-        return <AgentChat agent={agent} />;
       case "cron":
         return <CronJobs agent={agent} />;
       case "triggers":
@@ -80,6 +65,33 @@ export default function AgentDashboard() {
       default:
         return <Overview agent={agent} onAgentUpdate={setAgent} />;
     }
+  };
+
+  // Start a new chat with this agent (same flow as ChatList's handleAgentCreate)
+  const handleStartChat = async () => {
+    if (!agent?.workspacePath) return;
+
+    const agentPermissions: DefaultPermissions = {
+      fileRead: "allow",
+      fileWrite: "allow",
+      codeExecution: "allow",
+      webAccess: "allow",
+    };
+
+    let systemPrompt: string | undefined;
+    try {
+      systemPrompt = await getAgentIdentityPrompt(agent.alias);
+    } catch {
+      // Continue without identity prompt if fetch fails
+    }
+
+    navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
+      state: {
+        defaultPermissions: agentPermissions,
+        systemPrompt,
+        agentAlias: agent.alias,
+      },
+    });
   };
 
   if (loading) return null;
@@ -183,6 +195,36 @@ export default function AgentDashboard() {
             {agent.alias}
           </span>
         </div>
+        <button
+          onClick={handleStartChat}
+          disabled={!agent.workspacePath}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: "var(--accent)",
+            color: "#fff",
+            border: "none",
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: agent.workspacePath ? "pointer" : "not-allowed",
+            padding: "8px 14px",
+            borderRadius: 8,
+            transition: "background 0.15s",
+            flexShrink: 0,
+            opacity: agent.workspacePath ? 1 : 0.5,
+          }}
+          onMouseEnter={(e) => {
+            if (agent.workspacePath) e.currentTarget.style.background = "var(--accent-hover)";
+          }}
+          onMouseLeave={(e) => {
+            if (agent.workspacePath) e.currentTarget.style.background = "var(--accent)";
+          }}
+          title={agent.workspacePath ? "Start a new chat with this agent" : "Set a workspace path to enable chat"}
+        >
+          <MessageSquare size={14} />
+          {!isMobile && "Chat"}
+        </button>
         {!isMobile && (
           <button
             onClick={() => navigate("/agents")}
