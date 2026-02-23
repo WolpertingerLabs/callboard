@@ -73,7 +73,7 @@ export default function AgentList() {
             {!isMobile && "New Agent"}
           </button>
           <button
-            onClick={() => navigate("/agents/connections")}
+            onClick={() => navigate("/settings", { state: { tab: "connections" } })}
             style={{
               background: "var(--bg-secondary)",
               color: "var(--text)",
