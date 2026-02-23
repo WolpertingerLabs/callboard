@@ -325,6 +325,18 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
     return result;
   }, [chats, filters, matchingChatIds, showTriggered]);
 
+  // Count triggered chats that are currently hidden by the filter
+  const hiddenTriggeredCount = useMemo(() => {
+    if (showTriggered) return 0;
+    return chats.filter((c) => {
+      try {
+        return JSON.parse(c.metadata || "{}").triggered;
+      } catch {
+        return false;
+      }
+    }).length;
+  }, [chats, showTriggered]);
+
   // Determine the empty state message
   const isFiltered = bookmarkFilter || hasActiveFilters(filters) || matchingChatIds !== null;
 
@@ -682,6 +694,19 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
             sessionStatus={sessionStatuses.get(chat.id)}
           />
         ))}
+
+        {hiddenTriggeredCount > 0 && (
+          <div
+            style={{
+              padding: "8px 20px",
+              textAlign: "center",
+              fontSize: 12,
+              color: "var(--text-muted)",
+            }}
+          >
+            {hiddenTriggeredCount} triggered {hiddenTriggeredCount === 1 ? "chat" : "chats"} hidden
+          </div>
+        )}
 
         {hasMore && !anyFilterActive && (
           <div style={{ padding: "16px 20px", borderTop: "1px solid var(--border)" }}>
