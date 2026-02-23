@@ -175,7 +175,7 @@ export default function ConnectionsManager() {
               <p style={{ fontWeight: 600, marginBottom: 4 }}>Local proxy not configured</p>
               <p style={{ fontSize: 12, marginBottom: 16 }}>Set proxy mode to &quot;Local&quot; in Agent Settings to manage connections.</p>
               <button
-                onClick={() => navigate("/agents/settings")}
+                onClick={() => navigate("/settings", { state: { tab: "proxy" } })}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",

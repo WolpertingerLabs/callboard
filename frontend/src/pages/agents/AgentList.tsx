@@ -89,7 +89,7 @@ export default function AgentList() {
             <Plug size={18} />
           </button>
           <button
-            onClick={() => navigate("/agents/settings")}
+            onClick={() => navigate("/settings", { state: { tab: "proxy" } })}
             style={{
               background: "var(--bg-secondary)",
               color: "var(--text)",
