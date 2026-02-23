@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Trash2, Bot, ChevronRight, MessageSquare, Settings, Plug } from "lucide-react";
+import { Plus, Trash2, Bot, ChevronRight, MessageSquare, Plug } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { listAgents, deleteAgent } from "../../api";
 import type { AgentConfig } from "shared";
@@ -87,22 +87,6 @@ export default function AgentList() {
             title="Connection Manager"
           >
             <Plug size={18} />
-          </button>
-          <button
-            onClick={() => navigate("/settings", { state: { tab: "proxy" } })}
-            style={{
-              background: "var(--bg-secondary)",
-              color: "var(--text)",
-              padding: "10px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Agent Settings"
-          >
-            <Settings size={18} />
           </button>
           <button
             onClick={() => navigate("/")}
