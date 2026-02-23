@@ -4,11 +4,11 @@ import { searchChatContents } from "../api";
 interface UseChatSearchResult {
   /** Set of matching chat IDs, or null if no search is active (show all) */
   matchingChatIds: Set<string> | null;
-  /** True while a search request is in-flight or debounce is pending */
+  /** True while a search request is in-flight */
   isSearching: boolean;
 }
 
-export function useChatSearch(query: string, debounceMs: number = 500): UseChatSearchResult {
+export function useChatSearch(query: string): UseChatSearchResult {
   const [results, setResults] = useState<{ query: string; ids: Set<string> } | null>(null);
   const requestIdRef = useRef(0);
 
@@ -23,7 +23,7 @@ export function useChatSearch(query: string, debounceMs: number = 500): UseChatS
 
     const currentRequestId = ++requestIdRef.current;
 
-    const timer = setTimeout(async () => {
+    (async () => {
       try {
         const result = await searchChatContents(trimmed);
 
@@ -37,12 +37,10 @@ export function useChatSearch(query: string, debounceMs: number = 500): UseChatS
           setResults({ query: trimmed, ids: new Set() });
         }
       }
-    }, debounceMs);
+    })();
+  }, [trimmed]);
 
-    return () => clearTimeout(timer);
-  }, [trimmed, debounceMs]);
-
-  // Derive return values from current query + stored results (no synchronous setState in effect)
+  // Derive return values from current query + stored results
   if (!trimmed) {
     return { matchingChatIds: null, isSearching: false };
   }

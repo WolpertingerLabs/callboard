@@ -12,6 +12,7 @@ interface ChatFilterBarProps {
   onFiltersChange: (filters: ChatFilters) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  onSearchSubmit: () => void;
   isSearching: boolean;
 }
 
@@ -24,10 +25,18 @@ export default function ChatFilterBar({
   onFiltersChange,
   searchQuery,
   onSearchChange,
+  onSearchSubmit,
   isSearching,
 }: ChatFilterBarProps) {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const filtersActive = hasActiveFilters(filters);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSearchSubmit();
+    }
+  };
 
   return (
     <>
@@ -100,7 +109,7 @@ export default function ChatFilterBar({
           <SlidersHorizontal size={16} />
         </button>
 
-        {/* Search input with eyeglass icon */}
+        {/* Search input with search button on the right */}
         <div
           style={{
             flex: 1,
@@ -109,26 +118,15 @@ export default function ChatFilterBar({
             background: "var(--surface)",
             border: "1px solid var(--border)",
             borderRadius: 6,
-            padding: "0 8px",
+            padding: "0 0 0 8px",
             minWidth: 0,
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-              opacity: isSearching ? 0.4 : 0.6,
-              transition: "opacity 0.2s",
-            }}
-          >
-            {isSearching ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Search size={14} />}
-          </div>
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder="Search chat contents..."
             style={{
               flex: 1,
@@ -141,6 +139,29 @@ export default function ChatFilterBar({
               minWidth: 0,
             }}
           />
+          <button
+            onClick={onSearchSubmit}
+            disabled={isSearching}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              padding: "7px 8px",
+              background: "transparent",
+              border: "none",
+              borderLeft: "1px solid var(--border)",
+              borderTopRightRadius: 5,
+              borderBottomRightRadius: 5,
+              cursor: isSearching ? "default" : "pointer",
+              opacity: isSearching ? 0.4 : 0.6,
+              color: "var(--text)",
+              transition: "opacity 0.2s",
+            }}
+            title="Search"
+          >
+            {isSearching ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Search size={14} />}
+          </button>
         </div>
       </div>
 

@@ -45,6 +45,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState("");
   const [folder, setFolder] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
@@ -65,8 +66,12 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
   const isSettingsActive = location.pathname === "/settings";
   const isAgentsActive = location.pathname.startsWith("/agents");
 
-  // Content search hook
-  const { matchingChatIds, isSearching } = useChatSearch(searchQuery);
+  // Content search hook – only fires when user explicitly submits
+  const { matchingChatIds, isSearching } = useChatSearch(submittedQuery);
+
+  const handleSearchSubmit = () => {
+    setSubmittedQuery(searchQuery);
+  };
 
   // Determine if any filter is active (advanced filters, content search, or bookmarks)
   const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
@@ -335,23 +340,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
         }}
       >
         <h1 style={{ fontSize: 20, fontWeight: 600 }}>Claude Code</h1>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={() => navigate("/queue")}
-            style={{
-              background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
-              color: isQueueActive ? "#fff" : "var(--text)",
-              padding: "10px",
-              borderRadius: 8,
-              border: isQueueActive ? "none" : "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Drafts"
-          >
-            <ClipboardList size={18} />
-          </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             onClick={() => setShowNew(!showNew)}
             style={{
@@ -367,38 +356,66 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
           >
             <Plus size={18} />
           </button>
-          <button
-            onClick={() => navigate("/agents")}
-            style={{
-              background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
-              color: isAgentsActive ? "#fff" : "var(--text)",
-              padding: "10px",
-              borderRadius: 8,
-              border: isAgentsActive ? "none" : "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Agents"
-          >
-            <Bot size={18} />
-          </button>
-          <button
-            onClick={() => navigate("/settings")}
-            style={{
-              background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
-              color: isSettingsActive ? "#fff" : "var(--text)",
-              padding: "10px",
-              borderRadius: 8,
-              border: isSettingsActive ? "none" : "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Settings"
-          >
-            <Settings size={18} />
-          </button>
+          <div style={{ display: "flex" }}>
+            <button
+              onClick={() => navigate("/queue")}
+              style={{
+                background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
+                color: isQueueActive ? "#fff" : "var(--text)",
+                padding: "10px",
+                borderTopLeftRadius: 8,
+                borderBottomLeftRadius: 8,
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: 0,
+                border: isQueueActive ? "none" : "1px solid var(--border)",
+                borderRight: isQueueActive ? "none" : "none",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title="Drafts"
+            >
+              <ClipboardList size={18} />
+            </button>
+            <button
+              onClick={() => navigate("/agents")}
+              style={{
+                background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
+                color: isAgentsActive ? "#fff" : "var(--text)",
+                padding: "10px",
+                borderRadius: 0,
+                border: isAgentsActive ? "none" : "1px solid var(--border)",
+                borderLeft: "none",
+                borderRight: isAgentsActive ? "none" : "none",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title="Agents"
+            >
+              <Bot size={18} />
+            </button>
+            <button
+              onClick={() => navigate("/settings")}
+              style={{
+                background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
+                color: isSettingsActive ? "#fff" : "var(--text)",
+                padding: "10px",
+                borderTopLeftRadius: 0,
+                borderBottomLeftRadius: 0,
+                borderTopRightRadius: 8,
+                borderBottomRightRadius: 8,
+                border: isSettingsActive ? "none" : "1px solid var(--border)",
+                borderLeft: "none",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title="Settings"
+            >
+              <Settings size={18} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -411,6 +428,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
         onFiltersChange={setFilters}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        onSearchSubmit={handleSearchSubmit}
         isSearching={isSearching}
       />
 
