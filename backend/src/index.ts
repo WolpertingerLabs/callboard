@@ -25,7 +25,7 @@ import { createLogger } from "./utils/logger.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { LocalProxy } from "./services/local-proxy.js";
-import { getAgentSettings, getActiveMcpConfigDir } from "./services/agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir, ensureLocalProxyConfigDir, ensureRemoteProxyConfigDir } from "./services/agent-settings.js";
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 
@@ -151,10 +151,15 @@ app.listen(PORT, () => {
     log.error(`Event watcher init failed: ${err.message}`);
   }
 
-  // Start local proxy if configured
+  // Start proxy based on configured mode
   const settings = getAgentSettings();
-  const activeMcpConfigDir = getActiveMcpConfigDir();
-  if (settings.proxyMode === "local" && activeMcpConfigDir) {
+  if (settings.proxyMode === "local") {
+    // In local mode, getActiveMcpConfigDir() always returns a value (defaults to data/.drawlatch/)
+    const activeMcpConfigDir = getActiveMcpConfigDir()!;
+
+    // Ensure the config directory exists before starting
+    ensureLocalProxyConfigDir();
+
     // Sync MCP_CONFIG_DIR and load secrets before creating LocalProxy
     process.env.MCP_CONFIG_DIR = activeMcpConfigDir;
     loadMcpEnvIntoProcess();
@@ -173,6 +178,9 @@ app.listen(PORT, () => {
     } catch (err: any) {
       log.error(`Failed to initialize local proxy: ${err.message}`);
     }
+  } else if (settings.proxyMode === "remote") {
+    // Ensure the remote config directory and key scaffold exist
+    ensureRemoteProxyConfigDir();
   }
 });
 

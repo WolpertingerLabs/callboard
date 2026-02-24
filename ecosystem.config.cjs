@@ -2,7 +2,7 @@
 module.exports = {
   apps: [
     {
-      name: "claude-code-ui",
+      name: "callboard",
       script: "backend/dist/index.js",
       cwd: __dirname,
       instances: 1,

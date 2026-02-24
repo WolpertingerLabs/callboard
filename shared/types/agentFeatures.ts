@@ -9,7 +9,7 @@ export interface CronAction {
 }
 
 // ── Cron Jobs ──────────────────────────────────────────
-// Managed entirely by claude-code-ui. Scheduled tasks that
+// Managed entirely by callboard. Scheduled tasks that
 // fire on a cron expression and call executeAgent().
 
 export interface CronJob {
@@ -26,18 +26,18 @@ export interface CronJob {
 }
 
 // ── Event Subscriptions ───────────────────────────────
-// Lightweight declarations of which mcp-secure-proxy connections
+// Lightweight declarations of which drawlatch connections
 // an agent monitors. The event watcher polls poll_events and
 // wakes agents with matching subscriptions. The agent decides
 // how to respond — no condition matching or action config.
 
 export interface EventSubscription {
-  connectionAlias: string; // mcp-secure-proxy connection (e.g., "discord-bot", "github")
+  connectionAlias: string; // drawlatch connection (e.g., "discord-bot", "github")
   enabled: boolean; // toggle without removing
 }
 
 // ── Event Triggers ──────────────────────────────────────
-// User-defined rules that match incoming events from mcp-secure-proxy
+// User-defined rules that match incoming events from drawlatch
 // and dispatch agent sessions when filters match. Like cron jobs but
 // fired by events instead of schedules. Prompt templates can reference
 // event data via {{event.*}} placeholders.
@@ -79,5 +79,5 @@ export interface ActivityEntry {
 // ── Removed Types ─────────────────────────────────────
 // ChatMessage    — not needed; messages come from Claude SDK sessions
 // MemoryItem     — memory is now markdown files in the agent workspace, not key-value pairs
-// Connection     — connections are managed by mcp-secure-proxy, not us;
+// Connection     — connections are managed by drawlatch, not us;
 //                  we query the proxy live via list_routes + ingestor_status

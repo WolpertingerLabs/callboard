@@ -2,7 +2,7 @@
 
 import { spawn } from "child_process";
 
-const PROCESS_NAME = "claude-code-ui";
+const PROCESS_NAME = "callboard";
 const SCRIPT_PATH = "backend/dist/index.js";
 
 function runCommand(cmd, args) {

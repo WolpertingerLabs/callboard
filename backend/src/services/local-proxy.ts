@@ -3,19 +3,19 @@
  *
  * When proxyMode is "local", there is no separate server, no port, no child
  * process, and no encryption. LocalProxy imports the core functions from
- * mcp-secure-proxy and calls them directly in-process.
+ * drawlatch and calls them directly in-process.
  *
  * Supports multiple caller aliases: routes are resolved per-caller and cached.
  * A single shared IngestorManager handles all event sources (ingestors are
  * config-level, not per-caller).
  *
  * Key design: httpRequest() calls executeProxyRequest() imported from
- * mcp-secure-proxy — the exact same function the remote server uses.
+ * drawlatch — the exact same function the remote server uses.
  * No behavioral drift possible.
  */
-import { loadRemoteConfig, resolveCallerRoutes, resolveRoutes, resolveSecrets, type ResolvedRoute } from "mcp-secure-proxy/shared/config";
-import { executeProxyRequest } from "mcp-secure-proxy/remote/server";
-import { IngestorManager } from "mcp-secure-proxy/remote/ingestors";
+import { loadRemoteConfig, resolveCallerRoutes, resolveRoutes, resolveSecrets, type ResolvedRoute } from "drawlatch/shared/config";
+import { executeProxyRequest } from "drawlatch/remote/server";
+import { IngestorManager } from "drawlatch/remote/ingestors";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("local-proxy");

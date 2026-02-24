@@ -68,13 +68,13 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
    Otherwise, run detached so it survives if the server process dies mid-redeploy:
 
    ```
-   nohup npm run redeploy:prod > /tmp/claude-code-ui-redeploy.log 2>&1 &
+   nohup npm run redeploy:prod > /tmp/callboard-redeploy.log 2>&1 &
    ```
 
    Wait 3 seconds, then confirm PM2 restarted:
 
    ```
-   sleep 3 && pm2 list && echo "--- Redeploy log ---" && cat /tmp/claude-code-ui-redeploy.log
+   sleep 3 && pm2 list && echo "--- Redeploy log ---" && cat /tmp/callboard-redeploy.log
    ```
 
 ## Important

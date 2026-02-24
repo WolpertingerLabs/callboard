@@ -8,7 +8,7 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
+import { getAgentSettings, updateAgentSettings, discoverKeyAliases, DEFAULT_LOCAL_MCP_CONFIG_DIR, DEFAULT_REMOTE_MCP_CONFIG_DIR } from "../services/agent-settings.js";
 import { resetAllClients } from "../services/proxy-singleton.js";
 import { testRemoteConnection } from "../services/proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
@@ -21,7 +21,7 @@ export const agentSettingsRouter = Router();
 agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
   try {
     const settings = getAgentSettings();
-    res.json(settings);
+    res.json({ ...settings, defaultLocalMcpConfigDir: DEFAULT_LOCAL_MCP_CONFIG_DIR, defaultRemoteMcpConfigDir: DEFAULT_REMOTE_MCP_CONFIG_DIR });
   } catch (err: any) {
     log.error(`Error getting agent settings: ${err.message}`);
     res.status(500).json({ error: "Failed to get agent settings" });

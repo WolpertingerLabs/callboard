@@ -1,16 +1,16 @@
 /**
- * Proxy client for communicating with mcp-secure-proxy's remote server.
+ * Proxy client for communicating with drawlatch's remote server.
  *
  * Handles the Ed25519/X25519 handshake and AES-256-GCM encrypted channel,
  * providing a simple interface for making authenticated tool calls
  * (poll_events, ingestor_status, list_routes, http_request).
  *
- * Imports crypto primitives and protocol types from the mcp-secure-proxy
+ * Imports crypto primitives and protocol types from the drawlatch
  * package — no vendored crypto code.
  */
 import crypto from "node:crypto";
-import { loadKeyBundle, loadPublicKeys, EncryptedChannel, type KeyBundle, type PublicKeyBundle } from "mcp-secure-proxy/shared/crypto";
-import { HandshakeInitiator, type HandshakeReply, type ProxyRequest, type ProxyResponse } from "mcp-secure-proxy/shared/protocol";
+import { loadKeyBundle, loadPublicKeys, EncryptedChannel, type KeyBundle, type PublicKeyBundle } from "drawlatch/shared/crypto";
+import { HandshakeInitiator, type HandshakeReply, type ProxyRequest, type ProxyResponse } from "drawlatch/shared/protocol";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy-client");

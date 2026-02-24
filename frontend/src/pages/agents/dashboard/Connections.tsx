@@ -5,7 +5,7 @@ import { useIsMobile } from "../../../hooks/useIsMobile";
 import { getProxyRoutes } from "../../../api";
 import type { ProxyRoute, AgentConfig } from "../../../api";
 
-// Connections are managed by mcp-secure-proxy, not by claude-code-ui.
+// Connections are managed by drawlatch, not by callboard.
 // This page fetches live route data from the proxy via GET /api/proxy/routes.
 
 export default function Connections({ agent }: { agent: AgentConfig }) {
@@ -34,7 +34,7 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
       <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 800, margin: "0 auto" }}>
         <div style={{ marginBottom: 20 }}>
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>Connections</h1>
-          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>External services available via mcp-secure-proxy</p>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>External services available via drawlatch</p>
         </div>
         <div
           style={{
@@ -60,7 +60,7 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
       {/* Header */}
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700 }}>Connections</h1>
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>External services available via mcp-secure-proxy</p>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>External services available via drawlatch</p>
       </div>
 
       {/* Info banner */}
@@ -79,7 +79,7 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
         <Info size={18} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 2 }} />
         <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--text-muted)" }}>
           Connections are configured in{" "}
-          <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>mcp-secure-proxy</code>&apos;s{" "}
+          <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>drawlatch</code>&apos;s{" "}
           <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>remote.config.json</code>. The proxy
           manages authentication, secrets, and event ingestion. Agents access these services via MCP tools during sessions.
         </div>
@@ -115,7 +115,7 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
         >
           <WifiOff size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
           <p style={{ fontWeight: 600, marginBottom: 4 }}>Proxy not configured</p>
-          <p style={{ fontSize: 12 }}>mcp-secure-proxy keys were not found. Set up the proxy to enable external connections.</p>
+          <p style={{ fontSize: 12 }}>drawlatch keys were not found. Set up the proxy to enable external connections.</p>
         </div>
       )}
 

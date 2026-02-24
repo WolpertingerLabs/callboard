@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-ui-frontend",
+  "name": "callboard-frontend",
   "private": true,
   "type": "module",
   "scripts": {

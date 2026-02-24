@@ -2,10 +2,10 @@ export interface AgentSettings {
   /** @deprecated Use localMcpConfigDir / remoteMcpConfigDir instead. Kept as fallback. */
   mcpConfigDir?: string;
 
-  /** Absolute path to the .mcp-secure-proxy/ directory for local mode */
+  /** Absolute path to the .drawlatch/ directory for local mode */
   localMcpConfigDir?: string;
 
-  /** Absolute path to the .mcp-secure-proxy/ directory for remote mode */
+  /** Absolute path to the .drawlatch/ directory for remote mode */
   remoteMcpConfigDir?: string;
 
   /** Proxy mode: 'local' runs in-process, 'remote' connects to external server */
@@ -13,6 +13,12 @@ export interface AgentSettings {
 
   /** URL of the remote MCP secure proxy server (used in 'remote' mode only) */
   remoteServerUrl?: string;
+
+  /** Default local MCP config directory path (read-only, computed by backend) */
+  defaultLocalMcpConfigDir?: string;
+
+  /** Default remote MCP config directory path (read-only, computed by backend) */
+  defaultRemoteMcpConfigDir?: string;
 }
 
 export interface KeyAliasInfo {

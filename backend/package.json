@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-ui-backend",
+  "name": "callboard-backend",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.32",
-    "mcp-secure-proxy": "file:../../mcp-secure-proxy",
+    "drawlatch": "file:../../drawlatch",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",

@@ -351,7 +351,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
           justifyContent: "space-between",
         }}
       >
-        <h1 style={{ fontSize: 20, fontWeight: 600 }}>Claude Code</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 600 }}>Callboard</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             onClick={() => setShowNew(!showNew)}
@@ -471,7 +471,7 @@ export default function ChatList({ activeChatId, onRefresh }: ChatListProps) {
                 transition: "all 0.15s",
               }}
             >
-              Claude Code
+              Callboard
             </button>
             <button
               onClick={() => setChatMode("agent")}

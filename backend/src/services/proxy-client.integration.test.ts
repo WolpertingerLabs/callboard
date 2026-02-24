@@ -1,16 +1,16 @@
 /**
- * Integration tests for ProxyClient → mcp-secure-proxy remote server.
+ * Integration tests for ProxyClient → drawlatch remote server.
  *
  * These tests make real calls to the proxy server using the encrypted
  * Ed25519/X25519 channel. They require:
- *   1. mcp-secure-proxy remote server running (default: http://127.0.0.1:9999)
+ *   1. drawlatch remote server running (default: http://127.0.0.1:9999)
  *   2. An authorized client keypair
  *   3. The remote server's public keys
  *
  * Key discovery order (first match wins):
  *   - Env vars: EVENT_WATCHER_KEYS_DIR / EVENT_WATCHER_REMOTE_KEYS_DIR
- *   - mcp-secure-proxy project keys: ~/mcp-secure-proxy/.mcp-secure-proxy/keys/
- *   - Home directory keys: ~/.mcp-secure-proxy/keys/
+ *   - drawlatch project keys: ~/drawlatch/.drawlatch/keys/
+ *   - Home directory keys: ~/.drawlatch/keys/
  *
  * Skip these tests in CI or when the proxy is not available by setting:
  *   SKIP_PROXY_TESTS=true
@@ -33,25 +33,14 @@ function findKeys(): { keysDir: string; remoteKeysDir: string } | null {
 
   // Common key locations to try (client keys dir, remote server pubkey dir)
   const candidates: [string, string][] = [
-    // mcp-secure-proxy project-local keys (dev/test setup)
-    [
-      join(homedir(), "mcp-secure-proxy/.mcp-secure-proxy/keys/local"),
-      join(homedir(), "mcp-secure-proxy/.mcp-secure-proxy/keys/remote"),
-    ],
+    // drawlatch project-local keys (dev/test setup)
+    [join(homedir(), "drawlatch/.drawlatch/keys/local"), join(homedir(), "drawlatch/.drawlatch/keys/remote")],
     // Home directory keys (production MCP plugin setup)
-    [
-      join(homedir(), ".mcp-secure-proxy/keys/local"),
-      join(homedir(), ".mcp-secure-proxy/keys/peers/remote-server"),
-    ],
+    [join(homedir(), ".drawlatch/keys/local"), join(homedir(), ".drawlatch/keys/peers/remote-server")],
   ];
 
   for (const [k, r] of candidates) {
-    if (
-      existsSync(k) &&
-      existsSync(r) &&
-      existsSync(join(k, "signing.key.pem")) &&
-      existsSync(join(r, "signing.pub.pem"))
-    ) {
+    if (existsSync(k) && existsSync(r) && existsSync(join(k, "signing.key.pem")) && existsSync(join(r, "signing.pub.pem"))) {
       return { keysDir: k, remoteKeysDir: r };
     }
   }
@@ -209,9 +198,7 @@ describe.skipIf(SKIP || !keysExist)("ProxyClient integration", () => {
       const result = await client.callTool("poll_events", { after_id: -1 });
 
       // poll_events may return array directly or wrapped in { events: [] }
-      const events: unknown[] = Array.isArray(result)
-        ? result
-        : ((result as Record<string, unknown>)?.events as unknown[]) || [];
+      const events: unknown[] = Array.isArray(result) ? result : ((result as Record<string, unknown>)?.events as unknown[]) || [];
 
       expect(Array.isArray(events)).toBe(true);
 
@@ -238,9 +225,7 @@ describe.skipIf(SKIP || !keysExist)("ProxyClient integration", () => {
       if (!serverReachable) return;
 
       const result = await client.callTool("poll_events", { after_id: 999999999 });
-      const events: unknown[] = Array.isArray(result)
-        ? result
-        : ((result as Record<string, unknown>)?.events as unknown[]) || [];
+      const events: unknown[] = Array.isArray(result) ? result : ((result as Record<string, unknown>)?.events as unknown[]) || [];
 
       expect(events.length).toBe(0);
     });
@@ -254,9 +239,7 @@ describe.skipIf(SKIP || !keysExist)("ProxyClient integration", () => {
         connection: "nonexistent-connection",
       });
 
-      const events: unknown[] = Array.isArray(result)
-        ? result
-        : ((result as Record<string, unknown>)?.events as unknown[]) || [];
+      const events: unknown[] = Array.isArray(result) ? result : ((result as Record<string, unknown>)?.events as unknown[]) || [];
 
       expect(Array.isArray(events)).toBe(true);
       expect(events.length).toBe(0);

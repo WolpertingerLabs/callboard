@@ -1,7 +1,7 @@
 /**
  * Proxy dashboard routes.
  *
- * Exposes read-only data from mcp-secure-proxy to the frontend dashboard:
+ * Exposes read-only data from drawlatch to the frontend dashboard:
  *   GET /api/proxy/routes?alias=X     — available routes (connections/services)
  *   GET /api/proxy/ingestors?alias=X  — ingestor status (event sources)
  *   GET /api/proxy/events             — all stored events (newest first)

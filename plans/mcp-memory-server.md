@@ -24,12 +24,12 @@ Memory transforms the agent from a stateless tool into a persistent collaborator
 
 ## Design Principles
 
-1. **File-first memory.** Primary memory source is markdown files (MEMORY.md, memory/*.md) that humans can read and edit. The database is an index, not the source of truth.
-2. **Secure embeddings.** Embedding API keys live on the remote server via mcp-secure-proxy. Memory content is encrypted in transit.
+1. **File-first memory.** Primary memory source is markdown files (MEMORY.md, memory/\*.md) that humans can read and edit. The database is an index, not the source of truth.
+2. **Secure embeddings.** Embedding API keys live on the remote server via drawlatch. Memory content is encrypted in transit.
 3. **Hybrid search.** Vector similarity alone misses exact terms. BM25 alone misses semantic relationships. Combine both.
 4. **Lazy indexing.** Don't block the agent. Index in the background, serve slightly stale results rather than making the agent wait.
 5. **Provider-agnostic.** Support Voyage AI, OpenAI, and local embeddings. Swap without re-architecting.
-6. **MCP-native.** Standard MCP tools. Works with any Claude Code session, not just claude-code-ui.
+6. **MCP-native.** Standard MCP tools. Works with any Claude Code session, not just callboard.
 
 ---
 
@@ -49,6 +49,7 @@ Memory transforms the agent from a stateless tool into a persistent collaborator
 ```
 
 **Key distinction from OpenClaw:** OpenClaw's memory runs in-process with the agent. Ours runs as a separate MCP server, which means:
+
 - Memory persists independently of any Claude Code session
 - Multiple sessions can share the same memory index
 - The memory server can index files in the background even when no session is active
@@ -221,20 +222,20 @@ This avoids re-embedding the entire file when only a few lines change.
 
 ```typescript
 interface EmbeddingProvider {
-  id: string;                    // "voyage", "openai", "local"
-  model: string;                 // "voyage-3-large", "text-embedding-3-small"
-  dimensions: number;            // 1024, 1536, etc.
+  id: string; // "voyage", "openai", "local"
+  model: string; // "voyage-3-large", "text-embedding-3-small"
+  dimensions: number; // 1024, 1536, etc.
 
   embedQuery(text: string): Promise<number[]>;
   embedBatch(texts: string[]): Promise<number[][]>;
 }
 ```
 
-| Provider | Model | Dimensions | Cost | Quality |
-|----------|-------|-----------|------|---------|
-| Voyage AI | voyage-3-large | 1024 | $0.06/1M tokens | Best for code |
-| OpenAI | text-embedding-3-small | 1536 | $0.02/1M tokens | Good general |
-| Local | nomic-embed-text (GGUF) | 768 | Free | Good enough |
+| Provider  | Model                   | Dimensions | Cost            | Quality       |
+| --------- | ----------------------- | ---------- | --------------- | ------------- |
+| Voyage AI | voyage-3-large          | 1024       | $0.06/1M tokens | Best for code |
+| OpenAI    | text-embedding-3-small  | 1536       | $0.02/1M tokens | Good general  |
+| Local     | nomic-embed-text (GGUF) | 768        | Free            | Good enough   |
 
 Default: Voyage AI (best quality for code-heavy memory). Falls back to OpenAI, then local.
 
@@ -346,6 +347,7 @@ with cosine scores      with BM25 ranks
 ```
 
 Why hybrid matters:
+
 - **Vector alone** finds "database selection rationale" when you search "PostgreSQL decision" (semantic match), but misses exact function names or error codes.
 - **Keyword alone** finds "PostgreSQL" mentions but misses "we chose the relational database because of ACID compliance" (no keyword overlap).
 - **Hybrid** catches both.
@@ -357,25 +359,23 @@ Why hybrid matters:
 The memory server watches for file changes using `chokidar`:
 
 ```typescript
-const watcher = chokidar.watch([
-  path.join(workspaceDir, 'MEMORY.md'),
-  path.join(workspaceDir, 'memory.md'),
-  path.join(workspaceDir, 'memory/'),
-  ...extraPaths
-], {
-  ignoreInitial: false,          // Index existing files on startup
-  awaitWriteFinish: {
-    stabilityThreshold: 1500,    // Wait for writes to settle
-    pollInterval: 100
-  }
-});
+const watcher = chokidar.watch(
+  [path.join(workspaceDir, "MEMORY.md"), path.join(workspaceDir, "memory.md"), path.join(workspaceDir, "memory/"), ...extraPaths],
+  {
+    ignoreInitial: false, // Index existing files on startup
+    awaitWriteFinish: {
+      stabilityThreshold: 1500, // Wait for writes to settle
+      pollInterval: 100,
+    },
+  },
+);
 
-watcher.on('change', (filePath) => {
+watcher.on("change", (filePath) => {
   markDirty(filePath);
-  debouncedSync();               // Sync after 2s of quiet
+  debouncedSync(); // Sync after 2s of quiet
 });
 
-watcher.on('unlink', (filePath) => {
+watcher.on("unlink", (filePath) => {
   removeFileChunks(filePath);
 });
 ```
@@ -388,7 +388,7 @@ Sync is non-blocking: searches return current index state while background sync 
 
 ### Embedding API Keys
 
-Embedding providers require API keys. These follow the same pattern as mcp-secure-proxy:
+Embedding providers require API keys. These follow the same pattern as drawlatch:
 
 ```
 Local (no secrets)                    Remote (has secrets)
@@ -405,7 +405,7 @@ The memory index itself lives on the remote server. The MCP proxy only sees sear
 ### Memory Content Security
 
 - Memory files may contain sensitive information (credentials mentioned in context, private decisions, personal preferences).
-- All MCP communication is E2E encrypted via the existing mcp-secure-proxy crypto layer.
+- All MCP communication is E2E encrypted via the existing drawlatch crypto layer.
 - Memory files are read from the local filesystem but indexed on the remote server. For fully local operation, the "local" embedding provider uses on-device models with no network calls.
 - Session transcript indexing is opt-in (disabled by default).
 
@@ -509,7 +509,7 @@ The memory index itself lives on the remote server. The MCP proxy only sees sear
 5. Keyword search (BM25 via FTS5)
 6. Hybrid merge with reciprocal rank fusion
 7. MCP tools: `memory_search`, `memory_read`, `memory_status`
-8. MCP proxy integration (reuse mcp-secure-proxy E2EE)
+8. MCP proxy integration (reuse drawlatch E2EE)
 9. File change detection (hash-based skip)
 10. Basic tests
 
@@ -544,14 +544,14 @@ The memory index itself lives on the remote server. The MCP proxy only sees sear
 
 ### Phase 4: Integration + Polish
 
-**Goal:** Production-ready with claude-code-ui integration.
+**Goal:** Production-ready with callboard integration.
 
-1. claude-code-ui memory panel (search UI, memory file browser)
+1. callboard memory panel (search UI, memory file browser)
 2. Auto-gitignore for memory/ directory
 3. Per-workspace memory isolation
 4. Cross-workspace memory linking (optional shared index)
 5. Memory usage analytics (total chunks, index freshness, search latency)
-6. Connection template for mcp-secure-proxy
+6. Connection template for drawlatch
 7. Documentation, examples, deployment guide
 8. Performance benchmarks (search latency, indexing throughput)
 
@@ -561,34 +561,37 @@ The memory index itself lives on the remote server. The MCP proxy only sees sear
 
 ## Integration with Existing Stack
 
-### With mcp-secure-proxy
+### With drawlatch
 
 The memory server runs as a separate process alongside the API proxy:
 
 ```
-mcp-secure-proxy remote  (port 9999)  ← API proxy
+drawlatch remote  (port 9999)  ← API proxy
 mcp-memory-server remote (port 9997)  ← Memory index
 mcp-channel-bridge remote (port 9998) ← Channel bridge (if deployed)
 ```
 
 Same keypair infrastructure, same handshake, same caller authorization.
 
-### With claude-code-ui
+### With callboard
 
 The UI can show:
+
 - Memory search results inline in chat (when agent uses `memory_search`)
 - A dedicated memory browser panel (browse/edit memory files)
 - Index status indicator (stale, syncing, current)
 - "Remember this" button that calls `memory_store` with selected chat content
 
-### With claude-code-ui slash commands
+### With callboard slash commands
 
 A `/remember` slash command that:
+
 1. Takes a natural language note
 2. Calls `memory_store` to append to today's daily log
 3. Confirms what was stored
 
 A `/recall` slash command that:
+
 1. Takes a search query
 2. Calls `memory_search`
 3. Displays results in a formatted panel
@@ -597,28 +600,29 @@ A `/recall` slash command that:
 
 ## What This Doesn't Do (And Why)
 
-| Intentionally excluded | Reason |
-|----------------------|--------|
-| Memory expiry/TTL | Memory files are human-managed markdown; users delete what they don't need |
-| Importance scoring | Adds complexity without clear value; hybrid search relevance is sufficient |
-| Auto-summarization | Risks lossy compression of facts; raw storage is safer |
-| Cross-agent memory | Each workspace gets its own index; sharing is a future concern |
-| Graph memory | Embeddings + keyword search cover the retrieval need without a knowledge graph's complexity |
+| Intentionally excluded | Reason                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------- |
+| Memory expiry/TTL      | Memory files are human-managed markdown; users delete what they don't need                  |
+| Importance scoring     | Adds complexity without clear value; hybrid search relevance is sufficient                  |
+| Auto-summarization     | Risks lossy compression of facts; raw storage is safer                                      |
+| Cross-agent memory     | Each workspace gets its own index; sharing is a future concern                              |
+| Graph memory           | Embeddings + keyword search cover the retrieval need without a knowledge graph's complexity |
 
 ---
 
 ## Dependencies
 
-| Dependency | Purpose | Why |
-|-----------|---------|-----|
-| `better-sqlite3` | Database engine | Fast, embedded, no external DB needed |
-| `sqlite-vec` | Vector similarity search | Native SQLite extension, no external vector DB |
-| `chokidar` | File watching | Reliable cross-platform file watcher |
-| `@modelcontextprotocol/sdk` | MCP server implementation | Standard MCP tooling |
-| `tiktoken` / `gpt-tokenizer` | Token counting for chunking | Accurate chunk sizing |
-| mcp-secure-proxy shared crypto | E2EE channel | Reuse existing infrastructure |
+| Dependency                   | Purpose                     | Why                                            |
+| ---------------------------- | --------------------------- | ---------------------------------------------- |
+| `better-sqlite3`             | Database engine             | Fast, embedded, no external DB needed          |
+| `sqlite-vec`                 | Vector similarity search    | Native SQLite extension, no external vector DB |
+| `chokidar`                   | File watching               | Reliable cross-platform file watcher           |
+| `@modelcontextprotocol/sdk`  | MCP server implementation   | Standard MCP tooling                           |
+| `tiktoken` / `gpt-tokenizer` | Token counting for chunking | Accurate chunk sizing                          |
+| drawlatch shared crypto      | E2EE channel                | Reuse existing infrastructure                  |
 
 Embedding provider SDKs (HTTP calls, no heavy deps):
+
 - Voyage AI: raw `fetch` to `api.voyageai.com`
 - OpenAI: raw `fetch` to `api.openai.com`
 - Local: `node-llama-cpp` (optional, only if local provider enabled)

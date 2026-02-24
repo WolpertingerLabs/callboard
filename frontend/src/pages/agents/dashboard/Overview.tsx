@@ -312,7 +312,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
               Proxy Key Alias
             </p>
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-              Assign a local mcp-secure-proxy identity to this agent. Without an assigned key, Connections and Events are disabled.
+              Assign a local drawlatch identity to this agent. Without an assigned key, Connections and Events are disabled.
             </p>
           </div>
           {availableKeys.length === 0 ? (

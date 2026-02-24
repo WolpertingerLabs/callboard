@@ -6,7 +6,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const doc = {
   info: {
-    title: "Claude Code UI API",
+    title: "Callboard API",
     description: "API for managing Claude Code chat sessions, message streaming, image uploads, draft messages, folder browsing, and git operations.",
     version: "1.0.0",
   },

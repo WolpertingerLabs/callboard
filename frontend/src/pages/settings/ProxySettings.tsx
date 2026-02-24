@@ -18,6 +18,8 @@ export default function ProxySettings() {
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
+  const [defaultLocalDir, setDefaultLocalDir] = useState("");
+  const [defaultRemoteDir, setDefaultRemoteDir] = useState("");
 
   // Load settings on mount
   useEffect(() => {
@@ -29,6 +31,8 @@ export default function ProxySettings() {
         setRemoteMcpConfigDir(s.remoteMcpConfigDir || "");
         setProxyMode(s.proxyMode || undefined);
         setRemoteServerUrl(s.remoteServerUrl || "");
+        setDefaultLocalDir(s.defaultLocalMcpConfigDir || "");
+        setDefaultRemoteDir(s.defaultRemoteMcpConfigDir || "");
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -155,7 +159,7 @@ export default function ProxySettings() {
                 borderRadius: 4,
               }}
             >
-              .mcp-secure-proxy/
+              .drawlatch/
             </code>{" "}
             directory containing your keys and identity. Key aliases are discovered from the{" "}
             <code
@@ -187,7 +191,13 @@ export default function ProxySettings() {
                 }
                 setSaved(false);
               }}
-              placeholder="e.g. /home/user/.mcp-secure-proxy"
+              placeholder={
+                proxyMode === "local" && defaultLocalDir
+                  ? `Default: ${defaultLocalDir}`
+                  : proxyMode === "remote" && defaultRemoteDir
+                    ? `Default: ${defaultRemoteDir}`
+                    : "e.g. /home/user/.drawlatch"
+              }
               style={{
                 flex: 1,
                 padding: "10px 12px",
@@ -294,8 +304,8 @@ export default function ProxySettings() {
             <span style={{ fontSize: 14, fontWeight: 600 }}>Proxy Mode</span>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
-            How proxy tools connect to mcp-secure-proxy. Local mode runs in-process with no separate server. Remote mode connects to an external server over
-            an encrypted channel.
+            How proxy tools connect to drawlatch. Local mode runs in-process with no separate server. Remote mode connects to an external server over an
+            encrypted channel.
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: proxyMode === "remote" ? 16 : 0 }}>

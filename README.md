@@ -1,4 +1,4 @@
-# Claude Code UI
+# Callboard
 
 A full-stack web interface for the [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code) agent SDK, providing real-time chat, tool permission management, image uploads, git integration, and more.
 
@@ -48,7 +48,7 @@ A full-stack web interface for the [Anthropic Claude Code](https://docs.anthropi
 
 ```bash
 git clone <repository-url>
-cd claude-code-ui
+cd callboard
 ```
 
 2. Install dependencies:
@@ -113,14 +113,14 @@ The production server runs on port 8000 and serves the built frontend as static 
 
 ```bash
 pm2 list                    # List running processes
-pm2 logs claude-code-ui     # View logs
-pm2 restart claude-code-ui  # Restart the app
+pm2 logs callboard     # View logs
+pm2 restart callboard  # Restart the app
 ```
 
 ## Project Structure
 
 ```
-claude-code-ui/
+callboard/
 ├── frontend/               # React frontend
 │   └── src/
 │       ├── components/     # UI components (MessageBubble, PromptInput, etc.)

@@ -1,7 +1,7 @@
 /**
  * Connection manager for local mode.
  *
- * Reads mcp-secure-proxy's connection templates, merges them with the
+ * Reads drawlatch's connection templates, merges them with the
  * current caller config, manages secrets in .env, and triggers
  * LocalProxy.reinitialize() after config changes.
  *
@@ -11,14 +11,14 @@
  *
  * The caller's `env` field in remote.config.json maps generic secret
  * names (e.g., "GITHUB_TOKEN") to prefixed env vars (e.g.,
- * "${DEFAULT_GITHUB_TOKEN}"), using mcp-secure-proxy's built-in
+ * "${DEFAULT_GITHUB_TOKEN}"), using drawlatch's built-in
  * CallerConfig.env mechanism.
  */
 import { readFileSync, writeFileSync, existsSync, chmodSync } from "fs";
 import { join } from "path";
 import dotenv from "dotenv";
-import { listConnectionTemplates } from "mcp-secure-proxy/shared/connections";
-import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "mcp-secure-proxy/shared/config";
+import { listConnectionTemplates } from "drawlatch/shared/connections";
+import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "drawlatch/shared/config";
 import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
 import { getLocalProxyInstance } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
@@ -30,7 +30,7 @@ const log = createLogger("connection-manager");
 
 /**
  * Ensure process.env.MCP_CONFIG_DIR matches the mcpConfigDir from settings.
- * Must be called before any mcp-secure-proxy config function so that
+ * Must be called before any drawlatch config function so that
  * loadRemoteConfig() / saveRemoteConfig() use the correct directory.
  */
 function syncConfigDir(): string | null {
@@ -352,7 +352,7 @@ export async function setConnectionEnabled(alias: string, enabled: boolean, call
  *
  * Saves secrets with a per-caller prefix in .env (e.g., DEFAULT_GITHUB_TOKEN)
  * and updates the caller's `env` mapping in remote.config.json so that
- * mcp-secure-proxy's resolveSecrets() resolves them correctly.
+ * drawlatch's resolveSecrets() resolves them correctly.
  *
  * An empty string value for a secret deletes both the env var and the mapping.
  *

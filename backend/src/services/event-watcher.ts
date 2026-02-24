@@ -1,7 +1,7 @@
 /**
  * Per-alias event watchers.
  *
- * Each mcp-secure-proxy key alias gets its own independent polling loop.
+ * Each drawlatch key alias gets its own independent polling loop.
  * On startup, all agents are scanned for unique mcpKeyAlias values and a
  * watcher is started for each. Events are stored in the shared event log
  * and dispatched to the trigger system as before.
@@ -22,7 +22,7 @@ const log = createLogger("event-watcher");
 const BASE_POLL_INTERVAL = parseInt(process.env.EVENT_WATCHER_POLL_INTERVAL || "3000", 10);
 const MAX_BACKOFF = 60_000; // 60 seconds
 
-// ── Event shape from mcp-secure-proxy's poll_events ─────────────────
+// ── Event shape from drawlatch's poll_events ─────────────────
 
 interface IngestedEvent {
   id: number; // Monotonically increasing per ingestor

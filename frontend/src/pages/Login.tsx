@@ -47,7 +47,7 @@ export default function Login({ onLogin, serverError }: Props) {
       }}
     >
       <form onSubmit={handleSubmit} style={{ width: "100%", maxWidth: 320 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 24, textAlign: "center" }}>Claude Code</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 24, textAlign: "center" }}>Callboard</h1>
         {serverError && (
           <div
             style={{

@@ -1,4 +1,4 @@
-# Claude Code UI
+# Callboard
 
 ## Development
 
@@ -10,7 +10,7 @@
 - `npm start` - runs the server directly (no PM2)
 - `npm run redeploy:prod` - deletes and recreates PM2 process with correct config
 - To redeploy production, use: `npm run build && npm run redeploy:prod`
-- PM2 commands: `pm2 list`, `pm2 logs claude-code-ui`
+- PM2 commands: `pm2 list`, `pm2 logs callboard`
 
 ## Linting
 

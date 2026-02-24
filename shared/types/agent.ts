@@ -25,11 +25,11 @@ export interface AgentConfig {
   userLocation?: string;
   userContext?: string;
 
-  // Event subscriptions — which mcp-secure-proxy connections this agent monitors
+  // Event subscriptions — which drawlatch connections this agent monitors
   // The event watcher wakes the agent when new events arrive from subscribed connections
   eventSubscriptions?: EventSubscription[];
 
-  // MCP key alias — which mcp-secure-proxy local identity this agent uses.
+  // MCP key alias — which drawlatch local identity this agent uses.
   // Corresponds to a subdirectory under {mcpConfigDir}/keys/local/.
   // If undefined, proxy features (connections, events) are disabled for this agent.
   mcpKeyAlias?: string;

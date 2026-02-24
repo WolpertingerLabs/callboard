@@ -1,7 +1,7 @@
 /**
  * Per-connection event log.
  *
- * Events from mcp-secure-proxy ingestors are stored in append-only JSONL files
+ * Events from drawlatch ingestors are stored in append-only JSONL files
  * keyed by connection alias (the proxy route name). Each connection alias maps
  * to an API key / IAM-like profile in the proxy config.
  *
@@ -154,9 +154,7 @@ export function appendEvent(event: {
   // always stored — we can't deduplicate without a stable identifier.
   const key = event.idempotencyKey;
   if (key && seenKeys.has(key)) {
-    log.debug(
-      `Duplicate event skipped: ${event.source}:${event.eventType} (key: ${key})`,
-    );
+    log.debug(`Duplicate event skipped: ${event.source}:${event.eventType} (key: ${key})`);
     return null;
   }
 
