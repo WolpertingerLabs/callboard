@@ -1,12 +1,9 @@
 import { readdirSync, statSync, existsSync } from "fs";
 import { join, dirname, resolve, basename } from "path";
 import { homedir } from "os";
-import { CLAUDE_PROJECTS_DIR, projectDirToFolder } from "../utils/paths.js";
+import { CLAUDE_PROJECTS_DIR, projectDirToFolder, WORKSPACES_DIR } from "../utils/paths.js";
 import { resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "shared/types/index.js";
-
-/** Base directory for CCUI agent workspaces (excluded from recent folders). */
-const CCUI_AGENTS_DIR = process.env.CCUI_AGENTS_DIR || join(homedir(), ".ccui-agents");
 
 export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion };
 
@@ -195,8 +192,8 @@ export class FolderService {
         // Skip directories that no longer exist
         if (!existsSync(folder)) continue;
 
-        // Skip CCUI agent workspace directories
-        if (folder.startsWith(CCUI_AGENTS_DIR + "/") || folder === CCUI_AGENTS_DIR) continue;
+        // Skip agent workspace directories
+        if (folder.startsWith(WORKSPACES_DIR + "/") || folder === WORKSPACES_DIR) continue;
 
         // Count .jsonl files and find most recent modification
         let latestMtime = new Date(0);

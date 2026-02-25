@@ -12,7 +12,7 @@ export function isPasswordConfigured(): boolean {
   return !!process.env.AUTH_PASSWORD;
 }
 
-const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "ccui_session";
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "callboard_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Rate limiting: track attempts per IP

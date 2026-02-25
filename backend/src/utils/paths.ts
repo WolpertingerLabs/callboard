@@ -4,8 +4,23 @@ import { homedir } from "os";
 
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
-/** Absolute path to the project data directory (stable across dev/prod). */
-export const DATA_DIR = join(process.cwd(), "data");
+/** Absolute path to the Callboard data directory (~/.callboard). */
+export const DATA_DIR = join(homedir(), ".callboard");
+
+/**
+ * Base directory for agent workspaces (~/.callboard/agent-workspaces by default).
+ * Override via CALLBOARD_WORKSPACES_DIR (or legacy CCUI_AGENTS_DIR).
+ */
+export const WORKSPACES_DIR =
+  process.env.CALLBOARD_WORKSPACES_DIR ||
+  process.env.CCUI_AGENTS_DIR || // backward compat
+  join(DATA_DIR, "agent-workspaces");
+
+/** Default MCP config directory for local proxy mode. */
+export const DEFAULT_MCP_LOCAL_DIR = join(DATA_DIR, ".drawlatch");
+
+/** Default MCP config directory for remote proxy mode. */
+export const DEFAULT_MCP_REMOTE_DIR = join(DATA_DIR, ".drawlatch-remote");
 
 /** Ensure the data directory exists (idempotent, safe to call multiple times). */
 export function ensureDataDir(): void {

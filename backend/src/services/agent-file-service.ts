@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
-import { DATA_DIR } from "../utils/paths.js";
+import { DATA_DIR, WORKSPACES_DIR } from "../utils/paths.js";
 import type { AgentConfig } from "shared";
 
 const AGENTS_DIR = join(DATA_DIR, "agents");
@@ -68,10 +67,9 @@ export function deleteAgent(alias: string): boolean {
   return true;
 }
 
-/** Resolve the workspace directory path for an agent (e.g., ~/.ccui-agents/{alias}) */
+/** Resolve the workspace directory path for an agent (e.g., ~/.callboard/agent-workspaces/{alias}) */
 export function getAgentWorkspacePath(alias: string): string {
-  const baseDir = process.env.CCUI_AGENTS_DIR || join(homedir(), ".ccui-agents");
-  return join(baseDir, alias);
+  return join(WORKSPACES_DIR, alias);
 }
 
 /** Ensure the workspace directory exists and return its path */

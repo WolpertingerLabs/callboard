@@ -1,5 +1,5 @@
 /**
- * Custom CCUI Agent Tools — In-process MCP server for agent sessions.
+ * Custom Callboard Agent Tools — In-process MCP server for agent sessions.
  *
  * Gives agents programmatic access to platform APIs during their Claude Code sessions:
  * - Orchestrate other agents (start sessions, check status, read output)
@@ -114,7 +114,7 @@ export function buildAgentToolsServer(agentAlias: string) {
   const agentTimezone = agentConfig?.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   return createSdkMcpServer({
-    name: "ccui",
+    name: "callboard",
     version: "1.0.0",
     tools: [
       // ── Chat Sessions ────────────────────────────────────────
