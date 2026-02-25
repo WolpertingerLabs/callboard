@@ -7,18 +7,12 @@
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from "fs";
 import { join } from "path";
-import { DATA_DIR, ensureDataDir } from "../utils/paths.js";
+import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentSettings, KeyAliasInfo } from "shared";
 
 const log = createLogger("agent-settings");
 const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
-
-/** Default MCP config directory for local mode (inside the app data dir). */
-export const DEFAULT_LOCAL_MCP_CONFIG_DIR = join(DATA_DIR, ".drawlatch");
-
-/** Default MCP config directory for remote mode (separate from local to keep keys apart). */
-export const DEFAULT_REMOTE_MCP_CONFIG_DIR = join(DATA_DIR, ".drawlatch-remote");
 
 // ── Load / Save ─────────────────────────────────────────────────────
 
@@ -56,10 +50,10 @@ export function getAgentSettings(): AgentSettings {
 export function getActiveMcpConfigDir(): string | undefined {
   const settings = loadSettings();
   if (settings.proxyMode === "local") {
-    return settings.localMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_LOCAL_MCP_CONFIG_DIR;
+    return settings.localMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_LOCAL_DIR;
   }
   if (settings.proxyMode === "remote") {
-    return settings.remoteMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_REMOTE_MCP_CONFIG_DIR;
+    return settings.remoteMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_REMOTE_DIR;
   }
   return settings.mcpConfigDir;
 }

@@ -21,9 +21,9 @@ interface LocalStorageData {
   themeMode?: ThemeMode;
 }
 
-/** Check if a path is inside the ccui-agents workspace directory (excluded from recommended folders). */
-function isCcuiAgentsPath(path: string): boolean {
-  return path.includes("/.ccui-agents/") || path.endsWith("/.ccui-agents");
+/** Check if a path is inside the Callboard agent-workspaces directory (excluded from recommended folders). */
+function isCallboardWorkspacePath(path: string): boolean {
+  return path.includes("/.callboard/agent-workspaces/") || path.endsWith("/.callboard/agent-workspaces");
 }
 
 const DEFAULT_PERMISSIONS: DefaultPermissions = {
@@ -79,7 +79,7 @@ export function saveMaxTurns(value: number): void {
 
 export function getRecentDirectories(): RecentDirectory[] {
   const data = getStorageData();
-  return (data.recentDirectories || []).filter((dir) => !isCcuiAgentsPath(dir.path));
+  return (data.recentDirectories || []).filter((dir) => !isCallboardWorkspacePath(dir.path));
 }
 
 export function addRecentDirectory(path: string): void {
@@ -144,8 +144,8 @@ export function initializeSuggestedDirectories(chatDirectories: string[]): void 
   if (existing.length === 0 && chatDirectories.length > 0) {
     const data = getStorageData();
 
-    // Take first three unique directories, excluding ccui-agents workspace paths
-    const uniqueDirs = [...new Set(chatDirectories)].filter((dir) => !isCcuiAgentsPath(dir));
+    // Take first three unique directories, excluding Callboard workspace paths
+    const uniqueDirs = [...new Set(chatDirectories)].filter((dir) => !isCallboardWorkspacePath(dir));
     const suggestedDirs = uniqueDirs.slice(0, 3).map((path) => ({
       path,
       lastUsed: new Date().toISOString(),

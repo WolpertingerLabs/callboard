@@ -2,18 +2,12 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
-import { agentExists } from "../services/agent-file-service.js";
+import { agentExists, getAgentWorkspacePath } from "../services/agent-file-service.js";
 
 export const agentWorkspaceRouter = Router({ mergeParams: true });
 
 /** Workspace files that are editable via the dashboard */
 const ALLOWED_FILES = new Set(["SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md", "CLAUDE.md"]);
-
-function getAgentWorkspacePath(alias: string): string {
-  const baseDir = process.env.CCUI_AGENTS_DIR || join(homedir(), ".ccui-agents");
-  return join(baseDir, alias);
-}
 
 /** GET /api/agents/:alias/workspace — list workspace files */
 agentWorkspaceRouter.get("/", (req: Request, res: Response): void => {

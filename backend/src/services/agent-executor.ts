@@ -63,7 +63,7 @@ export interface ExecuteAgentResult {
  * Execute an agent session.
  *
  * Loads agent config, compiles identity, starts a Claude Code session
- * with CCUI tools injected, and logs the activity.
+ * with Callboard tools injected, and logs the activity.
  *
  * Returns the chatId of the new session, or null if it failed.
  */

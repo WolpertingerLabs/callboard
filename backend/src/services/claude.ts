@@ -422,7 +422,7 @@ interface SendMessageOptions {
   maxTurns?: number;
   /** Agent identity prompt — appended to Claude Code's preset system prompt */
   systemPrompt?: string;
-  /** Agent alias — when set, injects CCUI custom tools MCP server into the session */
+  /** Agent alias — when set, injects Callboard custom tools MCP server into the session */
   agentAlias?: string;
   /** Whether this chat was triggered by an automated system (cron, trigger, heartbeat, etc.) */
   triggered?: boolean;
@@ -461,7 +461,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     resumeSessionId = chat.session_id;
     initialMetadata = JSON.parse(chat.metadata || "{}");
     // Recover agentAlias from chat metadata when not explicitly provided.
-    // This ensures CCUI tools are re-injected when resuming an agent session.
+    // This ensures Callboard tools are re-injected when resuming an agent session.
     if (!opts.agentAlias && initialMetadata.agentAlias) {
       opts.agentAlias = initialMetadata.agentAlias;
       log.debug(`Recovered agentAlias="${opts.agentAlias}" from chat metadata for chatId=${opts.chatId}`);
@@ -503,7 +503,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   const plugins = buildPluginOptions(folder, activePlugins);
   const mcpOpts = buildMcpServerOptions();
 
-  // Build MCP servers map: start with configured servers, add CCUI agent tools if this is an agent session
+  // Build MCP servers map: start with configured servers, add Callboard agent tools if this is an agent session
   const mcpServers: Record<string, any> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
   const allowedTools: string[] = mcpOpts ? [...mcpOpts.allowedTools] : [];
 
@@ -547,18 +547,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
 
     try {
-      const ccuiServer = buildAgentToolsServer(opts.agentAlias);
-      if (ccuiServer && ccuiServer.type === "sdk" && ccuiServer.instance) {
-        mcpServers["ccui"] = ccuiServer;
-        allowedTools.push("mcp__ccui__*");
-        log.info(`Injected CCUI agent tools for agent="${opts.agentAlias}" — type=${ccuiServer.type}, name=${ccuiServer.name}`);
+      const callboardServer = buildAgentToolsServer(opts.agentAlias);
+      if (callboardServer && callboardServer.type === "sdk" && callboardServer.instance) {
+        mcpServers["callboard"] = callboardServer;
+        allowedTools.push("mcp__callboard__*");
+        log.info(`Injected Callboard agent tools for agent="${opts.agentAlias}" — type=${callboardServer.type}, name=${callboardServer.name}`);
       } else {
         log.error(
-          `buildAgentToolsServer returned invalid server for agent="${opts.agentAlias}": ${JSON.stringify({ type: ccuiServer?.type, name: ccuiServer?.name, hasInstance: !!ccuiServer?.instance })}`,
+          `buildAgentToolsServer returned invalid server for agent="${opts.agentAlias}": ${JSON.stringify({ type: callboardServer?.type, name: callboardServer?.name, hasInstance: !!callboardServer?.instance })}`,
         );
       }
     } catch (err: any) {
-      log.error(`Failed to build CCUI agent tools for agent="${opts.agentAlias}": ${err.message}`);
+      log.error(`Failed to build Callboard agent tools for agent="${opts.agentAlias}": ${err.message}`);
     }
   }
 

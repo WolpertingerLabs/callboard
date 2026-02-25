@@ -2,15 +2,9 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
-import { agentExists } from "../services/agent-file-service.js";
+import { agentExists, getAgentWorkspacePath } from "../services/agent-file-service.js";
 
 export const agentMemoryRouter = Router({ mergeParams: true });
-
-function getAgentWorkspacePath(alias: string): string {
-  const baseDir = process.env.CCUI_AGENTS_DIR || join(homedir(), ".ccui-agents");
-  return join(baseDir, alias);
-}
 
 /** GET /api/agents/:alias/memory — list daily memory files + curated memory */
 agentMemoryRouter.get("/", (req: Request, res: Response): void => {
