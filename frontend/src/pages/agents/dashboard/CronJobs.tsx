@@ -312,9 +312,11 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
 
   const scheduleTz = agent.userTimezone || agent.serverTimezone || "UTC";
 
-  // Split jobs into user-defined and system-defined
-  const userJobs = jobs.filter((j) => !j.isDefault);
-  const systemJobs = jobs.filter((j) => j.isDefault);
+  // Split jobs into user-defined and system-defined, with inactive jobs sorted to the bottom
+  const statusOrder: Record<string, number> = { active: 0, paused: 1, completed: 2 };
+  const sortByStatus = (a: CronJob, b: CronJob) => (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
+  const userJobs = jobs.filter((j) => !j.isDefault).sort(sortByStatus);
+  const systemJobs = jobs.filter((j) => j.isDefault).sort(sortByStatus);
 
   const renderJobCard = (job: CronJob) => {
     // If this job is being edited, show the edit form
@@ -397,6 +399,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     const StatusIcon = sConf.icon;
     const TypeIcon = tConf.icon;
     const canToggle = job.status !== "completed";
+    const isDimmed = job.status === "paused" || job.status === "completed";
 
     return (
       <div
@@ -406,6 +409,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           border: "1px solid var(--border)",
           borderRadius: "var(--radius)",
           padding: isMobile ? "14px 16px" : "16px 20px",
+          opacity: isDimmed ? 0.5 : 1,
+          transition: "opacity 0.15s",
         }}
       >
         {/* Top row: name, status, type */}
