@@ -13,9 +13,9 @@
  * drawlatch — the exact same function the remote server uses.
  * No behavioral drift possible.
  */
-import { loadRemoteConfig, resolveCallerRoutes, resolveRoutes, resolveSecrets, type ResolvedRoute } from "drawlatch/shared/config";
-import { executeProxyRequest } from "drawlatch/remote/server";
-import { IngestorManager } from "drawlatch/remote/ingestors";
+import { loadRemoteConfig, resolveCallerRoutes, resolveRoutes, resolveSecrets, type ResolvedRoute } from "@wolpertingerlabs/drawlatch/shared/config";
+import { executeProxyRequest } from "@wolpertingerlabs/drawlatch/remote/server";
+import { IngestorManager } from "@wolpertingerlabs/drawlatch/remote/ingestors";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("local-proxy");

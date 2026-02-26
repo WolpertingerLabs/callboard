@@ -9,8 +9,8 @@
  * package — no vendored crypto code.
  */
 import crypto from "node:crypto";
-import { loadKeyBundle, loadPublicKeys, EncryptedChannel, type KeyBundle, type PublicKeyBundle } from "drawlatch/shared/crypto";
-import { HandshakeInitiator, type HandshakeReply, type ProxyRequest, type ProxyResponse } from "drawlatch/shared/protocol";
+import { loadKeyBundle, loadPublicKeys, EncryptedChannel, type KeyBundle, type PublicKeyBundle } from "@wolpertingerlabs/drawlatch/shared/crypto";
+import { HandshakeInitiator, type HandshakeReply, type ProxyRequest, type ProxyResponse } from "@wolpertingerlabs/drawlatch/shared/protocol";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy-client");
