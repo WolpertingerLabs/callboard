@@ -1,5 +1,5 @@
 {
-  "name": "callboard",
+  "name": "@wolpertingerlabs/callboard",
   "version": "1.0.0-alpha.1",
   "type": "module",
   "workspaces": [
