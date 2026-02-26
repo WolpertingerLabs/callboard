@@ -17,8 +17,8 @@
 import { readFileSync, writeFileSync, existsSync, chmodSync } from "fs";
 import { join } from "path";
 import dotenv from "dotenv";
-import { listConnectionTemplates } from "drawlatch/shared/connections";
-import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "drawlatch/shared/config";
+import { listConnectionTemplates } from "@wolpertingerlabs/drawlatch/shared/connections";
+import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
 import { getLocalProxyInstance } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
