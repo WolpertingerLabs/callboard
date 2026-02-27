@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "child_process";
+import { fileURLToPath } from "url";
+import path from "path";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PROCESS_NAME = "callboard";
-const SCRIPT_PATH = "backend/dist/index.js";
+const SCRIPT_PATH = path.join(__dirname, "backend/dist/index.js");
 
 function runCommand(cmd, args) {
   return new Promise((resolve) => {

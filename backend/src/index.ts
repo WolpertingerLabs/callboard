@@ -4,6 +4,10 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 
+// Package root — resolved from backend/dist/index.js (or backend/src/index.ts via tsx).
+// Works both in local dev (monorepo root) and global npm install (package root).
+const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
 // Load .env: ~/.callboard/.env is the primary source (override: true).
 // Project-root .env fills in any vars NOT already set (override: false) — useful
 // for dev-only values like DEV_PORT_UI that contributors keep per-checkout.
@@ -14,8 +18,7 @@ if (existsSync(ENV_FILE)) {
   dotenv.config({ path: ENV_FILE, override: true });
 }
 {
-  const __rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  const rootEnv = path.join(__rootDir, ".env");
+  const rootEnv = path.join(__pkgRoot, ".env");
   if (existsSync(rootEnv)) {
     // override: false — project-root .env only fills gaps, never overrides ~/.callboard/.env
     const result = dotenv.config({ path: rootEnv, override: false });
@@ -149,7 +152,7 @@ app.post("/webhooks/:path", (req, res) => {
 });
 
 // Serve frontend static files in production
-const frontendDist = path.join(process.cwd(), "frontend/dist");
+const frontendDist = path.join(__pkgRoot, "frontend/dist");
 app.use(express.static(frontendDist));
 app.get("*", (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
