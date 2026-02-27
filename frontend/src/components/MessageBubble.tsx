@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { Check, RotateCw, Square } from "lucide-react";
+import { useState, useCallback, useMemo } from "react";
+import { Check, Copy, RotateCw, Square } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { useRelativeTime } from "../hooks/useRelativeTime";
@@ -94,6 +94,44 @@ const StatusIcon = ({ status }: { status: string }) => {
       return <Square size={14} style={{ color: "var(--text-muted)" }} />;
   }
 };
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    },
+    [text],
+  );
+
+  return (
+    <button
+      className="copy-btn"
+      onClick={handleCopy}
+      title="Copy message"
+      style={{
+        position: "absolute",
+        top: 6,
+        right: 6,
+        padding: 4,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1,
+      }}
+    >
+      {copied ? <Check size={14} style={{ color: "var(--success)" }} /> : <Copy size={14} style={{ color: "var(--text-muted)" }} />}
+    </button>
+  );
+}
 
 export function TodoList({ items }: { items: TodoItem[] }) {
   const completedCount = items.filter((t) => t.status === "completed").length;
@@ -410,6 +448,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
           {message.teamName}
         </div>
         <div
+          className="msg-bubble"
           style={{
             maxWidth: "85%",
             padding: "10px 14px",
@@ -424,6 +463,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
             wordBreak: "break-word",
           }}
         >
+          <CopyButton text={message.content} />
           <MarkdownRenderer content={message.content} className="message-markdown" />
         </div>
         <MessageMetadata message={message} align="left" />
@@ -441,6 +481,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
       }}
     >
       <div
+        className="msg-bubble"
         style={{
           maxWidth: "85%",
           padding: "10px 14px",
@@ -458,6 +499,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
           }),
         }}
       >
+        <CopyButton text={message.content} />
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
       </div>
       <MessageMetadata message={message} align={isUser ? "right" : "left"} />

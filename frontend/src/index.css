@@ -444,6 +444,22 @@ pre {
   background: rgba(124, 106, 239, 0.06);
 }
 
+/* Copy button on message hover */
+.msg-bubble {
+  position: relative;
+}
+
+.msg-bubble > .copy-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.msg-bubble:hover > .copy-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* Fix native <option> elements being unreadable in dark mode */
 select option {
   background: var(--bg);
