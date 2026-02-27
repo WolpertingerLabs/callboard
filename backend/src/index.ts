@@ -8,9 +8,9 @@ import { fileURLToPath } from "url";
 // Works both in local dev (monorepo root) and global npm install (package root).
 const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-// Load .env: ~/.callboard/.env is the primary source (override: true).
-// Project-root .env fills in any vars NOT already set (override: false) — useful
-// for dev-only values like DEV_PORT_UI that contributors keep per-checkout.
+// Load .env: ~/.callboard/.env is the base config, then the project-root .env
+// overrides it. This lets local dev / PM2 runs use a local .env to override
+// the global ~/.callboard config (e.g. different ports, passwords, log levels).
 import { ENV_FILE, ensureDataDir, ensureEnvFile } from "./utils/paths.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
@@ -20,10 +20,10 @@ if (existsSync(ENV_FILE)) {
 {
   const rootEnv = path.join(__pkgRoot, ".env");
   if (existsSync(rootEnv)) {
-    // override: false — project-root .env only fills gaps, never overrides ~/.callboard/.env
-    const result = dotenv.config({ path: rootEnv, override: false });
+    // override: true — project-root .env takes priority over ~/.callboard/.env
+    const result = dotenv.config({ path: rootEnv, override: true });
     if (result.parsed && Object.keys(result.parsed).length > 0 && __isFirstRun) {
-      console.warn(`[callboard] Loaded .env from project root. Consider moving it to ${ENV_FILE} for portable operation.`);
+      console.warn(`[callboard] Loaded .env from project root (overrides ${ENV_FILE}).`);
     }
   }
 }
