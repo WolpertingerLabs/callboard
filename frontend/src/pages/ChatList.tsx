@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { listChats, deleteChat, toggleBookmark, listAgents, getAgentIdentityPrompt, type Chat, type DefaultPermissions, type AgentConfig } from "../api";
@@ -108,6 +108,27 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
     load();
     onRefresh(() => load());
   }, [onRefresh, load]);
+
+  // Refetch chat list when sessions start or stop (debounced to avoid rapid-fire
+  // during new-chat migration: temp ID stop → real ID start).
+  const prevSessionCountRef = useRef(activeSessions.size);
+  useEffect(() => {
+    // Skip the initial render — the load() above already fetched
+    if (prevSessionCountRef.current === activeSessions.size && activeSessions.size === 0) return;
+    prevSessionCountRef.current = activeSessions.size;
+
+    const timer = setTimeout(() => load(), 500);
+    return () => clearTimeout(timer);
+  }, [activeSessions, load]);
+
+  // While any session is active, periodically refetch the chat list to pick up
+  // title changes, timestamp updates, and reordering.
+  useEffect(() => {
+    if (activeSessions.size === 0) return;
+
+    const interval = setInterval(() => load(), 15_000);
+    return () => clearInterval(interval);
+  }, [activeSessions.size, load]);
 
   const updateRecentDirs = () => {
     setRecentDirs(getRecentDirectories().map((r) => r.path));

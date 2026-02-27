@@ -196,6 +196,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return items;
   }, [messages]);
 
+  // Determine if the in-flight message is already present in the fetched messages list.
+  // This prevents showing the user's message twice (once as in-flight, once in the list).
+  const inFlightAlreadyInMessages = useMemo(() => {
+    if (!inFlightMessage || messages.length === 0) return false;
+    // Check if the last user message in the list matches the in-flight text
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        return messages[i].content?.trim() === inFlightMessage.trim();
+      }
+    }
+    return false;
+  }, [inFlightMessage, messages]);
+
+  // Show the in-flight bubble only when it's set AND not yet in the messages list
+  const showInFlightMessage = inFlightMessage && !inFlightAlreadyInMessages;
+
   // Keep navigate and onChatListRefresh in refs to avoid readSSE dependency churn
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
@@ -314,7 +330,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 const reasonMsg = event.reason ? reasonMessages[event.reason] : undefined;
 
                 setStreaming(false);
-                setInFlightMessage(null);
                 // Refetch complete chat data and messages
                 getChat(streamChatId!).then((chatData) => {
                   if (currentIdRef.current !== streamChatId) return;
@@ -328,6 +343,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   } else {
                     setMessages(msgArray);
                   }
+                  // Clear in-flight after messages arrive to avoid visual gap
+                  setInFlightMessage(null);
                 });
                 // Refresh slash commands in case they were discovered during initialization
                 loadSlashCommands();
@@ -368,12 +385,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 if (planApprovedRef.current) {
                   planApprovedRef.current = false;
                 }
-                // Clear in-flight message once we get the first response
-                setInFlightMessage(null);
-                // New content is available - refetch all messages to show latest state with timestamps
+                // New content is available - refetch all messages to show latest state with timestamps.
+                // Clear in-flight message AFTER messages arrive to avoid a gap where the
+                // user's sent message is neither in inFlightMessage nor in the message list.
                 getMessages(streamChatId!).then((msgs) => {
                   if (currentIdRef.current !== streamChatId) return;
                   setMessages(Array.isArray(msgs) ? msgs : []);
+                  setInFlightMessage(null);
                 });
 
                 // Check if this is the first response and we should refresh chat list
@@ -1476,7 +1494,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </div>
                 )}
 
-                {inFlightMessage && (
+                {showInFlightMessage && (
                   <div
                     style={{
                       display: "flex",
@@ -1495,26 +1513,53 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         fontSize: 14,
                         lineHeight: 1.5,
                         wordBreak: "break-word",
-                        opacity: 0.7,
+                        opacity: 0.9,
                       }}
                     >
                       {inFlightMessage}
                     </div>
                     <div
                       style={{
-                        fontSize: 10,
+                        fontSize: 11,
                         color: "var(--text-muted)",
-                        opacity: 0.5,
                         marginTop: 4,
                         textAlign: "right",
                       }}
                     >
-                      Sending...
+                      Sent
                     </div>
                   </div>
                 )}
 
-                {streaming && <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0" }}>Starting chat session...</div>}
+                {streaming && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "12px 0",
+                      color: "var(--text-muted)",
+                      fontSize: 13,
+                    }}
+                  >
+                    <span style={{ display: "inline-flex", gap: 3 }}>
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width: 5,
+                            height: 5,
+                            borderRadius: "50%",
+                            background: "var(--accent)",
+                            display: "inline-block",
+                            animation: `thinking-bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
+                          }}
+                        />
+                      ))}
+                    </span>
+                    <span>Claude is thinking...</span>
+                  </div>
+                )}
               </>
             ) : (
               /* EXISTING CHAT MODE: Message list */
@@ -1547,7 +1592,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     </div>
                   );
                 })}
-                {inFlightMessage && (
+                {showInFlightMessage && (
                   <div
                     style={{
                       display: "flex",
@@ -1566,21 +1611,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         fontSize: 14,
                         lineHeight: 1.5,
                         wordBreak: "break-word",
-                        opacity: 0.7,
+                        opacity: 0.9,
                       }}
                     >
                       {inFlightMessage}
                     </div>
                     <div
                       style={{
-                        fontSize: 10,
+                        fontSize: 11,
                         color: "var(--text-muted)",
-                        opacity: 0.5,
                         marginTop: 4,
                         textAlign: "right" as const,
                       }}
                     >
-                      Sending...
+                      Sent
                     </div>
                   </div>
                 )}
@@ -1616,11 +1660,35 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </div>
                 )}
                 {streaming && (
-                  <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0", display: "flex", alignItems: "center", gap: 8 }}>
-                    <div>{compacting ? "Compacting conversation..." : "Claude is working..."}</div>
-                    <div style={{ fontSize: 11, opacity: 0.7 }}>
+                  <div
+                    style={{
+                      color: "var(--text-muted)",
+                      fontSize: 13,
+                      padding: "12px 0",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <span style={{ display: "inline-flex", gap: 3 }}>
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width: 5,
+                            height: 5,
+                            borderRadius: "50%",
+                            background: "var(--accent)",
+                            display: "inline-block",
+                            animation: `thinking-bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
+                          }}
+                        />
+                      ))}
+                    </span>
+                    <span>{compacting ? "Compacting conversation..." : "Claude is thinking..."}</span>
+                    <span style={{ fontSize: 11, opacity: 0.7 }}>
                       {compacting ? "(Summarizing context to free up space)" : "(You can send another message anytime)"}
-                    </div>
+                    </span>
                   </div>
                 )}
                 <div ref={bottomRef} />
