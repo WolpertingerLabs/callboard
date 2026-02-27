@@ -481,10 +481,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Safety net: if the session registry reports the session stopped but we still
   // think we're streaming (e.g., SSE drop without message_complete), reset.
+  // Trust the registry as the source of truth — if it says stopped, clean up
+  // even if we have an active SSE reader (it will close on its own or via abort).
   useEffect(() => {
-    if (!globalSessionActive && streaming && !abortRef.current) {
+    if (!globalSessionActive && streaming) {
       setStreaming(false);
       setInFlightMessage(null);
+      // Abort any hanging SSE connection — the session is over
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
     }
   }, [globalSessionActive, streaming]);
 
