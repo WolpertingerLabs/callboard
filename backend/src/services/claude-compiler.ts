@@ -1,8 +1,11 @@
 import { existsSync, readFileSync, copyFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import type { AgentConfig } from "shared";
 
-const SCAFFOLD_DIR = join(process.cwd(), "backend", "src", "scaffold");
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// From backend/dist/services/ (or backend/src/services/ via tsx) → backend/src/scaffold
+const SCAFFOLD_DIR = join(__dirname, "..", "..", "src", "scaffold");
 
 const SCAFFOLD_FILES = ["CLAUDE.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md"];
 

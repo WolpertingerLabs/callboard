@@ -8,7 +8,7 @@ import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
-import { migratePermissions } from "shared/types/index.js";
+import { migratePermissions } from "../utils/migrate-permissions.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";

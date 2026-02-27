@@ -2,6 +2,29 @@
   "name": "@wolpertingerlabs/callboard",
   "version": "1.0.0-alpha.1",
   "type": "module",
+  "main": "./backend/dist/index.js",
+  "bin": {
+    "callboard": "./bin/callboard.js"
+  },
+  "files": [
+    "backend/dist",
+    "backend/src/scaffold",
+    "frontend/dist",
+    "shared/dist",
+    "bin",
+    "start-server.js",
+    "ecosystem.config.cjs",
+    "README.md",
+    "!**/*.test.*",
+    "!**/*.js.map",
+    "!**/*.d.ts.map"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "workspaces": [
     "shared",
     "backend",
@@ -27,7 +50,23 @@
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run lint:all && npm test && npm run build",
+    "publish:dry-run": "npm publish --dry-run"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.32",
+    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "cron-parser": "^5.0.0",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.0",
+    "multer": "^2.0.2",
+    "node-cron": "^3.0.3",
+    "uuid": "^10.0.0",
+    "winston": "^3.19.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
