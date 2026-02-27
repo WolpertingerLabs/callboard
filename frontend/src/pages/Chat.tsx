@@ -135,6 +135,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Track whether globalSessionActive was ever truthy for the current chat.
   // Used by the safety net to distinguish "session ended" from "session never started".
   const sessionWasActiveRef = useRef(false);
+  // Track whether the stream already received message_complete for this session.
+  // Prevents the auto-connect effect from creating a reconnection loop when the
+  // CLI watcher hasn't yet detected that the session ended (up to 30s delay).
+  const streamCompletedRef = useRef(false);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -312,6 +316,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               if (event.type === "message_complete") {
                 if (currentIdRef.current !== streamChatId) return;
                 setCompacting(false);
+                // Mark that this stream session is complete so the auto-connect
+                // effect doesn't reconnect while the CLI watcher catches up.
+                streamCompletedRef.current = true;
 
                 // Check if the conversation ended right after a plan approval.
                 // The SDK may end the conversation turn after ExitPlanMode is processed,
@@ -476,6 +483,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     if (!id || !globalSessionActive) return;
     if (streaming || abortRef.current) return; // Already connected
+    if (streamCompletedRef.current) return; // Stream already completed, don't reconnect
 
     setNetworkError(null);
     setStreaming(true);
@@ -486,28 +494,31 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     if (globalSessionActive) {
       sessionWasActiveRef.current = true;
+      streamCompletedRef.current = false; // Reset for new session
     }
   }, [globalSessionActive]);
 
   // Safety net: if the session registry reports the session *transitioned* from
-  // active → inactive but we still think we're streaming, clean up.
-  // Only fires when:
-  //   1. sessionWasActiveRef is true (the session was previously active — avoids
-  //      false triggers on new chats or before the session is registered)
-  //   2. globalSessionActive is now falsy (session ended)
-  //   3. streaming is still true (we haven't cleaned up yet)
+  // active → inactive, always clean up streaming state.
+  // Fires when sessionWasActiveRef is true (the session was previously active —
+  // avoids false triggers on new chats or before the session is registered)
+  // and globalSessionActive is now falsy (session ended).
+  // Note: we intentionally do NOT require `streaming` to be true here. Due to
+  // the auto-reconnect loop (streaming toggles rapidly while CLI watcher catches
+  // up), streaming may be momentarily false when globalSessionActive changes.
   useEffect(() => {
-    if (!globalSessionActive && streaming && sessionWasActiveRef.current) {
+    if (!globalSessionActive && sessionWasActiveRef.current) {
       setStreaming(false);
       setInFlightMessage(null);
       sessionWasActiveRef.current = false;
+      streamCompletedRef.current = false;
       // Abort any hanging SSE connection — the session is over
       if (abortRef.current) {
         abortRef.current.abort();
         abortRef.current = null;
       }
     }
-  }, [globalSessionActive, streaming]);
+  }, [globalSessionActive]);
 
   // Fetch slash commands and plugins for the chat
   const loadSlashCommands = useCallback(async () => {
@@ -539,6 +550,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     currentIdRef.current = undefined;
     tempChatIdRef.current = null;
     sessionWasActiveRef.current = false;
+    streamCompletedRef.current = false;
 
     // Abort any existing SSE stream from a previous chat
     if (abortRef.current) {
@@ -594,6 +606,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     planApprovedRef.current = false;
     tempChatIdRef.current = null;
     sessionWasActiveRef.current = false;
+    streamCompletedRef.current = false;
 
     // Clear only the inFlightMessage from router state so back/forward navigation
     // doesn't re-apply it. Preserve other state values (e.g. agentSystemPrompt, agentAlias).
@@ -703,6 +716,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Set in-flight message to show user's message immediately
       setInFlightMessage(prompt);
       setNetworkError(null); // Clear any previous network errors
+      streamCompletedRef.current = false; // Reset so new message can stream
 
       // If there's already a streaming connection, stop it first
       if (abortRef.current) {
@@ -876,7 +890,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
     });
     // Auto-connect is handled reactively by the globalSessionActive useEffect
-    if (globalSessionActive && !streaming && !abortRef.current) {
+    if (globalSessionActive && !streaming && !abortRef.current && !streamCompletedRef.current) {
       setStreaming(true);
       connectToStream();
     }
