@@ -1,6 +1,6 @@
 {
   "name": "@wolpertingerlabs/callboard",
-  "version": "1.0.0-alpha.1",
+  "version": "1.0.0-alpha.2",
   "type": "module",
   "main": "./backend/dist/index.js",
   "bin": {
@@ -12,8 +12,6 @@
     "frontend/dist",
     "shared/dist",
     "bin",
-    "start-server.js",
-    "ecosystem.config.cjs",
     "README.md",
     "!**/*.test.*",
     "!**/*.js.map",
@@ -42,7 +40,6 @@
     "build:backend": "npm -w callboard-backend run build",
     "build:frontend": "npm -w callboard-frontend run build",
     "start": "NODE_ENV=production node backend/dist/index.js",
-    "redeploy:prod": "node start-server.js",
     "preview": "npm -w callboard-frontend exec vite preview",
     "lint": "git diff --name-only --cached HEAD | grep -E '\\.(js|jsx|ts|tsx)$' | xargs -r eslint",
     "lint:fix": "git diff --name-only --cached HEAD | grep -E '\\.(js|jsx|ts|tsx)$' | xargs -r eslint --fix",

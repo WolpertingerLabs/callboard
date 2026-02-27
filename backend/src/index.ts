@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 // Load .env: ~/.callboard/.env is the base config, then the project-root .env
-// overrides it. This lets local dev / PM2 runs use a local .env to override
+// overrides it. This lets local dev runs use a local .env to override
 // the global ~/.callboard config (e.g. different ports, passwords, log levels).
 import { ENV_FILE, ensureDataDir, ensureEnvFile } from "./utils/paths.js";
 ensureDataDir();

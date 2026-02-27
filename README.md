@@ -31,7 +31,7 @@ A full-stack web interface for the [Anthropic Claude Code](https://docs.anthropi
 | **Logging**         | Winston                                      |
 | **Testing**         | Vitest                                       |
 | **Linting**         | ESLint, Prettier                             |
-| **Process Manager** | PM2 (production)                             |
+| **Process Manager** | Built-in daemon (`callboard start/stop`)     |
 | **Storage**         | File-based (JSONL chat logs, JSON metadata)  |
 
 ## Getting Started
@@ -101,20 +101,19 @@ npm run build
 npm start
 ```
 
-Or build and redeploy via PM2 in one step:
-
-```bash
-npm run build && npm run redeploy:prod
-```
-
 The production server runs on port 8000 and serves the built frontend as static files.
 
-### PM2 Management
+### CLI Management
+
+If installed globally (`npm install -g @wolpertingerlabs/callboard`):
 
 ```bash
-pm2 list                    # List running processes
-pm2 logs callboard     # View logs
-pm2 restart callboard  # Restart the app
+callboard start             # Start as background daemon
+callboard stop              # Stop the server
+callboard restart           # Restart the server
+callboard status            # Show PID, port, uptime, health
+callboard logs              # View and follow server logs
+callboard config            # Show effective configuration
 ```
 
 ## Project Structure
@@ -145,8 +144,8 @@ callboard/
 │   ├── images/             # Uploaded images
 │   ├── queue/              # Draft queue items
 │   └── sessions.json       # Active auth sessions
+├── bin/                    # CLI entry point (callboard command)
 ├── .env.example            # Environment variable template
-├── ecosystem.config.cjs    # PM2 process configuration
 ├── eslint.config.js        # ESLint configuration
 ├── tsconfig.base.json      # Shared TypeScript config
 └── package.json            # Workspace root (npm workspaces)
@@ -219,20 +218,19 @@ callboard/
 
 ## Scripts
 
-| Command                 | Description                                              |
-| ----------------------- | -------------------------------------------------------- |
-| `npm run dev`           | Start frontend and backend dev servers concurrently      |
-| `npm run build`         | Build shared types, backend, and frontend for production |
-| `npm start`             | Start the production server (`NODE_ENV=production`)      |
-| `npm run redeploy:prod` | Delete and recreate the PM2 process                      |
-| `npm test`              | Run tests (Vitest)                                       |
-| `npm run test:watch`    | Run tests in watch mode                                  |
-| `npm run lint`          | Lint staged files only                                   |
-| `npm run lint:fix`      | Lint and auto-fix staged files                           |
-| `npm run lint:all`      | Lint all project files                                   |
-| `npm run lint:all:fix`  | Lint and auto-fix all project files                      |
-| `npm run prettier`      | Format changed files with Prettier                       |
-| `npm run clean`         | Remove all build artifacts                               |
+| Command                | Description                                              |
+| ---------------------- | -------------------------------------------------------- |
+| `npm run dev`          | Start frontend and backend dev servers concurrently      |
+| `npm run build`        | Build shared types, backend, and frontend for production |
+| `npm start`            | Start the production server (`NODE_ENV=production`)      |
+| `npm test`             | Run tests (Vitest)                                       |
+| `npm run test:watch`   | Run tests in watch mode                                  |
+| `npm run lint`         | Lint staged files only                                   |
+| `npm run lint:fix`     | Lint and auto-fix staged files                           |
+| `npm run lint:all`     | Lint all project files                                   |
+| `npm run lint:all:fix` | Lint and auto-fix all project files                      |
+| `npm run prettier`     | Format changed files with Prettier                       |
+| `npm run clean`        | Remove all build artifacts                               |
 
 ## License
 

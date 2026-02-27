@@ -61,25 +61,36 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
 
    If a PR already exists for the branch, skip this step (check with `gh pr view` first).
 
-8. **Redeploy production** (skip if in a worktree):
+8. **Install and restart production** (skip if in a worktree):
 
    If in a worktree, **skip this step** — production runs from the main working tree, not from worktrees.
 
-   Otherwise, run detached so it survives if the server process dies mid-redeploy:
+   Otherwise, pack the build, install globally, and restart.
+   Read the version from `package.json` to construct the tarball filename:
 
    ```
-   nohup npm run redeploy:prod > /tmp/callboard-redeploy.log 2>&1 &
+   npm pack --pack-destination /tmp
    ```
 
-   Wait 3 seconds, then confirm PM2 restarted:
+   ```
+   npm install -g /tmp/wolpertingerlabs-callboard-<version>.tgz && rm /tmp/wolpertingerlabs-callboard-<version>.tgz
+   ```
+
+   (Replace `<version>` with the actual version from package.json, e.g. `1.0.0-alpha.1`)
 
    ```
-   sleep 3 && pm2 list && echo "--- Redeploy log ---" && cat /tmp/callboard-redeploy.log
+   callboard restart
+   ```
+
+   Confirm the server is running:
+
+   ```
+   callboard status
    ```
 
 ## Important
 
 - If any step fails, **stop immediately**, diagnose the issue, fix it, and restart from the failed step.
 - The commit message should accurately describe the changes — do NOT use a generic message like "save and reboot".
-- After the final step, if production was redeployed, confirm that the PM2 process is running with `pm2 list`.
+- After the final step, if production was restarted, confirm with `callboard status`.
 - If in a worktree, the pipeline ends after pushing (and creating a PR if on a non-primary branch).

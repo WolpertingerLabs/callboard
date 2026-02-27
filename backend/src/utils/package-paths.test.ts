@@ -45,19 +45,16 @@ describe("package path resolution", () => {
     // Which is: backend/src/scaffold
     //
     // We replicate from our location (backend/src/utils/):
-    const servicesDir = resolve(__dirname_here, "..");  // backend/src/
-    const scaffoldDir = join(servicesDir, "..", "src", "scaffold");  // backend/src/scaffold
+    const servicesDir = resolve(__dirname_here, ".."); // backend/src/
+    const scaffoldDir = join(servicesDir, "..", "src", "scaffold"); // backend/src/scaffold
 
     it("resolves to the scaffold directory", () => {
       expect(existsSync(scaffoldDir)).toBe(true);
     });
 
-    it.each(["CLAUDE.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md"])(
-      "contains scaffold file: %s",
-      (filename) => {
-        expect(existsSync(join(scaffoldDir, filename))).toBe(true);
-      },
-    );
+    it.each(["CLAUDE.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md"])("contains scaffold file: %s", (filename) => {
+      expect(existsSync(join(scaffoldDir, filename))).toBe(true);
+    });
   });
 
   describe("swagger.json (index.ts resolves spec via __dir)", () => {
@@ -74,12 +71,6 @@ describe("package path resolution", () => {
   describe("bin/callboard.js", () => {
     it("exists at the package root", () => {
       expect(existsSync(join(pkgRoot, "bin/callboard.js"))).toBe(true);
-    });
-  });
-
-  describe("start-server.js", () => {
-    it("exists at the package root", () => {
-      expect(existsSync(join(pkgRoot, "start-server.js"))).toBe(true);
     });
   });
 });

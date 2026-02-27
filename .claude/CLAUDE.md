@@ -6,11 +6,13 @@
 
 ## Production Deployment
 
-- Production runs on port 8000 with PM2
-- `npm start` - runs the server directly (no PM2)
-- `npm run redeploy:prod` - deletes and recreates PM2 process with correct config
-- To redeploy production, use: `npm run build && npm run redeploy:prod`
-- PM2 commands: `pm2 list`, `pm2 logs callboard`
+- Production runs on port 8000 by default
+- `callboard start` - start as background daemon
+- `callboard stop` - stop the background server
+- `callboard restart` - restart the background server
+- `callboard status` - check server health, PID, port, uptime
+- `callboard logs` - view and follow server logs
+- `callboard config` - show effective configuration
 
 ## Linting
 
@@ -21,4 +23,4 @@
 
 ## Workflow Instructions
 
-- Use `/gsr` to build, commit, push, and redeploy production in one command
+- Use `/gsr` to build, commit, push, and restart production in one command

@@ -617,7 +617,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // in .mcp.json templates also picks up the correct identity.
         ...(agentMcpKeyAlias && { MCP_KEY_ALIAS: agentMcpKeyAlias }),
         // Remove CLAUDECODE to prevent "cannot be launched inside another Claude Code session" errors
-        // when the backend was started from within a Claude Code session (e.g. via PM2 redeploy)
+        // when the backend was started from within a Claude Code session
         CLAUDECODE: undefined,
       },
       canUseTool: buildCanUseTool(emitter, getDefaultPermissions, () => trackingId),
