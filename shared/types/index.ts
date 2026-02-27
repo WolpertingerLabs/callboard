@@ -1,5 +1,4 @@
 export type { PermissionLevel, DefaultPermissions } from "./permissions.js";
-export { migratePermissions } from "./permissions.js";
 
 export type { PluginCommand, PluginManifest, Plugin } from "./plugins.js";
 

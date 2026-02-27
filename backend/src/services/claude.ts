@@ -8,7 +8,6 @@ import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
-import { migratePermissions } from "../utils/migrate-permissions.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
@@ -316,19 +315,26 @@ function buildCanUseTool(emitter: EventEmitter, getDefaultPermissions: () => Def
     if (category) {
       try {
         const defaultPermissions = getDefaultPermissions();
+        log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, permissions=${JSON.stringify(defaultPermissions)}`);
         if (defaultPermissions && defaultPermissions[category]) {
           const permission = defaultPermissions[category];
           if (permission === "allow") {
-            log.debug(`Permission auto-allow: tool=${toolName}, category=${category}`);
+            log.info(`[PERM-DIAG] Auto-ALLOW: tool=${toolName}, category=${category}`);
             return { behavior: "allow", updatedInput: input };
           } else if (permission === "deny") {
-            log.debug(`Permission auto-deny: tool=${toolName}, category=${category}`);
+            log.info(`[PERM-DIAG] Auto-DENY: tool=${toolName}, category=${category}`);
             return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
           }
         }
-      } catch {
+        log.info(
+          `[PERM-DIAG] Falling through to ASK: tool=${toolName}, category=${category}, hasPerms=${!!defaultPermissions}, catValue=${defaultPermissions?.[category]}`,
+        );
+      } catch (err) {
+        log.info(`[PERM-DIAG] ERROR in permission lookup: tool=${toolName}, error=${err}`);
         // If permission lookup fails, fall through to normal permission flow
       }
+    } else {
+      log.info(`[PERM-DIAG] No category for tool=${toolName}, skipping permission check`);
     }
 
     return new Promise<PermissionResult>((resolve) => {
@@ -496,10 +502,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   const getDefaultPermissions = (): DefaultPermissions | null => {
     if (isNewChat) {
       // For new chats, use the permissions passed directly
-      return migratePermissions(defaultPermissions);
+      log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=true, raw=${JSON.stringify(defaultPermissions)}`);
+      return defaultPermissions ?? null;
     }
     // For existing chats, read from chat metadata (may have been updated)
-    return migratePermissions(initialMetadata.defaultPermissions);
+    log.info(
+      `[PERM-DIAG] getDefaultPermissions: isNewChat=false, raw=${JSON.stringify(initialMetadata.defaultPermissions)}, fullMeta=${JSON.stringify(initialMetadata)}`,
+    );
+    return initialMetadata.defaultPermissions ?? null;
   };
 
   // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)

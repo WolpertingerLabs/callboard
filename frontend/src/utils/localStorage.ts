@@ -1,5 +1,4 @@
 import type { DefaultPermissions } from "../api";
-import { migratePermissions } from "shared/types/index.js";
 
 const STORAGE_KEYS = {
   SETTINGS: "claude-code-settings",
@@ -54,7 +53,7 @@ function setStorageData(data: LocalStorageData): void {
 export function getDefaultPermissions(): DefaultPermissions {
   const data = getStorageData();
   if (data.defaultPermissions) {
-    return migratePermissions(data.defaultPermissions) ?? DEFAULT_PERMISSIONS;
+    return data.defaultPermissions;
   }
   return DEFAULT_PERMISSIONS;
 }
