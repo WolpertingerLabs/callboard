@@ -98,7 +98,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
-  const transitionInFlightMessage = (location.state as any)?.inFlightMessage as string | undefined;
+  // Read once and store in a ref so it's consumed exactly once per mount and
+  // doesn't become stale if the effect re-runs on id changes.
+  const transitionInFlightMessageRef = useRef((location.state as any)?.inFlightMessage as string | undefined);
+  const transitionInFlightMessage = transitionInFlightMessageRef.current;
 
   const [chat, setChat] = useState<ChatType | null>(null);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
@@ -611,8 +614,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // Clear only the inFlightMessage from router state so back/forward navigation
     // doesn't re-apply it. Preserve other state values (e.g. agentSystemPrompt, agentAlias).
     if (transitionInFlightMessage) {
-      const { inFlightMessage: _, ...rest } = (window.history.state ?? {}) as Record<string, unknown>;
-      window.history.replaceState(rest, "");
+      transitionInFlightMessageRef.current = undefined; // Consume once
+      const { inFlightMessage: _, ...rest } = (location.state ?? {}) as Record<string, unknown>;
+      navigate(location.pathname + location.search, { replace: true, state: Object.keys(rest).length > 0 ? rest : undefined });
     }
 
     getChat(id!).then((chatData) => {

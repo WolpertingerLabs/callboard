@@ -11,7 +11,6 @@ import type {
   StoredImage,
   ImageUploadResult,
   QueueItem,
-  SessionStatus,
   BranchConfig,
   FolderItem,
   BrowseResult,
@@ -48,7 +47,6 @@ export type {
   StoredImage,
   ImageUploadResult,
   QueueItem,
-  SessionStatus,
   BranchConfig,
   FolderItem,
   BrowseResult,
@@ -165,12 +163,6 @@ export async function respondToChat(
   if (!res.ok) {
     return { ok: false };
   }
-  return res.json();
-}
-
-export async function getSessionStatus(id: string): Promise<SessionStatus> {
-  const res = await fetch(`${BASE}/chats/${id}/status`, { credentials: "include" });
-  await assertOk(res, "Failed to get session status");
   return res.json();
 }
 

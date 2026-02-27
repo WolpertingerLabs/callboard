@@ -13,6 +13,14 @@ const SCAN_INTERVAL_MS = 5_000;
 /** How long a session can be idle (no file growth) before it's considered stopped (ms) */
 const INACTIVITY_THRESHOLD_MS = 30_000;
 
+/**
+ * Maximum number of recent chats to scan for CLI activity.
+ * CLI sessions will appear in recent chats, so we don't need to scan the
+ * entire history — just the most recently-updated entries (same scope the
+ * sidebar shows). This keeps the 5-second scan lightweight.
+ */
+const SCAN_CHAT_LIMIT = 20;
+
 interface TrackedSession {
   chatId: string;
   logPath: string;
@@ -89,9 +97,12 @@ async function scan(): Promise<void> {
   const now = Date.now();
 
   try {
-    const allChats = chatFileService.getAllChats();
+    // Only scan the most recent chats — active CLI sessions will always be
+    // near the top since their chat entry gets updated. This avoids reading
+    // every chat file on disk every 5 seconds.
+    const recentChats = chatFileService.getAllChats(SCAN_CHAT_LIMIT);
 
-    for (const chat of allChats) {
+    for (const chat of recentChats) {
       if (!chat.session_id) continue;
 
       // Don't override web sessions
@@ -145,10 +156,10 @@ async function scan(): Promise<void> {
       }
     }
 
-    // Clean up tracked sessions that no longer exist in the chat list
+    // Clean up tracked sessions whose chats were deleted. Use getChat() for
+    // a targeted lookup instead of scanning the full list.
     for (const [chatId] of trackedSessions) {
-      const stillExists = allChats.some((c) => c.id === chatId);
-      if (!stillExists) {
+      if (!chatFileService.getChat(chatId)) {
         trackedSessions.delete(chatId);
         const existing = sessionRegistry.get(chatId);
         if (existing?.type === "cli") {
@@ -193,8 +204,7 @@ export function initCliWatcher(): void {
     if (event.event !== "session_stopped" || event.type !== "web") return;
 
     const chatId = event.chatId;
-    const allChats = chatFileService.getAllChats();
-    const chat = allChats.find((c) => c.id === chatId);
+    const chat = chatFileService.getChat(chatId);
     if (!chat?.session_id) return;
 
     const logPath = findSessionLogPath(chat.session_id);

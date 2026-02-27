@@ -30,6 +30,13 @@ export interface SessionEvent {
 class SessionRegistry extends EventEmitter {
   private sessions = new Map<string, SessionInfo>();
 
+  constructor() {
+    super();
+    // Each SSE client adds a "change" listener, plus the CLI watcher.
+    // Raise the limit to avoid spurious warnings with multiple browser tabs.
+    this.setMaxListeners(50);
+  }
+
   /**
    * Register a new active session.
    * If a session already exists for this chatId, it is unregistered first
