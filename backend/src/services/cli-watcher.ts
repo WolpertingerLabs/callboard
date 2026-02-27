@@ -21,6 +21,7 @@ interface TrackedSession {
 
 const trackedSessions = new Map<string, TrackedSession>();
 let scanInterval: ReturnType<typeof setInterval> | null = null;
+let registryListener: ((event: any) => void) | null = null;
 
 /**
  * Check if a JSONL file's tail contains a completion marker
@@ -112,24 +113,17 @@ function scan(): void {
           }
         }
       } else {
-        // Not yet tracking — start tracking with current size
-        // Only register as active if file was recently modified
-        const recentThreshold = now - SCAN_INTERVAL_MS * 2;
-        const isRecent = stats.mtime.getTime() > recentThreshold;
-
+        // Not yet tracking — establish a baseline with the current file size.
+        // We intentionally do NOT register on the first encounter; we need a
+        // second scan to confirm the file is *actively growing*.  This prevents
+        // false positives from recently-completed web sessions whose writes
+        // make the file look "recent" even though no CLI session is running.
         trackedSessions.set(chat.id, {
           chatId: chat.id,
           logPath,
           lastSize: stats.size,
-          lastGrowthTime: isRecent ? now : stats.mtime.getTime(),
+          lastGrowthTime: stats.mtime.getTime(),
         });
-
-        // If file was recently modified and doesn't have a completion marker, register
-        if (isRecent && !hasCompletionMarker(logPath)) {
-          if (!sessionRegistry.has(chat.id)) {
-            sessionRegistry.register(chat.id, { type: "cli" });
-          }
-        }
       }
     }
 
@@ -159,6 +153,36 @@ export function initCliWatcher(): void {
 
   log.info(`CLI watcher started (interval=${SCAN_INTERVAL_MS}ms, timeout=${INACTIVITY_THRESHOLD_MS}ms)`);
 
+  // Listen for web sessions ending so we can pre-seed trackedSessions with
+  // the current file size.  This prevents the next scan from mistaking the
+  // web session's recent file writes as CLI activity.
+  registryListener = (event: { event: string; chatId: string; type: string }) => {
+    if (event.event !== "session_stopped" || event.type !== "web") return;
+
+    const chatId = event.chatId;
+    const allChats = chatFileService.getAllChats();
+    const chat = allChats.find((c) => c.id === chatId);
+    if (!chat?.session_id) return;
+
+    const logPath = findSessionLogPath(chat.session_id);
+    if (!logPath || !existsSync(logPath)) return;
+
+    try {
+      const stats = statSync(logPath);
+      // Seed with current size so the next scan sees "no growth"
+      trackedSessions.set(chatId, {
+        chatId,
+        logPath,
+        lastSize: stats.size,
+        lastGrowthTime: 0, // Set to 0 so inactivity check won't re-register
+      });
+      log.debug(`Pre-seeded tracking for ended web session: chatId=${chatId}, size=${stats.size}`);
+    } catch {
+      // File stat failed — nothing to seed
+    }
+  };
+  sessionRegistry.on("change", registryListener);
+
   // Run an initial scan immediately
   scan();
 
@@ -172,6 +196,12 @@ export function shutdownCliWatcher(): void {
   if (scanInterval) {
     clearInterval(scanInterval);
     scanInterval = null;
+  }
+
+  // Remove the registry listener
+  if (registryListener) {
+    sessionRegistry.off("change", registryListener);
+    registryListener = null;
   }
 
   // Unregister all CLI sessions
