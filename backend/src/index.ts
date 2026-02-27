@@ -1,11 +1,29 @@
 import dotenv from "dotenv";
+import { existsSync, readFileSync } from "fs";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Load .env from project root
-const __rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-dotenv.config({ path: path.join(__rootDir, ".env"), override: true });
+// Load .env: ~/.callboard/.env is the primary source (override: true).
+// Project-root .env fills in any vars NOT already set (override: false) — useful
+// for dev-only values like DEV_PORT_UI that contributors keep per-checkout.
+import { ENV_FILE, ensureDataDir, ensureEnvFile } from "./utils/paths.js";
+ensureDataDir();
+const __isFirstRun = ensureEnvFile();
+if (existsSync(ENV_FILE)) {
+  dotenv.config({ path: ENV_FILE, override: true });
+}
+{
+  const __rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const rootEnv = path.join(__rootDir, ".env");
+  if (existsSync(rootEnv)) {
+    // override: false — project-root .env only fills gaps, never overrides ~/.callboard/.env
+    const result = dotenv.config({ path: rootEnv, override: false });
+    if (result.parsed && Object.keys(result.parsed).length > 0 && __isFirstRun) {
+      console.warn(`[callboard] Loaded .env from project root. Consider moving it to ${ENV_FILE} for portable operation.`);
+    }
+  }
+}
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { chatsRouter } from "./routes/chats.js";
@@ -21,7 +39,6 @@ import { proxyRouter } from "./routes/proxy.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
-import { existsSync, readFileSync } from "fs";
 import { createLogger } from "./utils/logger.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
@@ -141,6 +158,14 @@ app.get("*", (_req, res) => {
 app.listen(PORT, () => {
   log.info(`Backend running on http://localhost:${PORT}`);
   log.info(`Log level: ${process.env.LOG_LEVEL || "info"}`);
+  log.info(`Config: ${ENV_FILE}`);
+
+  if (__isFirstRun) {
+    log.warn(`First run detected — created ${ENV_FILE}`);
+    if (!process.env.AUTH_PASSWORD) {
+      log.warn(`Set AUTH_PASSWORD in ${ENV_FILE} to enable login.`);
+    }
+  }
 
   // Initialize automation systems (non-blocking, log errors but don't crash)
   try {

@@ -1,17 +1,22 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
+import { homedir } from "os";
 import dotenv from "dotenv";
 
 export default defineConfig(() => {
-  // Load .env from project root (one level up from frontend/)
-  // Use dotenv.parse to read the file directly, so .env values take priority
-  // over any inherited process.env values
-  const envPath = path.resolve(__dirname, "..", ".env");
+  // Load .env: prefer project-root .env (dev overrides), fall back to ~/.callboard/.env
+  const projectEnvPath = path.resolve(__dirname, "..", ".env");
+  const configEnvPath = path.join(homedir(), ".callboard", ".env");
+
   let envFile: Record<string, string> = {};
   try {
-    envFile = dotenv.parse(readFileSync(envPath));
+    if (existsSync(projectEnvPath)) {
+      envFile = dotenv.parse(readFileSync(projectEnvPath));
+    } else if (existsSync(configEnvPath)) {
+      envFile = dotenv.parse(readFileSync(configEnvPath));
+    }
   } catch {
     // .env file is optional
   }

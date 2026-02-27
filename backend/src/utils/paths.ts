@@ -1,4 +1,4 @@
-import { statSync, existsSync, mkdirSync } from "fs";
+import { statSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -6,6 +6,9 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
 /** Absolute path to the Callboard data directory (~/.callboard). */
 export const DATA_DIR = join(homedir(), ".callboard");
+
+/** Path to the primary .env file inside the config directory (~/.callboard/.env). */
+export const ENV_FILE = join(DATA_DIR, ".env");
 
 /**
  * Base directory for agent workspaces (~/.callboard/agent-workspaces by default).
@@ -27,6 +30,35 @@ export function ensureDataDir(): void {
   if (!existsSync(DATA_DIR)) {
     mkdirSync(DATA_DIR, { recursive: true });
   }
+}
+
+/** Default .env template scaffolded on first run. */
+const ENV_TEMPLATE = `# Callboard configuration — ~/.callboard/.env
+# See .env.example in the project repo for all available options.
+
+# Authentication password for the application (required)
+# If empty, login is disabled.
+AUTH_PASSWORD=
+
+# Port for the application (defaults to 8000)
+# PORT=8000
+
+# Log level for backend output (error, warn, info, debug). Default: info
+# LOG_LEVEL=info
+
+# Session cookie name (optional, defaults to "callboard_session")
+# SESSION_COOKIE_NAME=
+`;
+
+/**
+ * Scaffold a default ~/.callboard/.env if one does not exist.
+ * Returns true if a new file was created (first run), false otherwise.
+ */
+export function ensureEnvFile(): boolean {
+  ensureDataDir();
+  if (existsSync(ENV_FILE)) return false;
+  writeFileSync(ENV_FILE, ENV_TEMPLATE, { mode: 0o600 });
+  return true;
 }
 
 function isDirectory(p: string): boolean {
