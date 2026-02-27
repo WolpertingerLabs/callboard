@@ -1,0 +1,262 @@
+import { stat, open, access } from "fs/promises";
+import { constants } from "fs";
+import { sessionRegistry } from "./session-registry.js";
+import { chatFileService } from "./chat-file-service.js";
+import { findSessionLogPath } from "../utils/session-log.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("cli-watcher");
+
+/** How often to scan for CLI session activity (ms) */
+const SCAN_INTERVAL_MS = 5_000;
+
+/** How long a session can be idle (no file growth) before it's considered stopped (ms) */
+const INACTIVITY_THRESHOLD_MS = 30_000;
+
+/**
+ * Maximum number of recent chats to scan for CLI activity.
+ * CLI sessions will appear in recent chats, so we don't need to scan the
+ * entire history — just the most recently-updated entries (same scope the
+ * sidebar shows). This keeps the 5-second scan lightweight.
+ */
+const SCAN_CHAT_LIMIT = 20;
+
+interface TrackedSession {
+  chatId: string;
+  logPath: string;
+  lastSize: number;
+  lastGrowthTime: number;
+}
+
+const trackedSessions = new Map<string, TrackedSession>();
+let scanTimer: ReturnType<typeof setTimeout> | null = null;
+let registryListener: ((event: any) => void) | null = null;
+let scanning = false;
+
+/** Check if a file exists (async equivalent of existsSync). */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if a JSONL file's tail contains a completion marker
+ * (type: "summary" or message.stop_reason).
+ */
+async function hasCompletionMarker(logPath: string): Promise<boolean> {
+  let fh;
+  try {
+    const stats = await stat(logPath);
+    const tailSize = Math.min(4096, stats.size);
+    if (tailSize === 0) return false;
+
+    const buffer = Buffer.alloc(tailSize);
+    fh = await open(logPath, "r");
+    await fh.read(buffer, 0, tailSize, stats.size - tailSize);
+
+    const tailContent = buffer.toString("utf-8");
+    const lines = tailContent.split("\n");
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === "summary" || parsed.message?.stop_reason) {
+          return true;
+        }
+      } catch {
+        // Skip unparseable lines
+      }
+    }
+  } catch {
+    // File read error — assume not complete
+  } finally {
+    await fh?.close();
+  }
+  return false;
+}
+
+/**
+ * Scan all known chats for CLI session activity.
+ *
+ * For each chat that isn't already tracked as a web session:
+ * - Check if its JSONL file has grown since the last scan
+ * - If growing: register as "cli" in the session registry
+ * - If idle for too long: unregister from the session registry
+ */
+async function scan(): Promise<void> {
+  // Prevent overlapping scans if a previous one is still in-flight
+  if (scanning) return;
+  scanning = true;
+
+  const now = Date.now();
+
+  try {
+    // Only scan the most recent chats — active CLI sessions will always be
+    // near the top since their chat entry gets updated. This avoids reading
+    // every chat file on disk every 5 seconds.
+    const recentChats = chatFileService.getAllChats(SCAN_CHAT_LIMIT);
+
+    for (const chat of recentChats) {
+      if (!chat.session_id) continue;
+
+      // Don't override web sessions
+      const existing = sessionRegistry.get(chat.id);
+      if (existing?.type === "web") continue;
+
+      const logPath = findSessionLogPath(chat.session_id);
+      if (!logPath || !(await fileExists(logPath))) continue;
+
+      let stats;
+      try {
+        stats = await stat(logPath);
+      } catch {
+        continue;
+      }
+
+      const tracked = trackedSessions.get(chat.id);
+
+      if (tracked) {
+        // Already tracking this session — check for growth
+        if (stats.size > tracked.lastSize) {
+          // File grew — session is active
+          tracked.lastSize = stats.size;
+          tracked.lastGrowthTime = now;
+
+          if (!sessionRegistry.has(chat.id)) {
+            // Check for completion before registering
+            if (!(await hasCompletionMarker(logPath))) {
+              sessionRegistry.register(chat.id, { type: "cli" });
+            }
+          }
+        } else if (sessionRegistry.has(chat.id) && existing?.type === "cli") {
+          // File hasn't grown — check if past inactivity threshold
+          if (now - tracked.lastGrowthTime > INACTIVITY_THRESHOLD_MS) {
+            sessionRegistry.unregister(chat.id);
+            trackedSessions.delete(chat.id);
+          }
+        }
+      } else {
+        // Not yet tracking — establish a baseline with the current file size.
+        // We intentionally do NOT register on the first encounter; we need a
+        // second scan to confirm the file is *actively growing*.  This prevents
+        // false positives from recently-completed web sessions whose writes
+        // make the file look "recent" even though no CLI session is running.
+        trackedSessions.set(chat.id, {
+          chatId: chat.id,
+          logPath,
+          lastSize: stats.size,
+          lastGrowthTime: stats.mtime.getTime(),
+        });
+      }
+    }
+
+    // Clean up tracked sessions whose chats were deleted. Use getChat() for
+    // a targeted lookup instead of scanning the full list.
+    for (const [chatId] of trackedSessions) {
+      if (!chatFileService.getChat(chatId)) {
+        trackedSessions.delete(chatId);
+        const existing = sessionRegistry.get(chatId);
+        if (existing?.type === "cli") {
+          sessionRegistry.unregister(chatId);
+        }
+      }
+    }
+  } catch (err: any) {
+    log.warn(`CLI watcher scan error: ${err.message}`);
+  } finally {
+    scanning = false;
+  }
+}
+
+/**
+ * Schedule the next scan after SCAN_INTERVAL_MS.
+ * Uses setTimeout instead of setInterval to prevent overlapping scans
+ * (each scan waits for the previous one to finish before scheduling the next).
+ */
+function scheduleNextScan(): void {
+  if (!scanTimer) return; // Watcher has been shut down
+  scanTimer = setTimeout(async () => {
+    await scan();
+    scheduleNextScan();
+  }, SCAN_INTERVAL_MS);
+}
+
+/**
+ * Initialize the CLI session watcher.
+ * Starts a periodic scan that detects active CLI sessions and
+ * registers/unregisters them in the session registry.
+ */
+export function initCliWatcher(): void {
+  if (scanTimer) return; // Already running
+
+  log.info(`CLI watcher started (interval=${SCAN_INTERVAL_MS}ms, timeout=${INACTIVITY_THRESHOLD_MS}ms)`);
+
+  // Listen for web sessions ending so we can pre-seed trackedSessions with
+  // the current file size.  This prevents the next scan from mistaking the
+  // web session's recent file writes as CLI activity.
+  registryListener = (event: { event: string; chatId: string; type: string }) => {
+    if (event.event !== "session_stopped" || event.type !== "web") return;
+
+    const chatId = event.chatId;
+    const chat = chatFileService.getChat(chatId);
+    if (!chat?.session_id) return;
+
+    const logPath = findSessionLogPath(chat.session_id);
+    if (!logPath) return;
+
+    // Use async stat for pre-seeding too
+    stat(logPath)
+      .then((stats) => {
+        // Seed with current size so the next scan sees "no growth"
+        trackedSessions.set(chatId, {
+          chatId,
+          logPath,
+          lastSize: stats.size,
+          lastGrowthTime: 0, // Set to 0 so inactivity check won't re-register
+        });
+        log.debug(`Pre-seeded tracking for ended web session: chatId=${chatId}, size=${stats.size}`);
+      })
+      .catch(() => {
+        // File stat failed — nothing to seed
+      });
+  };
+  sessionRegistry.on("change", registryListener);
+
+  // Run an initial scan immediately, then schedule recurring scans
+  // Use a sentinel value so scheduleNextScan knows we're still active
+  scanTimer = setTimeout(() => {}, 0);
+  scan().then(() => scheduleNextScan());
+}
+
+/**
+ * Stop the CLI session watcher and clean up.
+ */
+export function shutdownCliWatcher(): void {
+  if (scanTimer) {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  // Remove the registry listener
+  if (registryListener) {
+    sessionRegistry.off("change", registryListener);
+    registryListener = null;
+  }
+
+  // Unregister all CLI sessions
+  for (const [chatId] of trackedSessions) {
+    const existing = sessionRegistry.get(chatId);
+    if (existing?.type === "cli") {
+      sessionRegistry.unregister(chatId);
+    }
+  }
+  trackedSessions.clear();
+
+  log.info("CLI watcher stopped");
+}

@@ -19,11 +19,13 @@ import { agentsRouter } from "./routes/agents.js";
 import { agentSettingsRouter } from "./routes/agent-settings.js";
 import { proxyRouter } from "./routes/proxy.js";
 import { connectionsRouter } from "./routes/connections.js";
+import { sessionsRouter } from "./routes/sessions.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
 import { existsSync, readFileSync } from "fs";
 import { createLogger } from "./utils/logger.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
+import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
 import { LocalProxy } from "./services/local-proxy.js";
 import { getAgentSettings, getActiveMcpConfigDir, ensureLocalProxyConfigDir, ensureRemoteProxyConfigDir } from "./services/agent-settings.js";
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
@@ -109,6 +111,7 @@ app.use("/api/agents", agentsRouter);
 app.use("/api/agent-settings", agentSettingsRouter);
 app.use("/api/proxy", proxyRouter);
 app.use("/api/connections", connectionsRouter);
+app.use("/api/sessions", sessionsRouter);
 
 // Webhook route for local proxy mode (ingestor event ingestion)
 app.post("/webhooks/:path", (req, res) => {
@@ -150,6 +153,11 @@ app.listen(PORT, () => {
   } catch (err: any) {
     log.error(`Event watcher init failed: ${err.message}`);
   }
+  try {
+    initCliWatcher();
+  } catch (err: any) {
+    log.error(`CLI watcher init failed: ${err.message}`);
+  }
 
   // Start proxy based on configured mode
   const settings = getAgentSettings();
@@ -189,6 +197,7 @@ async function gracefulShutdown(signal: string) {
   log.info(`${signal} received, shutting down gracefully`);
   shutdownScheduler();
   shutdownEventWatchers();
+  shutdownCliWatcher();
 
   const localProxy = getLocalProxyInstance();
   if (localProxy) {

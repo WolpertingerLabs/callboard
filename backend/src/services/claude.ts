@@ -17,6 +17,7 @@ import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
+import { sessionRegistry } from "./session-registry.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -37,7 +38,6 @@ interface ActiveSession {
   emitter: EventEmitter;
 }
 
-const activeSessions = new Map<string, ActiveSession>();
 const pendingRequests = new Map<string, PendingRequest>();
 
 /**
@@ -216,7 +216,9 @@ function categorizeToolPermission(toolName: string): keyof DefaultPermissions | 
 }
 
 export function getActiveSession(chatId: string): ActiveSession | undefined {
-  return activeSessions.get(chatId);
+  const info = sessionRegistry.get(chatId);
+  if (!info || !info.abortController || !info.emitter) return undefined;
+  return { abortController: info.abortController, emitter: info.emitter };
 }
 
 export function hasPendingRequest(chatId: string): boolean {
@@ -254,10 +256,10 @@ export function respondToPermission(
 }
 
 export function stopSession(chatId: string): boolean {
-  const session = activeSessions.get(chatId);
-  if (session) {
-    session.abortController.abort();
-    activeSessions.delete(chatId);
+  const info = sessionRegistry.get(chatId);
+  if (info && info.abortController) {
+    info.abortController.abort();
+    sessionRegistry.unregister(chatId);
     pendingRequests.delete(chatId);
     return true;
   }
@@ -487,7 +489,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // Mutable tracking ID: for new chats starts as a temp ID, migrates to real chatId on session_id arrival
   let trackingId = opts.chatId || `new-${Date.now()}`;
-  activeSessions.set(trackingId, { abortController, emitter });
+  sessionRegistry.register(trackingId, { type: "web", abortController, emitter });
 
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata);
 
@@ -666,8 +668,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
             trackingId = sessionId;
             log.debug(`Migrated tracking ID: ${oldTrackingId} → ${trackingId}`);
 
-            activeSessions.delete(oldTrackingId);
-            activeSessions.set(trackingId, { abortController, emitter });
+            sessionRegistry.migrate(oldTrackingId, trackingId);
 
             const pending = pendingRequests.get(oldTrackingId);
             if (pending) {
@@ -740,7 +741,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {
-      activeSessions.delete(trackingId);
+      sessionRegistry.unregister(trackingId);
       pendingRequests.delete(trackingId);
     }
   })();

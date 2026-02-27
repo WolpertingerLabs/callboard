@@ -1,5 +1,5 @@
 import { Globe, Monitor, X, Bookmark, Bot, Zap } from "lucide-react";
-import type { Chat, SessionStatus } from "../api";
+import type { Chat } from "../api";
 
 interface Props {
   chat: Chat;
@@ -7,7 +7,7 @@ interface Props {
   onClick: () => void;
   onDelete: () => void;
   onToggleBookmark?: (bookmarked: boolean) => void;
-  sessionStatus?: SessionStatus;
+  sessionStatus?: { active: boolean; type: string };
 }
 
 export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, sessionStatus }: Props) {

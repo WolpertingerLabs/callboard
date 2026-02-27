@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import SplitLayout from "./components/SplitLayout";
 import Login from "./pages/Login";
+import { SessionProvider } from "./contexts/SessionContext";
 import { getThemeMode } from "./utils/localStorage";
 import type { ThemeMode } from "./utils/localStorage";
 
@@ -55,20 +56,22 @@ export default function App() {
   };
 
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* Existing chat routes */}
-        <Route path="/" element={<SplitLayout onLogout={handleLogout} />} />
-        <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} />} />
-        <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} />} />
-        <Route path="/queue" element={<SplitLayout onLogout={handleLogout} />} />
-        <Route path="/settings" element={<SplitLayout onLogout={handleLogout} />} />
+    <SessionProvider>
+      <BrowserRouter>
+        <Routes>
+          {/* Existing chat routes */}
+          <Route path="/" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/queue" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/settings" element={<SplitLayout onLogout={handleLogout} />} />
 
-        {/* Agent routes - rendered inside SplitLayout */}
-        <Route path="/agents" element={<SplitLayout onLogout={handleLogout} />} />
-        <Route path="/agents/new" element={<SplitLayout onLogout={handleLogout} />} />
-        <Route path="/agents/:alias/*" element={<SplitLayout onLogout={handleLogout} />} />
-      </Routes>
-    </BrowserRouter>
+          {/* Agent routes - rendered inside SplitLayout */}
+          <Route path="/agents" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/agents/new" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/agents/:alias/*" element={<SplitLayout onLogout={handleLogout} />} />
+        </Routes>
+      </BrowserRouter>
+    </SessionProvider>
   );
 }

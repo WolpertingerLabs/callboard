@@ -20,19 +20,18 @@ import {
   getMessages,
   getPending,
   respondToChat,
-  getSessionStatus,
   uploadImages,
   getSlashCommandsAndPlugins,
   getNewChatInfo,
   type Chat as ChatType,
   type ParsedMessage,
-  type SessionStatus,
   type Plugin,
   type NewChatInfo,
   type DefaultPermissions,
   type BranchConfig,
   type AppPluginsData,
 } from "../api";
+import { useIsSessionActive } from "../contexts/SessionContext";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
@@ -97,16 +96,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const agentSystemPrompt = (location.state as any)?.systemPrompt as string | undefined;
   const agentAlias = (location.state as any)?.agentAlias as string | undefined;
 
+  // When navigating from /chat/new → /chat/:id, the in-flight message is passed
+  // via router state so it survives the component remount.
+  // Read once and store in a ref so it's consumed exactly once per mount and
+  // doesn't become stale if the effect re-runs on id changes.
+  const transitionInFlightMessageRef = useRef((location.state as any)?.inFlightMessage as string | undefined);
+  const transitionInFlightMessage = transitionInFlightMessageRef.current;
+
   const [chat, setChat] = useState<ChatType | null>(null);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
-  const [streaming, setStreaming] = useState(false);
+  const [streaming, setStreaming] = useState(!!transitionInFlightMessage);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
+  const globalSessionActive = useIsSessionActive(id);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [draftMessage, setDraftMessage] = useState("");
-  const [inFlightMessage, setInFlightMessage] = useState<string | null>(null);
+  const [inFlightMessage, setInFlightMessage] = useState<string | null>(transitionInFlightMessage ?? null);
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [activePluginIds, setActivePluginIds] = useState<string[]>([]);
@@ -127,6 +133,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const planApprovedRef = useRef(false);
   const tempChatIdRef = useRef<string | null>(null);
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightMessageRef = useRef<string | null>(inFlightMessage);
+  inFlightMessageRef.current = inFlightMessage;
+  // Track whether globalSessionActive was ever truthy for the current chat.
+  // Used by the safety net to distinguish "session ended" from "session never started".
+  const sessionWasActiveRef = useRef(false);
+  // Track whether the stream already received message_complete for this session.
+  // Prevents the auto-connect effect from creating a reconnection loop when the
+  // CLI watcher hasn't yet detected that the session ended (up to 30s delay).
+  const streamCompletedRef = useRef(false);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -197,13 +212,29 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return items;
   }, [messages]);
 
+  // Determine if the in-flight message is already present in the fetched messages list.
+  // This prevents showing the user's message twice (once as in-flight, once in the list).
+  const inFlightAlreadyInMessages = useMemo(() => {
+    if (!inFlightMessage || messages.length === 0) return false;
+    // Check if the last user message in the list matches the in-flight text
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        return messages[i].content?.trim() === inFlightMessage.trim();
+      }
+    }
+    return false;
+  }, [inFlightMessage, messages]);
+
+  // Show the in-flight bubble only when it's set AND not yet in the messages list
+  const showInFlightMessage = inFlightMessage && !inFlightAlreadyInMessages;
+
   // Keep navigate and onChatListRefresh in refs to avoid readSSE dependency churn
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
   const onChatListRefreshRef = useRef(onChatListRefresh);
   onChatListRefreshRef.current = onChatListRefresh;
 
-  // Safety timeout: if streaming is true but no SSE events arrive for 2 minutes,
+  // Safety timeout: if streaming is true but no SSE events arrive for 5 minutes,
   // assume the stream is dead and reset the indicator.
   const STREAMING_INACTIVITY_TIMEOUT_MS = 300_000; // 5 minutes
 
@@ -271,12 +302,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               // Handle chat_created - fires during new chat creation
               if (event.type === "chat_created" && event.chatId) {
                 tempChatIdRef.current = event.chatId;
-                // Navigate to the real chat URL
-                navigateRef.current(`/chat/${event.chatId}`, { replace: true });
+                // Navigate to the real chat URL, passing the in-flight message
+                // via router state so it survives the component remount.
+                navigateRef.current(`/chat/${event.chatId}`, {
+                  replace: true,
+                  state: { inFlightMessage: inFlightMessageRef.current },
+                });
                 // Refresh chat list to show the new chat
                 onChatListRefreshRef.current?.();
                 // Cancel this stream - Chat will re-render with id param
-                // and auto-connect via checkSessionStatus()
+                // and auto-connect via the globalSessionActive useEffect
                 reader.cancel();
                 return;
               }
@@ -284,6 +319,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               if (event.type === "message_complete") {
                 if (currentIdRef.current !== streamChatId) return;
                 setCompacting(false);
+                // Mark that this stream session is complete so the auto-connect
+                // effect doesn't reconnect while the CLI watcher catches up.
+                streamCompletedRef.current = true;
 
                 // Check if the conversation ended right after a plan approval.
                 // The SDK may end the conversation turn after ExitPlanMode is processed,
@@ -315,7 +353,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 const reasonMsg = event.reason ? reasonMessages[event.reason] : undefined;
 
                 setStreaming(false);
-                setInFlightMessage(null);
                 // Refetch complete chat data and messages
                 getChat(streamChatId!).then((chatData) => {
                   if (currentIdRef.current !== streamChatId) return;
@@ -329,6 +366,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   } else {
                     setMessages(msgArray);
                   }
+                  // Clear in-flight after messages arrive to avoid visual gap
+                  setInFlightMessage(null);
                 });
                 // Refresh slash commands in case they were discovered during initialization
                 loadSlashCommands();
@@ -369,12 +408,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 if (planApprovedRef.current) {
                   planApprovedRef.current = false;
                 }
-                // Clear in-flight message once we get the first response
-                setInFlightMessage(null);
-                // New content is available - refetch all messages to show latest state with timestamps
+                // New content is available - refetch all messages to show latest state with timestamps.
+                // Clear in-flight message AFTER messages arrive to avoid a gap where the
+                // user's sent message is neither in inFlightMessage nor in the message list.
                 getMessages(streamChatId!).then((msgs) => {
                   if (currentIdRef.current !== streamChatId) return;
                   setMessages(Array.isArray(msgs) ? msgs : []);
+                  setInFlightMessage(null);
                 });
 
                 // Check if this is the first response and we should refresh chat list
@@ -440,26 +480,48 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, readSSE]);
 
-  // Check session status and auto-connect to active sessions
-  const checkSessionStatus = useCallback(async () => {
-    if (!id) return;
-    const checkId = id; // Capture for staleness check
-    try {
-      const status = await getSessionStatus(id);
-      // If user navigated to a different chat while awaiting, discard result
-      if (currentIdRef.current !== checkId) return;
-      setSessionStatus(status);
+  // Auto-connect to active sessions when the global session registry reports activity.
+  // This replaces the old one-shot checkSessionStatus() call with a reactive approach:
+  // whenever globalSessionActive becomes truthy, we connect to the SSE stream.
+  useEffect(() => {
+    if (!id || !globalSessionActive) return;
+    if (streaming || abortRef.current) return; // Already connected
+    if (streamCompletedRef.current) return; // Stream already completed, don't reconnect
 
-      // Auto-connect if session is active (web or CLI)
-      if (status.active && (status.type === "web" || status.type === "cli")) {
-        setNetworkError(null); // Clear any previous network errors
-        setStreaming(true);
-        connectToStream();
-      }
-    } catch (error) {
-      console.warn("Failed to check session status:", error);
+    setNetworkError(null);
+    setStreaming(true);
+    connectToStream();
+  }, [id, globalSessionActive, streaming, connectToStream]);
+
+  // Track when the session registry first reports this chat as active.
+  useEffect(() => {
+    if (globalSessionActive) {
+      sessionWasActiveRef.current = true;
+      streamCompletedRef.current = false; // Reset for new session
     }
-  }, [id, connectToStream]);
+  }, [globalSessionActive]);
+
+  // Safety net: if the session registry reports the session *transitioned* from
+  // active → inactive, always clean up streaming state.
+  // Fires when sessionWasActiveRef is true (the session was previously active —
+  // avoids false triggers on new chats or before the session is registered)
+  // and globalSessionActive is now falsy (session ended).
+  // Note: we intentionally do NOT require `streaming` to be true here. Due to
+  // the auto-reconnect loop (streaming toggles rapidly while CLI watcher catches
+  // up), streaming may be momentarily false when globalSessionActive changes.
+  useEffect(() => {
+    if (!globalSessionActive && sessionWasActiveRef.current) {
+      setStreaming(false);
+      setInFlightMessage(null);
+      sessionWasActiveRef.current = false;
+      streamCompletedRef.current = false;
+      // Abort any hanging SSE connection — the session is over
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    }
+  }, [globalSessionActive]);
 
   // Fetch slash commands and plugins for the chat
   const loadSlashCommands = useCallback(async () => {
@@ -484,13 +546,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setInFlightMessage(null);
     setPendingAction(null);
     setNetworkError(null);
-    setSessionStatus(null);
     setChat(null);
     setMessages([]);
     setBranchConfig({});
     setViewMode("chat");
     currentIdRef.current = undefined;
     tempChatIdRef.current = null;
+    sessionWasActiveRef.current = false;
+    streamCompletedRef.current = false;
 
     // Abort any existing SSE stream from a previous chat
     if (abortRef.current) {
@@ -520,16 +583,24 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     if (!id) return;
 
+    // Detect if this is a new-chat → existing-chat transition.
+    // When navigating from /chat/new → /chat/:id, the in-flight message is passed
+    // via router state (transitionInFlightMessage). We also check tempChatIdRef for
+    // same-component transitions (though those are rare with separate routes).
+    const isNewChatTransition = !!transitionInFlightMessage || tempChatIdRef.current === id;
+
     // Track the current chat ID for staleness detection in closures
     currentIdRef.current = id;
 
     // Reset state for new chat — prevents old chat's streaming/error state
-    // from being visible while new chat data loads
-    setStreaming(false);
-    setInFlightMessage(null);
+    // from being visible while new chat data loads.
+    // Skip resetting inFlightMessage and streaming during new-chat transitions.
+    if (!isNewChatTransition) {
+      setStreaming(false);
+      setInFlightMessage(null);
+    }
     setPendingAction(null);
     setNetworkError(null);
-    setSessionStatus(null);
     setInfo(null); // Clear new-chat info when transitioning to existing mode
     setViewMode("chat"); // Reset to chat view when switching chats
 
@@ -537,6 +608,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     hasReceivedFirstResponseRef.current = false;
     planApprovedRef.current = false;
     tempChatIdRef.current = null;
+    sessionWasActiveRef.current = false;
+    streamCompletedRef.current = false;
+
+    // Clear only the inFlightMessage from router state so back/forward navigation
+    // doesn't re-apply it. Preserve other state values (e.g. agentSystemPrompt, agentAlias).
+    if (transitionInFlightMessage) {
+      transitionInFlightMessageRef.current = undefined; // Consume once
+      const { inFlightMessage: _, ...rest } = (location.state ?? {}) as Record<string, unknown>;
+      navigate(location.pathname + location.search, { replace: true, state: Object.keys(rest).length > 0 ? rest : undefined });
+    }
 
     getChat(id!).then((chatData) => {
       // Guard: only apply if still on this chat
@@ -583,8 +664,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
     });
 
-    // Check session status and auto-connect
-    checkSessionStatus();
+    // Auto-connect is now handled reactively by the globalSessionActive useEffect above
 
     // Cleanup: abort SSE stream when chat ID changes or component unmounts
     return () => {
@@ -593,7 +673,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         abortRef.current = null;
       }
     };
-  }, [id, checkSessionStatus, loadSlashCommands]);
+  }, [id, loadSlashCommands]);
 
   useEffect(() => {
     // Only auto-scroll if auto-scroll is enabled
@@ -640,6 +720,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Set in-flight message to show user's message immediately
       setInFlightMessage(prompt);
       setNetworkError(null); // Clear any previous network errors
+      streamCompletedRef.current = false; // Reset so new message can stream
 
       // If there's already a streaming connection, stop it first
       if (abortRef.current) {
@@ -812,8 +893,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     });
-    await checkSessionStatus();
-  }, [checkSessionStatus, id]);
+    // Auto-connect is handled reactively by the globalSessionActive useEffect
+    if (globalSessionActive && !streaming && !abortRef.current && !streamCompletedRef.current) {
+      setStreaming(true);
+      connectToStream();
+    }
+  }, [globalSessionActive, streaming, connectToStream, id]);
 
   // Compute indices of user text messages for navigation
   const userMessageIndices = useMemo(() => {
@@ -993,18 +1078,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               >
                 New
               </div>
-            ) : sessionStatus?.active ? (
+            ) : globalSessionActive ? (
               <div
                 style={{
                   fontSize: 11,
                   padding: "2px 6px",
                   borderRadius: 4,
-                  background: sessionStatus.type === "web" ? "var(--accent)" : "#10b981",
+                  background: globalSessionActive.type === "web" ? "var(--accent)" : "#10b981",
                   color: "#fff",
                   fontWeight: 500,
                 }}
               >
-                {sessionStatus.type === "web" ? "🌐 Active" : "💻 CLI"}
+                {globalSessionActive.type === "web" ? "🌐 Active" : "💻 CLI"}
               </div>
             ) : null}
             {/* Worktree tag */}
@@ -1476,7 +1561,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </div>
                 )}
 
-                {inFlightMessage && (
+                {showInFlightMessage && (
                   <div
                     style={{
                       display: "flex",
@@ -1495,26 +1580,53 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         fontSize: 14,
                         lineHeight: 1.5,
                         wordBreak: "break-word",
-                        opacity: 0.7,
+                        opacity: 0.9,
                       }}
                     >
                       {inFlightMessage}
                     </div>
                     <div
                       style={{
-                        fontSize: 10,
+                        fontSize: 11,
                         color: "var(--text-muted)",
-                        opacity: 0.5,
                         marginTop: 4,
                         textAlign: "right",
                       }}
                     >
-                      Sending...
+                      Sent
                     </div>
                   </div>
                 )}
 
-                {streaming && <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0" }}>Starting chat session...</div>}
+                {streaming && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "12px 0",
+                      color: "var(--text-muted)",
+                      fontSize: 13,
+                    }}
+                  >
+                    <span style={{ display: "inline-flex", gap: 3 }}>
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width: 5,
+                            height: 5,
+                            borderRadius: "50%",
+                            background: "var(--accent)",
+                            display: "inline-block",
+                            animation: `thinking-bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
+                          }}
+                        />
+                      ))}
+                    </span>
+                    <span>Claude is thinking...</span>
+                  </div>
+                )}
               </>
             ) : (
               /* EXISTING CHAT MODE: Message list */
@@ -1547,7 +1659,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     </div>
                   );
                 })}
-                {inFlightMessage && (
+                {showInFlightMessage && (
                   <div
                     style={{
                       display: "flex",
@@ -1566,21 +1678,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         fontSize: 14,
                         lineHeight: 1.5,
                         wordBreak: "break-word",
-                        opacity: 0.7,
+                        opacity: 0.9,
                       }}
                     >
                       {inFlightMessage}
                     </div>
                     <div
                       style={{
-                        fontSize: 10,
+                        fontSize: 11,
                         color: "var(--text-muted)",
-                        opacity: 0.5,
                         marginTop: 4,
                         textAlign: "right" as const,
                       }}
                     >
-                      Sending...
+                      Sent
                     </div>
                   </div>
                 )}
@@ -1616,11 +1727,35 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </div>
                 )}
                 {streaming && (
-                  <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0", display: "flex", alignItems: "center", gap: 8 }}>
-                    <div>{compacting ? "Compacting conversation..." : "Claude is working..."}</div>
-                    <div style={{ fontSize: 11, opacity: 0.7 }}>
+                  <div
+                    style={{
+                      color: "var(--text-muted)",
+                      fontSize: 13,
+                      padding: "12px 0",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <span style={{ display: "inline-flex", gap: 3 }}>
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width: 5,
+                            height: 5,
+                            borderRadius: "50%",
+                            background: "var(--accent)",
+                            display: "inline-block",
+                            animation: `thinking-bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
+                          }}
+                        />
+                      ))}
+                    </span>
+                    <span>{compacting ? "Compacting conversation..." : "Claude is thinking..."}</span>
+                    <span style={{ fontSize: 11, opacity: 0.7 }}>
                       {compacting ? "(Summarizing context to free up space)" : "(You can send another message anytime)"}
-                    </div>
+                    </span>
                   </div>
                 )}
                 <div ref={bottomRef} />
