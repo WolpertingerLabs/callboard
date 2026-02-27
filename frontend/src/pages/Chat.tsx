@@ -132,6 +132,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightMessageRef = useRef<string | null>(inFlightMessage);
   inFlightMessageRef.current = inFlightMessage;
+  // Track whether globalSessionActive was ever truthy for the current chat.
+  // Used by the safety net to distinguish "session ended" from "session never started".
+  const sessionWasActiveRef = useRef(false);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -479,14 +482,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     connectToStream();
   }, [id, globalSessionActive, streaming, connectToStream]);
 
-  // Safety net: if the session registry reports the session stopped but we still
-  // think we're streaming (e.g., SSE drop without message_complete), reset.
-  // Trust the registry as the source of truth — if it says stopped, clean up
-  // even if we have an active SSE reader (it will close on its own or via abort).
+  // Track when the session registry first reports this chat as active.
   useEffect(() => {
-    if (!globalSessionActive && streaming) {
+    if (globalSessionActive) {
+      sessionWasActiveRef.current = true;
+    }
+  }, [globalSessionActive]);
+
+  // Safety net: if the session registry reports the session *transitioned* from
+  // active → inactive but we still think we're streaming, clean up.
+  // Only fires when:
+  //   1. sessionWasActiveRef is true (the session was previously active — avoids
+  //      false triggers on new chats or before the session is registered)
+  //   2. globalSessionActive is now falsy (session ended)
+  //   3. streaming is still true (we haven't cleaned up yet)
+  useEffect(() => {
+    if (!globalSessionActive && streaming && sessionWasActiveRef.current) {
       setStreaming(false);
       setInFlightMessage(null);
+      sessionWasActiveRef.current = false;
       // Abort any hanging SSE connection — the session is over
       if (abortRef.current) {
         abortRef.current.abort();
@@ -524,6 +538,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setViewMode("chat");
     currentIdRef.current = undefined;
     tempChatIdRef.current = null;
+    sessionWasActiveRef.current = false;
 
     // Abort any existing SSE stream from a previous chat
     if (abortRef.current) {
@@ -578,6 +593,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     hasReceivedFirstResponseRef.current = false;
     planApprovedRef.current = false;
     tempChatIdRef.current = null;
+    sessionWasActiveRef.current = false;
 
     // Clear the router state so back/forward navigation doesn't re-apply the
     // in-flight message from a previous transition.
