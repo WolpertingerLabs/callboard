@@ -1,5 +1,4 @@
-import { statSync, existsSync, readdirSync, openSync, readSync, closeSync } from "fs";
-import { join } from "path";
+import { statSync, existsSync, openSync, readSync, closeSync } from "fs";
 import { sessionRegistry } from "./session-registry.js";
 import { chatFileService } from "./chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
@@ -18,8 +17,6 @@ interface TrackedSession {
   logPath: string;
   lastSize: number;
   lastGrowthTime: number;
-  /** Tracked sizes for subagent JSONL files (keyed by file path) */
-  subagentSizes: Map<string, number>;
 }
 
 const trackedSessions = new Map<string, TrackedSession>();
@@ -63,43 +60,10 @@ function hasCompletionMarker(logPath: string): boolean {
 }
 
 /**
- * Check if any subagent JSONL files have grown since the last scan.
- * Returns true if any subagent file is new or has grown, updating
- * the tracked sizes in the process.
- */
-function hasSubagentActivity(logPath: string, tracked: TrackedSession): boolean {
-  const subagentsDir = logPath.replace(".jsonl", "") + "/subagents";
-  if (!existsSync(subagentsDir)) return false;
-
-  let hasActivity = false;
-  try {
-    for (const file of readdirSync(subagentsDir)) {
-      if (!file.startsWith("agent-") || !file.endsWith(".jsonl")) continue;
-      const filePath = join(subagentsDir, file);
-
-      try {
-        const stats = statSync(filePath);
-        const prevSize = tracked.subagentSizes.get(filePath) ?? 0;
-
-        if (stats.size > prevSize) {
-          tracked.subagentSizes.set(filePath, stats.size);
-          hasActivity = true;
-        }
-      } catch {
-        // Individual file stat error — skip
-      }
-    }
-  } catch {
-    // Directory read error — skip
-  }
-  return hasActivity;
-}
-
-/**
  * Scan all known chats for CLI session activity.
  *
  * For each chat that isn't already tracked as a web session:
- * - Check if its JSONL file or subagent files have grown since the last scan
+ * - Check if its JSONL file has grown since the last scan
  * - If growing: register as "cli" in the session registry
  * - If idle for too long: unregister from the session registry
  */
@@ -129,12 +93,9 @@ function scan(): void {
       const tracked = trackedSessions.get(chat.id);
 
       if (tracked) {
-        // Already tracking this session — check for growth in main JSONL or subagent files
-        const mainGrew = stats.size > tracked.lastSize;
-        const subagentGrew = hasSubagentActivity(logPath, tracked);
-
-        if (mainGrew || subagentGrew) {
-          // Activity detected — session is active
+        // Already tracking this session — check for growth
+        if (stats.size > tracked.lastSize) {
+          // File grew — session is active
           tracked.lastSize = stats.size;
           tracked.lastGrowthTime = now;
 
@@ -145,7 +106,7 @@ function scan(): void {
             }
           }
         } else if (sessionRegistry.has(chat.id) && existing?.type === "cli") {
-          // No growth in main JSONL or subagent files — check if past inactivity threshold
+          // File hasn't grown — check if past inactivity threshold
           if (now - tracked.lastGrowthTime > INACTIVITY_THRESHOLD_MS) {
             sessionRegistry.unregister(chat.id);
             trackedSessions.delete(chat.id);
@@ -162,7 +123,6 @@ function scan(): void {
           logPath,
           lastSize: stats.size,
           lastGrowthTime: stats.mtime.getTime(),
-          subagentSizes: new Map(),
         });
       }
     }
@@ -215,7 +175,6 @@ export function initCliWatcher(): void {
         logPath,
         lastSize: stats.size,
         lastGrowthTime: 0, // Set to 0 so inactivity check won't re-register
-        subagentSizes: new Map(),
       });
       log.debug(`Pre-seeded tracking for ended web session: chatId=${chatId}, size=${stats.size}`);
     } catch {
