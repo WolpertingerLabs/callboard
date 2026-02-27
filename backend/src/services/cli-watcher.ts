@@ -1,4 +1,5 @@
-import { statSync, existsSync, openSync, readSync, closeSync } from "fs";
+import { stat, open, access } from "fs/promises";
+import { constants } from "fs";
 import { sessionRegistry } from "./session-registry.js";
 import { chatFileService } from "./chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
@@ -20,23 +21,34 @@ interface TrackedSession {
 }
 
 const trackedSessions = new Map<string, TrackedSession>();
-let scanInterval: ReturnType<typeof setInterval> | null = null;
+let scanTimer: ReturnType<typeof setTimeout> | null = null;
 let registryListener: ((event: any) => void) | null = null;
+let scanning = false;
+
+/** Check if a file exists (async equivalent of existsSync). */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Check if a JSONL file's tail contains a completion marker
  * (type: "summary" or message.stop_reason).
  */
-function hasCompletionMarker(logPath: string): boolean {
+async function hasCompletionMarker(logPath: string): Promise<boolean> {
+  let fh;
   try {
-    const stats = statSync(logPath);
+    const stats = await stat(logPath);
     const tailSize = Math.min(4096, stats.size);
     if (tailSize === 0) return false;
 
     const buffer = Buffer.alloc(tailSize);
-    const fd = openSync(logPath, "r");
-    readSync(fd, buffer, 0, tailSize, stats.size - tailSize);
-    closeSync(fd);
+    fh = await open(logPath, "r");
+    await fh.read(buffer, 0, tailSize, stats.size - tailSize);
 
     const tailContent = buffer.toString("utf-8");
     const lines = tailContent.split("\n");
@@ -55,6 +67,8 @@ function hasCompletionMarker(logPath: string): boolean {
     }
   } catch {
     // File read error — assume not complete
+  } finally {
+    await fh?.close();
   }
   return false;
 }
@@ -67,7 +81,11 @@ function hasCompletionMarker(logPath: string): boolean {
  * - If growing: register as "cli" in the session registry
  * - If idle for too long: unregister from the session registry
  */
-function scan(): void {
+async function scan(): Promise<void> {
+  // Prevent overlapping scans if a previous one is still in-flight
+  if (scanning) return;
+  scanning = true;
+
   const now = Date.now();
 
   try {
@@ -81,11 +99,11 @@ function scan(): void {
       if (existing?.type === "web") continue;
 
       const logPath = findSessionLogPath(chat.session_id);
-      if (!logPath || !existsSync(logPath)) continue;
+      if (!logPath || !(await fileExists(logPath))) continue;
 
       let stats;
       try {
-        stats = statSync(logPath);
+        stats = await stat(logPath);
       } catch {
         continue;
       }
@@ -101,7 +119,7 @@ function scan(): void {
 
           if (!sessionRegistry.has(chat.id)) {
             // Check for completion before registering
-            if (!hasCompletionMarker(logPath)) {
+            if (!(await hasCompletionMarker(logPath))) {
               sessionRegistry.register(chat.id, { type: "cli" });
             }
           }
@@ -140,7 +158,22 @@ function scan(): void {
     }
   } catch (err: any) {
     log.warn(`CLI watcher scan error: ${err.message}`);
+  } finally {
+    scanning = false;
   }
+}
+
+/**
+ * Schedule the next scan after SCAN_INTERVAL_MS.
+ * Uses setTimeout instead of setInterval to prevent overlapping scans
+ * (each scan waits for the previous one to finish before scheduling the next).
+ */
+function scheduleNextScan(): void {
+  if (!scanTimer) return; // Watcher has been shut down
+  scanTimer = setTimeout(async () => {
+    await scan();
+    scheduleNextScan();
+  }, SCAN_INTERVAL_MS);
 }
 
 /**
@@ -149,7 +182,7 @@ function scan(): void {
  * registers/unregisters them in the session registry.
  */
 export function initCliWatcher(): void {
-  if (scanInterval) return; // Already running
+  if (scanTimer) return; // Already running
 
   log.info(`CLI watcher started (interval=${SCAN_INTERVAL_MS}ms, timeout=${INACTIVITY_THRESHOLD_MS}ms)`);
 
@@ -165,37 +198,39 @@ export function initCliWatcher(): void {
     if (!chat?.session_id) return;
 
     const logPath = findSessionLogPath(chat.session_id);
-    if (!logPath || !existsSync(logPath)) return;
+    if (!logPath) return;
 
-    try {
-      const stats = statSync(logPath);
-      // Seed with current size so the next scan sees "no growth"
-      trackedSessions.set(chatId, {
-        chatId,
-        logPath,
-        lastSize: stats.size,
-        lastGrowthTime: 0, // Set to 0 so inactivity check won't re-register
+    // Use async stat for pre-seeding too
+    stat(logPath)
+      .then((stats) => {
+        // Seed with current size so the next scan sees "no growth"
+        trackedSessions.set(chatId, {
+          chatId,
+          logPath,
+          lastSize: stats.size,
+          lastGrowthTime: 0, // Set to 0 so inactivity check won't re-register
+        });
+        log.debug(`Pre-seeded tracking for ended web session: chatId=${chatId}, size=${stats.size}`);
+      })
+      .catch(() => {
+        // File stat failed — nothing to seed
       });
-      log.debug(`Pre-seeded tracking for ended web session: chatId=${chatId}, size=${stats.size}`);
-    } catch {
-      // File stat failed — nothing to seed
-    }
   };
   sessionRegistry.on("change", registryListener);
 
-  // Run an initial scan immediately
-  scan();
-
-  scanInterval = setInterval(scan, SCAN_INTERVAL_MS);
+  // Run an initial scan immediately, then schedule recurring scans
+  // Use a sentinel value so scheduleNextScan knows we're still active
+  scanTimer = setTimeout(() => {}, 0);
+  scan().then(() => scheduleNextScan());
 }
 
 /**
  * Stop the CLI session watcher and clean up.
  */
 export function shutdownCliWatcher(): void {
-  if (scanInterval) {
-    clearInterval(scanInterval);
-    scanInterval = null;
+  if (scanTimer) {
+    clearTimeout(scanTimer);
+    scanTimer = null;
   }
 
   // Remove the registry listener

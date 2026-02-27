@@ -32,9 +32,18 @@ class SessionRegistry extends EventEmitter {
 
   /**
    * Register a new active session.
+   * If a session already exists for this chatId, it is unregistered first
+   * (emitting a "session_stopped" event) to avoid leaking resources.
    * Emits a "change" event with { event: "session_started", chatId, type }.
    */
   register(chatId: string, info: Omit<SessionInfo, "chatId" | "startedAt">): void {
+    const existing = this.sessions.get(chatId);
+    if (existing) {
+      log.warn(`register: overwriting existing session for chatId=${chatId} (was type=${existing.type}, now type=${info.type})`);
+      this.sessions.delete(chatId);
+      this.emit("change", { event: "session_stopped", chatId, type: existing.type } as SessionEvent);
+    }
+
     const session: SessionInfo = {
       chatId,
       startedAt: Date.now(),

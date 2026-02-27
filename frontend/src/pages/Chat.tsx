@@ -227,7 +227,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const onChatListRefreshRef = useRef(onChatListRefresh);
   onChatListRefreshRef.current = onChatListRefresh;
 
-  // Safety timeout: if streaming is true but no SSE events arrive for 2 minutes,
+  // Safety timeout: if streaming is true but no SSE events arrive for 5 minutes,
   // assume the stream is dead and reset the indicator.
   const STREAMING_INACTIVITY_TIMEOUT_MS = 300_000; // 5 minutes
 
@@ -595,10 +595,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     tempChatIdRef.current = null;
     sessionWasActiveRef.current = false;
 
-    // Clear the router state so back/forward navigation doesn't re-apply the
-    // in-flight message from a previous transition.
+    // Clear only the inFlightMessage from router state so back/forward navigation
+    // doesn't re-apply it. Preserve other state values (e.g. agentSystemPrompt, agentAlias).
     if (transitionInFlightMessage) {
-      window.history.replaceState({}, "");
+      const { inFlightMessage: _, ...rest } = (window.history.state ?? {}) as Record<string, unknown>;
+      window.history.replaceState(rest, "");
     }
 
     getChat(id!).then((chatData) => {
