@@ -20,19 +20,18 @@ import {
   getMessages,
   getPending,
   respondToChat,
-  getSessionStatus,
   uploadImages,
   getSlashCommandsAndPlugins,
   getNewChatInfo,
   type Chat as ChatType,
   type ParsedMessage,
-  type SessionStatus,
   type Plugin,
   type NewChatInfo,
   type DefaultPermissions,
   type BranchConfig,
   type AppPluginsData,
 } from "../api";
+import { useIsSessionActive } from "../contexts/SessionContext";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
@@ -102,7 +101,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
+  const globalSessionActive = useIsSessionActive(id);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [draftMessage, setDraftMessage] = useState("");
@@ -276,7 +275,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // Refresh chat list to show the new chat
                 onChatListRefreshRef.current?.();
                 // Cancel this stream - Chat will re-render with id param
-                // and auto-connect via checkSessionStatus()
+                // and auto-connect via the globalSessionActive useEffect
                 reader.cancel();
                 return;
               }
@@ -440,26 +439,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, readSSE]);
 
-  // Check session status and auto-connect to active sessions
-  const checkSessionStatus = useCallback(async () => {
-    if (!id) return;
-    const checkId = id; // Capture for staleness check
-    try {
-      const status = await getSessionStatus(id);
-      // If user navigated to a different chat while awaiting, discard result
-      if (currentIdRef.current !== checkId) return;
-      setSessionStatus(status);
+  // Auto-connect to active sessions when the global session registry reports activity.
+  // This replaces the old one-shot checkSessionStatus() call with a reactive approach:
+  // whenever globalSessionActive becomes truthy, we connect to the SSE stream.
+  useEffect(() => {
+    if (!id || !globalSessionActive) return;
+    if (streaming || abortRef.current) return; // Already connected
 
-      // Auto-connect if session is active (web or CLI)
-      if (status.active && (status.type === "web" || status.type === "cli")) {
-        setNetworkError(null); // Clear any previous network errors
-        setStreaming(true);
-        connectToStream();
-      }
-    } catch (error) {
-      console.warn("Failed to check session status:", error);
+    setNetworkError(null);
+    setStreaming(true);
+    connectToStream();
+  }, [id, globalSessionActive, streaming, connectToStream]);
+
+  // Safety net: if the session registry reports the session stopped but we still
+  // think we're streaming (e.g., SSE drop without message_complete), reset.
+  useEffect(() => {
+    if (!globalSessionActive && streaming && !abortRef.current) {
+      setStreaming(false);
+      setInFlightMessage(null);
     }
-  }, [id, connectToStream]);
+  }, [globalSessionActive, streaming]);
 
   // Fetch slash commands and plugins for the chat
   const loadSlashCommands = useCallback(async () => {
@@ -484,7 +483,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setInFlightMessage(null);
     setPendingAction(null);
     setNetworkError(null);
-    setSessionStatus(null);
     setChat(null);
     setMessages([]);
     setBranchConfig({});
@@ -529,7 +527,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setInFlightMessage(null);
     setPendingAction(null);
     setNetworkError(null);
-    setSessionStatus(null);
     setInfo(null); // Clear new-chat info when transitioning to existing mode
     setViewMode("chat"); // Reset to chat view when switching chats
 
@@ -583,8 +580,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
     });
 
-    // Check session status and auto-connect
-    checkSessionStatus();
+    // Auto-connect is now handled reactively by the globalSessionActive useEffect above
 
     // Cleanup: abort SSE stream when chat ID changes or component unmounts
     return () => {
@@ -593,7 +589,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         abortRef.current = null;
       }
     };
-  }, [id, checkSessionStatus, loadSlashCommands]);
+  }, [id, loadSlashCommands]);
 
   useEffect(() => {
     // Only auto-scroll if auto-scroll is enabled
@@ -812,8 +808,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     });
-    await checkSessionStatus();
-  }, [checkSessionStatus, id]);
+    // Auto-connect is handled reactively by the globalSessionActive useEffect
+    if (globalSessionActive && !streaming && !abortRef.current) {
+      setStreaming(true);
+      connectToStream();
+    }
+  }, [globalSessionActive, streaming, connectToStream, id]);
 
   // Compute indices of user text messages for navigation
   const userMessageIndices = useMemo(() => {
@@ -993,18 +993,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               >
                 New
               </div>
-            ) : sessionStatus?.active ? (
+            ) : globalSessionActive ? (
               <div
                 style={{
                   fontSize: 11,
                   padding: "2px 6px",
                   borderRadius: 4,
-                  background: sessionStatus.type === "web" ? "var(--accent)" : "#10b981",
+                  background: globalSessionActive.type === "web" ? "var(--accent)" : "#10b981",
                   color: "#fff",
                   fontWeight: 500,
                 }}
               >
-                {sessionStatus.type === "web" ? "🌐 Active" : "💻 CLI"}
+                {globalSessionActive.type === "web" ? "🌐 Active" : "💻 CLI"}
               </div>
             ) : null}
             {/* Worktree tag */}

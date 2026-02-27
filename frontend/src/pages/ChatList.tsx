@@ -1,18 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import {
-  listChats,
-  deleteChat,
-  toggleBookmark,
-  getSessionStatus,
-  listAgents,
-  getAgentIdentityPrompt,
-  type Chat,
-  type SessionStatus,
-  type DefaultPermissions,
-  type AgentConfig,
-} from "../api";
+import { listChats, deleteChat, toggleBookmark, listAgents, getAgentIdentityPrompt, type Chat, type DefaultPermissions, type AgentConfig } from "../api";
+import { useSessionContext } from "../contexts/SessionContext";
 import ChatListItem from "../components/ChatListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import PermissionSettings from "../components/PermissionSettings";
@@ -39,8 +29,8 @@ interface ChatListProps {
 }
 
 export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, onToggleSidebar }: ChatListProps) {
+  const { activeSessions } = useSessionContext();
   const [chats, setChats] = useState<Chat[]>([]);
-  const [sessionStatuses, setSessionStatuses] = useState<Map<string, SessionStatus>>(new Map());
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
@@ -97,20 +87,6 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
       // Update the UI to reflect any new suggested directories
       updateRecentDirs();
-
-      // Fetch session statuses for all chats
-      const statuses = new Map<string, SessionStatus>();
-      await Promise.all(
-        response.chats.map(async (chat) => {
-          try {
-            const status = await getSessionStatus(chat.id);
-            if (status.active) {
-              statuses.set(chat.id, status);
-            }
-          } catch {} // Ignore errors for individual status checks
-        }),
-      );
-      setSessionStatuses(statuses);
     },
     [bookmarkFilter, anyFilterActive],
   );
@@ -123,20 +99,6 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       const response = await listChats(20, chats.length, bookmarkFilter || undefined);
       setChats((prev) => [...prev, ...response.chats]);
       setHasMore(response.hasMore);
-
-      // Fetch session statuses for new chats
-      const statuses = new Map(sessionStatuses);
-      await Promise.all(
-        response.chats.map(async (chat) => {
-          try {
-            const status = await getSessionStatus(chat.id);
-            if (status.active) {
-              statuses.set(chat.id, status);
-            }
-          } catch {} // Ignore errors for individual status checks
-        }),
-      );
-      setSessionStatuses(statuses);
     } finally {
       setIsLoadingMore(false);
     }
@@ -825,7 +787,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
             onClick={() => navigate(`/chat/${chat.id}`)}
             onDelete={() => handleDelete(chat)}
             onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
-            sessionStatus={sessionStatuses.get(chat.id)}
+            sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
           />
         ))}
 

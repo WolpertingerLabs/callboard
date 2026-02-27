@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
+import { sessionRegistry } from "../services/session-registry.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
@@ -418,54 +419,25 @@ streamRouter.post("/:id/respond", (req, res) => {
   res.json({ ok: result.ok, toolName: result.toolName });
 });
 
-// Check session status - active in web, CLI, or inactive
+// Check session status - reads from the centralized session registry
 streamRouter.get("/:id/status", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Check session status'
-  // #swagger.description = 'Returns whether the session is active in web, CLI (recently modified JSONL), or inactive. CLI sessions are considered active if modified within the last 5 minutes.'
+  // #swagger.description = 'Returns whether the session is active (web or CLI) by consulting the centralized session registry.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
-  /* #swagger.responses[200] = { description: "Session status with active flag, type (web/cli/inactive/none), lastActivity, and fileSize" } */
+  /* #swagger.responses[200] = { description: "Session status with active flag, type (web/cli/inactive), and hasPending" } */
   const chatId = req.params.id;
 
-  // Check if session is active in web
-  const webSession = getActiveSession(chatId);
-  if (webSession) {
+  const session = sessionRegistry.get(chatId);
+  if (session) {
     return res.json({
       active: true,
-      type: "web",
+      type: session.type,
       hasPending: hasPendingRequest(chatId),
     });
   }
 
-  // Check if session exists and get its log path
-  const chat = findChatForStatus(chatId);
-  if (!chat || !chat.session_id) {
-    return res.json({ active: false, type: "none" });
-  }
-
-  // Check CLI activity by examining .jsonl file modification time
-  const logPath = findSessionLogPath(chat.session_id);
-  if (!logPath || !existsSync(logPath)) {
-    return res.json({ active: false, type: "none" });
-  }
-
-  try {
-    const stats = statSync(logPath);
-    const lastModified = stats.mtime.getTime();
-    const now = Date.now();
-    const recentThreshold = now - 300_000; // 5 minutes
-
-    const isRecentlyActive = lastModified > recentThreshold;
-
-    res.json({
-      active: isRecentlyActive,
-      type: isRecentlyActive ? "cli" : "inactive",
-      lastActivity: stats.mtime.toISOString(),
-      fileSize: stats.size,
-    });
-  } catch {
-    res.json({ active: false, type: "none" });
-  }
+  res.json({ active: false, type: "inactive" });
 });
 
 // Stop execution
