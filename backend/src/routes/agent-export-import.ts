@@ -31,11 +31,7 @@ const upload = multer({
     files: 1,
   },
   fileFilter: (_req, file, cb) => {
-    if (
-      file.mimetype === "application/zip" ||
-      file.mimetype === "application/x-zip-compressed" ||
-      file.originalname.endsWith(".zip")
-    ) {
+    if (file.mimetype === "application/zip" || file.mimetype === "application/x-zip-compressed" || file.originalname.endsWith(".zip")) {
       cb(null, true);
     } else {
       cb(new Error("Only .zip files are accepted"));
@@ -161,9 +157,7 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   }
 
   const entries = zip.getEntries();
-  const entryNames = entries
-    .filter((e: AdmZip.IZipEntry) => !e.isDirectory)
-    .map((e: AdmZip.IZipEntry) => e.entryName);
+  const entryNames = entries.filter((e: AdmZip.IZipEntry) => !e.isDirectory).map((e: AdmZip.IZipEntry) => e.entryName);
 
   // 1. Must contain agent.json at root
   if (!entryNames.includes("agent.json")) {
@@ -247,7 +241,7 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   }
 
   // Ensure default cron jobs exist (heartbeat, consolidation)
-  const defaultJobs = ensureDefaultCronJobs(alias);
+  ensureDefaultCronJobs(alias);
 
   // Schedule active cron jobs (both imported and defaults)
   const allJobs = listCronJobs(alias);
