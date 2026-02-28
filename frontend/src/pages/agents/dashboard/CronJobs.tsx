@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 // useOutletContext removed — agent is now passed as a prop
-import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil } from "lucide-react";
+import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2 } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import ConfirmModal from "../../../components/ConfirmModal";
-import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob } from "../../../api";
+import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob } from "../../../api";
 import type { CronJob, AgentConfig } from "../../../api";
 
 function timeAgo(ts: number): string {
@@ -197,6 +197,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<CronJob | null>(null);
 
+  // Run now state
+  const [runningJobId, setRunningJobId] = useState<string | null>(null);
+
   // Edit form state
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -235,6 +238,19 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       // ignore
     } finally {
       setDeleteTarget(null);
+    }
+  };
+
+  const handleRunNow = async (job: CronJob) => {
+    if (runningJobId) return;
+    setRunningJobId(job.id);
+    try {
+      const updated = await runAgentCronJob(agent.alias, job.id);
+      setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)));
+    } catch {
+      // ignore
+    } finally {
+      setRunningJobId(null);
     }
   };
 
@@ -516,6 +532,33 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             {job.nextRun && <span style={{ color: "var(--text)" }}>Next run: {timeUntil(job.nextRun)}</span>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={() => handleRunNow(job)}
+              disabled={runningJobId === job.id}
+              title="Run now"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "6px 12px",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 500,
+                background: "transparent",
+                color: "var(--accent)",
+                border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
+                transition: "background 0.15s",
+                cursor: runningJobId === job.id ? "not-allowed" : "pointer",
+                opacity: runningJobId === job.id ? 0.6 : 1,
+              }}
+              onMouseEnter={(e) => {
+                if (runningJobId !== job.id) e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 10%, transparent)";
+              }}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              {runningJobId === job.id ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Zap size={12} />}
+              Run Now
+            </button>
             {canToggle && (
               <button
                 onClick={() => toggleJob(job.id, job.status)}
