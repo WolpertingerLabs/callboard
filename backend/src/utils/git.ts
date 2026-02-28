@@ -399,6 +399,15 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
     return worktreePath;
   }
 
+  // If the branch is already checked out in another worktree (including the
+  // main one), return that worktree's path instead of failing with
+  // "fatal: '<branch>' is already checked out at '...'"
+  const worktrees = getGitWorktrees(repoDir);
+  const existing = worktrees.find((wt) => wt.branch === branch);
+  if (existing) {
+    return existing.path;
+  }
+
   // Create the worktree
   if (createBranch) {
     // Create a new branch and worktree in one command
