@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight } from "lucide-react";
 import { listChats, deleteChat, toggleBookmark, listAgents, getAgentIdentityPrompt, type Chat, type DefaultPermissions, type AgentConfig } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import ChatListItem from "../components/ChatListItem";
@@ -28,6 +28,37 @@ interface ChatListProps {
   onToggleSidebar?: () => void;
 }
 
+function getPermissionsSummary(permissions: DefaultPermissions): string {
+  const labels: Record<keyof DefaultPermissions, string> = {
+    fileRead: "File Read",
+    fileWrite: "File Write",
+    codeExecution: "Code Execution",
+    webAccess: "Web Access",
+  };
+
+  const values = Object.values(permissions);
+  const allSame = values.every((v) => v === values[0]);
+  if (allSame) {
+    return `${values[0].charAt(0).toUpperCase() + values[0].slice(1)} all`;
+  }
+
+  const grouped: Record<string, string[]> = {};
+  for (const [key, level] of Object.entries(permissions)) {
+    const label = labels[key as keyof DefaultPermissions];
+    if (!grouped[level]) grouped[level] = [];
+    grouped[level].push(label);
+  }
+
+  const parts: string[] = [];
+  for (const level of ["allow", "ask", "deny"]) {
+    if (grouped[level]?.length) {
+      parts.push(`${level.charAt(0).toUpperCase() + level.slice(1)} ${grouped[level].join(", ")}`);
+    }
+  }
+
+  return parts.join("; ");
+}
+
 export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, onToggleSidebar }: ChatListProps) {
   const { activeSessions } = useSessionContext();
   const [chats, setChats] = useState<Chat[]>([]);
@@ -49,6 +80,8 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
     chatName: "",
   });
   const [chatMode, setChatMode] = useState<"claude-code" | "agent">("claude-code");
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [pathOpen, setPathOpen] = useState(true);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const navigate = useNavigate();
@@ -322,6 +355,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
   // Determine the empty state message
   const isFiltered = bookmarkFilter || hasActiveFilters(filters) || matchingChatIds !== null;
+  const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
   if (sidebarCollapsed) {
@@ -609,91 +643,185 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
           {chatMode === "claude-code" ? (
             <>
-              <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />
-
-              {recentDirs.length > 0 && (
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
-                  {recentDirs.map((dir) => (
-                    <div
-                      key={dir}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        marginBottom: 4,
-                      }}
-                    >
-                      <button
-                        onClick={() => handleCreate(dir)}
-                        title={dir}
-                        style={{
-                          flex: 1,
-                          textAlign: "left",
-                          background: "var(--surface)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 8,
-                          padding: "10px 12px",
-                          fontSize: 14,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          direction: "rtl",
-                        }}
-                      >
-                        {dir}
-                      </button>
-                      <button
-                        onClick={() => handleRemoveRecentDir(dir)}
-                        style={{
-                          background: "var(--surface)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 6,
-                          padding: "8px",
-                          fontSize: 12,
-                          color: "var(--text-muted)",
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          minWidth: 28,
-                          height: 28,
-                        }}
-                        title={`Remove ${dir} from recent directories`}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "var(--text-muted)",
-                      margin: "10px 0 6px",
-                    }}
-                  >
-                    Or enter a new path
-                  </div>
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" autoFocus />
-                </div>
+              {/* Permissions Section — collapsible, default closed */}
+              <div style={{ marginBottom: 8 }}>
                 <button
-                  onClick={() => handleCreate()}
-                  disabled={!folder.trim()}
+                  onClick={() => setPermissionsOpen(!permissionsOpen)}
                   style={{
-                    background: folder.trim() ? "var(--accent)" : "var(--border)",
-                    color: "#fff",
-                    padding: "10px 16px",
-                    borderRadius: 8,
-                    fontSize: 14,
-                    alignSelf: "flex-start",
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 0",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--text-muted)",
+                    textAlign: "left",
                   }}
                 >
-                  Create
+                  {permissionsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <span>Permissions: {getPermissionsSummary(defaultPermissions)}</span>
                 </button>
+                {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />}
+              </div>
+
+              {/* Directory Section — collapsible, default open */}
+              <div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 0",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <button
+                    onClick={() => setPathOpen(!pathOpen)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "inherit",
+                      fontSize: "inherit",
+                      fontWeight: "inherit",
+                      padding: 0,
+                    }}
+                  >
+                    {pathOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    <span>Directory{displayPath ? ":" : ""}</span>
+                  </button>
+                  {displayPath && !pathOpen ? (
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCreate(displayPath);
+                      }}
+                      style={{
+                        cursor: "pointer",
+                        color: "var(--accent)",
+                        fontWeight: 500,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        direction: "rtl",
+                        flex: 1,
+                      }}
+                      title={`Open chat in ${displayPath}`}
+                    >
+                      {displayPath}
+                    </span>
+                  ) : displayPath ? (
+                    <span
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        direction: "rtl",
+                        flex: 1,
+                      }}
+                    >
+                      {displayPath}
+                    </span>
+                  ) : null}
+                </div>
+
+                {pathOpen && (
+                  <>
+                    {recentDirs.length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
+                        {recentDirs.map((dir) => (
+                          <div
+                            key={dir}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 4,
+                              marginBottom: 4,
+                            }}
+                          >
+                            <button
+                              onClick={() => handleCreate(dir)}
+                              title={dir}
+                              style={{
+                                flex: 1,
+                                textAlign: "left",
+                                background: "var(--surface)",
+                                border: "1px solid var(--border)",
+                                borderRadius: 8,
+                                padding: "10px 12px",
+                                fontSize: 14,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                direction: "rtl",
+                              }}
+                            >
+                              {dir}
+                            </button>
+                            <button
+                              onClick={() => handleRemoveRecentDir(dir)}
+                              style={{
+                                background: "var(--surface)",
+                                border: "1px solid var(--border)",
+                                borderRadius: 6,
+                                padding: "8px",
+                                fontSize: 12,
+                                color: "var(--text-muted)",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                minWidth: 28,
+                                height: 28,
+                              }}
+                              title={`Remove ${dir} from recent directories`}
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))}
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "var(--text-muted)",
+                            margin: "10px 0 6px",
+                          }}
+                        >
+                          Or enter a new path
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" autoFocus />
+                      </div>
+                      <button
+                        onClick={() => handleCreate()}
+                        disabled={!folder.trim()}
+                        style={{
+                          background: folder.trim() ? "var(--accent)" : "var(--border)",
+                          color: "#fff",
+                          padding: "10px 16px",
+                          borderRadius: 8,
+                          fontSize: 14,
+                          alignSelf: "flex-start",
+                        }}
+                      >
+                        Create
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </>
           ) : (
