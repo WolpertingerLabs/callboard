@@ -107,8 +107,11 @@ export default function SlashCommandsModal({
     return plugin.mcpServers.some(serverHasMissingEnv);
   };
 
+  // De-duplicate slash commands
+  const uniqueSlashCommands = Array.from(new Set(slashCommands));
+
   // Group commands by category
-  const categorizedCommands = slashCommands.reduce(
+  const categorizedCommands = uniqueSlashCommands.reduce(
     (acc, command) => {
       const category = getCommandCategory(command);
       if (!acc[category]) acc[category] = [];
@@ -129,7 +132,7 @@ export default function SlashCommandsModal({
   const mcpServers = appPlugins.flatMap((p) => p.mcpServers ?? []);
   const hasAppPlugins = appPlugins.length > 0;
   const hasMcpServers = mcpServers.length > 0;
-  const hasAnyContent = slashCommands.length > 0 || plugins.length > 0 || hasAppPlugins || hasMcpServers;
+  const hasAnyContent = uniqueSlashCommands.length > 0 || plugins.length > 0 || hasAppPlugins || hasMcpServers;
 
   return (
     <ModalOverlay style={{ padding: "20px" }}>
@@ -290,7 +293,7 @@ export default function SlashCommandsModal({
 
           {/* Per-Directory Plugins Section */}
           {plugins.length > 0 && (
-            <div style={{ marginTop: slashCommands.length > 0 ? "32px" : "0" }}>
+            <div style={{ marginTop: uniqueSlashCommands.length > 0 ? "32px" : "0" }}>
               <h3
                 style={{
                   margin: "0 0 16px 0",
@@ -310,7 +313,9 @@ export default function SlashCommandsModal({
               <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {plugins.map((plugin) => {
                   const isActive = activePluginIds.has(plugin.id);
-                  const pluginCommands = plugin.commands;
+                  const pluginCommands = plugin.commands.filter(
+                    (cmd, i, arr) => arr.findIndex((c) => c.name === cmd.name) === i,
+                  );
 
                   return (
                     <div
@@ -454,7 +459,7 @@ export default function SlashCommandsModal({
 
           {/* App-Wide Plugins Section */}
           {hasAppPlugins && (
-            <div style={{ marginTop: slashCommands.length > 0 || plugins.length > 0 ? "32px" : "0" }}>
+            <div style={{ marginTop: uniqueSlashCommands.length > 0 || plugins.length > 0 ? "32px" : "0" }}>
               <h3
                 style={{
                   margin: "0 0 16px 0",
@@ -476,7 +481,9 @@ export default function SlashCommandsModal({
                   const hasMissingEnv = pluginHasMissingEnv(plugin);
                   const isEnabled = plugin.enabled && !hasMissingEnv;
                   const isDisabledByEnv = plugin.enabled && hasMissingEnv;
-                  const pluginCommands = plugin.commands;
+                  const pluginCommands = plugin.commands.filter(
+                    (cmd, i, arr) => arr.findIndex((c) => c.name === cmd.name) === i,
+                  );
 
                   return (
                     <div
@@ -680,7 +687,7 @@ export default function SlashCommandsModal({
 
           {/* MCP Servers Section */}
           {hasMcpServers && (
-            <div style={{ marginTop: slashCommands.length > 0 || plugins.length > 0 || hasAppPlugins ? "32px" : "0" }}>
+            <div style={{ marginTop: uniqueSlashCommands.length > 0 || plugins.length > 0 || hasAppPlugins ? "32px" : "0" }}>
               <h3
                 style={{
                   margin: "0 0 16px 0",
