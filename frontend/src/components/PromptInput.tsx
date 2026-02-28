@@ -8,10 +8,11 @@ interface Props {
   disabled: boolean;
   onSaveDraft?: (prompt: string, images?: File[], onSuccess?: () => void) => void;
   slashCommands?: string[];
+  commandDescriptions?: Record<string, string>;
   onSetValue?: (setValue: (value: string) => void) => void;
 }
 
-export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], onSetValue }: Props) {
+export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], commandDescriptions, onSetValue }: Props) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [showImageUpload, setShowImageUpload] = useState(false);
@@ -125,7 +126,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
         }}
       >
         <div style={{ flex: 1, position: "relative" }}>
-          <SlashCommandAutocomplete slashCommands={slashCommands} query={value} onSelect={handleCommandSelect} visible={showAutocomplete} />
+          <SlashCommandAutocomplete slashCommands={slashCommands} query={value} onSelect={handleCommandSelect} visible={showAutocomplete} commandDescriptions={commandDescriptions} />
 
           <textarea
             ref={textareaRef}

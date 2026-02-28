@@ -6,9 +6,10 @@ interface Props {
   query: string;
   onSelect: (command: string) => void;
   visible: boolean;
+  commandDescriptions?: Record<string, string>;
 }
 
-export default function SlashCommandAutocomplete({ slashCommands, query, onSelect, visible }: Props) {
+export default function SlashCommandAutocomplete({ slashCommands, query, onSelect, visible, commandDescriptions }: Props) {
   const filteredCommands = useMemo(() => {
     if (!query || !query.startsWith("/")) return [];
 
@@ -105,14 +106,14 @@ export default function SlashCommandAutocomplete({ slashCommands, query, onSelec
             >
               {command}
             </code>
-            {getCommandDescription(command) && (
+            {(commandDescriptions?.[command] || getCommandDescription(command)) && (
               <span
                 style={{
                   fontSize: 12,
                   color: "var(--text-muted)",
                 }}
               >
-                {getCommandDescription(command)}
+                {commandDescriptions?.[command] || getCommandDescription(command)}
               </span>
             )}
           </div>
