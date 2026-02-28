@@ -51,7 +51,8 @@
     "test:watch": "vitest",
     "prepare": "npm run build",
     "prepublishOnly": "npm run lint:all && npm test && npm run build",
-    "publish:dry-run": "npm publish --dry-run"
+    "publish:dry-run": "npm publish --dry-run",
+    "reload": "npm install --include=dev && npm run build && VERSION=$(node -p \"require('./package.json').version\") && npm pack --pack-destination /tmp && npm install -g \"/tmp/wolpertingerlabs-callboard-$VERSION.tgz\" && rm \"/tmp/wolpertingerlabs-callboard-$VERSION.tgz\" && callboard restart && callboard status"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.32",

@@ -5,7 +5,7 @@ import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { ensureWorktree, switchBranch, hasUncommittedChanges, getGitInfo } from "../utils/git.js";
+import { getGitInfo, resolveBranch } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
@@ -32,16 +32,19 @@ streamRouter.post("/new/message", async (req, res) => {
           properties: {
             folder: { type: "string", description: "Absolute path to the project folder" },
             prompt: { type: "string", description: "The user message to send" },
-            defaultPermissions: { type: "object", description: "Default tool permissions" },
+            defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess — each 'allow', 'deny', or 'ask')" },
             imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image IDs to attach" },
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
+            maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
+            systemPrompt: { type: "string", description: "Custom system prompt appended to Claude Code's preset system prompt" },
+            agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
             branchConfig: {
               type: "object",
               properties: {
-                baseBranch: { type: "string" },
-                newBranch: { type: "string" },
-                useWorktree: { type: "boolean" },
-                autoCreateBranch: { type: "boolean" },
+                baseBranch: { type: "string", description: "Base branch to start from" },
+                newBranch: { type: "string", description: "New branch name to create" },
+                useWorktree: { type: "boolean", description: "Create a git worktree instead of switching branches in-place" },
+                autoCreateBranch: { type: "boolean", description: "Auto-generate a branch name from the prompt" },
                 forceBranchChange: { type: "boolean", description: "Skip uncommitted changes check when switching branches" }
               }
             }
@@ -68,8 +71,8 @@ streamRouter.post("/new/message", async (req, res) => {
   // Resolve effective folder based on branch configuration
   let effectiveFolder = folder;
   if (branchConfig) {
-    const { baseBranch, useWorktree, autoCreateBranch } = branchConfig;
     let { newBranch } = branchConfig;
+    const { baseBranch, useWorktree, autoCreateBranch } = branchConfig;
 
     // Auto-generate branch name from the prompt if requested
     if (autoCreateBranch && !newBranch) {
@@ -86,59 +89,20 @@ streamRouter.post("/new/message", async (req, res) => {
       }
     }
 
-    const targetBranch = newBranch || baseBranch;
+    const branchResult = resolveBranch({
+      folder,
+      baseBranch,
+      newBranch,
+      useWorktree,
+      forceBranchChange: branchConfig.forceBranchChange,
+    });
 
-    // ── Dirty-state guard ──────────────────────────────────────
-    // If an in-place branch switch is requested AND the working tree has
-    // uncommitted changes, block unless the client opts in with forceBranchChange.
-    // Worktrees are inherently isolated, so they bypass this check.
-    if (targetBranch && !useWorktree) {
-      const currentGitInfo = getGitInfo(folder);
-      const currentBranch = currentGitInfo.branch;
-      const effectiveBranch = newBranch || baseBranch;
-
-      if (effectiveBranch && effectiveBranch !== currentBranch) {
-        if (!branchConfig.forceBranchChange && hasUncommittedChanges(folder)) {
-          log.warn(`Blocked branch switch from ${currentBranch} to ${effectiveBranch}: uncommitted changes detected`);
-          return res.status(409).json({
-            error: "uncommitted_changes",
-            message: `Cannot switch from "${currentBranch}" to "${effectiveBranch}" because there are uncommitted changes in the working directory. Confirm to proceed anyway.`,
-            currentBranch,
-            targetBranch: effectiveBranch,
-          });
-        }
-      }
+    if (!branchResult.ok) {
+      log.warn(`Blocked branch switch: ${branchResult.message}`);
+      return res.status(409).json(branchResult);
     }
-    // ── End dirty-state guard ──────────────────────────────────
 
-    if (targetBranch && useWorktree) {
-      try {
-        log.debug(`Creating worktree for branch=${targetBranch}, isNew=${!!newBranch}, base=${baseBranch}`);
-        effectiveFolder = ensureWorktree(folder, targetBranch, !!newBranch, baseBranch);
-        log.debug(`Worktree created at ${effectiveFolder}`);
-      } catch (err: any) {
-        log.error(`Failed to create worktree: ${err.message}`);
-        return res.status(500).json({ error: `Failed to create worktree: ${err.message}` });
-      }
-    } else if (newBranch) {
-      try {
-        log.debug(`Creating new branch=${newBranch}, base=${baseBranch}`);
-        const worktreePath = switchBranch(folder, newBranch, true, baseBranch);
-        if (worktreePath) effectiveFolder = worktreePath;
-      } catch (err: any) {
-        log.error(`Failed to create branch: ${err.message}`);
-        return res.status(500).json({ error: `Failed to create branch: ${err.message}` });
-      }
-    } else if (baseBranch) {
-      try {
-        log.debug(`Switching to branch=${baseBranch}`);
-        const worktreePath = switchBranch(folder, baseBranch, false);
-        if (worktreePath) effectiveFolder = worktreePath;
-      } catch (err: any) {
-        log.error(`Failed to switch branch: ${err.message}`);
-        return res.status(500).json({ error: `Failed to switch branch: ${err.message}` });
-      }
-    }
+    effectiveFolder = branchResult.folder;
   }
 
   try {
@@ -211,7 +175,9 @@ streamRouter.post("/:id/message", async (req, res) => {
           properties: {
             prompt: { type: "string", description: "The user message to send" },
             imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image IDs to attach" },
-            activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" }
+            activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
+            maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
+            acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" }
           }
         }
       }

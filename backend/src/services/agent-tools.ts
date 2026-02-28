@@ -25,6 +25,7 @@ import { getActivity, appendActivity } from "./agent-activity.js";
 import { getActiveSession } from "./claude.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
+import { resolveBranch } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 
 import type { CronJob, Trigger, AgentConfig } from "shared";
@@ -121,15 +122,32 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       tool(
         "start_chat_session",
-        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session.",
+        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration.",
         {
           prompt: z.string().describe("The task or message for the chat session"),
           folder: z.string().describe("Absolute path to the working directory for the session"),
           maxTurns: z.number().optional().describe("Maximum agentic turns before stopping (default: 200)"),
+          baseBranch: z.string().optional().describe("Base branch to start from (switches to this branch before starting)"),
+          newBranch: z.string().optional().describe("New branch name to create (created from baseBranch or current HEAD)"),
+          useWorktree: z.boolean().optional().describe("Create a git worktree instead of switching branches in-place (default: false)"),
         },
         async (args) => {
           try {
             const sendMessage = getSendMessage();
+
+            // Resolve effective folder based on branch configuration
+            const branchResult = resolveBranch({
+              folder: args.folder,
+              baseBranch: args.baseBranch,
+              newBranch: args.newBranch,
+              useWorktree: args.useWorktree,
+            });
+
+            if (!branchResult.ok) {
+              return { content: [{ type: "text" as const, text: JSON.stringify(branchResult) }] };
+            }
+
+            const effectiveFolder = branchResult.folder;
 
             // Build async generator prompt (required when MCP servers are present)
             const promptIterable = (async function* () {
@@ -141,7 +159,7 @@ export function buildAgentToolsServer(agentAlias: string) {
 
             const emitter = await sendMessage({
               prompt: promptIterable,
-              folder: args.folder,
+              folder: effectiveFolder,
               maxTurns: args.maxTurns ?? 200,
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
             });
@@ -160,15 +178,15 @@ export function buildAgentToolsServer(agentAlias: string) {
               });
             });
 
-            log.info(`Agent ${agentAlias} started chat session ${chatId} in ${args.folder}`);
+            log.info(`Agent ${agentAlias} started chat session ${chatId} in ${effectiveFolder}`);
 
             appendActivity(agentAlias, {
               type: "system",
-              message: `Started chat session in ${args.folder}`,
-              metadata: { chatId, folder: args.folder },
+              message: `Started chat session in ${effectiveFolder}`,
+              metadata: { chatId, folder: effectiveFolder, ...(effectiveFolder !== args.folder && { originalFolder: args.folder }) },
             });
 
-            return { content: [{ type: "text" as const, text: JSON.stringify({ chatId, status: "started", folder: args.folder }) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify({ chatId, status: "started", folder: effectiveFolder }) }] };
           } catch (err: any) {
             log.error(`start_chat_session failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error starting session: ${err.message}` }] };
