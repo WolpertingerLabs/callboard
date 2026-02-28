@@ -495,6 +495,81 @@ export function hasUncommittedChanges(directory: string): boolean {
   }
 }
 
+// ── Branch resolution ────────────────────────────────────────────────
+
+export interface ResolveBranchOptions {
+  /** Absolute path to the working directory / repo root */
+  folder: string;
+  /** Branch to switch to (or base for newBranch) */
+  baseBranch?: string;
+  /** New branch name to create (from baseBranch or current HEAD) */
+  newBranch?: string;
+  /** Create a git worktree instead of switching branches in-place */
+  useWorktree?: boolean;
+  /** Skip uncommitted-changes guard (default: false) */
+  forceBranchChange?: boolean;
+}
+
+export type ResolveBranchResult =
+  | { ok: true; folder: string }
+  | { ok: false; error: "uncommitted_changes"; message: string; currentBranch: string; targetBranch: string };
+
+/**
+ * Resolve a branch configuration to an effective working directory.
+ *
+ * Handles worktree creation, new-branch creation, and branch switching
+ * with a dirty-state guard. Returns the (possibly new) folder path on
+ * success, or a structured error when uncommitted changes block an
+ * in-place branch switch.
+ *
+ * Worktrees are inherently isolated and bypass the dirty-state guard.
+ */
+export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
+  const { folder, baseBranch, newBranch, useWorktree, forceBranchChange } = opts;
+  const targetBranch = newBranch || baseBranch;
+
+  if (!targetBranch && !useWorktree) {
+    return { ok: true, folder };
+  }
+
+  // Dirty-state guard: block in-place branch switch if uncommitted changes exist.
+  // Worktrees are inherently isolated, so they bypass this check.
+  if (targetBranch && !useWorktree) {
+    const currentBranch = getGitInfo(folder).branch;
+    const effectiveBranch = newBranch || baseBranch;
+
+    if (effectiveBranch && effectiveBranch !== currentBranch && !forceBranchChange && hasUncommittedChanges(folder)) {
+      return {
+        ok: false,
+        error: "uncommitted_changes",
+        message: `Cannot switch from "${currentBranch}" to "${effectiveBranch}" because there are uncommitted changes. Use a worktree to work in isolation instead.`,
+        currentBranch: currentBranch || "unknown",
+        targetBranch: effectiveBranch,
+      };
+    }
+  }
+
+  // Worktree path
+  if (targetBranch && useWorktree) {
+    const worktreeFolder = ensureWorktree(folder, targetBranch, !!newBranch, baseBranch);
+    return { ok: true, folder: worktreeFolder };
+  }
+
+  // Create new branch in-place
+  if (newBranch) {
+    const worktreePath = switchBranch(folder, newBranch, true, baseBranch);
+    return { ok: true, folder: worktreePath || folder };
+  }
+
+  // Switch to existing branch
+  if (baseBranch) {
+    const worktreePath = switchBranch(folder, baseBranch, false);
+    return { ok: true, folder: worktreePath || folder };
+  }
+
+  return { ok: true, folder };
+}
+
 /**
  * Get the git diff (unstaged + staged) for a repository.
  * Returns the raw unified diff string.
