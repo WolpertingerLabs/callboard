@@ -19,3 +19,4 @@ shared/dist/
 **/*.tsbuildinfo
 shared/types/*.js
 shared/types/*.d.ts
+.DS_Store
