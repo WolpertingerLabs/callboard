@@ -3,6 +3,8 @@ export interface BranchConfig {
   newBranch?: string;
   useWorktree?: boolean;
   autoCreateBranch?: boolean;
+  /** When true, skip the uncommitted-changes check before switching branches */
+  forceBranchChange?: boolean;
 }
 
 /** Classification of a file in the diff */

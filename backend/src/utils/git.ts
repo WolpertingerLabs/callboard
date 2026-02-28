@@ -460,6 +460,33 @@ export function switchBranch(directory: string, branch: string, createNew: boole
 }
 
 /**
+ * Check whether the working directory has any uncommitted changes.
+ * Uses `git status --porcelain` which is fast and catches:
+ *   - staged changes
+ *   - unstaged modifications
+ *   - untracked files
+ *
+ * Returns true if there are ANY changes; false if the working tree is clean.
+ */
+export function hasUncommittedChanges(directory: string): boolean {
+  if (!directory || !existsSync(directory)) {
+    return false;
+  }
+
+  try {
+    const output = execSync("git status --porcelain", {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 5000,
+    });
+    return output.trim().length > 0;
+  } catch {
+    return false; // If git status fails, don't block the user
+  }
+}
+
+/**
  * Get the git diff (unstaged + staged) for a repository.
  * Returns the raw unified diff string.
  */

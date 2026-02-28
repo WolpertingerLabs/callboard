@@ -5,7 +5,7 @@ import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { ensureWorktree, switchBranch } from "../utils/git.js";
+import { ensureWorktree, switchBranch, hasUncommittedChanges, getGitInfo } from "../utils/git.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
 import { writeSSEHeaders, sendSSE, createSSEHandler } from "../utils/sse.js";
@@ -39,7 +39,9 @@ streamRouter.post("/new/message", async (req, res) => {
               properties: {
                 baseBranch: { type: "string" },
                 newBranch: { type: "string" },
-                useWorktree: { type: "boolean" }
+                useWorktree: { type: "boolean" },
+                autoCreateBranch: { type: "boolean" },
+                forceBranchChange: { type: "boolean", description: "Skip uncommitted changes check when switching branches" }
               }
             }
           }
@@ -49,6 +51,7 @@ streamRouter.post("/new/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
+  /* #swagger.responses[409] = { description: "Uncommitted changes block branch switch. Set forceBranchChange to override." } */
   const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
@@ -83,6 +86,29 @@ streamRouter.post("/new/message", async (req, res) => {
     }
 
     const targetBranch = newBranch || baseBranch;
+
+    // ── Dirty-state guard ──────────────────────────────────────
+    // If an in-place branch switch is requested AND the working tree has
+    // uncommitted changes, block unless the client opts in with forceBranchChange.
+    // Worktrees are inherently isolated, so they bypass this check.
+    if (targetBranch && !useWorktree) {
+      const currentGitInfo = getGitInfo(folder);
+      const currentBranch = currentGitInfo.branch;
+      const effectiveBranch = newBranch || baseBranch;
+
+      if (effectiveBranch && effectiveBranch !== currentBranch) {
+        if (!branchConfig.forceBranchChange && hasUncommittedChanges(folder)) {
+          log.warn(`Blocked branch switch from ${currentBranch} to ${effectiveBranch}: uncommitted changes detected`);
+          return res.status(409).json({
+            error: "uncommitted_changes",
+            message: `Cannot switch from "${currentBranch}" to "${effectiveBranch}" because there are uncommitted changes in the working directory. Confirm to proceed anyway.`,
+            currentBranch,
+            targetBranch: effectiveBranch,
+          });
+        }
+      }
+    }
+    // ── End dirty-state guard ──────────────────────────────────
 
     if (targetBranch && useWorktree) {
       try {

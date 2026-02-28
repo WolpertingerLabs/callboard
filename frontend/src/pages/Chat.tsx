@@ -36,6 +36,7 @@ import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
+import ConfirmModal from "../components/ConfirmModal";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
 import BranchSelector from "../components/BranchSelector";
@@ -122,6 +123,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [autoScroll, setAutoScroll] = useState(true);
   const [compacting, setCompacting] = useState(false);
   const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
+  const [branchChangeConfirm, setBranchChangeConfirm] = useState<{
+    isOpen: boolean;
+    prompt: string;
+    images?: File[];
+    message: string;
+  }>({ isOpen: false, prompt: "", message: "" });
+  const forceBranchChangeRef = useRef(false);
   const [viewMode, setViewMode] = useState<"chat" | "diff">("chat");
   const [showMobileActions, setShowMobileActions] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -744,7 +752,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             requestBody.activePlugins = activePluginIds;
           }
           if (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch) {
-            requestBody.branchConfig = branchConfig;
+            requestBody.branchConfig = {
+              ...branchConfig,
+              ...(forceBranchChangeRef.current && { forceBranchChange: true }),
+            };
           }
           if (agentSystemPrompt) {
             requestBody.systemPrompt = agentSystemPrompt;
@@ -800,6 +811,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
         if (!res.ok || !res.body) {
           const errorData = await res.json().catch(() => ({}));
+
+          // Intercept 409: uncommitted changes block branch switch
+          if (res.status === 409 && errorData.error === "uncommitted_changes") {
+            setBranchChangeConfirm({
+              isOpen: true,
+              prompt,
+              images,
+              message: errorData.message || "There are uncommitted changes that would be affected by this branch switch.",
+            });
+            setStreaming(false);
+            setInFlightMessage(null);
+            return;
+          }
+
           setNetworkError(errorData.error || "Failed to send message");
           setStreaming(false);
           setInFlightMessage(null);
@@ -827,6 +852,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
   handleSendRef.current = handleSend;
+
+  // Retry the original message with forceBranchChange after user confirms the modal
+  const handleConfirmBranchChange = useCallback(() => {
+    const { prompt, images } = branchChangeConfirm;
+    forceBranchChangeRef.current = true;
+    setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" });
+    handleSend(prompt, images);
+    // Reset synchronously — handleSend reads the ref before its first await
+    forceBranchChangeRef.current = false;
+  }, [branchChangeConfirm, handleSend]);
 
   const handleRespond = useCallback(
     async (allow: boolean, updatedInput?: Record<string, unknown>) => {
@@ -1841,6 +1876,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         onCommandSelect={handleCommandSelect}
         onActivePluginsChange={setActivePluginIds}
         onAppPluginsDataChange={setAppPluginsData}
+      />
+
+      <ConfirmModal
+        isOpen={branchChangeConfirm.isOpen}
+        onClose={() => setBranchChangeConfirm({ isOpen: false, prompt: "", message: "" })}
+        onConfirm={handleConfirmBranchChange}
+        title="Uncommitted Changes Detected"
+        message={branchChangeConfirm.message}
+        confirmText="Switch Branch Anyway"
+        confirmStyle="danger"
       />
     </div>
   );
