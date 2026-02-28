@@ -243,6 +243,16 @@ export async function getGitBranches(folder: string): Promise<{ branches: string
   return res.json();
 }
 
+export async function generateGitBranchName(prompt: string): Promise<{ branchName: string }> {
+  const res = await fetch(`${BASE}/git/generate-branch-name`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  await assertOk(res, "Failed to generate branch name");
+  return res.json();
+}
+
 export async function getGitDiff(folder: string): Promise<GitDiffResponse> {
   const res = await fetch(`${BASE}/git/diff?folder=${encodeURIComponent(folder)}`);
   await assertOk(res, "Failed to get diff");

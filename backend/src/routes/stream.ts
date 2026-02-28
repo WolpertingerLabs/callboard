@@ -10,6 +10,7 @@ import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
 import { writeSSEHeaders, sendSSE, createSSEHandler } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
+import { generateBranchName } from "../services/quick-completion.js";
 
 const log = createLogger("stream");
 
@@ -63,7 +64,24 @@ streamRouter.post("/new/message", async (req, res) => {
   // Resolve effective folder based on branch configuration
   let effectiveFolder = folder;
   if (branchConfig) {
-    const { baseBranch, newBranch, useWorktree } = branchConfig;
+    const { baseBranch, useWorktree, autoCreateBranch } = branchConfig;
+    let { newBranch } = branchConfig;
+
+    // Auto-generate branch name from the prompt if requested
+    if (autoCreateBranch && !newBranch) {
+      try {
+        const generated = await generateBranchName(prompt);
+        if (generated) {
+          newBranch = generated;
+          log.debug(`Auto-generated branch name: ${newBranch}`);
+        } else {
+          log.warn("Auto-generate branch name returned null, proceeding without new branch");
+        }
+      } catch (err: any) {
+        log.warn(`Auto-generate branch name failed: ${err.message}, proceeding without new branch`);
+      }
+    }
+
     const targetBranch = newBranch || baseBranch;
 
     if (targetBranch && useWorktree) {

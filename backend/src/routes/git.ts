@@ -9,6 +9,7 @@ import {
   validateFilename,
   validateFolderPath,
 } from "../utils/git.js";
+import { generateBranchName } from "../services/quick-completion.js";
 
 export const gitRouter = Router();
 
@@ -206,5 +207,44 @@ gitRouter.get("/diff/file/raw", (req, res) => {
       return res.status(404).json({ error: "File not found" });
     }
     res.status(500).json({ error: "Failed to read file", details: err.message });
+  }
+});
+
+/**
+ * Generate a git-safe branch name from a natural language prompt.
+ * Uses AI to produce a <type>/<kebab-case-description> format branch name.
+ */
+gitRouter.post("/generate-branch-name", async (req, res) => {
+  // #swagger.tags = ['Git']
+  // #swagger.summary = 'Generate a branch name from a prompt'
+  // #swagger.description = 'Uses AI to generate a git-safe branch name from a natural language request.'
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["prompt"],
+          properties: {
+            prompt: { type: "string", description: "Natural language description to generate a branch name from" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Generated branch name" } */
+  /* #swagger.responses[400] = { description: "Missing prompt" } */
+  /* #swagger.responses[500] = { description: "Failed to generate branch name" } */
+  const { prompt } = req.body;
+  if (!prompt) return res.status(400).json({ error: "prompt is required" });
+
+  try {
+    const branchName = await generateBranchName(prompt);
+    if (!branchName) {
+      return res.status(500).json({ error: "Failed to generate branch name" });
+    }
+    res.json({ branchName });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to generate branch name", details: err.message });
   }
 });

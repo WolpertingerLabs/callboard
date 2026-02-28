@@ -743,7 +743,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (activePluginIds.length > 0) {
             requestBody.activePlugins = activePluginIds;
           }
-          if (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree) {
+          if (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch) {
             requestBody.branchConfig = branchConfig;
           }
           if (agentSystemPrompt) {

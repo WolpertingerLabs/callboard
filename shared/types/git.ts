@@ -2,6 +2,7 @@ export interface BranchConfig {
   baseBranch?: string;
   newBranch?: string;
   useWorktree?: boolean;
+  autoCreateBranch?: boolean;
 }
 
 /** Classification of a file in the diff */

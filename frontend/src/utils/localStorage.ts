@@ -16,6 +16,7 @@ interface LocalStorageData {
   recentDirectories?: RecentDirectory[];
   maxTurns?: number;
   useWorktree?: boolean;
+  autoCreateBranch?: boolean;
   showTriggeredChats?: boolean;
   themeMode?: ThemeMode;
   sidebarCollapsed?: boolean;
@@ -112,6 +113,17 @@ export function getUseWorktree(): boolean {
 export function saveUseWorktree(value: boolean): void {
   const data = getStorageData();
   data.useWorktree = value;
+  setStorageData(data);
+}
+
+export function getAutoCreateBranch(): boolean {
+  const data = getStorageData();
+  return data.autoCreateBranch ?? false;
+}
+
+export function saveAutoCreateBranch(value: boolean): void {
+  const data = getStorageData();
+  data.autoCreateBranch = value;
   setStorageData(data);
 }
 

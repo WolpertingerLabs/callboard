@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { GitBranch, GitFork } from "lucide-react";
+import { GitBranch, GitFork, Sparkles } from "lucide-react";
 import { getGitBranches, type BranchConfig } from "../api";
-import { getUseWorktree, saveUseWorktree } from "../utils/localStorage";
+import { getUseWorktree, saveUseWorktree, getAutoCreateBranch, saveAutoCreateBranch } from "../utils/localStorage";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /**
@@ -36,9 +36,13 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   const [baseBranch, setBaseBranch] = useState(currentBranch);
   const [newBranch, setNewBranch] = useState("");
   const [useWorktree, setUseWorktree] = useState(() => getUseWorktree());
+  const [autoCreateBranch, setAutoCreateBranch] = useState(() => getAutoCreateBranch());
 
-  // Worktree only makes sense when there's a branch change
-  const worktreeEnabled = baseBranch !== currentBranch || !!newBranch.trim();
+  // Worktree only makes sense when there's a branch change:
+  // - different base branch selected, OR
+  // - new branch name entered manually, OR
+  // - auto-create branch is checked (will create a new branch)
+  const worktreeEnabled = baseBranch !== currentBranch || !!newBranch.trim() || autoCreateBranch;
 
   // Fetch branches on mount
   useEffect(() => {
@@ -62,10 +66,14 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
   // Propagate changes to parent
   const propagateChange = useCallback(
-    (base: string, newBr: string, worktree: boolean, wtEnabled: boolean) => {
+    (base: string, newBr: string, worktree: boolean, wtEnabled: boolean, autoCreate: boolean) => {
       const config: BranchConfig = {};
 
-      if (newBr.trim()) {
+      if (autoCreate && !newBr.trim()) {
+        // Auto-create mode: backend will generate the branch name
+        config.autoCreateBranch = true;
+        config.baseBranch = base;
+      } else if (newBr.trim()) {
         config.baseBranch = base;
         config.newBranch = newBr.trim();
       } else if (base !== currentBranch) {
@@ -92,13 +100,19 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   // Propagate on state changes (skip if branch name is invalid)
   useEffect(() => {
     if (branchError) return;
-    propagateChange(baseBranch, newBranch, useWorktree, worktreeEnabled);
-  }, [baseBranch, newBranch, useWorktree, worktreeEnabled, propagateChange, branchError]);
+    propagateChange(baseBranch, newBranch, useWorktree, worktreeEnabled, autoCreateBranch);
+  }, [baseBranch, newBranch, useWorktree, worktreeEnabled, autoCreateBranch, propagateChange, branchError]);
 
   // Persist worktree preference
   const handleWorktreeChange = useCallback((checked: boolean) => {
     setUseWorktree(checked);
     saveUseWorktree(checked);
+  }, []);
+
+  // Persist auto-create branch preference
+  const handleAutoCreateBranchChange = useCallback((checked: boolean) => {
+    setAutoCreateBranch(checked);
+    saveAutoCreateBranch(checked);
   }, []);
 
   // Compute worktree path preview (mirrors backend ensureWorktree in git.ts)
@@ -112,7 +126,10 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
   const isMobile = useIsMobile();
 
-  const hasChanges = baseBranch !== currentBranch || newBranch.trim() || (worktreeEnabled && useWorktree);
+  const hasChanges = baseBranch !== currentBranch || newBranch.trim() || autoCreateBranch || (worktreeEnabled && useWorktree);
+
+  // The new branch text field is disabled when auto-create is checked
+  const newBranchDisabled = autoCreateBranch;
 
   // Shared sub-components
   const baseBranchSelect = (
@@ -152,26 +169,73 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
   const newBranchInput = (
     <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, minWidth: isMobile ? 0 : 120 }}>
-      <input
-        type="text"
-        value={newBranch}
-        onChange={(e) => setNewBranch(e.target.value)}
-        placeholder="new-branch (optional)"
-        style={{
-          flex: 1,
-          background: "var(--bg)",
-          color: "var(--text)",
-          border: branchError ? "1px solid var(--danger, #ef4444)" : "1px solid var(--border)",
-          borderRadius: 5,
-          padding: "4px 8px",
-          fontSize: 12,
-          fontFamily: "monospace",
-          outline: "none",
-          minWidth: 0,
-          boxSizing: "border-box",
-        }}
-      />
+      {newBranchDisabled ? (
+        <div
+          style={{
+            flex: 1,
+            padding: "4px 8px",
+            fontSize: 12,
+            fontFamily: "monospace",
+            color: "var(--accent)",
+            fontStyle: "italic",
+            opacity: 0.85,
+            minWidth: 0,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          Will auto-create new branch name
+        </div>
+      ) : (
+        <input
+          type="text"
+          value={newBranch}
+          onChange={(e) => setNewBranch(e.target.value)}
+          placeholder="new-branch (optional)"
+          style={{
+            flex: 1,
+            background: "var(--bg)",
+            color: "var(--text)",
+            border: branchError ? "1px solid var(--danger, #ef4444)" : "1px solid var(--border)",
+            borderRadius: 5,
+            padding: "4px 8px",
+            fontSize: 12,
+            fontFamily: "monospace",
+            outline: "none",
+            minWidth: 0,
+            boxSizing: "border-box",
+          }}
+        />
+      )}
     </div>
+  );
+
+  const autoCreateBranchToggle = (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        cursor: "pointer",
+        fontSize: 12,
+        color: autoCreateBranch ? "var(--accent)" : "var(--text-muted)",
+        flexShrink: 0,
+        userSelect: "none",
+        fontWeight: autoCreateBranch ? 500 : 400,
+        transition: "color 0.15s ease",
+      }}
+      title="Auto-generate a branch name from the first message"
+    >
+      <input
+        type="checkbox"
+        checked={autoCreateBranch}
+        onChange={(e) => handleAutoCreateBranchChange(e.target.checked)}
+        style={{ cursor: "pointer", margin: 0 }}
+      />
+      <Sparkles size={12} style={{ flexShrink: 0 }} />
+      Auto-create
+    </label>
   );
 
   const worktreeToggle = (
@@ -189,7 +253,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         opacity: worktreeEnabled ? 1 : 0.5,
         transition: "color 0.15s ease, opacity 0.15s ease",
       }}
-      title={worktreeEnabled ? undefined : "Select a different branch or enter a new branch name to use worktrees"}
+      title={worktreeEnabled ? undefined : "Select a different branch, enter a new branch name, or enable auto-create to use worktrees"}
     >
       <input
         type="checkbox"
@@ -215,35 +279,44 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       }}
     >
       {isMobile ? (
-        /* Mobile: two-row layout */
+        /* Mobile: multi-row layout */
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {/* Row 1: Base branch selector (full width) */}
           {baseBranchSelect}
-          {/* Row 2: New branch input + worktree toggle */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {newBranchInput}
+          {/* Row 2: New branch input */}
+          {newBranchInput}
+          {/* Row 3: Toggles */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {autoCreateBranchToggle}
             {worktreeToggle}
           </div>
         </div>
       ) : (
-        /* Desktop: single-row inline layout */
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexWrap: "wrap",
-          }}
-        >
-          {baseBranchSelect}
-          <span style={{ color: "var(--border)", fontSize: 14, userSelect: "none" }}>/</span>
-          {newBranchInput}
-          {worktreeToggle}
+        /* Desktop: two-row layout */
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* Row 1: Base branch + new branch input */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            {baseBranchSelect}
+            <span style={{ color: "var(--border)", fontSize: 14, userSelect: "none" }}>/</span>
+            {newBranchInput}
+          </div>
+          {/* Row 2: Toggles */}
+          <div style={{ display: "flex", alignItems: "center", gap: 14, paddingLeft: 19 }}>
+            {autoCreateBranchToggle}
+            {worktreeToggle}
+          </div>
         </div>
       )}
 
       {/* Validation error */}
-      {branchError && (
+      {branchError && !newBranchDisabled && (
         <div
           style={{
             marginTop: 6,
@@ -257,8 +330,8 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         </div>
       )}
 
-      {/* Worktree path preview */}
-      {worktreeEnabled && useWorktree && (
+      {/* Worktree path preview - only show when not auto-creating (we don't know the branch name yet) */}
+      {worktreeEnabled && useWorktree && !autoCreateBranch && (
         <div
           style={{
             marginTop: 6,
