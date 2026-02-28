@@ -173,7 +173,8 @@ export default function CreateAgent() {
               style={{ ...inputStyle, fontFamily: "monospace", fontSize: 14 }}
             />
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
-              Unique identifier used for tooling. Lowercase letters, numbers, hyphens, underscores.
+              Unique identifier used for tooling. <span style={{ color: "var(--text)" }}>Cannot be changed after creation.</span> Lowercase letters, numbers,
+              hyphens, underscores.
             </p>
           </div>
 
