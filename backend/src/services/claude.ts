@@ -17,6 +17,7 @@ import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
 import { sessionRegistry } from "./session-registry.js";
+import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("claude");
@@ -486,6 +487,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
       ...(opts.triggered && { triggered: true }),
     };
+    // Record initial branch for drift detection on subsequent messages
+    const gitInfo = getGitInfo(folder);
+    if (gitInfo.branch) {
+      initialMetadata.lastBranch = gitInfo.branch;
+    }
   } else {
     throw new Error("Either chatId or folder is required");
   }

@@ -130,6 +130,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     message: string;
   }>({ isOpen: false, prompt: "", message: "" });
   const forceBranchChangeRef = useRef(false);
+  const [branchDriftConfirm, setBranchDriftConfirm] = useState<{
+    isOpen: boolean;
+    prompt: string;
+    images?: File[];
+    message: string;
+  }>({ isOpen: false, prompt: "", message: "" });
+  const acknowledgeBranchDriftRef = useRef(false);
   const [viewMode, setViewMode] = useState<"chat" | "diff">("chat");
   const [showMobileActions, setShowMobileActions] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -799,6 +806,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (activePluginIds.length > 0) {
             body.activePlugins = activePluginIds;
           }
+          if (acknowledgeBranchDriftRef.current) {
+            body.acknowledgeBranchDrift = true;
+          }
 
           res = await fetch(`/api/chats/${id}/message`, {
             method: "POST",
@@ -819,6 +829,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               prompt,
               images,
               message: errorData.message || "There are uncommitted changes that would be affected by this branch switch.",
+            });
+            setStreaming(false);
+            setInFlightMessage(null);
+            return;
+          }
+
+          // Intercept 409: branch changed externally since last message
+          if (res.status === 409 && errorData.error === "branch_drift") {
+            setBranchDriftConfirm({
+              isOpen: true,
+              prompt,
+              images,
+              message: errorData.message || "The branch has changed since your last message.",
             });
             setStreaming(false);
             setInFlightMessage(null);
@@ -862,6 +885,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // Reset synchronously — handleSend reads the ref before its first await
     forceBranchChangeRef.current = false;
   }, [branchChangeConfirm, handleSend]);
+
+  // Retry the original message with acknowledgeBranchDrift after user confirms the modal
+  const handleConfirmBranchDrift = useCallback(() => {
+    const { prompt, images } = branchDriftConfirm;
+    acknowledgeBranchDriftRef.current = true;
+    setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" });
+    handleSend(prompt, images);
+    // Reset synchronously — handleSend reads the ref before its first await
+    acknowledgeBranchDriftRef.current = false;
+  }, [branchDriftConfirm, handleSend]);
 
   const handleRespond = useCallback(
     async (allow: boolean, updatedInput?: Record<string, unknown>) => {
@@ -1885,6 +1918,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         title="Uncommitted Changes Detected"
         message={branchChangeConfirm.message}
         confirmText="Switch Branch Anyway"
+        confirmStyle="danger"
+      />
+
+      <ConfirmModal
+        isOpen={branchDriftConfirm.isOpen}
+        onClose={() => setBranchDriftConfirm({ isOpen: false, prompt: "", message: "" })}
+        onConfirm={handleConfirmBranchDrift}
+        title="Branch Changed"
+        message={branchDriftConfirm.message}
+        confirmText="Continue Anyway"
         confirmStyle="danger"
       />
     </div>

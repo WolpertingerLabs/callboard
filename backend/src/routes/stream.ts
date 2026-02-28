@@ -6,6 +6,7 @@ import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
 import { ensureWorktree, switchBranch, hasUncommittedChanges, getGitInfo } from "../utils/git.js";
+import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
 import { writeSSEHeaders, sendSSE, createSSEHandler } from "../utils/sse.js";
@@ -218,9 +219,35 @@ streamRouter.post("/:id/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with message_update, permission_request, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
-  const { prompt, imageIds, activePlugins, maxTurns } = req.body;
+  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
+
+  // ── Branch drift guard ──────────────────────────────────────
+  // If the git branch changed since the last message in this chat,
+  // block unless the client explicitly acknowledges.
+  const chatRecord = chatFileService.getChat(req.params.id);
+  if (chatRecord) {
+    const meta = JSON.parse(chatRecord.metadata || "{}");
+    const currentGitInfo = getGitInfo(chatRecord.folder);
+    const currentBranch = currentGitInfo.branch;
+
+    if (meta.lastBranch && currentBranch && meta.lastBranch !== currentBranch && !acknowledgeBranchDrift) {
+      log.warn(`Branch drift detected for chat ${req.params.id}: "${meta.lastBranch}" → "${currentBranch}"`);
+      return res.status(409).json({
+        error: "branch_drift",
+        message: `The branch has changed from "${meta.lastBranch}" to "${currentBranch}" since your last message. Do you want to continue on "${currentBranch}"?`,
+        lastBranch: meta.lastBranch,
+        currentBranch,
+      });
+    }
+
+    // Update lastBranch to current (after check passes)
+    if (currentBranch) {
+      chatFileService.updateChatMetadata(req.params.id, { lastBranch: currentBranch });
+    }
+  }
+  // ── End branch drift guard ──────────────────────────────────
 
   try {
     const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
