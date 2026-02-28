@@ -513,6 +513,16 @@ export async function deleteAgentCronJob(alias: string, jobId: string): Promise<
   await assertOk(res, "Failed to delete cron job");
 }
 
+export async function runAgentCronJob(alias: string, jobId: string): Promise<CronJob> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs/${encodeURIComponent(jobId)}/run`, {
+    method: "POST",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to run cron job");
+  const data = await res.json();
+  return data.job;
+}
+
 // Agent trigger API functions
 
 export interface BacktestResult {
