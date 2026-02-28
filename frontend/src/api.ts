@@ -431,6 +431,26 @@ export async function getAgentIdentityPrompt(alias: string): Promise<string> {
   return data.prompt;
 }
 
+// Agent export/import API functions
+
+export function getAgentExportUrl(alias: string): string {
+  return `${BASE}/agents/${encodeURIComponent(alias)}/export`;
+}
+
+export async function importAgent(file: File): Promise<AgentConfig> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch(`${BASE}/agents/import`, {
+    method: "POST",
+    credentials: "include",
+    body: formData,
+  });
+  await assertOk(res, "Failed to import agent");
+  const data = await res.json();
+  return data.agent;
+}
+
 // Agent workspace file API functions
 
 export async function getWorkspaceFiles(alias: string): Promise<string[]> {
