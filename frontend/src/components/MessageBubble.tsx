@@ -236,7 +236,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   if (!relativeTime) return null;
 
   const displayModel = message.model || null;
-  const hasDetails = !!(message.gitBranch || message.usage || message.serviceTier);
+  const hasDetails = !!(message.usage || message.serviceTier);
 
   return (
     <div
@@ -251,6 +251,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
       <span>
         {relativeTime}
         {displayModel && <span> · {displayModel}</span>}
+        {message.gitBranch && <span> · {message.gitBranch}</span>}
         {hasDetails && (
           <span
             onClick={(e) => {
@@ -278,7 +279,6 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
             textAlign: align,
           }}
         >
-          {message.gitBranch && <div>Branch: {message.gitBranch}</div>}
           {message.serviceTier && <div>Tier: {message.serviceTier}</div>}
           {message.usage && <div>Tokens: {formatUsage(message.usage)}</div>}
         </div>
