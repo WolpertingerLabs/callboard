@@ -57,6 +57,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.32",
     "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.1",
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "cron-parser": "^5.0.0",
