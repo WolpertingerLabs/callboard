@@ -67,6 +67,11 @@ export default tseslint.config(
         __filename: "readonly",
         Buffer: "readonly",
         global: "readonly",
+        // Node 22+ globals used by bin/callboard.js
+        fetch: "readonly",
+        AbortController: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
       },
     },
   },

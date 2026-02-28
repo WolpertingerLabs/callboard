@@ -73,7 +73,7 @@ if (values.help && !subcommand) {
 
 switch (subcommand) {
   case null:
-    await cmdStartForeground();
+    await cmdDefault();
     break;
   case "start":
     if (values.help) {
@@ -127,6 +127,23 @@ switch (subcommand) {
 }
 
 // ── Commands ─────────────────────────────────────────────────────────
+
+async function cmdDefault() {
+  ensureDataDir();
+  const isFirstRun = ensureEnvFile();
+  if (isFirstRun) {
+    printFirstRunBanner();
+    return;
+  }
+
+  // Show status if running, otherwise show help
+  const pid = readPid();
+  if (pid) {
+    await cmdStatus();
+  } else {
+    printHelp();
+  }
+}
 
 async function cmdStart() {
   if (values.foreground) return cmdStartForeground();
@@ -507,11 +524,13 @@ Options:
   -h, --help     Show this help message
   -v, --version  Show version number
 
-Running 'callboard' with no arguments starts the server in the foreground.
+Running 'callboard' with no arguments shows status (if running) or this help.
+Use 'callboard start --foreground' to run in the foreground.
 
 Examples:
-  callboard                    Start server in foreground
+  callboard                    Show status or help
   callboard start              Start server in background
+  callboard start -f           Start server in foreground
   callboard start --port 3000  Start on a custom port
   callboard status             Check if server is running
   callboard logs -n 100        View last 100 log lines
@@ -527,7 +546,7 @@ Start the Callboard server.
 Usage: callboard start [options]
 
 Options:
-  -f, --foreground  Run in foreground (default when no command given)
+  -f, --foreground  Run in foreground instead of daemonizing
   --port <number>   Override the configured port
   -h, --help        Show this help message
 
