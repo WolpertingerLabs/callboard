@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { createAgent } from "../../api";
+import { createAgent, listAgents } from "../../api";
+import type { AgentConfig } from "shared";
 
 export default function CreateAgent() {
   const navigate = useNavigate();
@@ -17,6 +18,38 @@ export default function CreateAgent() {
   const [tone, setTone] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Template selector state
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [selectedTemplate, setSelectedTemplate] = useState("");
+
+  useEffect(() => {
+    listAgents()
+      .then(setAgents)
+      .catch(() => {})
+      .finally(() => setAgentsLoading(false));
+  }, []);
+
+  const handleTemplateChange = (alias: string) => {
+    setSelectedTemplate(alias);
+    if (!alias) {
+      // Reset template-filled fields
+      setDescription("");
+      setEmoji("");
+      setPersonality("");
+      setRole("");
+      setTone("");
+      return;
+    }
+    const agent = agents.find((a) => a.alias === alias);
+    if (!agent) return;
+    setDescription(agent.description || "");
+    setEmoji(agent.emoji || "");
+    setPersonality(agent.personality || "");
+    setRole(agent.role || "");
+    setTone(agent.tone || "");
+  };
 
   const toAlias = (input: string) =>
     input
@@ -134,6 +167,31 @@ export default function CreateAgent() {
             gap: 20,
           }}
         >
+          {/* Template selector */}
+          {agents.length > 0 && (
+            <div>
+              <label style={labelStyle}>Copy from existing agent</label>
+              <select
+                value={selectedTemplate}
+                onChange={(e) => handleTemplateChange(e.target.value)}
+                disabled={agentsLoading}
+                style={{
+                  ...inputStyle,
+                  cursor: "pointer",
+                  appearance: "auto",
+                }}
+              >
+                <option value="">None (start fresh)</option>
+                {agents.map((agent) => (
+                  <option key={agent.alias} value={agent.alias}>
+                    {agent.emoji ? `${agent.emoji} ` : ""}
+                    {agent.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Core fields */}
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1 }}>
