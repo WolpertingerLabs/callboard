@@ -36,9 +36,10 @@ export function ensureDataDir(): void {
 const ENV_TEMPLATE = `# Callboard configuration — ~/.callboard/.env
 # See .env.example in the project repo for all available options.
 
-# Authentication password for the application (required)
-# If empty, login is disabled.
-AUTH_PASSWORD=
+# Authentication — set a password with: callboard set-password
+# The hashed password and salt are stored below (never store plaintext).
+# AUTH_PASSWORD_HASH=
+# AUTH_PASSWORD_SALT=
 
 # Port for the application (defaults to 8000)
 # PORT=8000

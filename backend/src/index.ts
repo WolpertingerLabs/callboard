@@ -41,7 +41,7 @@ import { agentSettingsRouter } from "./routes/agent-settings.js";
 import { proxyRouter } from "./routes/proxy.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { sessionsRouter } from "./routes/sessions.js";
-import { loginHandler, logoutHandler, checkAuthHandler, requireAuth } from "./auth.js";
+import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
@@ -133,6 +133,33 @@ app.use("/api/proxy", proxyRouter);
 app.use("/api/connections", connectionsRouter);
 app.use("/api/sessions", sessionsRouter);
 
+// Change password (requires auth — registered after requireAuth middleware)
+app.post(
+  "/api/auth/change-password",
+  // #swagger.tags = ['Auth']
+  // #swagger.summary = 'Change password'
+  // #swagger.description = 'Change the server password. Requires current password. Invalidates all other sessions.'
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["currentPassword", "newPassword"],
+          properties: {
+            currentPassword: { type: "string", description: "Current password" },
+            newPassword: { type: "string", description: "New password" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Password changed successfully" } */
+  /* #swagger.responses[400] = { description: "Missing required fields" } */
+  /* #swagger.responses[401] = { description: "Current password is incorrect" } */
+  changePasswordHandler,
+);
+
 // Webhook route for local proxy mode (ingestor event ingestion)
 app.post("/webhooks/:path", (req, res) => {
   const localProxy = getLocalProxyInstance();
@@ -165,8 +192,8 @@ app.listen(PORT, () => {
 
   if (__isFirstRun) {
     log.warn(`First run detected — created ${ENV_FILE}`);
-    if (!process.env.AUTH_PASSWORD) {
-      log.warn(`Set AUTH_PASSWORD in ${ENV_FILE} to enable login.`);
+    if (!process.env.AUTH_PASSWORD_HASH && !process.env.AUTH_PASSWORD) {
+      log.warn(`No password configured. Set one with: callboard set-password`);
     }
   }
 

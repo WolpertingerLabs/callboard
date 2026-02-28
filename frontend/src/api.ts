@@ -761,3 +761,15 @@ export async function deleteCallerAlias(callerAlias: string): Promise<void> {
   });
   await assertOk(res, "Failed to delete caller alias");
 }
+
+// Password change API
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await fetch(`${BASE}/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  await assertOk(res, "Failed to change password");
+}

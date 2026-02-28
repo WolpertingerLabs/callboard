@@ -1,21 +1,45 @@
 import { randomBytes } from "crypto";
 import type { Request, Response, NextFunction } from "express";
-import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions } from "./services/sessions.js";
+import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions, deleteAllSessionsExcept } from "./services/sessions.js";
+import { verifyPassword, hashPassword, generateSalt } from "./utils/password.js";
+import { updateEnvFile } from "./utils/env-writer.js";
 
-// Read password lazily so dotenv.config() in index.ts has time to load .env first
-// (ES module imports are hoisted and run before dotenv.config)
-function getPassword(): string | null {
-  return process.env.AUTH_PASSWORD || null;
+// ── Password helpers ────────────────────────────────────────────────
+
+/** True when the .env stores a scrypt hash (new mode). */
+function isHashedMode(): boolean {
+  return !!process.env.AUTH_PASSWORD_HASH;
 }
 
+/** True when any form of password is configured (hashed or legacy plaintext). */
 export function isPasswordConfigured(): boolean {
-  return !!process.env.AUTH_PASSWORD;
+  return !!process.env.AUTH_PASSWORD_HASH || !!process.env.AUTH_PASSWORD;
 }
+
+/**
+ * Verify a submitted password against the configured credential.
+ *  - Hashed mode: AUTH_PASSWORD_HASH + AUTH_PASSWORD_SALT with scrypt.
+ *  - Legacy plaintext mode: direct string comparison (backwards compat).
+ */
+async function verifyConfiguredPassword(password: string): Promise<boolean> {
+  if (isHashedMode()) {
+    const storedHash = process.env.AUTH_PASSWORD_HASH!;
+    const salt = process.env.AUTH_PASSWORD_SALT || ""; // empty salt for backwards compat
+    return verifyPassword(password, storedHash, salt);
+  }
+  // Legacy plaintext comparison
+  const configuredPassword = process.env.AUTH_PASSWORD || null;
+  if (!configuredPassword) return false;
+  return password === configuredPassword;
+}
+
+// ── Session constants ───────────────────────────────────────────────
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "callboard_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-// Rate limiting: track attempts per IP
+// ── Rate limiting ───────────────────────────────────────────────────
+
 const attempts = new Map<string, { count: number; resetAt: number }>();
 const MAX_ATTEMPTS = 3;
 const WINDOW_MS = 60 * 1000; // 1 minute
@@ -36,7 +60,9 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
-// Extend (roll) a session: reset both the server-side expiry and the browser cookie
+// ── Session helpers ─────────────────────────────────────────────────
+
+/** Extend (roll) a session: reset both the server-side expiry and the browser cookie. */
 function rollSession(token: string, res: Response): void {
   const newExpiry = Date.now() + SESSION_TTL_MS;
   extendSession(token, newExpiry);
@@ -51,10 +77,11 @@ function rollSession(token: string, res: Response): void {
 // Session cleanup on startup
 cleanupExpiredSessions();
 
-export function loginHandler(req: Request, res: Response) {
-  const configuredPassword = getPassword();
-  if (!configuredPassword) {
-    return res.status(503).json({ error: "Server misconfigured: AUTH_PASSWORD is not set." });
+// ── Handlers ────────────────────────────────────────────────────────
+
+export async function loginHandler(req: Request, res: Response) {
+  if (!isPasswordConfigured()) {
+    return res.status(503).json({ error: "Server misconfigured: no password is set." });
   }
 
   const ip = getClientIp(req);
@@ -63,7 +90,8 @@ export function loginHandler(req: Request, res: Response) {
   }
 
   const { password } = req.body;
-  if (password !== configuredPassword) {
+  const valid = await verifyConfiguredPassword(password);
+  if (!valid) {
     return res.status(401).json({ error: "Invalid password" });
   }
 
@@ -88,7 +116,7 @@ export function logoutHandler(_req: Request, res: Response) {
 
 export function checkAuthHandler(req: Request, res: Response) {
   if (!isPasswordConfigured()) {
-    return res.json({ authenticated: false, error: "Server misconfigured: AUTH_PASSWORD is not set." });
+    return res.json({ authenticated: false, error: "Server misconfigured: no password is set." });
   }
   const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.json({ authenticated: false });
@@ -104,6 +132,50 @@ export function checkAuthHandler(req: Request, res: Response) {
   res.json({ authenticated: true });
 }
 
+export async function changePasswordHandler(req: Request, res: Response) {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Both currentPassword and newPassword are required." });
+  }
+
+  if (!newPassword) {
+    return res.status(400).json({ error: "New password cannot be empty." });
+  }
+
+  // Verify current password
+  const valid = await verifyConfiguredPassword(currentPassword);
+  if (!valid) {
+    return res.status(401).json({ error: "Current password is incorrect." });
+  }
+
+  // Hash the new password
+  const salt = generateSalt();
+  const hash = await hashPassword(newPassword, salt);
+
+  // Write to .env, removing the old plaintext AUTH_PASSWORD if present
+  updateEnvFile(
+    {
+      AUTH_PASSWORD_HASH: hash,
+      AUTH_PASSWORD_SALT: salt,
+    },
+    ["AUTH_PASSWORD"],
+  );
+
+  // Update process.env so the running server uses the new credentials immediately
+  process.env.AUTH_PASSWORD_HASH = hash;
+  process.env.AUTH_PASSWORD_SALT = salt;
+  delete process.env.AUTH_PASSWORD;
+
+  // Invalidate all sessions except the current one
+  const currentToken = req.cookies?.[SESSION_COOKIE_NAME];
+  deleteAllSessionsExcept(currentToken);
+
+  res.json({ ok: true });
+}
+
+// ── Middleware ───────────────────────────────────────────────────────
+
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   // Allow login/auth-check endpoints through
   if (req.path === "/api/auth/login" || req.path === "/api/auth/check" || req.path === "/api/auth/logout") {
@@ -111,7 +183,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   if (!isPasswordConfigured()) {
-    return res.status(503).json({ error: "Server misconfigured: AUTH_PASSWORD is not set." });
+    return res.status(503).json({ error: "Server misconfigured: no password is set." });
   }
 
   const token = req.cookies?.[SESSION_COOKIE_NAME];

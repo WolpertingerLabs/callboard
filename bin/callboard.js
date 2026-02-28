@@ -13,6 +13,7 @@ import { stat } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { createInterface } from "node:readline";
 
 // ── Paths & constants ────────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -115,6 +116,13 @@ switch (subcommand) {
       printConfigHelp();
     } else {
       cmdConfig();
+    }
+    break;
+  case "set-password":
+    if (values.help) {
+      printSetPasswordHelp();
+    } else {
+      await cmdSetPassword();
     }
     break;
   case "help":
@@ -332,8 +340,9 @@ function cmdConfig() {
   console.log(`\nCallboard Configuration`);
   console.log(`=======================`);
 
+  const passwordStatus = config.AUTH_PASSWORD_HASH ? "****  (hashed)" : config.AUTH_PASSWORD ? "****  (plaintext — run: callboard set-password)" : "(not set)";
   const configLines = [
-    ["AUTH_PASSWORD", config.AUTH_PASSWORD ? "****  (set)" : "(not set)"],
+    ["PASSWORD", passwordStatus],
     ["PORT", port],
     ["LOG_LEVEL", config.LOG_LEVEL || "info"],
     ["SESSION_COOKIE_NAME", config.SESSION_COOKIE_NAME || "callboard_session  (default)"],
@@ -444,10 +453,10 @@ function getConfiguredPort() {
 
 function warnIfNoPassword() {
   const config = loadEffectiveConfig();
-  if (!config.AUTH_PASSWORD) {
+  if (!config.AUTH_PASSWORD_HASH && !config.AUTH_PASSWORD) {
     console.log();
-    console.log("  \u26A0 AUTH_PASSWORD is not set. Login will be disabled.");
-    console.log(`    Set it in: ${ENV_FILE}`);
+    console.log("  \u26A0 No password is set. Login will be disabled.");
+    console.log(`    Set one with: callboard set-password`);
   }
 }
 
@@ -495,12 +504,115 @@ Welcome to Callboard!
   Created config: ${ENV_FILE}
 
   Next steps:
-    1. Set a password:  edit ${ENV_FILE}
-       Set AUTH_PASSWORD=your-secret-password
+    1. Set a password:  callboard set-password
     2. Start server:    callboard start
     3. Open browser:    http://localhost:${DEFAULT_PORT}
 
   All commands: callboard --help
+`);
+}
+
+// ── Set-password command ─────────────────────────────────────────────
+
+async function cmdSetPassword() {
+  ensureDataDir();
+  ensureEnvFile();
+
+  const { hashPassword, generateSalt } = await import(join(PKG_ROOT, "backend/dist/utils/password.js"));
+  const { updateEnvFile } = await import(join(PKG_ROOT, "backend/dist/utils/env-writer.js"));
+
+  const password = await promptPassword("Enter new password: ");
+  if (!password) {
+    console.error("Error: Password cannot be empty.");
+    process.exit(1);
+  }
+
+  const confirm = await promptPassword("Confirm new password: ");
+  if (password !== confirm) {
+    console.error("Error: Passwords do not match.");
+    process.exit(1);
+  }
+
+  const salt = generateSalt();
+  const hash = await hashPassword(password, salt);
+
+  updateEnvFile(
+    {
+      AUTH_PASSWORD_HASH: hash,
+      AUTH_PASSWORD_SALT: salt,
+    },
+    ["AUTH_PASSWORD"],
+  );
+
+  console.log("\nPassword set successfully.");
+
+  const pid = readPid();
+  if (pid) {
+    console.log("  Restart the server to apply: callboard restart");
+  }
+}
+
+function promptPassword(prompt) {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) {
+      // TTY mode: hide input character by character
+      process.stdout.write(prompt);
+      const stdin = process.stdin;
+      stdin.setRawMode(true);
+      stdin.resume();
+      stdin.setEncoding("utf8");
+      let password = "";
+      const onData = (ch) => {
+        ch = ch.toString();
+        if (ch === "\n" || ch === "\r" || ch === "\u0004") {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.removeListener("data", onData);
+          process.stdout.write("\n");
+          resolve(password);
+        } else if (ch === "\u0003") {
+          // Ctrl+C
+          stdin.setRawMode(false);
+          process.stdout.write("\n");
+          process.exit(0);
+        } else if (ch === "\u007F" || ch === "\b") {
+          // Backspace
+          if (password.length > 0) {
+            password = password.slice(0, -1);
+          }
+        } else {
+          password += ch;
+        }
+      };
+      stdin.on("data", onData);
+    } else {
+      // Non-TTY (piped input): just read a line
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(prompt, (answer) => {
+        rl.close();
+        resolve(answer);
+      });
+    }
+  });
+}
+
+function printSetPasswordHelp() {
+  console.log(`
+callboard set-password
+
+Set or change the server password.
+
+Usage: callboard set-password [options]
+
+Options:
+  -h, --help   Show this help message
+
+Prompts for a new password interactively, hashes it with scrypt,
+and stores the hash in ~/.callboard/.env. The plaintext password
+is never stored.
+
+If the server is running, restart it to apply the new password:
+  callboard restart
 `);
 }
 
@@ -519,6 +631,7 @@ Commands:
   status         Show server status (PID, port, uptime, health)
   logs           View and follow server logs
   config         Show effective configuration
+  set-password   Set or change the server password
 
 Options:
   -h, --help     Show this help message

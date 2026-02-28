@@ -85,6 +85,21 @@ export function deleteSession(token: string): void {
   saveSessions(data);
 }
 
+/**
+ * Delete all sessions except the one with the given token.
+ * Used when changing the password to invalidate all other sessions.
+ */
+export function deleteAllSessionsExcept(exceptToken?: string): void {
+  const data = loadSessions();
+  const tokens = Object.keys(data.sessions);
+  for (const token of tokens) {
+    if (token !== exceptToken) {
+      delete data.sessions[token];
+    }
+  }
+  saveSessions(data);
+}
+
 export function cleanupExpiredSessions(): number {
   const data = loadSessions();
   const now = Date.now();
