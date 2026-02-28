@@ -197,8 +197,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<CronJob | null>(null);
 
-  // Run now state
+  // Run now state: "sending" while request is in-flight, "queued" during cooldown
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
+  const [runPhase, setRunPhase] = useState<"sending" | "queued">("sending");
 
   // Edit form state
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
@@ -243,15 +244,17 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
 
   const handleRunNow = async (job: CronJob) => {
     if (runningJobId) return;
+    setRunPhase("sending");
     setRunningJobId(job.id);
     try {
       const updated = await runAgentCronJob(agent.alias, job.id);
       setJobs((prev) => prev.map((j) => (j.id === job.id ? updated : j)));
     } catch {
       // ignore
-    } finally {
-      setRunningJobId(null);
     }
+    // Show "Queued" for 5 seconds to prevent rapid re-triggers
+    setRunPhase("queued");
+    setTimeout(() => setRunningJobId(null), 5000);
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -556,8 +559,16 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               }}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             >
-              {runningJobId === job.id ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Zap size={12} />}
-              Run Now
+              {runningJobId === job.id ? (
+                runPhase === "sending" ? (
+                  <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
+                ) : (
+                  <CheckCircle size={12} />
+                )
+              ) : (
+                <Zap size={12} />
+              )}
+              {runningJobId === job.id ? (runPhase === "sending" ? "Starting..." : "Queued") : "Run Now"}
             </button>
             {canToggle && (
               <button
