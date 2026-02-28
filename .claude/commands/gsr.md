@@ -88,9 +88,47 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
    callboard status
    ```
 
+9. **Offer worktree cleanup** (only if in a worktree):
+
+   If in a worktree, ask the user if they would like to remove this worktree. Use `AskUserQuestion` with options:
+   - **Yes, remove worktree** — remove the worktree directory.
+   - **No, keep it** — leave the worktree in place for further work.
+
+   If the user chooses to remove:
+   1. Capture the current worktree path and branch name before leaving.
+   2. Navigate out of the worktree to the main working tree:
+      ```
+      cd "$(git rev-parse --git-common-dir)/.."
+      ```
+   3. Remove the worktree:
+      ```
+      git worktree remove <worktree-path>
+      ```
+
+   If the user chooses to keep it, skip to step 10.
+
+10. **Offer branch cleanup** (only if on a non-primary branch):
+
+    If the current branch (or the branch that was just used, if the worktree was removed in step 9) is not `main` or `master`, ask the user if they would like to delete the local branch and switch back to the primary branch. Use `AskUserQuestion` with options:
+    - **Yes, delete branch** — delete the local branch and switch to the primary branch.
+    - **No, keep it** — leave the branch as-is.
+
+    If the user chooses to delete:
+    1. Switch to the primary branch (if not already there):
+       ```
+       git checkout <primary-branch>
+       ```
+    2. Delete the local branch:
+       ```
+       git branch -D <branch-name>
+       ```
+
+    If the user chooses to keep it, the pipeline is complete.
+
 ## Important
 
 - If any step fails, **stop immediately**, diagnose the issue, fix it, and restart from the failed step.
 - The commit message should accurately describe the changes — do NOT use a generic message like "save and reboot".
 - After the final step, if production was restarted, confirm with `callboard status`.
-- If in a worktree, the pipeline ends after pushing (and creating a PR if on a non-primary branch).
+- If in a worktree, the pipeline ends after pushing (and creating a PR if on a non-primary branch), then offers worktree and branch cleanup.
+- If on a non-primary branch (without a worktree), the pipeline ends after production restart, then offers branch cleanup.
