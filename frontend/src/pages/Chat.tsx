@@ -752,7 +752,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
     }
 
-    return { allSlashCommands: allCmds, pluginCommandDescriptions: descriptions };
+    // De-duplicate commands that may appear in multiple sources
+    const uniqueCmds = Array.from(new Set(allCmds));
+    return { allSlashCommands: uniqueCmds, pluginCommandDescriptions: descriptions };
   }, [slashCommands, plugins, activePluginIds, appPluginsData]);
 
   const toggleAutoScroll = useCallback(() => {

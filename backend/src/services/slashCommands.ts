@@ -83,15 +83,17 @@ export function getCommandsAndPluginsForDirectory(directory: string): DirectoryC
 export function getAllCommandsForDirectory(directory: string, activePluginIds: string[] = []): string[] {
   const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(directory);
 
-  // Start with regular slash commands
-  const allCommands = [...slashCommands];
+  // Start with regular slash commands, using a Set to avoid duplicates
+  const allCommands = new Set(slashCommands);
 
   // Add commands from active plugins
   for (const plugin of plugins) {
     if (activePluginIds.includes(plugin.id)) {
-      allCommands.push(...pluginToSlashCommands(plugin));
+      for (const cmd of pluginToSlashCommands(plugin)) {
+        allCommands.add(cmd);
+      }
     }
   }
 
-  return allCommands;
+  return Array.from(allCommands);
 }
