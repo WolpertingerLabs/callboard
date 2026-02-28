@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Trash2, Bot, ChevronRight, ChevronLeft } from "lucide-react";
+import { Plus, Trash2, Bot, ChevronRight, ChevronLeft, Download, Upload } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { listAgents, deleteAgent } from "../../api";
+import { listAgents, deleteAgent, getAgentExportUrl, importAgent } from "../../api";
 import type { AgentConfig } from "shared";
 
 export default function AgentList() {
@@ -11,6 +11,9 @@ export default function AgentList() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchAgents = async () => {
     try {
@@ -35,6 +38,33 @@ export default function AgentList() {
       // silently fail
     }
     setDeleteTarget(null);
+  };
+
+  const handleExport = (alias: string) => {
+    const url = getAgentExportUrl(alias);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${alias}-export.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleImport = async (file: File) => {
+    setImporting(true);
+    setImportError(null);
+    try {
+      const agent = await importAgent(file);
+      navigate(`/agents/${agent.alias}`);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Failed to import agent");
+    } finally {
+      setImporting(false);
+      // Reset file input so the same file can be selected again
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
   };
 
   return (
@@ -71,27 +101,99 @@ export default function AgentList() {
           )}
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>Agents</h1>
         </div>
-        <button
-          onClick={() => navigate("/agents/new")}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Hidden file input for import */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".zip"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleImport(file);
+            }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "var(--bg-secondary)",
+              color: "var(--text)",
+              padding: "8px 14px",
+              borderRadius: 8,
+              fontSize: 14,
+              fontWeight: 500,
+              border: "1px solid var(--border)",
+              opacity: importing ? 0.6 : 1,
+              cursor: importing ? "not-allowed" : "pointer",
+              transition: "border-color 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              if (!importing) e.currentTarget.style.borderColor = "var(--accent)";
+            }}
+            onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+            title="Import agent from zip"
+          >
+            <Upload size={16} />
+            {!isMobile && (importing ? "Importing..." : "Import")}
+          </button>
+          <button
+            onClick={() => navigate("/agents/new")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "var(--accent)",
+              color: "#fff",
+              padding: "8px 14px",
+              borderRadius: 8,
+              fontSize: 14,
+              fontWeight: 500,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-hover)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
+          >
+            <Plus size={16} />
+            {!isMobile && "New Agent"}
+          </button>
+        </div>
+      </div>
+
+      {/* Import error banner */}
+      {importError && (
+        <div
           style={{
+            padding: "10px 20px",
+            background: "color-mix(in srgb, var(--danger) 10%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
             display: "flex",
             alignItems: "center",
-            gap: 6,
-            background: "var(--accent)",
-            color: "#fff",
-            padding: "8px 14px",
-            borderRadius: 8,
-            fontSize: 14,
-            fontWeight: 500,
-            transition: "background 0.15s",
+            justifyContent: "space-between",
+            gap: 12,
+            flexShrink: 0,
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-hover)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
         >
-          <Plus size={16} />
-          {!isMobile && "New Agent"}
-        </button>
-      </div>
+          <p style={{ fontSize: 14, color: "var(--danger)", margin: 0 }}>{importError}</p>
+          <button
+            onClick={() => setImportError(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--danger)",
+              cursor: "pointer",
+              fontSize: 14,
+              fontWeight: 500,
+              flexShrink: 0,
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Main content */}
       <div
@@ -212,6 +314,35 @@ export default function AgentList() {
                     {agent.description}
                   </p>
                 </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleExport(agent.alias);
+                  }}
+                  title="Export agent"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "transparent",
+                    color: "var(--text-muted)",
+                    padding: 8,
+                    borderRadius: 8,
+                    border: "none",
+                    flexShrink: 0,
+                    transition: "color 0.15s, background 0.15s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = "var(--accent)";
+                    e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 10%, transparent)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = "var(--text-muted)";
+                    e.currentTarget.style.background = "transparent";
+                  }}
+                >
+                  <Download size={16} />
+                </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

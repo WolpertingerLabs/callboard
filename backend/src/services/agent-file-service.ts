@@ -14,6 +14,10 @@ function ensureAgentsDir(): void {
 // Ensure directory exists on import
 ensureAgentsDir();
 
+export function getAgentDataDir(alias: string): string {
+  return join(AGENTS_DIR, alias);
+}
+
 function agentDir(alias: string): string {
   return join(AGENTS_DIR, alias);
 }
