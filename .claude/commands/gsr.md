@@ -3,9 +3,23 @@ name: git-save-reboot
 description: Run the full build, lint, format, commit, push, and redeploy pipeline. Stop immediately if any step fails.
 ---
 
+## Arguments
+
+`$ARGUMENTS`
+
+- If the arguments contain `install-deps`, run step 1 (Install dev dependencies). Otherwise, **skip step 1** entirely.
+
 ## Steps
 
-1. **Build** the project:
+1. **Install dev dependencies** (only if `install-deps` is passed):
+
+   ```
+   npm install --include=dev
+   ```
+
+   Stop and fix any installation errors before continuing.
+
+2. **Build** the project:
 
    ```
    npm run build
@@ -13,7 +27,7 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
 
    Stop and fix any build errors before continuing.
 
-2. **Lint** all files:
+3. **Lint** all files:
 
    ```
    npm run lint:all:fix
@@ -21,20 +35,20 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
 
    Stop and fix any lint errors that could not be auto-fixed.
 
-3. **Prettier** — format only touched (uncommitted) files:
+4. **Prettier** — format only touched (uncommitted) files:
 
    ```
    npm run prettier
    ```
 
-4. **Git commit** — stage all changes (including any formatting/lint fixes from above) and commit with a descriptive message summarizing what changed:
+5. **Git commit** — stage all changes (including any formatting/lint fixes from above) and commit with a descriptive message summarizing what changed:
 
    ```
    git add -A
    git commit -m "<descriptive message>"
    ```
 
-5. **Detect branch and worktree context** before pushing:
+6. **Detect branch and worktree context** before pushing:
    - Check if on a **non-primary branch** (i.e. not `main` or `master`):
      ```
      git branch --show-current
@@ -45,7 +59,7 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
      ```
      If the output of `git rev-parse --git-common-dir` differs from `git rev-parse --git-dir`, you are in a worktree.
 
-6. **Git push**:
+7. **Git push**:
 
    ```
    git push
@@ -53,7 +67,7 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
 
    If on a non-primary branch and pushing for the first time, use `git push -u origin <branch>`.
 
-7. **Create PR** (only if on a non-primary branch):
+8. **Create PR** (only if on a non-primary branch):
 
    ```
    gh pr create --fill
@@ -61,7 +75,7 @@ description: Run the full build, lint, format, commit, push, and redeploy pipeli
 
    If a PR already exists for the branch, skip this step (check with `gh pr view` first).
 
-8. **Install and restart production** (skip if in a worktree):
+9. **Install and restart production** (skip if in a worktree):
 
    If in a worktree, **skip this step** — production runs from the main working tree, not from worktrees.
 
