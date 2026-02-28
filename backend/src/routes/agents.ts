@@ -18,6 +18,7 @@ import { agentMemoryRouter } from "./agent-memory.js";
 import { agentCronJobsRouter } from "./agent-cron-jobs.js";
 import { agentActivityRouter } from "./agent-activity.js";
 import { agentTriggersRouter } from "./agent-triggers.js";
+import { agentExportImportRouter } from "./agent-export-import.js";
 import { cancelAllJobsForAgent, scheduleJob } from "../services/cron-scheduler.js";
 import { ensureDefaultCronJobs } from "../services/agent-cron-jobs.js";
 
@@ -29,6 +30,7 @@ agentsRouter.use("/:alias/memory", agentMemoryRouter);
 agentsRouter.use("/:alias/cron-jobs", agentCronJobsRouter);
 agentsRouter.use("/:alias/activity", agentActivityRouter);
 agentsRouter.use("/:alias/triggers", agentTriggersRouter);
+agentsRouter.use("/", agentExportImportRouter);
 
 const SERVER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
