@@ -292,26 +292,20 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
           </div>
         </div>
       ) : (
-        /* Desktop: two-row layout */
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {/* Row 1: Base branch + new branch input */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              flexWrap: "wrap",
-            }}
-          >
-            {baseBranchSelect}
-            <span style={{ color: "var(--border)", fontSize: 14, userSelect: "none" }}>/</span>
-            {newBranchInput}
-          </div>
-          {/* Row 2: Toggles */}
-          <div style={{ display: "flex", alignItems: "center", gap: 14, paddingLeft: 19 }}>
-            {autoCreateBranchToggle}
-            {worktreeToggle}
-          </div>
+        /* Desktop: single-row inline layout */
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          {baseBranchSelect}
+          <span style={{ color: "var(--border)", fontSize: 14, userSelect: "none" }}>/</span>
+          {newBranchInput}
+          {autoCreateBranchToggle}
+          {worktreeToggle}
         </div>
       )}
 
