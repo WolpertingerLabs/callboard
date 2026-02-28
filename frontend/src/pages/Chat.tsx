@@ -712,6 +712,42 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return () => window.removeEventListener("storage", handleStorageChange);
   }, []);
 
+  // Combine base slash commands with active plugin commands for autocomplete
+  const { allSlashCommands, pluginCommandDescriptions } = useMemo(() => {
+    const allCmds = [...slashCommands];
+    const descriptions: Record<string, string> = {};
+
+    // Add commands from active per-directory plugins
+    for (const plugin of plugins) {
+      if (activePluginIds.includes(plugin.id)) {
+        for (const cmd of plugin.commands) {
+          const fullName = `${plugin.manifest.name}:${cmd.name}`;
+          allCmds.push(fullName);
+          if (cmd.description) {
+            descriptions[fullName] = cmd.description;
+          }
+        }
+      }
+    }
+
+    // Add commands from enabled app-wide plugins
+    if (appPluginsData) {
+      for (const plugin of appPluginsData.plugins) {
+        if (plugin.enabled) {
+          for (const cmd of plugin.commands) {
+            const fullName = `${plugin.manifest.name}:${cmd.name}`;
+            allCmds.push(fullName);
+            if (cmd.description) {
+              descriptions[fullName] = cmd.description;
+            }
+          }
+        }
+      }
+    }
+
+    return { allSlashCommands: allCmds, pluginCommandDescriptions: descriptions };
+  }, [slashCommands, plugins, activePluginIds, appPluginsData]);
+
   const toggleAutoScroll = useCallback(() => {
     setAutoScroll((prev) => {
       const newAutoScroll = !prev;
@@ -1254,7 +1290,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             )}
 
             {/* Slash Commands Modal Button */}
-            {slashCommands.length > 0 && (
+            {allSlashCommands.length > 0 && (
               <button
                 onClick={() => setShowSlashCommandsModal(true)}
                 style={{
@@ -1437,7 +1473,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             </button>
           )}
 
-          {slashCommands.length > 0 && (
+          {allSlashCommands.length > 0 && (
             <button
               onClick={() => setShowSlashCommandsModal(true)}
               style={{
@@ -1538,7 +1574,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     </div>
 
                     {/* Slash commands if available */}
-                    {slashCommands.length > 0 && (
+                    {allSlashCommands.length > 0 && (
                       <div
                         style={{
                           background: "var(--bg-secondary)",
@@ -1549,7 +1585,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       >
                         <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Available Commands</div>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {slashCommands.slice(0, 8).map((cmd, i) => (
+                          {allSlashCommands.slice(0, 8).map((cmd, i) => (
                             <button
                               key={i}
                               onClick={() => {
@@ -1571,7 +1607,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                               {cmd}
                             </button>
                           ))}
-                          {slashCommands.length > 8 && (
+                          {allSlashCommands.length > 8 && (
                             <button
                               onClick={() => setShowSlashCommandsModal(true)}
                               style={{
@@ -1584,7 +1620,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                                 cursor: "pointer",
                               }}
                             >
-                              +{slashCommands.length - 8} more
+                              +{allSlashCommands.length - 8} more
                             </button>
                           )}
                         </div>
@@ -1848,7 +1884,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           onSend={handleSend}
           disabled={!id && streaming}
           onSaveDraft={handleSaveDraft}
-          slashCommands={slashCommands}
+          slashCommands={allSlashCommands}
+          commandDescriptions={pluginCommandDescriptions}
           onSetValue={setPromptInputSetValue}
         />
       )}
