@@ -79,7 +79,7 @@ agentExportImportRouter.get("/:alias/export", (req: Request, res: Response): voi
 
   const archive = archiver("zip", { zlib: { level: 6 } });
 
-  archive.on("error", (err) => {
+  archive.on("error", (err: Error) => {
     log.error(`Export archive error for ${alias}: ${err.message}`);
     if (!res.headersSent) {
       res.status(500).json({ error: "Failed to create export archive" });
@@ -161,7 +161,9 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   }
 
   const entries = zip.getEntries();
-  const entryNames = entries.filter((e) => !e.isDirectory).map((e) => e.entryName);
+  const entryNames = entries
+    .filter((e: AdmZip.IZipEntry) => !e.isDirectory)
+    .map((e: AdmZip.IZipEntry) => e.entryName);
 
   // 1. Must contain agent.json at root
   if (!entryNames.includes("agent.json")) {
@@ -170,7 +172,7 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   }
 
   // 2. Check all entries are in the whitelist
-  const disallowed = entryNames.filter((name) => !isAllowedEntry(name));
+  const disallowed = entryNames.filter((name: string) => !isAllowedEntry(name));
   if (disallowed.length > 0) {
     log.warn(`Import rejected — unexpected files in zip: ${disallowed.join(", ")}`);
     res.status(400).json({
