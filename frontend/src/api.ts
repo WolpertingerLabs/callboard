@@ -118,6 +118,12 @@ export async function updateChatPermissions(id: string, permissions: DefaultPerm
   return res.json();
 }
 
+export async function markAsRead(id: string): Promise<Chat> {
+  const res = await fetch(`${BASE}/chats/${id}/read`, { method: "PATCH" });
+  await assertOk(res, "Failed to mark chat as read");
+  return res.json();
+}
+
 export interface NewChatInfo {
   folder: string;
   displayFolder?: string;
@@ -812,4 +818,20 @@ export async function changePassword(currentPassword: string, newPassword: strin
     body: JSON.stringify({ currentPassword, newPassword }),
   });
   await assertOk(res, "Failed to change password");
+}
+
+// Claude Code auth status API
+
+export interface ClaudeAuthStatus {
+  loggedIn: boolean;
+  email?: string;
+  authMethod?: string;
+  subscriptionType?: string;
+  error?: string;
+}
+
+export async function checkClaudeStatus(): Promise<ClaudeAuthStatus> {
+  const res = await fetch(`${BASE}/auth/claude-status`, { credentials: "include" });
+  await assertOk(res, "Failed to check Claude status");
+  return res.json();
 }

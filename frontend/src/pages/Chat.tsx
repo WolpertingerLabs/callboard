@@ -26,6 +26,7 @@ import {
   uploadImages,
   getSlashCommandsAndPlugins,
   getNewChatInfo,
+  markAsRead,
   type Chat as ChatType,
   type ParsedMessage,
   type Plugin,
@@ -687,6 +688,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         loadSlashCommands();
       }
     });
+    // Mark chat as read (fire-and-forget — best-effort background update)
+    markAsRead(id!).catch(() => {});
     Promise.all([getMessages(id!), getPending(id!)]).then(([msgs, pending]) => {
       if (currentIdRef.current !== id) return;
       const messageArray = Array.isArray(msgs) ? msgs : [];
