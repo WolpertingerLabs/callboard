@@ -20,6 +20,7 @@ interface LocalStorageData {
   showTriggeredChats?: boolean;
   themeMode?: ThemeMode;
   sidebarCollapsed?: boolean;
+  chatLastReadAt?: Record<string, string>; // chatId -> ISO timestamp
 }
 
 /** Check if a path is inside the Callboard agent-workspaces directory (excluded from recommended folders). */
@@ -158,6 +159,23 @@ export function saveSidebarCollapsed(value: boolean): void {
   const data = getStorageData();
   data.sidebarCollapsed = value;
   setStorageData(data);
+}
+
+export function getChatLastReadAt(chatId: string): string | null {
+  const data = getStorageData();
+  return data.chatLastReadAt?.[chatId] ?? null;
+}
+
+export function saveChatLastReadAt(chatId: string, timestamp: string): void {
+  const data = getStorageData();
+  if (!data.chatLastReadAt) data.chatLastReadAt = {};
+  data.chatLastReadAt[chatId] = timestamp;
+  setStorageData(data);
+}
+
+export function getAllChatLastReadAt(): Record<string, string> {
+  const data = getStorageData();
+  return data.chatLastReadAt ?? {};
 }
 
 export function initializeSuggestedDirectories(chatDirectories: string[]): void {

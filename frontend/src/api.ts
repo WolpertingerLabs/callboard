@@ -108,6 +108,15 @@ export async function toggleBookmark(id: string, bookmarked: boolean): Promise<C
   return res.json();
 }
 
+export async function markChatAsRead(id: string): Promise<Chat> {
+  const res = await fetch(`${BASE}/chats/${id}/read`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+  });
+  await assertOk(res, "Failed to mark chat as read");
+  return res.json();
+}
+
 export interface NewChatInfo {
   folder: string;
   displayFolder?: string;

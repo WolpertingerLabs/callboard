@@ -19,6 +19,8 @@ import {
   initializeSuggestedDirectories,
   getShowTriggeredChats,
   saveShowTriggeredChats,
+  getAllChatLastReadAt,
+  saveChatLastReadAt,
 } from "../utils/localStorage";
 
 interface ChatListProps {
@@ -110,6 +112,14 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       const response = await listChats(limit, 0, useFilter || undefined);
       setChats(response.chats);
       setHasMore(shouldFetchAll ? false : response.hasMore);
+
+      // First-use: mark all visible chats as "read" so the upgrade doesn't flood dots
+      const readMap = getAllChatLastReadAt();
+      if (Object.keys(readMap).length === 0 && response.chats.length > 0) {
+        for (const chat of response.chats) {
+          saveChatLastReadAt(chat.id, chat.updated_at);
+        }
+      }
 
       // Initialize suggested directories from first three chat directories if none exist
       if (!useFilter) {
@@ -916,17 +926,31 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
             {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
           </p>
         )}
-        {filteredChats.map((chat) => (
-          <ChatListItem
-            key={chat.id}
-            chat={chat}
-            isActive={chat.id === activeChatId}
-            onClick={() => navigate(`/chat/${chat.id}`)}
-            onDelete={() => handleDelete(chat)}
-            onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
-            sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
-          />
-        ))}
+        {filteredChats.map((chat) => {
+          // Determine unread status: compare lastReadAt with updated_at
+          const localLastRead = getAllChatLastReadAt()[chat.id];
+          let lastRead: string | null = localLastRead ?? null;
+          if (!lastRead) {
+            try {
+              const meta = JSON.parse(chat.metadata || "{}");
+              lastRead = meta.lastReadAt ?? null;
+            } catch {}
+          }
+          const hasUnread = lastRead ? chat.updated_at > lastRead : true;
+
+          return (
+            <ChatListItem
+              key={chat.id}
+              chat={chat}
+              isActive={chat.id === activeChatId}
+              hasUnread={hasUnread}
+              onClick={() => navigate(`/chat/${chat.id}`)}
+              onDelete={() => handleDelete(chat)}
+              onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
+              sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
+            />
+          );
+        })}
 
         {hiddenTriggeredCount > 0 && (
           <div

@@ -19,6 +19,18 @@ export interface Chat {
   plugins?: Plugin[];
 }
 
+/** Shape of the JSON string stored in Chat.metadata. */
+export interface ChatMetadata {
+  title?: string;
+  preview?: string;
+  bookmarked?: boolean;
+  session_ids?: string[];
+  defaultPermissions?: Record<string, string>;
+  agentAlias?: string;
+  triggered?: boolean;
+  lastReadAt?: string; // ISO timestamp — when user last viewed this chat
+}
+
 export interface ChatListResponse {
   chats: Chat[];
   hasMore: boolean;

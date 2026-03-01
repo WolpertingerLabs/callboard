@@ -582,6 +582,37 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
   }
 });
 
+// Mark a chat as read (record lastReadAt timestamp)
+chatsRouter.patch("/:id/read", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Mark a chat as read'
+  // #swagger.description = 'Records the current time as lastReadAt in chat metadata. Creates a file storage record if the chat only exists on the filesystem.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    // Parse existing metadata and set lastReadAt
+    let meta: Record<string, any> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+
+    meta.lastReadAt = new Date().toISOString();
+    const updatedMetadata = JSON.stringify(meta);
+
+    // Upsert: creates file storage record if it only existed on filesystem
+    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+
+    res.json(updatedChat);
+  } catch (err: any) {
+    log.error(`Error marking chat as read: ${err}`);
+    res.status(500).json({ error: "Failed to mark as read", details: err.message });
+  }
+});
+
 // Delete a chat (deletes both file storage metadata and JSONL session log)
 chatsRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Chats']
