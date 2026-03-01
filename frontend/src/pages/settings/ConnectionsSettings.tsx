@@ -30,7 +30,7 @@ import {
   getProxyIngestors,
   controlListener,
 } from "../../api";
-import type { ConnectionStatus, CallerInfo, ProxyTestResult, IngestorStatus, LifecycleResult } from "../../api";
+import type { ConnectionStatus, CallerInfo, ProxyTestResult, IngestorStatus } from "../../api";
 import ConfigureConnectionModal from "../../components/ConfigureConnectionModal";
 import ListenerConfigPanel from "../../components/ListenerConfigPanel";
 
@@ -899,10 +899,7 @@ function ConnectionCard({
                         : ingestorStatus.state === "starting" || ingestorStatus.state === "reconnecting"
                           ? "var(--warning)"
                           : "var(--text-muted)",
-                  boxShadow:
-                    ingestorStatus.state === "connected"
-                      ? "0 0 4px var(--success)"
-                      : "none",
+                  boxShadow: ingestorStatus.state === "connected" ? "0 0 4px var(--success)" : "none",
                 }}
                 title={`Listener: ${ingestorStatus.state}`}
               />
@@ -1110,11 +1107,7 @@ function ConnectionCard({
             onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
             title="Restart listener"
           >
-            {controlAction === "restart" ? (
-              <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} />
-            ) : (
-              <RotateCw size={10} />
-            )}
+            {controlAction === "restart" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <RotateCw size={10} />}
             Restart
           </button>
 
@@ -1155,25 +1148,25 @@ function ConnectionCard({
             padding: "8px 10px",
             borderRadius: 6,
             fontSize: 12,
-            background: testResult.success
-              ? "color-mix(in srgb, var(--success) 10%, transparent)"
-              : "color-mix(in srgb, var(--error) 10%, transparent)",
+            background: testResult.success ? "color-mix(in srgb, var(--success) 10%, transparent)" : "color-mix(in srgb, var(--error) 10%, transparent)",
             color: testResult.success ? "var(--success)" : "var(--error)",
             display: "flex",
             alignItems: "flex-start",
             gap: 6,
           }}
         >
-          {testResult.success ? <Check size={14} style={{ flexShrink: 0, marginTop: 1 }} /> : <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />}
+          {testResult.success ? (
+            <Check size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+          ) : (
+            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+          )}
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 500 }}>
               {testResult.success ? "Test passed" : "Test failed"}
               {testResult.status ? ` (${testResult.status})` : ""}
             </div>
             {(testResult.error || testResult.message || testResult.description) && (
-              <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
-                {testResult.error || testResult.message || testResult.description}
-              </div>
+              <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{testResult.error || testResult.message || testResult.description}</div>
             )}
           </div>
           <button
