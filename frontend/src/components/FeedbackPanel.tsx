@@ -44,51 +44,53 @@ export default function FeedbackPanel({ action, onRespond }: Props) {
   if (action.type === "user_question") {
     const questions = action.questions || [];
     return (
-      <div style={panelStyle}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>Claude is asking</div>
-        {questions.map((q: any, qi: number) => (
-          <div key={qi} style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{q.question}</div>
-            {(q.options || []).map((opt: any, oi: number) => {
-              const selected = q.multiSelect ? ((answers[qi] as string[]) || []).includes(opt.label) : answers[qi] === opt.label;
-              return (
-                <button
-                  key={oi}
-                  onClick={() => {
-                    if (q.multiSelect) {
-                      const cur = (answers[qi] as string[]) || [];
-                      setAnswers((prev) => ({
-                        ...prev,
-                        [qi]: selected ? cur.filter((l) => l !== opt.label) : [...cur, opt.label],
-                      }));
-                    } else {
-                      setAnswers((prev) => ({ ...prev, [qi]: opt.label }));
-                    }
-                  }}
-                  style={{
-                    ...optionBtn,
-                    border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
-                    background: selected ? "var(--accent-light, rgba(99,102,241,0.1))" : "var(--surface)",
-                  }}
-                >
-                  <div style={{ fontWeight: 500 }}>{opt.label}</div>
-                  {opt.description && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{opt.description}</div>}
-                </button>
-              );
-            })}
-            <input
-              placeholder="Other..."
-              value={otherText[qi] || ""}
-              onChange={(e) => {
-                setOtherText((prev) => ({ ...prev, [qi]: e.target.value }));
-                if (e.target.value) {
-                  setAnswers((prev) => ({ ...prev, [qi]: e.target.value }));
-                }
-              }}
-              style={{ ...inputStyle, marginTop: 4 }}
-            />
-          </div>
-        ))}
+      <div style={questionPanelStyle}>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8, flexShrink: 0 }}>Claude is asking</div>
+        <div style={questionScrollArea}>
+          {questions.map((q: any, qi: number) => (
+            <div key={qi} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{q.question}</div>
+              {(q.options || []).map((opt: any, oi: number) => {
+                const selected = q.multiSelect ? ((answers[qi] as string[]) || []).includes(opt.label) : answers[qi] === opt.label;
+                return (
+                  <button
+                    key={oi}
+                    onClick={() => {
+                      if (q.multiSelect) {
+                        const cur = (answers[qi] as string[]) || [];
+                        setAnswers((prev) => ({
+                          ...prev,
+                          [qi]: selected ? cur.filter((l) => l !== opt.label) : [...cur, opt.label],
+                        }));
+                      } else {
+                        setAnswers((prev) => ({ ...prev, [qi]: opt.label }));
+                      }
+                    }}
+                    style={{
+                      ...optionBtn,
+                      border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
+                      background: selected ? "var(--accent-light, rgba(99,102,241,0.1))" : "var(--surface)",
+                    }}
+                  >
+                    <div style={{ fontWeight: 500 }}>{opt.label}</div>
+                    {opt.description && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{opt.description}</div>}
+                  </button>
+                );
+              })}
+              <input
+                placeholder="Other..."
+                value={otherText[qi] || ""}
+                onChange={(e) => {
+                  setOtherText((prev) => ({ ...prev, [qi]: e.target.value }));
+                  if (e.target.value) {
+                    setAnswers((prev) => ({ ...prev, [qi]: e.target.value }));
+                  }
+                }}
+                style={{ ...inputStyle, marginTop: 4 }}
+              />
+            </div>
+          ))}
+        </div>
         <button
           onClick={() => {
             const formatted: Record<string, string | string[]> = {};
@@ -97,7 +99,7 @@ export default function FeedbackPanel({ action, onRespond }: Props) {
             });
             onRespond(true, { answers: formatted });
           }}
-          style={allowBtn}
+          style={{ ...allowBtn, flexShrink: 0 }}
         >
           Submit
         </button>
@@ -165,6 +167,24 @@ const panelStyle: React.CSSProperties = {
   borderTop: "1px solid var(--border)",
   background: "var(--surface)",
   flexShrink: 0,
+};
+
+const questionPanelStyle: React.CSSProperties = {
+  padding: "12px 16px",
+  borderTop: "1px solid var(--border)",
+  background: "var(--surface)",
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+  maxHeight: "60vh",
+};
+
+const questionScrollArea: React.CSSProperties = {
+  flex: 1,
+  overflowY: "auto",
+  minHeight: 0,
+  marginBottom: 8,
+  WebkitOverflowScrolling: "touch",
 };
 
 const preStyle: React.CSSProperties = {
