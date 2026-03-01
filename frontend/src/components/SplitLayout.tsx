@@ -12,9 +12,11 @@ import { getSidebarCollapsed, saveSidebarCollapsed } from "../utils/localStorage
 
 interface SplitLayoutProps {
   onLogout: () => void;
+  claudeLoggedIn?: boolean;
+  onShowClaudeModal?: () => void;
 }
 
-export default function SplitLayout({ onLogout }: SplitLayoutProps) {
+export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModal }: SplitLayoutProps) {
   const isMobile = useIsMobile();
   const location = useLocation();
   const chatListRefreshRef = useRef<(() => void) | null>(null);
@@ -79,6 +81,8 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
         onRefresh={(fn) => {
           chatListRefreshRef.current = fn;
         }}
+        claudeLoggedIn={claudeLoggedIn}
+        onShowClaudeModal={onShowClaudeModal}
       />
     );
   }
@@ -113,6 +117,8 @@ export default function SplitLayout({ onLogout }: SplitLayoutProps) {
           }}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={toggleSidebar}
+          claudeLoggedIn={claudeLoggedIn}
+          onShowClaudeModal={onShowClaudeModal}
         />
       </div>
 
