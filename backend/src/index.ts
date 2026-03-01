@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import express from "express";
 import path from "path";
@@ -132,6 +133,35 @@ app.use("/api/agent-settings", agentSettingsRouter);
 app.use("/api/proxy", proxyRouter);
 app.use("/api/connections", connectionsRouter);
 app.use("/api/sessions", sessionsRouter);
+
+// Claude Code auth status (requires auth — exposes server-side CLI state)
+let claudeStatusCache: { data: any; ts: number } | null = null;
+const CLAUDE_STATUS_TTL = 60_000; // 60 seconds
+
+app.get(
+  "/api/auth/claude-status",
+  // #swagger.tags = ['Auth']
+  // #swagger.summary = 'Check Claude Code CLI login status'
+  // #swagger.description = 'Returns whether the server host is logged into Claude Code via the CLI. Cached for 60 seconds.'
+  /* #swagger.responses[200] = { description: "Claude Code auth status" } */
+  (_req, res) => {
+    const now = Date.now();
+    if (claudeStatusCache && now - claudeStatusCache.ts < CLAUDE_STATUS_TTL) {
+      return res.json(claudeStatusCache.data);
+    }
+
+    try {
+      const raw = execSync("claude auth status", { timeout: 10_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      const parsed = JSON.parse(raw.trim());
+      claudeStatusCache = { data: parsed, ts: now };
+      res.json(parsed);
+    } catch (err: any) {
+      const fallback = { loggedIn: false, error: err.code === "ENOENT" ? "Claude CLI not installed" : `CLI error: ${err.message}` };
+      claudeStatusCache = { data: fallback, ts: now };
+      res.json(fallback);
+    }
+  },
+);
 
 // Change password (requires auth — registered after requireAuth middleware)
 app.post(
