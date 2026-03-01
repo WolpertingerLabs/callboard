@@ -30,6 +30,7 @@ interface ListenerConfigPanelProps {
   connectionName: string;
   caller: string;
   ingestorStatus?: IngestorStatus;
+  ingestorStatuses?: IngestorStatus[];
   localModeActive?: boolean;
   onClose: () => void;
   onStatusChange?: () => void;
@@ -40,6 +41,7 @@ export default function ListenerConfigPanel({
   connectionName,
   caller,
   ingestorStatus,
+  ingestorStatuses,
   localModeActive,
   onClose,
   onStatusChange,
@@ -101,20 +103,31 @@ export default function ListenerConfigPanel({
     fetchConfig();
   }, [fetchConfig]);
 
-  // ── Fetch instances (local mode, multi-instance only) ──
+  // ── Fetch instances (local mode: direct API, remote mode: derive from ingestor statuses) ──
 
   const fetchInstances = useCallback(async () => {
-    if (!localModeActive) return;
-    setLoadingInstances(true);
-    try {
-      const data = await getListenerInstances(connectionAlias, caller);
-      setInstances(data.instances);
-    } catch {
-      // silently fail — instance list is supplementary
-    } finally {
-      setLoadingInstances(false);
+    if (localModeActive) {
+      setLoadingInstances(true);
+      try {
+        const data = await getListenerInstances(connectionAlias, caller);
+        setInstances(data.instances);
+      } catch {
+        // silently fail — instance list is supplementary
+      } finally {
+        setLoadingInstances(false);
+      }
+    } else if (ingestorStatuses && ingestorStatuses.length > 0) {
+      // In remote mode, derive instance list from ingestor statuses
+      const derived: ListenerInstanceInfo[] = ingestorStatuses
+        .filter((s) => s.instanceId)
+        .map((s) => ({
+          instanceId: s.instanceId!,
+          params: {},
+          disabled: false,
+        }));
+      setInstances(derived);
     }
-  }, [connectionAlias, caller, localModeActive]);
+  }, [connectionAlias, caller, localModeActive, ingestorStatuses]);
 
   useEffect(() => {
     if (config?.supportsMultiInstance) {
@@ -182,13 +195,29 @@ export default function ListenerConfigPanel({
     setCreatingInstance(true);
     setNewInstanceError(null);
     try {
-      await createListenerInstance(connectionAlias, id, {}, caller);
+      // Use proxy tool (works in both local and remote mode)
+      const result = await setListenerParams(connectionAlias, {}, caller, id, true);
+      if (!result.success) throw new Error(result.error || "Failed to create instance");
       setNewInstanceId("");
       setShowNewInstanceForm(false);
       await fetchInstances();
       onStatusChange?.();
-    } catch (err: any) {
-      setNewInstanceError(err.message || "Failed to create instance");
+    } catch (proxyErr: any) {
+      // Fallback to direct API (local mode only)
+      if (localModeActive) {
+        try {
+          await createListenerInstance(connectionAlias, id, {}, caller);
+          setNewInstanceId("");
+          setShowNewInstanceForm(false);
+          await fetchInstances();
+          onStatusChange?.();
+          return;
+        } catch (directErr: any) {
+          setNewInstanceError(directErr.message || "Failed to create instance");
+          return;
+        }
+      }
+      setNewInstanceError(proxyErr.message || "Failed to create instance");
     } finally {
       setCreatingInstance(false);
     }
@@ -941,7 +970,7 @@ export default function ListenerConfigPanel({
               )}
 
               {/* No instances message */}
-              {!loadingInstances && instances.length === 0 && localModeActive && (
+              {!loadingInstances && instances.length === 0 && (
                 <div
                   style={{
                     textAlign: "center",
@@ -959,8 +988,8 @@ export default function ListenerConfigPanel({
                 </div>
               )}
 
-              {/* Add instance form / button (local mode only) */}
-              {localModeActive && (
+              {/* Add instance form / button */}
+              {
                 <div style={{ marginTop: 10 }}>
                   {showNewInstanceForm ? (
                     <div
@@ -1096,7 +1125,7 @@ export default function ListenerConfigPanel({
                     </button>
                   )}
                 </div>
-              )}
+              }
             </div>
           )}
 
