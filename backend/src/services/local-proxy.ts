@@ -246,6 +246,82 @@ export class LocalProxy {
         }
       }
 
+      case "control_listener": {
+        const { connection: conn, action, instance_id } = (toolInput ?? {}) as {
+          connection: string;
+          action: "start" | "stop" | "restart";
+          instance_id?: string;
+        };
+        // Cast to any — startOne/stopOne/restartOne added in drawlatch alpha.4
+        const mgr = this._ingestorManager as any;
+        try {
+          switch (action) {
+            case "start":
+              if (typeof mgr.startOne !== "function") return { success: false, connection: conn, error: "startOne not available in this drawlatch version" };
+              return await mgr.startOne(effectiveAlias, conn, instance_id);
+            case "stop":
+              if (typeof mgr.stopOne !== "function") return { success: false, connection: conn, error: "stopOne not available in this drawlatch version" };
+              return await mgr.stopOne(effectiveAlias, conn, instance_id);
+            case "restart":
+              if (typeof mgr.restartOne !== "function") return { success: false, connection: conn, error: "restartOne not available in this drawlatch version" };
+              return await mgr.restartOne(effectiveAlias, conn, instance_id);
+            default:
+              return { success: false, connection: conn, error: `Unknown action: ${String(action)}` };
+          }
+        } catch (err: any) {
+          return { success: false, connection: conn, action, error: err.message };
+        }
+      }
+
+      case "list_listener_configs": {
+        return routes
+          .filter((r: any) => r.listenerConfig)
+          .map((r: any) => ({
+            connection: r.alias,
+            name: r.listenerConfig.name,
+            description: r.listenerConfig.description,
+            fields: r.listenerConfig.fields,
+            ingestorType: r.ingestorConfig?.type,
+            supportsMultiInstance: r.listenerConfig.supportsMultiInstance ?? false,
+            instanceKeyField: r.listenerConfig.fields?.find((f: any) => f.instanceKey)?.key,
+          }));
+      }
+
+      case "resolve_listener_options": {
+        const { connection: conn, paramKey } = (toolInput ?? {}) as {
+          connection: string;
+          paramKey: string;
+        };
+        const route = routes.find((r: any) => r.alias === conn) as any;
+        if (!route?.listenerConfig) {
+          return { success: false, error: `No listener config for connection: ${conn}` };
+        }
+        const field = route.listenerConfig.fields?.find((f: any) => f.key === paramKey);
+        if (!field?.dynamicOptions) {
+          return { success: false, error: `No dynamic options for field: ${paramKey}` };
+        }
+        const { url, method = "GET", body, responsePath, labelField, valueField } = field.dynamicOptions;
+        try {
+          const result = await executeProxyRequest({ method, url, headers: {}, body }, routes);
+          let items: any = result.body;
+          if (responsePath) {
+            for (const segment of responsePath.split(".")) {
+              items = items?.[segment];
+            }
+          }
+          if (!Array.isArray(items)) {
+            return { success: false, error: "Response did not contain an array at the expected path." };
+          }
+          const options = items.map((item: any) => ({
+            value: item[valueField],
+            label: item[labelField],
+          }));
+          return { success: true, connection: conn, paramKey, options };
+        } catch (err: any) {
+          return { success: false, connection: conn, paramKey, error: err.message };
+        }
+      }
+
       default:
         throw new Error(`Unknown tool: ${toolName}`);
     }

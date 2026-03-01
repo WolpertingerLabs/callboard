@@ -212,6 +212,115 @@ export function buildProxyToolsServer(keyAlias: string) {
       ),
 
       tool(
+        "control_listener",
+        "Start, stop, or restart an event listener for a connection. " +
+          "Stopping a listener pauses event collection; starting resumes it. " +
+          "Use restart after configuration changes.",
+        {
+          connection: z
+            .string()
+            .describe("Connection alias (e.g., \"discord-bot\")"),
+          action: z
+            .enum(["start", "stop", "restart"])
+            .describe("Lifecycle action to perform"),
+          instance_id: z
+            .string()
+            .optional()
+            .describe("Instance ID for multi-instance listeners. Omit to control all instances."),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [
+                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
+              ],
+            };
+          }
+          try {
+            const result = await proxy.callTool("control_listener", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`control_listener failed: ${err.message}`);
+            return {
+              content: [
+                { type: "text" as const, text: `Error: ${err.message}` },
+              ],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "list_listener_configs",
+        "List configurable event listener schemas for all connections. " +
+          "Returns field definitions (type, label, options, defaults) that can be used to render configuration forms.",
+        {},
+        async () => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [
+                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
+              ],
+            };
+          }
+          try {
+            const result = await proxy.callTool("list_listener_configs");
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`list_listener_configs failed: ${err.message}`);
+            return {
+              content: [
+                { type: "text" as const, text: `Error: ${err.message}` },
+              ],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "resolve_listener_options",
+        "Fetch dynamic options for a listener configuration field. " +
+          "Some fields (like Trello boards) require an API call to populate their options list.",
+        {
+          connection: z
+            .string()
+            .describe("Connection alias (e.g., \"trello\")"),
+          paramKey: z
+            .string()
+            .describe("The field key to resolve options for (e.g., \"boardId\")"),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [
+                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
+              ],
+            };
+          }
+          try {
+            const result = await proxy.callTool("resolve_listener_options", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`resolve_listener_options failed: ${err.message}`);
+            return {
+              content: [
+                { type: "text" as const, text: `Error: ${err.message}` },
+              ],
+            };
+          }
+        },
+      ),
+
+      tool(
         "ingestor_status",
         "Get the status of all active ingestors for this caller. " +
           "Shows connection state, buffer sizes, event counts, and any errors.",

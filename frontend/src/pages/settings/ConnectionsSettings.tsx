@@ -15,11 +15,24 @@ import {
   Users,
   ChevronDown,
   Cloud,
+  Play,
+  Square,
+  RotateCw,
 } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { getConnections, setConnectionEnabled, createCallerAlias, deleteCallerAlias, testProxyApiConnection, testProxyIngestor } from "../../api";
-import type { ConnectionStatus, CallerInfo, ProxyTestResult } from "../../api";
+import {
+  getConnections,
+  setConnectionEnabled,
+  createCallerAlias,
+  deleteCallerAlias,
+  testProxyApiConnection,
+  testProxyIngestor,
+  getProxyIngestors,
+  controlListener,
+} from "../../api";
+import type { ConnectionStatus, CallerInfo, ProxyTestResult, IngestorStatus, LifecycleResult } from "../../api";
 import ConfigureConnectionModal from "../../components/ConfigureConnectionModal";
+import ListenerConfigPanel from "../../components/ListenerConfigPanel";
 
 interface ConnectionsSettingsProps {
   onSwitchTab: (tab: string) => void;
@@ -40,6 +53,26 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [showNewCallerInput, setShowNewCallerInput] = useState(false);
   const [newCallerAlias, setNewCallerAlias] = useState("");
   const [newCallerError, setNewCallerError] = useState<string | null>(null);
+  const [ingestorStatuses, setIngestorStatuses] = useState<Record<string, IngestorStatus>>({});
+  const [listenerConfig, setListenerConfig] = useState<{ alias: string; name: string } | null>(null);
+
+  const fetchIngestorStatuses = useCallback(
+    async (caller?: string) => {
+      try {
+        const data = await getProxyIngestors(caller || selectedCaller);
+        if (data.ingestors) {
+          const statusMap: Record<string, IngestorStatus> = {};
+          for (const status of data.ingestors) {
+            statusMap[status.connection] = status;
+          }
+          setIngestorStatuses(statusMap);
+        }
+      } catch {
+        // silently fail — ingestor status is supplementary
+      }
+    },
+    [selectedCaller],
+  );
 
   const fetchConnections = useCallback(
     async (caller?: string) => {
@@ -65,7 +98,8 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   useEffect(() => {
     setLoading(true);
     fetchConnections();
-  }, [fetchConnections]);
+    fetchIngestorStatuses();
+  }, [fetchConnections, fetchIngestorStatuses]);
 
   const handleCallerChange = (caller: string) => {
     setSelectedCaller(caller);
@@ -536,8 +570,11 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                 connection={conn}
                 caller={selectedCaller}
                 toggling={togglingAlias === conn.alias}
+                ingestorStatus={ingestorStatuses[conn.alias]}
                 onToggle={(enabled) => handleToggle(conn.alias, enabled)}
                 onConfigure={() => setConfiguring(conn)}
+                onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
+                onStatusChange={() => fetchIngestorStatuses()}
               />
             ))}
           </div>
@@ -553,6 +590,18 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
           onSecretsUpdated={handleSecretsUpdated}
         />
       )}
+
+      {/* Listener config panel */}
+      {listenerConfig && (
+        <ListenerConfigPanel
+          connectionAlias={listenerConfig.alias}
+          connectionName={listenerConfig.name}
+          caller={selectedCaller}
+          ingestorStatus={ingestorStatuses[listenerConfig.alias]}
+          onClose={() => setListenerConfig(null)}
+          onStatusChange={() => fetchIngestorStatuses()}
+        />
+      )}
     </>
   );
 }
@@ -563,20 +612,39 @@ function ConnectionCard({
   connection,
   caller,
   toggling,
+  ingestorStatus,
   onToggle,
   onConfigure,
+  onOpenListenerConfig,
+  onStatusChange,
 }: {
   connection: ConnectionStatus;
   caller: string;
   toggling: boolean;
+  ingestorStatus?: IngestorStatus;
   onToggle: (enabled: boolean) => void;
   onConfigure: () => void;
+  onOpenListenerConfig: () => void;
+  onStatusChange: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const [testResult, setTestResult] = useState<ProxyTestResult | null>(null);
   const [testing, setTesting] = useState<"connection" | "ingestor" | null>(null);
+  const [controlAction, setControlAction] = useState<string | null>(null);
   const conn = connection;
   const isRemote = conn.source === "remote";
+
+  const handleListenerControl = async (action: "start" | "stop" | "restart") => {
+    setControlAction(action);
+    try {
+      await controlListener(conn.alias, action, caller);
+      onStatusChange();
+    } catch {
+      // silently fail
+    } finally {
+      setControlAction(null);
+    }
+  };
 
   const handleTestConnection = async () => {
     setTesting("connection");
@@ -800,7 +868,7 @@ function ConnectionCard({
           {conn.allowedEndpoints.length !== 1 ? "s" : ""}
         </span>
 
-        {/* Ingestor type badge */}
+        {/* Ingestor type + live status badge */}
         {conn.hasIngestor && conn.ingestorType && (
           <span
             style={{
@@ -810,10 +878,35 @@ function ConnectionCard({
               background: "color-mix(in srgb, var(--accent) 10%, transparent)",
               color: "var(--accent)",
               border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
             }}
           >
-            <Radio size={10} style={{ marginRight: 3, verticalAlign: "middle" }} />
+            <Radio size={10} />
             {conn.ingestorType}
+            {ingestorStatus && (
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background:
+                    ingestorStatus.state === "connected"
+                      ? "var(--success)"
+                      : ingestorStatus.state === "error"
+                        ? "var(--error)"
+                        : ingestorStatus.state === "starting" || ingestorStatus.state === "reconnecting"
+                          ? "var(--warning)"
+                          : "var(--text-muted)",
+                  boxShadow:
+                    ingestorStatus.state === "connected"
+                      ? "0 0 4px var(--success)"
+                      : "none",
+                }}
+                title={`Listener: ${ingestorStatus.state}`}
+              />
+            )}
           </span>
         )}
 
@@ -948,6 +1041,110 @@ function ConnectionCard({
               Test Listener
             </button>
           )}
+        </div>
+      )}
+
+      {/* Listener controls row (when connection has ingestor and is enabled/remote) */}
+      {conn.hasIngestor && (conn.enabled || isRemote) && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          {/* Quick start/stop/restart buttons */}
+          <button
+            onClick={() => handleListenerControl(ingestorStatus?.state === "connected" ? "stop" : "start")}
+            disabled={controlAction !== null}
+            style={{
+              padding: "5px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: ingestorStatus?.state === "connected" ? "var(--error)" : "var(--success)",
+              fontSize: 11,
+              fontWeight: 500,
+              cursor: controlAction ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              if (!controlAction) e.currentTarget.style.background = "var(--bg-secondary)";
+            }}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            title={ingestorStatus?.state === "connected" ? "Stop listener" : "Start listener"}
+          >
+            {controlAction === "start" || controlAction === "stop" ? (
+              <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} />
+            ) : ingestorStatus?.state === "connected" ? (
+              <Square size={10} />
+            ) : (
+              <Play size={10} />
+            )}
+            {ingestorStatus?.state === "connected" ? "Stop" : "Start"}
+          </button>
+
+          <button
+            onClick={() => handleListenerControl("restart")}
+            disabled={controlAction !== null}
+            style={{
+              padding: "5px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--text-muted)",
+              fontSize: 11,
+              fontWeight: 500,
+              cursor: controlAction ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              if (!controlAction) e.currentTarget.style.background = "var(--bg-secondary)";
+            }}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            title="Restart listener"
+          >
+            {controlAction === "restart" ? (
+              <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} />
+            ) : (
+              <RotateCw size={10} />
+            )}
+            Restart
+          </button>
+
+          {/* Spacer */}
+          <div style={{ flex: 1 }} />
+
+          {/* Listener config button */}
+          <button
+            onClick={onOpenListenerConfig}
+            style={{
+              padding: "5px 10px",
+              borderRadius: 6,
+              border: "1px solid color-mix(in srgb, var(--accent) 30%, var(--border))",
+              background: "color-mix(in srgb, var(--accent) 6%, var(--bg))",
+              color: "var(--accent)",
+              fontSize: 11,
+              fontWeight: 500,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 12%, var(--bg))")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 6%, var(--bg))")}
+            title="View listener configuration and controls"
+          >
+            <Radio size={10} />
+            Listener
+          </button>
         </div>
       )}
 

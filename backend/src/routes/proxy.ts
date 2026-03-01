@@ -120,6 +120,95 @@ proxyRouter.post("/test-ingestor/:connection", async (req: Request, res: Respons
   }
 });
 
+/** POST /api/proxy/control-listener/:connection — start/stop/restart a listener */
+proxyRouter.post("/control-listener/:connection", async (req: Request, res: Response): Promise<void> => {
+  const connection = req.params.connection;
+  const alias = (req.query.alias || req.body?.caller) as string | undefined;
+  const action = req.body?.action as string | undefined;
+  const instance_id = req.body?.instance_id as string | undefined;
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  if (!action || !["start", "stop", "restart"].includes(action)) {
+    res.status(400).json({ success: false, error: "Invalid action. Must be start, stop, or restart." });
+    return;
+  }
+
+  const proxyAlias = alias || (req.query.alias as string | undefined);
+  const client = proxyAlias ? getProxy(proxyAlias) : null;
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  try {
+    const result = await client.callTool("control_listener", { connection, action, instance_id });
+    res.json(result);
+  } catch (err: any) {
+    log.error(`control_listener failed for "${connection}": ${err.message}`);
+    res.status(502).json({ success: false, connection, error: `Proxy error: ${err.message}` });
+  }
+});
+
+/** GET /api/proxy/listener-configs — get listener configuration schemas for all connections */
+proxyRouter.get("/listener-configs", async (req: Request, res: Response): Promise<void> => {
+  const alias = req.query.alias as string | undefined;
+
+  if (!alias || !isProxyConfigured()) {
+    res.json({ configs: [] });
+    return;
+  }
+
+  const client = getProxy(alias);
+  if (!client) {
+    res.json({ configs: [] });
+    return;
+  }
+
+  try {
+    const result = await client.callTool("list_listener_configs");
+    const configs = Array.isArray(result) ? result : [];
+    res.json({ configs });
+  } catch (err: any) {
+    log.warn(`Failed to fetch listener configs for alias "${alias}": ${err.message}`);
+    res.status(502).json({ error: "Failed to fetch listener configs", configs: [] });
+  }
+});
+
+/** POST /api/proxy/resolve-listener-options — fetch dynamic dropdown options for a listener field */
+proxyRouter.post("/resolve-listener-options", async (req: Request, res: Response): Promise<void> => {
+  const { connection, paramKey, caller: bodyAlias } = req.body ?? {};
+  const alias = (req.query.alias || bodyAlias) as string | undefined;
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  if (!connection || !paramKey) {
+    res.status(400).json({ success: false, error: "Missing required fields: connection, paramKey" });
+    return;
+  }
+
+  const proxyAlias = alias || (req.query.alias as string | undefined);
+  const client = proxyAlias ? getProxy(proxyAlias) : null;
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  try {
+    const result = await client.callTool("resolve_listener_options", { connection, paramKey });
+    res.json(result);
+  } catch (err: any) {
+    log.error(`resolve_listener_options failed for "${connection}.${paramKey}": ${err.message}`);
+    res.status(502).json({ success: false, error: `Proxy error: ${err.message}` });
+  }
+});
+
 /** GET /api/proxy/events — all stored events across all connections, newest first */
 proxyRouter.get("/events", (req: Request, res: Response): void => {
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
