@@ -100,6 +100,22 @@ export function deleteAllSessionsExcept(exceptToken?: string): void {
   saveSessions(data);
 }
 
+/**
+ * Delete ALL sessions unconditionally.
+ * Called on server startup because the config encryption key is not in memory
+ * yet — users must re-authenticate to provide the decryption key.
+ */
+export function deleteAllSessions(): void {
+  const data: SessionsFile = {
+    sessions: {},
+    metadata: {
+      last_cleanup: Date.now(),
+      version: 1,
+    },
+  };
+  saveSessions(data);
+}
+
 export function cleanupExpiredSessions(): number {
   const data = loadSessions();
   const now = Date.now();

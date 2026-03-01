@@ -341,8 +341,10 @@ function cmdConfig() {
   console.log(`=======================`);
 
   const passwordStatus = config.AUTH_PASSWORD_HASH ? "****  (hashed)" : config.AUTH_PASSWORD ? "****  (plaintext — run: callboard set-password)" : "(not set)";
+  const encryptionStatus = config.CONFIG_ENCRYPTION_SALT ? "active  (salt configured)" : "inactive";
   const configLines = [
     ["PASSWORD", passwordStatus],
+    ["CONFIG_ENCRYPTION", encryptionStatus],
     ["PORT", port],
     ["LOG_LEVEL", config.LOG_LEVEL || "info"],
     ["SESSION_COOKIE_NAME", config.SESSION_COOKIE_NAME || "callboard_session  (default)"],
@@ -518,8 +520,57 @@ async function cmdSetPassword() {
   ensureDataDir();
   ensureEnvFile();
 
-  const { hashPassword, generateSalt } = await import(join(PKG_ROOT, "backend/dist/utils/password.js"));
+  const { hashPassword, generateSalt, verifyPassword } = await import(join(PKG_ROOT, "backend/dist/utils/password.js"));
   const { updateEnvFile } = await import(join(PKG_ROOT, "backend/dist/utils/env-writer.js"));
+  const { deriveConfigEncryptionKey, encryptString, decryptToString } = await import(join(PKG_ROOT, "backend/dist/utils/config-encryption.js"));
+
+  // Load effective config to check for encryption state
+  const config = loadEffectiveConfig();
+  const configEncryptionSalt = config.CONFIG_ENCRYPTION_SALT;
+
+  // Determine the active MCP config dir for encrypted secrets
+  let encPath = null;
+  let hasEncryptedConfig = false;
+  try {
+    const { getActiveMcpConfigDir } = await import(join(PKG_ROOT, "backend/dist/services/agent-settings.js"));
+    const configDir = getActiveMcpConfigDir();
+    if (configDir && configEncryptionSalt) {
+      encPath = join(configDir, ".env.enc");
+      hasEncryptedConfig = existsSync(encPath);
+    }
+  } catch {
+    // agent-settings may not be available in CLI context — skip
+  }
+
+  // If encrypted config exists, we need the current password to re-encrypt
+  let oldPassword = null;
+  if (hasEncryptedConfig) {
+    console.log("Encrypted config detected — current password required to re-encrypt secrets.\n");
+    oldPassword = await promptPassword("Enter current password: ");
+    if (!oldPassword) {
+      console.error("Error: Current password is required when encrypted config exists.");
+      process.exit(1);
+    }
+
+    // Verify old password against stored hash
+    if (config.AUTH_PASSWORD_HASH) {
+      const authSalt = config.AUTH_PASSWORD_SALT || "";
+      const valid = await verifyPassword(oldPassword, config.AUTH_PASSWORD_HASH, authSalt);
+      if (!valid) {
+        console.error("Error: Current password is incorrect.");
+        process.exit(1);
+      }
+    } else if (config.AUTH_PASSWORD) {
+      if (oldPassword !== config.AUTH_PASSWORD) {
+        console.error("Error: Current password is incorrect.");
+        process.exit(1);
+      }
+    } else {
+      console.error("Error: No existing password found to verify against.");
+      process.exit(1);
+    }
+    console.log();
+  }
 
   const password = await promptPassword("Enter new password: ");
   if (!password) {
@@ -531,6 +582,30 @@ async function cmdSetPassword() {
   if (password !== confirm) {
     console.error("Error: Passwords do not match.");
     process.exit(1);
+  }
+
+  // Re-encrypt config secrets with the new password (BEFORE changing the password hash)
+  if (hasEncryptedConfig && oldPassword && configEncryptionSalt) {
+    try {
+      const oldKey = await deriveConfigEncryptionKey(oldPassword, configEncryptionSalt);
+      const newKey = await deriveConfigEncryptionKey(password, configEncryptionSalt);
+
+      // Decrypt with old key, re-encrypt with new key
+      const encrypted = readFileSync(encPath);
+      const plaintext = decryptToString(encrypted, oldKey);
+      const reEncrypted = encryptString(plaintext, newKey);
+
+      // Atomic write
+      const tmpPath = encPath + ".tmp";
+      writeFileSync(tmpPath, reEncrypted, { mode: 0o600 });
+      const { renameSync } = await import("node:fs");
+      renameSync(tmpPath, encPath);
+      console.log("\nRe-encrypted config secrets with new password.");
+    } catch (err) {
+      console.error(`\nError: Failed to re-encrypt config secrets: ${err.message}`);
+      console.error("Password change aborted — your current password is unchanged.");
+      process.exit(1);
+    }
   }
 
   const salt = generateSalt();

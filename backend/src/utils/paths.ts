@@ -41,6 +41,15 @@ const ENV_TEMPLATE = `# Callboard configuration — ~/.callboard/.env
 # AUTH_PASSWORD_HASH=
 # AUTH_PASSWORD_SALT=
 
+# Config encryption salt — auto-generated on first login.
+# Used to derive an AES-256 encryption key from your password to encrypt
+# Drawlatch connection secrets (API tokens, etc.) at rest.
+#
+# WARNING: DO NOT modify or delete this value. Changing it makes ALL
+# encrypted connection secrets permanently unrecoverable. You would need
+# to delete the .env.enc file and re-enter all API tokens.
+# CONFIG_ENCRYPTION_SALT=
+
 # Port for the application (defaults to 8000)
 # PORT=8000
 
