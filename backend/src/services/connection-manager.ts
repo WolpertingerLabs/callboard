@@ -417,6 +417,137 @@ export async function setSecrets(secrets: Record<string, string>, callerAlias: s
   return status;
 }
 
+// ── Listener instance management (local mode) ──────────────────────
+
+export interface ListenerInstanceInfo {
+  instanceId: string;
+  disabled?: boolean;
+  params?: Record<string, unknown>;
+}
+
+/**
+ * List all listener instances for a connection and caller.
+ * Returns the instances from callers[alias].listenerInstances[connection].
+ */
+export function listListenerInstances(connectionAlias: string, callerAlias: string = "default"): ListenerInstanceInfo[] {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  // Cast to any — listenerInstances added in drawlatch alpha.4
+  const caller = config.callers[callerAlias] as any;
+  if (!caller?.listenerInstances?.[connectionAlias]) return [];
+
+  return Object.entries(caller.listenerInstances[connectionAlias]).map(([instanceId, overrides]) => ({
+    instanceId,
+    disabled: (overrides as any)?.disabled ?? false,
+    params: (overrides as any)?.params ?? {},
+  }));
+}
+
+/**
+ * Add a new listener instance for a connection.
+ * Saves to remote.config.json and reinitializes the proxy.
+ */
+export async function addListenerInstance(
+  connectionAlias: string,
+  instanceId: string,
+  params: Record<string, unknown>,
+  callerAlias: string = "default",
+): Promise<ListenerInstanceInfo> {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  // Cast to any — listenerInstances added in drawlatch alpha.4
+  const caller = ensureCallerConfig(config, callerAlias) as any;
+
+  if (!caller.listenerInstances) {
+    caller.listenerInstances = {};
+  }
+  if (!caller.listenerInstances[connectionAlias]) {
+    caller.listenerInstances[connectionAlias] = {};
+  }
+
+  if (caller.listenerInstances[connectionAlias][instanceId]) {
+    throw new Error(`Instance "${instanceId}" already exists for connection "${connectionAlias}"`);
+  }
+
+  caller.listenerInstances[connectionAlias][instanceId] = { params };
+  saveRemoteConfig(config);
+  log.info(`Added listener instance "${instanceId}" for connection "${connectionAlias}", caller "${callerAlias}"`);
+
+  await reinitializeProxy();
+
+  return { instanceId, params };
+}
+
+/**
+ * Update a listener instance's parameters.
+ * Merges params into the existing instance overrides.
+ */
+export async function updateListenerInstance(
+  connectionAlias: string,
+  instanceId: string,
+  params: Record<string, unknown>,
+  disabled?: boolean,
+  callerAlias: string = "default",
+): Promise<ListenerInstanceInfo> {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  // Cast to any — listenerInstances added in drawlatch alpha.4
+  const caller = config.callers[callerAlias] as any;
+
+  if (!caller?.listenerInstances?.[connectionAlias]?.[instanceId]) {
+    throw new Error(`Instance "${instanceId}" not found for connection "${connectionAlias}"`);
+  }
+
+  const instance = caller.listenerInstances[connectionAlias][instanceId];
+  if (params && Object.keys(params).length > 0) {
+    instance.params = { ...(instance.params || {}), ...params };
+  }
+  if (disabled !== undefined) {
+    instance.disabled = disabled;
+  }
+
+  saveRemoteConfig(config);
+  log.info(`Updated listener instance "${instanceId}" for connection "${connectionAlias}", caller "${callerAlias}"`);
+
+  await reinitializeProxy();
+
+  return {
+    instanceId,
+    disabled: instance.disabled ?? false,
+    params: instance.params ?? {},
+  };
+}
+
+/**
+ * Delete a listener instance.
+ * Removes from remote.config.json and reinitializes the proxy.
+ */
+export async function deleteListenerInstance(connectionAlias: string, instanceId: string, callerAlias: string = "default"): Promise<void> {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  // Cast to any — listenerInstances added in drawlatch alpha.4
+  const caller = config.callers[callerAlias] as any;
+
+  if (!caller?.listenerInstances?.[connectionAlias]?.[instanceId]) {
+    throw new Error(`Instance "${instanceId}" not found for connection "${connectionAlias}"`);
+  }
+
+  delete caller.listenerInstances[connectionAlias][instanceId];
+
+  // Clean up empty maps
+  if (Object.keys(caller.listenerInstances[connectionAlias]).length === 0) {
+    delete caller.listenerInstances[connectionAlias];
+  }
+  if (Object.keys(caller.listenerInstances).length === 0) {
+    delete caller.listenerInstances;
+  }
+
+  saveRemoteConfig(config);
+  log.info(`Deleted listener instance "${instanceId}" for connection "${connectionAlias}", caller "${callerAlias}"`);
+
+  await reinitializeProxy();
+}
+
 // ── Remote mode connections ─────────────────────────────────────────
 
 /**

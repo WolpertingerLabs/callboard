@@ -10,14 +10,15 @@ This document tracks all new drawlatch features that need to be integrated into 
 
 ## Current State (What's Already Integrated)
 
-| MCP Tool | Claude Sessions | Backend Route | Frontend UI |
-|----------|:-:|:-:|:-:|
-| `secure_request` | ✅ | ✅ | — |
-| `list_routes` | ✅ | ✅ `GET /api/proxy/routes` | ✅ |
-| `poll_events` | ✅ | ✅ `GET /api/proxy/events` | ✅ |
-| `ingestor_status` | ✅ | ✅ `GET /api/proxy/ingestors` | ✅ |
+| MCP Tool          | Claude Sessions |         Backend Route         | Frontend UI |
+| ----------------- | :-------------: | :---------------------------: | :---------: |
+| `secure_request`  |       ✅        |              ✅               |      —      |
+| `list_routes`     |       ✅        |  ✅ `GET /api/proxy/routes`   |     ✅      |
+| `poll_events`     |       ✅        |  ✅ `GET /api/proxy/events`   |     ✅      |
+| `ingestor_status` |       ✅        | ✅ `GET /api/proxy/ingestors` |     ✅      |
 
 Plus supporting infrastructure:
+
 - ✅ Local & remote proxy mode selection (with UI)
 - ✅ Connection enable/disable per caller alias
 - ✅ Secret management per caller with env-var prefixes
@@ -41,6 +42,7 @@ Plus supporting infrastructure:
 Updated ConnectionsSettings to work for both local and remote proxy modes. Remote connections are displayed as read-only cards.
 
 **Files changed:**
+
 - `shared/types/connections.ts` — Added `source?: "local" | "remote"` to `ConnectionStatus`
 - `backend/src/services/connection-manager.ts` — Added `listRemoteConnections()`
 - `backend/src/routes/connections.ts` — Updated `GET /` and `GET /callers` for remote mode
@@ -63,6 +65,7 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 **Implementation:**
 
 **Backend:**
+
 - `backend/src/services/local-proxy.ts` — Add `test_connection` case in `callTool()` switch. The drawlatch remote server already handles this; for local mode, need to import and call the test function from drawlatch (or use `executeProxyRequest` with the test config).
 - `backend/src/services/proxy-tools.ts` — Expose `test_connection` tool to Claude sessions.
 - `backend/src/routes/proxy-routes.ts` — Add `POST /api/proxy/test-connection/:alias` endpoint.
@@ -71,6 +74,7 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
   - Returns `{ success: boolean, message: string, statusCode?: number }`
 
 **Frontend:**
+
 - `frontend/src/pages/settings/ConnectionsSettings.tsx` — Add a "Test" button on each connection card (both local enabled + remote).
   - Shows loading spinner while testing
   - Shows success (green check) or failure (red X) toast/inline result
@@ -90,11 +94,13 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 **Implementation:**
 
 **Backend:**
+
 - Same pattern as `test_connection` above.
 - `backend/src/routes/proxy-routes.ts` — Add `POST /api/proxy/test-ingestor/:alias` endpoint.
 - `backend/src/services/proxy-tools.ts` — Expose `test_ingestor` tool to Claude sessions.
 
 **Frontend:**
+
 - Add "Test Listener" button in the listener/ingestor section of connection cards (only for connections with `hasIngestor`).
 - Same loading/result UX as test_connection.
 
@@ -115,12 +121,14 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 **Implementation:**
 
 **Backend:**
+
 - `backend/src/services/proxy-tools.ts` — Expose `control_listener` tool to Claude sessions.
 - `backend/src/routes/proxy-routes.ts` — Add `POST /api/proxy/control-listener/:alias` endpoint.
   - Body: `{ action: "start" | "stop" | "restart", instance_id?: string, caller?: string }`
   - Calls `proxy.callTool("control_listener", { connection: alias, action, instance_id })`
 
 **Frontend:**
+
 - Add start/stop/restart buttons to an ingestor management panel (could be in ConnectionsSettings or a dedicated "Listeners" tab in settings).
 - Show current listener state (from `ingestor_status`) alongside controls.
 - Consider a dedicated "Listeners" section in settings or in the Events dashboard.
@@ -138,11 +146,13 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 **Implementation:**
 
 **Backend:**
+
 - `backend/src/services/proxy-tools.ts` — Expose `list_listener_configs` tool.
 - `backend/src/routes/proxy-routes.ts` — Add `GET /api/proxy/listener-configs` endpoint.
   - Returns `{ configs: Record<string, ListenerConfigSchema> }` keyed by connection alias.
 
 **Frontend:**
+
 - Build a new `ListenerConfigPanel` component that auto-renders forms from field schemas.
 - Field type → React control mapping:
   - `text` → `<input type="text">`
@@ -166,6 +176,7 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 **Status: ✅ COMPLETE**
 
 **What it does:** Fetches real-time options from APIs to populate dynamic dropdowns. For example:
+
 - Discord: list of guilds (servers) the bot is in
 - Trello: list of boards the user has access to
 - Reddit: (user types subreddit names, no API needed)
@@ -178,12 +189,14 @@ Called lazily when a user opens/focuses a select field. Each field's `dynamicOpt
 **Implementation:**
 
 **Backend:**
+
 - `backend/src/services/proxy-tools.ts` — Expose `resolve_listener_options` tool.
 - `backend/src/routes/proxy-routes.ts` — Add `POST /api/proxy/resolve-listener-options` endpoint.
   - Body: `{ connection: string, paramKey: string, caller?: string }`
   - Returns: `{ options: Array<{ value: string, label: string }> }`
 
 **Frontend:**
+
 - Wire into the `ListenerConfigPanel` form renderer from Tier 2.2.
 - When a `select`/`multiselect` field has `dynamicOptions`, fetch options lazily on field focus.
 - Cache results for the session (avoid re-fetching on every focus).
@@ -192,6 +205,8 @@ Called lazily when a user opens/focuses a select field. Each field's `dynamicOpt
 **Estimated effort:** ~150 lines, but depends on Tier 2.2 being done first.
 
 ### 3.2 Multi-Instance Listener Support
+
+**Status: ✅ COMPLETE**
 
 **What it does:** A single connection (e.g., Trello) can have multiple concurrent listener instances. For example: watching 3 different Trello boards, or multiple Discord guilds, or several Reddit subreddits. Each instance has its own configuration overrides and event buffer.
 
@@ -204,38 +219,48 @@ Fields with `instanceKey: true` in the listener config schema create separate in
 **Implementation:**
 
 **Backend:**
-- `backend/src/services/connection-manager.ts` — Add `listenerInstances` config management.
-  - CRUD operations for instances per connection per caller.
-  - Store in `remote.config.json` under `callers[alias].listenerInstances[connection]`.
-- Update `poll_events` calls to support `instance_id` parameter.
-- Update `control_listener` calls to support `instance_id` parameter.
+
+- `backend/src/services/connection-manager.ts` — Added `listenerInstances` CRUD:
+  - `listListenerInstances()`, `addListenerInstance()`, `updateListenerInstance()`, `deleteListenerInstance()`
+  - Stores in `remote.config.json` under `callers[alias].listenerInstances[connection]`
+  - All writes trigger `reinitializeProxy()` for immediate effect
+- `backend/src/routes/connections.ts` — Added REST endpoints:
+  - `GET /:alias/listener-instances` — list instances
+  - `POST /:alias/listener-instances` — create instance
+  - `PUT /:alias/listener-instances/:instanceId` — update instance
+  - `DELETE /:alias/listener-instances/:instanceId` — delete instance
+- `control_listener` already supports `instance_id` parameter from Tier 2.1
 
 **Frontend:**
-- Add instance management UI to the ListenerConfigPanel:
-  - List existing instances
-  - Create new instance (with instanceKey field)
-  - Delete instance
-  - Per-instance parameter overrides
-- Instance selector in the event viewer for filtering events by instance.
-- Instance-aware start/stop/restart controls.
 
-**Estimated effort:** ~500+ lines across many files. This is the largest single feature.
+- `frontend/src/api.ts` — Added `ListenerInstanceInfo` type and CRUD API functions
+- `frontend/src/api.ts` — Added `instanceId?: string` to `IngestorStatus` (forward-compatible)
+- `frontend/src/components/ListenerConfigPanel.tsx` — Added instance management UI:
+  - Instance list with per-instance start/stop/restart controls
+  - "Add Instance" form with instance key hint from config schema
+  - Delete instance button (local mode only)
+  - Bulk controls (start all / stop all / restart all)
+  - Instance count in metadata footer
+  - Single-instance status section hidden when multi-instance active
+- `frontend/src/pages/settings/ConnectionsSettings.tsx` — Passes `localModeActive` to panel
+
+**Note:** Per-instance status indicators await drawlatch adding `instanceId` to its `IngestorStatus` type (currently alpha.2). The UI is forward-compatible and will automatically show per-instance status once drawlatch includes it.
 
 ---
 
 ## Drawlatch MCP Tools Summary
 
-| Tool | Purpose | Tier | Callboard Status |
-|------|---------|:----:|:---:|
-| `secure_request` | Make authenticated HTTP requests | — | ✅ Integrated |
-| `list_routes` | List available API routes | — | ✅ Integrated |
-| `poll_events` | Poll for real-time events | — | ✅ Integrated |
-| `ingestor_status` | Get listener statuses | — | ✅ Integrated |
-| `test_connection` | Validate API credentials | 1 | ✅ Integrated |
-| `test_ingestor` | Validate listener config | 1 | ✅ Integrated |
-| `control_listener` | Start/stop/restart listeners | 2 | ✅ Integrated |
-| `list_listener_configs` | Get listener field schemas | 2 | ✅ Integrated |
-| `resolve_listener_options` | Fetch dynamic dropdown options | 3 | ✅ Integrated |
+| Tool                       | Purpose                          | Tier | Callboard Status |
+| -------------------------- | -------------------------------- | :--: | :--------------: |
+| `secure_request`           | Make authenticated HTTP requests |  —   |  ✅ Integrated   |
+| `list_routes`              | List available API routes        |  —   |  ✅ Integrated   |
+| `poll_events`              | Poll for real-time events        |  —   |  ✅ Integrated   |
+| `ingestor_status`          | Get listener statuses            |  —   |  ✅ Integrated   |
+| `test_connection`          | Validate API credentials         |  1   |  ✅ Integrated   |
+| `test_ingestor`            | Validate listener config         |  1   |  ✅ Integrated   |
+| `control_listener`         | Start/stop/restart listeners     |  2   |  ✅ Integrated   |
+| `list_listener_configs`    | Get listener field schemas       |  2   |  ✅ Integrated   |
+| `resolve_listener_options` | Fetch dynamic dropdown options   |  3   |  ✅ Integrated   |
 
 Plus multi-instance listener support (not a tool, but a feature across multiple tools).
 
@@ -244,17 +269,20 @@ Plus multi-instance listener support (not a tool, but a feature across multiple 
 ## Architecture Notes
 
 ### Local Mode
+
 - Callboard imports drawlatch functions directly: `loadRemoteConfig`, `resolveCallerRoutes`, `executeProxyRequest`, `IngestorManager`
 - New features need additional drawlatch function imports
 - Currently installed: `@wolpertingerlabs/drawlatch@1.0.0-alpha.2`
 - Source drawlatch is at `1.0.0-alpha.4` — need to update for new fields
 
 ### Remote Mode
+
 - `proxy-client.ts` encrypted channel handles arbitrary request types
 - New tool calls follow the same encrypt→send→decrypt pattern
 - Minimal new code needed per tool
 
 ### Frontend Pattern
+
 - Each new tool gets: API function in `api.ts` → route in `proxy-routes.ts` → service call → UI component
 - The listener config schema system (`ListenerConfigField`) is designed for UI auto-rendering:
   - Field types map to React controls
@@ -262,6 +290,7 @@ Plus multi-instance listener support (not a tool, but a feature across multiple 
   - Instance keys for multi-instance support
 
 ### Connection Templates (22 total)
+
 GitHub, Discord Bot, Discord OAuth, Slack, Stripe, Notion, Linear, OpenAI, Anthropic, Google, Google AI, Reddit, X (Twitter), Mastodon, Bluesky, Trello, Telegram, Twitch, Hex, Lichess, OpenRouter, Devin
 
 Each template includes: auth headers, secret placeholders, endpoint allowlists, `testConnection` config, `testIngestor` strategy, `listenerConfig` schema.
