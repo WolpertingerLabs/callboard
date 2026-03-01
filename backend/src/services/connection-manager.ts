@@ -14,7 +14,7 @@
  * "${DEFAULT_GITHUB_TOKEN}"), using drawlatch's built-in
  * CallerConfig.env mechanism.
  */
-import { readFileSync, writeFileSync, existsSync, chmodSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, chmodSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import dotenv from "dotenv";
 import { listConnectionTemplates } from "@wolpertingerlabs/drawlatch/shared/connections";
@@ -22,6 +22,7 @@ import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type Calle
 import { getActiveMcpConfigDir } from "./agent-settings.js";
 import { getLocalProxyInstance } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
+import { isEncryptionKeyAvailable, getEncryptionKey, encryptString, decryptEnvFileContents } from "../utils/config-encryption.js";
 import type { ConnectionStatus, CallerInfo } from "shared";
 
 const log = createLogger("connection-manager");
@@ -64,16 +65,39 @@ function prefixedEnvVar(callerAlias: string, secretName: string): string {
 
 // ── .env file utilities ─────────────────────────────────────────────
 
-function getEnvFilePath(): string | null {
+function _getEnvFilePath(): string | null {
   const configDir = syncConfigDir();
   if (!configDir) return null;
   return join(configDir, ".env");
 }
 
-/** Load all vars from the mcp .env file into a map (without setting process.env). */
+/**
+ * Load all vars from the mcp .env (or .env.enc) file into a map
+ * (without setting process.env).
+ *
+ * When config encryption is active, reads and decrypts .env.enc.
+ * Falls back to plaintext .env for backward compatibility.
+ */
 function loadEnvFile(): Record<string, string> {
-  const envPath = getEnvFilePath();
-  if (!envPath || !existsSync(envPath)) return {};
+  const configDir = syncConfigDir();
+  if (!configDir) return {};
+
+  const encPath = join(configDir, ".env.enc");
+  const envPath = join(configDir, ".env");
+
+  // Prefer encrypted file when encryption key is available
+  if (existsSync(encPath) && isEncryptionKeyAvailable()) {
+    try {
+      const plaintext = decryptEnvFileContents(encPath, getEncryptionKey()!);
+      return dotenv.parse(plaintext);
+    } catch (err: any) {
+      log.error(`Failed to decrypt .env.enc: ${err.message}`);
+      return {};
+    }
+  }
+
+  // Fallback: plaintext .env
+  if (!existsSync(envPath)) return {};
   try {
     const parsed = dotenv.parse(readFileSync(envPath, "utf-8"));
     return parsed;
@@ -84,26 +108,54 @@ function loadEnvFile(): Record<string, string> {
 }
 
 /**
- * Load the mcp config dir's .env file into process.env.
- * Called on server startup when local mode is active.
+ * Load the mcp config dir's secrets into process.env.
+ *
+ * When config encryption is active, decrypts .env.enc and sets each
+ * key-value pair into process.env. Falls back to plaintext .env.
+ * Called on server startup (non-encrypted) or after login (encrypted).
  */
 export function loadMcpEnvIntoProcess(): void {
-  const envPath = getEnvFilePath();
-  if (!envPath || !existsSync(envPath)) return;
+  const configDir = syncConfigDir();
+  if (!configDir) return;
+
+  const encPath = join(configDir, ".env.enc");
+  const envPath = join(configDir, ".env");
+
+  // Prefer encrypted file when encryption key is available
+  if (existsSync(encPath) && isEncryptionKeyAvailable()) {
+    try {
+      const plaintext = decryptEnvFileContents(encPath, getEncryptionKey()!);
+      const parsed = dotenv.parse(plaintext);
+      for (const [key, value] of Object.entries(parsed)) {
+        process.env[key] = value;
+      }
+      log.info(`Loaded MCP secrets from encrypted ${encPath} (${Object.keys(parsed).length} vars)`);
+      return;
+    } catch (err: any) {
+      log.error(`Failed to decrypt MCP .env.enc: ${err.message}`);
+      return;
+    }
+  }
+
+  // Fallback: plaintext .env
+  if (!existsSync(envPath)) return;
   dotenv.config({ path: envPath, override: true });
   log.info(`Loaded MCP .env from ${envPath}`);
 }
 
 /**
- * Write key-value pairs to the mcp .env file.
+ * Write key-value pairs to the mcp secrets file.
  * Also sets process.env immediately for in-process use.
  * An empty string value removes the key.
+ *
+ * When config encryption is active, writes to .env.enc (encrypted).
+ * Otherwise writes plaintext .env (backward compatible).
  */
 function setEnvVars(updates: Record<string, string>): void {
-  const envPath = getEnvFilePath();
-  if (!envPath) throw new Error("MCP config dir not set");
+  const configDir = syncConfigDir();
+  if (!configDir) throw new Error("MCP config dir not set");
 
-  // Read current .env
+  // Read current env vars (handles decryption transparently)
   const envVars = loadEnvFile();
 
   // Apply updates
@@ -124,14 +176,37 @@ function setEnvVars(updates: Record<string, string>): void {
     }
     return `${k}=${v}`;
   });
+  const plaintext = lines.join("\n") + "\n";
 
-  writeFileSync(envPath, lines.join("\n") + "\n", { mode: 0o600 });
+  const encPath = join(configDir, ".env.enc");
+  const envPath = join(configDir, ".env");
 
-  // Ensure file permissions even if it already existed
-  try {
-    chmodSync(envPath, 0o600);
-  } catch {
-    // May fail on some platforms — best effort
+  // Write encrypted when encryption is active
+  if (isEncryptionKeyAvailable() && (existsSync(encPath) || process.env.CONFIG_ENCRYPTION_SALT)) {
+    const key = getEncryptionKey()!;
+    const encrypted = encryptString(plaintext, key);
+
+    // Atomic write: .enc.tmp → rename → remove plaintext
+    const tmpPath = encPath + ".tmp";
+    writeFileSync(tmpPath, encrypted, { mode: 0o600 });
+    renameSync(tmpPath, encPath);
+
+    // Remove plaintext .env if it exists
+    if (existsSync(envPath)) {
+      try {
+        unlinkSync(envPath);
+      } catch {
+        // Best effort
+      }
+    }
+  } else {
+    // Write plaintext (backward compatible)
+    writeFileSync(envPath, plaintext, { mode: 0o600 });
+    try {
+      chmodSync(envPath, 0o600);
+    } catch {
+      // May fail on some platforms — best effort
+    }
   }
 }
 

@@ -47,6 +47,29 @@ export function setLocalProxyInstance(proxy: LocalProxy): void {
   localProxyInstance = proxy;
 }
 
+// ── Deferred proxy startup (for config encryption) ──────────────────
+
+/**
+ * Registration pattern for deferred proxy startup.
+ *
+ * When config encryption is active, the local proxy can't start on boot
+ * because secrets aren't in memory yet. index.ts registers a startup
+ * function, and auth.ts calls startDeferredProxy() after login decrypts
+ * the secrets and loads them into process.env.
+ */
+let _deferredProxyStarter: (() => Promise<void>) | null = null;
+
+export function setDeferredProxyStarter(fn: () => Promise<void>): void {
+  _deferredProxyStarter = fn;
+}
+
+export async function startDeferredProxy(): Promise<void> {
+  if (!_deferredProxyStarter) return;
+  if (localProxyInstance) return; // Already running
+  await _deferredProxyStarter();
+  _deferredProxyStarter = null; // One-shot — don't start twice
+}
+
 // ── Per-alias client cache (remote mode) ────────────────────────────
 
 const clientCache = new Map<string, ProxyClient>();

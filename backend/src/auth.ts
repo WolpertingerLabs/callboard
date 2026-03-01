@@ -1,8 +1,26 @@
 import { randomBytes } from "crypto";
+import { existsSync } from "fs";
+import { join } from "path";
 import type { Request, Response, NextFunction } from "express";
-import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions, deleteAllSessionsExcept } from "./services/sessions.js";
+import { getSession, createSession, deleteSession, extendSession, deleteAllSessionsExcept } from "./services/sessions.js";
 import { verifyPassword, hashPassword, generateSalt } from "./utils/password.js";
 import { updateEnvFile } from "./utils/env-writer.js";
+import {
+  deriveConfigEncryptionKey,
+  getOrCreateConfigEncryptionSalt,
+  setEncryptionKey,
+  getEncryptionKey,
+  isEncryptionKeyAvailable,
+  encryptEnvFile,
+  decryptEnvFileContents,
+  encryptString,
+} from "./utils/config-encryption.js";
+import { getActiveMcpConfigDir } from "./services/agent-settings.js";
+import { startDeferredProxy } from "./services/proxy-singleton.js";
+import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
+import { createLogger } from "./utils/logger.js";
+
+const log = createLogger("auth");
 
 // ── Password helpers ────────────────────────────────────────────────
 
@@ -74,8 +92,9 @@ function rollSession(token: string, res: Response): void {
   });
 }
 
-// Session cleanup on startup
-cleanupExpiredSessions();
+// NOTE: Session cleanup on startup is now handled by deleteAllSessions()
+// in index.ts — all sessions are wiped because the config encryption key
+// is not in memory until the first login after restart.
 
 // ── Handlers ────────────────────────────────────────────────────────
 
@@ -93,6 +112,39 @@ export async function loginHandler(req: Request, res: Response) {
   const valid = await verifyConfiguredPassword(password);
   if (!valid) {
     return res.status(401).json({ error: "Invalid password" });
+  }
+
+  // ── Config encryption key derivation ────────────────────────────
+  // Derive a reproducible AES-256 key from the password + constant salt.
+  // This key only exists in memory and is used to encrypt/decrypt
+  // Drawlatch connection secrets (.env.enc).
+  try {
+    const configSalt = getOrCreateConfigEncryptionSalt();
+    const configKey = await deriveConfigEncryptionKey(password, configSalt);
+    setEncryptionKey(configKey);
+
+    const configDir = getActiveMcpConfigDir();
+    if (configDir) {
+      const envPath = join(configDir, ".env");
+      const encPath = join(configDir, ".env.enc");
+
+      if (existsSync(envPath) && !existsSync(encPath)) {
+        // First login after feature deploy: migrate plaintext → encrypted
+        encryptEnvFile(envPath, encPath, configKey);
+        log.info("Migrated plaintext MCP .env to encrypted .env.enc");
+      }
+
+      if (existsSync(encPath)) {
+        // Decrypt secrets and load into process.env
+        loadMcpEnvIntoProcess();
+      }
+
+      // Start the local proxy if it was deferred (waiting for decryption key)
+      await startDeferredProxy();
+    }
+  } catch (err: any) {
+    log.error(`Config encryption setup failed during login: ${err.message}`);
+    // Login still succeeds — encryption is a secondary concern
   }
 
   const token = randomBytes(32).toString("hex");
@@ -147,6 +199,43 @@ export async function changePasswordHandler(req: Request, res: Response) {
   const valid = await verifyConfiguredPassword(currentPassword);
   if (!valid) {
     return res.status(401).json({ error: "Current password is incorrect." });
+  }
+
+  // ── Re-encrypt config with new password (BEFORE updating password hash) ──
+  // If re-encryption fails, the password change is aborted so the old
+  // password + old encryption remain consistent.
+  const configSalt = process.env.CONFIG_ENCRYPTION_SALT;
+  if (configSalt && isEncryptionKeyAvailable()) {
+    const configDir = getActiveMcpConfigDir();
+    if (configDir) {
+      const encPath = join(configDir, ".env.enc");
+      if (existsSync(encPath)) {
+        try {
+          // Decrypt with old key (currently in memory from login)
+          const oldKey = getEncryptionKey()!;
+          const plaintext = decryptEnvFileContents(encPath, oldKey);
+
+          // Derive new key from new password
+          const newConfigKey = await deriveConfigEncryptionKey(newPassword, configSalt);
+
+          // Re-encrypt with new key (atomic write)
+          const encrypted = encryptString(plaintext, newConfigKey);
+          const { writeFileSync, renameSync } = await import("fs");
+          const tmpPath = encPath + ".tmp";
+          writeFileSync(tmpPath, encrypted, { mode: 0o600 });
+          renameSync(tmpPath, encPath);
+
+          // Update in-memory key
+          setEncryptionKey(newConfigKey);
+          log.info("Re-encrypted config secrets with new password");
+        } catch (err: any) {
+          log.error(`Config re-encryption failed: ${err.message}`);
+          return res.status(500).json({
+            error: "Password change aborted — failed to re-encrypt config secrets. Your current password is unchanged.",
+          });
+        }
+      }
+    }
   }
 
   // Hash the new password

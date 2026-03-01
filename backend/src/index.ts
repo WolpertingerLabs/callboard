@@ -48,8 +48,10 @@ import { initEventWatchers, shutdownEventWatchers } from "./services/event-watch
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
 import { LocalProxy } from "./services/local-proxy.js";
 import { getAgentSettings, getActiveMcpConfigDir, ensureLocalProxyConfigDir, ensureRemoteProxyConfigDir } from "./services/agent-settings.js";
-import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
+import { setLocalProxyInstance, getLocalProxyInstance, setDeferredProxyStarter } from "./services/proxy-singleton.js";
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
+import { deleteAllSessions } from "./services/sessions.js";
+import { isEncryptionActive, cleanupEncryptionArtifacts } from "./utils/config-encryption.js";
 
 const log = createLogger("server");
 
@@ -185,6 +187,13 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
 
+// ── Session wipe on startup ──────────────────────────────────────────
+// The config encryption key is not in memory until the first login after
+// restart, so all sessions must be invalidated. Users will re-authenticate
+// which triggers key derivation and secret decryption.
+deleteAllSessions();
+log.info("All sessions cleared on startup (encryption key not yet in memory)");
+
 app.listen(PORT, () => {
   log.info(`Backend running on http://localhost:${PORT}`);
   log.info(`Log level: ${process.env.LOG_LEVEL || "info"}`);
@@ -223,23 +232,45 @@ app.listen(PORT, () => {
     // Ensure the config directory exists before starting
     ensureLocalProxyConfigDir();
 
-    // Sync MCP_CONFIG_DIR and load secrets before creating LocalProxy
-    process.env.MCP_CONFIG_DIR = activeMcpConfigDir;
-    loadMcpEnvIntoProcess();
+    // Clean up any stale encryption artifacts from interrupted writes
+    cleanupEncryptionArtifacts(activeMcpConfigDir);
 
-    try {
-      const localProxy = new LocalProxy(activeMcpConfigDir, "default");
-      localProxy
-        .start()
-        .then(() => {
+    // Sync MCP_CONFIG_DIR
+    process.env.MCP_CONFIG_DIR = activeMcpConfigDir;
+
+    if (isEncryptionActive(activeMcpConfigDir)) {
+      // Config encryption is active — proxy startup is deferred until login
+      // because the decryption key isn't in memory yet. Register a deferred
+      // starter that auth.ts will call after the first successful login.
+      log.info("Config encryption active — proxy startup deferred until login");
+      setDeferredProxyStarter(async () => {
+        try {
+          const localProxy = new LocalProxy(activeMcpConfigDir, "default");
+          await localProxy.start();
           setLocalProxyInstance(localProxy);
-          log.info("Local proxy started");
-        })
-        .catch((err: any) => {
-          log.error(`Failed to start local proxy: ${err.message}`);
-        });
-    } catch (err: any) {
-      log.error(`Failed to initialize local proxy: ${err.message}`);
+          log.info("Local proxy started (post-login, secrets decrypted)");
+        } catch (err: any) {
+          log.error(`Failed to start local proxy after login: ${err.message}`);
+        }
+      });
+    } else {
+      // No encryption — start proxy immediately (backward compatible)
+      loadMcpEnvIntoProcess();
+
+      try {
+        const localProxy = new LocalProxy(activeMcpConfigDir, "default");
+        localProxy
+          .start()
+          .then(() => {
+            setLocalProxyInstance(localProxy);
+            log.info("Local proxy started");
+          })
+          .catch((err: any) => {
+            log.error(`Failed to start local proxy: ${err.message}`);
+          });
+      } catch (err: any) {
+        log.error(`Failed to initialize local proxy: ${err.message}`);
+      }
     }
   } else if (settings.proxyMode === "remote") {
     // Ensure the remote config directory and key scaffold exist
