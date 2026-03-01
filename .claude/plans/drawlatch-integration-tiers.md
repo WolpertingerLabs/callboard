@@ -102,9 +102,11 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 
 ---
 
-## Tier 2 — High Value (Medium Effort, High Impact)
+## Tier 2 — High Value (DONE)
 
 ### 2.1 `control_listener` — Runtime Listener Start/Stop/Restart
+
+**Status: ✅ COMPLETE**
 
 **What it does:** Start, stop, or restart individual event listeners at runtime without restarting the whole callboard server. Supports per-instance control via `instance_id` parameter.
 
@@ -126,6 +128,8 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 **Estimated effort:** ~200 lines across 5-6 files.
 
 ### 2.2 `list_listener_configs` — Listener Configuration Schemas
+
+**Status: ✅ COMPLETE**
 
 **What it does:** Returns JSON schemas for all configurable listener fields per connection. Each field has: `key`, `label`, `description`, `type` (text/number/boolean/select/multiselect/secret/text[]), `default`, `required`, `validation`, `dynamicOptions` metadata.
 
@@ -158,6 +162,8 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 ## Tier 3 — Full Feature (Higher Effort)
 
 ### 3.1 `resolve_listener_options` — Dynamic Dropdown Options
+
+**Status: ✅ COMPLETE**
 
 **What it does:** Fetches real-time options from APIs to populate dynamic dropdowns. For example:
 - Discord: list of guilds (servers) the bot is in
@@ -227,9 +233,9 @@ Fields with `instanceKey: true` in the listener config schema create separate in
 | `ingestor_status` | Get listener statuses | — | ✅ Integrated |
 | `test_connection` | Validate API credentials | 1 | ✅ Integrated |
 | `test_ingestor` | Validate listener config | 1 | ✅ Integrated |
-| `control_listener` | Start/stop/restart listeners | 2 | ❌ Not integrated |
-| `list_listener_configs` | Get listener field schemas | 2 | ❌ Not integrated |
-| `resolve_listener_options` | Fetch dynamic dropdown options | 3 | ❌ Not integrated |
+| `control_listener` | Start/stop/restart listeners | 2 | ✅ Integrated |
+| `list_listener_configs` | Get listener field schemas | 2 | ✅ Integrated |
+| `resolve_listener_options` | Fetch dynamic dropdown options | 3 | ✅ Integrated |
 
 Plus multi-instance listener support (not a tool, but a feature across multiple tools).
 

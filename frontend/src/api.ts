@@ -653,6 +653,96 @@ export async function testProxyIngestor(connection: string, caller?: string): Pr
   return res.json();
 }
 
+// Listener control types
+
+export interface LifecycleResult {
+  success: boolean;
+  connection: string;
+  instanceId?: string;
+  state?: string;
+  error?: string;
+}
+
+export async function controlListener(
+  connection: string,
+  action: "start" | "stop" | "restart",
+  caller?: string,
+  instanceId?: string,
+): Promise<LifecycleResult | LifecycleResult[]> {
+  const res = await fetch(`${BASE}/proxy/control-listener/${encodeURIComponent(connection)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ action, ...(caller && { caller }), ...(instanceId && { instance_id: instanceId }) }),
+  });
+  await assertOk(res, "Failed to control listener");
+  return res.json();
+}
+
+// Listener config types
+
+export interface ListenerConfigOption {
+  value: string;
+  label: string;
+}
+
+export interface ListenerConfigField {
+  key: string;
+  label: string;
+  description?: string;
+  required?: boolean;
+  type: "text" | "number" | "boolean" | "select" | "multiselect" | "secret" | "text[]";
+  default?: string | number | boolean | string[];
+  options?: ListenerConfigOption[];
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  pattern?: string;
+  dynamicOptions?: {
+    url: string;
+    method?: string;
+    body?: unknown;
+    responsePath?: string;
+    labelField: string;
+    valueField: string;
+  };
+  overrideKey?: string;
+  instanceKey?: boolean;
+  group?: string;
+}
+
+export interface ListenerConfigSchema {
+  connection: string;
+  name: string;
+  description?: string;
+  fields: ListenerConfigField[];
+  ingestorType?: string;
+  supportsMultiInstance: boolean;
+  instanceKeyField?: string;
+}
+
+export async function getListenerConfigs(alias?: string): Promise<{ configs: ListenerConfigSchema[] }> {
+  const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
+  const res = await fetch(`${BASE}/proxy/listener-configs${params}`, { credentials: "include" });
+  await assertOk(res, "Failed to get listener configs");
+  return res.json();
+}
+
+export async function resolveListenerOptions(
+  connection: string,
+  paramKey: string,
+  caller?: string,
+): Promise<{ success: boolean; options?: ListenerConfigOption[]; error?: string }> {
+  const res = await fetch(`${BASE}/proxy/resolve-listener-options`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ connection, paramKey, ...(caller && { caller }) }),
+  });
+  await assertOk(res, "Failed to resolve listener options");
+  return res.json();
+}
+
 export interface ProxyRoute {
   index: number;
   name?: string;
