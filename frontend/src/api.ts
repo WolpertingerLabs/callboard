@@ -809,3 +809,19 @@ export async function changePassword(currentPassword: string, newPassword: strin
   });
   await assertOk(res, "Failed to change password");
 }
+
+// Claude Code auth status API
+
+export interface ClaudeAuthStatus {
+  loggedIn: boolean;
+  email?: string;
+  authMethod?: string;
+  subscriptionType?: string;
+  error?: string;
+}
+
+export async function checkClaudeStatus(): Promise<ClaudeAuthStatus> {
+  const res = await fetch(`${BASE}/auth/claude-status`, { credentials: "include" });
+  await assertOk(res, "Failed to check Claude status");
+  return res.json();
+}

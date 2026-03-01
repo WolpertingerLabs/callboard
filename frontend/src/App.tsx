@@ -1,8 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import SplitLayout from "./components/SplitLayout";
 import Login from "./pages/Login";
+import CodeLoginModal from "./components/CodeLoginModal";
 import { SessionProvider } from "./contexts/SessionContext";
+import { checkClaudeStatus, type ClaudeAuthStatus } from "./api";
 import { getThemeMode } from "./utils/localStorage";
 import type { ThemeMode } from "./utils/localStorage";
 
@@ -15,6 +17,10 @@ function applyTheme(mode: ThemeMode) {
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [serverError, setServerError] = useState("");
+
+  // Claude Code login state (default true to prevent flash)
+  const [claudeLoggedIn, setClaudeLoggedIn] = useState(true);
+  const [showClaudeModal, setShowClaudeModal] = useState(false);
 
   // Theme management
   useEffect(() => {
@@ -45,6 +51,41 @@ export default function App() {
       .catch(() => setAuthed(false));
   }, []);
 
+  // Check Claude Code auth status after Callboard login
+  useEffect(() => {
+    if (!authed) return;
+
+    checkClaudeStatus()
+      .then((status) => {
+        setClaudeLoggedIn(status.loggedIn);
+        if (!status.loggedIn) {
+          // Show modal unless dismissed this session
+          try {
+            if (!sessionStorage.getItem("claude-login-dismissed")) {
+              setShowClaudeModal(true);
+            }
+          } catch {
+            setShowClaudeModal(true);
+          }
+        }
+      })
+      .catch(() => {
+        // If check fails, don't block the user — just skip the modal
+      });
+  }, [authed]);
+
+  const handleClaudeStatusChange = useCallback((status: ClaudeAuthStatus) => {
+    setClaudeLoggedIn(status.loggedIn);
+  }, []);
+
+  const handleShowClaudeModal = useCallback(() => {
+    setShowClaudeModal(true);
+  }, []);
+
+  const handleCloseClaudeModal = useCallback(() => {
+    setShowClaudeModal(false);
+  }, []);
+
   if (authed === null) return null; // loading
 
   if (!authed) return <Login onLogin={() => setAuthed(true)} serverError={serverError} />;
@@ -60,18 +101,25 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           {/* Existing chat routes */}
-          <Route path="/" element={<SplitLayout onLogout={handleLogout} />} />
-          <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} />} />
-          <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} />} />
-          <Route path="/queue" element={<SplitLayout onLogout={handleLogout} />} />
-          <Route path="/settings" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+          <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+          <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+          <Route path="/queue" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+          <Route path="/settings" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
 
           {/* Agent routes - rendered inside SplitLayout */}
-          <Route path="/agents" element={<SplitLayout onLogout={handleLogout} />} />
-          <Route path="/agents/new" element={<SplitLayout onLogout={handleLogout} />} />
-          <Route path="/agents/:alias/*" element={<SplitLayout onLogout={handleLogout} />} />
+          <Route path="/agents" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+          <Route
+            path="/agents/new"
+            element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+          />
+          <Route
+            path="/agents/:alias/*"
+            element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+          />
         </Routes>
       </BrowserRouter>
+      <CodeLoginModal isOpen={showClaudeModal} onClose={handleCloseClaudeModal} onStatusChange={handleClaudeStatusChange} />
     </SessionProvider>
   );
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight } from "lucide-react";
+import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
 import { listChats, deleteChat, toggleBookmark, listAgents, getAgentIdentityPrompt, type Chat, type DefaultPermissions, type AgentConfig } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import ChatListItem from "../components/ChatListItem";
@@ -26,6 +26,8 @@ interface ChatListProps {
   onRefresh: (refreshFn: () => void) => void;
   sidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
+  claudeLoggedIn?: boolean;
+  onShowClaudeModal?: () => void;
 }
 
 function getPermissionsSummary(permissions: DefaultPermissions): string {
@@ -59,7 +61,7 @@ function getPermissionsSummary(permissions: DefaultPermissions): string {
   return parts.join("; ");
 }
 
-export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, onToggleSidebar }: ChatListProps) {
+export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, onToggleSidebar, claudeLoggedIn, onShowClaudeModal }: ChatListProps) {
   const { activeSessions } = useSessionContext();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -466,6 +468,24 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
         >
           <Settings size={18} />
         </button>
+        {claudeLoggedIn === false && onShowClaudeModal && (
+          <button
+            onClick={onShowClaudeModal}
+            style={{
+              background: "rgba(210, 153, 34, 0.15)",
+              color: "var(--warning)",
+              padding: "10px",
+              borderRadius: 8,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              marginTop: "auto",
+            }}
+            title="Claude Code login required"
+          >
+            <AlertTriangle size={18} />
+          </button>
+        )}
         {onToggleSidebar && (
           <button
             onClick={onToggleSidebar}
@@ -477,7 +497,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              marginTop: "auto",
+              ...(claudeLoggedIn !== false ? { marginTop: "auto" } : {}),
               marginBottom: 16,
             }}
             title="Expand sidebar"
@@ -577,6 +597,23 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               <Settings size={18} />
             </button>
           </div>
+          {claudeLoggedIn === false && onShowClaudeModal && (
+            <button
+              onClick={onShowClaudeModal}
+              style={{
+                background: "rgba(210, 153, 34, 0.15)",
+                color: "var(--warning)",
+                padding: "6px",
+                borderRadius: 6,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title="Claude Code login required"
+            >
+              <AlertTriangle size={18} />
+            </button>
+          )}
           {onToggleSidebar && (
             <button
               onClick={onToggleSidebar}
