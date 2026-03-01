@@ -25,6 +25,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let isBookmarked = false;
   let agentAlias: string | undefined;
   let isTriggered = false;
+  let lastReadAt: string | undefined;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     title = meta.title;
@@ -32,7 +33,10 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     isBookmarked = meta.bookmarked === true;
     agentAlias = meta.agentAlias;
     isTriggered = meta.triggered === true;
+    lastReadAt = meta.lastReadAt;
   } catch {}
+
+  const hasUnread = lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
 
   const displayName = title || (preview ? (preview.length > 60 ? preview.slice(0, 60) + "..." : preview) : folderName);
 
@@ -92,7 +96,21 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               <Zap size={10} />
             </span>
           )}
-          <div style={{ fontSize: 15, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
+          {hasUnread && (
+            <span
+              title="Unread messages"
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: "var(--accent)",
+                flexShrink: 0,
+              }}
+            />
+          )}
+          <div style={{ fontSize: 15, fontWeight: hasUnread ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {displayName}
+          </div>
           {sessionStatus?.active && (
             <div
               style={{
