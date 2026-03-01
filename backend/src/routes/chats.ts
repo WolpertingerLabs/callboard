@@ -582,6 +582,74 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
   }
 });
 
+// Update default permissions on a chat
+chatsRouter.patch("/:id/permissions", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Update chat permissions'
+  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["defaultPermissions"],
+          properties: {
+            defaultPermissions: {
+              type: "object",
+              required: ["fileRead", "fileWrite", "codeExecution", "webAccess"],
+              properties: {
+                fileRead: { type: "string", enum: ["allow", "ask", "deny"] },
+                fileWrite: { type: "string", enum: ["allow", "ask", "deny"] },
+                codeExecution: { type: "string", enum: ["allow", "ask", "deny"] },
+                webAccess: { type: "string", enum: ["allow", "ask", "deny"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[400] = { description: "Invalid request body" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const { defaultPermissions } = req.body;
+  if (!defaultPermissions || typeof defaultPermissions !== "object") {
+    return res.status(400).json({ error: "defaultPermissions must be an object" });
+  }
+
+  const validLevels = ["allow", "ask", "deny"];
+  const requiredKeys = ["fileRead", "fileWrite", "codeExecution", "webAccess"];
+  for (const key of requiredKeys) {
+    if (!validLevels.includes(defaultPermissions[key])) {
+      return res.status(400).json({ error: `${key} must be one of: allow, ask, deny` });
+    }
+  }
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    // Parse existing metadata and update permissions
+    let meta: Record<string, any> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+
+    meta.defaultPermissions = defaultPermissions;
+    const updatedMetadata = JSON.stringify(meta);
+
+    // Upsert: creates file storage record if it only existed on filesystem
+    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+
+    res.json(updatedChat);
+  } catch (err: any) {
+    log.error(`Error updating permissions: ${err}`);
+    res.status(500).json({ error: "Failed to update permissions", details: err.message });
+  }
+});
+
 // Delete a chat (deletes both file storage metadata and JSONL session log)
 chatsRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Chats']
