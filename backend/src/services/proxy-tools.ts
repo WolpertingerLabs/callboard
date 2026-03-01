@@ -144,6 +144,74 @@ export function buildProxyToolsServer(keyAlias: string) {
       ),
 
       tool(
+        "test_connection",
+        "Verify API credentials with a non-destructive read-only test request. " +
+          "Use this to check if a connection's secrets are correctly configured before making real requests.",
+        {
+          connection: z
+            .string()
+            .describe("Connection alias to test (e.g., \"github\", \"slack\")"),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [
+                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
+              ],
+            };
+          }
+          try {
+            const result = await proxy.callTool("test_connection", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`test_connection failed: ${err.message}`);
+            return {
+              content: [
+                { type: "text" as const, text: `Error: ${err.message}` },
+              ],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "test_ingestor",
+        "Verify event listener configuration without starting it. " +
+          "Checks credentials, webhook secrets, and listener parameters for a connection's ingestor.",
+        {
+          connection: z
+            .string()
+            .describe("Connection alias to test (e.g., \"discord-bot\", \"github\")"),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [
+                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
+              ],
+            };
+          }
+          try {
+            const result = await proxy.callTool("test_ingestor", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`test_ingestor failed: ${err.message}`);
+            return {
+              content: [
+                { type: "text" as const, text: `Error: ${err.message}` },
+              ],
+            };
+          }
+        },
+      ),
+
+      tool(
         "ingestor_status",
         "Get the status of all active ingestors for this caller. " +
           "Shows connection state, buffer sizes, event counts, and any errors.",

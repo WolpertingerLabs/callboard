@@ -50,9 +50,11 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 
 ---
 
-## Tier 1 — Quick Wins (Low Effort, High Impact)
+## Tier 1 — Quick Wins (DONE)
 
 ### 1.1 `test_connection` — Validate API Credentials
+
+**Status: ✅ COMPLETE**
 
 **What it does:** Makes a non-destructive read-only request to verify API credentials work (e.g., `GET /user` for GitHub, `GET /users/@me` for Discord). Each connection template has a pre-configured `testConnection` config.
 
@@ -78,6 +80,8 @@ Updated ConnectionsSettings to work for both local and remote proxy modes. Remot
 **Estimated effort:** ~150 lines across 4-5 files.
 
 ### 1.2 `test_ingestor` — Validate Listener Configuration
+
+**Status: ✅ COMPLETE**
 
 **What it does:** Verifies event listener/ingestor configuration without starting a persistent listener. Tests webhook secrets, poll credentials, WebSocket auth. Each connection template has a `testIngestor` strategy (`webhook_verify`, `poll_once`, `websocket_auth`).
 
@@ -221,8 +225,8 @@ Fields with `instanceKey: true` in the listener config schema create separate in
 | `list_routes` | List available API routes | — | ✅ Integrated |
 | `poll_events` | Poll for real-time events | — | ✅ Integrated |
 | `ingestor_status` | Get listener statuses | — | ✅ Integrated |
-| `test_connection` | Validate API credentials | 1 | ❌ Not integrated |
-| `test_ingestor` | Validate listener config | 1 | ❌ Not integrated |
+| `test_connection` | Validate API credentials | 1 | ✅ Integrated |
+| `test_ingestor` | Validate listener config | 1 | ✅ Integrated |
 | `control_listener` | Start/stop/restart listeners | 2 | ❌ Not integrated |
 | `list_listener_configs` | Get listener field schemas | 2 | ❌ Not integrated |
 | `resolve_listener_options` | Fetch dynamic dropdown options | 3 | ❌ Not integrated |

@@ -17,8 +17,8 @@ import {
   Cloud,
 } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { getConnections, setConnectionEnabled, createCallerAlias, deleteCallerAlias } from "../../api";
-import type { ConnectionStatus, CallerInfo } from "../../api";
+import { getConnections, setConnectionEnabled, createCallerAlias, deleteCallerAlias, testProxyApiConnection, testProxyIngestor } from "../../api";
+import type { ConnectionStatus, CallerInfo, ProxyTestResult } from "../../api";
 import ConfigureConnectionModal from "../../components/ConfigureConnectionModal";
 
 interface ConnectionsSettingsProps {
@@ -534,6 +534,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
               <ConnectionCard
                 key={conn.alias}
                 connection={conn}
+                caller={selectedCaller}
                 toggling={togglingAlias === conn.alias}
                 onToggle={(enabled) => handleToggle(conn.alias, enabled)}
                 onConfigure={() => setConfiguring(conn)}
@@ -560,18 +561,48 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
 
 function ConnectionCard({
   connection,
+  caller,
   toggling,
   onToggle,
   onConfigure,
 }: {
   connection: ConnectionStatus;
+  caller: string;
   toggling: boolean;
   onToggle: (enabled: boolean) => void;
   onConfigure: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const [testResult, setTestResult] = useState<ProxyTestResult | null>(null);
+  const [testing, setTesting] = useState<"connection" | "ingestor" | null>(null);
   const conn = connection;
   const isRemote = conn.source === "remote";
+
+  const handleTestConnection = async () => {
+    setTesting("connection");
+    setTestResult(null);
+    try {
+      const result = await testProxyApiConnection(conn.alias, caller);
+      setTestResult(result);
+    } catch {
+      setTestResult({ success: false, connection: conn.alias, error: "Test request failed" });
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  const handleTestIngestor = async () => {
+    setTesting("ingestor");
+    setTestResult(null);
+    try {
+      const result = await testProxyIngestor(conn.alias, caller);
+      setTestResult(result);
+    } catch {
+      setTestResult({ success: false, connection: conn.alias, error: "Test request failed" });
+    } finally {
+      setTesting(null);
+    }
+  };
 
   // Compute secret status
   const requiredTotal = conn.requiredSecrets.length;
@@ -828,27 +859,145 @@ function ConnectionCard({
         )}
       </div>
 
-      {/* Configure button (when enabled and local only) */}
-      {conn.enabled && !isRemote && (
-        <button
-          onClick={onConfigure}
+      {/* Action buttons row (when enabled or remote) */}
+      {(conn.enabled || isRemote) && (
+        <div style={{ display: "flex", gap: 6 }}>
+          {/* Configure button (local only) */}
+          {!isRemote && (
+            <button
+              onClick={onConfigure}
+              style={{
+                flex: 1,
+                padding: "8px 0",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--text)",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            >
+              Configure
+            </button>
+          )}
+
+          {/* Test Connection button */}
+          <button
+            onClick={handleTestConnection}
+            disabled={testing !== null}
+            style={{
+              flex: isRemote ? 1 : 0,
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--text-muted)",
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: testing ? "wait" : "pointer",
+              transition: "background 0.15s",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 4,
+              whiteSpace: "nowrap",
+            }}
+            onMouseEnter={(e) => {
+              if (!testing) e.currentTarget.style.background = "var(--bg-secondary)";
+            }}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            title="Test API credentials"
+          >
+            {testing === "connection" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Wifi size={12} />}
+            Test
+          </button>
+
+          {/* Test Ingestor button (only if connection has ingestor) */}
+          {conn.hasIngestor && (
+            <button
+              onClick={handleTestIngestor}
+              disabled={testing !== null}
+              style={{
+                flex: isRemote ? 1 : 0,
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--text-muted)",
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: testing ? "wait" : "pointer",
+                transition: "background 0.15s",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+                whiteSpace: "nowrap",
+              }}
+              onMouseEnter={(e) => {
+                if (!testing) e.currentTarget.style.background = "var(--bg-secondary)";
+              }}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+              title="Test event listener configuration"
+            >
+              {testing === "ingestor" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Radio size={12} />}
+              Test Listener
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Test result display */}
+      {testResult && (
+        <div
           style={{
-            width: "100%",
-            padding: "8px 0",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "var(--bg)",
-            color: "var(--text)",
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: "pointer",
-            transition: "background 0.15s",
+            padding: "8px 10px",
+            borderRadius: 6,
+            fontSize: 12,
+            background: testResult.success
+              ? "color-mix(in srgb, var(--success) 10%, transparent)"
+              : "color-mix(in srgb, var(--error) 10%, transparent)",
+            color: testResult.success ? "var(--success)" : "var(--error)",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
         >
-          Configure
-        </button>
+          {testResult.success ? <Check size={14} style={{ flexShrink: 0, marginTop: 1 }} /> : <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 500 }}>
+              {testResult.success ? "Test passed" : "Test failed"}
+              {testResult.status ? ` (${testResult.status})` : ""}
+            </div>
+            {(testResult.error || testResult.message || testResult.description) && (
+              <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                {testResult.error || testResult.message || testResult.description}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => setTestResult(null)}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              padding: 2,
+              marginLeft: "auto",
+              flexShrink: 0,
+              opacity: 0.6,
+              fontSize: 16,
+              lineHeight: 1,
+            }}
+            title="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
       )}
     </div>
   );

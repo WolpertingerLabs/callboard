@@ -67,6 +67,59 @@ proxyRouter.get("/ingestors", async (req: Request, res: Response): Promise<void>
   }
 });
 
+/** POST /api/proxy/test-connection/:connection — test API credentials for a connection */
+proxyRouter.post("/test-connection/:connection", async (req: Request, res: Response): Promise<void> => {
+  const connection = req.params.connection;
+  const alias = (req.query.alias || req.body?.caller) as string | undefined;
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  // Use the specified caller alias or first available
+  const proxyAlias = alias || (req.query.alias as string | undefined);
+  const client = proxyAlias ? getProxy(proxyAlias) : null;
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  try {
+    const result = await client.callTool("test_connection", { connection });
+    res.json(result);
+  } catch (err: any) {
+    log.error(`test_connection failed for "${connection}": ${err.message}`);
+    res.status(502).json({ success: false, connection, error: `Proxy error: ${err.message}` });
+  }
+});
+
+/** POST /api/proxy/test-ingestor/:connection — test listener configuration for a connection */
+proxyRouter.post("/test-ingestor/:connection", async (req: Request, res: Response): Promise<void> => {
+  const connection = req.params.connection;
+  const alias = (req.query.alias || req.body?.caller) as string | undefined;
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  const proxyAlias = alias || (req.query.alias as string | undefined);
+  const client = proxyAlias ? getProxy(proxyAlias) : null;
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  try {
+    const result = await client.callTool("test_ingestor", { connection });
+    res.json(result);
+  } catch (err: any) {
+    log.error(`test_ingestor failed for "${connection}": ${err.message}`);
+    res.status(502).json({ success: false, connection, error: `Proxy error: ${err.message}` });
+  }
+});
+
 /** GET /api/proxy/events — all stored events across all connections, newest first */
 proxyRouter.get("/events", (req: Request, res: Response): void => {
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;

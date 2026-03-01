@@ -619,6 +619,40 @@ export async function backtestTriggerFilter(alias: string, filter: TriggerFilter
 
 // Proxy API functions
 
+export interface ProxyTestResult {
+  success: boolean;
+  connection: string;
+  supported?: boolean;
+  status?: number;
+  statusText?: string;
+  strategy?: string;
+  description?: string;
+  message?: string;
+  error?: string;
+}
+
+export async function testProxyApiConnection(connection: string, caller?: string): Promise<ProxyTestResult> {
+  const res = await fetch(`${BASE}/proxy/test-connection/${encodeURIComponent(connection)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ ...(caller && { caller }) }),
+  });
+  await assertOk(res, "Failed to test connection");
+  return res.json();
+}
+
+export async function testProxyIngestor(connection: string, caller?: string): Promise<ProxyTestResult> {
+  const res = await fetch(`${BASE}/proxy/test-ingestor/${encodeURIComponent(connection)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ ...(caller && { caller }) }),
+  });
+  await assertOk(res, "Failed to test ingestor");
+  return res.json();
+}
+
 export interface ProxyRoute {
   index: number;
   name?: string;
