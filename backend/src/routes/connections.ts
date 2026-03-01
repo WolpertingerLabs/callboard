@@ -19,8 +19,10 @@ import {
   listCallerAliases,
   createCallerAlias,
   deleteCallerAlias,
+  listRemoteConnections,
 } from "../services/connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir } from "../services/agent-settings.js";
+import { isProxyConfigured, getConfiguredAliases } from "../services/proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("connections-routes");
@@ -40,12 +42,27 @@ export const connectionsRouter = Router();
 connectionsRouter.get("/callers", (_req: Request, res: Response): void => {
   try {
     const settings = getAgentSettings();
-    if (settings.proxyMode !== "local" || !getActiveMcpConfigDir()) {
-      res.json({ callers: [] });
+    const localActive = settings.proxyMode === "local" && !!getActiveMcpConfigDir();
+    const remoteActive = settings.proxyMode === "remote" && isProxyConfigured();
+
+    if (localActive) {
+      const callers = listCallerAliases();
+      res.json({ callers });
       return;
     }
-    const callers = listCallerAliases();
-    res.json({ callers });
+
+    if (remoteActive) {
+      // In remote mode, callers are key aliases (read-only, no create/delete)
+      const aliases = getConfiguredAliases();
+      const callers = aliases.map((alias) => ({
+        alias,
+        connectionCount: 0, // Unknown until routes are fetched
+      }));
+      res.json({ callers });
+      return;
+    }
+
+    res.json({ callers: [] });
   } catch (err: any) {
     log.error(`Error listing caller aliases: ${err.message}`);
     res.status(500).json({ error: "Failed to list caller aliases" });
@@ -144,20 +161,29 @@ connectionsRouter.delete("/callers/:callerAlias", async (req: Request, res: Resp
 // #swagger.tags = ['Connections']
 // #swagger.summary = 'List all connection templates with status'
 /* #swagger.responses[200] = { description: "Connection templates with status" } */
-connectionsRouter.get("/", (req: Request, res: Response): void => {
+connectionsRouter.get("/", async (req: Request, res: Response): Promise<void> => {
   try {
     const settings = getAgentSettings();
     const localModeActive = settings.proxyMode === "local" && !!getActiveMcpConfigDir();
+    const remoteModeActive = settings.proxyMode === "remote" && isProxyConfigured();
 
-    if (!localModeActive) {
-      res.json({ templates: [], callers: [], localModeActive: false });
+    if (localModeActive) {
+      const callerAlias = (req.query.caller as string) || "default";
+      const templates = listConnectionsWithStatus(callerAlias);
+      const callers = listCallerAliases();
+      res.json({ templates, callers, localModeActive: true, remoteModeActive: false });
       return;
     }
 
-    const callerAlias = (req.query.caller as string) || "default";
-    const templates = listConnectionsWithStatus(callerAlias);
-    const callers = listCallerAliases();
-    res.json({ templates, callers, localModeActive: true });
+    if (remoteModeActive) {
+      const callerAlias = (req.query.caller as string) || undefined;
+      const { templates, callers } = await listRemoteConnections(callerAlias);
+      res.json({ templates, callers, localModeActive: false, remoteModeActive: true });
+      return;
+    }
+
+    // Neither mode is active
+    res.json({ templates: [], callers: [], localModeActive: false, remoteModeActive: false });
   } catch (err: any) {
     log.error(`Error listing connections: ${err.message}`);
     res.status(500).json({ error: "Failed to list connections" });

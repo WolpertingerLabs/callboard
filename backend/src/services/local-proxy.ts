@@ -110,15 +110,37 @@ export class LocalProxy {
         );
 
       case "list_routes":
-        return routes.map((route, index) => ({
-          index,
-          name: route.name,
-          description: route.description,
-          docsUrl: route.docsUrl,
-          allowedEndpoints: route.allowedEndpoints,
-          secretNames: Object.keys(route.secrets),
-          autoHeaders: Object.keys(route.headers),
-        }));
+        return routes.map((route, index) => {
+          // Cast to any for optional fields that may not exist in older drawlatch versions
+          const r = route as any;
+          const info: Record<string, unknown> = { index };
+
+          if (r.alias) info.alias = r.alias;
+          if (route.name) info.name = route.name;
+          if (route.description) info.description = route.description;
+          if (route.docsUrl) info.docsUrl = route.docsUrl;
+          if (route.openApiUrl) info.openApiUrl = route.openApiUrl;
+
+          info.allowedEndpoints = route.allowedEndpoints;
+          info.secretNames = Object.keys(route.secrets);
+          info.autoHeaders = Object.keys(route.headers);
+
+          // Ingestor & testing metadata (matches remote server response)
+          // These fields may not exist on older ResolvedRoute versions
+          info.hasTestConnection = r.testConnection !== undefined;
+          info.hasIngestor = r.ingestorConfig !== undefined;
+          if (r.ingestorConfig) {
+            info.ingestorType = r.ingestorConfig.type;
+            info.hasTestIngestor = r.testIngestor !== undefined && r.testIngestor !== null;
+            info.hasListenerConfig = r.listenerConfig !== undefined;
+            if (r.listenerConfig) {
+              info.listenerParamKeys = r.listenerConfig.fields?.map((f: any) => f.key);
+              info.supportsMultiInstance = r.listenerConfig.supportsMultiInstance ?? false;
+            }
+          }
+
+          return info;
+        });
 
       case "poll_events": {
         const { connection, after_id } = (toolInput ?? {}) as {

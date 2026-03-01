@@ -750,6 +750,7 @@ export interface ConnectionsListResponse {
   templates: ConnectionStatus[];
   callers: CallerInfo[];
   localModeActive: boolean;
+  remoteModeActive?: boolean;
 }
 
 export async function getConnections(caller?: string): Promise<ConnectionsListResponse> {
