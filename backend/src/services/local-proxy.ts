@@ -156,6 +156,96 @@ export class LocalProxy {
       case "ingestor_status":
         return this._ingestorManager.getStatuses(effectiveAlias);
 
+      case "test_connection": {
+        const { connection } = (toolInput ?? {}) as { connection: string };
+        const route = routes.find((r: any) => r.alias === connection) as any;
+        if (!route) {
+          return { success: false, connection, error: `Unknown connection: ${connection}` };
+        }
+        if (!route.testConnection) {
+          return { success: false, connection, supported: false, error: "This connection does not have a test configuration." };
+        }
+        const testConfig = route.testConnection;
+        const method = testConfig.method ?? "GET";
+        const expectedStatus = testConfig.expectedStatus ?? [200];
+        try {
+          const result = await executeProxyRequest(
+            { method, url: testConfig.url, headers: testConfig.headers, body: testConfig.body },
+            routes,
+          );
+          const isSuccess = expectedStatus.includes(result.status);
+          return {
+            success: isSuccess,
+            connection,
+            status: result.status,
+            statusText: result.statusText,
+            description: testConfig.description,
+            ...(isSuccess ? {} : { error: `Unexpected status ${result.status} (expected ${expectedStatus.join(" or ")})` }),
+          };
+        } catch (err: any) {
+          return { success: false, connection, description: testConfig.description, error: err.message };
+        }
+      }
+
+      case "test_ingestor": {
+        const { connection: conn } = (toolInput ?? {}) as { connection: string };
+        const route = routes.find((r: any) => r.alias === conn) as any;
+        if (!route) {
+          return { success: false, connection: conn, error: `Unknown connection: ${conn}` };
+        }
+        if (!route.ingestorConfig) {
+          return { success: false, connection: conn, supported: false, error: "This connection does not have an event listener." };
+        }
+        if (route.testIngestor === null) {
+          return { success: false, connection: conn, supported: false, error: "This event listener does not support testing." };
+        }
+        if (!route.testIngestor) {
+          return { success: false, connection: conn, supported: false, error: "This event listener does not have a test configuration." };
+        }
+        const ingestorTestConfig = route.testIngestor;
+        try {
+          switch (ingestorTestConfig.strategy) {
+            case "webhook_verify": {
+              const missing: string[] = [];
+              for (const secretName of ingestorTestConfig.requireSecrets ?? []) {
+                if (!route.secrets[secretName]) missing.push(secretName);
+              }
+              if (missing.length > 0) {
+                return { success: false, connection: conn, strategy: ingestorTestConfig.strategy, description: ingestorTestConfig.description, error: `Missing required secrets: ${missing.join(", ")}` };
+              }
+              return { success: true, connection: conn, strategy: ingestorTestConfig.strategy, description: ingestorTestConfig.description, message: "All required webhook secrets are configured." };
+            }
+            case "websocket_auth":
+            case "http_request":
+            case "poll_once": {
+              if (!ingestorTestConfig.request) {
+                return { success: false, connection: conn, strategy: ingestorTestConfig.strategy, description: ingestorTestConfig.description, error: "Test configuration missing request details." };
+              }
+              const testMethod = ingestorTestConfig.request.method ?? "GET";
+              const expectedCodes = ingestorTestConfig.request.expectedStatus ?? [200];
+              const result = await executeProxyRequest(
+                { method: testMethod, url: ingestorTestConfig.request.url, headers: ingestorTestConfig.request.headers, body: ingestorTestConfig.request.body },
+                routes,
+              );
+              const passed = expectedCodes.includes(result.status);
+              return {
+                success: passed,
+                connection: conn,
+                strategy: ingestorTestConfig.strategy,
+                status: result.status,
+                statusText: result.statusText,
+                description: ingestorTestConfig.description,
+                ...(passed ? { message: "Listener test passed." } : { error: `Unexpected status ${result.status}` }),
+              };
+            }
+            default:
+              return { success: false, connection: conn, error: `Unknown test strategy: ${String(ingestorTestConfig.strategy)}` };
+          }
+        } catch (err: any) {
+          return { success: false, connection: conn, strategy: ingestorTestConfig.strategy, description: ingestorTestConfig.description, error: err.message };
+        }
+      }
+
       default:
         throw new Error(`Unknown tool: ${toolName}`);
     }
