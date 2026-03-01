@@ -5,33 +5,22 @@
  * controls for each field type. Dynamic options are fetched lazily via
  * `resolve_listener_options` when the user focuses a select field.
  *
- * Currently read-only (displays current defaults/schema). Future: save
- * listener parameter overrides to config.
+ * When `supportsMultiInstance` is true, shows an instance management section
+ * with CRUD operations for listener instances (local mode only) and
+ * per-instance start/stop/restart controls.
  */
 import { useState, useEffect, useCallback } from "react";
-import {
-  X,
-  Radio,
-  Loader2,
-  ChevronDown,
-  ChevronRight,
-  Info,
-  Play,
-  Square,
-  RotateCw,
-  Check,
-  AlertTriangle,
-  Zap,
-} from "lucide-react";
+import { X, Radio, Loader2, ChevronDown, ChevronRight, Info, Play, Square, RotateCw, Check, AlertTriangle, Zap, Plus, Trash2 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
-import { getListenerConfigs, resolveListenerOptions, controlListener } from "../api";
-import type { ListenerConfigSchema, ListenerConfigField, ListenerConfigOption, IngestorStatus, LifecycleResult } from "../api";
+import { getListenerConfigs, resolveListenerOptions, controlListener, getListenerInstances, createListenerInstance, deleteListenerInstanceApi } from "../api";
+import type { ListenerConfigSchema, ListenerConfigField, ListenerConfigOption, IngestorStatus, LifecycleResult, ListenerInstanceInfo } from "../api";
 
 interface ListenerConfigPanelProps {
   connectionAlias: string;
   connectionName: string;
   caller: string;
   ingestorStatus?: IngestorStatus;
+  localModeActive?: boolean;
   onClose: () => void;
   onStatusChange?: () => void;
 }
@@ -41,6 +30,7 @@ export default function ListenerConfigPanel({
   connectionName,
   caller,
   ingestorStatus,
+  localModeActive,
   onClose,
   onStatusChange,
 }: ListenerConfigPanelProps) {
@@ -56,6 +46,18 @@ export default function ListenerConfigPanel({
 
   // Expanded field groups
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["default"]));
+
+  // Multi-instance state
+  const [instances, setInstances] = useState<ListenerInstanceInfo[]>([]);
+  const [loadingInstances, setLoadingInstances] = useState(false);
+  const [showNewInstanceForm, setShowNewInstanceForm] = useState(false);
+  const [newInstanceId, setNewInstanceId] = useState("");
+  const [newInstanceError, setNewInstanceError] = useState<string | null>(null);
+  const [creatingInstance, setCreatingInstance] = useState(false);
+  const [deletingInstance, setDeletingInstance] = useState<string | null>(null);
+  const [instanceControlAction, setInstanceControlAction] = useState<Record<string, string>>({});
+
+  // ── Fetch config ──
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -78,6 +80,29 @@ export default function ListenerConfigPanel({
     fetchConfig();
   }, [fetchConfig]);
 
+  // ── Fetch instances (local mode, multi-instance only) ──
+
+  const fetchInstances = useCallback(async () => {
+    if (!localModeActive) return;
+    setLoadingInstances(true);
+    try {
+      const data = await getListenerInstances(connectionAlias, caller);
+      setInstances(data.instances);
+    } catch {
+      // silently fail — instance list is supplementary
+    } finally {
+      setLoadingInstances(false);
+    }
+  }, [connectionAlias, caller, localModeActive]);
+
+  useEffect(() => {
+    if (config?.supportsMultiInstance) {
+      fetchInstances();
+    }
+  }, [config?.supportsMultiInstance, fetchInstances]);
+
+  // ── Listener control handlers ──
+
   const handleControl = async (action: "start" | "stop" | "restart") => {
     setControlAction(action);
     setControlResult(null);
@@ -95,6 +120,57 @@ export default function ListenerConfigPanel({
       setControlAction(null);
     }
   };
+
+  // ── Instance CRUD handlers ──
+
+  const handleCreateInstance = async () => {
+    const id = newInstanceId.trim();
+    if (!id) return;
+    setCreatingInstance(true);
+    setNewInstanceError(null);
+    try {
+      await createListenerInstance(connectionAlias, id, {}, caller);
+      setNewInstanceId("");
+      setShowNewInstanceForm(false);
+      await fetchInstances();
+      onStatusChange?.();
+    } catch (err: any) {
+      setNewInstanceError(err.message || "Failed to create instance");
+    } finally {
+      setCreatingInstance(false);
+    }
+  };
+
+  const handleDeleteInstance = async (instanceId: string) => {
+    setDeletingInstance(instanceId);
+    try {
+      await deleteListenerInstanceApi(connectionAlias, instanceId, caller);
+      await fetchInstances();
+      onStatusChange?.();
+    } catch {
+      // silently fail
+    } finally {
+      setDeletingInstance(null);
+    }
+  };
+
+  const handleInstanceControl = async (instanceId: string, action: "start" | "stop" | "restart") => {
+    setInstanceControlAction((prev) => ({ ...prev, [instanceId]: action }));
+    try {
+      await controlListener(connectionAlias, action, caller, instanceId);
+      onStatusChange?.();
+    } catch {
+      // silently fail
+    } finally {
+      setInstanceControlAction((prev) => {
+        const next = { ...prev };
+        delete next[instanceId];
+        return next;
+      });
+    }
+  };
+
+  // ── Dynamic options ──
 
   const handleFetchDynamicOptions = async (field: ListenerConfigField) => {
     if (!field.dynamicOptions || dynamicOptions[field.key]) return;
@@ -145,6 +221,8 @@ export default function ListenerConfigPanel({
         return "var(--text-muted)";
     }
   };
+
+  const isMultiInstance = config?.supportsMultiInstance ?? false;
 
   return (
     <ModalOverlay>
@@ -244,8 +322,8 @@ export default function ListenerConfigPanel({
             </div>
           )}
 
-          {/* Ingestor Status + Controls */}
-          {ingestorStatus && (
+          {/* Ingestor Status + Controls (single-instance only) */}
+          {ingestorStatus && !isMultiInstance && (
             <div style={{ marginBottom: 20 }}>
               <h3
                 style={{
@@ -316,9 +394,7 @@ export default function ListenerConfigPanel({
                     {ingestorStatus.totalEventsReceived} events
                   </span>
                   <span>Buffered: {ingestorStatus.bufferedEvents}</span>
-                  {ingestorStatus.lastEventAt && (
-                    <span>Last: {new Date(ingestorStatus.lastEventAt).toLocaleTimeString()}</span>
-                  )}
+                  {ingestorStatus.lastEventAt && <span>Last: {new Date(ingestorStatus.lastEventAt).toLocaleTimeString()}</span>}
                 </div>
 
                 {/* Error display */}
@@ -348,8 +424,7 @@ export default function ListenerConfigPanel({
                       padding: "7px 0",
                       borderRadius: 6,
                       border: "1px solid var(--border)",
-                      background:
-                        ingestorStatus.state === "connected" ? "var(--bg-secondary)" : "color-mix(in srgb, var(--success) 10%, var(--bg))",
+                      background: ingestorStatus.state === "connected" ? "var(--bg-secondary)" : "color-mix(in srgb, var(--success) 10%, var(--bg))",
                       color: ingestorStatus.state === "connected" ? "var(--text-muted)" : "var(--success)",
                       fontSize: 12,
                       fontWeight: 500,
@@ -361,11 +436,7 @@ export default function ListenerConfigPanel({
                       opacity: ingestorStatus.state === "connected" ? 0.5 : 1,
                     }}
                   >
-                    {controlAction === "start" ? (
-                      <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-                    ) : (
-                      <Play size={12} />
-                    )}
+                    {controlAction === "start" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Play size={12} />}
                     Start
                   </button>
                   <button
@@ -376,8 +447,7 @@ export default function ListenerConfigPanel({
                       padding: "7px 0",
                       borderRadius: 6,
                       border: "1px solid var(--border)",
-                      background:
-                        ingestorStatus.state === "stopped" ? "var(--bg-secondary)" : "color-mix(in srgb, var(--error) 10%, var(--bg))",
+                      background: ingestorStatus.state === "stopped" ? "var(--bg-secondary)" : "color-mix(in srgb, var(--error) 10%, var(--bg))",
                       color: ingestorStatus.state === "stopped" ? "var(--text-muted)" : "var(--error)",
                       fontSize: 12,
                       fontWeight: 500,
@@ -389,11 +459,7 @@ export default function ListenerConfigPanel({
                       opacity: ingestorStatus.state === "stopped" ? 0.5 : 1,
                     }}
                   >
-                    {controlAction === "stop" ? (
-                      <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-                    ) : (
-                      <Square size={12} />
-                    )}
+                    {controlAction === "stop" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Square size={12} />}
                     Stop
                   </button>
                   <button
@@ -415,11 +481,7 @@ export default function ListenerConfigPanel({
                       gap: 4,
                     }}
                   >
-                    {controlAction === "restart" ? (
-                      <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-                    ) : (
-                      <RotateCw size={12} />
-                    )}
+                    {controlAction === "restart" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <RotateCw size={12} />}
                     Restart
                   </button>
                 </div>
@@ -446,6 +508,479 @@ export default function ListenerConfigPanel({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* ── Multi-instance management section ── */}
+          {!loading && config && isMultiInstance && (
+            <div style={{ marginBottom: 20 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 12,
+                }}
+              >
+                <h3
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--text-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px",
+                  }}
+                >
+                  Listener Instances
+                </h3>
+
+                {/* Bulk controls */}
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    onClick={() => handleControl("start")}
+                    disabled={controlAction !== null}
+                    style={{
+                      padding: "3px 8px",
+                      borderRadius: 5,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--success)",
+                      fontSize: 11,
+                      fontWeight: 500,
+                      cursor: controlAction !== null ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 3,
+                    }}
+                    title="Start all instances"
+                  >
+                    {controlAction === "start" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <Play size={10} />}
+                    All
+                  </button>
+                  <button
+                    onClick={() => handleControl("stop")}
+                    disabled={controlAction !== null}
+                    style={{
+                      padding: "3px 8px",
+                      borderRadius: 5,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--error)",
+                      fontSize: 11,
+                      fontWeight: 500,
+                      cursor: controlAction !== null ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 3,
+                    }}
+                    title="Stop all instances"
+                  >
+                    {controlAction === "stop" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <Square size={10} />}
+                    All
+                  </button>
+                  <button
+                    onClick={() => handleControl("restart")}
+                    disabled={controlAction !== null}
+                    style={{
+                      padding: "3px 8px",
+                      borderRadius: 5,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text-muted)",
+                      fontSize: 11,
+                      fontWeight: 500,
+                      cursor: controlAction !== null ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 3,
+                    }}
+                    title="Restart all instances"
+                  >
+                    {controlAction === "restart" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <RotateCw size={10} />}
+                    All
+                  </button>
+                </div>
+              </div>
+
+              {/* Bulk control result */}
+              {controlResult && (
+                <div
+                  style={{
+                    marginBottom: 10,
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    background: controlResult.success
+                      ? "color-mix(in srgb, var(--success) 10%, transparent)"
+                      : "color-mix(in srgb, var(--error) 10%, transparent)",
+                    color: controlResult.success ? "var(--success)" : "var(--error)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  {controlResult.success ? <Check size={12} /> : <AlertTriangle size={12} />}
+                  {controlResult.message}
+                </div>
+              )}
+
+              {/* Loading instances */}
+              {loadingInstances && (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "16px 0",
+                    color: "var(--text-muted)",
+                    fontSize: 12,
+                  }}
+                >
+                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+                </div>
+              )}
+
+              {/* Instance list */}
+              {!loadingInstances && instances.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {instances.map((instance) => {
+                    const iAction = instanceControlAction[instance.instanceId];
+                    const isDeleting = deletingInstance === instance.instanceId;
+
+                    return (
+                      <div
+                        key={instance.instanceId}
+                        style={{
+                          background: "var(--bg)",
+                          borderRadius: 8,
+                          border: "1px solid var(--border)",
+                          padding: "10px 14px",
+                          opacity: instance.disabled ? 0.6 : 1,
+                        }}
+                      >
+                        {/* Instance header */}
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            marginBottom: 8,
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}>
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 500,
+                                fontFamily: "monospace",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {instance.instanceId}
+                            </span>
+                            {instance.disabled && (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "1px 5px",
+                                  borderRadius: 4,
+                                  background: "var(--bg-secondary)",
+                                  color: "var(--text-muted)",
+                                  fontWeight: 500,
+                                }}
+                              >
+                                Disabled
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Delete button (local mode only) */}
+                          {localModeActive && (
+                            <button
+                              onClick={() => handleDeleteInstance(instance.instanceId)}
+                              disabled={isDeleting}
+                              style={{
+                                background: "transparent",
+                                padding: 4,
+                                borderRadius: 4,
+                                color: "var(--text-muted)",
+                                cursor: isDeleting ? "wait" : "pointer",
+                                flexShrink: 0,
+                                opacity: 0.6,
+                                transition: "opacity 0.15s, color 0.15s",
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.opacity = "1";
+                                e.currentTarget.style.color = "var(--error)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.opacity = "0.6";
+                                e.currentTarget.style.color = "var(--text-muted)";
+                              }}
+                              title={`Delete instance "${instance.instanceId}"`}
+                            >
+                              {isDeleting ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Trash2 size={12} />}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Instance params (if any) */}
+                        {instance.params && Object.keys(instance.params).length > 0 && (
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: 6,
+                              flexWrap: "wrap",
+                              marginBottom: 8,
+                              fontSize: 11,
+                            }}
+                          >
+                            {Object.entries(instance.params).map(([key, value]) => (
+                              <span
+                                key={key}
+                                style={{
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  background: "var(--bg-secondary)",
+                                  color: "var(--text-muted)",
+                                  fontFamily: "monospace",
+                                }}
+                              >
+                                {key}: {String(value)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Per-instance control buttons */}
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button
+                            onClick={() => handleInstanceControl(instance.instanceId, "start")}
+                            disabled={!!iAction}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: 5,
+                              border: "1px solid var(--border)",
+                              background: "color-mix(in srgb, var(--success) 8%, var(--bg))",
+                              color: "var(--success)",
+                              fontSize: 11,
+                              fontWeight: 500,
+                              cursor: iAction ? "wait" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 3,
+                            }}
+                            title="Start this instance"
+                          >
+                            {iAction === "start" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <Play size={10} />}
+                            Start
+                          </button>
+                          <button
+                            onClick={() => handleInstanceControl(instance.instanceId, "stop")}
+                            disabled={!!iAction}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: 5,
+                              border: "1px solid var(--border)",
+                              background: "color-mix(in srgb, var(--error) 8%, var(--bg))",
+                              color: "var(--error)",
+                              fontSize: 11,
+                              fontWeight: 500,
+                              cursor: iAction ? "wait" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 3,
+                            }}
+                            title="Stop this instance"
+                          >
+                            {iAction === "stop" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <Square size={10} />}
+                            Stop
+                          </button>
+                          <button
+                            onClick={() => handleInstanceControl(instance.instanceId, "restart")}
+                            disabled={!!iAction}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: 5,
+                              border: "1px solid var(--border)",
+                              background: "var(--bg)",
+                              color: "var(--text-muted)",
+                              fontSize: 11,
+                              fontWeight: 500,
+                              cursor: iAction ? "wait" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 3,
+                            }}
+                            title="Restart this instance"
+                          >
+                            {iAction === "restart" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <RotateCw size={10} />}
+                            Restart
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* No instances message */}
+              {!loadingInstances && instances.length === 0 && localModeActive && (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "16px 12px",
+                    color: "var(--text-muted)",
+                    fontSize: 12,
+                    background: "var(--bg)",
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  No listener instances configured.
+                  <br />
+                  <span style={{ fontSize: 11, opacity: 0.8 }}>Create an instance to start listening for events.</span>
+                </div>
+              )}
+
+              {/* Add instance form / button (local mode only) */}
+              {localModeActive && (
+                <div style={{ marginTop: 10 }}>
+                  {showNewInstanceForm ? (
+                    <div
+                      style={{
+                        background: "var(--bg)",
+                        borderRadius: 8,
+                        border: "1px solid var(--border)",
+                        padding: "10px 14px",
+                      }}
+                    >
+                      <label
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: "var(--text-muted)",
+                          display: "block",
+                          marginBottom: 6,
+                        }}
+                      >
+                        {config?.instanceKeyField ? `Instance ID (${config.instanceKeyField})` : "Instance ID"}
+                      </label>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input
+                          type="text"
+                          placeholder="e.g. my-instance-1"
+                          value={newInstanceId}
+                          onChange={(e) => {
+                            setNewInstanceId(e.target.value);
+                            setNewInstanceError(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleCreateInstance();
+                            if (e.key === "Escape") {
+                              setShowNewInstanceForm(false);
+                              setNewInstanceId("");
+                              setNewInstanceError(null);
+                            }
+                          }}
+                          autoFocus
+                          style={{
+                            flex: 1,
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            border: `1px solid ${newInstanceError ? "var(--error)" : "var(--border)"}`,
+                            background: "var(--surface)",
+                            color: "var(--text)",
+                            fontSize: 12,
+                            fontFamily: "monospace",
+                            outline: "none",
+                            minWidth: 0,
+                          }}
+                        />
+                        <button
+                          onClick={handleCreateInstance}
+                          disabled={creatingInstance || !newInstanceId.trim()}
+                          style={{
+                            padding: "5px 12px",
+                            borderRadius: 6,
+                            background: "var(--accent)",
+                            color: "#fff",
+                            fontSize: 12,
+                            fontWeight: 500,
+                            cursor: creatingInstance || !newInstanceId.trim() ? "not-allowed" : "pointer",
+                            flexShrink: 0,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                            opacity: creatingInstance || !newInstanceId.trim() ? 0.6 : 1,
+                          }}
+                        >
+                          {creatingInstance && <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} />}
+                          Create
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowNewInstanceForm(false);
+                            setNewInstanceId("");
+                            setNewInstanceError(null);
+                          }}
+                          style={{
+                            padding: "5px 10px",
+                            borderRadius: 6,
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-secondary)",
+                            color: "var(--text-muted)",
+                            fontSize: 12,
+                            cursor: "pointer",
+                            flexShrink: 0,
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {newInstanceError && (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: "var(--error)",
+                            marginTop: 6,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                          }}
+                        >
+                          <AlertTriangle size={10} />
+                          {newInstanceError}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowNewInstanceForm(true)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        border: "1px dashed var(--border)",
+                        background: "transparent",
+                        color: "var(--accent)",
+                        fontSize: 12,
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        width: "100%",
+                        transition: "background 0.15s",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 6%, transparent)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <Plus size={14} />
+                      Add Instance
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -518,7 +1053,7 @@ export default function ListenerConfigPanel({
           )}
 
           {/* No fields */}
-          {!loading && config && config.fields.length === 0 && (
+          {!loading && config && config.fields.length === 0 && !isMultiInstance && (
             <div
               style={{
                 textAlign: "center",
@@ -549,6 +1084,7 @@ export default function ListenerConfigPanel({
               {config.ingestorType && <span>Type: {config.ingestorType}</span>}
               <span>Multi-instance: {config.supportsMultiInstance ? "Yes" : "No"}</span>
               {config.instanceKeyField && <span>Instance key: {config.instanceKeyField}</span>}
+              {isMultiInstance && instances.length > 0 && <span>Instances: {instances.length}</span>}
             </div>
           )}
         </div>
@@ -628,9 +1164,7 @@ function FieldDisplay({
           >
             {field.label}
           </span>
-          {field.required && (
-            <span style={{ fontSize: 10, color: "var(--error)", fontWeight: 600 }}>Required</span>
-          )}
+          {field.required && <span style={{ fontSize: 10, color: "var(--error)", fontWeight: 600 }}>Required</span>}
           {field.instanceKey && (
             <span
               style={{
@@ -732,11 +1266,7 @@ function FieldDisplay({
                 padding: 0,
               }}
             >
-              {loadingOptions ? (
-                <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-              ) : (
-                <ChevronDown size={12} />
-              )}
+              {loadingOptions ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <ChevronDown size={12} />}
               Load options from API
             </button>
           ) : null}

@@ -756,6 +756,7 @@ export interface ProxyRoute {
 
 export interface IngestorStatus {
   connection: string;
+  instanceId?: string;
   type: "websocket" | "webhook" | "poll";
   state: string;
   bufferedEvents: number;
@@ -931,6 +932,66 @@ export async function deleteCallerAlias(callerAlias: string): Promise<void> {
     credentials: "include",
   });
   await assertOk(res, "Failed to delete caller alias");
+}
+
+// Listener instance management (local mode)
+
+export interface ListenerInstanceInfo {
+  instanceId: string;
+  disabled?: boolean;
+  params?: Record<string, unknown>;
+}
+
+export async function getListenerInstances(connectionAlias: string, caller?: string): Promise<{ instances: ListenerInstanceInfo[] }> {
+  const params = new URLSearchParams();
+  if (caller) params.append("caller", caller);
+  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances?${params}`, {
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to list listener instances");
+  return res.json();
+}
+
+export async function createListenerInstance(
+  connectionAlias: string,
+  instanceId: string,
+  instanceParams?: Record<string, unknown>,
+  caller?: string,
+): Promise<{ instance: ListenerInstanceInfo }> {
+  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ instanceId, params: instanceParams || {}, ...(caller && { caller }) }),
+  });
+  await assertOk(res, "Failed to create listener instance");
+  return res.json();
+}
+
+export async function updateListenerInstanceApi(
+  connectionAlias: string,
+  instanceId: string,
+  updates: { params?: Record<string, unknown>; disabled?: boolean },
+  caller?: string,
+): Promise<{ instance: ListenerInstanceInfo }> {
+  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances/${encodeURIComponent(instanceId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ ...updates, ...(caller && { caller }) }),
+  });
+  await assertOk(res, "Failed to update listener instance");
+  return res.json();
+}
+
+export async function deleteListenerInstanceApi(connectionAlias: string, instanceId: string, caller?: string): Promise<void> {
+  const params = new URLSearchParams();
+  if (caller) params.append("caller", caller);
+  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances/${encodeURIComponent(instanceId)}?${params}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete listener instance");
 }
 
 // Password change API

@@ -20,6 +20,10 @@ import {
   createCallerAlias,
   deleteCallerAlias,
   listRemoteConnections,
+  listListenerInstances,
+  addListenerInstance,
+  updateListenerInstance,
+  deleteListenerInstance,
 } from "../services/connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir } from "../services/agent-settings.js";
 import { isProxyConfigured, getConfiguredAliases } from "../services/proxy-singleton.js";
@@ -306,5 +310,105 @@ connectionsRouter.get("/:alias/secrets", (req: Request, res: Response): void => 
   } catch (err: any) {
     log.error(`Error checking secrets for ${req.params.alias}: ${err.message}`);
     res.status(500).json({ error: "Failed to check secrets" });
+  }
+});
+
+// ── Listener instance management (local mode only) ──────────────────
+
+/**
+ * GET /api/connections/:alias/listener-instances
+ *
+ * List all listener instances for a connection.
+ * Query: ?caller=X (default: "default")
+ */
+connectionsRouter.get("/:alias/listener-instances", (req: Request, res: Response): void => {
+  try {
+    const callerAlias = (req.query.caller as string) || "default";
+    const instances = listListenerInstances(req.params.alias, callerAlias);
+    res.json({ instances });
+  } catch (err: any) {
+    log.error(`Error listing listener instances for ${req.params.alias}: ${err.message}`);
+    res.status(500).json({ error: "Failed to list listener instances" });
+  }
+});
+
+/**
+ * POST /api/connections/:alias/listener-instances
+ *
+ * Create a new listener instance.
+ * Body: { instanceId: string, params?: Record<string, unknown>, caller?: string }
+ */
+connectionsRouter.post("/:alias/listener-instances", async (req: Request, res: Response): Promise<void> => {
+  const { instanceId, params, caller } = req.body;
+  const callerAlias = caller || "default";
+
+  if (!instanceId || typeof instanceId !== "string") {
+    res.status(400).json({ error: "instanceId is required and must be a string" });
+    return;
+  }
+
+  // Validate instanceId format
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(instanceId)) {
+    res.status(400).json({
+      error: "instanceId must start with a letter or number and contain only letters, numbers, hyphens, and underscores",
+    });
+    return;
+  }
+
+  try {
+    const instance = await addListenerInstance(req.params.alias, instanceId, params || {}, callerAlias);
+    res.json({ instance });
+  } catch (err: any) {
+    if (err.message.includes("already exists")) {
+      res.status(409).json({ error: err.message });
+    } else {
+      log.error(`Error creating listener instance: ${err.message}`);
+      res.status(500).json({ error: "Failed to create listener instance" });
+    }
+  }
+});
+
+/**
+ * PUT /api/connections/:alias/listener-instances/:instanceId
+ *
+ * Update a listener instance's parameters.
+ * Body: { params?: Record<string, unknown>, disabled?: boolean, caller?: string }
+ */
+connectionsRouter.put("/:alias/listener-instances/:instanceId", async (req: Request, res: Response): Promise<void> => {
+  const { params, disabled, caller } = req.body;
+  const callerAlias = caller || "default";
+
+  try {
+    const instance = await updateListenerInstance(req.params.alias, req.params.instanceId, params || {}, disabled, callerAlias);
+    res.json({ instance });
+  } catch (err: any) {
+    if (err.message.includes("not found")) {
+      res.status(404).json({ error: err.message });
+    } else {
+      log.error(`Error updating listener instance: ${err.message}`);
+      res.status(500).json({ error: "Failed to update listener instance" });
+    }
+  }
+});
+
+/**
+ * DELETE /api/connections/:alias/listener-instances/:instanceId
+ *
+ * Delete a listener instance.
+ * Query: ?caller=X (default: "default")
+ */
+connectionsRouter.delete("/:alias/listener-instances/:instanceId", async (req: Request, res: Response): Promise<void> => {
+  const callerAlias = (req.query.caller as string) || req.body?.caller || "default";
+
+  try {
+    await deleteListenerInstance(req.params.alias, req.params.instanceId, callerAlias);
+    res.json({ deleted: req.params.instanceId });
+  } catch (err: any) {
+    if (err.message.includes("not found")) {
+      res.status(404).json({ error: err.message });
+    } else {
+      log.error(`Error deleting listener instance: ${err.message}`);
+      res.status(500).json({ error: "Failed to delete listener instance" });
+    }
   }
 });

@@ -598,6 +598,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
           connectionName={listenerConfig.name}
           caller={selectedCaller}
           ingestorStatus={ingestorStatuses[listenerConfig.alias]}
+          localModeActive={localModeActive}
           onClose={() => setListenerConfig(null)}
           onStatusChange={() => fetchIngestorStatuses()}
         />
