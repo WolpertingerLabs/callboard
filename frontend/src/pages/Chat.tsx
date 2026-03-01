@@ -15,6 +15,7 @@ import {
   ArrowUpToLine,
   ArrowDownToLine,
   MoreHorizontal,
+  Shield,
 } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
@@ -42,9 +43,10 @@ import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
+import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
-import { addRecentDirectory, getMaxTurns } from "../utils/localStorage";
+import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions } from "../utils/localStorage";
 import { getActivePlugins } from "../utils/plugins";
 
 interface ToolGroup {
@@ -142,6 +144,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const acknowledgeBranchDriftRef = useRef(false);
   const [viewMode, setViewMode] = useState<"chat" | "diff">("chat");
   const [showMobileActions, setShowMobileActions] = useState(false);
+  const [showPermissionsModal, setShowPermissionsModal] = useState(false);
+  const [chatPermissions, setChatPermissions] = useState<DefaultPermissions | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -160,6 +164,33 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Prevents the auto-connect effect from creating a reconnection loop when the
   // CLI watcher hasn't yet detected that the session ended (up to 30s delay).
   const streamCompletedRef = useRef(false);
+
+  // Reset chatPermissions when navigating to a different chat
+  useEffect(() => {
+    setChatPermissions(null);
+  }, [id]);
+
+  // Resolve effective permissions for this chat
+  const effectivePermissions = useMemo((): DefaultPermissions => {
+    // If we've locally updated chatPermissions via the modal, use that
+    if (chatPermissions) return chatPermissions;
+
+    if (!id) {
+      // New chat: use permissions from navigation state, or localStorage defaults
+      return defaultPermissions || getLocalDefaultPermissions();
+    }
+
+    // Existing chat: parse from chat metadata
+    if (chat?.metadata) {
+      try {
+        const meta = JSON.parse(chat.metadata);
+        if (meta.defaultPermissions) return meta.defaultPermissions;
+      } catch {}
+    }
+
+    // Fall back to localStorage defaults
+    return getLocalDefaultPermissions();
+  }, [id, defaultPermissions, chat?.metadata, chatPermissions]);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -797,7 +828,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // NEW CHAT MODE: POST to /api/chats/new/message
           addRecentDirectory(folder);
 
-          const requestBody: any = { folder, prompt, defaultPermissions, maxTurns: getMaxTurns() };
+          const requestBody: any = { folder, prompt, defaultPermissions: chatPermissions || defaultPermissions, maxTurns: getMaxTurns() };
           if (activePluginIds.length > 0) {
             requestBody.activePlugins = activePluginIds;
           }
@@ -913,7 +944,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     },
-    [id, folder, defaultPermissions, agentSystemPrompt, agentAlias, readSSE, activePluginIds, chat, branchConfig],
+    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, readSSE, activePluginIds, chat, branchConfig],
   );
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
@@ -1399,6 +1430,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               </button>
             )}
 
+            {/* Chat Permissions Button */}
+            <button
+              onClick={() => setShowPermissionsModal(true)}
+              style={{
+                background: "var(--bg-secondary)",
+                color: "var(--text)",
+                padding: "8px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title="Chat permissions"
+            >
+              <Shield size={16} />
+            </button>
+
             {networkError && (
               <button
                 onClick={handleReconnect}
@@ -1616,6 +1666,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               <Slash size={16} />
             </button>
           )}
+
+          {/* Chat Permissions Button */}
+          <button
+            onClick={() => setShowPermissionsModal(true)}
+            style={{
+              background: "var(--bg-secondary)",
+              color: "var(--text)",
+              padding: "8px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+            title="Chat permissions"
+          >
+            <Shield size={16} />
+          </button>
 
           {networkError && (
             <button
@@ -2036,6 +2106,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         onCommandSelect={handleCommandSelect}
         onActivePluginsChange={setActivePluginIds}
         onAppPluginsDataChange={setAppPluginsData}
+      />
+
+      <ChatPermissionsModal
+        isOpen={showPermissionsModal}
+        onClose={() => setShowPermissionsModal(false)}
+        chatId={id}
+        permissions={effectivePermissions}
+        onPermissionsChange={setChatPermissions}
       />
 
       <ConfirmModal

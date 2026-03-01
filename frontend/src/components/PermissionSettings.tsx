@@ -3,6 +3,7 @@ import { DefaultPermissions, PermissionLevel } from "../api";
 interface PermissionSettingsProps {
   permissions: DefaultPermissions;
   onChange: (permissions: DefaultPermissions) => void;
+  title?: string;
 }
 
 function PermissionRow({
@@ -66,7 +67,7 @@ function PermissionRow({
   );
 }
 
-export default function PermissionSettings({ permissions, onChange }: PermissionSettingsProps) {
+export default function PermissionSettings({ permissions, onChange, title }: PermissionSettingsProps) {
   const updatePermission = (category: keyof DefaultPermissions, level: PermissionLevel) => {
     onChange({
       ...permissions,
@@ -92,7 +93,7 @@ export default function PermissionSettings({ permissions, onChange }: Permission
           marginBottom: 8,
         }}
       >
-        Default Permissions for New Chat
+        {title ?? "Default Permissions for New Chat"}
       </div>
 
       <PermissionRow
