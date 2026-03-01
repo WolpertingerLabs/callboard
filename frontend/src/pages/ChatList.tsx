@@ -248,6 +248,23 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
     load();
   };
 
+  const handleChatClick = (chat: Chat) => {
+    // Optimistically mark as read so the unread dot disappears immediately
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id !== chat.id) return c;
+        try {
+          const meta = JSON.parse(c.metadata || "{}");
+          meta.lastReadAt = new Date().toISOString();
+          return { ...c, metadata: JSON.stringify(meta) };
+        } catch {
+          return c;
+        }
+      }),
+    );
+    navigate(`/chat/${chat.id}`);
+  };
+
   const handleToggleBookmark = async (chat: Chat, bookmarked: boolean) => {
     try {
       await toggleBookmark(chat.id, bookmarked);
@@ -921,7 +938,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
             key={chat.id}
             chat={chat}
             isActive={chat.id === activeChatId}
-            onClick={() => navigate(`/chat/${chat.id}`)}
+            onClick={() => handleChatClick(chat)}
             onDelete={() => handleDelete(chat)}
             onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
             sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
