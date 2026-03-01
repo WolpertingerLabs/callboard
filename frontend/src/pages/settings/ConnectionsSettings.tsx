@@ -53,7 +53,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [showNewCallerInput, setShowNewCallerInput] = useState(false);
   const [newCallerAlias, setNewCallerAlias] = useState("");
   const [newCallerError, setNewCallerError] = useState<string | null>(null);
-  const [ingestorStatuses, setIngestorStatuses] = useState<Record<string, IngestorStatus>>({});
+  const [ingestorStatuses, setIngestorStatuses] = useState<Record<string, IngestorStatus[]>>({});
   const [listenerConfig, setListenerConfig] = useState<{ alias: string; name: string } | null>(null);
 
   const fetchIngestorStatuses = useCallback(
@@ -61,9 +61,10 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
       try {
         const data = await getProxyIngestors(caller || selectedCaller);
         if (data.ingestors) {
-          const statusMap: Record<string, IngestorStatus> = {};
+          const statusMap: Record<string, IngestorStatus[]> = {};
           for (const status of data.ingestors) {
-            statusMap[status.connection] = status;
+            if (!statusMap[status.connection]) statusMap[status.connection] = [];
+            statusMap[status.connection].push(status);
           }
           setIngestorStatuses(statusMap);
         }
@@ -570,7 +571,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                 connection={conn}
                 caller={selectedCaller}
                 toggling={togglingAlias === conn.alias}
-                ingestorStatus={ingestorStatuses[conn.alias]}
+                ingestorStatuses={ingestorStatuses[conn.alias]}
                 onToggle={(enabled) => handleToggle(conn.alias, enabled)}
                 onConfigure={() => setConfiguring(conn)}
                 onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
@@ -597,7 +598,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
           connectionAlias={listenerConfig.alias}
           connectionName={listenerConfig.name}
           caller={selectedCaller}
-          ingestorStatus={ingestorStatuses[listenerConfig.alias]}
+          ingestorStatus={ingestorStatuses[listenerConfig.alias]?.[0]}
           localModeActive={localModeActive}
           onClose={() => setListenerConfig(null)}
           onStatusChange={() => fetchIngestorStatuses()}
@@ -613,7 +614,7 @@ function ConnectionCard({
   connection,
   caller,
   toggling,
-  ingestorStatus,
+  ingestorStatuses,
   onToggle,
   onConfigure,
   onOpenListenerConfig,
@@ -622,7 +623,7 @@ function ConnectionCard({
   connection: ConnectionStatus;
   caller: string;
   toggling: boolean;
-  ingestorStatus?: IngestorStatus;
+  ingestorStatuses?: IngestorStatus[];
   onToggle: (enabled: boolean) => void;
   onConfigure: () => void;
   onOpenListenerConfig: () => void;
@@ -634,6 +635,10 @@ function ConnectionCard({
   const [controlAction, setControlAction] = useState<string | null>(null);
   const conn = connection;
   const isRemote = conn.source === "remote";
+
+  // Derive primary status from array (for backward compat)
+  const ingestorStatus = ingestorStatuses?.[0];
+  const instanceCount = ingestorStatuses?.length ?? 0;
 
   const handleListenerControl = async (action: "start" | "stop" | "restart") => {
     setControlAction(action);
@@ -904,6 +909,11 @@ function ConnectionCard({
                 }}
                 title={`Listener: ${ingestorStatus.state}`}
               />
+            )}
+            {instanceCount > 1 && (
+              <span style={{ fontSize: 9, color: "var(--text-muted)" }}>
+                {ingestorStatuses!.filter((s) => s.state === "connected").length}/{instanceCount}
+              </span>
             )}
           </span>
         )}

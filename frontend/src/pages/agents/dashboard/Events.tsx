@@ -163,7 +163,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {ingestors.map((ing) => (
               <div
-                key={ing.connection}
+                key={ing.instanceId ? `${ing.connection}:${ing.instanceId}` : ing.connection}
                 style={{
                   padding: "10px 14px",
                   background: "var(--surface)",
@@ -176,6 +176,20 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                   <div style={{ width: 8, height: 8, borderRadius: "50%", background: stateColor(ing.state), flexShrink: 0 }} />
                   <span style={{ fontWeight: 700, fontFamily: "monospace", fontSize: 13 }}>{ing.connection}</span>
+                  {ing.instanceId && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontFamily: "monospace",
+                        color: "var(--text-muted)",
+                        padding: "1px 4px",
+                        borderRadius: 3,
+                        background: "var(--bg-secondary)",
+                      }}
+                    >
+                      {ing.instanceId}
+                    </span>
+                  )}
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, color: "var(--text-muted)", fontSize: 11 }}>
                   <span
@@ -331,6 +345,22 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                     {event.source}
                   </span>
 
+                  {event.instanceId && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontFamily: "monospace",
+                        padding: "1px 5px",
+                        borderRadius: 4,
+                        background: "var(--bg-secondary)",
+                        color: "var(--text-muted)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {event.instanceId}
+                    </span>
+                  )}
+
                   {/* Event type */}
                   <span
                     style={{
@@ -374,6 +404,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                       <span>ID: {event.id}</span>
                       <span>Received: {new Date(event.receivedAt).toLocaleString()}</span>
                       <span>Stored: {new Date(event.storedAt).toLocaleString()}</span>
+                      {event.instanceId && <span>Instance: {event.instanceId}</span>}
                     </div>
                     <pre
                       style={{

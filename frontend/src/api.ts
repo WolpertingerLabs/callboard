@@ -743,6 +743,67 @@ export async function resolveListenerOptions(
   return res.json();
 }
 
+// ── Listener Param Read/Write (Tier 4) ──
+
+export interface ListenerParams {
+  success: boolean;
+  connection: string;
+  instance_id?: string;
+  params: Record<string, unknown>;
+  defaults: Record<string, unknown>;
+  error?: string;
+}
+
+export async function getListenerParams(connection: string, caller?: string, instanceId?: string): Promise<ListenerParams> {
+  const params = new URLSearchParams();
+  if (caller) params.append("alias", caller);
+  if (instanceId) params.append("instance_id", instanceId);
+  const qs = params.toString() ? `?${params}` : "";
+  const res = await fetch(`${BASE}/proxy/listener-params/${encodeURIComponent(connection)}${qs}`, {
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to get listener params");
+  return res.json();
+}
+
+export async function setListenerParams(
+  connection: string,
+  params: Record<string, unknown>,
+  caller?: string,
+  instanceId?: string,
+  createInstance?: boolean,
+): Promise<{ success: boolean; connection: string; instance_id?: string; params: Record<string, unknown>; error?: string }> {
+  const res = await fetch(`${BASE}/proxy/listener-params/${encodeURIComponent(connection)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      params,
+      ...(caller && { caller }),
+      ...(instanceId && { instance_id: instanceId }),
+      ...(createInstance !== undefined && { create_instance: createInstance }),
+    }),
+  });
+  await assertOk(res, "Failed to set listener params");
+  return res.json();
+}
+
+export async function deleteListenerInstanceViaProxy(
+  connection: string,
+  instanceId: string,
+  caller?: string,
+): Promise<{ success: boolean; connection: string; instance_id: string; error?: string }> {
+  const params = new URLSearchParams();
+  if (caller) params.append("alias", caller);
+  const qs = params.toString() ? `?${params}` : "";
+  const res = await fetch(`${BASE}/proxy/listener-instance/${encodeURIComponent(connection)}/${encodeURIComponent(instanceId)}${qs}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete listener instance");
+  return res.json();
+}
+
 export interface ProxyRoute {
   index: number;
   name?: string;
@@ -787,6 +848,8 @@ export interface StoredEvent {
   receivedAt: string;
   receivedAtMs?: number;
   source: string;
+  /** Instance ID for multi-instance listeners (e.g. "project-board") */
+  instanceId?: string;
   eventType: string;
   data: unknown;
   storedAt: number;

@@ -244,7 +244,193 @@ Fields with `instanceKey: true` in the listener config schema create separate in
   - Single-instance status section hidden when multi-instance active
 - `frontend/src/pages/settings/ConnectionsSettings.tsx` — Passes `localModeActive` to panel
 
-**Note:** Per-instance status indicators await drawlatch adding `instanceId` to its `IngestorStatus` type (currently alpha.2). The UI is forward-compatible and will automatically show per-instance status once drawlatch includes it.
+**Note:** Per-instance status indicators await upgrading drawlatch from alpha.2 to alpha.4, which adds `instanceId` to `IngestorStatus`. The UI is forward-compatible and will automatically show per-instance status once upgraded.
+
+---
+
+## Tier 4 — Editable Listener Config (New in drawlatch alpha.4)
+
+These 3 new MCP tools turn the read-only `ListenerConfigPanel` into a fully editable configuration UI. They also enable listener config management in **remote mode** (currently instance CRUD is local-mode only via direct `remote.config.json` access).
+
+### 4.1 `get_listener_params` — Read Current Parameter Overrides
+
+**What it does:** Returns the current listener parameter overrides for a connection, along with schema defaults. Supports `instance_id` for multi-instance listeners. This is the read-side complement to the schema from `list_listener_configs` — schemas tell you what fields exist, this tells you what values are currently set.
+
+**Why it matters:** The `ListenerConfigPanel` currently shows field schemas with default values only. Without this tool, there's no way to know what the user has actually configured. Needed to populate form fields with current values.
+
+**Drawlatch tool signature:**
+
+```
+Input:
+  connection: string       // connection alias
+  instance_id?: string     // optional, for multi-instance
+
+Output:
+  connection: string
+  instance_id?: string
+  params: Record<string, unknown>    // current override values
+  defaults: Record<string, unknown>  // defaults from template schema
+```
+
+**Implementation:**
+
+**Backend:**
+
+- `backend/src/services/local-proxy.ts` — Add `get_listener_params` case. Read from `callers[alias].listenerInstances[connection][instanceId].params` (or single-instance equivalent). Return merged with schema defaults.
+- `backend/src/services/proxy-tools.ts` — Expose `get_listener_params` tool to Claude sessions.
+- `backend/src/routes/proxy.ts` — Add `GET /api/proxy/listener-params/:connection` endpoint.
+  - Query: `?caller=...&instance_id=...`
+  - Returns `{ params, defaults }`
+
+**Frontend:**
+
+- `frontend/src/api.ts` — Add `getListenerParams(connection, caller?, instanceId?)` function.
+- `frontend/src/components/ListenerConfigPanel.tsx` — Fetch current params on mount and populate form fields with actual values instead of just showing schema defaults.
+
+**Estimated effort:** ~100 lines across 4 files.
+
+### 4.2 `set_listener_params` — Write Parameter Overrides
+
+**What it does:** Sets listener parameter overrides for a connection. Validates params against the schema. Supports creating new multi-instance instances via `create_instance` flag. Merges into existing config and persists to `remote.config.json`.
+
+**Why it matters:** This is the **key enabler** for editable forms. Currently the `ListenerConfigPanel` is read-only display. With this tool, the schema fields become actual form inputs that save changes. Also enables remote mode config management (currently local-mode only).
+
+**Drawlatch tool signature:**
+
+```
+Input:
+  connection: string
+  instance_id?: string           // optional, for multi-instance
+  params: Record<string, unknown> // key-value pairs to set
+  create_instance?: boolean       // true = create new instance if doesn't exist
+
+Output:
+  success: boolean
+  connection: string
+  instance_id?: string
+  params: Record<string, unknown>  // merged result after save
+```
+
+**Implementation:**
+
+**Backend:**
+
+- `backend/src/services/local-proxy.ts` — Add `set_listener_params` case. Validate against schema, merge params, save config, reinitialize proxy.
+- `backend/src/services/proxy-tools.ts` — Expose `set_listener_params` tool to Claude sessions.
+- `backend/src/routes/proxy.ts` — Add `PUT /api/proxy/listener-params/:connection` endpoint.
+  - Body: `{ params, instance_id?, create_instance?, caller? }`
+
+**Frontend:**
+
+- `frontend/src/api.ts` — Add `setListenerParams(connection, params, caller?, instanceId?, createInstance?)` function.
+- `frontend/src/components/ListenerConfigPanel.tsx` — Transform `FieldDisplay` from read-only to editable:
+  - `text` → `<input type="text">`
+  - `number` → `<input type="number">` with min/max
+  - `boolean` → toggle switch
+  - `select` → `<select>` dropdown (with dynamic options from `resolve_listener_options`)
+  - `multiselect` → checkbox group
+  - `secret` → `<input type="password">`
+  - `text[]` → tag input / comma-separated
+  - Add "Save" button that calls `setListenerParams()`
+  - Show dirty/unsaved indicator
+- Update "Add Instance" form to include param fields from schema (not just instance ID).
+
+**Estimated effort:** ~400 lines across 4-5 files. The editable form renderer is the bulk.
+
+### 4.3 `delete_listener_instance` — Remove Instance via Tool
+
+**What it does:** Removes a multi-instance listener instance. Stops the running ingestor if active, removes from config, cleans up empty maps.
+
+**Why it matters:** Instance deletion currently only works in **local mode** (callboard writes directly to `remote.config.json` via `connection-manager.ts`). This tool enables deletion in **remote mode** too, and provides a cleaner abstraction than direct config file manipulation.
+
+**Drawlatch tool signature:**
+
+```
+Input:
+  connection: string
+  instance_id: string     // required
+
+Output:
+  success: boolean
+  connection: string
+  instance_id: string
+```
+
+**Implementation:**
+
+**Backend:**
+
+- `backend/src/services/local-proxy.ts` — Add `delete_listener_instance` case.
+- `backend/src/services/proxy-tools.ts` — Expose `delete_listener_instance` tool to Claude sessions.
+- `backend/src/routes/proxy.ts` — Add `DELETE /api/proxy/listener-instance/:connection/:instanceId` endpoint.
+
+**Frontend:**
+
+- `frontend/src/api.ts` — Add `deleteListenerInstanceViaProxy(connection, instanceId, caller?)` function.
+- `frontend/src/components/ListenerConfigPanel.tsx` — Update delete handler to use proxy tool instead of direct config CRUD. Falls back to direct CRUD in local mode if tool unavailable.
+
+**Migration note:** With these tools in place, the direct config CRUD in `connection-manager.ts` (`addListenerInstance`, `updateListenerInstance`, `deleteListenerInstance`) and the REST endpoints in `connections.ts` can be deprecated in favor of routing through the proxy tools. This gives a single code path for both local and remote modes.
+
+**Estimated effort:** ~100 lines across 4 files.
+
+---
+
+## Tier 5 — Instance-Aware Enhancements
+
+These leverage new fields added in drawlatch alpha.4 (`instanceId` on `IngestorStatus` and `IngestedEvent`).
+
+**Pre-requisite:** Upgrade callboard's drawlatch dependency from `1.0.0-alpha.2` to `1.0.0-alpha.4`. Remove `any` casts for `startOne`/`stopOne`/`restartOne`/`listenerInstances` which are now properly typed.
+
+### 5.1 `poll_events` with `instance_id` Filtering
+
+**What it does:** The `poll_events` tool now accepts an optional `instance_id` parameter to filter events from a specific listener instance.
+
+**Why it matters:** When multiple instances of the same connection are running (e.g., 3 Trello boards), users need to see events from a specific instance without noise from the others.
+
+**Implementation:**
+
+**Backend:**
+
+- `backend/src/services/local-proxy.ts` — Update `poll_events` handler to pass `instance_id` through.
+- `backend/src/services/proxy-tools.ts` — Add `instance_id` to `poll_events` tool schema.
+- `backend/src/routes/proxy.ts` — Add `instance_id` query param to events endpoints.
+
+**Frontend:**
+
+- Event viewer: Add instance filter dropdown when viewing a multi-instance connection's events.
+- Show instance badge on individual event entries.
+
+**Estimated effort:** ~80 lines.
+
+### 5.2 Per-Instance Status Display
+
+**What it does:** `IngestorStatus` now includes `instanceId?: string` in drawlatch alpha.4. Multiple status entries are returned per connection for multi-instance listeners.
+
+**Why it matters:** The `ListenerConfigPanel` currently can't show per-instance status (connected/stopped/error) because the old drawlatch didn't include `instanceId` in status output. Now it can.
+
+**Implementation:**
+
+**Frontend:**
+
+- `frontend/src/components/ListenerConfigPanel.tsx` — Fetch all ingestor statuses, match by `connection + instanceId`, show status dot + state text on each instance row.
+- `frontend/src/pages/settings/ConnectionsSettings.tsx` — Update `fetchIngestorStatuses` to handle multiple statuses per connection. Show aggregate badge on card (e.g., "3/5 connected").
+
+**Estimated effort:** ~80 lines.
+
+### 5.3 Per-Instance Event Badges
+
+**What it does:** `IngestedEvent` now includes `instanceId?: string`. Events carry their source instance identity.
+
+**Why it matters:** In the event log, events from different instances of the same connection are currently indistinguishable.
+
+**Implementation:**
+
+**Frontend:**
+
+- Event viewer: Show instance ID badge on events where `instanceId` is set.
+- Group-by-instance view option for multi-instance connections.
+
+**Estimated effort:** ~50 lines.
 
 ---
 
@@ -261,8 +447,11 @@ Fields with `instanceKey: true` in the listener config schema create separate in
 | `control_listener`         | Start/stop/restart listeners     |  2   |  ✅ Integrated   |
 | `list_listener_configs`    | Get listener field schemas       |  2   |  ✅ Integrated   |
 | `resolve_listener_options` | Fetch dynamic dropdown options   |  3   |  ✅ Integrated   |
+| `get_listener_params`      | Read current param overrides     |  4   |  ⬜ Not started  |
+| `set_listener_params`      | Write param overrides            |  4   |  ⬜ Not started  |
+| `delete_listener_instance` | Remove a listener instance       |  4   |  ⬜ Not started  |
 
-Plus multi-instance listener support (not a tool, but a feature across multiple tools).
+Plus multi-instance listener support (Tier 3.2, ✅ done) and instance-aware enhancements (Tier 5, ⬜ not started).
 
 ---
 
@@ -302,16 +491,28 @@ Each template includes: auth headers, secret placeholders, endpoint allowlists, 
 ```
 Tier 0: Remote connections in settings (DONE)
   │
-  ├── Tier 1.1: test_connection (independent)
-  ├── Tier 1.2: test_ingestor (independent)
+  ├── Tier 1.1: test_connection (DONE)
+  ├── Tier 1.2: test_ingestor (DONE)
   │
-  ├── Tier 2.1: control_listener (independent)
-  ├── Tier 2.2: list_listener_configs (independent, but enables Tier 3)
+  ├── Tier 2.1: control_listener (DONE)
+  ├── Tier 2.2: list_listener_configs (DONE)
   │     │
-  │     ├── Tier 3.1: resolve_listener_options (depends on 2.2 form renderer)
-  │     └── Tier 3.2: multi-instance support (depends on 2.2 + 2.1)
+  │     ├── Tier 3.1: resolve_listener_options (DONE)
+  │     ├── Tier 3.2: multi-instance support (DONE)
+  │     │
+  │     └── Tier 4: Editable listener config ← NEW
+  │           │
+  │           ├── 4.1: get_listener_params (read current overrides)
+  │           ├── 4.2: set_listener_params (write overrides — editable forms)
+  │           └── 4.3: delete_listener_instance (remote-mode instance delete)
+  │
+  └── Tier 5: Instance-aware enhancements (requires drawlatch alpha.4 upgrade)
+        │
+        ├── 5.1: poll_events instance_id filtering
+        ├── 5.2: per-instance status display
+        └── 5.3: per-instance event badges
 ```
 
-Tier 1 items are fully independent and can be done in any order.
-Tier 2 items are independent of each other.
-Tier 3 items depend on Tier 2.2 (the form renderer).
+Tiers 0–3: ✅ Complete.
+Tier 4: Depends on Tier 2.2 (form renderer) + Tier 3.2 (instance management). The big item is 4.2 — turning the read-only schema display into editable form controls.
+Tier 5: Depends on upgrading drawlatch from alpha.2 → alpha.4. Independent of Tier 4.
