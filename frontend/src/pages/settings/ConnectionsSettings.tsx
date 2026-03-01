@@ -14,6 +14,7 @@ import {
   Trash2,
   Users,
   ChevronDown,
+  Cloud,
 } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { getConnections, setConnectionEnabled, createCallerAlias, deleteCallerAlias } from "../../api";
@@ -30,6 +31,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [callers, setCallers] = useState<CallerInfo[]>([]);
   const [selectedCaller, setSelectedCaller] = useState("default");
   const [localModeActive, setLocalModeActive] = useState(true);
+  const [remoteModeActive, setRemoteModeActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [configuring, setConfiguring] = useState<ConnectionStatus | null>(null);
@@ -46,6 +48,11 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
         setConnections(data.templates);
         setCallers(data.callers || []);
         setLocalModeActive(data.localModeActive);
+        setRemoteModeActive(data.remoteModeActive ?? false);
+        // When switching to remote mode for the first time, pick the first available caller
+        if (!data.localModeActive && data.remoteModeActive && data.callers?.length > 0 && !caller) {
+          setSelectedCaller(data.callers[0].alias);
+        }
       } catch {
         setConnections([]);
       } finally {
@@ -141,8 +148,11 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
     return a.name.localeCompare(b.name);
   });
 
+  // Whether caller management (create/delete) is available (local mode only)
+  const canManageCallers = localModeActive && !remoteModeActive;
+
   // ── Not configured state ──
-  if (!loading && !localModeActive) {
+  if (!loading && !localModeActive && !remoteModeActive) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <div
@@ -157,8 +167,8 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
           }}
         >
           <WifiOff size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
-          <p style={{ fontWeight: 600, marginBottom: 4 }}>Local proxy not configured</p>
-          <p style={{ fontSize: 12, marginBottom: 16 }}>Set proxy mode to &quot;Local&quot; in Proxy settings to manage connections.</p>
+          <p style={{ fontWeight: 600, marginBottom: 4 }}>Proxy not configured</p>
+          <p style={{ fontSize: 12, marginBottom: 16 }}>Set proxy mode in Proxy settings to manage connections.</p>
           <button
             onClick={() => onSwitchTab("proxy")}
             style={{
@@ -293,7 +303,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                         </div>
                       </div>
                     </div>
-                    {caller.alias !== "default" && (
+                    {canManageCallers && caller.alias !== "default" && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -315,107 +325,111 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                   </div>
                 ))}
 
-                {/* Divider */}
-                <div
-                  style={{
-                    height: 1,
-                    background: "var(--border)",
-                    margin: "4px 0",
-                  }}
-                />
-
-                {/* New caller input */}
-                {showNewCallerInput ? (
-                  <div style={{ padding: "8px 12px" }}>
+                {/* Divider + new caller input (local mode only) */}
+                {canManageCallers && (
+                  <>
                     <div
                       style={{
-                        display: "flex",
-                        gap: 6,
-                        alignItems: "center",
+                        height: 1,
+                        background: "var(--border)",
+                        margin: "4px 0",
                       }}
-                    >
-                      <input
-                        type="text"
-                        placeholder="alias-name"
-                        value={newCallerAlias}
-                        onChange={(e) => {
-                          setNewCallerAlias(e.target.value);
-                          setNewCallerError(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleCreateCaller();
-                          if (e.key === "Escape") {
-                            setShowNewCallerInput(false);
-                            setNewCallerAlias("");
-                            setNewCallerError(null);
-                          }
-                        }}
-                        autoFocus
-                        style={{
-                          flex: 1,
-                          padding: "6px 8px",
-                          borderRadius: 6,
-                          border: `1px solid ${newCallerError ? "var(--error)" : "var(--border)"}`,
-                          background: "var(--bg)",
-                          color: "var(--text)",
-                          fontSize: 12,
-                          fontFamily: "monospace",
-                          outline: "none",
-                          minWidth: 0,
-                        }}
-                      />
-                      <button
-                        onClick={handleCreateCaller}
-                        style={{
-                          background: "var(--accent)",
-                          color: "#fff",
-                          padding: "5px 10px",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          fontWeight: 500,
-                          cursor: "pointer",
-                          flexShrink: 0,
-                        }}
-                      >
-                        Add
-                      </button>
-                    </div>
-                    {newCallerError && (
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "var(--error)",
-                          marginTop: 4,
-                        }}
-                      >
-                        {newCallerError}
+                    />
+
+                    {/* New caller input */}
+                    {showNewCallerInput ? (
+                      <div style={{ padding: "8px 12px" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 6,
+                            alignItems: "center",
+                          }}
+                        >
+                          <input
+                            type="text"
+                            placeholder="alias-name"
+                            value={newCallerAlias}
+                            onChange={(e) => {
+                              setNewCallerAlias(e.target.value);
+                              setNewCallerError(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleCreateCaller();
+                              if (e.key === "Escape") {
+                                setShowNewCallerInput(false);
+                                setNewCallerAlias("");
+                                setNewCallerError(null);
+                              }
+                            }}
+                            autoFocus
+                            style={{
+                              flex: 1,
+                              padding: "6px 8px",
+                              borderRadius: 6,
+                              border: `1px solid ${newCallerError ? "var(--error)" : "var(--border)"}`,
+                              background: "var(--bg)",
+                              color: "var(--text)",
+                              fontSize: 12,
+                              fontFamily: "monospace",
+                              outline: "none",
+                              minWidth: 0,
+                            }}
+                          />
+                          <button
+                            onClick={handleCreateCaller}
+                            style={{
+                              background: "var(--accent)",
+                              color: "#fff",
+                              padding: "5px 10px",
+                              borderRadius: 6,
+                              fontSize: 12,
+                              fontWeight: 500,
+                              cursor: "pointer",
+                              flexShrink: 0,
+                            }}
+                          >
+                            Add
+                          </button>
+                        </div>
+                        {newCallerError && (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "var(--error)",
+                              marginTop: 4,
+                            }}
+                          >
+                            {newCallerError}
+                          </div>
+                        )}
                       </div>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowNewCallerInput(true);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          width: "100%",
+                          padding: "8px 12px",
+                          background: "transparent",
+                          color: "var(--accent)",
+                          fontSize: 13,
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <Plus size={14} />
+                        New caller alias
+                      </button>
                     )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowNewCallerInput(true);
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      width: "100%",
-                      padding: "8px 12px",
-                      background: "transparent",
-                      color: "var(--accent)",
-                      fontSize: 13,
-                      cursor: "pointer",
-                      textAlign: "left",
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <Plus size={14} />
-                    New caller alias
-                  </button>
+                  </>
                 )}
               </div>
             )}
@@ -557,6 +571,7 @@ function ConnectionCard({
 }) {
   const [hovered, setHovered] = useState(false);
   const conn = connection;
+  const isRemote = conn.source === "remote";
 
   // Compute secret status
   const requiredTotal = conn.requiredSecrets.length;
@@ -596,14 +611,14 @@ function ConnectionCard({
         flexDirection: "column",
         gap: 12,
         transition: "border-color 0.15s",
-        opacity: conn.enabled ? 1 : 0.75,
+        opacity: conn.enabled || isRemote ? 1 : 0.75,
         overflow: "hidden",
         minWidth: 0,
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Top row: icon + name + toggle */}
+      {/* Top row: icon + name + toggle/badge */}
       <div
         style={{
           display: "flex",
@@ -625,19 +640,23 @@ function ConnectionCard({
               width: 36,
               height: 36,
               borderRadius: 8,
-              background: conn.enabled ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
+              background: conn.enabled || isRemote ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
             }}
           >
-            <Wifi
-              size={18}
-              style={{
-                color: conn.enabled ? "var(--accent)" : "var(--text-muted)",
-              }}
-            />
+            {isRemote ? (
+              <Cloud size={18} style={{ color: "var(--accent)" }} />
+            ) : (
+              <Wifi
+                size={18}
+                style={{
+                  color: conn.enabled ? "var(--accent)" : "var(--text-muted)",
+                }}
+              />
+            )}
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
             <h3
@@ -668,40 +687,61 @@ function ConnectionCard({
           </div>
         </div>
 
-        {/* Toggle switch */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!toggling) onToggle(!conn.enabled);
-          }}
-          style={{
-            width: 40,
-            height: 22,
-            borderRadius: 11,
-            border: "none",
-            background: conn.enabled ? "var(--accent)" : "var(--bg-secondary)",
-            position: "relative",
-            cursor: toggling ? "wait" : "pointer",
-            transition: "background 0.2s",
-            flexShrink: 0,
-            marginLeft: 10,
-          }}
-          title={conn.enabled ? "Disable connection" : "Enable connection"}
-        >
-          <div
+        {/* Toggle switch (local) or Remote badge */}
+        {isRemote ? (
+          <span
             style={{
-              width: 16,
-              height: 16,
-              borderRadius: "50%",
-              background: "#fff",
-              position: "absolute",
-              top: 3,
-              left: conn.enabled ? 21 : 3,
-              transition: "left 0.2s",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+              fontSize: 11,
+              padding: "3px 8px",
+              borderRadius: 6,
+              background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+              color: "var(--accent)",
+              fontWeight: 500,
+              whiteSpace: "nowrap",
+              marginLeft: 10,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
             }}
-          />
-        </button>
+          >
+            <Cloud size={10} />
+            Remote
+          </span>
+        ) : (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!toggling) onToggle(!conn.enabled);
+            }}
+            style={{
+              width: 40,
+              height: 22,
+              borderRadius: 11,
+              border: "none",
+              background: conn.enabled ? "var(--accent)" : "var(--bg-secondary)",
+              position: "relative",
+              cursor: toggling ? "wait" : "pointer",
+              transition: "background 0.2s",
+              flexShrink: 0,
+              marginLeft: 10,
+            }}
+            title={conn.enabled ? "Disable connection" : "Enable connection"}
+          >
+            <div
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: "50%",
+                background: "#fff",
+                position: "absolute",
+                top: 3,
+                left: conn.enabled ? 21 : 3,
+                transition: "left 0.2s",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+              }}
+            />
+          </button>
+        )}
       </div>
 
       {/* Badges row */}
@@ -746,8 +786,8 @@ function ConnectionCard({
           </span>
         )}
 
-        {/* Secret status badge */}
-        {requiredTotal > 0 && (
+        {/* Secret status badge (local mode only — remote has no secret info) */}
+        {!isRemote && requiredTotal > 0 && (
           <span
             style={{
               fontSize: 11,
@@ -788,8 +828,8 @@ function ConnectionCard({
         )}
       </div>
 
-      {/* Configure button (when enabled) */}
-      {conn.enabled && (
+      {/* Configure button (when enabled and local only) */}
+      {conn.enabled && !isRemote && (
         <button
           onClick={onConfigure}
           style={{

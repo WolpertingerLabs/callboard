@@ -20,7 +20,7 @@ import dotenv from "dotenv";
 import { listConnectionTemplates } from "@wolpertingerlabs/drawlatch/shared/connections";
 import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { getActiveMcpConfigDir } from "./agent-settings.js";
-import { getLocalProxyInstance } from "./proxy-singleton.js";
+import { getLocalProxyInstance, getProxy, getConfiguredAliases } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 import type { ConnectionStatus, CallerInfo } from "shared";
 
@@ -415,6 +415,67 @@ export async function setSecrets(secrets: Record<string, string>, callerAlias: s
     status[name] = isSecretSetForCaller(name, callerAlias, callerEnv);
   }
   return status;
+}
+
+// ── Remote mode connections ─────────────────────────────────────────
+
+/**
+ * List connections from a remote proxy server.
+ *
+ * Uses `list_routes` via the proxy client for the given key alias (or
+ * the first available alias). Maps the raw route metadata to
+ * `ConnectionStatus[]` with `source: "remote"`.
+ *
+ * Remote connections are read-only in the UI — secrets and enable/disable
+ * are managed on the remote server.
+ */
+export async function listRemoteConnections(callerAlias?: string): Promise<{ templates: ConnectionStatus[]; callers: CallerInfo[] }> {
+  const aliases = getConfiguredAliases();
+  if (aliases.length === 0) {
+    return { templates: [], callers: [] };
+  }
+
+  // Use specified alias or first available
+  const alias = callerAlias && aliases.includes(callerAlias) ? callerAlias : aliases[0];
+  const client = getProxy(alias);
+  if (!client) {
+    return { templates: [], callers: [] };
+  }
+
+  let routes: any[] = [];
+  try {
+    const result = await client.callTool("list_routes");
+    routes = Array.isArray(result) ? result : [];
+  } catch (err: any) {
+    log.error(`Failed to fetch remote connections for alias "${alias}": ${err.message}`);
+    return { templates: [], callers: [] };
+  }
+
+  // Map routes to ConnectionStatus
+  const templates: ConnectionStatus[] = routes.map((route: any) => ({
+    alias: route.alias || route.name || `route-${route.index}`,
+    name: route.name || `Route ${route.index}`,
+    ...(route.description && { description: route.description }),
+    ...(route.docsUrl && { docsUrl: route.docsUrl }),
+    ...(route.openApiUrl && { openApiUrl: route.openApiUrl }),
+    requiredSecrets: [],
+    optionalSecrets: [],
+    hasIngestor: route.hasIngestor ?? false,
+    ...(route.ingestorType && { ingestorType: route.ingestorType }),
+    allowedEndpoints: route.allowedEndpoints ?? [],
+    enabled: true, // If listed by remote, it's enabled
+    requiredSecretsSet: {},
+    optionalSecretsSet: {},
+    source: "remote" as const,
+  }));
+
+  // Build callers list from key aliases
+  const callers: CallerInfo[] = aliases.map((a) => ({
+    alias: a,
+    connectionCount: a === alias ? templates.length : 0,
+  }));
+
+  return { templates, callers };
 }
 
 /** Reinitialize the local proxy to pick up config/secret changes. */
