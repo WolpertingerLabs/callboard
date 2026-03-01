@@ -511,10 +511,21 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=true, raw=${JSON.stringify(defaultPermissions)}`);
       return defaultPermissions ?? null;
     }
-    // For existing chats, read from chat metadata (may have been updated)
-    log.info(
-      `[PERM-DIAG] getDefaultPermissions: isNewChat=false, raw=${JSON.stringify(initialMetadata.defaultPermissions)}, fullMeta=${JSON.stringify(initialMetadata)}`,
-    );
+    // Re-read from file so mid-conversation permission changes take effect immediately
+    try {
+      const freshChat = chatFileService.getChat(opts.chatId!);
+      if (freshChat) {
+        const freshMeta = JSON.parse(freshChat.metadata || "{}");
+        if (freshMeta.defaultPermissions) {
+          log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=false, fresh=${JSON.stringify(freshMeta.defaultPermissions)}`);
+          return freshMeta.defaultPermissions;
+        }
+      }
+    } catch (err) {
+      log.error(`[PERM-DIAG] Error re-reading permissions for ${opts.chatId}: ${err}`);
+    }
+    // Fall back to initial metadata if re-read fails
+    log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=false, fallback=${JSON.stringify(initialMetadata.defaultPermissions)}`);
     return initialMetadata.defaultPermissions ?? null;
   };
 

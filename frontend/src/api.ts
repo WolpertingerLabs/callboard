@@ -108,6 +108,16 @@ export async function toggleBookmark(id: string, bookmarked: boolean): Promise<C
   return res.json();
 }
 
+export async function updateChatPermissions(id: string, permissions: DefaultPermissions): Promise<Chat> {
+  const res = await fetch(`${BASE}/chats/${id}/permissions`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ defaultPermissions: permissions }),
+  });
+  await assertOk(res, "Failed to update chat permissions");
+  return res.json();
+}
+
 export interface NewChatInfo {
   folder: string;
   displayFolder?: string;
