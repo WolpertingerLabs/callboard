@@ -25,6 +25,7 @@ import {
   uploadImages,
   getSlashCommandsAndPlugins,
   getNewChatInfo,
+  markChatAsRead,
   type Chat as ChatType,
   type ParsedMessage,
   type Plugin,
@@ -43,7 +44,7 @@ import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
-import { addRecentDirectory, getMaxTurns } from "../utils/localStorage";
+import { addRecentDirectory, getMaxTurns, saveChatLastReadAt } from "../utils/localStorage";
 import { getActivePlugins } from "../utils/plugins";
 
 interface ToolGroup {
@@ -691,6 +692,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
     };
   }, [id, loadSlashCommands]);
+
+  // Mark chat as read when the user opens it
+  useEffect(() => {
+    if (!id) return;
+
+    // Write to localStorage immediately for instant UI update in sidebar
+    const now = new Date().toISOString();
+    saveChatLastReadAt(id, now);
+
+    // Persist to server (fire-and-forget, non-blocking)
+    markChatAsRead(id).catch(() => {
+      // Silently fail — localStorage has the correct state
+    });
+  }, [id]);
 
   useEffect(() => {
     // Only auto-scroll if auto-scroll is enabled

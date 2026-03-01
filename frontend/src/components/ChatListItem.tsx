@@ -4,13 +4,14 @@ import type { Chat } from "../api";
 interface Props {
   chat: Chat;
   isActive?: boolean;
+  hasUnread?: boolean;
   onClick: () => void;
   onDelete: () => void;
   onToggleBookmark?: (bookmarked: boolean) => void;
   sessionStatus?: { active: boolean; type: string };
 }
 
-export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, sessionStatus }: Props) {
+export default function ChatListItem({ chat, isActive, hasUnread, onClick, onDelete, onToggleBookmark, sessionStatus }: Props) {
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
@@ -52,6 +53,18 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     >
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {hasUnread && !isActive && (
+            <div
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: "var(--accent)",
+                flexShrink: 0,
+              }}
+              title="Unread messages"
+            />
+          )}
           {isBookmarked && <Bookmark size={14} style={{ color: "var(--accent)", flexShrink: 0 }} fill="var(--accent)" />}
           {agentAlias && (
             <span
@@ -92,7 +105,9 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               <Zap size={10} />
             </span>
           )}
-          <div style={{ fontSize: 15, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
+          <div style={{ fontSize: 15, fontWeight: hasUnread && !isActive ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {displayName}
+          </div>
           {sessionStatus?.active && (
             <div
               style={{
