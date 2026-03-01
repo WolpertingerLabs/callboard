@@ -9,10 +9,20 @@
  * with CRUD operations for listener instances (local mode only) and
  * per-instance start/stop/restart controls.
  */
-import { useState, useEffect, useCallback } from "react";
-import { X, Radio, Loader2, ChevronDown, ChevronRight, Info, Play, Square, RotateCw, Check, AlertTriangle, Zap, Plus, Trash2 } from "lucide-react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { X, Radio, Loader2, ChevronDown, ChevronRight, Info, Play, Square, RotateCw, Check, AlertTriangle, Zap, Plus, Trash2, Edit3 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
-import { getListenerConfigs, resolveListenerOptions, controlListener, getListenerInstances, createListenerInstance, deleteListenerInstanceApi } from "../api";
+import {
+  getListenerConfigs,
+  resolveListenerOptions,
+  controlListener,
+  getListenerInstances,
+  createListenerInstance,
+  deleteListenerInstanceApi,
+  getListenerParams,
+  setListenerParams,
+  deleteListenerInstanceViaProxy,
+} from "../api";
 import type { ListenerConfigSchema, ListenerConfigField, ListenerConfigOption, IngestorStatus, LifecycleResult, ListenerInstanceInfo } from "../api";
 
 interface ListenerConfigPanelProps {
@@ -56,6 +66,17 @@ export default function ListenerConfigPanel({
   const [creatingInstance, setCreatingInstance] = useState(false);
   const [deletingInstance, setDeletingInstance] = useState<string | null>(null);
   const [instanceControlAction, setInstanceControlAction] = useState<Record<string, string>>({});
+
+  // Editable form state
+  const [formValues, setFormValues] = useState<Record<string, unknown>>({});
+  const [originalValues, setOriginalValues] = useState<Record<string, unknown>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [editingInstanceId, setEditingInstanceId] = useState<string | null>(null);
+
+  const isDirty = useMemo(() => {
+    return Object.keys(formValues).some((key) => JSON.stringify(formValues[key]) !== JSON.stringify(originalValues[key]));
+  }, [formValues, originalValues]);
 
   // ── Fetch config ──
 
@@ -101,6 +122,38 @@ export default function ListenerConfigPanel({
     }
   }, [config?.supportsMultiInstance, fetchInstances]);
 
+  // ── Fetch params ──
+
+  const fetchParams = useCallback(
+    async (instanceId?: string) => {
+      try {
+        const data = await getListenerParams(connectionAlias, caller, instanceId);
+        if (data.success) {
+          const merged: Record<string, unknown> = { ...data.defaults, ...data.params };
+          setFormValues(merged);
+          setOriginalValues(merged);
+          setSaveResult(null);
+        }
+      } catch {
+        // Fall back to defaults only — params API might not be supported
+      }
+    },
+    [connectionAlias, caller],
+  );
+
+  useEffect(() => {
+    if (config) {
+      if (config.supportsMultiInstance) {
+        // For multi-instance, fetch params when editingInstanceId is set
+        if (editingInstanceId) {
+          fetchParams(editingInstanceId);
+        }
+      } else {
+        fetchParams();
+      }
+    }
+  }, [config, editingInstanceId, fetchParams]);
+
   // ── Listener control handlers ──
 
   const handleControl = async (action: "start" | "stop" | "restart") => {
@@ -144,11 +197,30 @@ export default function ListenerConfigPanel({
   const handleDeleteInstance = async (instanceId: string) => {
     setDeletingInstance(instanceId);
     try {
-      await deleteListenerInstanceApi(connectionAlias, instanceId, caller);
+      // Use proxy tool (works in both local and remote mode)
+      const result = await deleteListenerInstanceViaProxy(connectionAlias, instanceId, caller);
+      if (!result.success) throw new Error(result.error);
+      if (editingInstanceId === instanceId) {
+        setEditingInstanceId(null);
+        setFormValues({});
+        setOriginalValues({});
+      }
       await fetchInstances();
       onStatusChange?.();
     } catch {
-      // silently fail
+      // Fallback to direct API for local mode if proxy tool not available
+      try {
+        await deleteListenerInstanceApi(connectionAlias, instanceId, caller);
+        if (editingInstanceId === instanceId) {
+          setEditingInstanceId(null);
+          setFormValues({});
+          setOriginalValues({});
+        }
+        await fetchInstances();
+        onStatusChange?.();
+      } catch {
+        // silently fail
+      }
     } finally {
       setDeletingInstance(null);
     }
@@ -184,6 +256,34 @@ export default function ListenerConfigPanel({
       // silently fail — static options or placeholder will remain
     } finally {
       setLoadingOptions(null);
+    }
+  };
+
+  const handleSave = async () => {
+    const changedParams: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(formValues)) {
+      if (JSON.stringify(value) !== JSON.stringify(originalValues[key])) {
+        changedParams[key] = value;
+      }
+    }
+    if (Object.keys(changedParams).length === 0) return;
+
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      const result = await setListenerParams(connectionAlias, changedParams, caller, editingInstanceId ?? undefined);
+      if (result.success) {
+        const merged = { ...formValues };
+        setOriginalValues(merged);
+        setSaveResult({ success: true, message: "Parameters saved successfully" });
+        onStatusChange?.();
+      } else {
+        setSaveResult({ success: false, message: result.error || "Failed to save" });
+      }
+    } catch (err: any) {
+      setSaveResult({ success: false, message: err.message || "Failed to save parameters" });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -694,8 +794,24 @@ export default function ListenerConfigPanel({
                             )}
                           </div>
 
-                          {/* Delete button (local mode only) */}
-                          {localModeActive && (
+                          {/* Edit + Delete buttons */}
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button
+                              onClick={() => setEditingInstanceId(editingInstanceId === instance.instanceId ? null : instance.instanceId)}
+                              style={{
+                                background: "transparent",
+                                padding: 4,
+                                borderRadius: 4,
+                                color: editingInstanceId === instance.instanceId ? "var(--accent)" : "var(--text-muted)",
+                                cursor: "pointer",
+                                flexShrink: 0,
+                                opacity: editingInstanceId === instance.instanceId ? 1 : 0.6,
+                                transition: "opacity 0.15s, color 0.15s",
+                              }}
+                              title={editingInstanceId === instance.instanceId ? "Close editor" : `Edit parameters for "${instance.instanceId}"`}
+                            >
+                              <Edit3 size={12} />
+                            </button>
                             <button
                               onClick={() => handleDeleteInstance(instance.instanceId)}
                               disabled={isDeleting}
@@ -721,7 +837,7 @@ export default function ListenerConfigPanel({
                             >
                               {isDeleting ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Trash2 size={12} />}
                             </button>
-                          )}
+                          </div>
                         </div>
 
                         {/* Instance params (if any) */}
@@ -985,8 +1101,46 @@ export default function ListenerConfigPanel({
           )}
 
           {/* Config fields */}
-          {!loading && config && config.fields.length > 0 && (
+          {(!isMultiInstance || editingInstanceId) && !loading && config && config.fields.length > 0 && (
             <div>
+              {editingInstanceId && (
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+                    color: "var(--accent)",
+                    fontSize: 12,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Edit3 size={12} />
+                  Editing instance: <code style={{ fontFamily: "monospace", fontWeight: 600 }}>{editingInstanceId}</code>
+                  <button
+                    onClick={() => {
+                      setEditingInstanceId(null);
+                      setFormValues({});
+                      setOriginalValues({});
+                      setSaveResult(null);
+                    }}
+                    style={{
+                      marginLeft: "auto",
+                      background: "transparent",
+                      color: "var(--text-muted)",
+                      cursor: "pointer",
+                      fontSize: 11,
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
               <h3
                 style={{
                   fontSize: 13,
@@ -997,7 +1151,7 @@ export default function ListenerConfigPanel({
                   marginBottom: 12,
                 }}
               >
-                Configuration Schema
+                Configuration
               </h3>
 
               {Object.entries(groupedFields).map(([group, fields]) => {
@@ -1042,6 +1196,8 @@ export default function ListenerConfigPanel({
                             dynamicOptions={dynamicOptions[field.key]}
                             loadingOptions={loadingOptions === field.key}
                             onFetchOptions={() => handleFetchDynamicOptions(field)}
+                            value={formValues[field.key]}
+                            onChange={(val) => setFormValues((prev) => ({ ...prev, [field.key]: val }))}
                           />
                         ))}
                       </div>
@@ -1095,24 +1251,63 @@ export default function ListenerConfigPanel({
             padding: "16px 24px",
             borderTop: "1px solid var(--border)",
             display: "flex",
-            justifyContent: "flex-end",
+            justifyContent: "space-between",
+            alignItems: "center",
             flexShrink: 0,
           }}
         >
-          <button
-            onClick={onClose}
-            style={{
-              padding: "8px 20px",
-              borderRadius: 8,
-              fontSize: 14,
-              background: "var(--bg-secondary)",
-              border: "1px solid var(--border)",
-              color: "var(--text)",
-              cursor: "pointer",
-            }}
-          >
-            Close
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {isDirty && (
+              <span style={{ fontSize: 12, color: "var(--warning)", display: "flex", alignItems: "center", gap: 4 }}>
+                <AlertTriangle size={12} />
+                Unsaved changes
+              </span>
+            )}
+            {saveResult && (
+              <span style={{ fontSize: 12, color: saveResult.success ? "var(--success)" : "var(--error)", display: "flex", alignItems: "center", gap: 4 }}>
+                {saveResult.success ? <Check size={12} /> : <AlertTriangle size={12} />}
+                {saveResult.message}
+              </span>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={onClose}
+              style={{
+                padding: "8px 20px",
+                borderRadius: 8,
+                fontSize: 14,
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border)",
+                color: "var(--text)",
+                cursor: "pointer",
+              }}
+            >
+              Close
+            </button>
+            {config?.fields && config.fields.length > 0 && (
+              <button
+                onClick={handleSave}
+                disabled={!isDirty || saving}
+                style={{
+                  padding: "8px 20px",
+                  borderRadius: 8,
+                  fontSize: 14,
+                  background: isDirty ? "var(--accent)" : "var(--bg-secondary)",
+                  border: "none",
+                  color: isDirty ? "#fff" : "var(--text-muted)",
+                  cursor: !isDirty || saving ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  opacity: !isDirty ? 0.5 : 1,
+                }}
+              >
+                {saving && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+                Save
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </ModalOverlay>
@@ -1126,13 +1321,16 @@ function FieldDisplay({
   dynamicOptions,
   loadingOptions,
   onFetchOptions,
+  value,
+  onChange,
 }: {
   field: ListenerConfigField;
   dynamicOptions?: ListenerConfigOption[];
   loadingOptions: boolean;
   onFetchOptions: () => void;
+  value?: unknown;
+  onChange?: (value: unknown) => void;
 }) {
-  const hasDynamic = !!field.dynamicOptions;
   const options = dynamicOptions || field.options || [];
 
   return (
@@ -1212,66 +1410,192 @@ function FieldDisplay({
         </p>
       )}
 
-      {/* Default value */}
-      {field.default !== undefined && (
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          Default:{" "}
-          <code
+      {/* Editable control */}
+      <div style={{ marginTop: 8 }}>
+        {field.type === "text" && (
+          <input
+            type="text"
+            value={(value as string) ?? ""}
+            onChange={(e) => onChange?.(e.target.value)}
+            placeholder={field.placeholder || `Enter ${field.label.toLowerCase()}`}
             style={{
+              width: "100%",
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 12,
               fontFamily: "monospace",
-              fontSize: 11,
-              padding: "1px 4px",
-              borderRadius: 3,
-              background: "var(--bg-secondary)",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+        )}
+        {field.type === "number" && (
+          <input
+            type="number"
+            value={(value as number) ?? ""}
+            onChange={(e) => onChange?.(e.target.value === "" ? undefined : Number(e.target.value))}
+            min={field.min}
+            max={field.max}
+            placeholder={field.placeholder}
+            style={{
+              width: "100%",
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 12,
+              fontFamily: "monospace",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+        )}
+        {field.type === "boolean" && (
+          <button
+            onClick={() => onChange?.(!(value ?? field.default ?? false))}
+            style={{
+              width: 40,
+              height: 22,
+              borderRadius: 11,
+              border: "none",
+              background: (value ?? field.default) ? "var(--accent)" : "var(--bg-secondary)",
+              cursor: "pointer",
+              position: "relative",
+              transition: "background 0.2s",
             }}
           >
-            {JSON.stringify(field.default)}
-          </code>
-        </div>
-      )}
-
-      {/* Static/dynamic options */}
-      {(field.type === "select" || field.type === "multiselect") && (
-        <div style={{ marginTop: 6 }}>
-          {options.length > 0 ? (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-              {options.map((opt) => (
-                <span
-                  key={opt.value}
-                  style={{
-                    fontSize: 11,
-                    padding: "2px 6px",
-                    borderRadius: 4,
-                    background: "var(--bg-secondary)",
-                    color: "var(--text)",
-                    fontFamily: "monospace",
-                  }}
-                >
-                  {opt.label}
-                </span>
-              ))}
-            </div>
-          ) : hasDynamic ? (
-            <button
-              onClick={onFetchOptions}
-              disabled={loadingOptions}
+            <div
               style={{
-                fontSize: 12,
-                color: "var(--accent)",
-                background: "transparent",
-                cursor: loadingOptions ? "wait" : "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                padding: 0,
+                width: 16,
+                height: 16,
+                borderRadius: "50%",
+                background: "#fff",
+                position: "absolute",
+                top: 3,
+                left: (value ?? field.default) ? 21 : 3,
+                transition: "left 0.2s",
               }}
-            >
-              {loadingOptions ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <ChevronDown size={12} />}
-              Load options from API
-            </button>
-          ) : null}
-        </div>
-      )}
+            />
+          </button>
+        )}
+        {field.type === "select" && (
+          <select
+            value={(value as string) ?? (field.default as string) ?? ""}
+            onChange={(e) => onChange?.(e.target.value || undefined)}
+            onFocus={() => {
+              if (field.dynamicOptions && !dynamicOptions) onFetchOptions();
+            }}
+            style={{
+              width: "100%",
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 12,
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          >
+            <option value="">-- Select --</option>
+            {loadingOptions && <option disabled>Loading options...</option>}
+            {options.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        )}
+        {field.type === "multiselect" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {loadingOptions && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Loading options...</span>}
+            {!loadingOptions && options.length === 0 && field.dynamicOptions && (
+              <button
+                onClick={onFetchOptions}
+                style={{
+                  fontSize: 12,
+                  color: "var(--accent)",
+                  background: "transparent",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: 0,
+                }}
+              >
+                Load options from API
+              </button>
+            )}
+            {options.map((opt) => {
+              const selected = Array.isArray(value) ? (value as string[]).includes(opt.value) : false;
+              return (
+                <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={(e) => {
+                      const current = Array.isArray(value) ? [...(value as string[])] : [];
+                      onChange?.(e.target.checked ? [...current, opt.value] : current.filter((v) => v !== opt.value));
+                    }}
+                    style={{ accentColor: "var(--accent)" }}
+                  />
+                  {opt.label}
+                </label>
+              );
+            })}
+          </div>
+        )}
+        {field.type === "secret" && (
+          <input
+            type="password"
+            value={(value as string) ?? ""}
+            onChange={(e) => onChange?.(e.target.value)}
+            placeholder={field.placeholder || "Enter secret value"}
+            style={{
+              width: "100%",
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 12,
+              fontFamily: "monospace",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+        )}
+        {field.type === "text[]" && (
+          <input
+            type="text"
+            value={Array.isArray(value) ? (value as string[]).join(", ") : ((value as string) ?? "")}
+            onChange={(e) => {
+              const items = e.target.value
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
+              onChange?.(items.length > 0 ? items : undefined);
+            }}
+            placeholder={field.placeholder || "Comma-separated values"}
+            style={{
+              width: "100%",
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 12,
+              fontFamily: "monospace",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+        )}
+      </div>
 
       {/* Validation hints */}
       {(field.min !== undefined || field.max !== undefined || field.pattern || field.placeholder) && (

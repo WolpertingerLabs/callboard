@@ -432,14 +432,13 @@ export interface ListenerInstanceInfo {
 export function listListenerInstances(connectionAlias: string, callerAlias: string = "default"): ListenerInstanceInfo[] {
   syncConfigDir();
   const config = loadRemoteConfig();
-  // Cast to any — listenerInstances added in drawlatch alpha.4
-  const caller = config.callers[callerAlias] as any;
+  const caller = config.callers[callerAlias];
   if (!caller?.listenerInstances?.[connectionAlias]) return [];
 
   return Object.entries(caller.listenerInstances[connectionAlias]).map(([instanceId, overrides]) => ({
     instanceId,
-    disabled: (overrides as any)?.disabled ?? false,
-    params: (overrides as any)?.params ?? {},
+    disabled: overrides?.disabled ?? false,
+    params: overrides?.params ?? {},
   }));
 }
 
@@ -455,8 +454,7 @@ export async function addListenerInstance(
 ): Promise<ListenerInstanceInfo> {
   syncConfigDir();
   const config = loadRemoteConfig();
-  // Cast to any — listenerInstances added in drawlatch alpha.4
-  const caller = ensureCallerConfig(config, callerAlias) as any;
+  const caller = ensureCallerConfig(config, callerAlias);
 
   if (!caller.listenerInstances) {
     caller.listenerInstances = {};
@@ -491,8 +489,7 @@ export async function updateListenerInstance(
 ): Promise<ListenerInstanceInfo> {
   syncConfigDir();
   const config = loadRemoteConfig();
-  // Cast to any — listenerInstances added in drawlatch alpha.4
-  const caller = config.callers[callerAlias] as any;
+  const caller = config.callers[callerAlias];
 
   if (!caller?.listenerInstances?.[connectionAlias]?.[instanceId]) {
     throw new Error(`Instance "${instanceId}" not found for connection "${connectionAlias}"`);
@@ -525,8 +522,7 @@ export async function updateListenerInstance(
 export async function deleteListenerInstance(connectionAlias: string, instanceId: string, callerAlias: string = "default"): Promise<void> {
   syncConfigDir();
   const config = loadRemoteConfig();
-  // Cast to any — listenerInstances added in drawlatch alpha.4
-  const caller = config.callers[callerAlias] as any;
+  const caller = config.callers[callerAlias];
 
   if (!caller?.listenerInstances?.[connectionAlias]?.[instanceId]) {
     throw new Error(`Instance "${instanceId}" not found for connection "${connectionAlias}"`);

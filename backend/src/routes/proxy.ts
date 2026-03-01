@@ -220,6 +220,81 @@ proxyRouter.post("/resolve-listener-options", async (req: Request, res: Response
   res.status(status).json(result);
 });
 
+/** GET /api/proxy/listener-params/:connection — get current listener parameter overrides */
+proxyRouter.get("/listener-params/:connection", async (req: Request, res: Response): Promise<void> => {
+  const connection = req.params.connection;
+  const instance_id = req.query.instance_id as string | undefined;
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  const client = resolveProxyClient(req);
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  const { result, status } = await safeCallTool(client, "get_listener_params", {
+    connection,
+    ...(instance_id && { instance_id }),
+  });
+  res.status(status).json(result);
+});
+
+/** PUT /api/proxy/listener-params/:connection — set listener parameter overrides */
+proxyRouter.put("/listener-params/:connection", async (req: Request, res: Response): Promise<void> => {
+  const connection = req.params.connection;
+  const { params, instance_id, create_instance } = req.body ?? {};
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  if (!params || typeof params !== "object") {
+    res.status(400).json({ success: false, error: "Missing required field: params (must be an object)" });
+    return;
+  }
+
+  const client = resolveProxyClient(req);
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  const { result, status } = await safeCallTool(client, "set_listener_params", {
+    connection,
+    params,
+    ...(instance_id && { instance_id }),
+    ...(create_instance !== undefined && { create_instance }),
+  });
+  res.status(status).json(result);
+});
+
+/** DELETE /api/proxy/listener-instance/:connection/:instanceId — delete a listener instance */
+proxyRouter.delete("/listener-instance/:connection/:instanceId", async (req: Request, res: Response): Promise<void> => {
+  const { connection, instanceId } = req.params;
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  const client = resolveProxyClient(req);
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  const { result, status } = await safeCallTool(client, "delete_listener_instance", {
+    connection,
+    instance_id: instanceId,
+  });
+  res.status(status).json(result);
+});
+
 /** GET /api/proxy/events — all stored events across all connections, newest first */
 proxyRouter.get("/events", (req: Request, res: Response): void => {
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
@@ -235,7 +310,8 @@ proxyRouter.get("/events/:source", (req: Request, res: Response): void => {
   const source = req.params.source as string;
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
   const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+  const instanceId = req.query.instance_id as string | undefined;
 
-  const events = getEvents(source, { limit, offset });
+  const events = getEvents(source, { limit, offset, instanceId });
   res.json({ events });
 });

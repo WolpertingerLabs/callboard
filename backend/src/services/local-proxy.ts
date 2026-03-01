@@ -13,7 +13,14 @@
  * drawlatch — the exact same function the remote server uses.
  * No behavioral drift possible.
  */
-import { loadRemoteConfig, resolveCallerRoutes, resolveRoutes, resolveSecrets, type ResolvedRoute } from "@wolpertingerlabs/drawlatch/shared/config";
+import {
+  loadRemoteConfig,
+  saveRemoteConfig,
+  resolveCallerRoutes,
+  resolveRoutes,
+  resolveSecrets,
+  type ResolvedRoute,
+} from "@wolpertingerlabs/drawlatch/shared/config";
 import { executeProxyRequest } from "@wolpertingerlabs/drawlatch/remote/server";
 import { IngestorManager } from "@wolpertingerlabs/drawlatch/remote/ingestors";
 import { createLogger } from "../utils/logger.js";
@@ -143,12 +150,13 @@ export class LocalProxy {
         });
 
       case "poll_events": {
-        const { connection, after_id } = (toolInput ?? {}) as {
+        const { connection, after_id, instance_id } = (toolInput ?? {}) as {
           connection?: string;
           after_id?: number;
+          instance_id?: string;
         };
         if (connection) {
-          return this._ingestorManager.getEvents(effectiveAlias, connection, after_id ?? -1);
+          return this._ingestorManager.getEvents(effectiveAlias, connection, after_id ?? -1, instance_id);
         }
         return this._ingestorManager.getAllEvents(effectiveAlias, after_id ?? -1);
       }
@@ -169,10 +177,7 @@ export class LocalProxy {
         const method = testConfig.method ?? "GET";
         const expectedStatus = testConfig.expectedStatus ?? [200];
         try {
-          const result = await executeProxyRequest(
-            { method, url: testConfig.url, headers: testConfig.headers, body: testConfig.body },
-            routes,
-          );
+          const result = await executeProxyRequest({ method, url: testConfig.url, headers: testConfig.headers, body: testConfig.body }, routes);
           const isSuccess = expectedStatus.includes(result.status);
           return {
             success: isSuccess,
@@ -211,15 +216,33 @@ export class LocalProxy {
                 if (!route.secrets[secretName]) missing.push(secretName);
               }
               if (missing.length > 0) {
-                return { success: false, connection: conn, strategy: ingestorTestConfig.strategy, description: ingestorTestConfig.description, error: `Missing required secrets: ${missing.join(", ")}` };
+                return {
+                  success: false,
+                  connection: conn,
+                  strategy: ingestorTestConfig.strategy,
+                  description: ingestorTestConfig.description,
+                  error: `Missing required secrets: ${missing.join(", ")}`,
+                };
               }
-              return { success: true, connection: conn, strategy: ingestorTestConfig.strategy, description: ingestorTestConfig.description, message: "All required webhook secrets are configured." };
+              return {
+                success: true,
+                connection: conn,
+                strategy: ingestorTestConfig.strategy,
+                description: ingestorTestConfig.description,
+                message: "All required webhook secrets are configured.",
+              };
             }
             case "websocket_auth":
             case "http_request":
             case "poll_once": {
               if (!ingestorTestConfig.request) {
-                return { success: false, connection: conn, strategy: ingestorTestConfig.strategy, description: ingestorTestConfig.description, error: "Test configuration missing request details." };
+                return {
+                  success: false,
+                  connection: conn,
+                  strategy: ingestorTestConfig.strategy,
+                  description: ingestorTestConfig.description,
+                  error: "Test configuration missing request details.",
+                };
               }
               const testMethod = ingestorTestConfig.request.method ?? "GET";
               const expectedCodes = ingestorTestConfig.request.expectedStatus ?? [200];
@@ -247,24 +270,23 @@ export class LocalProxy {
       }
 
       case "control_listener": {
-        const { connection: conn, action, instance_id } = (toolInput ?? {}) as {
+        const {
+          connection: conn,
+          action,
+          instance_id,
+        } = (toolInput ?? {}) as {
           connection: string;
           action: "start" | "stop" | "restart";
           instance_id?: string;
         };
-        // Cast to any — startOne/stopOne/restartOne added in drawlatch alpha.4
-        const mgr = this._ingestorManager as any;
         try {
           switch (action) {
             case "start":
-              if (typeof mgr.startOne !== "function") return { success: false, connection: conn, error: "startOne not available in this drawlatch version" };
-              return await mgr.startOne(effectiveAlias, conn, instance_id);
+              return await this._ingestorManager.startOne(effectiveAlias, conn, instance_id);
             case "stop":
-              if (typeof mgr.stopOne !== "function") return { success: false, connection: conn, error: "stopOne not available in this drawlatch version" };
-              return await mgr.stopOne(effectiveAlias, conn, instance_id);
+              return await this._ingestorManager.stopOne(effectiveAlias, conn, instance_id);
             case "restart":
-              if (typeof mgr.restartOne !== "function") return { success: false, connection: conn, error: "restartOne not available in this drawlatch version" };
-              return await mgr.restartOne(effectiveAlias, conn, instance_id);
+              return await this._ingestorManager.restartOne(effectiveAlias, conn, instance_id);
             default:
               return { success: false, connection: conn, error: `Unknown action: ${String(action)}` };
           }
@@ -320,6 +342,179 @@ export class LocalProxy {
         } catch (err: any) {
           return { success: false, connection: conn, paramKey, error: err.message };
         }
+      }
+
+      case "get_listener_params": {
+        const { connection, instance_id } = (toolInput ?? {}) as {
+          connection: string;
+          instance_id?: string;
+        };
+        const route = routes.find((r: any) => r.alias === connection) as any;
+        if (!route) {
+          return { success: false, connection, error: `Unknown connection: ${connection}` };
+        }
+        if (!route.listenerConfig) {
+          return { success: false, connection, error: `No listener config for connection: ${connection}` };
+        }
+
+        // Build defaults from schema fields
+        const defaults: Record<string, unknown> = {};
+        for (const field of route.listenerConfig.fields ?? []) {
+          if (field.default !== undefined) {
+            defaults[field.key] = field.default;
+          }
+        }
+
+        // Read current overrides from config
+        const paramConfig = loadRemoteConfig();
+        const paramCaller = paramConfig.callers[effectiveAlias];
+        let params: Record<string, unknown> = {};
+
+        if (instance_id) {
+          // Multi-instance: read from listenerInstances
+          const instanceOverrides = paramCaller?.listenerInstances?.[connection]?.[instance_id];
+          if (!instanceOverrides) {
+            return { success: false, connection, instance_id, error: `Instance not found: ${instance_id}` };
+          }
+          params = instanceOverrides.params ?? {};
+        } else {
+          // Single-instance: read from ingestorOverrides
+          const overrides = paramCaller?.ingestorOverrides?.[connection];
+          params = overrides?.params ?? {};
+        }
+
+        return {
+          success: true,
+          connection,
+          ...(instance_id && { instance_id }),
+          params,
+          defaults,
+        };
+      }
+
+      case "set_listener_params": {
+        const { connection, instance_id, params, create_instance } = (toolInput ?? {}) as {
+          connection: string;
+          instance_id?: string;
+          params: Record<string, unknown>;
+          create_instance?: boolean;
+        };
+        const route = routes.find((r: any) => r.alias === connection) as any;
+        if (!route) {
+          return { success: false, connection, error: `Unknown connection: ${connection}` };
+        }
+        if (!route.listenerConfig) {
+          return { success: false, connection, error: `No listener config for connection: ${connection}` };
+        }
+
+        // Validate param keys against schema
+        const validKeys = new Set((route.listenerConfig.fields ?? []).map((f: any) => f.key));
+        const unknownKeys = Object.keys(params).filter((k) => !validKeys.has(k));
+        if (unknownKeys.length > 0) {
+          return {
+            success: false,
+            connection,
+            error: `Unknown parameter keys: ${unknownKeys.join(", ")}. Valid keys: ${Array.from(validKeys).join(", ")}`,
+          };
+        }
+
+        // Load config, modify, save
+        const setConfig = loadRemoteConfig();
+        const setCaller = setConfig.callers[effectiveAlias];
+        if (!setCaller) {
+          return { success: false, connection, error: `Caller not found: ${effectiveAlias}` };
+        }
+
+        let mergedParams: Record<string, unknown>;
+
+        if (instance_id) {
+          // Multi-instance: write to listenerInstances
+          setCaller.listenerInstances ??= {};
+          setCaller.listenerInstances[connection] ??= {};
+
+          const existing = setCaller.listenerInstances[connection][instance_id];
+
+          if (!existing && !create_instance) {
+            return {
+              success: false,
+              connection,
+              instance_id,
+              error: `Instance "${instance_id}" does not exist. Set create_instance to true to create it.`,
+            };
+          }
+
+          if (existing) {
+            existing.params = { ...(existing.params ?? {}), ...params };
+            mergedParams = existing.params;
+          } else {
+            setCaller.listenerInstances[connection][instance_id] = { params };
+            mergedParams = params;
+          }
+        } else {
+          // Single-instance: write to ingestorOverrides
+          setCaller.ingestorOverrides ??= {};
+          setCaller.ingestorOverrides[connection] ??= {};
+          const overrides = setCaller.ingestorOverrides[connection];
+          overrides.params = { ...(overrides.params ?? {}), ...params };
+          mergedParams = overrides.params;
+        }
+
+        saveRemoteConfig(setConfig);
+        await this.reinitialize();
+
+        return {
+          success: true,
+          connection,
+          ...(instance_id && { instance_id }),
+          params: mergedParams,
+        };
+      }
+
+      case "delete_listener_instance": {
+        const { connection, instance_id } = (toolInput ?? {}) as {
+          connection: string;
+          instance_id: string;
+        };
+        if (!instance_id) {
+          return { success: false, connection, error: "instance_id is required" };
+        }
+
+        const delConfig = loadRemoteConfig();
+        const delCaller = delConfig.callers[effectiveAlias];
+        if (!delCaller) {
+          return { success: false, connection, instance_id, error: `Caller not found: ${effectiveAlias}` };
+        }
+
+        const instances = delCaller.listenerInstances?.[connection];
+        if (!instances || !(instance_id in instances)) {
+          return { success: false, connection, instance_id, error: `Instance "${instance_id}" not found for connection "${connection}".` };
+        }
+
+        // Stop the running ingestor if active
+        if (this._ingestorManager.has(effectiveAlias, connection, instance_id)) {
+          try {
+            await this._ingestorManager.stopOne(effectiveAlias, connection, instance_id);
+          } catch {
+            // Log but don't fail the delete
+            log.warn(`Failed to stop ingestor ${effectiveAlias}:${connection}:${instance_id} during delete`);
+          }
+        }
+
+        // Remove from config
+        delete instances[instance_id];
+
+        // Clean up empty maps
+        if (Object.keys(instances).length === 0) {
+          delete delCaller.listenerInstances![connection];
+          if (Object.keys(delCaller.listenerInstances!).length === 0) {
+            delete delCaller.listenerInstances;
+          }
+        }
+
+        saveRemoteConfig(delConfig);
+        await this.reinitialize();
+
+        return { success: true, connection, instance_id };
       }
 
       default:
