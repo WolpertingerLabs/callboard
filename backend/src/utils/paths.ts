@@ -20,10 +20,16 @@ export const WORKSPACES_DIR =
   join(DATA_DIR, "agent-workspaces");
 
 /** Default MCP config directory for local proxy mode. */
-export const DEFAULT_MCP_LOCAL_DIR = join(DATA_DIR, ".drawlatch");
+export const DEFAULT_MCP_LOCAL_DIR = join(DATA_DIR, ".drawlatch.local");
 
 /** Default MCP config directory for remote proxy mode. */
-export const DEFAULT_MCP_REMOTE_DIR = join(DATA_DIR, ".drawlatch-remote");
+export const DEFAULT_MCP_REMOTE_DIR = join(DATA_DIR, ".drawlatch.remote");
+
+/** @deprecated Old local directory name, kept for migration only. */
+export const LEGACY_MCP_LOCAL_DIR = join(DATA_DIR, ".drawlatch");
+
+/** @deprecated Old remote directory name, kept for migration only. */
+export const LEGACY_MCP_REMOTE_DIR = join(DATA_DIR, ".drawlatch-remote");
 
 /** Ensure the data directory exists (idempotent, safe to call multiple times). */
 export function ensureDataDir(): void {

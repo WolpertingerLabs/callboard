@@ -2,10 +2,10 @@ export interface AgentSettings {
   /** @deprecated Use localMcpConfigDir / remoteMcpConfigDir instead. Kept as fallback. */
   mcpConfigDir?: string;
 
-  /** Absolute path to the .drawlatch/ directory for local mode */
+  /** Absolute path to the .drawlatch.local/ directory for local mode */
   localMcpConfigDir?: string;
 
-  /** Absolute path to the .drawlatch/ directory for remote mode */
+  /** Absolute path to the .drawlatch.remote/ directory for remote mode */
   remoteMcpConfigDir?: string;
 
   /** Proxy mode: 'local' runs in-process, 'remote' connects to external server */

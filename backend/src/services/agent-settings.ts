@@ -5,9 +5,9 @@
  * Currently stores the MCP config directory path and provides key alias
  * discovery from the configured drawlatch directory.
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
-import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
+import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentSettings, KeyAliasInfo } from "shared";
 
@@ -18,12 +18,16 @@ const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
 
 function loadSettings(): AgentSettings {
   ensureDataDir();
-  if (!existsSync(SETTINGS_FILE)) return {};
+  if (!existsSync(SETTINGS_FILE)) return { proxyMode: "local" };
   try {
-    return JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+    const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+    if (!raw.proxyMode) {
+      raw.proxyMode = "local";
+    }
+    return raw;
   } catch (err: any) {
     log.warn(`Failed to load agent settings: ${err.message}`);
-    return {};
+    return { proxyMode: "local" };
   }
 }
 
@@ -152,5 +156,41 @@ export function ensureRemoteProxyConfigDir(): void {
     };
     writeFileSync(stubConfigPath, JSON.stringify(stubConfig, null, 2), { mode: 0o600 });
     log.info(`Created remote proxy config scaffold: ${configDir}`);
+  }
+}
+
+/**
+ * Migrate legacy drawlatch directory names to the new convention and
+ * ensure both directories exist.
+ *
+ *   .drawlatch        -> .drawlatch.local
+ *   .drawlatch-remote -> .drawlatch.remote
+ *
+ * Uses renameSync for atomic rename on the same filesystem.
+ * Safe to call multiple times (idempotent).
+ */
+export function migrateDrawlatchDirs(): void {
+  ensureDataDir();
+
+  // Migrate local dir: .drawlatch -> .drawlatch.local
+  if (!existsSync(DEFAULT_MCP_LOCAL_DIR) && existsSync(LEGACY_MCP_LOCAL_DIR)) {
+    renameSync(LEGACY_MCP_LOCAL_DIR, DEFAULT_MCP_LOCAL_DIR);
+    log.info(`Migrated ${LEGACY_MCP_LOCAL_DIR} -> ${DEFAULT_MCP_LOCAL_DIR}`);
+  }
+
+  // Migrate remote dir: .drawlatch-remote -> .drawlatch.remote
+  if (!existsSync(DEFAULT_MCP_REMOTE_DIR) && existsSync(LEGACY_MCP_REMOTE_DIR)) {
+    renameSync(LEGACY_MCP_REMOTE_DIR, DEFAULT_MCP_REMOTE_DIR);
+    log.info(`Migrated ${LEGACY_MCP_REMOTE_DIR} -> ${DEFAULT_MCP_REMOTE_DIR}`);
+  }
+
+  // Ensure both directories exist after migration
+  if (!existsSync(DEFAULT_MCP_LOCAL_DIR)) {
+    mkdirSync(DEFAULT_MCP_LOCAL_DIR, { recursive: true, mode: 0o700 });
+    log.info(`Created ${DEFAULT_MCP_LOCAL_DIR}`);
+  }
+  if (!existsSync(DEFAULT_MCP_REMOTE_DIR)) {
+    mkdirSync(DEFAULT_MCP_REMOTE_DIR, { recursive: true, mode: 0o700 });
+    log.info(`Created ${DEFAULT_MCP_REMOTE_DIR}`);
   }
 }
