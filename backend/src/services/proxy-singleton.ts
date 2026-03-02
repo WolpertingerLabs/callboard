@@ -21,7 +21,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
 import { LocalProxy } from "./local-proxy.js";
-import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir } from "./agent-settings.js";
+import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, ensureLocalProxyConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy-manager");
@@ -170,6 +170,55 @@ export function resetAllClients(): void {
   clientCache.clear();
   failedAliases.clear();
   log.info("Reset all proxy client caches");
+}
+
+/**
+ * Handle proxy mode switching at runtime.
+ *
+ * When switching to "local": creates and starts a LocalProxy instance.
+ * When switching away from "local": stops and clears the LocalProxy.
+ * Always resets cached remote ProxyClient instances.
+ */
+export async function switchProxyMode(newMode: string | undefined): Promise<void> {
+  resetAllClients();
+
+  // Tear down existing LocalProxy if switching away from local
+  if (localProxyInstance && newMode !== "local") {
+    try {
+      await localProxyInstance.stop();
+      log.info("LocalProxy stopped (mode switched away from local)");
+    } catch (err: any) {
+      log.warn(`Failed to stop LocalProxy during mode switch: ${err.message}`);
+    }
+    localProxyInstance = null;
+  }
+
+  // Create LocalProxy if switching to local mode
+  if (newMode === "local") {
+    ensureLocalProxyConfigDir();
+    const configDir = getActiveMcpConfigDir();
+    if (configDir) {
+      // Sync MCP_CONFIG_DIR so drawlatch's loadRemoteConfig reads the right dir
+      process.env.MCP_CONFIG_DIR = configDir;
+
+      // Load .env secrets into process.env
+      const { loadMcpEnvIntoProcess } = await import("./connection-manager.js");
+      loadMcpEnvIntoProcess();
+
+      try {
+        const proxy = new LocalProxy(configDir, "default");
+        await proxy.start();
+        localProxyInstance = proxy;
+        log.info(`LocalProxy created and started (configDir=${configDir})`);
+      } catch (err: any) {
+        log.error(`Failed to create LocalProxy during mode switch: ${err.message}`);
+      }
+    } else {
+      log.warn("Cannot create LocalProxy: no MCP config directory configured");
+    }
+  } else if (newMode === "remote") {
+    ensureRemoteProxyConfigDir();
+  }
 }
 
 // ── Backwards-compatible shims ──────────────────────────────────────

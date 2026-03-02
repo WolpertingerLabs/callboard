@@ -159,7 +159,7 @@ export default function ProxySettings() {
                 borderRadius: 4,
               }}
             >
-              .drawlatch/
+              .drawlatch.local/
             </code>{" "}
             directory containing your keys and identity. Key aliases are discovered from the{" "}
             <code
@@ -196,7 +196,7 @@ export default function ProxySettings() {
                   ? `Default: ${defaultLocalDir}`
                   : proxyMode === "remote" && defaultRemoteDir
                     ? `Default: ${defaultRemoteDir}`
-                    : "e.g. /home/user/.drawlatch"
+                    : "e.g. /home/user/.drawlatch.local"
               }
               style={{
                 flex: 1,

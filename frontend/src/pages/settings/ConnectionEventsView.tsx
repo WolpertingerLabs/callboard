@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-// useOutletContext removed — agent is now passed as a prop
-import { Radio, Loader2, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
-import { useIsMobile } from "../../../hooks/useIsMobile";
-import { getProxyEvents, getProxyIngestors } from "../../../api";
-import type { StoredEvent, IngestorStatus, AgentConfig } from "../../../api";
+import { ArrowLeft, Radio, Loader2, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { useIsMobile } from "../../hooks/useIsMobile";
+import { getProxyEvents, getProxyIngestors } from "../../api";
+import type { StoredEvent, IngestorStatus } from "../../api";
 
 const POLL_INTERVAL = 5_000; // refresh event list every 5s
 
@@ -37,39 +36,40 @@ function stateColor(state: string): string {
   }
 }
 
-export default function Events({ agent }: { agent: AgentConfig }) {
+interface ConnectionEventsViewProps {
+  selectedCaller: string;
+  onBack: () => void;
+}
+
+export default function ConnectionEventsView({ selectedCaller, onBack }: ConnectionEventsViewProps) {
   const isMobile = useIsMobile();
   const [events, setEvents] = useState<StoredEvent[]>([]);
   const [sources, setSources] = useState<string[]>([]);
-  const [activeSource, setActiveSource] = useState<string | null>(null); // null = all
+  const [activeSource, setActiveSource] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [ingestors, setIngestors] = useState<IngestorStatus[]>([]);
   const [refreshingIngestors, setRefreshingIngestors] = useState(false);
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const hasKeys = !!agent.mcpKeyAlias;
-
   // Manual refresh handler (with spinner)
   const refreshIngestors = () => {
     setRefreshingIngestors(true);
-    getProxyIngestors(agent.mcpKeyAlias)
+    getProxyIngestors(selectedCaller)
       .then((data) => setIngestors(data.ingestors))
       .catch(() => setIngestors([]))
       .finally(() => setRefreshingIngestors(false));
   };
 
-  // Initial fetch on mount
+  // Fetch ingestors on mount and when caller changes
   useEffect(() => {
-    if (!hasKeys) return;
-    getProxyIngestors(agent.mcpKeyAlias)
+    getProxyIngestors(selectedCaller)
       .then((data) => setIngestors(data.ingestors))
       .catch(() => setIngestors([]));
-  }, [hasKeys, agent.mcpKeyAlias]);
+  }, [selectedCaller]);
 
   // Poll events on interval
   useEffect(() => {
-    if (!hasKeys) return;
     const fetchEvents = () => {
       getProxyEvents(100)
         .then((data) => {
@@ -86,50 +86,43 @@ export default function Events({ agent }: { agent: AgentConfig }) {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [hasKeys]);
+  }, []);
 
   // Filter events by active source
   const filteredEvents = activeSource ? events.filter((e) => e.source === activeSource) : events;
 
-  // Build ingestor lookup
-  const ingestorMap = new Map<string, IngestorStatus>();
-  for (const ing of ingestors) {
-    if (!ingestorMap.has(ing.connection)) ingestorMap.set(ing.connection, ing);
-  }
-
-  // Guard: no key aliases assigned
-  if (!hasKeys) {
-    return (
-      <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 900, margin: "0 auto" }}>
-        <div style={{ marginBottom: 24 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 700 }}>Events</h1>
-          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Live event feed from all proxy ingestors</p>
-        </div>
-        <div
-          style={{
-            textAlign: "center",
-            padding: "48px 20px",
-            color: "var(--text-muted)",
-            fontSize: 14,
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-          }}
-        >
-          <Radio size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
-          <p style={{ fontWeight: 600, marginBottom: 4 }}>No proxy key assigned</p>
-          <p style={{ fontSize: 12 }}>Assign an MCP key alias to this agent in the Overview tab to enable event monitoring.</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ padding: isMobile ? "16px" : "24px 32px", maxWidth: 900, margin: "0 auto" }}>
-      {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700 }}>Events</h1>
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>Live event feed from all proxy ingestors — polled every 3 seconds</p>
+    <div>
+      {/* Header with back button */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+        <button
+          onClick={onBack}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "6px 10px",
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            color: "var(--text-muted)",
+            fontSize: 12,
+            fontWeight: 500,
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "var(--surface)")}
+        >
+          <ArrowLeft size={14} />
+          Back
+        </button>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Connection Events</h2>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0, marginTop: 2 }}>
+            Live event feed from proxy ingestors — polled every 5 seconds
+          </p>
+        </div>
       </div>
 
       {/* Ingestor status cards */}
@@ -400,7 +393,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                       fontSize: 12,
                     }}
                   >
-                    <div style={{ display: "flex", gap: 16, marginBottom: 8, color: "var(--text-muted)" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 8, color: "var(--text-muted)" }}>
                       <span>ID: {event.id}</span>
                       <span>Received: {new Date(event.receivedAt).toLocaleString()}</span>
                       <span>Stored: {new Date(event.storedAt).toLocaleString()}</span>

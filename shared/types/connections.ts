@@ -36,4 +36,6 @@ export interface ConnectionStatus {
   requiredSecretsSet: Record<string, boolean>;
   /** Which optional secrets have values set (key name -> true/false). */
   optionalSecretsSet: Record<string, boolean>;
+  /** Where this connection is managed: "local" (configurable) or "remote" (read-only). */
+  source?: "local" | "remote";
 }

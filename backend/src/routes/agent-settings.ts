@@ -10,7 +10,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
-import { resetAllClients } from "../services/proxy-singleton.js";
+import { switchProxyMode } from "../services/proxy-singleton.js";
 import { testRemoteConnection } from "../services/proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -30,7 +30,7 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
 });
 
 /** PUT /api/agent-settings — update agent settings */
-agentSettingsRouter.put("/", (req: Request, res: Response): void => {
+agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> => {
   const { mcpConfigDir, localMcpConfigDir, remoteMcpConfigDir, proxyMode, remoteServerUrl } = req.body;
   try {
     const updated = updateAgentSettings({
@@ -40,8 +40,9 @@ agentSettingsRouter.put("/", (req: Request, res: Response): void => {
       proxyMode: proxyMode ?? undefined,
       remoteServerUrl: remoteServerUrl ?? undefined,
     });
-    // Clear cached proxy clients so they pick up new URL / mode / keys
-    resetAllClients();
+    // Handle proxy mode switching — creates/destroys LocalProxy as needed
+    // and resets cached remote ProxyClient instances
+    await switchProxyMode(updated.proxyMode);
     res.json(updated);
   } catch (err: any) {
     log.error(`Error updating agent settings: ${err.message}`);

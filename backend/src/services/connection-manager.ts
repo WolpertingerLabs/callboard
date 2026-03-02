@@ -20,7 +20,7 @@ import dotenv from "dotenv";
 import { listConnectionTemplates } from "@wolpertingerlabs/drawlatch/shared/connections";
 import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { getActiveMcpConfigDir } from "./agent-settings.js";
-import { getLocalProxyInstance } from "./proxy-singleton.js";
+import { getLocalProxyInstance, getProxy, getConfiguredAliases } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 import type { ConnectionStatus, CallerInfo } from "shared";
 
@@ -415,6 +415,194 @@ export async function setSecrets(secrets: Record<string, string>, callerAlias: s
     status[name] = isSecretSetForCaller(name, callerAlias, callerEnv);
   }
   return status;
+}
+
+// ── Listener instance management (local mode) ──────────────────────
+
+export interface ListenerInstanceInfo {
+  instanceId: string;
+  disabled?: boolean;
+  params?: Record<string, unknown>;
+}
+
+/**
+ * List all listener instances for a connection and caller.
+ * Returns the instances from callers[alias].listenerInstances[connection].
+ */
+export function listListenerInstances(connectionAlias: string, callerAlias: string = "default"): ListenerInstanceInfo[] {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  const caller = config.callers[callerAlias];
+  if (!caller?.listenerInstances?.[connectionAlias]) return [];
+
+  return Object.entries(caller.listenerInstances[connectionAlias]).map(([instanceId, overrides]) => ({
+    instanceId,
+    disabled: overrides?.disabled ?? false,
+    params: overrides?.params ?? {},
+  }));
+}
+
+/**
+ * Add a new listener instance for a connection.
+ * Saves to remote.config.json and reinitializes the proxy.
+ */
+export async function addListenerInstance(
+  connectionAlias: string,
+  instanceId: string,
+  params: Record<string, unknown>,
+  callerAlias: string = "default",
+): Promise<ListenerInstanceInfo> {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  const caller = ensureCallerConfig(config, callerAlias);
+
+  if (!caller.listenerInstances) {
+    caller.listenerInstances = {};
+  }
+  if (!caller.listenerInstances[connectionAlias]) {
+    caller.listenerInstances[connectionAlias] = {};
+  }
+
+  if (caller.listenerInstances[connectionAlias][instanceId]) {
+    throw new Error(`Instance "${instanceId}" already exists for connection "${connectionAlias}"`);
+  }
+
+  caller.listenerInstances[connectionAlias][instanceId] = { params };
+  saveRemoteConfig(config);
+  log.info(`Added listener instance "${instanceId}" for connection "${connectionAlias}", caller "${callerAlias}"`);
+
+  await reinitializeProxy();
+
+  return { instanceId, params };
+}
+
+/**
+ * Update a listener instance's parameters.
+ * Merges params into the existing instance overrides.
+ */
+export async function updateListenerInstance(
+  connectionAlias: string,
+  instanceId: string,
+  params: Record<string, unknown>,
+  disabled?: boolean,
+  callerAlias: string = "default",
+): Promise<ListenerInstanceInfo> {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  const caller = config.callers[callerAlias];
+
+  if (!caller?.listenerInstances?.[connectionAlias]?.[instanceId]) {
+    throw new Error(`Instance "${instanceId}" not found for connection "${connectionAlias}"`);
+  }
+
+  const instance = caller.listenerInstances[connectionAlias][instanceId];
+  if (params && Object.keys(params).length > 0) {
+    instance.params = { ...(instance.params || {}), ...params };
+  }
+  if (disabled !== undefined) {
+    instance.disabled = disabled;
+  }
+
+  saveRemoteConfig(config);
+  log.info(`Updated listener instance "${instanceId}" for connection "${connectionAlias}", caller "${callerAlias}"`);
+
+  await reinitializeProxy();
+
+  return {
+    instanceId,
+    disabled: instance.disabled ?? false,
+    params: instance.params ?? {},
+  };
+}
+
+/**
+ * Delete a listener instance.
+ * Removes from remote.config.json and reinitializes the proxy.
+ */
+export async function deleteListenerInstance(connectionAlias: string, instanceId: string, callerAlias: string = "default"): Promise<void> {
+  syncConfigDir();
+  const config = loadRemoteConfig();
+  const caller = config.callers[callerAlias];
+
+  if (!caller?.listenerInstances?.[connectionAlias]?.[instanceId]) {
+    throw new Error(`Instance "${instanceId}" not found for connection "${connectionAlias}"`);
+  }
+
+  delete caller.listenerInstances[connectionAlias][instanceId];
+
+  // Clean up empty maps
+  if (Object.keys(caller.listenerInstances[connectionAlias]).length === 0) {
+    delete caller.listenerInstances[connectionAlias];
+  }
+  if (Object.keys(caller.listenerInstances).length === 0) {
+    delete caller.listenerInstances;
+  }
+
+  saveRemoteConfig(config);
+  log.info(`Deleted listener instance "${instanceId}" for connection "${connectionAlias}", caller "${callerAlias}"`);
+
+  await reinitializeProxy();
+}
+
+// ── Remote mode connections ─────────────────────────────────────────
+
+/**
+ * List connections from a remote proxy server.
+ *
+ * Uses `list_routes` via the proxy client for the given key alias (or
+ * the first available alias). Maps the raw route metadata to
+ * `ConnectionStatus[]` with `source: "remote"`.
+ *
+ * Remote connections are read-only in the UI — secrets and enable/disable
+ * are managed on the remote server.
+ */
+export async function listRemoteConnections(callerAlias?: string): Promise<{ templates: ConnectionStatus[]; callers: CallerInfo[] }> {
+  const aliases = getConfiguredAliases();
+  if (aliases.length === 0) {
+    return { templates: [], callers: [] };
+  }
+
+  // Use specified alias or first available
+  const alias = callerAlias && aliases.includes(callerAlias) ? callerAlias : aliases[0];
+  const client = getProxy(alias);
+  if (!client) {
+    return { templates: [], callers: [] };
+  }
+
+  let routes: any[] = [];
+  try {
+    const result = await client.callTool("list_routes");
+    routes = Array.isArray(result) ? result : [];
+  } catch (err: any) {
+    log.error(`Failed to fetch remote connections for alias "${alias}": ${err.message}`);
+    return { templates: [], callers: [] };
+  }
+
+  // Map routes to ConnectionStatus
+  const templates: ConnectionStatus[] = routes.map((route: any) => ({
+    alias: route.alias || route.name || `route-${route.index}`,
+    name: route.name || `Route ${route.index}`,
+    ...(route.description && { description: route.description }),
+    ...(route.docsUrl && { docsUrl: route.docsUrl }),
+    ...(route.openApiUrl && { openApiUrl: route.openApiUrl }),
+    requiredSecrets: [],
+    optionalSecrets: [],
+    hasIngestor: route.hasIngestor ?? false,
+    ...(route.ingestorType && { ingestorType: route.ingestorType }),
+    allowedEndpoints: route.allowedEndpoints ?? [],
+    enabled: true, // If listed by remote, it's enabled
+    requiredSecretsSet: {},
+    optionalSecretsSet: {},
+    source: "remote" as const,
+  }));
+
+  // Build callers list from key aliases
+  const callers: CallerInfo[] = aliases.map((a) => ({
+    alias: a,
+    connectionCount: a === alias ? templates.length : 0,
+  }));
+
+  return { templates, callers };
 }
 
 /** Reinitialize the local proxy to pick up config/secret changes. */

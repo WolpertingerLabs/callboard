@@ -35,25 +35,16 @@ export function buildProxyToolsServer(keyAlias: string) {
           "do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in " +
           "the URL, headers, or body. Use list_routes first to discover available APIs.",
         {
-          method: z
-            .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
-            .describe("HTTP method"),
-          url: z
-            .string()
-            .describe("Full URL, may contain ${VAR} placeholders"),
-          headers: z
-            .record(z.string(), z.string())
-            .optional()
-            .describe("Request headers, may contain ${VAR} placeholders"),
+          method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).describe("HTTP method"),
+          url: z.string().describe("Full URL, may contain ${VAR} placeholders"),
+          headers: z.record(z.string(), z.string()).optional().describe("Request headers, may contain ${VAR} placeholders"),
           body: z.any().optional().describe("Request body (object for JSON, string for raw)"),
         },
         async (input) => {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [
-                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
-              ],
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
             };
           }
           try {
@@ -64,9 +55,7 @@ export function buildProxyToolsServer(keyAlias: string) {
           } catch (err: any) {
             log.error(`secure_request failed: ${err.message}`);
             return {
-              content: [
-                { type: "text" as const, text: `Error: ${err.message}` },
-              ],
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
             };
           }
         },
@@ -82,9 +71,7 @@ export function buildProxyToolsServer(keyAlias: string) {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [
-                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
-              ],
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
             };
           }
           try {
@@ -95,9 +82,7 @@ export function buildProxyToolsServer(keyAlias: string) {
           } catch (err: any) {
             log.error(`list_routes failed: ${err.message}`);
             return {
-              content: [
-                { type: "text" as const, text: `Error: ${err.message}` },
-              ],
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
             };
           }
         },
@@ -109,22 +94,15 @@ export function buildProxyToolsServer(keyAlias: string) {
           "Returns events received since the given cursor. Pass after_id from the last event " +
           "you received to get only new events. Omit connection to get events from all ingestors.",
         {
-          connection: z
-            .string()
-            .optional()
-            .describe("Connection alias to poll (e.g., \"discord-bot\"). Omit for all."),
-          after_id: z
-            .number()
-            .optional()
-            .describe("Return events with id > after_id. Omit or -1 for all buffered events."),
+          connection: z.string().optional().describe('Connection alias to poll (e.g., "discord-bot"). Omit for all.'),
+          after_id: z.number().optional().describe("Return events with id > after_id. Omit or -1 for all buffered events."),
+          instance_id: z.string().optional().describe("Instance ID to filter events from. Only returns events from this specific listener instance."),
         },
         async (input) => {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [
-                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
-              ],
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
             };
           }
           try {
@@ -135,9 +113,267 @@ export function buildProxyToolsServer(keyAlias: string) {
           } catch (err: any) {
             log.error(`poll_events failed: ${err.message}`);
             return {
-              content: [
-                { type: "text" as const, text: `Error: ${err.message}` },
-              ],
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "test_connection",
+        "Verify API credentials with a non-destructive read-only test request. " +
+          "Use this to check if a connection's secrets are correctly configured before making real requests.",
+        {
+          connection: z.string().describe('Connection alias to test (e.g., "github", "slack")'),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("test_connection", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`test_connection failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "test_ingestor",
+        "Verify event listener configuration without starting it. " +
+          "Checks credentials, webhook secrets, and listener parameters for a connection's ingestor.",
+        {
+          connection: z.string().describe('Connection alias to test (e.g., "discord-bot", "github")'),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("test_ingestor", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`test_ingestor failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "control_listener",
+        "Start, stop, or restart an event listener for a connection. " +
+          "Stopping a listener pauses event collection; starting resumes it. " +
+          "Use restart after configuration changes.",
+        {
+          connection: z.string().describe('Connection alias (e.g., "discord-bot")'),
+          action: z.enum(["start", "stop", "restart"]).describe("Lifecycle action to perform"),
+          instance_id: z.string().optional().describe("Instance ID for multi-instance listeners. Omit to control all instances."),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("control_listener", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`control_listener failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "list_listener_configs",
+        "List configurable event listener schemas for all connections. " +
+          "Returns field definitions (type, label, options, defaults) that can be used to render configuration forms.",
+        {},
+        async () => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("list_listener_configs");
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`list_listener_configs failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "resolve_listener_options",
+        "Fetch dynamic options for a listener configuration field. " + "Some fields (like Trello boards) require an API call to populate their options list.",
+        {
+          connection: z.string().describe('Connection alias (e.g., "trello")'),
+          paramKey: z.string().describe('The field key to resolve options for (e.g., "boardId")'),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("resolve_listener_options", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`resolve_listener_options failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "get_listener_params",
+        "Read current listener parameter overrides for a connection. " +
+          "Returns both the active parameter values and their schema defaults. " +
+          "Use this to populate configuration forms with actual values.",
+        {
+          connection: z.string().describe('Connection alias (e.g., "trello", "discord-bot")'),
+          instance_id: z.string().optional().describe("Instance ID for multi-instance listeners. Omit for single-instance."),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("get_listener_params", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`get_listener_params failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "set_listener_params",
+        "Set listener parameter overrides for a connection. " +
+          "Validates params against the schema, merges with existing config, and persists. " +
+          "Supports create_instance flag for multi-instance listeners.",
+        {
+          connection: z.string().describe('Connection alias (e.g., "trello", "discord-bot")'),
+          instance_id: z.string().optional().describe("Instance ID for multi-instance listeners. Omit for single-instance."),
+          params: z.record(z.string(), z.unknown()).describe("Key-value pairs to set. Keys must match listener config field keys."),
+          create_instance: z.boolean().optional().describe("If true, create the instance if it doesn't exist (multi-instance only)."),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("set_listener_params", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`set_listener_params failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "list_listener_instances",
+        "List all configured instances for a multi-instance listener connection. " +
+          "Returns every instance from config (including stopped/disabled ones), " +
+          "unlike ingestor_status which only shows running instances.",
+        {
+          connection: z.string().describe('Connection alias (e.g., "trello")'),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("list_listener_instances", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`list_listener_instances failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
+        "delete_listener_instance",
+        "Remove a multi-instance listener instance. " + "Stops the running ingestor if active, removes from config, and cleans up.",
+        {
+          connection: z.string().describe('Connection alias (e.g., "trello")'),
+          instance_id: z.string().describe("Instance ID to delete"),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("delete_listener_instance", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`delete_listener_instance failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
             };
           }
         },
@@ -145,16 +381,13 @@ export function buildProxyToolsServer(keyAlias: string) {
 
       tool(
         "ingestor_status",
-        "Get the status of all active ingestors for this caller. " +
-          "Shows connection state, buffer sizes, event counts, and any errors.",
+        "Get the status of all active ingestors for this caller. " + "Shows connection state, buffer sizes, event counts, and any errors.",
         {},
         async () => {
           const proxy = getProxy(keyAlias);
           if (!proxy) {
             return {
-              content: [
-                { type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." },
-              ],
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
             };
           }
           try {
@@ -165,9 +398,7 @@ export function buildProxyToolsServer(keyAlias: string) {
           } catch (err: any) {
             log.error(`ingestor_status failed: ${err.message}`);
             return {
-              content: [
-                { type: "text" as const, text: `Error: ${err.message}` },
-              ],
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
             };
           }
         },
