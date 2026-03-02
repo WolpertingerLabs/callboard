@@ -33,6 +33,7 @@ import {
 import type { ConnectionStatus, CallerInfo, ProxyTestResult, IngestorStatus } from "../../api";
 import ConfigureConnectionModal from "../../components/ConfigureConnectionModal";
 import ListenerConfigPanel from "../../components/ListenerConfigPanel";
+import ConnectionEventsView from "./ConnectionEventsView";
 
 interface ConnectionsSettingsProps {
   onSwitchTab: (tab: string) => void;
@@ -55,6 +56,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [newCallerError, setNewCallerError] = useState<string | null>(null);
   const [ingestorStatuses, setIngestorStatuses] = useState<Record<string, IngestorStatus[]>>({});
   const [listenerConfig, setListenerConfig] = useState<{ alias: string; name: string } | null>(null);
+  const [showEventsView, setShowEventsView] = useState(false);
 
   const fetchIngestorStatuses = useCallback(
     async (caller?: string) => {
@@ -517,68 +519,105 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
               }}
             />
           </div>
+
+          {/* Events debug button */}
+          <button
+            onClick={() => setShowEventsView(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "10px 14px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: showEventsView ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--surface)",
+              color: showEventsView ? "var(--accent)" : "var(--text-muted)",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              if (!showEventsView) e.currentTarget.style.background = "var(--bg-secondary)";
+            }}
+            onMouseLeave={(e) => {
+              if (!showEventsView) e.currentTarget.style.background = "var(--surface)";
+            }}
+            title="View connection events for debugging"
+          >
+            <Radio size={14} />
+            Events
+          </button>
         </div>
 
-        {/* Loading state */}
-        {loading && (
-          <div
-            style={{
-              textAlign: "center",
-              padding: "48px 20px",
-              color: "var(--text-muted)",
-              fontSize: 14,
-            }}
-          >
-            <Loader2
-              size={24}
-              style={{
-                animation: "spin 1s linear infinite",
-                marginBottom: 12,
-              }}
-            />
-            <p>Loading connections...</p>
-          </div>
-        )}
+        {/* Events view or connections grid */}
+        {showEventsView ? (
+          <ConnectionEventsView selectedCaller={selectedCaller} onBack={() => setShowEventsView(false)} />
+        ) : (
+          <>
+            {/* Loading state */}
+            {loading && (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "48px 20px",
+                  color: "var(--text-muted)",
+                  fontSize: 14,
+                }}
+              >
+                <Loader2
+                  size={24}
+                  style={{
+                    animation: "spin 1s linear infinite",
+                    marginBottom: 12,
+                  }}
+                />
+                <p>Loading connections...</p>
+              </div>
+            )}
 
-        {/* Connection cards grid */}
-        {!loading && sorted.length === 0 && searchQuery && (
-          <div
-            style={{
-              textAlign: "center",
-              padding: "48px 20px",
-              color: "var(--text-muted)",
-              fontSize: 14,
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-            }}
-          >
-            No connections match &quot;{searchQuery}&quot;
-          </div>
-        )}
+            {/* Connection cards grid */}
+            {!loading && sorted.length === 0 && searchQuery && (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "48px 20px",
+                  color: "var(--text-muted)",
+                  fontSize: 14,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)",
+                }}
+              >
+                No connections match &quot;{searchQuery}&quot;
+              </div>
+            )}
 
-        {!loading && sorted.length > 0 && (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)",
-              gap: 12,
-            }}
-          >
-            {sorted.map((conn) => (
-              <ConnectionCard
-                key={conn.alias}
-                connection={conn}
-                caller={selectedCaller}
-                toggling={togglingAlias === conn.alias}
-                ingestorStatuses={ingestorStatuses[conn.alias]}
-                onToggle={(enabled) => handleToggle(conn.alias, enabled)}
-                onConfigure={() => setConfiguring(conn)}
-                onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
-                onStatusChange={() => fetchIngestorStatuses()}
-              />
-            ))}
-          </div>
+            {!loading && sorted.length > 0 && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)",
+                  gap: 12,
+                }}
+              >
+                {sorted.map((conn) => (
+                  <ConnectionCard
+                    key={conn.alias}
+                    connection={conn}
+                    caller={selectedCaller}
+                    toggling={togglingAlias === conn.alias}
+                    ingestorStatuses={ingestorStatuses[conn.alias]}
+                    onToggle={(enabled) => handleToggle(conn.alias, enabled)}
+                    onConfigure={() => setConfiguring(conn)}
+                    onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
+                    onStatusChange={() => fetchIngestorStatuses()}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 
