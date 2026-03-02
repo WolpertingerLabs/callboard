@@ -108,6 +108,9 @@ export interface StoredEvent {
   receivedAtMs?: number;
   /** Connection alias / route name (e.g. "discord-bot", "github") */
   source: string;
+  /** Instance ID for multi-instance listeners (e.g. "project-board").
+   *  Omitted for single-instance connections. */
+  instanceId?: string;
   /** Source-specific event type (e.g. "MESSAGE_CREATE", "push") */
   eventType: string;
   /** Raw payload from external service */
@@ -143,6 +146,7 @@ export function appendEvent(event: {
   receivedAt: string;
   receivedAtMs?: number;
   source: string;
+  instanceId?: string;
   eventType: string;
   data: unknown;
 }): StoredEvent | null {
@@ -179,6 +183,8 @@ export function appendEvent(event: {
 export interface GetEventsOptions {
   limit?: number;
   offset?: number;
+  /** Filter by instance ID (multi-instance listeners only) */
+  instanceId?: string;
 }
 
 /**
@@ -203,12 +209,15 @@ export function getEvents(source: string, opts: GetEventsOptions = {}): StoredEv
     }
   }
 
+  // Filter by instanceId if specified
+  const filtered = opts.instanceId ? entries.filter((e) => e.instanceId === opts.instanceId) : entries;
+
   // Sort newest first
-  entries.sort((a, b) => b.storedAt - a.storedAt);
+  filtered.sort((a, b) => b.storedAt - a.storedAt);
 
   const offset = opts.offset ?? 0;
   const limit = opts.limit ?? 100;
-  return entries.slice(offset, offset + limit);
+  return filtered.slice(offset, offset + limit);
 }
 
 /**

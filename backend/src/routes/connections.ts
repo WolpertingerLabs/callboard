@@ -19,8 +19,14 @@ import {
   listCallerAliases,
   createCallerAlias,
   deleteCallerAlias,
+  listRemoteConnections,
+  listListenerInstances,
+  addListenerInstance,
+  updateListenerInstance,
+  deleteListenerInstance,
 } from "../services/connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir } from "../services/agent-settings.js";
+import { isProxyConfigured, getConfiguredAliases } from "../services/proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("connections-routes");
@@ -40,12 +46,27 @@ export const connectionsRouter = Router();
 connectionsRouter.get("/callers", (_req: Request, res: Response): void => {
   try {
     const settings = getAgentSettings();
-    if (settings.proxyMode !== "local" || !getActiveMcpConfigDir()) {
-      res.json({ callers: [] });
+    const localActive = settings.proxyMode === "local" && !!getActiveMcpConfigDir();
+    const remoteActive = settings.proxyMode === "remote" && isProxyConfigured();
+
+    if (localActive) {
+      const callers = listCallerAliases();
+      res.json({ callers });
       return;
     }
-    const callers = listCallerAliases();
-    res.json({ callers });
+
+    if (remoteActive) {
+      // In remote mode, callers are key aliases (read-only, no create/delete)
+      const aliases = getConfiguredAliases();
+      const callers = aliases.map((alias) => ({
+        alias,
+        connectionCount: 0, // Unknown until routes are fetched
+      }));
+      res.json({ callers });
+      return;
+    }
+
+    res.json({ callers: [] });
   } catch (err: any) {
     log.error(`Error listing caller aliases: ${err.message}`);
     res.status(500).json({ error: "Failed to list caller aliases" });
@@ -144,20 +165,29 @@ connectionsRouter.delete("/callers/:callerAlias", async (req: Request, res: Resp
 // #swagger.tags = ['Connections']
 // #swagger.summary = 'List all connection templates with status'
 /* #swagger.responses[200] = { description: "Connection templates with status" } */
-connectionsRouter.get("/", (req: Request, res: Response): void => {
+connectionsRouter.get("/", async (req: Request, res: Response): Promise<void> => {
   try {
     const settings = getAgentSettings();
     const localModeActive = settings.proxyMode === "local" && !!getActiveMcpConfigDir();
+    const remoteModeActive = settings.proxyMode === "remote" && isProxyConfigured();
 
-    if (!localModeActive) {
-      res.json({ templates: [], callers: [], localModeActive: false });
+    if (localModeActive) {
+      const callerAlias = (req.query.caller as string) || "default";
+      const templates = listConnectionsWithStatus(callerAlias);
+      const callers = listCallerAliases();
+      res.json({ templates, callers, localModeActive: true, remoteModeActive: false });
       return;
     }
 
-    const callerAlias = (req.query.caller as string) || "default";
-    const templates = listConnectionsWithStatus(callerAlias);
-    const callers = listCallerAliases();
-    res.json({ templates, callers, localModeActive: true });
+    if (remoteModeActive) {
+      const callerAlias = (req.query.caller as string) || undefined;
+      const { templates, callers } = await listRemoteConnections(callerAlias);
+      res.json({ templates, callers, localModeActive: false, remoteModeActive: true });
+      return;
+    }
+
+    // Neither mode is active
+    res.json({ templates: [], callers: [], localModeActive: false, remoteModeActive: false });
   } catch (err: any) {
     log.error(`Error listing connections: ${err.message}`);
     res.status(500).json({ error: "Failed to list connections" });
@@ -280,5 +310,105 @@ connectionsRouter.get("/:alias/secrets", (req: Request, res: Response): void => 
   } catch (err: any) {
     log.error(`Error checking secrets for ${req.params.alias}: ${err.message}`);
     res.status(500).json({ error: "Failed to check secrets" });
+  }
+});
+
+// ── Listener instance management (local mode only) ──────────────────
+
+/**
+ * GET /api/connections/:alias/listener-instances
+ *
+ * List all listener instances for a connection.
+ * Query: ?caller=X (default: "default")
+ */
+connectionsRouter.get("/:alias/listener-instances", (req: Request, res: Response): void => {
+  try {
+    const callerAlias = (req.query.caller as string) || "default";
+    const instances = listListenerInstances(req.params.alias, callerAlias);
+    res.json({ instances });
+  } catch (err: any) {
+    log.error(`Error listing listener instances for ${req.params.alias}: ${err.message}`);
+    res.status(500).json({ error: "Failed to list listener instances" });
+  }
+});
+
+/**
+ * POST /api/connections/:alias/listener-instances
+ *
+ * Create a new listener instance.
+ * Body: { instanceId: string, params?: Record<string, unknown>, caller?: string }
+ */
+connectionsRouter.post("/:alias/listener-instances", async (req: Request, res: Response): Promise<void> => {
+  const { instanceId, params, caller } = req.body;
+  const callerAlias = caller || "default";
+
+  if (!instanceId || typeof instanceId !== "string") {
+    res.status(400).json({ error: "instanceId is required and must be a string" });
+    return;
+  }
+
+  // Validate instanceId format
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(instanceId)) {
+    res.status(400).json({
+      error: "instanceId must start with a letter or number and contain only letters, numbers, hyphens, and underscores",
+    });
+    return;
+  }
+
+  try {
+    const instance = await addListenerInstance(req.params.alias, instanceId, params || {}, callerAlias);
+    res.json({ instance });
+  } catch (err: any) {
+    if (err.message.includes("already exists")) {
+      res.status(409).json({ error: err.message });
+    } else {
+      log.error(`Error creating listener instance: ${err.message}`);
+      res.status(500).json({ error: "Failed to create listener instance" });
+    }
+  }
+});
+
+/**
+ * PUT /api/connections/:alias/listener-instances/:instanceId
+ *
+ * Update a listener instance's parameters.
+ * Body: { params?: Record<string, unknown>, disabled?: boolean, caller?: string }
+ */
+connectionsRouter.put("/:alias/listener-instances/:instanceId", async (req: Request, res: Response): Promise<void> => {
+  const { params, disabled, caller } = req.body;
+  const callerAlias = caller || "default";
+
+  try {
+    const instance = await updateListenerInstance(req.params.alias, req.params.instanceId, params || {}, disabled, callerAlias);
+    res.json({ instance });
+  } catch (err: any) {
+    if (err.message.includes("not found")) {
+      res.status(404).json({ error: err.message });
+    } else {
+      log.error(`Error updating listener instance: ${err.message}`);
+      res.status(500).json({ error: "Failed to update listener instance" });
+    }
+  }
+});
+
+/**
+ * DELETE /api/connections/:alias/listener-instances/:instanceId
+ *
+ * Delete a listener instance.
+ * Query: ?caller=X (default: "default")
+ */
+connectionsRouter.delete("/:alias/listener-instances/:instanceId", async (req: Request, res: Response): Promise<void> => {
+  const callerAlias = (req.query.caller as string) || req.body?.caller || "default";
+
+  try {
+    await deleteListenerInstance(req.params.alias, req.params.instanceId, callerAlias);
+    res.json({ deleted: req.params.instanceId });
+  } catch (err: any) {
+    if (err.message.includes("not found")) {
+      res.status(404).json({ error: err.message });
+    } else {
+      log.error(`Error deleting listener instance: ${err.message}`);
+      res.status(500).json({ error: "Failed to delete listener instance" });
+    }
   }
 });

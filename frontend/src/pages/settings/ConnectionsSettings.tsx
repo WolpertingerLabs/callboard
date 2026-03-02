@@ -14,11 +14,25 @@ import {
   Trash2,
   Users,
   ChevronDown,
+  Cloud,
+  Play,
+  Square,
+  RotateCw,
 } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { getConnections, setConnectionEnabled, createCallerAlias, deleteCallerAlias } from "../../api";
-import type { ConnectionStatus, CallerInfo } from "../../api";
+import {
+  getConnections,
+  setConnectionEnabled,
+  createCallerAlias,
+  deleteCallerAlias,
+  testProxyApiConnection,
+  testProxyIngestor,
+  getProxyIngestors,
+  controlListener,
+} from "../../api";
+import type { ConnectionStatus, CallerInfo, ProxyTestResult, IngestorStatus } from "../../api";
 import ConfigureConnectionModal from "../../components/ConfigureConnectionModal";
+import ListenerConfigPanel from "../../components/ListenerConfigPanel";
 
 interface ConnectionsSettingsProps {
   onSwitchTab: (tab: string) => void;
@@ -30,6 +44,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [callers, setCallers] = useState<CallerInfo[]>([]);
   const [selectedCaller, setSelectedCaller] = useState("default");
   const [localModeActive, setLocalModeActive] = useState(true);
+  const [remoteModeActive, setRemoteModeActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [configuring, setConfiguring] = useState<ConnectionStatus | null>(null);
@@ -38,6 +53,27 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [showNewCallerInput, setShowNewCallerInput] = useState(false);
   const [newCallerAlias, setNewCallerAlias] = useState("");
   const [newCallerError, setNewCallerError] = useState<string | null>(null);
+  const [ingestorStatuses, setIngestorStatuses] = useState<Record<string, IngestorStatus[]>>({});
+  const [listenerConfig, setListenerConfig] = useState<{ alias: string; name: string } | null>(null);
+
+  const fetchIngestorStatuses = useCallback(
+    async (caller?: string) => {
+      try {
+        const data = await getProxyIngestors(caller || selectedCaller);
+        if (data.ingestors) {
+          const statusMap: Record<string, IngestorStatus[]> = {};
+          for (const status of data.ingestors) {
+            if (!statusMap[status.connection]) statusMap[status.connection] = [];
+            statusMap[status.connection].push(status);
+          }
+          setIngestorStatuses(statusMap);
+        }
+      } catch {
+        // silently fail — ingestor status is supplementary
+      }
+    },
+    [selectedCaller],
+  );
 
   const fetchConnections = useCallback(
     async (caller?: string) => {
@@ -46,6 +82,11 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
         setConnections(data.templates);
         setCallers(data.callers || []);
         setLocalModeActive(data.localModeActive);
+        setRemoteModeActive(data.remoteModeActive ?? false);
+        // When switching to remote mode for the first time, pick the first available caller
+        if (!data.localModeActive && data.remoteModeActive && data.callers?.length > 0 && !caller) {
+          setSelectedCaller(data.callers[0].alias);
+        }
       } catch {
         setConnections([]);
       } finally {
@@ -58,7 +99,8 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   useEffect(() => {
     setLoading(true);
     fetchConnections();
-  }, [fetchConnections]);
+    fetchIngestorStatuses();
+  }, [fetchConnections, fetchIngestorStatuses]);
 
   const handleCallerChange = (caller: string) => {
     setSelectedCaller(caller);
@@ -141,8 +183,11 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
     return a.name.localeCompare(b.name);
   });
 
+  // Whether caller management (create/delete) is available (local mode only)
+  const canManageCallers = localModeActive && !remoteModeActive;
+
   // ── Not configured state ──
-  if (!loading && !localModeActive) {
+  if (!loading && !localModeActive && !remoteModeActive) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <div
@@ -157,8 +202,8 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
           }}
         >
           <WifiOff size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
-          <p style={{ fontWeight: 600, marginBottom: 4 }}>Local proxy not configured</p>
-          <p style={{ fontSize: 12, marginBottom: 16 }}>Set proxy mode to &quot;Local&quot; in Proxy settings to manage connections.</p>
+          <p style={{ fontWeight: 600, marginBottom: 4 }}>Proxy not configured</p>
+          <p style={{ fontSize: 12, marginBottom: 16 }}>Set proxy mode in Proxy settings to manage connections.</p>
           <button
             onClick={() => onSwitchTab("proxy")}
             style={{
@@ -293,7 +338,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                         </div>
                       </div>
                     </div>
-                    {caller.alias !== "default" && (
+                    {canManageCallers && caller.alias !== "default" && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -315,107 +360,111 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                   </div>
                 ))}
 
-                {/* Divider */}
-                <div
-                  style={{
-                    height: 1,
-                    background: "var(--border)",
-                    margin: "4px 0",
-                  }}
-                />
-
-                {/* New caller input */}
-                {showNewCallerInput ? (
-                  <div style={{ padding: "8px 12px" }}>
+                {/* Divider + new caller input (local mode only) */}
+                {canManageCallers && (
+                  <>
                     <div
                       style={{
-                        display: "flex",
-                        gap: 6,
-                        alignItems: "center",
+                        height: 1,
+                        background: "var(--border)",
+                        margin: "4px 0",
                       }}
-                    >
-                      <input
-                        type="text"
-                        placeholder="alias-name"
-                        value={newCallerAlias}
-                        onChange={(e) => {
-                          setNewCallerAlias(e.target.value);
-                          setNewCallerError(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleCreateCaller();
-                          if (e.key === "Escape") {
-                            setShowNewCallerInput(false);
-                            setNewCallerAlias("");
-                            setNewCallerError(null);
-                          }
-                        }}
-                        autoFocus
-                        style={{
-                          flex: 1,
-                          padding: "6px 8px",
-                          borderRadius: 6,
-                          border: `1px solid ${newCallerError ? "var(--error)" : "var(--border)"}`,
-                          background: "var(--bg)",
-                          color: "var(--text)",
-                          fontSize: 12,
-                          fontFamily: "monospace",
-                          outline: "none",
-                          minWidth: 0,
-                        }}
-                      />
-                      <button
-                        onClick={handleCreateCaller}
-                        style={{
-                          background: "var(--accent)",
-                          color: "#fff",
-                          padding: "5px 10px",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          fontWeight: 500,
-                          cursor: "pointer",
-                          flexShrink: 0,
-                        }}
-                      >
-                        Add
-                      </button>
-                    </div>
-                    {newCallerError && (
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "var(--error)",
-                          marginTop: 4,
-                        }}
-                      >
-                        {newCallerError}
+                    />
+
+                    {/* New caller input */}
+                    {showNewCallerInput ? (
+                      <div style={{ padding: "8px 12px" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 6,
+                            alignItems: "center",
+                          }}
+                        >
+                          <input
+                            type="text"
+                            placeholder="alias-name"
+                            value={newCallerAlias}
+                            onChange={(e) => {
+                              setNewCallerAlias(e.target.value);
+                              setNewCallerError(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleCreateCaller();
+                              if (e.key === "Escape") {
+                                setShowNewCallerInput(false);
+                                setNewCallerAlias("");
+                                setNewCallerError(null);
+                              }
+                            }}
+                            autoFocus
+                            style={{
+                              flex: 1,
+                              padding: "6px 8px",
+                              borderRadius: 6,
+                              border: `1px solid ${newCallerError ? "var(--error)" : "var(--border)"}`,
+                              background: "var(--bg)",
+                              color: "var(--text)",
+                              fontSize: 12,
+                              fontFamily: "monospace",
+                              outline: "none",
+                              minWidth: 0,
+                            }}
+                          />
+                          <button
+                            onClick={handleCreateCaller}
+                            style={{
+                              background: "var(--accent)",
+                              color: "#fff",
+                              padding: "5px 10px",
+                              borderRadius: 6,
+                              fontSize: 12,
+                              fontWeight: 500,
+                              cursor: "pointer",
+                              flexShrink: 0,
+                            }}
+                          >
+                            Add
+                          </button>
+                        </div>
+                        {newCallerError && (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "var(--error)",
+                              marginTop: 4,
+                            }}
+                          >
+                            {newCallerError}
+                          </div>
+                        )}
                       </div>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowNewCallerInput(true);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          width: "100%",
+                          padding: "8px 12px",
+                          background: "transparent",
+                          color: "var(--accent)",
+                          fontSize: 13,
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <Plus size={14} />
+                        New caller alias
+                      </button>
                     )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowNewCallerInput(true);
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      width: "100%",
-                      padding: "8px 12px",
-                      background: "transparent",
-                      color: "var(--accent)",
-                      fontSize: 13,
-                      cursor: "pointer",
-                      textAlign: "left",
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <Plus size={14} />
-                    New caller alias
-                  </button>
+                  </>
                 )}
               </div>
             )}
@@ -520,9 +569,13 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
               <ConnectionCard
                 key={conn.alias}
                 connection={conn}
+                caller={selectedCaller}
                 toggling={togglingAlias === conn.alias}
+                ingestorStatuses={ingestorStatuses[conn.alias]}
                 onToggle={(enabled) => handleToggle(conn.alias, enabled)}
                 onConfigure={() => setConfiguring(conn)}
+                onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
+                onStatusChange={() => fetchIngestorStatuses()}
               />
             ))}
           </div>
@@ -538,6 +591,20 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
           onSecretsUpdated={handleSecretsUpdated}
         />
       )}
+
+      {/* Listener config panel */}
+      {listenerConfig && (
+        <ListenerConfigPanel
+          connectionAlias={listenerConfig.alias}
+          connectionName={listenerConfig.name}
+          caller={selectedCaller}
+          ingestorStatus={ingestorStatuses[listenerConfig.alias]?.[0]}
+          ingestorStatuses={ingestorStatuses[listenerConfig.alias]}
+          localModeActive={localModeActive}
+          onClose={() => setListenerConfig(null)}
+          onStatusChange={() => fetchIngestorStatuses()}
+        />
+      )}
     </>
   );
 }
@@ -546,17 +613,71 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
 
 function ConnectionCard({
   connection,
+  caller,
   toggling,
+  ingestorStatuses,
   onToggle,
   onConfigure,
+  onOpenListenerConfig,
+  onStatusChange,
 }: {
   connection: ConnectionStatus;
+  caller: string;
   toggling: boolean;
+  ingestorStatuses?: IngestorStatus[];
   onToggle: (enabled: boolean) => void;
   onConfigure: () => void;
+  onOpenListenerConfig: () => void;
+  onStatusChange: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const [testResult, setTestResult] = useState<ProxyTestResult | null>(null);
+  const [testing, setTesting] = useState<"connection" | "ingestor" | null>(null);
+  const [controlAction, setControlAction] = useState<string | null>(null);
   const conn = connection;
+  const isRemote = conn.source === "remote";
+
+  // Derive primary status from array (for backward compat)
+  const ingestorStatus = ingestorStatuses?.[0];
+  const instanceCount = ingestorStatuses?.length ?? 0;
+
+  const handleListenerControl = async (action: "start" | "stop" | "restart") => {
+    setControlAction(action);
+    try {
+      await controlListener(conn.alias, action, caller);
+      onStatusChange();
+    } catch {
+      // silently fail
+    } finally {
+      setControlAction(null);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTesting("connection");
+    setTestResult(null);
+    try {
+      const result = await testProxyApiConnection(conn.alias, caller);
+      setTestResult(result);
+    } catch {
+      setTestResult({ success: false, connection: conn.alias, error: "Test request failed" });
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  const handleTestIngestor = async () => {
+    setTesting("ingestor");
+    setTestResult(null);
+    try {
+      const result = await testProxyIngestor(conn.alias, caller);
+      setTestResult(result);
+    } catch {
+      setTestResult({ success: false, connection: conn.alias, error: "Test request failed" });
+    } finally {
+      setTesting(null);
+    }
+  };
 
   // Compute secret status
   const requiredTotal = conn.requiredSecrets.length;
@@ -596,14 +717,14 @@ function ConnectionCard({
         flexDirection: "column",
         gap: 12,
         transition: "border-color 0.15s",
-        opacity: conn.enabled ? 1 : 0.75,
+        opacity: conn.enabled || isRemote ? 1 : 0.75,
         overflow: "hidden",
         minWidth: 0,
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Top row: icon + name + toggle */}
+      {/* Top row: icon + name + toggle/badge */}
       <div
         style={{
           display: "flex",
@@ -625,19 +746,23 @@ function ConnectionCard({
               width: 36,
               height: 36,
               borderRadius: 8,
-              background: conn.enabled ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
+              background: conn.enabled || isRemote ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
             }}
           >
-            <Wifi
-              size={18}
-              style={{
-                color: conn.enabled ? "var(--accent)" : "var(--text-muted)",
-              }}
-            />
+            {isRemote ? (
+              <Cloud size={18} style={{ color: "var(--accent)" }} />
+            ) : (
+              <Wifi
+                size={18}
+                style={{
+                  color: conn.enabled ? "var(--accent)" : "var(--text-muted)",
+                }}
+              />
+            )}
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
             <h3
@@ -668,40 +793,61 @@ function ConnectionCard({
           </div>
         </div>
 
-        {/* Toggle switch */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!toggling) onToggle(!conn.enabled);
-          }}
-          style={{
-            width: 40,
-            height: 22,
-            borderRadius: 11,
-            border: "none",
-            background: conn.enabled ? "var(--accent)" : "var(--bg-secondary)",
-            position: "relative",
-            cursor: toggling ? "wait" : "pointer",
-            transition: "background 0.2s",
-            flexShrink: 0,
-            marginLeft: 10,
-          }}
-          title={conn.enabled ? "Disable connection" : "Enable connection"}
-        >
-          <div
+        {/* Toggle switch (local) or Remote badge */}
+        {isRemote ? (
+          <span
             style={{
-              width: 16,
-              height: 16,
-              borderRadius: "50%",
-              background: "#fff",
-              position: "absolute",
-              top: 3,
-              left: conn.enabled ? 21 : 3,
-              transition: "left 0.2s",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+              fontSize: 11,
+              padding: "3px 8px",
+              borderRadius: 6,
+              background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+              color: "var(--accent)",
+              fontWeight: 500,
+              whiteSpace: "nowrap",
+              marginLeft: 10,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
             }}
-          />
-        </button>
+          >
+            <Cloud size={10} />
+            Remote
+          </span>
+        ) : (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!toggling) onToggle(!conn.enabled);
+            }}
+            style={{
+              width: 40,
+              height: 22,
+              borderRadius: 11,
+              border: "none",
+              background: conn.enabled ? "var(--accent)" : "var(--bg-secondary)",
+              position: "relative",
+              cursor: toggling ? "wait" : "pointer",
+              transition: "background 0.2s",
+              flexShrink: 0,
+              marginLeft: 10,
+            }}
+            title={conn.enabled ? "Disable connection" : "Enable connection"}
+          >
+            <div
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: "50%",
+                background: "#fff",
+                position: "absolute",
+                top: 3,
+                left: conn.enabled ? 21 : 3,
+                transition: "left 0.2s",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+              }}
+            />
+          </button>
+        )}
       </div>
 
       {/* Badges row */}
@@ -729,7 +875,7 @@ function ConnectionCard({
           {conn.allowedEndpoints.length !== 1 ? "s" : ""}
         </span>
 
-        {/* Ingestor type badge */}
+        {/* Ingestor type + live status badge */}
         {conn.hasIngestor && conn.ingestorType && (
           <span
             style={{
@@ -739,15 +885,42 @@ function ConnectionCard({
               background: "color-mix(in srgb, var(--accent) 10%, transparent)",
               color: "var(--accent)",
               border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
             }}
           >
-            <Radio size={10} style={{ marginRight: 3, verticalAlign: "middle" }} />
+            <Radio size={10} />
             {conn.ingestorType}
+            {ingestorStatus && (
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background:
+                    ingestorStatus.state === "connected"
+                      ? "var(--success)"
+                      : ingestorStatus.state === "error"
+                        ? "var(--error)"
+                        : ingestorStatus.state === "starting" || ingestorStatus.state === "reconnecting"
+                          ? "var(--warning)"
+                          : "var(--text-muted)",
+                  boxShadow: ingestorStatus.state === "connected" ? "0 0 4px var(--success)" : "none",
+                }}
+                title={`Listener: ${ingestorStatus.state}`}
+              />
+            )}
+            {instanceCount > 1 && (
+              <span style={{ fontSize: 9, color: "var(--text-muted)" }}>
+                {ingestorStatuses!.filter((s) => s.state === "connected").length}/{instanceCount}
+              </span>
+            )}
           </span>
         )}
 
-        {/* Secret status badge */}
-        {requiredTotal > 0 && (
+        {/* Secret status badge (local mode only — remote has no secret info) */}
+        {!isRemote && requiredTotal > 0 && (
           <span
             style={{
               fontSize: 11,
@@ -788,27 +961,245 @@ function ConnectionCard({
         )}
       </div>
 
-      {/* Configure button (when enabled) */}
-      {conn.enabled && (
-        <button
-          onClick={onConfigure}
+      {/* Action buttons row (when enabled or remote) */}
+      {(conn.enabled || isRemote) && (
+        <div style={{ display: "flex", gap: 6 }}>
+          {/* Configure button (local only) */}
+          {!isRemote && (
+            <button
+              onClick={onConfigure}
+              style={{
+                flex: 1,
+                padding: "8px 0",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--text)",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            >
+              Configure
+            </button>
+          )}
+
+          {/* Test Connection button */}
+          <button
+            onClick={handleTestConnection}
+            disabled={testing !== null}
+            style={{
+              flex: isRemote ? 1 : 0,
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--text-muted)",
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: testing ? "wait" : "pointer",
+              transition: "background 0.15s",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 4,
+              whiteSpace: "nowrap",
+            }}
+            onMouseEnter={(e) => {
+              if (!testing) e.currentTarget.style.background = "var(--bg-secondary)";
+            }}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            title="Test API credentials"
+          >
+            {testing === "connection" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Wifi size={12} />}
+            Test
+          </button>
+
+          {/* Test Ingestor button (only if connection has ingestor) */}
+          {conn.hasIngestor && (
+            <button
+              onClick={handleTestIngestor}
+              disabled={testing !== null}
+              style={{
+                flex: isRemote ? 1 : 0,
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--text-muted)",
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: testing ? "wait" : "pointer",
+                transition: "background 0.15s",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+                whiteSpace: "nowrap",
+              }}
+              onMouseEnter={(e) => {
+                if (!testing) e.currentTarget.style.background = "var(--bg-secondary)";
+              }}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+              title="Test event listener configuration"
+            >
+              {testing === "ingestor" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Radio size={12} />}
+              Test Listener
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Listener controls row (when connection has ingestor and is enabled/remote) */}
+      {conn.hasIngestor && (conn.enabled || isRemote) && (
+        <div
           style={{
-            width: "100%",
-            padding: "8px 0",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "var(--bg)",
-            color: "var(--text)",
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: "pointer",
-            transition: "background 0.15s",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
         >
-          Configure
-        </button>
+          {/* Quick start/stop/restart buttons */}
+          <button
+            onClick={() => handleListenerControl(ingestorStatus?.state === "connected" ? "stop" : "start")}
+            disabled={controlAction !== null}
+            style={{
+              padding: "5px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: ingestorStatus?.state === "connected" ? "var(--error)" : "var(--success)",
+              fontSize: 11,
+              fontWeight: 500,
+              cursor: controlAction ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              if (!controlAction) e.currentTarget.style.background = "var(--bg-secondary)";
+            }}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            title={ingestorStatus?.state === "connected" ? "Stop listener" : "Start listener"}
+          >
+            {controlAction === "start" || controlAction === "stop" ? (
+              <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} />
+            ) : ingestorStatus?.state === "connected" ? (
+              <Square size={10} />
+            ) : (
+              <Play size={10} />
+            )}
+            {ingestorStatus?.state === "connected" ? "Stop" : "Start"}
+          </button>
+
+          <button
+            onClick={() => handleListenerControl("restart")}
+            disabled={controlAction !== null}
+            style={{
+              padding: "5px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--text-muted)",
+              fontSize: 11,
+              fontWeight: 500,
+              cursor: controlAction ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              if (!controlAction) e.currentTarget.style.background = "var(--bg-secondary)";
+            }}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+            title="Restart listener"
+          >
+            {controlAction === "restart" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <RotateCw size={10} />}
+            Restart
+          </button>
+
+          {/* Spacer */}
+          <div style={{ flex: 1 }} />
+
+          {/* Listener config button */}
+          <button
+            onClick={onOpenListenerConfig}
+            style={{
+              padding: "5px 10px",
+              borderRadius: 6,
+              border: "1px solid color-mix(in srgb, var(--accent) 30%, var(--border))",
+              background: "color-mix(in srgb, var(--accent) 6%, var(--bg))",
+              color: "var(--accent)",
+              fontSize: 11,
+              fontWeight: 500,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 12%, var(--bg))")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 6%, var(--bg))")}
+            title="View listener configuration and controls"
+          >
+            <Radio size={10} />
+            Listener
+          </button>
+        </div>
+      )}
+
+      {/* Test result display */}
+      {testResult && (
+        <div
+          style={{
+            padding: "8px 10px",
+            borderRadius: 6,
+            fontSize: 12,
+            background: testResult.success ? "color-mix(in srgb, var(--success) 10%, transparent)" : "color-mix(in srgb, var(--error) 10%, transparent)",
+            color: testResult.success ? "var(--success)" : "var(--error)",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+          }}
+        >
+          {testResult.success ? (
+            <Check size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+          ) : (
+            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+          )}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 500 }}>
+              {testResult.success ? "Test passed" : "Test failed"}
+              {testResult.status ? ` (${testResult.status})` : ""}
+            </div>
+            {(testResult.error || testResult.message || testResult.description) && (
+              <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{testResult.error || testResult.message || testResult.description}</div>
+            )}
+          </div>
+          <button
+            onClick={() => setTestResult(null)}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              padding: 2,
+              marginLeft: "auto",
+              flexShrink: 0,
+              opacity: 0.6,
+              fontSize: 16,
+              lineHeight: 1,
+            }}
+            title="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
       )}
     </div>
   );
