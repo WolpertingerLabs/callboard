@@ -35,6 +35,16 @@ import ConfigureConnectionModal from "../../components/ConfigureConnectionModal"
 import ListenerConfigPanel from "../../components/ListenerConfigPanel";
 import ConnectionEventsView from "./ConnectionEventsView";
 
+const CATEGORY_LABELS: Record<string, string> = {
+  ai: "AI",
+  "developer-tools": "Developer Tools",
+  gaming: "Gaming",
+  messaging: "Messaging",
+  productivity: "Productivity",
+  "social-media": "Social Media",
+};
+const CATEGORY_ORDER = Object.keys(CATEGORY_LABELS);
+
 interface ConnectionsSettingsProps {
   onSwitchTab: (tab: string) => void;
 }
@@ -48,6 +58,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [remoteModeActive, setRemoteModeActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [stabilityFilter, setStabilityFilter] = useState<"stable" | "beta" | "dev">("beta");
   const [configuring, setConfiguring] = useState<ConnectionStatus | null>(null);
   const [togglingAlias, setTogglingAlias] = useState<string | null>(null);
   const [showCallerMenu, setShowCallerMenu] = useState(false);
@@ -171,12 +182,21 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
     );
   };
 
+  const stabilitySet = new Set<string>(
+    stabilityFilter === "stable"
+      ? ["stable"]
+      : stabilityFilter === "beta"
+        ? ["stable", "beta"]
+        : ["stable", "beta", "dev"],
+  );
+
   const filtered = connections.filter(
     (c) =>
-      !searchQuery ||
-      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.alias.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.description?.toLowerCase().includes(searchQuery.toLowerCase()),
+      stabilitySet.has(c.stability ?? "dev") &&
+      (!searchQuery ||
+        c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.alias.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.description?.toLowerCase().includes(searchQuery.toLowerCase())),
   );
 
   // Sort: enabled first, then alphabetically
@@ -184,6 +204,26 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
     if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
+
+  // Group sorted connections by category in display order
+  const grouped: { key: string; label: string; connections: typeof sorted }[] = [];
+  const byCategory = new Map<string, typeof sorted>();
+  for (const conn of sorted) {
+    const cat = conn.category ?? "other";
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat)!.push(conn);
+  }
+  for (const cat of CATEGORY_ORDER) {
+    const conns = byCategory.get(cat);
+    if (conns?.length) {
+      grouped.push({ key: cat, label: CATEGORY_LABELS[cat], connections: conns });
+    }
+  }
+  // Append any uncategorized connections
+  const uncategorized = byCategory.get("other");
+  if (uncategorized?.length) {
+    grouped.push({ key: "other", label: "Other", connections: uncategorized });
+  }
 
   // Whether caller management (create/delete) is available (local mode only)
   const canManageCallers = localModeActive && !remoteModeActive;
@@ -520,6 +560,36 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
             />
           </div>
 
+          {/* Stability filter pills */}
+          <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+            {(
+              [
+                { key: "stable", label: "Stable" },
+                { key: "beta", label: "+ Beta" },
+                { key: "dev", label: "All" },
+              ] as const
+            ).map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setStabilityFilter(key)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  background: stabilityFilter === key ? "var(--accent)" : "var(--surface)",
+                  color: stabilityFilter === key ? "#fff" : "var(--text-muted)",
+                  border:
+                    stabilityFilter === key ? "1px solid var(--accent)" : "1px solid var(--border)",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           {/* Events debug button */}
           <button
             onClick={() => setShowEventsView(true)}
@@ -578,7 +648,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
             )}
 
             {/* Connection cards grid */}
-            {!loading && sorted.length === 0 && searchQuery && (
+            {!loading && sorted.length === 0 && (searchQuery || stabilityFilter !== "dev") && (
               <div
                 style={{
                   textAlign: "center",
@@ -590,33 +660,75 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                   borderRadius: "var(--radius)",
                 }}
               >
-                No connections match &quot;{searchQuery}&quot;
+                {searchQuery
+                  ? `No connections match "${searchQuery}"`
+                  : "No connections at this stability level"}
+                {stabilityFilter !== "dev" && (
+                  <p style={{ fontSize: 12, marginTop: 8 }}>
+                    Try selecting{" "}
+                    <button
+                      onClick={() => setStabilityFilter("dev")}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "var(--accent)",
+                        cursor: "pointer",
+                        padding: 0,
+                        fontSize: 12,
+                        textDecoration: "underline",
+                      }}
+                    >
+                      All
+                    </button>{" "}
+                    to see more connections.
+                  </p>
+                )}
               </div>
             )}
 
-            {!loading && sorted.length > 0 && (
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)",
-                  gap: 12,
-                }}
-              >
-                {sorted.map((conn) => (
-                  <ConnectionCard
-                    key={conn.alias}
-                    connection={conn}
-                    caller={selectedCaller}
-                    toggling={togglingAlias === conn.alias}
-                    ingestorStatuses={ingestorStatuses[conn.alias]}
-                    onToggle={(enabled) => handleToggle(conn.alias, enabled)}
-                    onConfigure={() => setConfiguring(conn)}
-                    onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
-                    onStatusChange={() => fetchIngestorStatuses()}
-                  />
-                ))}
-              </div>
-            )}
+            {!loading &&
+              sorted.length > 0 &&
+              grouped.map((group, groupIdx) => (
+                <div key={group.key} style={{ marginTop: groupIdx > 0 ? 16 : 0 }}>
+                  <h4
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: "var(--text-muted)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      padding: "4px 0",
+                      margin: 0,
+                      marginBottom: 8,
+                    }}
+                  >
+                    {group.label}
+                  </h4>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)",
+                      gap: 12,
+                    }}
+                  >
+                    {group.connections.map((conn) => (
+                      <ConnectionCard
+                        key={conn.alias}
+                        connection={conn}
+                        caller={selectedCaller}
+                        toggling={togglingAlias === conn.alias}
+                        ingestorStatuses={ingestorStatuses[conn.alias]}
+                        onToggle={(enabled) => handleToggle(conn.alias, enabled)}
+                        onConfigure={() => setConfiguring(conn)}
+                        onOpenListenerConfig={() =>
+                          setListenerConfig({ alias: conn.alias, name: conn.name })
+                        }
+                        onStatusChange={() => fetchIngestorStatuses()}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
           </>
         )}
       </div>
@@ -898,6 +1010,25 @@ function ConnectionCard({
           flexWrap: "wrap",
         }}
       >
+        {/* Stability badge */}
+        {conn.stability && conn.stability !== "stable" && (
+          <span
+            style={{
+              fontSize: 11,
+              padding: "3px 7px",
+              borderRadius: 6,
+              background:
+                conn.stability === "beta"
+                  ? "color-mix(in srgb, var(--warning) 12%, transparent)"
+                  : "var(--bg-secondary)",
+              color: conn.stability === "beta" ? "var(--warning)" : "var(--text-muted)",
+              fontWeight: 500,
+            }}
+          >
+            {conn.stability}
+          </span>
+        )}
+
         {/* Endpoint count */}
         <span
           style={{

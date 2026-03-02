@@ -313,6 +313,9 @@ export function listConnectionsWithStatus(callerAlias: string = "default"): Conn
       enabled: enabledConnections.has(t.alias),
       requiredSecretsSet,
       optionalSecretsSet,
+      // stability + category are available on recent drawlatch templates (>= alpha.5)
+      ...("stability" in t && { stability: (t as any).stability }),
+      ...("category" in t && { category: (t as any).category }),
     };
   });
 }
@@ -594,6 +597,8 @@ export async function listRemoteConnections(callerAlias?: string): Promise<{ tem
     requiredSecretsSet: {},
     optionalSecretsSet: {},
     source: "remote" as const,
+    ...(route.stability && { stability: route.stability }),
+    ...(route.category && { category: route.category }),
   }));
 
   // Build callers list from key aliases
