@@ -15,6 +15,7 @@ const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 import { ENV_FILE, ensureDataDir, ensureEnvFile } from "./utils/paths.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
+migrateDrawlatchDirs();
 if (existsSync(ENV_FILE)) {
   dotenv.config({ path: ENV_FILE, override: true });
 }
@@ -48,7 +49,13 @@ import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
 import { LocalProxy } from "./services/local-proxy.js";
-import { getAgentSettings, getActiveMcpConfigDir, ensureLocalProxyConfigDir, ensureRemoteProxyConfigDir } from "./services/agent-settings.js";
+import {
+  getAgentSettings,
+  getActiveMcpConfigDir,
+  ensureLocalProxyConfigDir,
+  ensureRemoteProxyConfigDir,
+  migrateDrawlatchDirs,
+} from "./services/agent-settings.js";
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 
@@ -247,7 +254,7 @@ app.listen(PORT, () => {
   // Start proxy based on configured mode
   const settings = getAgentSettings();
   if (settings.proxyMode === "local") {
-    // In local mode, getActiveMcpConfigDir() always returns a value (defaults to data/.drawlatch/)
+    // In local mode, getActiveMcpConfigDir() always returns a value (defaults to data/.drawlatch.local/)
     const activeMcpConfigDir = getActiveMcpConfigDir()!;
 
     // Ensure the config directory exists before starting
