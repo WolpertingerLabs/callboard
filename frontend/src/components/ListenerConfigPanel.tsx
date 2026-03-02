@@ -22,6 +22,7 @@ import {
   getListenerParams,
   setListenerParams,
   deleteListenerInstanceViaProxy,
+  listListenerInstancesViaProxy,
 } from "../api";
 import type { ListenerConfigSchema, ListenerConfigField, ListenerConfigOption, IngestorStatus, LifecycleResult, ListenerInstanceInfo } from "../api";
 
@@ -103,29 +104,47 @@ export default function ListenerConfigPanel({
     fetchConfig();
   }, [fetchConfig]);
 
-  // ── Fetch instances (local mode: direct API, remote mode: derive from ingestor statuses) ──
+  // ── Fetch instances (unified: proxy tool first, local direct API fallback) ──
 
   const fetchInstances = useCallback(async () => {
-    if (localModeActive) {
-      setLoadingInstances(true);
+    setLoadingInstances(true);
+    try {
+      // Primary path: use proxy tool (works in both local and remote mode)
+      // Returns ALL instances from config, including stopped/disabled ones
       try {
-        const data = await getListenerInstances(connectionAlias, caller);
-        setInstances(data.instances);
+        const data = await listListenerInstancesViaProxy(connectionAlias, caller);
+        if (data.success) {
+          setInstances(data.instances);
+          return;
+        }
       } catch {
-        // silently fail — instance list is supplementary
-      } finally {
-        setLoadingInstances(false);
+        // Proxy tool may not be supported — fall through to fallbacks
       }
-    } else if (ingestorStatuses && ingestorStatuses.length > 0) {
-      // In remote mode, derive instance list from ingestor statuses
-      const derived: ListenerInstanceInfo[] = ingestorStatuses
-        .filter((s) => s.instanceId)
-        .map((s) => ({
-          instanceId: s.instanceId!,
-          params: {},
-          disabled: false,
-        }));
-      setInstances(derived);
+
+      // Fallback for local mode: direct API
+      if (localModeActive) {
+        try {
+          const data = await getListenerInstances(connectionAlias, caller);
+          setInstances(data.instances);
+          return;
+        } catch {
+          // silently fail
+        }
+      }
+
+      // Last resort: derive from ingestor statuses (only shows running instances)
+      if (ingestorStatuses && ingestorStatuses.length > 0) {
+        const derived: ListenerInstanceInfo[] = ingestorStatuses
+          .filter((s) => s.instanceId)
+          .map((s) => ({
+            instanceId: s.instanceId!,
+            params: {},
+            disabled: false,
+          }));
+        setInstances(derived);
+      }
+    } finally {
+      setLoadingInstances(false);
     }
   }, [connectionAlias, caller, localModeActive, ingestorStatuses]);
 
@@ -237,18 +256,20 @@ export default function ListenerConfigPanel({
       await fetchInstances();
       onStatusChange?.();
     } catch {
-      // Fallback to direct API for local mode if proxy tool not available
-      try {
-        await deleteListenerInstanceApi(connectionAlias, instanceId, caller);
-        if (editingInstanceId === instanceId) {
-          setEditingInstanceId(null);
-          setFormValues({});
-          setOriginalValues({});
+      // Fallback to direct API for local mode only if proxy tool not available
+      if (localModeActive) {
+        try {
+          await deleteListenerInstanceApi(connectionAlias, instanceId, caller);
+          if (editingInstanceId === instanceId) {
+            setEditingInstanceId(null);
+            setFormValues({});
+            setOriginalValues({});
+          }
+          await fetchInstances();
+          onStatusChange?.();
+        } catch {
+          // silently fail
         }
-        await fetchInstances();
-        onStatusChange?.();
-      } catch {
-        // silently fail
       }
     } finally {
       setDeletingInstance(null);

@@ -460,7 +460,27 @@ export class LocalProxy {
         }
 
         saveRemoteConfig(setConfig);
-        await this.reinitialize();
+
+        // Re-resolve routes so the new config is picked up
+        this.resolveAllCallers(loadRemoteConfig());
+
+        // Restart just the affected ingestor so new params take effect immediately.
+        // Matches drawlatch remote server behavior (restartOne, not full reinitialize).
+        if (this._ingestorManager.has(effectiveAlias, connection, instance_id)) {
+          try {
+            await this._ingestorManager.restartOne(effectiveAlias, connection, instance_id);
+          } catch (err: any) {
+            // Config was saved successfully — log the restart failure but don't fail the operation
+            log.warn(`Params saved but failed to restart ingestor ${effectiveAlias}:${connection}${instance_id ? `:${instance_id}` : ""}: ${err.message}`);
+            return {
+              success: true,
+              connection,
+              ...(instance_id && { instance_id }),
+              params: mergedParams,
+              warning: "Params saved but ingestor restart failed. Use control_listener to restart manually.",
+            };
+          }
+        }
 
         return {
           success: true,
@@ -468,6 +488,33 @@ export class LocalProxy {
           ...(instance_id && { instance_id }),
           params: mergedParams,
         };
+      }
+
+      case "list_listener_instances": {
+        const { connection } = (toolInput ?? {}) as { connection: string };
+        const route = routes.find((r: any) => r.alias === connection) as any;
+        if (!route) {
+          return { success: false, connection, error: `Unknown connection: ${connection}` };
+        }
+        if (!route.listenerConfig?.supportsMultiInstance) {
+          return { success: false, connection, error: "This connection does not support multi-instance listeners." };
+        }
+
+        // Read all instances from config (including stopped/disabled ones)
+        const liConfig = loadRemoteConfig();
+        const liCaller = liConfig.callers[effectiveAlias];
+        if (!liCaller) {
+          return { success: false, connection, error: `Caller not found: ${effectiveAlias}` };
+        }
+
+        const instanceMap = liCaller.listenerInstances?.[connection] ?? {};
+        const instanceList = Object.entries(instanceMap).map(([instanceId, overrides]: [string, any]) => ({
+          instanceId,
+          disabled: overrides?.disabled ?? false,
+          params: overrides?.params ?? {},
+        }));
+
+        return { success: true, connection, instances: instanceList };
       }
 
       case "delete_listener_instance": {
@@ -512,7 +559,9 @@ export class LocalProxy {
         }
 
         saveRemoteConfig(delConfig);
-        await this.reinitialize();
+
+        // Re-resolve routes so the deleted instance is no longer visible
+        this.resolveAllCallers(loadRemoteConfig());
 
         return { success: true, connection, instance_id };
       }

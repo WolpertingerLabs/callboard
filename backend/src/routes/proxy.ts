@@ -273,6 +273,25 @@ proxyRouter.put("/listener-params/:connection", async (req: Request, res: Respon
   res.status(status).json(result);
 });
 
+/** GET /api/proxy/listener-instances/:connection — list all configured instances for a multi-instance connection */
+proxyRouter.get("/listener-instances/:connection", async (req: Request, res: Response): Promise<void> => {
+  const connection = req.params.connection;
+
+  if (!isProxyConfigured()) {
+    res.status(400).json({ success: false, error: "Proxy not configured" });
+    return;
+  }
+
+  const client = resolveProxyClient(req);
+  if (!client) {
+    res.status(400).json({ success: false, error: "No proxy client available for this alias" });
+    return;
+  }
+
+  const { result, status } = await safeCallTool(client, "list_listener_instances", { connection });
+  res.status(status).json(result);
+});
+
 /** DELETE /api/proxy/listener-instance/:connection/:instanceId — delete a listener instance */
 proxyRouter.delete("/listener-instance/:connection/:instanceId", async (req: Request, res: Response): Promise<void> => {
   const { connection, instanceId } = req.params;

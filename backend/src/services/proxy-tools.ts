@@ -323,6 +323,35 @@ export function buildProxyToolsServer(keyAlias: string) {
       ),
 
       tool(
+        "list_listener_instances",
+        "List all configured instances for a multi-instance listener connection. " +
+          "Returns every instance from config (including stopped/disabled ones), " +
+          "unlike ingestor_status which only shows running instances.",
+        {
+          connection: z.string().describe('Connection alias (e.g., "trello")'),
+        },
+        async (input) => {
+          const proxy = getProxy(keyAlias);
+          if (!proxy) {
+            return {
+              content: [{ type: "text" as const, text: "Proxy not configured. Set up proxy in Agent Settings." }],
+            };
+          }
+          try {
+            const result = await proxy.callTool("list_listener_instances", input);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          } catch (err: any) {
+            log.error(`list_listener_instances failed: ${err.message}`);
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+            };
+          }
+        },
+      ),
+
+      tool(
         "delete_listener_instance",
         "Remove a multi-instance listener instance. " + "Stops the running ingestor if active, removes from config, and cleans up.",
         {

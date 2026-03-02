@@ -447,9 +447,10 @@ These leverage new fields added in drawlatch alpha.4 (`instanceId` on `IngestorS
 | `control_listener`         | Start/stop/restart listeners     |  2   |  ✅ Integrated   |
 | `list_listener_configs`    | Get listener field schemas       |  2   |  ✅ Integrated   |
 | `resolve_listener_options` | Fetch dynamic dropdown options   |  3   |  ✅ Integrated   |
-| `get_listener_params`      | Read current param overrides     |  4   |  ⬜ Not started  |
-| `set_listener_params`      | Write param overrides            |  4   |  ⬜ Not started  |
-| `delete_listener_instance` | Remove a listener instance       |  4   |  ⬜ Not started  |
+| `get_listener_params`      | Read current param overrides     |  4   |  ✅ Integrated   |
+| `set_listener_params`      | Write param overrides            |  4   |  ✅ Integrated   |
+| `delete_listener_instance` | Remove a listener instance       |  4   |  ✅ Integrated   |
+| `list_listener_instances`  | List all configured instances    |  4   |  ✅ Integrated   |
 
 Plus multi-instance listener support (Tier 3.2, ✅ done) and instance-aware enhancements (Tier 5, ⬜ not started).
 

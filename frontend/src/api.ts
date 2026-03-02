@@ -788,6 +788,20 @@ export async function setListenerParams(
   return res.json();
 }
 
+export async function listListenerInstancesViaProxy(
+  connection: string,
+  caller?: string,
+): Promise<{ success: boolean; connection: string; instances: ListenerInstanceInfo[]; error?: string }> {
+  const params = new URLSearchParams();
+  if (caller) params.append("alias", caller);
+  const qs = params.toString() ? `?${params}` : "";
+  const res = await fetch(`${BASE}/proxy/listener-instances/${encodeURIComponent(connection)}${qs}`, {
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to list listener instances");
+  return res.json();
+}
+
 export async function deleteListenerInstanceViaProxy(
   connection: string,
   instanceId: string,
