@@ -183,8 +183,9 @@ export function resetAllClients(): void {
 export async function switchProxyMode(newMode: string | undefined): Promise<void> {
   resetAllClients();
 
-  // Tear down existing LocalProxy and tunnel if switching away from local
-  if (localProxyInstance && newMode !== "local") {
+  // Tear down existing tunnel and LocalProxy when any local-mode state changes
+  // (switching away from local, OR re-creating local with changed settings like tunnelEnabled)
+  if (localProxyInstance) {
     try {
       await stopTunnel();
     } catch (err: any) {
@@ -192,14 +193,14 @@ export async function switchProxyMode(newMode: string | undefined): Promise<void
     }
     try {
       await localProxyInstance.stop();
-      log.info("LocalProxy stopped (mode switched away from local)");
+      log.info("LocalProxy stopped (mode switch / settings change)");
     } catch (err: any) {
       log.warn(`Failed to stop LocalProxy during mode switch: ${err.message}`);
     }
     localProxyInstance = null;
   }
 
-  // Create LocalProxy if switching to local mode
+  // Create LocalProxy if switching to (or staying in) local mode
   if (newMode === "local") {
     ensureLocalProxyConfigDir();
     const configDir = getActiveMcpConfigDir();
