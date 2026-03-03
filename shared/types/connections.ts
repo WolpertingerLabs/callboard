@@ -38,4 +38,8 @@ export interface ConnectionStatus {
   optionalSecretsSet: Record<string, boolean>;
   /** Where this connection is managed: "local" (configurable) or "remote" (read-only). */
   source?: "local" | "remote";
+  /** Connection stability level. Defaults to "dev" when omitted. */
+  stability?: "stable" | "beta" | "dev";
+  /** Category grouping for visual organization. */
+  category?: "ai" | "developer-tools" | "gaming" | "messaging" | "productivity" | "social-media";
 }
