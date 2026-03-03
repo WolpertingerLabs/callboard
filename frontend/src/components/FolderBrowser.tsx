@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { X, Home, Folder, GitBranch, Eye, EyeOff, ChevronRight, ArrowUp } from "lucide-react";
-import { browseDirectory, getFolderSuggestions, type BrowseResult, type FolderItem, type FolderSuggestion } from "../api";
+import { X, Home, Folder, GitBranch, Eye, EyeOff, ChevronRight, ArrowUp, RefreshCw } from "lucide-react";
+import { browseDirectory, getFolderSuggestions, clearFolderCache, type BrowseResult, type FolderItem, type FolderSuggestion } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ModalOverlay from "./ModalOverlay";
 
@@ -21,6 +21,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
     return localStorage.getItem("folderBrowser.showHidden") === "true";
   });
   const [suggestions, setSuggestions] = useState<FolderSuggestion[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Load folder suggestions on mount
   useEffect(() => {
@@ -73,6 +74,21 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
     const newValue = !showHidden;
     setShowHidden(newValue);
     localStorage.setItem("folderBrowser.showHidden", newValue.toString());
+  };
+
+  const handleRefresh = async () => {
+    if (isRefreshing || isLoading) return;
+    setIsRefreshing(true);
+    try {
+      await clearFolderCache();
+      const result = await browseDirectory(currentPath, showHidden);
+      setBrowseResult(result);
+      setCurrentPath(result.currentPath);
+    } catch (err: any) {
+      setError(err.message || "Failed to refresh directory");
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   const handleNavigate = (path: string) => {
@@ -151,6 +167,26 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
             >
               {showHidden ? <EyeOff size={isMobile ? 12 : 14} /> : <Eye size={isMobile ? 12 : 14} />}
               {!isMobile && (showHidden ? "Hide hidden" : "Show hidden")}
+            </button>
+            <button
+              onClick={handleRefresh}
+              disabled={isRefreshing || isLoading}
+              style={{
+                background: "var(--surface)",
+                color: "var(--text)",
+                padding: isMobile ? "4px 8px" : "6px 12px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                cursor: isRefreshing || isLoading ? "default" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: isMobile ? 4 : 6,
+                fontSize: isMobile ? 11 : 13,
+                opacity: isRefreshing || isLoading ? 0.6 : 1,
+              }}
+              title="Refresh directory listing"
+            >
+              <RefreshCw size={isMobile ? 12 : 14} style={isRefreshing ? { animation: "spin 1s linear infinite" } : undefined} />
             </button>
           </div>
           <button
