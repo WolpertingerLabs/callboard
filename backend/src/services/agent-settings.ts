@@ -166,6 +166,10 @@ export function ensureRemoteProxyConfigDir(): void {
  *   .drawlatch        -> .drawlatch.local
  *   .drawlatch-remote -> .drawlatch.remote
  *
+ * Also fixes stale agent-settings.json references that still point to
+ * the old directory names (e.g., localMcpConfigDir still set to the
+ * legacy .drawlatch path after a directory rename).
+ *
  * Uses renameSync for atomic rename on the same filesystem.
  * Safe to call multiple times (idempotent).
  */
@@ -184,6 +188,11 @@ export function migrateDrawlatchDirs(): void {
     log.info(`Migrated ${LEGACY_MCP_REMOTE_DIR} -> ${DEFAULT_MCP_REMOTE_DIR}`);
   }
 
+  // Fix stale settings references that still point to legacy directory names.
+  // This can happen when the directories were renamed in a previous run but
+  // the agent-settings.json was not updated at the same time.
+  migrateSettingsReferences();
+
   // Ensure both directories exist after migration
   if (!existsSync(DEFAULT_MCP_LOCAL_DIR)) {
     mkdirSync(DEFAULT_MCP_LOCAL_DIR, { recursive: true, mode: 0o700 });
@@ -192,5 +201,39 @@ export function migrateDrawlatchDirs(): void {
   if (!existsSync(DEFAULT_MCP_REMOTE_DIR)) {
     mkdirSync(DEFAULT_MCP_REMOTE_DIR, { recursive: true, mode: 0o700 });
     log.info(`Created ${DEFAULT_MCP_REMOTE_DIR}`);
+  }
+}
+
+/**
+ * Update stale localMcpConfigDir / remoteMcpConfigDir references in
+ * agent-settings.json that still point to legacy directory names.
+ *
+ * Covers both cases:
+ *   - localMcpConfigDir  pointing to .drawlatch  → .drawlatch.local
+ *   - remoteMcpConfigDir pointing to .drawlatch-remote → .drawlatch.remote
+ *
+ * Also clears the setting entirely when it matches the new default
+ * (avoids a redundant override that would break if defaults change again).
+ */
+function migrateSettingsReferences(): void {
+  const settings = loadSettings();
+  let changed = false;
+
+  // Fix local config dir reference
+  if (settings.localMcpConfigDir === LEGACY_MCP_LOCAL_DIR) {
+    settings.localMcpConfigDir = DEFAULT_MCP_LOCAL_DIR;
+    changed = true;
+    log.info(`Updated localMcpConfigDir setting: ${LEGACY_MCP_LOCAL_DIR} -> ${DEFAULT_MCP_LOCAL_DIR}`);
+  }
+
+  // Fix remote config dir reference
+  if (settings.remoteMcpConfigDir === LEGACY_MCP_REMOTE_DIR) {
+    settings.remoteMcpConfigDir = DEFAULT_MCP_REMOTE_DIR;
+    changed = true;
+    log.info(`Updated remoteMcpConfigDir setting: ${LEGACY_MCP_REMOTE_DIR} -> ${DEFAULT_MCP_REMOTE_DIR}`);
+  }
+
+  if (changed) {
+    saveSettings(settings);
   }
 }
