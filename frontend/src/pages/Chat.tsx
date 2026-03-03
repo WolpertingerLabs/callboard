@@ -1018,6 +1018,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setPendingAction(null);
   }, [id]);
 
+  // The stop button should be active whenever the frontend is streaming OR the
+  // server reports an active web session for this chat.  This covers cases where
+  // the SSE connection dropped, the page was refreshed, or the inactivity
+  // timeout fired — the server-side session is still running and can be aborted
+  // via the /stop API regardless of frontend connection state.
+  // CLI sessions are excluded because the server doesn't control their execution.
+  const canStop = streaming || globalSessionActive?.type === "web";
+
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
     // Refetch chat data and messages to capture any missing content
@@ -1474,20 +1482,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         {/* Stop button - always in top bar */}
         <button
           onClick={handleStop}
-          disabled={!streaming}
+          disabled={!canStop}
           style={{
-            background: streaming ? "var(--danger)" : "var(--border)",
-            color: streaming ? "#fff" : "var(--text-secondary)",
+            background: canStop ? "var(--danger)" : "var(--border)",
+            color: canStop ? "#fff" : "var(--text-secondary)",
             padding: "8px",
             borderRadius: 6,
             border: "none",
-            cursor: streaming ? "pointer" : "default",
+            cursor: canStop ? "pointer" : "default",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            opacity: streaming ? 1 : 0.5,
+            opacity: canStop ? 1 : 0.5,
           }}
-          title={streaming ? "Stop generation" : "No active generation"}
+          title={canStop ? "Stop generation" : "No active generation"}
         >
           <Square size={14} />
         </button>
