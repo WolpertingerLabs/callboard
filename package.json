@@ -30,9 +30,9 @@
     "frontend"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": "npm -w callboard-backend run dev",
-    "dev:frontend": "npm -w callboard-frontend run dev",
+    "dev": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev npm -w callboard-backend run dev",
+    "dev:frontend": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev npm -w callboard-frontend run dev",
     "swagger": "tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
     "clean": "rm -rf shared/dist backend/dist frontend/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
