@@ -8,7 +8,7 @@ import dotenv from "dotenv";
 export default defineConfig(() => {
   // Load .env: prefer project-root .env (dev overrides), fall back to ~/.callboard/.env
   const projectEnvPath = path.resolve(__dirname, "..", ".env");
-  const configEnvPath = path.join(homedir(), ".callboard", ".env");
+  const configEnvPath = process.env.CALLBOARD_DATA_DIR ? path.join(process.env.CALLBOARD_DATA_DIR, ".env") : path.join(homedir(), ".callboard", ".env");
 
   let envFile: Record<string, string> = {};
   try {

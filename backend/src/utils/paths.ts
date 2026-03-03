@@ -4,10 +4,14 @@ import { homedir } from "os";
 
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
-/** Absolute path to the Callboard data directory (~/.callboard). */
-export const DATA_DIR = join(homedir(), ".callboard");
+/**
+ * Absolute path to the Callboard data directory.
+ * Defaults to ~/.callboard; override with CALLBOARD_DATA_DIR env var
+ * (e.g. ~/.callboard-dev for development).
+ */
+export const DATA_DIR = process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard");
 
-/** Path to the primary .env file inside the config directory (~/.callboard/.env). */
+/** Path to the primary .env file inside the data directory. */
 export const ENV_FILE = join(DATA_DIR, ".env");
 
 /**
@@ -39,7 +43,7 @@ export function ensureDataDir(): void {
 }
 
 /** Default .env template scaffolded on first run. */
-const ENV_TEMPLATE = `# Callboard configuration — ~/.callboard/.env
+const ENV_TEMPLATE = `# Callboard configuration
 # See .env.example in the project repo for all available options.
 
 # Authentication — set a password with: callboard set-password
