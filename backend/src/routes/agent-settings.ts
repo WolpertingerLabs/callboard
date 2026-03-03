@@ -5,6 +5,7 @@
  *   PUT  /api/agent-settings                  — update settings
  *   GET  /api/agent-settings/key-aliases      — discover key aliases from MCP config dir
  *   POST /api/agent-settings/test-connection  — test remote proxy connection
+ *   GET  /api/agent-settings/tunnel-status    — get cloudflared tunnel status
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -12,6 +13,7 @@ import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../se
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode } from "../services/proxy-singleton.js";
 import { testRemoteConnection } from "../services/proxy-singleton.js";
+import { getTunnelStatusFull } from "../services/tunnel-manager.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("agent-settings-routes");
@@ -31,7 +33,7 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
 
 /** PUT /api/agent-settings — update agent settings */
 agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> => {
-  const { mcpConfigDir, localMcpConfigDir, remoteMcpConfigDir, proxyMode, remoteServerUrl } = req.body;
+  const { mcpConfigDir, localMcpConfigDir, remoteMcpConfigDir, proxyMode, remoteServerUrl, tunnelEnabled } = req.body;
   try {
     const updated = updateAgentSettings({
       mcpConfigDir: mcpConfigDir ?? undefined,
@@ -39,6 +41,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       remoteMcpConfigDir: remoteMcpConfigDir ?? undefined,
       proxyMode: proxyMode ?? undefined,
       remoteServerUrl: remoteServerUrl ?? undefined,
+      tunnelEnabled: tunnelEnabled ?? undefined,
     });
     // Handle proxy mode switching — creates/destroys LocalProxy as needed
     // and resets cached remote ProxyClient instances
@@ -75,5 +78,16 @@ agentSettingsRouter.post("/test-connection", async (req: Request, res: Response)
   } catch (err: any) {
     log.error(`Error testing connection: ${err.message}`);
     res.status(500).json({ error: "Failed to test connection" });
+  }
+});
+
+/** GET /api/agent-settings/tunnel-status — get cloudflared tunnel status */
+agentSettingsRouter.get("/tunnel-status", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const status = await getTunnelStatusFull();
+    res.json(status);
+  } catch (err: any) {
+    log.error(`Error getting tunnel status: ${err.message}`);
+    res.status(500).json({ error: "Failed to get tunnel status" });
   }
 });

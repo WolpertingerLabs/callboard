@@ -14,6 +14,9 @@ export interface AgentSettings {
   /** URL of the remote MCP secure proxy server (used in 'remote' mode only) */
   remoteServerUrl?: string;
 
+  /** Enable cloudflared tunnel for webhook event ingestion (local mode only) */
+  tunnelEnabled?: boolean;
+
   /** Default local MCP config directory path (read-only, computed by backend) */
   defaultLocalMcpConfigDir?: string;
 

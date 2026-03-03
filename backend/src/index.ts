@@ -58,6 +58,7 @@ import {
 } from "./services/agent-settings.js";
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
+import { startTunnelIfEnabled, stopTunnel } from "./services/tunnel-manager.js";
 
 const log = createLogger("server");
 
@@ -251,37 +252,43 @@ app.listen(PORT, () => {
   // (they use getProxy() which requires the LocalProxy singleton to be set).
   const settings = getAgentSettings();
   if (settings.proxyMode === "local") {
-    // In local mode, getActiveMcpConfigDir() always returns a value (defaults to data/.drawlatch.local/)
-    const activeMcpConfigDir = getActiveMcpConfigDir()!;
+    // Async IIFE: tunnel must start before LocalProxy constructor so that
+    // callback URL env vars are available during drawlatch's resolveSecrets().
+    void (async () => {
+      // In local mode, getActiveMcpConfigDir() always returns a value (defaults to data/.drawlatch.local/)
+      const activeMcpConfigDir = getActiveMcpConfigDir()!;
 
-    // Ensure the config directory exists before starting
-    ensureLocalProxyConfigDir();
+      // Ensure the config directory exists before starting
+      ensureLocalProxyConfigDir();
 
-    // Sync MCP_CONFIG_DIR and load secrets before creating LocalProxy
-    process.env.MCP_CONFIG_DIR = activeMcpConfigDir;
-    loadMcpEnvIntoProcess();
+      // Sync MCP_CONFIG_DIR and load secrets before creating LocalProxy
+      process.env.MCP_CONFIG_DIR = activeMcpConfigDir;
+      loadMcpEnvIntoProcess();
 
-    try {
-      const localProxy = new LocalProxy(activeMcpConfigDir, "default");
-      localProxy
-        .start()
-        .then(() => {
-          setLocalProxyInstance(localProxy);
-          log.info("Local proxy started");
+      // Start cloudflared tunnel if enabled — sets callback URL env vars
+      // (e.g., TRELLO_CALLBACK_URL) that resolveSecrets() needs
+      try {
+        await startTunnelIfEnabled(PORT);
+      } catch (err: any) {
+        log.error(`Tunnel startup failed: ${err.message}`);
+      }
 
-          // Initialize event watchers now that LocalProxy is ready
-          try {
-            initEventWatchers();
-          } catch (err: any) {
-            log.error(`Event watcher init failed: ${err.message}`);
-          }
-        })
-        .catch((err: any) => {
-          log.error(`Failed to start local proxy: ${err.message}`);
-        });
-    } catch (err: any) {
-      log.error(`Failed to initialize local proxy: ${err.message}`);
-    }
+      try {
+        const localProxy = new LocalProxy(activeMcpConfigDir, "default");
+        await localProxy.start();
+        setLocalProxyInstance(localProxy);
+        log.info("Local proxy started");
+
+        // Initialize event watchers now that LocalProxy is ready
+        try {
+          initEventWatchers();
+        } catch (err: any) {
+          log.error(`Event watcher init failed: ${err.message}`);
+        }
+      } catch (err: any) {
+        log.error(`Failed to start local proxy: ${err.message}`);
+      }
+    })();
   } else {
     if (settings.proxyMode === "remote") {
       // Ensure the remote config directory and key scaffold exist
@@ -304,6 +311,13 @@ async function gracefulShutdown(signal: string) {
   shutdownScheduler();
   shutdownEventWatchers();
   shutdownCliWatcher();
+
+  // Stop tunnel first (fast — just kills cloudflared child process)
+  try {
+    await stopTunnel();
+  } catch (err: any) {
+    log.error(`Failed to stop tunnel: ${err.message}`);
+  }
 
   const localProxy = getLocalProxyInstance();
   if (localProxy) {
