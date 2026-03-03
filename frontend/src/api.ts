@@ -319,6 +319,11 @@ export async function getFolderSuggestions(): Promise<SuggestionsResponse> {
   return res.json();
 }
 
+export async function clearFolderCache(): Promise<void> {
+  const res = await fetch(`${BASE}/folders/clear-cache`, { method: "POST" });
+  await assertOk(res, "Failed to clear folder cache");
+}
+
 // App-wide Plugins & MCP Servers API functions
 
 export async function getAppPlugins(): Promise<AppPluginsData> {
