@@ -22,6 +22,7 @@ import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
 import { LocalProxy } from "./local-proxy.js";
 import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, ensureLocalProxyConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
+import { startTunnelIfEnabled, stopTunnel } from "./tunnel-manager.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy-manager");
@@ -182,8 +183,13 @@ export function resetAllClients(): void {
 export async function switchProxyMode(newMode: string | undefined): Promise<void> {
   resetAllClients();
 
-  // Tear down existing LocalProxy if switching away from local
+  // Tear down existing LocalProxy and tunnel if switching away from local
   if (localProxyInstance && newMode !== "local") {
+    try {
+      await stopTunnel();
+    } catch (err: any) {
+      log.warn(`Failed to stop tunnel during mode switch: ${err.message}`);
+    }
     try {
       await localProxyInstance.stop();
       log.info("LocalProxy stopped (mode switched away from local)");
@@ -204,6 +210,15 @@ export async function switchProxyMode(newMode: string | undefined): Promise<void
       // Load .env secrets into process.env
       const { loadMcpEnvIntoProcess } = await import("./connection-manager.js");
       loadMcpEnvIntoProcess();
+
+      // Start tunnel if enabled — must happen before LocalProxy constructor
+      // so callback URL env vars are available during resolveSecrets()
+      const PORT = process.env.PORT || 8000;
+      try {
+        await startTunnelIfEnabled(PORT);
+      } catch (err: any) {
+        log.error(`Tunnel startup failed during mode switch: ${err.message}`);
+      }
 
       try {
         const proxy = new LocalProxy(configDir, "default");

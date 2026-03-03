@@ -937,6 +937,20 @@ export async function testProxyConnection(url: string, alias?: string): Promise<
   return res.json();
 }
 
+// Tunnel status
+
+export interface TunnelStatus {
+  active: boolean;
+  url?: string;
+  cloudflaredAvailable?: boolean;
+}
+
+export async function getTunnelStatus(): Promise<TunnelStatus> {
+  const res = await fetch(`${BASE}/agent-settings/tunnel-status`, { credentials: "include" });
+  await assertOk(res, "Failed to get tunnel status");
+  return res.json();
+}
+
 // Agent activity API functions
 
 export async function getAgentActivity(alias: string, type?: string, limit?: number, offset?: number): Promise<ActivityEntry[]> {
