@@ -241,17 +241,14 @@ app.listen(PORT, () => {
     log.error(`Scheduler init failed: ${err.message}`);
   }
   try {
-    initEventWatchers();
-  } catch (err: any) {
-    log.error(`Event watcher init failed: ${err.message}`);
-  }
-  try {
     initCliWatcher();
   } catch (err: any) {
     log.error(`CLI watcher init failed: ${err.message}`);
   }
 
-  // Start proxy based on configured mode
+  // Start proxy based on configured mode, then initialize event watchers.
+  // In local mode, event watchers must start AFTER LocalProxy is ready
+  // (they use getProxy() which requires the LocalProxy singleton to be set).
   const settings = getAgentSettings();
   if (settings.proxyMode === "local") {
     // In local mode, getActiveMcpConfigDir() always returns a value (defaults to data/.drawlatch.local/)
@@ -271,6 +268,13 @@ app.listen(PORT, () => {
         .then(() => {
           setLocalProxyInstance(localProxy);
           log.info("Local proxy started");
+
+          // Initialize event watchers now that LocalProxy is ready
+          try {
+            initEventWatchers();
+          } catch (err: any) {
+            log.error(`Event watcher init failed: ${err.message}`);
+          }
         })
         .catch((err: any) => {
           log.error(`Failed to start local proxy: ${err.message}`);
@@ -278,9 +282,19 @@ app.listen(PORT, () => {
     } catch (err: any) {
       log.error(`Failed to initialize local proxy: ${err.message}`);
     }
-  } else if (settings.proxyMode === "remote") {
-    // Ensure the remote config directory and key scaffold exist
-    ensureRemoteProxyConfigDir();
+  } else {
+    if (settings.proxyMode === "remote") {
+      // Ensure the remote config directory and key scaffold exist
+      ensureRemoteProxyConfigDir();
+    }
+
+    // In remote mode, event watchers can start immediately (ProxyClient
+    // resolves keys synchronously and doesn't depend on LocalProxy)
+    try {
+      initEventWatchers();
+    } catch (err: any) {
+      log.error(`Event watcher init failed: ${err.message}`);
+    }
   }
 });
 

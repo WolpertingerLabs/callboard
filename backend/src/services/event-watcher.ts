@@ -11,7 +11,7 @@
  */
 import { appendEvent } from "./event-log.js";
 import { dispatchEvent } from "./trigger-dispatcher.js";
-import { getProxyClient, resetClient } from "./proxy-singleton.js";
+import { getProxy, type ProxyLike, resetClient } from "./proxy-singleton.js";
 import { listAgents } from "./agent-file-service.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -114,9 +114,9 @@ export function startWatcherForAlias(alias: string): void {
   // Stop existing watcher if running
   stopWatcherForAlias(alias);
 
-  const client = getProxyClient(alias);
+  const client = getProxy(alias);
   if (!client) {
-    log.info(`Event watcher not started for alias "${alias}" — proxy client unavailable`);
+    log.info(`Event watcher not started for alias "${alias}" — proxy unavailable`);
     return;
   }
 
@@ -161,7 +161,7 @@ function schedulePoll(state: WatcherState): void {
  * Poll a single connection and process its events.
  * Each connection has its own cursor since event IDs are per-ingestor.
  */
-async function pollConnection(state: WatcherState, proxyClient: ReturnType<typeof getProxyClient> & object, connection: string): Promise<void> {
+async function pollConnection(state: WatcherState, proxyClient: ProxyLike, connection: string): Promise<void> {
   const cursor = state.cursors.get(connection) ?? -1;
 
   const result = (await proxyClient.callTool("poll_events", {
@@ -214,7 +214,7 @@ async function pollConnection(state: WatcherState, proxyClient: ReturnType<typeo
  */
 async function pollLoop(state: WatcherState): Promise<void> {
   try {
-    const proxyClient = getProxyClient(state.alias);
+    const proxyClient = getProxy(state.alias);
     if (!proxyClient) return;
 
     // Discover active connections via ingestor_status
