@@ -10,6 +10,8 @@ import { CronExpressionParser } from "cron-parser";
 import { listAgents, getAgent } from "./agent-file-service.js";
 import { listCronJobs, updateCronJob, ensureDefaultCronJobs } from "./agent-cron-jobs.js";
 import { executeAgent } from "./agent-executor.js";
+import { appendActivity } from "./agent-activity.js";
+import { isInQuietHours } from "../utils/quiet-hours.js";
 import { createLogger } from "../utils/logger.js";
 
 import type { CronJob } from "shared";
@@ -72,6 +74,21 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
     job.schedule,
     async () => {
       log.info(`Cron job fired: ${job.name} (${job.id}) for agent ${alias}`);
+
+      // Quiet hours check — skip repetitive jobs, let one-off jobs through
+      if (job.type !== "one-off") {
+        const currentAgent = getAgent(alias);
+        if (currentAgent && isInQuietHours(currentAgent)) {
+          log.info(`Quiet hours active for agent ${alias}, skipping cron job: ${job.name} (${job.id})`);
+          appendActivity(alias, {
+            type: "cron",
+            message: `Cron job "${job.name}" skipped (quiet hours active)`,
+            metadata: { jobId: job.id, jobName: job.name, reason: "quiet_hours" },
+          });
+          computeAndStoreNextRun(alias, job, timezone);
+          return;
+        }
+      }
 
       // Update lastRun timestamp
       const now = Date.now();

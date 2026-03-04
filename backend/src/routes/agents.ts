@@ -163,6 +163,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     userContext,
     eventSubscriptions,
     mcpKeyAlias,
+    quietHours,
   } = req.body as Partial<AgentConfig>;
 
   // Build updated config — only override fields present in request body
@@ -184,7 +185,23 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     ...(userContext !== undefined && { userContext: userContext?.trim() || undefined }),
     ...(eventSubscriptions !== undefined && { eventSubscriptions }),
     ...(mcpKeyAlias !== undefined && { mcpKeyAlias }),
+    ...(quietHours !== undefined && { quietHours }),
   };
+
+  // Validate quiet hours
+  if (quietHours !== undefined && quietHours !== null) {
+    if (typeof quietHours.enabled !== "boolean") {
+      res.status(400).json({ error: "quietHours.enabled must be a boolean" });
+      return;
+    }
+    if (quietHours.enabled) {
+      const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+      if (!timeRegex.test(quietHours.start) || !timeRegex.test(quietHours.end)) {
+        res.status(400).json({ error: "quietHours start/end must be in HH:MM format (00:00 - 23:59)" });
+        return;
+      }
+    }
+  }
 
   // Validate required fields
   if (!updated.name || updated.name.length === 0 || updated.name.length > 128) {

@@ -10,6 +10,8 @@
 import { listAgents } from "./agent-file-service.js";
 import { listTriggers, updateTrigger } from "./agent-triggers.js";
 import { executeAgent } from "./agent-executor.js";
+import { appendActivity } from "./agent-activity.js";
+import { isInQuietHours } from "../utils/quiet-hours.js";
 import { createLogger } from "../utils/logger.js";
 import type { TriggerFilter, FilterCondition } from "shared";
 import type { StoredEvent } from "./event-log.js";
@@ -35,9 +37,20 @@ export function dispatchEvent(event: StoredEvent): void {
       if (trigger.status !== "active") continue;
       if (!matchesFilter(event, trigger.filter)) continue;
 
-      log.info(
-        `Trigger "${trigger.name}" (${trigger.id}) matched event ${event.source}:${event.eventType} for agent ${agent.alias}`,
-      );
+      // Quiet hours check — suppress all triggers during quiet hours
+      if (isInQuietHours(agent)) {
+        log.info(
+          `Quiet hours active for agent ${agent.alias}, skipping trigger "${trigger.name}" (${trigger.id}) for event ${event.source}:${event.eventType}`,
+        );
+        appendActivity(agent.alias, {
+          type: "trigger",
+          message: `Trigger "${trigger.name}" matched but skipped (quiet hours active)`,
+          metadata: { triggerId: trigger.id, triggerName: trigger.name, reason: "quiet_hours" },
+        });
+        continue;
+      }
+
+      log.info(`Trigger "${trigger.name}" (${trigger.id}) matched event ${event.source}:${event.eventType} for agent ${agent.alias}`);
 
       // Update trigger stats
       updateTrigger(agent.alias, trigger.id, {

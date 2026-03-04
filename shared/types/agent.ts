@@ -33,4 +33,13 @@ export interface AgentConfig {
   // Corresponds to a subdirectory under {mcpConfigDir}/keys/local/.
   // If undefined, proxy features (connections, events) are disabled for this agent.
   mcpKeyAlias?: string;
+
+  // Quiet hours — suppress recurring cron jobs and event triggers during this window.
+  // Times are in the agent's userTimezone (or server timezone if unset).
+  // One-off cron jobs still fire during quiet hours.
+  quietHours?: {
+    enabled: boolean;
+    start: string; // "HH:MM" (24-hour)
+    end: string; // "HH:MM" (24-hour)
+  };
 }
