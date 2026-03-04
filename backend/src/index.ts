@@ -68,6 +68,11 @@ const PORT = (!isProduction && process.env.DEV_PORT_SERVER) || process.env.PORT 
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
+
+// Raw buffer for webhook endpoints (needed for signature verification).
+// Must be registered BEFORE express.json() so webhook bodies stay as Buffers.
+app.use("/webhooks", express.raw({ type: "application/json", limit: "1mb" }));
+
 app.use(express.json());
 
 // Auth routes (public)
@@ -211,15 +216,31 @@ app.post("/webhooks/:path", (req, res) => {
     res.status(404).json({ error: "Local proxy not active" });
     return;
   }
+
   const ingestors = localProxy.ingestorManager.getWebhookIngestors(req.params.path);
   if (ingestors.length === 0) {
     res.status(404).json({ error: "No webhook ingestor for this path" });
     return;
   }
+
+  // Ensure we have a raw Buffer for signature verification.
+  // The /webhooks express.raw() middleware should provide a Buffer, but
+  // fall back safely if something else parsed the body first.
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === "string" ? req.body : JSON.stringify(req.body));
+
+  // Fan out to all matching ingestors (multiple callers may share a webhook path)
+  let anyAccepted = false;
   for (const ingestor of ingestors) {
-    ingestor.handleWebhook(req.headers, req.body);
+    const result = ingestor.handleWebhook(req.headers, rawBody);
+    if (result.accepted) anyAccepted = true;
   }
-  res.json({ received: true });
+
+  // Return 200 if any ingestor accepted (providers like GitHub retry on non-2xx)
+  if (anyAccepted) {
+    res.status(200).json({ received: true });
+  } else {
+    res.status(403).json({ error: "Webhook rejected by all ingestors" });
+  }
 });
 
 // Serve frontend static files in production
