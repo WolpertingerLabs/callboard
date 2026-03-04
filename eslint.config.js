@@ -55,8 +55,8 @@ export default tseslint.config(
     },
   },
   {
-    // Node.js files (bin/callboard.js)
-    files: ["*.js", "bin/*.js"],
+    // Node.js files (bin/callboard.js, scripts/*.cjs)
+    files: ["*.js", "bin/*.js", "scripts/*.cjs"],
     languageOptions: {
       globals: {
         console: "readonly",
@@ -73,6 +73,9 @@ export default tseslint.config(
         setTimeout: "readonly",
         clearTimeout: "readonly",
       },
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
     },
   },
 );
