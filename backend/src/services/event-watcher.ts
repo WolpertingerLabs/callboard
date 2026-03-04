@@ -134,6 +134,25 @@ export function startWatcherForAlias(alias: string): void {
 }
 
 /**
+ * Reset all per-connection cursors for a specific alias.
+ *
+ * Called when the proxy is reinitialized (e.g., after connection config changes
+ * or mode switches). Ingestor restarts reset their event counters, so the
+ * watcher's cursors must also be reset to avoid missing events whose IDs
+ * fall below the previous cursor position.
+ */
+export function resetCursorsForAlias(alias: string): void {
+  const state = watchers.get(alias);
+  if (!state) return;
+
+  const count = state.cursors.size;
+  state.cursors.clear();
+  if (count > 0) {
+    log.info(`Reset ${count} cursor(s) for alias "${alias}"`);
+  }
+}
+
+/**
  * Stop a watcher for a specific alias.
  */
 export function stopWatcherForAlias(alias: string): void {

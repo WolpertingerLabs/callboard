@@ -23,6 +23,7 @@ import {
 } from "@wolpertingerlabs/drawlatch/shared/config";
 import { executeProxyRequest } from "@wolpertingerlabs/drawlatch/remote/server";
 import { IngestorManager } from "@wolpertingerlabs/drawlatch/remote/ingestors";
+import { resetCursorsForAlias } from "./event-watcher.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("local-proxy");
@@ -92,6 +93,13 @@ export class LocalProxy {
     this.resolveAllCallers(config);
     this._ingestorManager = new IngestorManager(config);
     await this.start();
+
+    // Reset event-watcher cursors for all callers — ingestor restarts reset
+    // their event counters, so cursors pointing at old IDs would miss events.
+    for (const alias of this.routesByCallerAlias.keys()) {
+      resetCursorsForAlias(alias);
+    }
+
     log.info(`LocalProxy reinitialized — callers=${this.routesByCallerAlias.size}`);
   }
 

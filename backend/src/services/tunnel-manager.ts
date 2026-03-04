@@ -108,6 +108,7 @@ export async function stopTunnel(): Promise<void> {
     tunnelUrl = null;
     stopFn = null;
     delete process.env.DRAWLATCH_TUNNEL_URL;
+    clearAutoPopulatedCallbackUrls();
   }
 }
 
@@ -136,13 +137,19 @@ export async function getTunnelStatusFull(): Promise<TunnelStatus> {
 
 // ── Internal helpers ──────────────────────────────────────────────────
 
+/** Env var names that were auto-populated by autoPopulateCallbackUrls().
+ *  Tracked so stopTunnel() can clean them up to prevent stale URLs. */
+const autoPopulatedEnvVars = new Set<string>();
+
 /**
  * Auto-populate callback URL env vars for webhook ingestors.
  *
  * Scans all callers' connection routes for webhook ingestors that reference
- * an env var in their callbackUrl (e.g., "${TRELLO_CALLBACK_URL}"). If that
- * env var is not already set, auto-populates it with the tunnel URL + the
- * webhook path.
+ * an env var in their callbackUrl (e.g., "${TRELLO_CALLBACK_URL}"). Sets
+ * (or overwrites) the env var with the tunnel URL + the webhook path.
+ *
+ * Always overwrites existing values — after a tunnel restart the URL changes,
+ * so any previously set callback URL is stale and must be replaced.
  *
  * Ported from drawlatch server.ts tunnel integration (lines 1403-1421).
  */
@@ -160,15 +167,27 @@ function autoPopulateCallbackUrls(url: string): void {
         const match = /^\$\{(\w+)\}$/.exec(callbackTpl);
         if (match) {
           const envVar = match[1];
-          if (!process.env[envVar]) {
-            const fullUrl = `${url}/webhooks/${webhookPath}`;
-            process.env[envVar] = fullUrl;
-            log.info(`Auto-set ${envVar}=${fullUrl}`);
-          }
+          const fullUrl = `${url}/webhooks/${webhookPath}`;
+          process.env[envVar] = fullUrl;
+          autoPopulatedEnvVars.add(envVar);
+          log.info(`Auto-set ${envVar}=${fullUrl}`);
         }
       }
     }
   } catch (err: any) {
     log.warn(`Failed to auto-populate callback URLs: ${err.message}`);
   }
+}
+
+/**
+ * Clear all auto-populated callback URL env vars.
+ * Called during stopTunnel() so that stale URLs from a previous tunnel
+ * don't persist and get used by a subsequent tunnel with a different URL.
+ */
+function clearAutoPopulatedCallbackUrls(): void {
+  for (const envVar of autoPopulatedEnvVars) {
+    delete process.env[envVar];
+    log.debug(`Cleared auto-populated ${envVar}`);
+  }
+  autoPopulatedEnvVars.clear();
 }

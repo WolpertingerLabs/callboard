@@ -198,7 +198,13 @@ app.post(
   changePasswordHandler,
 );
 
-// Webhook route for local proxy mode (ingestor event ingestion)
+// Webhook routes for local proxy mode (ingestor event ingestion).
+// HEAD handler: some webhook providers (e.g., Trello) send a HEAD request to
+// verify the callback URL during registration. Return 200 so verification passes.
+app.head("/webhooks/:path", (_req, res) => {
+  res.sendStatus(200);
+});
+
 app.post("/webhooks/:path", (req, res) => {
   const localProxy = getLocalProxyInstance();
   if (!localProxy) {
