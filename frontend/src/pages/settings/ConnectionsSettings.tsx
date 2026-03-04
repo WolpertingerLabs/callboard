@@ -618,7 +618,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
             title="View connection events for debugging"
           >
             <Radio size={14} />
-            Events
+            {!isMobile && "Events"}
           </button>
         </div>
 
