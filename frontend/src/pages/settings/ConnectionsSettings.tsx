@@ -58,7 +58,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [remoteModeActive, setRemoteModeActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [stabilityFilter, setStabilityFilter] = useState<"stable" | "beta" | "dev">("beta");
+  const [stabilityFilter, setStabilityFilter] = useState<"stable" | "beta" | "dev">("stable");
   const [configuring, setConfiguring] = useState<ConnectionStatus | null>(null);
   const [togglingAlias, setTogglingAlias] = useState<string | null>(null);
   const [showCallerMenu, setShowCallerMenu] = useState(false);
@@ -182,13 +182,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
     );
   };
 
-  const stabilitySet = new Set<string>(
-    stabilityFilter === "stable"
-      ? ["stable"]
-      : stabilityFilter === "beta"
-        ? ["stable", "beta"]
-        : ["stable", "beta", "dev"],
-  );
+  const stabilitySet = new Set<string>(stabilityFilter === "stable" ? ["stable"] : stabilityFilter === "beta" ? ["stable", "beta"] : ["stable", "beta", "dev"]);
 
   const filtered = connections.filter(
     (c) =>
@@ -560,27 +554,34 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
             />
           </div>
 
-          {/* Stability filter pills */}
-          <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+          {/* Stability filter grouped buttons */}
+          <div
+            style={{
+              display: "flex",
+              flexShrink: 0,
+              borderRadius: 6,
+              overflow: "hidden",
+              border: "1px solid var(--border)",
+            }}
+          >
             {(
               [
                 { key: "stable", label: "Stable" },
                 { key: "beta", label: "+ Beta" },
                 { key: "dev", label: "All" },
               ] as const
-            ).map(({ key, label }) => (
+            ).map(({ key, label }, i, arr) => (
               <button
                 key={key}
                 onClick={() => setStabilityFilter(key)}
                 style={{
                   padding: "6px 10px",
-                  borderRadius: 6,
                   fontSize: 12,
                   fontWeight: 500,
                   background: stabilityFilter === key ? "var(--accent)" : "var(--surface)",
                   color: stabilityFilter === key ? "#fff" : "var(--text-muted)",
-                  border:
-                    stabilityFilter === key ? "1px solid var(--accent)" : "1px solid var(--border)",
+                  border: "none",
+                  borderRight: i < arr.length - 1 ? "1px solid var(--border)" : "none",
                   cursor: "pointer",
                   whiteSpace: "nowrap",
                 }}
@@ -660,9 +661,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                   borderRadius: "var(--radius)",
                 }}
               >
-                {searchQuery
-                  ? `No connections match "${searchQuery}"`
-                  : "No connections at this stability level"}
+                {searchQuery ? `No connections match "${searchQuery}"` : "No connections at this stability level"}
                 {stabilityFilter !== "dev" && (
                   <p style={{ fontSize: 12, marginTop: 8 }}>
                     Try selecting{" "}
@@ -720,9 +719,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                         ingestorStatuses={ingestorStatuses[conn.alias]}
                         onToggle={(enabled) => handleToggle(conn.alias, enabled)}
                         onConfigure={() => setConfiguring(conn)}
-                        onOpenListenerConfig={() =>
-                          setListenerConfig({ alias: conn.alias, name: conn.name })
-                        }
+                        onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
                         onStatusChange={() => fetchIngestorStatuses()}
                       />
                     ))}
@@ -1017,10 +1014,7 @@ function ConnectionCard({
               fontSize: 11,
               padding: "3px 7px",
               borderRadius: 6,
-              background:
-                conn.stability === "beta"
-                  ? "color-mix(in srgb, var(--warning) 12%, transparent)"
-                  : "var(--bg-secondary)",
+              background: conn.stability === "beta" ? "color-mix(in srgb, var(--warning) 12%, transparent)" : "var(--bg-secondary)",
               color: conn.stability === "beta" ? "var(--warning)" : "var(--text-muted)",
               fontWeight: 500,
             }}
