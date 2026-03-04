@@ -1,6 +1,6 @@
 {
   "name": "@wolpertingerlabs/callboard",
-  "version": "1.0.0-alpha.5.2",
+  "version": "1.0.0-alpha.6.0",
   "license": "MIT",
   "type": "module",
   "main": "./backend/dist/index.js",
@@ -50,13 +50,17 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run lint:all && npm test && npm run build",
+    "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm test && npm run build",
     "publish:dry-run": "npm publish --dry-run",
-    "reload": "npm install --include=dev && npm run build && VERSION=$(node -p \"require('./package.json').version\") && npm pack --pack-destination /tmp && npm install -g \"/tmp/wolpertingerlabs-callboard-$VERSION.tgz\" && rm \"/tmp/wolpertingerlabs-callboard-$VERSION.tgz\" && callboard restart && callboard status"
+    "reload": "node scripts/drawlatch-reload.cjs",
+    "drawlatch:local": "node scripts/drawlatch-switch.cjs local && npm install",
+    "drawlatch:prod": "node scripts/drawlatch-switch.cjs prod && npm install",
+    "drawlatch:which": "node scripts/drawlatch-switch.cjs which",
+    "drawlatch:check": "node scripts/drawlatch-switch.cjs check"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.32",
-    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.5.2",
+    "@wolpertingerlabs/drawlatch": "file:../drawlatch",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
