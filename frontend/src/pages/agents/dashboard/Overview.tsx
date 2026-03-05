@@ -40,10 +40,6 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
   const [userLocation, setUserLocation] = useState(agent.userLocation || "");
   const [userContext, setUserContext] = useState(agent.userContext || "");
   const [selectedKeyAlias, setSelectedKeyAlias] = useState<string | undefined>(agent.mcpKeyAlias);
-  const [quietHoursEnabled, setQuietHoursEnabled] = useState(agent.quietHours?.enabled || false);
-  const [quietHoursStart, setQuietHoursStart] = useState(agent.quietHours?.start || "22:00");
-  const [quietHoursEnd, setQuietHoursEnd] = useState(agent.quietHours?.end || "07:00");
-  const [quietHoursScope, setQuietHoursScope] = useState<"all" | "crons" | "triggers">(agent.quietHours?.scope || "all");
   const [availableKeys, setAvailableKeys] = useState<KeyAliasInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -104,12 +100,6 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
         userLocation: userLocation || undefined,
         userContext: userContext || undefined,
         mcpKeyAlias: selectedKeyAlias || undefined,
-        quietHours: {
-          enabled: quietHoursEnabled,
-          start: quietHoursStart,
-          end: quietHoursEnd,
-          scope: quietHoursScope,
-        },
       });
       onAgentUpdate?.(updated);
       setSaved(true);
@@ -315,42 +305,6 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
               style={{ ...inputStyle, resize: "vertical" }}
             />
           </div>
-
-          {/* Quiet Hours section */}
-          <div style={{ gridColumn: isMobile ? undefined : "1 / -1", borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 4 }}>
-            <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
-              Quiet Hours
-            </p>
-            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-              Suppress recurring cron jobs and/or event triggers during specified hours. Use scope to control what is suppressed. One-off jobs still fire.
-            </p>
-          </div>
-          <div style={{ gridColumn: isMobile ? undefined : "1 / -1" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={quietHoursEnabled} onChange={(e) => setQuietHoursEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
-              <span style={{ fontSize: 14 }}>Enable quiet hours</span>
-            </label>
-          </div>
-          {quietHoursEnabled && (
-            <>
-              <div>
-                <label style={labelStyle}>Start Time</label>
-                <input type="time" value={quietHoursStart} onChange={(e) => setQuietHoursStart(e.target.value)} style={inputStyle} />
-              </div>
-              <div>
-                <label style={labelStyle}>End Time</label>
-                <input type="time" value={quietHoursEnd} onChange={(e) => setQuietHoursEnd(e.target.value)} style={inputStyle} />
-              </div>
-              <div>
-                <label style={labelStyle}>Scope</label>
-                <select value={quietHoursScope} onChange={(e) => setQuietHoursScope(e.target.value as "all" | "crons" | "triggers")} style={inputStyle}>
-                  <option value="all">All (crons & triggers)</option>
-                  <option value="crons">Crons only</option>
-                  <option value="triggers">Triggers only</option>
-                </select>
-              </div>
-            </>
-          )}
 
           {/* Proxy Key Aliases section */}
           <div style={{ gridColumn: isMobile ? undefined : "1 / -1", borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 4 }}>

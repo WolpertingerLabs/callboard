@@ -40,8 +40,8 @@ export function dispatchEvent(event: StoredEvent): void {
       if (trigger.status !== "active") continue;
       if (!matchesFilter(event, trigger.filter)) continue;
 
-      // Quiet hours check — suppress all triggers during quiet hours
-      if (isInQuietHours(agent, "triggers")) {
+      // Quiet hours check — suppress this trigger if it has quiet hours configured
+      if (isInQuietHours(trigger.quietHours, agent.userTimezone)) {
         log.info(
           `Quiet hours active for agent ${agent.alias}, skipping trigger "${trigger.name}" (${trigger.id}) for event ${event.source}:${event.eventType}`,
         );

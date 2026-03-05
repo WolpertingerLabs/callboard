@@ -5,11 +5,24 @@ import { listCronJobs, getCronJob, createCronJob, updateCronJob, deleteCronJob }
 import { scheduleJob, cancelJob } from "../services/cron-scheduler.js";
 import { executeAgent } from "../services/agent-executor.js";
 import { createLogger } from "../utils/logger.js";
-import type { CronJob, CronAction } from "shared";
+import type { CronJob, CronAction, QuietHours } from "shared";
 
 const log = createLogger("cron-jobs-api");
 
 export const agentCronJobsRouter = Router({ mergeParams: true });
+
+const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function validateQuietHours(qh: QuietHours | undefined): string | null {
+  if (!qh) return null;
+  if (typeof qh.enabled !== "boolean") return "quietHours.enabled must be a boolean";
+  if (qh.enabled) {
+    if (!TIME_REGEX.test(qh.start) || !TIME_REGEX.test(qh.end)) {
+      return "quietHours start/end must be in HH:MM format (00:00 - 23:59)";
+    }
+  }
+  return null;
+}
 
 /** GET /api/agents/:alias/cron-jobs — list all cron jobs for this agent */
 agentCronJobsRouter.get("/", (req: Request, res: Response): void => {
@@ -52,7 +65,7 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
     return;
   }
 
-  const { name, schedule, type, description, action, status } = req.body as Partial<CronJob>;
+  const { name, schedule, type, description, action, status, quietHours } = req.body as Partial<CronJob>;
 
   if (!name || !schedule || !type || !description) {
     res.status(400).json({ error: "name, schedule, type, and description are required" });
@@ -65,6 +78,12 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
     return;
   }
 
+  const qhError = validateQuietHours(quietHours);
+  if (qhError) {
+    res.status(400).json({ error: qhError });
+    return;
+  }
+
   const cronAction: CronAction = action || { type: "start_session" };
 
   const job = createCronJob(alias, {
@@ -74,6 +93,7 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
     status: status || "active",
     description: description.trim(),
     action: cronAction,
+    ...(quietHours && { quietHours }),
   });
 
   // Sync scheduler: schedule the job if it's active
@@ -96,6 +116,13 @@ agentCronJobsRouter.put("/:jobId", (req: Request, res: Response): void => {
 
   // Strip protected fields — isDefault and id cannot be changed via API
   const { id: _id, isDefault: _isDefault, ...safeUpdates } = req.body as Partial<CronJob>;
+
+  const qhError = validateQuietHours(safeUpdates.quietHours);
+  if (qhError) {
+    res.status(400).json({ error: qhError });
+    return;
+  }
+
   const job = updateCronJob(alias, jobId, safeUpdates);
 
   if (!job) {

@@ -24,7 +24,7 @@ export type { SessionStatus } from "./session.js";
 
 export type { AgentConfig } from "./agent.js";
 
-export type { CronAction, CronJob, EventSubscription, ActivityEntry, Trigger, TriggerFilter, FilterCondition } from "./agentFeatures.js";
+export type { CronAction, CronJob, EventSubscription, ActivityEntry, Trigger, TriggerFilter, FilterCondition, QuietHours } from "./agentFeatures.js";
 
 export type { AgentSettings, KeyAliasInfo } from "./agentSettings.js";
 
