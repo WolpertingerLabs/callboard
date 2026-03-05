@@ -20,7 +20,8 @@ import { agentActivityRouter } from "./agent-activity.js";
 import { agentTriggersRouter } from "./agent-triggers.js";
 import { agentExportImportRouter } from "./agent-export-import.js";
 import { cancelAllJobsForAgent, scheduleJob } from "../services/cron-scheduler.js";
-import { ensureDefaultCronJobs } from "../services/agent-cron-jobs.js";
+import { ensureDefaultCronJobs, listCronJobs } from "../services/agent-cron-jobs.js";
+import { appendActivity } from "../services/agent-activity.js";
 
 export const agentsRouter = Router();
 
@@ -164,6 +165,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     eventSubscriptions,
     mcpKeyAlias,
     quietHours,
+    enabled,
   } = req.body as Partial<AgentConfig>;
 
   // Build updated config — only override fields present in request body
@@ -186,6 +188,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     ...(eventSubscriptions !== undefined && { eventSubscriptions }),
     ...(mcpKeyAlias !== undefined && { mcpKeyAlias }),
     ...(quietHours !== undefined && { quietHours }),
+    ...(enabled !== undefined && { enabled }),
   };
 
   // Validate quiet hours
@@ -216,6 +219,48 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
 
   // Persist (createAgent acts as upsert — mkdirSync with recursive is a no-op)
   createAgent(updated);
+
+  const workspacePath = ensureAgentWorkspaceDir(alias);
+  res.json({ agent: { ...updated, workspacePath, serverTimezone: SERVER_TIMEZONE } });
+});
+
+agentsRouter.patch("/:alias/toggle", (req: Request, res: Response): void => {
+  const alias = req.params.alias as string;
+  const existing = getAgent(alias);
+
+  if (!existing) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+
+  const { enabled } = req.body as { enabled: boolean };
+  if (typeof enabled !== "boolean") {
+    res.status(400).json({ error: "enabled must be a boolean" });
+    return;
+  }
+
+  // Persist the updated enabled state
+  const updated: AgentConfig = { ...existing, enabled };
+  createAgent(updated);
+
+  if (enabled) {
+    // Re-schedule all active cron jobs
+    ensureDefaultCronJobs(alias);
+    const jobs = listCronJobs(alias);
+    for (const job of jobs) {
+      if (job.status === "active") {
+        scheduleJob(alias, job);
+      }
+    }
+  } else {
+    // Cancel all scheduled cron jobs
+    cancelAllJobsForAgent(alias);
+  }
+
+  appendActivity(alias, {
+    type: "system",
+    message: enabled ? "Agent enabled" : "Agent disabled",
+  });
 
   const workspacePath = ensureAgentWorkspaceDir(alias);
   res.json({ agent: { ...updated, workspacePath, serverTimezone: SERVER_TIMEZONE } });

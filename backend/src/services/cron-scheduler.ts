@@ -37,6 +37,12 @@ export function initScheduler(): void {
     // Ensure default cron jobs (e.g., heartbeat) exist for every agent
     ensureDefaultCronJobs(agent.alias);
 
+    // Skip scheduling for disabled agents
+    if (agent.enabled === false) {
+      log.info(`Agent ${agent.alias} is disabled — skipping cron scheduling`);
+      continue;
+    }
+
     const jobs = listCronJobs(agent.alias);
     for (const job of jobs) {
       if (job.status === "active") {
@@ -73,6 +79,14 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
   const task = cron.schedule(
     job.schedule,
     async () => {
+      // Agent-level enabled check — skip if agent is disabled
+      const latestConfig = getAgent(alias);
+      if (latestConfig?.enabled === false) {
+        log.info(`Agent ${alias} is disabled — skipping cron job: ${job.name} (${job.id})`);
+        computeAndStoreNextRun(alias, job, timezone);
+        return;
+      }
+
       log.info(`Cron job fired: ${job.name} (${job.id}) for agent ${alias}`);
 
       // Quiet hours check — skip repetitive jobs, let one-off jobs through

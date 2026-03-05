@@ -7,6 +7,7 @@ export interface AgentConfig {
   description: string;
   systemPrompt?: string;
   createdAt: number;
+  enabled?: boolean; // Defaults to true when absent. When false, all crons, triggers, and sessions are suppressed.
   workspacePath?: string; // Resolved server-side, present in API responses
   serverTimezone?: string; // Resolved server-side, the server's IANA system timezone
 
