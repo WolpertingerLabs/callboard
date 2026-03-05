@@ -17,6 +17,7 @@ import {
   MoreHorizontal,
   Shield,
 } from "lucide-react";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
   getChat,
@@ -739,6 +740,41 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [viewMode]);
+
+  // ── Auto-mark chat as read when user has scrolled to the bottom ──
+  // Uses IntersectionObserver on bottomRef (the sentinel div at the end of
+  // the message list). When the sentinel is visible inside the scroll
+  // container the user has seen the latest message, so we fire a debounced
+  // markAsRead call. The 2-second debounce batches rapid triggers that
+  // occur during auto-scroll / streaming.
+  const debouncedMarkAsRead = useDebouncedCallback(
+    useCallback(() => {
+      if (id) markAsRead(id).catch(() => {});
+    }, [id]),
+    2000,
+  );
+
+  useEffect(() => {
+    const bottom = bottomRef.current;
+    const container = chatContainerRef.current;
+    if (!id || !bottom || !container) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          debouncedMarkAsRead();
+        }
+      },
+      { root: container, threshold: 1.0 },
+    );
+
+    observer.observe(bottom);
+
+    return () => {
+      observer.disconnect();
+      debouncedMarkAsRead.cancel();
+    };
+  }, [id, debouncedMarkAsRead]);
 
   // Load active plugins from localStorage and listen for changes
   useEffect(() => {
