@@ -204,7 +204,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
 
   const filtered = connections.filter(
     (c) =>
-      stabilitySet.has(c.stability ?? "dev") &&
+      (stabilitySet.has(c.stability ?? "dev") || c.enabled) &&
       (!searchQuery ||
         c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         c.alias.toLowerCase().includes(searchQuery.toLowerCase()) ||
