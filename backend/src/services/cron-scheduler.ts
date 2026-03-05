@@ -92,7 +92,7 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
       // Quiet hours check — skip repetitive jobs, let one-off jobs through
       if (job.type !== "one-off") {
         const currentAgent = getAgent(alias);
-        if (currentAgent && isInQuietHours(currentAgent)) {
+        if (currentAgent && isInQuietHours(currentAgent, "crons")) {
           log.info(`Quiet hours active for agent ${alias}, skipping cron job: ${job.name} (${job.id})`);
           appendActivity(alias, {
             type: "cron",

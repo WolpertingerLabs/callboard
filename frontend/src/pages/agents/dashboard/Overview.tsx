@@ -43,6 +43,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(agent.quietHours?.enabled || false);
   const [quietHoursStart, setQuietHoursStart] = useState(agent.quietHours?.start || "22:00");
   const [quietHoursEnd, setQuietHoursEnd] = useState(agent.quietHours?.end || "07:00");
+  const [quietHoursScope, setQuietHoursScope] = useState<"all" | "crons" | "triggers">(agent.quietHours?.scope || "all");
   const [availableKeys, setAvailableKeys] = useState<KeyAliasInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -107,6 +108,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
           enabled: quietHoursEnabled,
           start: quietHoursStart,
           end: quietHoursEnd,
+          scope: quietHoursScope,
         },
       });
       onAgentUpdate?.(updated);
@@ -320,7 +322,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
               Quiet Hours
             </p>
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-              Suppress recurring cron jobs and event triggers during specified hours. One-off jobs still fire.
+              Suppress recurring cron jobs and/or event triggers during specified hours. Use scope to control what is suppressed. One-off jobs still fire.
             </p>
           </div>
           <div style={{ gridColumn: isMobile ? undefined : "1 / -1" }}>
@@ -338,6 +340,14 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
               <div>
                 <label style={labelStyle}>End Time</label>
                 <input type="time" value={quietHoursEnd} onChange={(e) => setQuietHoursEnd(e.target.value)} style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Scope</label>
+                <select value={quietHoursScope} onChange={(e) => setQuietHoursScope(e.target.value as "all" | "crons" | "triggers")} style={inputStyle}>
+                  <option value="all">All (crons & triggers)</option>
+                  <option value="crons">Crons only</option>
+                  <option value="triggers">Triggers only</option>
+                </select>
               </div>
             </>
           )}

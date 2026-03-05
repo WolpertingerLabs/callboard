@@ -16,10 +16,16 @@ import type { AgentConfig } from "shared";
  *
  * Handles midnight crossover (e.g., start=22:00, end=07:00).
  */
-export function isInQuietHours(agent: AgentConfig): boolean {
+export function isInQuietHours(agent: AgentConfig, context?: "crons" | "triggers"): boolean {
   if (!agent.quietHours?.enabled) return false;
 
-  const { start, end } = agent.quietHours;
+  const { start, end, scope } = agent.quietHours;
+
+  // Scope filtering: if scope targets a specific type and the caller is the other type, don't suppress
+  const effectiveScope = scope || "all";
+  if (context && effectiveScope !== "all" && effectiveScope !== context) {
+    return false;
+  }
   if (!start || !end) return false;
 
   const timezone = agent.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;

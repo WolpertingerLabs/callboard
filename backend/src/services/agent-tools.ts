@@ -26,6 +26,7 @@ import { getActiveSession } from "./claude.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { resolveBranch } from "../utils/git.js";
+import { isInQuietHours } from "../utils/quiet-hours.js";
 import { createLogger } from "../utils/logger.js";
 
 import type { CronJob, Trigger, AgentConfig } from "shared";
@@ -828,6 +829,91 @@ export function buildAgentToolsServer(agentAlias: string) {
             return { content: [{ type: "text" as const, text: JSON.stringify(entry, null, 2) }] };
           } catch (err: any) {
             return { content: [{ type: "text" as const, text: `Error logging activity: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── Quiet Hours ─────────────────────────────────────────
+
+      tool(
+        "get_quiet_hours",
+        "Get your current quiet hours configuration. Returns whether quiet hours are enabled, the start/end times, scope, and whether you are currently in quiet hours.",
+        {},
+        async () => {
+          try {
+            const config = getAgent(agentAlias);
+            if (!config) {
+              return { content: [{ type: "text" as const, text: `Agent "${agentAlias}" not found` }] };
+            }
+            const qh = config.quietHours || { enabled: false, start: "22:00", end: "07:00" };
+            const result = {
+              enabled: qh.enabled,
+              start: qh.start,
+              end: qh.end,
+              scope: qh.scope || "all",
+              currentlyInQuietHours: isInQuietHours(config),
+              timezone: config.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+            };
+            return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error getting quiet hours: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "set_quiet_hours",
+        "Update your quiet hours configuration. Quiet hours suppress recurring cron jobs and/or event triggers during the specified window. Scope controls what is suppressed: 'all' (crons and triggers), 'crons' (crons only), or 'triggers' (triggers only).",
+        {
+          enabled: z.boolean().describe("Whether quiet hours are enabled"),
+          start: z.string().optional().describe("Start time in HH:MM 24-hour format (e.g. '22:00'). Required when enabling."),
+          end: z.string().optional().describe("End time in HH:MM 24-hour format (e.g. '07:00'). Required when enabling."),
+          scope: z
+            .enum(["all", "crons", "triggers"])
+            .optional()
+            .describe("What to suppress during quiet hours: 'all' (default — crons and triggers), 'crons' (crons only), or 'triggers' (triggers only)"),
+        },
+        async (args) => {
+          try {
+            const config = getAgent(agentAlias);
+            if (!config) {
+              return { content: [{ type: "text" as const, text: `Agent "${agentAlias}" not found` }] };
+            }
+
+            const currentQH = config.quietHours || { enabled: false, start: "22:00", end: "07:00" };
+
+            // Validate times when enabling
+            if (args.enabled) {
+              const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+              const start = args.start || currentQH.start;
+              const end = args.end || currentQH.end;
+              if (!start || !end || !timeRegex.test(start) || !timeRegex.test(end)) {
+                return {
+                  content: [{ type: "text" as const, text: "Error: start and end must be in HH:MM format (00:00 - 23:59) when enabled" }],
+                };
+              }
+            }
+
+            // Merge with existing config
+            const updatedQH = {
+              enabled: args.enabled,
+              start: args.start || currentQH.start,
+              end: args.end || currentQH.end,
+              scope: args.scope || currentQH.scope || "all",
+            };
+            const updated: AgentConfig = { ...config, quietHours: updatedQH };
+            createAgent(updated);
+
+            log.info(`Agent ${agentAlias} updated quiet hours: enabled=${args.enabled}, scope=${updatedQH.scope}`);
+            appendActivity(agentAlias, {
+              type: "system",
+              message: `Quiet hours ${args.enabled ? "enabled" : "disabled"} (scope: ${updatedQH.scope})`,
+              metadata: { quietHours: updatedQH },
+            });
+
+            return { content: [{ type: "text" as const, text: JSON.stringify(updatedQH, null, 2) }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error setting quiet hours: ${err.message}` }] };
           }
         },
       ),

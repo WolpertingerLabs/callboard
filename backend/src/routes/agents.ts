@@ -204,6 +204,13 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
         return;
       }
     }
+    if (quietHours.scope !== undefined) {
+      const validScopes = ["all", "crons", "triggers"];
+      if (!validScopes.includes(quietHours.scope)) {
+        res.status(400).json({ error: "quietHours.scope must be 'all', 'crons', or 'triggers'" });
+        return;
+      }
+    }
   }
 
   // Validate required fields
