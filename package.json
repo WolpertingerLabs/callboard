@@ -1,6 +1,6 @@
 {
   "name": "@wolpertingerlabs/callboard",
-  "version": "1.0.0-alpha.6.0",
+  "version": "1.0.0-alpha.7.0",
   "license": "MIT",
   "type": "module",
   "main": "./backend/dist/index.js",
