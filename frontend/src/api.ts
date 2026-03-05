@@ -80,11 +80,12 @@ async function assertOk(res: Response, fallback: string): Promise<void> {
   }
 }
 
-export async function listChats(limit?: number, offset?: number, bookmarked?: boolean): Promise<ChatListResponse> {
+export async function listChats(limit?: number, offset?: number, bookmarked?: boolean, excludeTriggered?: boolean): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
   if (offset !== undefined) params.append("offset", offset.toString());
   if (bookmarked) params.append("bookmarked", "true");
+  if (excludeTriggered) params.append("excludeTriggered", "true");
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");

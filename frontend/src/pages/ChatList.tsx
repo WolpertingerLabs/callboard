@@ -109,7 +109,10 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       // to avoid missing matches due to pagination
       const shouldFetchAll = anyFilterActive || useFilter;
       const limit = shouldFetchAll ? 9999 : 20;
-      const response = await listChats(limit, 0, useFilter || undefined);
+      // When triggered chats are hidden, tell the API to exclude them so we
+      // always get LIMIT real chats back (not LIMIT minus triggered ones)
+      const excludeTriggered = !showTriggered;
+      const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined);
       setChats(response.chats);
       setHasMore(shouldFetchAll ? false : response.hasMore);
 
@@ -122,7 +125,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       // Update the UI to reflect any new suggested directories
       updateRecentDirs();
     },
-    [bookmarkFilter, anyFilterActive],
+    [bookmarkFilter, anyFilterActive, showTriggered],
   );
 
   const loadMore = async () => {
@@ -130,7 +133,8 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
     setIsLoadingMore(true);
     try {
-      const response = await listChats(20, chats.length, bookmarkFilter || undefined);
+      const excludeTriggered = !showTriggered;
+      const response = await listChats(20, chats.length, bookmarkFilter || undefined, excludeTriggered || undefined);
       setChats((prev) => [...prev, ...response.chats]);
       setHasMore(response.hasMore);
     } finally {
@@ -306,19 +310,9 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   };
 
   // Client-side filtering for advanced filters and content search
+  // Note: triggered chat filtering is now handled server-side via excludeTriggered param
   const filteredChats = useMemo(() => {
     let result = chats;
-
-    // Hide triggered chats unless toggle is ON
-    if (!showTriggered) {
-      result = result.filter((c) => {
-        try {
-          return !JSON.parse(c.metadata || "{}").triggered;
-        } catch {
-          return true;
-        }
-      });
-    }
 
     // Directory include regex
     if (filters.directoryInclude.active && filters.directoryInclude.value) {
@@ -358,11 +352,11 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
     }
 
     return result;
-  }, [chats, filters, matchingChatIds, showTriggered]);
+  }, [chats, filters, matchingChatIds]);
 
-  // Count triggered chats that are currently hidden by the filter
-  const hiddenTriggeredCount = useMemo(() => {
-    if (showTriggered) return 0;
+  // Count triggered chats currently in the response (visible when showTriggered is ON)
+  const triggeredCount = useMemo(() => {
+    if (!showTriggered) return 0;
     return chats.filter((c) => {
       try {
         return JSON.parse(c.metadata || "{}").triggered;
@@ -982,7 +976,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           />
         ))}
 
-        {hiddenTriggeredCount > 0 && (
+        {showTriggered && triggeredCount > 0 && (
           <div
             style={{
               padding: "8px 20px",
@@ -991,7 +985,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               color: "var(--text-muted)",
             }}
           >
-            {hiddenTriggeredCount} triggered {hiddenTriggeredCount === 1 ? "chat" : "chats"} hidden
+            Showing {triggeredCount} triggered {triggeredCount === 1 ? "chat" : "chats"}
           </div>
         )}
 
