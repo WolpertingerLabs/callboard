@@ -121,7 +121,7 @@ export default function FeedbackPanel({ action, onRespond }: Props) {
         <div
           style={{
             ...planContainerStyle,
-            maxHeight: planExpanded ? "80vh" : 300,
+            maxHeight: planExpanded ? "75vh" : 300,
             transition: "max-height 0.3s ease",
           }}
         >
