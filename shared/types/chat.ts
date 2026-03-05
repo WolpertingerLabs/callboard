@@ -23,4 +23,5 @@ export interface ChatListResponse {
   chats: Chat[];
   hasMore: boolean;
   total: number;
+  stale?: boolean;
 }
