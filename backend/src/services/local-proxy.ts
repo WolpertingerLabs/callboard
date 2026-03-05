@@ -21,10 +21,12 @@ import {
   resolveSecrets,
   type ResolvedRoute,
 } from "@wolpertingerlabs/drawlatch/shared/config";
-import { executeProxyRequest } from "@wolpertingerlabs/drawlatch/remote/server";
+import { executeProxyRequest, type ProxyRequestInput } from "@wolpertingerlabs/drawlatch/remote/server";
 import { IngestorManager } from "@wolpertingerlabs/drawlatch/remote/ingestors";
 import { resetCursorsForAlias } from "./event-watcher.js";
 import { createLogger } from "../utils/logger.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 const log = createLogger("local-proxy");
 
@@ -112,17 +114,53 @@ export class LocalProxy {
     const effectiveAlias = callerAlias ?? this.primaryCallerAlias;
 
     switch (toolName) {
-      case "http_request":
-        // Delegates to the SAME function the remote server uses — no duplication
-        return executeProxyRequest(
-          toolInput as {
-            method: string;
-            url: string;
-            headers?: Record<string, string>;
-            body?: unknown;
-          },
-          routes,
-        );
+      case "http_request": {
+        // Delegates to the SAME function the remote server uses — no duplication.
+        // In local mode, files arrive as { path } references — read & base64-encode
+        // them here (mirrors what drawlatch's MCP server does before sending to remote).
+        const input = toolInput as {
+          method: string;
+          url: string;
+          headers?: Record<string, string>;
+          body?: unknown;
+          files?: Array<{ field: string; path: string; filename: string; contentType: string }>;
+          bodyFieldName?: string;
+        };
+
+        const proxyInput: ProxyRequestInput = {
+          method: input.method,
+          url: input.url,
+          headers: input.headers,
+          body: input.body,
+        };
+
+        if (input.files?.length) {
+          const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB per file
+          proxyInput.files = await Promise.all(
+            input.files.map(async ({ field, path: filePath, filename, contentType }) => {
+              if (!path.isAbsolute(filePath)) {
+                throw new Error(`File path must be absolute: ${filePath}`);
+              }
+              let stat;
+              try {
+                stat = await fs.stat(filePath);
+              } catch {
+                throw new Error(`File not found: ${filePath}`);
+              }
+              if (stat.size > MAX_FILE_SIZE) {
+                throw new Error(`File too large (${(stat.size / 1024 / 1024).toFixed(1)} MB): ${filePath} — max ${MAX_FILE_SIZE / 1024 / 1024} MB`);
+              }
+              const buffer = await fs.readFile(filePath);
+              return { field, data: buffer.toString("base64"), filename, contentType };
+            }),
+          );
+          if (input.bodyFieldName) {
+            proxyInput.bodyFieldName = input.bodyFieldName;
+          }
+        }
+
+        return executeProxyRequest(proxyInput, routes);
+      }
 
       case "list_routes":
         return routes.map((route, index) => {

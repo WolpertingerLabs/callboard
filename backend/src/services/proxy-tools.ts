@@ -33,12 +33,25 @@ export function buildProxyToolsServer(keyAlias: string) {
         "Make an authenticated HTTP request through a configured connection. " +
           "Route-level headers (e.g., Authorization) are injected automatically by the server — " +
           "do not send them yourself. You may use ${VAR_NAME} placeholders for other secrets in " +
-          "the URL, headers, or body. Use list_routes first to discover available APIs.",
+          "the URL, headers, or body. Use list_routes first to discover available APIs. " +
+          "Supports file attachments via the files parameter for multipart uploads.",
         {
           method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).describe("HTTP method"),
           url: z.string().describe("Full URL, may contain ${VAR} placeholders"),
           headers: z.record(z.string(), z.string()).optional().describe("Request headers, may contain ${VAR} placeholders"),
           body: z.any().optional().describe("Request body (object for JSON, string for raw)"),
+          files: z
+            .array(
+              z.object({
+                field: z.string().describe("Form field name (e.g., 'files[0]')"),
+                path: z.string().describe("Absolute path to the file on disk"),
+                filename: z.string().describe("Filename for the upload"),
+                contentType: z.string().describe("MIME type (e.g., 'image/png')"),
+              }),
+            )
+            .optional()
+            .describe("File attachments for multipart upload"),
+          bodyFieldName: z.string().optional().describe("Form field name for the JSON body (defaults to 'payload_json')"),
         },
         async (input) => {
           const proxy = getProxy(keyAlias);
