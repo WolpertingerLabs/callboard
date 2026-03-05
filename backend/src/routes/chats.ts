@@ -16,6 +16,19 @@ const log = createLogger("chats");
 
 export const chatsRouter = Router();
 
+// Cache for chat list responses (stale-while-revalidate)
+interface CachedChatListResponse {
+  data: { chats: any[]; hasMore: boolean; total: number };
+  createdAt: number;
+}
+const chatListCache = new Map<string, CachedChatListResponse>();
+const CHAT_LIST_CACHE_TTL = 5_000; // 5 seconds — fresh
+const CHAT_LIST_CACHE_MAX_AGE = 300_000; // 5 minutes — serve stale
+
+function clearChatListCache() {
+  chatListCache.clear();
+}
+
 // Cache for git info to avoid repeated expensive operations
 const gitInfoCache = new Map<string, { isGitRepo: boolean; branch?: string; cachedAt: number }>();
 const GIT_CACHE_TTL = 300000; // 5 minutes
@@ -272,8 +285,26 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['offset'] = { in: 'query', type: 'integer', description: 'Offset for pagination (default: 0)' } */
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
-  /* #swagger.responses[200] = { description: "Paginated chat list with hasMore and total fields" } */
+  /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
+  /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, and stale fields" } */
   try {
+    // Check cache (stale-while-revalidate)
+    const bypassCache = req.query.cached === "false";
+    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}`;
+    const now = Date.now();
+
+    if (!bypassCache) {
+      const cached = chatListCache.get(cacheKey);
+      if (cached) {
+        const age = now - cached.createdAt;
+        if (age < CHAT_LIST_CACHE_TTL) {
+          return res.json({ ...cached.data, stale: false });
+        }
+        if (age < CHAT_LIST_CACHE_MAX_AGE) {
+          return res.json({ ...cached.data, stale: true });
+        }
+      }
+    }
     // Get all file chats for augmentation lookup (may be empty if no file storage)
     let fileChats: any[] = [];
     try {
@@ -431,11 +462,9 @@ chatsRouter.get("/", (req, res) => {
       hasMore = offset + limit < total;
     }
 
-    res.json({
-      chats: chatsFromLogs,
-      hasMore,
-      total,
-    });
+    const responseData = { chats: chatsFromLogs, hasMore, total };
+    chatListCache.set(cacheKey, { data: responseData, createdAt: Date.now() });
+    res.json({ ...responseData, stale: false });
   } catch (err: any) {
     log.error(`Error listing chats: ${err}`);
     res.status(500).json({ error: "Failed to list chats", details: err.message });
@@ -542,6 +571,7 @@ chatsRouter.post("/", (req, res) => {
 
   try {
     const chat = chatFileService.createChat(folder, sessionId, JSON.stringify(metadata));
+    clearChatListCache();
     res.status(201).json({
       ...chat,
       is_git_repo: gitInfo.isGitRepo,
@@ -598,6 +628,7 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
     // Upsert: creates file storage record if it only existed on filesystem
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
+    clearChatListCache();
     res.json(updatedChat);
   } catch (err: any) {
     log.error(`Error toggling bookmark: ${err}`);
@@ -666,6 +697,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     // Upsert: creates file storage record if it only existed on filesystem
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
+    clearChatListCache();
     res.json(updatedChat);
   } catch (err: any) {
     log.error(`Error updating permissions: ${err}`);
@@ -697,6 +729,7 @@ chatsRouter.patch("/:id/read", (req, res) => {
     // Upsert: creates file storage record if it only existed on filesystem
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
+    clearChatListCache();
     res.json(updatedChat);
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
@@ -735,6 +768,7 @@ chatsRouter.delete("/:id", (req, res) => {
       } catch {}
     }
 
+    clearChatListCache();
     res.json({ ok: true });
   } catch (err: any) {
     log.error(`Error deleting chat: ${err}`);
