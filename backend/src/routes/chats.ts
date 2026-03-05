@@ -271,6 +271,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Number of chats per page (default: 20)' } */
   /* #swagger.parameters['offset'] = { in: 'query', type: 'integer', description: 'Offset for pagination (default: 0)' } */
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
+  /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore and total fields" } */
   try {
     // Get all file chats for augmentation lookup (may be empty if no file storage)
@@ -305,6 +306,7 @@ chatsRouter.get("/", (req, res) => {
     const limit = parseInt(req.query.limit as string) || 20;
     const offset = parseInt(req.query.offset as string) || 0;
     const bookmarkedFilter = req.query.bookmarked === "true";
+    const excludeTriggered = req.query.excludeTriggered === "true";
 
     // Build set of bookmarked session IDs when filtering
     let bookmarkedSessionIds: Set<string> | null = null;
@@ -320,11 +322,13 @@ chatsRouter.get("/", (req, res) => {
       }
     }
 
-    // When filtering by bookmarks, fetch all sessions since bookmarked chats may be
-    // spread across pages. The bookmarked set is typically small so this is fine.
-    // Otherwise, use optimized pagination to discover only the sessions we need.
-    const fetchLimit = bookmarkedFilter ? 9999 : limit;
-    const fetchOffset = bookmarkedFilter ? 0 : offset;
+    // When filtering by bookmarks or excluding triggered chats, we need to fetch
+    // more sessions than requested since we filter after augmentation (the triggered
+    // flag lives in chat file metadata). For bookmarks, fetch all. For excludeTriggered,
+    // over-fetch to ensure we get enough non-triggered results.
+    const needsPostFilter = bookmarkedFilter || excludeTriggered;
+    const fetchLimit = needsPostFilter ? 9999 : limit;
+    const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: paginatedSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
 
     const augmentSession = (s: (typeof paginatedSessions)[0]) => {
@@ -390,6 +394,15 @@ chatsRouter.get("/", (req, res) => {
       }
     };
 
+    /** Check if an augmented chat has the triggered flag set in its metadata */
+    const isTriggered = (chat: any): boolean => {
+      try {
+        return JSON.parse(chat.metadata || "{}").triggered === true;
+      } catch {
+        return false;
+      }
+    };
+
     let chatsFromLogs;
     let total: number;
     let hasMore: boolean;
@@ -397,9 +410,19 @@ chatsRouter.get("/", (req, res) => {
     if (bookmarkedFilter && bookmarkedSessionIds) {
       // Filter to only bookmarked sessions, then augment and paginate
       const bookmarkedSessions = paginatedSessions.filter((s) => bookmarkedSessionIds!.has(s.sessionId));
-      total = bookmarkedSessions.length;
-      const paged = bookmarkedSessions.slice(offset, offset + limit);
-      chatsFromLogs = paged.map(augmentSession);
+      let augmented = bookmarkedSessions.map(augmentSession);
+      if (excludeTriggered) {
+        augmented = augmented.filter((c) => !isTriggered(c));
+      }
+      total = augmented.length;
+      chatsFromLogs = augmented.slice(offset, offset + limit);
+      hasMore = offset + limit < total;
+    } else if (excludeTriggered) {
+      // Augment all fetched sessions, filter out triggered, then paginate
+      const allAugmented = paginatedSessions.map(augmentSession);
+      const nonTriggered = allAugmented.filter((c) => !isTriggered(c));
+      total = nonTriggered.length;
+      chatsFromLogs = nonTriggered.slice(offset, offset + limit);
       hasMore = offset + limit < total;
     } else {
       // Normal path: sessions are already paginated
