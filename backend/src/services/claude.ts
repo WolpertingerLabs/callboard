@@ -12,6 +12,7 @@ import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { buildProxyToolsServer } from "./proxy-tools.js";
+import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
@@ -23,6 +24,40 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("claude");
 
 export type { StreamEvent };
+
+/**
+ * Build a system prompt section listing available MCP proxy connections.
+ * Returns empty string if no connections are found.
+ */
+async function buildProxyConnectionsPrompt(proxyKeyAlias: string, proxyMode: string): Promise<string> {
+  let connections: Array<{ alias: string; name: string; description?: string; docsUrl?: string; enabled?: boolean }> = [];
+
+  if (proxyMode === "local") {
+    const all = listConnectionsWithStatus(proxyKeyAlias);
+    connections = all.filter((c) => c.enabled);
+  } else if (proxyMode === "remote") {
+    const { templates } = await listRemoteConnections(proxyKeyAlias);
+    connections = templates;
+  }
+
+  if (connections.length === 0) return "";
+
+  const lines = connections.map((c) => {
+    let line = `- **${c.name}** (\`${c.alias}\`)`;
+    if (c.description) line += ` — ${c.description}`;
+    if (c.docsUrl) line += ` | [Docs](${c.docsUrl})`;
+    return line;
+  });
+
+  return [
+    "# Available API Connections",
+    "",
+    "The following API connections are available through the MCP proxy tools (`mcp__mcp-proxy__*`).",
+    "Use `list_routes` for detailed endpoint information, or `secure_request` to make API calls.",
+    "",
+    ...lines,
+  ].join("\n");
+}
 
 interface PendingRequest {
   toolName: string;
@@ -540,9 +575,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
   const agentSettings = getAgentSettings();
   const activeMcpConfigDir = getActiveMcpConfigDir();
+  let proxyKeyAlias = "default";
   if (agentSettings.proxyMode && activeMcpConfigDir) {
     // Determine key alias: agent's alias if available, otherwise "default"
-    const proxyKeyAlias = opts.agentAlias ? (getAgent(opts.agentAlias)?.mcpKeyAlias ?? "default") : "default";
+    proxyKeyAlias = opts.agentAlias ? (getAgent(opts.agentAlias)?.mcpKeyAlias ?? "default") : "default";
 
     try {
       const proxyServer = buildProxyToolsServer(proxyKeyAlias);
@@ -647,6 +683,24 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   (async () => {
     try {
+      // Inject proxy connections listing into system prompt before starting the conversation
+      if (agentSettings.proxyMode && activeMcpConfigDir) {
+        try {
+          const connectionsPrompt = await buildProxyConnectionsPrompt(proxyKeyAlias, agentSettings.proxyMode);
+          if (connectionsPrompt) {
+            const existingAppend = queryOpts.options.systemPrompt?.append || "";
+            queryOpts.options.systemPrompt = {
+              type: "preset",
+              preset: "claude_code",
+              append: existingAppend ? `${existingAppend}\n\n${connectionsPrompt}` : connectionsPrompt,
+            };
+            log.info(`Injected ${connectionsPrompt.split("\n").length} lines of proxy connections into system prompt`);
+          }
+        } catch (err: any) {
+          log.warn(`Failed to build proxy connections prompt: ${err.message}`);
+        }
+      }
+
       let sessionId: string | null = null;
       let endReason: string | undefined;
 
