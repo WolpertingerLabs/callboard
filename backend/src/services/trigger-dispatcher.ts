@@ -31,6 +31,9 @@ export function dispatchEvent(event: StoredEvent): void {
   const agents = listAgents();
 
   for (const agent of agents) {
+    // Skip disabled agents entirely
+    if (agent.enabled === false) continue;
+
     const triggers = listTriggers(agent.alias);
 
     for (const trigger of triggers) {

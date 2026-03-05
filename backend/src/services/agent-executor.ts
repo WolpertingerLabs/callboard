@@ -77,6 +77,11 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       return null;
     }
 
+    if (config.enabled === false) {
+      log.warn(`Agent "${agentAlias}" is disabled — skipping ${triggeredBy} execution`);
+      return null;
+    }
+
     const identityPrompt = compileIdentityPrompt(config);
     const workspacePath = getAgentWorkspacePath(agentAlias);
     const workspaceContext = compileWorkspaceContext(workspacePath);

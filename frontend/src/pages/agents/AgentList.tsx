@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Plus, Trash2, Bot, ChevronRight, ChevronLeft, Download, Upload } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { listAgents, deleteAgent, getAgentExportUrl, importAgent } from "../../api";
+import { listAgents, deleteAgent, toggleAgent, getAgentExportUrl, importAgent } from "../../api";
 import type { AgentConfig } from "shared";
 
 export default function AgentList() {
@@ -48,6 +48,18 @@ export default function AgentList() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  const handleToggle = async (alias: string, currentEnabled: boolean) => {
+    const newEnabled = !currentEnabled;
+    // Optimistic update
+    setAgents((prev) => prev.map((a) => (a.alias === alias ? { ...a, enabled: newEnabled } : a)));
+    try {
+      await toggleAgent(alias, newEnabled);
+    } catch {
+      // Revert on failure
+      setAgents((prev) => prev.map((a) => (a.alias === alias ? { ...a, enabled: currentEnabled } : a)));
+    }
   };
 
   const handleImport = async (file: File) => {
@@ -266,115 +278,154 @@ export default function AgentList() {
               gap: 10,
             }}
           >
-            {agents.map((agent) => (
-              <div
-                key={agent.alias}
-                onClick={() => navigate(`/agents/${agent.alias}`)}
-                style={{
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)",
-                  padding: isMobile ? "14px 16px" : "16px 20px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  cursor: "pointer",
-                  transition: "border-color 0.15s",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                    <h3 style={{ fontSize: 16, fontWeight: 600 }}>{agent.name}</h3>
-                    <span
+            {agents.map((agent) => {
+              const isEnabled = agent.enabled !== false;
+              return (
+                <div
+                  key={agent.alias}
+                  onClick={() => navigate(`/agents/${agent.alias}`)}
+                  style={{
+                    background: "var(--surface)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius)",
+                    padding: isMobile ? "14px 16px" : "16px 20px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    cursor: "pointer",
+                    transition: "border-color 0.15s, opacity 0.15s",
+                    opacity: isEnabled ? 1 : 0.55,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                      <h3 style={{ fontSize: 16, fontWeight: 600 }}>{agent.name}</h3>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontFamily: "monospace",
+                          color: isEnabled ? "var(--accent)" : "var(--text-muted)",
+                          background: isEnabled
+                            ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                            : "color-mix(in srgb, var(--text-muted) 12%, transparent)",
+                          padding: "2px 8px",
+                          borderRadius: 6,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {agent.alias}
+                      </span>
+                    </div>
+                    <p
                       style={{
-                        fontSize: 12,
-                        fontFamily: "monospace",
-                        color: "var(--accent)",
-                        background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                        padding: "2px 8px",
-                        borderRadius: 6,
-                        flexShrink: 0,
+                        fontSize: 14,
+                        color: "var(--text-muted)",
+                        lineHeight: 1.5,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
                       }}
                     >
-                      {agent.alias}
-                    </span>
+                      {agent.description}
+                    </p>
                   </div>
-                  <p
+                  {/* Toggle switch */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggle(agent.alias, isEnabled);
+                    }}
+                    title={isEnabled ? "Disable agent" : "Enable agent"}
                     style={{
-                      fontSize: 14,
-                      color: "var(--text-muted)",
-                      lineHeight: 1.5,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      position: "relative",
+                      width: 36,
+                      height: 20,
+                      borderRadius: 10,
+                      border: "none",
+                      background: isEnabled ? "var(--accent)" : "var(--border)",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      transition: "background 0.2s",
+                      padding: 0,
                     }}
                   >
-                    {agent.description}
-                  </p>
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 2,
+                        left: isEnabled ? 18 : 2,
+                        width: 16,
+                        height: 16,
+                        borderRadius: "50%",
+                        background: "#fff",
+                        transition: "left 0.2s",
+                      }}
+                    />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleExport(agent.alias);
+                    }}
+                    title="Export agent"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "transparent",
+                      color: "var(--text-muted)",
+                      padding: 8,
+                      borderRadius: 8,
+                      border: "none",
+                      flexShrink: 0,
+                      transition: "color 0.15s, background 0.15s",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = "var(--accent)";
+                      e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 10%, transparent)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = "var(--text-muted)";
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    <Download size={16} />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteTarget(agent.alias);
+                    }}
+                    title="Delete agent"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "transparent",
+                      color: "var(--text-muted)",
+                      padding: 8,
+                      borderRadius: 8,
+                      border: "none",
+                      flexShrink: 0,
+                      transition: "color 0.15s, background 0.15s",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = "var(--danger)";
+                      e.currentTarget.style.background = "color-mix(in srgb, var(--danger) 10%, transparent)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = "var(--text-muted)";
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                  <ChevronRight size={16} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
                 </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleExport(agent.alias);
-                  }}
-                  title="Export agent"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "transparent",
-                    color: "var(--text-muted)",
-                    padding: 8,
-                    borderRadius: 8,
-                    border: "none",
-                    flexShrink: 0,
-                    transition: "color 0.15s, background 0.15s",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = "var(--accent)";
-                    e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 10%, transparent)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = "var(--text-muted)";
-                    e.currentTarget.style.background = "transparent";
-                  }}
-                >
-                  <Download size={16} />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleteTarget(agent.alias);
-                  }}
-                  title="Delete agent"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "transparent",
-                    color: "var(--text-muted)",
-                    padding: 8,
-                    borderRadius: 8,
-                    border: "none",
-                    flexShrink: 0,
-                    transition: "color 0.15s, background 0.15s",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = "var(--danger)";
-                    e.currentTarget.style.background = "color-mix(in srgb, var(--danger) 10%, transparent)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = "var(--text-muted)";
-                    e.currentTarget.style.background = "transparent";
-                  }}
-                >
-                  <Trash2 size={16} />
-                </button>
-                <ChevronRight size={16} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

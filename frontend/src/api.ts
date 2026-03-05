@@ -438,6 +438,18 @@ export async function updateAgent(alias: string, updates: Partial<AgentConfig>):
   return data.agent;
 }
 
+export async function toggleAgent(alias: string, enabled: boolean): Promise<AgentConfig> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/toggle`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ enabled }),
+  });
+  await assertOk(res, "Failed to toggle agent");
+  const data = await res.json();
+  return data.agent;
+}
+
 export async function deleteAgent(alias: string): Promise<void> {
   const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}`, {
     method: "DELETE",
