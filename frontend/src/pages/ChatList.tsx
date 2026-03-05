@@ -86,6 +86,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   const [pathOpen, setPathOpen] = useState(true);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
   const isQueueActive = location.pathname === "/queue";
@@ -115,6 +116,15 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined);
       setChats(response.chats);
       setHasMore(shouldFetchAll ? false : response.hasMore);
+
+      // If the response was stale (cached), immediately fetch fresh data
+      if (response.stale) {
+        const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false);
+        setChats(freshResponse.chats);
+        setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
+      }
+
+      setIsInitialLoading(false);
 
       // Initialize suggested directories from first three chat directories if none exist
       if (!useFilter) {
@@ -959,7 +969,22 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       )}
 
       <div style={{ flex: 1, overflow: "auto" }}>
-        {filteredChats.length === 0 && (
+        {filteredChats.length === 0 && isInitialLoading && (
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", padding: 40 }}>
+            <div
+              style={{
+                width: 24,
+                height: 24,
+                border: "3px solid var(--border)",
+                borderTopColor: "var(--accent)",
+                borderRadius: "50%",
+                animation: "spin 0.8s linear infinite",
+              }}
+            />
+            <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+          </div>
+        )}
+        {filteredChats.length === 0 && !isInitialLoading && (
           <p style={{ padding: 20, color: "var(--text-muted)", textAlign: "center" }}>
             {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
           </p>
