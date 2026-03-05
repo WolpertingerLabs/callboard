@@ -78,6 +78,7 @@ export class LocalProxy {
 
   async start(): Promise<void> {
     await this._ingestorManager.startAll();
+    await this.stopUserStoppedListeners();
     log.info("LocalProxy ingestors started");
   }
 
@@ -101,6 +102,91 @@ export class LocalProxy {
     }
 
     log.info(`LocalProxy reinitialized — callers=${this.routesByCallerAlias.size}`);
+  }
+
+  /**
+   * Persist listener stopped/started state to remote.config.json.
+   * For multi-instance listeners, sets listenerInstances[conn][instanceId].disabled.
+   * For single-instance listeners, sets ingestorOverrides[conn].stopped.
+   */
+  private persistListenerState(callerAlias: string, connection: string, stopped: boolean, instanceId?: string): void {
+    try {
+      const config = loadRemoteConfig();
+      const caller = config.callers[callerAlias];
+      if (!caller) return;
+
+      if (instanceId) {
+        // Multi-instance: use existing `disabled` field
+        const instance = caller.listenerInstances?.[connection]?.[instanceId];
+        if (instance) {
+          if (stopped) {
+            instance.disabled = true;
+          } else {
+            delete instance.disabled;
+          }
+        }
+      } else {
+        // Single-instance: use `stopped` field on ingestorOverrides
+        caller.ingestorOverrides ??= {};
+        caller.ingestorOverrides[connection] ??= {};
+        if (stopped) {
+          (caller.ingestorOverrides[connection] as any).stopped = true;
+        } else {
+          delete (caller.ingestorOverrides[connection] as any).stopped;
+        }
+        // Clean up empty override objects
+        if (Object.keys(caller.ingestorOverrides[connection]).length === 0) {
+          delete caller.ingestorOverrides[connection];
+        }
+        if (Object.keys(caller.ingestorOverrides).length === 0) {
+          delete caller.ingestorOverrides;
+        }
+      }
+
+      saveRemoteConfig(config);
+      log.info(`Persisted listener state: ${callerAlias}:${connection}${instanceId ? `:${instanceId}` : ""} stopped=${stopped}`);
+    } catch (err: any) {
+      log.warn(`Failed to persist listener state: ${err.message}`);
+    }
+  }
+
+  /**
+   * After startAll(), stop any listeners the user had explicitly stopped.
+   * Reads stopped state from remote.config.json.
+   */
+  private async stopUserStoppedListeners(): Promise<void> {
+    const config = loadRemoteConfig();
+    for (const [callerAlias, caller] of Object.entries(config.callers)) {
+      // Single-instance: check ingestorOverrides[conn].stopped
+      if (caller.ingestorOverrides) {
+        for (const [conn, overrides] of Object.entries(caller.ingestorOverrides)) {
+          if ((overrides as any)?.stopped) {
+            try {
+              await this._ingestorManager.stopOne(callerAlias, conn);
+              log.info(`Auto-stopped listener ${callerAlias}:${conn} (user preference)`);
+            } catch (err: any) {
+              log.warn(`Failed to auto-stop ${callerAlias}:${conn}: ${err.message}`);
+            }
+          }
+        }
+      }
+
+      // Multi-instance: check listenerInstances[conn][id].disabled
+      if (caller.listenerInstances) {
+        for (const [conn, instances] of Object.entries(caller.listenerInstances)) {
+          for (const [instanceId, overrides] of Object.entries(instances)) {
+            if (overrides?.disabled) {
+              try {
+                await this._ingestorManager.stopOne(callerAlias, conn, instanceId);
+                log.info(`Auto-stopped listener instance ${callerAlias}:${conn}:${instanceId} (user preference)`);
+              } catch (err: any) {
+                log.warn(`Failed to auto-stop ${callerAlias}:${conn}:${instanceId}: ${err.message}`);
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -288,16 +374,27 @@ export class LocalProxy {
           instance_id?: string;
         };
         try {
+          let result: unknown;
           switch (action) {
             case "start":
-              return await this._ingestorManager.startOne(effectiveAlias, conn, instance_id);
+              result = await this._ingestorManager.startOne(effectiveAlias, conn, instance_id);
+              break;
             case "stop":
-              return await this._ingestorManager.stopOne(effectiveAlias, conn, instance_id);
+              result = await this._ingestorManager.stopOne(effectiveAlias, conn, instance_id);
+              break;
             case "restart":
-              return await this._ingestorManager.restartOne(effectiveAlias, conn, instance_id);
+              result = await this._ingestorManager.restartOne(effectiveAlias, conn, instance_id);
+              break;
             default:
               return { success: false, connection: conn, error: `Unknown action: ${String(action)}` };
           }
+
+          // Persist start/stop state so it survives restarts
+          if (action === "start" || action === "stop") {
+            this.persistListenerState(effectiveAlias, conn, action === "stop", instance_id);
+          }
+
+          return result;
         } catch (err: any) {
           return { success: false, connection: conn, action, error: err.message };
         }
