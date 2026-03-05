@@ -95,15 +95,46 @@ const StatusIcon = ({ status }: { status: string }) => {
   }
 };
 
+function copyToClipboard(text: string): boolean {
+  // Fallback for non-secure contexts (HTTP on non-localhost)
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    const ok = document.execCommand("copy");
+    return ok;
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(
-    (e: React.MouseEvent) => {
+    async (e: React.MouseEvent) => {
       e.stopPropagation();
-      navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      let ok = false;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        } catch {
+          // Clipboard API failed (non-secure context, permission denied, etc.)
+          ok = copyToClipboard(text);
+        }
+      } else {
+        ok = copyToClipboard(text);
+      }
+      if (ok) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }
     },
     [text],
   );
