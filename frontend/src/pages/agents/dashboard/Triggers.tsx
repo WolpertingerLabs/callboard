@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 // useOutletContext removed — agent is now passed as a prop
-import { Plus, Zap, Play, Pause, Trash2, X, Search, ChevronDown, ChevronRight, Info, Pencil } from "lucide-react";
+import { Plus, Zap, Play, Pause, Trash2, X, Search, ChevronDown, ChevronRight, Info, Pencil, Moon } from "lucide-react";
 import ModalOverlay from "../../../components/ModalOverlay";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { getAgentTriggers, createAgentTrigger, updateAgentTrigger, deleteAgentTrigger, backtestTriggerFilter, getProxyEvents } from "../../../api";
@@ -35,6 +35,9 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
   const [formEventType, setFormEventType] = useState("");
   const [formConditions, setFormConditions] = useState<FilterCondition[]>([]);
   const [formPrompt, setFormPrompt] = useState("");
+  const [formQHEnabled, setFormQHEnabled] = useState(false);
+  const [formQHStart, setFormQHStart] = useState("22:00");
+  const [formQHEnd, setFormQHEnd] = useState("07:00");
   const [formSaving, setFormSaving] = useState(false);
 
   // Backtest state
@@ -107,6 +110,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
         filter: buildFilter(),
         action: { type: "start_session", prompt: formPrompt.trim() || undefined },
         triggerCount: 0,
+        ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
       });
       setTriggers((prev) => [...prev, trigger]);
       setShowForm(false);
@@ -125,6 +129,9 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     setFormEventType("");
     setFormConditions([]);
     setFormPrompt("");
+    setFormQHEnabled(false);
+    setFormQHStart("22:00");
+    setFormQHEnd("07:00");
     setBacktestResults(null);
     setEditingTriggerId(null);
   };
@@ -153,6 +160,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
         description: formDescription.trim(),
         filter: buildFilter(),
         action: { type: "start_session", prompt: formPrompt.trim() || undefined },
+        quietHours: formQHEnabled ? { enabled: true, start: formQHStart, end: formQHEnd } : { enabled: false, start: formQHStart, end: formQHEnd },
       });
       setTriggers((prev) => prev.map((t) => (t.id === editingTriggerId ? updated : t)));
       setShowForm(false);
@@ -172,6 +180,9 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     setFormEventType(trigger.filter.eventType || "");
     setFormConditions(trigger.filter.conditions ? trigger.filter.conditions.map((c) => ({ ...c })) : []);
     setFormPrompt(trigger.action.prompt || "");
+    setFormQHEnabled(trigger.quietHours?.enabled || false);
+    setFormQHStart(trigger.quietHours?.start || "22:00");
+    setFormQHEnd(trigger.quietHours?.end || "07:00");
     setBacktestResults(null);
     setShowForm(true);
 
@@ -456,6 +467,27 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
             />
           </div>
 
+          {/* Quiet Hours */}
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={formQHEnabled} onChange={(e) => setFormQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Quiet hours</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— suppress during a time window</span>
+            </label>
+            {formQHEnabled && (
+              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>Start</label>
+                  <input type="time" value={formQHStart} onChange={(e) => setFormQHStart(e.target.value)} style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>End</label>
+                  <input type="time" value={formQHEnd} onChange={(e) => setFormQHEnd(e.target.value)} style={inputStyle} />
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Actions row */}
           <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
             {/* Backtest button */}
@@ -687,6 +719,25 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                   <Zap size={13} />
                   <span style={{ fontFamily: "monospace", fontSize: 12 }}>{filterSummary(trigger.filter)}</span>
                 </div>
+
+                {/* Quiet hours indicator */}
+                {trigger.quietHours?.enabled && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                      fontSize: 12,
+                      color: "var(--text-muted)",
+                      marginBottom: 6,
+                    }}
+                  >
+                    <Moon size={12} />
+                    <span>
+                      Quiet {trigger.quietHours.start} – {trigger.quietHours.end}
+                    </span>
+                  </div>
+                )}
 
                 {/* Description */}
                 {trigger.description && <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 10 }}>{trigger.description}</p>}

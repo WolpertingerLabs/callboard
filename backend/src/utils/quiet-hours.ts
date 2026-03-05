@@ -1,39 +1,33 @@
 /**
  * Quiet hours utility.
  *
- * Checks whether the current moment falls within an agent's configured
- * quiet hours window. Used by the cron scheduler and trigger dispatcher
- * to suppress repetitive executions during off-hours.
+ * Checks whether the current moment falls within a quiet hours window.
+ * Used by the cron scheduler and trigger dispatcher to suppress
+ * executions during off-hours.
  */
-import type { AgentConfig } from "shared";
+import type { QuietHours } from "shared";
 
 /**
- * Returns true if the current time falls within the agent's quiet hours window,
+ * Returns true if the current time falls within the given quiet hours window,
  * meaning execution should be suppressed.
  *
- * Times are interpreted in the agent's userTimezone. If no timezone is configured,
+ * Times are interpreted in the provided timezone. If no timezone is given,
  * falls back to the server's system timezone.
  *
  * Handles midnight crossover (e.g., start=22:00, end=07:00).
  */
-export function isInQuietHours(agent: AgentConfig, context?: "crons" | "triggers"): boolean {
-  if (!agent.quietHours?.enabled) return false;
+export function isInQuietHours(quietHours: QuietHours | undefined, timezone?: string): boolean {
+  if (!quietHours?.enabled) return false;
 
-  const { start, end, scope } = agent.quietHours;
-
-  // Scope filtering: if scope targets a specific type and the caller is the other type, don't suppress
-  const effectiveScope = scope || "all";
-  if (context && effectiveScope !== "all" && effectiveScope !== context) {
-    return false;
-  }
+  const { start, end } = quietHours;
   if (!start || !end) return false;
 
-  const timezone = agent.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  // Get current time in the agent's timezone
+  // Get current time in the target timezone
   const now = new Date();
   const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
+    timeZone: tz,
     hour: "numeric",
     minute: "numeric",
     hour12: false,

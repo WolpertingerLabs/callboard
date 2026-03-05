@@ -2,18 +2,25 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { agentExists } from "../services/agent-file-service.js";
 import { appendActivity } from "../services/agent-activity.js";
-import {
-  listTriggers,
-  getTrigger,
-  createTrigger,
-  updateTrigger,
-  deleteTrigger,
-} from "../services/agent-triggers.js";
+import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "../services/agent-triggers.js";
 import { backtestFilter } from "../services/trigger-dispatcher.js";
 import { getAllEvents } from "../services/event-log.js";
-import type { Trigger, TriggerFilter, CronAction } from "shared";
+import type { Trigger, TriggerFilter, CronAction, QuietHours } from "shared";
 
 export const agentTriggersRouter = Router({ mergeParams: true });
+
+const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function validateQuietHours(qh: QuietHours | undefined): string | null {
+  if (!qh) return null;
+  if (typeof qh.enabled !== "boolean") return "quietHours.enabled must be a boolean";
+  if (qh.enabled) {
+    if (!TIME_REGEX.test(qh.start) || !TIME_REGEX.test(qh.end)) {
+      return "quietHours start/end must be in HH:MM format (00:00 - 23:59)";
+    }
+  }
+  return null;
+}
 
 /** GET /api/agents/:alias/triggers — list all triggers for this agent */
 agentTriggersRouter.get("/", (req: Request, res: Response): void => {
@@ -84,10 +91,16 @@ agentTriggersRouter.post("/", (req: Request, res: Response): void => {
     return;
   }
 
-  const { name, description, filter, action, status } = req.body as Partial<Trigger>;
+  const { name, description, filter, action, status, quietHours } = req.body as Partial<Trigger>;
 
   if (!name || !filter) {
     res.status(400).json({ error: "name and filter are required" });
+    return;
+  }
+
+  const qhError = validateQuietHours(quietHours);
+  if (qhError) {
+    res.status(400).json({ error: qhError });
     return;
   }
 
@@ -100,6 +113,7 @@ agentTriggersRouter.post("/", (req: Request, res: Response): void => {
     filter,
     action: cronAction,
     triggerCount: 0,
+    ...(quietHours && { quietHours }),
   });
 
   appendActivity(alias, {
@@ -122,6 +136,13 @@ agentTriggersRouter.put("/:triggerId", (req: Request, res: Response): void => {
   }
 
   const updates = req.body as Partial<Trigger>;
+
+  const qhError = validateQuietHours(updates.quietHours);
+  if (qhError) {
+    res.status(400).json({ error: qhError });
+    return;
+  }
+
   const trigger = updateTrigger(alias, triggerId, updates);
 
   if (!trigger) {

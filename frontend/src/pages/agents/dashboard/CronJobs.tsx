@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 // useOutletContext removed — agent is now passed as a prop
-import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2 } from "lucide-react";
+import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2, Moon } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import ConfirmModal from "../../../components/ConfirmModal";
 import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob } from "../../../api";
@@ -192,6 +192,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [formType, setFormType] = useState<CronJob["type"]>("recurring");
   const [formDescription, setFormDescription] = useState("");
   const [formPrompt, setFormPrompt] = useState("");
+  const [formQHEnabled, setFormQHEnabled] = useState(false);
+  const [formQHStart, setFormQHStart] = useState("22:00");
+  const [formQHEnd, setFormQHEnd] = useState("07:00");
   const [formSaving, setFormSaving] = useState(false);
 
   // Delete confirmation state
@@ -208,6 +211,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [editType, setEditType] = useState<CronJob["type"]>("recurring");
   const [editDescription, setEditDescription] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
+  const [editQHEnabled, setEditQHEnabled] = useState(false);
+  const [editQHStart, setEditQHStart] = useState("22:00");
+  const [editQHEnd, setEditQHEnd] = useState("07:00");
   const [editSaving, setEditSaving] = useState(false);
 
   const loadJobs = () => {
@@ -270,6 +276,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         status: "active",
         description: formDescription.trim(),
         action: { type: "start_session", prompt: formPrompt.trim() || undefined },
+        ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
       });
       setJobs((prev) => [...prev, job]);
       setShowForm(false);
@@ -278,6 +285,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormType("recurring");
       setFormDescription("");
       setFormPrompt("");
+      setFormQHEnabled(false);
+      setFormQHStart("22:00");
+      setFormQHEnd("07:00");
     } catch {
       // ignore
     } finally {
@@ -292,6 +302,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     setEditType(job.type);
     setEditDescription(job.description);
     setEditPrompt(job.action?.prompt || "");
+    setEditQHEnabled(job.quietHours?.enabled || false);
+    setEditQHStart(job.quietHours?.start || "22:00");
+    setEditQHEnd(job.quietHours?.end || "07:00");
   };
 
   const cancelEditing = () => {
@@ -310,6 +323,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         type: editType,
         description: editDescription.trim(),
         action: { type: "start_session", prompt: editPrompt.trim() || undefined },
+        quietHours: editQHEnabled ? { enabled: true, start: editQHStart, end: editQHEnd } : { enabled: false, start: editQHStart, end: editQHEnd },
       });
       setJobs((prev) => prev.map((j) => (j.id === editingJobId ? updated : j)));
       setEditingJobId(null);
@@ -375,6 +389,25 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             rows={3}
             style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
           />
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={editQHEnabled} onChange={(e) => setEditQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Quiet hours</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— suppress during a time window</span>
+            </label>
+            {editQHEnabled && (
+              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>Start</label>
+                  <input type="time" value={editQHStart} onChange={(e) => setEditQHStart(e.target.value)} style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>End</label>
+                  <input type="time" value={editQHEnd} onChange={(e) => setEditQHEnd(e.target.value)} style={inputStyle} />
+                </div>
+              </div>
+            )}
+          </div>
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button
               type="button"
@@ -514,6 +547,25 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           <span>{describeCron(job.schedule, scheduleTz)}</span>
           <span style={{ opacity: 0.5 }}>({job.schedule})</span>
         </div>
+
+        {/* Quiet hours indicator */}
+        {job.quietHours?.enabled && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 12,
+              color: "var(--text-muted)",
+              marginBottom: 6,
+            }}
+          >
+            <Moon size={12} />
+            <span>
+              Quiet {job.quietHours.start} – {job.quietHours.end}
+            </span>
+          </div>
+        )}
 
         {/* Description */}
         <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 10 }}>{job.description}</p>
@@ -718,6 +770,25 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             rows={3}
             style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
           />
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={formQHEnabled} onChange={(e) => setFormQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Quiet hours</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— suppress during a time window</span>
+            </label>
+            {formQHEnabled && (
+              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>Start</label>
+                  <input type="time" value={formQHStart} onChange={(e) => setFormQHStart(e.target.value)} style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>End</label>
+                  <input type="time" value={formQHEnd} onChange={(e) => setFormQHEnd(e.target.value)} style={inputStyle} />
+                </div>
+              </div>
+            )}
+          </div>
           <button
             type="submit"
             disabled={!formName.trim() || !formSchedule.trim() || !formDescription.trim() || formSaving}

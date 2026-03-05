@@ -8,6 +8,16 @@ export interface CronAction {
   maxTurns?: number;
 }
 
+// ── Quiet Hours ──────────────────────────────────────
+// Per-item quiet hours window. When enabled, the item is suppressed
+// during the specified time window (in the agent's userTimezone).
+
+export interface QuietHours {
+  enabled: boolean;
+  start: string; // "HH:MM" (24-hour)
+  end: string; // "HH:MM" (24-hour)
+}
+
 // ── Cron Jobs ──────────────────────────────────────────
 // Managed entirely by callboard. Scheduled tasks that
 // fire on a cron expression and call executeAgent().
@@ -23,6 +33,7 @@ export interface CronJob {
   description: string;
   action: CronAction;
   isDefault?: boolean; // Marks system-created default jobs (e.g., heartbeat)
+  quietHours?: QuietHours;
 }
 
 // ── Event Subscriptions ───────────────────────────────
@@ -63,6 +74,7 @@ export interface Trigger {
   action: CronAction; // Reuse from cron jobs
   lastTriggered?: number;
   triggerCount: number;
+  quietHours?: QuietHours;
 }
 
 // ── Activity Log ──────────────────────────────────────
