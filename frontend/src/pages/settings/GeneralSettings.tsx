@@ -20,6 +20,8 @@ export default function GeneralSettings() {
   const [newThemeDesc, setNewThemeDesc] = useState("");
   const [generating, setGenerating] = useState(false);
   const [themeError, setThemeError] = useState("");
+  const [regeneratingTheme, setRegeneratingTheme] = useState<string | null>(null);
+  const [regenerateDesc, setRegenerateDesc] = useState("");
 
   useEffect(() => {
     fetchInstanceName()
@@ -60,6 +62,31 @@ export default function GeneralSettings() {
       handleSelectTheme(theme.name);
     } catch (err: any) {
       setThemeError(err.message || "Failed to generate theme");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleRegenerateTheme = async (name: string) => {
+    const desc = regenerateDesc.trim();
+    if (!desc) {
+      setThemeError("A description is required to regenerate a theme.");
+      return;
+    }
+    setGenerating(true);
+    setThemeError("");
+    try {
+      // Delete the old theme, generate a new one with the same name
+      await deleteTheme(name);
+      const theme = await generateTheme(name, desc);
+      setCustomThemes((prev) => prev.map((t) => (t.name === name ? { name: theme.name, createdAt: theme.createdAt, updatedAt: theme.updatedAt } : t)));
+      setRegeneratingTheme(null);
+      setRegenerateDesc("");
+      if (selectedTheme === name) {
+        reloadCustomTheme();
+      }
+    } catch (err: any) {
+      setThemeError(err.message || "Failed to regenerate theme");
     } finally {
       setGenerating(false);
     }
@@ -307,53 +334,118 @@ export default function GeneralSettings() {
 
           {/* Custom themes */}
           {customThemes.map((theme) => (
-            <div
-              key={theme.name}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <button
-                onClick={() => handleSelectTheme(theme.name)}
+            <div key={theme.name} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div
                 style={{
-                  flex: 1,
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "10px 14px",
-                  borderRadius: 8,
-                  border: selectedTheme === theme.name ? "2px solid var(--accent)" : "1px solid var(--border)",
-                  background: selectedTheme === theme.name ? "var(--accent-bg)" : "var(--surface)",
-                  color: "var(--text)",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: selectedTheme === theme.name ? 600 : 400,
-                  textAlign: "left",
+                  gap: 6,
                 }}
               >
-                <span>{theme.name}</span>
-                {selectedTheme === theme.name && <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 500 }}>Active</span>}
-              </button>
-              <button
-                onClick={() => handleDeleteTheme(theme.name)}
-                title={`Delete "${theme.name}"`}
-                style={{
-                  background: "var(--surface)",
-                  color: "var(--text-muted)",
-                  padding: 8,
-                  borderRadius: 8,
-                  border: "1px solid var(--border)",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
-                <Trash2 size={14} />
-              </button>
+                <button
+                  onClick={() => handleSelectTheme(theme.name)}
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    border: selectedTheme === theme.name ? "2px solid var(--accent)" : "1px solid var(--border)",
+                    background: selectedTheme === theme.name ? "var(--accent-bg)" : "var(--surface)",
+                    color: "var(--text)",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: selectedTheme === theme.name ? 600 : 400,
+                    textAlign: "left",
+                  }}
+                >
+                  <span>{theme.name}</span>
+                  {selectedTheme === theme.name && <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 500 }}>Active</span>}
+                </button>
+                <button
+                  onClick={() => {
+                    if (regeneratingTheme === theme.name) {
+                      setRegeneratingTheme(null);
+                      setRegenerateDesc("");
+                    } else {
+                      setRegeneratingTheme(theme.name);
+                      setRegenerateDesc("");
+                      setThemeError("");
+                    }
+                  }}
+                  title={`Regenerate "${theme.name}"`}
+                  style={{
+                    background: "var(--surface)",
+                    color: "var(--text-muted)",
+                    padding: 8,
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <RefreshCw size={14} />
+                </button>
+                <button
+                  onClick={() => handleDeleteTheme(theme.name)}
+                  title={`Delete "${theme.name}"`}
+                  style={{
+                    background: "var(--surface)",
+                    color: "var(--text-muted)",
+                    padding: 8,
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+              {regeneratingTheme === theme.name && (
+                <div style={{ display: "flex", gap: 6, paddingLeft: 4 }}>
+                  <input
+                    type="text"
+                    placeholder="Describe the new look..."
+                    value={regenerateDesc}
+                    onChange={(e) => setRegenerateDesc(e.target.value)}
+                    disabled={generating}
+                    style={{
+                      flex: 1,
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      fontSize: 12,
+                      boxSizing: "border-box",
+                    }}
+                  />
+                  <button
+                    onClick={() => handleRegenerateTheme(theme.name)}
+                    disabled={generating}
+                    style={{
+                      background: generating ? "var(--surface)" : "var(--accent)",
+                      color: generating ? "var(--text-muted)" : "var(--text-on-accent)",
+                      padding: "8px 14px",
+                      borderRadius: 8,
+                      border: generating ? "1px solid var(--border)" : "none",
+                      fontSize: 12,
+                      cursor: generating ? "not-allowed" : "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {generating ? "Regenerating..." : "Regenerate"}
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
