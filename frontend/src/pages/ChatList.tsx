@@ -170,7 +170,10 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
   useEffect(() => {
     fetchInstanceName()
-      .then(setInstanceName)
+      .then((name) => {
+        setInstanceName(name);
+        document.title = `Callboard / ${name}`;
+      })
       .catch(() => {});
   }, []);
 
