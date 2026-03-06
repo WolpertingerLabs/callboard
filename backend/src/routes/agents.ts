@@ -22,6 +22,7 @@ import { agentExportImportRouter } from "./agent-export-import.js";
 import { cancelAllJobsForAgent, scheduleJob } from "../services/cron-scheduler.js";
 import { ensureDefaultCronJobs, listCronJobs } from "../services/agent-cron-jobs.js";
 import { appendActivity } from "../services/agent-activity.js";
+import { ensureCallerConfigForAlias } from "../services/connection-manager.js";
 
 export const agentsRouter = Router();
 
@@ -202,6 +203,12 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
 
   // Persist (createAgent acts as upsert — mkdirSync with recursive is a no-op)
   createAgent(updated);
+
+  // Auto-create caller config if the agent was assigned a proxy key alias
+  // that doesn't yet have a corresponding entry in remote.config.json.
+  if (updated.mcpKeyAlias) {
+    ensureCallerConfigForAlias(updated.mcpKeyAlias);
+  }
 
   const workspacePath = ensureAgentWorkspaceDir(alias);
   res.json({ agent: { ...updated, workspacePath, serverTimezone: SERVER_TIMEZONE } });
