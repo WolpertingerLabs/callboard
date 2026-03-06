@@ -1,24 +1,21 @@
 /**
- * Connection manager for local mode.
+ * Connection manager for local and remote modes.
  *
- * Reads drawlatch's connection templates, merges them with the
- * current caller config, manages secrets in .env, and triggers
+ * Local mode: Reads drawlatch's connection templates, merges them with
+ * the current caller config, manages secrets in .env, and triggers
  * LocalProxy.reinitialize() after config changes.
+ *
+ * Remote mode: Calls drawlatch tool handlers (list_connection_templates,
+ * set_connection_enabled, set_secrets, get_secret_status) via the proxy
+ * client to manage connections on the remote server.
  *
  * Supports multiple caller aliases. Each alias gets its own set of
  * enabled connections and its own env var prefix for secrets to avoid
  * conflicts (e.g., DEFAULT_GITHUB_TOKEN vs MYAGENT_GITHUB_TOKEN).
- *
- * The caller's `env` field in remote.config.json maps generic secret
- * names (e.g., "GITHUB_TOKEN") to prefixed env vars (e.g.,
- * "${DEFAULT_GITHUB_TOKEN}"), using drawlatch's built-in
- * CallerConfig.env mechanism.
  */
-import { readFileSync, writeFileSync, existsSync, chmodSync } from "fs";
-import { join } from "path";
-import dotenv from "dotenv";
 import { listConnectionTemplates } from "@wolpertingerlabs/drawlatch/shared/connections";
 import { loadRemoteConfig, saveRemoteConfig, type RemoteServerConfig, type CallerConfig } from "@wolpertingerlabs/drawlatch/shared/config";
+import { loadEnvIntoProcess as drawlatchLoadEnv, setEnvVars, isSecretSetForCaller, setCallerSecrets } from "@wolpertingerlabs/drawlatch/shared/env-utils";
 import { getActiveMcpConfigDir } from "./agent-settings.js";
 import { getLocalProxyInstance, getProxy, getConfiguredAliases } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
@@ -40,136 +37,14 @@ function syncConfigDir(): string | null {
   return configDir;
 }
 
-// ── Env var prefix utilities ────────────────────────────────────────
-
-/**
- * Convert a caller alias to an env var prefix.
- * "default" → "DEFAULT", "my-agent" → "MY_AGENT", "work bot" → "WORK_BOT"
- */
-function callerToPrefix(callerAlias: string): string {
-  return callerAlias
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "");
-}
-
-/**
- * Get the prefixed env var name for a secret.
- * callerAlias="default", secretName="GITHUB_TOKEN" → "DEFAULT_GITHUB_TOKEN"
- */
-function prefixedEnvVar(callerAlias: string, secretName: string): string {
-  return `${callerToPrefix(callerAlias)}_${secretName}`;
-}
-
-// ── .env file utilities ─────────────────────────────────────────────
-
-function getEnvFilePath(): string | null {
-  const configDir = syncConfigDir();
-  if (!configDir) return null;
-  return join(configDir, ".env");
-}
-
-/** Load all vars from the mcp .env file into a map (without setting process.env). */
-function loadEnvFile(): Record<string, string> {
-  const envPath = getEnvFilePath();
-  if (!envPath || !existsSync(envPath)) return {};
-  try {
-    const parsed = dotenv.parse(readFileSync(envPath, "utf-8"));
-    return parsed;
-  } catch (err: any) {
-    log.warn(`Failed to parse .env at ${envPath}: ${err.message}`);
-    return {};
-  }
-}
-
 /**
  * Load the mcp config dir's .env file into process.env.
  * Called on server startup when local mode is active.
  */
 export function loadMcpEnvIntoProcess(): void {
-  const envPath = getEnvFilePath();
-  if (!envPath || !existsSync(envPath)) return;
-  dotenv.config({ path: envPath, override: true });
-  log.info(`Loaded MCP .env from ${envPath}`);
-}
-
-/**
- * Write key-value pairs to the mcp .env file.
- * Also sets process.env immediately for in-process use.
- * An empty string value removes the key.
- */
-function setEnvVars(updates: Record<string, string>): void {
-  const envPath = getEnvFilePath();
-  if (!envPath) throw new Error("MCP config dir not set");
-
-  // Read current .env
-  const envVars = loadEnvFile();
-
-  // Apply updates
-  for (const [key, value] of Object.entries(updates)) {
-    if (value === "") {
-      delete envVars[key];
-      delete process.env[key];
-    } else {
-      envVars[key] = value;
-      process.env[key] = value;
-    }
-  }
-
-  // Serialize — quote values that contain spaces, quotes, or newlines
-  const lines = Object.entries(envVars).map(([k, v]) => {
-    if (/[\s"'\\#]/.test(v) || v.length === 0) {
-      return `${k}="${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    }
-    return `${k}=${v}`;
-  });
-
-  writeFileSync(envPath, lines.join("\n") + "\n", { mode: 0o600 });
-
-  // Ensure file permissions even if it already existed
-  try {
-    chmodSync(envPath, 0o600);
-  } catch {
-    // May fail on some platforms — best effort
-  }
-}
-
-/**
- * Check if a secret is set for a given caller alias.
- *
- * Resolution order:
- * 1. Check the caller's `env` mapping — if the caller has
- *    `"GITHUB_TOKEN": "${DEFAULT_GITHUB_TOKEN}"`, resolve the referenced
- *    env var and check that it's set.
- * 2. Fall back to checking the bare secret name in process.env
- *    (backward compatibility for callers without env mappings).
- */
-function isSecretSetForCaller(secretName: string, callerAlias: string, callerEnv?: Record<string, string>): boolean {
-  // 1. Check caller env mapping
-  if (callerEnv) {
-    const mapping = callerEnv[secretName];
-    if (mapping) {
-      // Resolve the mapping (e.g., "${DEFAULT_GITHUB_TOKEN}" → check process.env.DEFAULT_GITHUB_TOKEN)
-      const envMatch = /^\$\{(.+)\}$/.exec(mapping);
-      if (envMatch) {
-        const val = process.env[envMatch[1]];
-        return val !== undefined && val !== "";
-      }
-      // Literal value — always "set"
-      return true;
-    }
-  }
-
-  // 2. Fall back: check the prefixed version
-  const prefixed = prefixedEnvVar(callerAlias, secretName);
-  if (process.env[prefixed] !== undefined && process.env[prefixed] !== "") {
-    return true;
-  }
-
-  // 3. Fall back: check bare env var name (backward compat)
-  const val = process.env[secretName];
-  return val !== undefined && val !== "";
+  syncConfigDir();
+  drawlatchLoadEnv();
+  log.info("Loaded MCP .env into process.env");
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -353,70 +228,24 @@ export async function setConnectionEnabled(alias: string, enabled: boolean, call
 /**
  * Set secrets for a connection, scoped to a specific caller alias.
  *
- * Saves secrets with a per-caller prefix in .env (e.g., DEFAULT_GITHUB_TOKEN)
- * and updates the caller's `env` mapping in remote.config.json so that
- * drawlatch's resolveSecrets() resolves them correctly.
- *
- * An empty string value for a secret deletes both the env var and the mapping.
+ * Delegates to drawlatch's setCallerSecrets() which handles prefixed
+ * env var writes and caller env mapping updates in one call.
  *
  * Returns updated secret-is-set status for all provided names.
  */
 export async function setSecrets(secrets: Record<string, string>, callerAlias: string = "default"): Promise<Record<string, boolean>> {
   syncConfigDir();
 
-  // Build prefixed env var updates
-  const envUpdates: Record<string, string> = {};
-  const newMappings: Record<string, string | null> = {}; // null = delete mapping
-
-  for (const [secretName, value] of Object.entries(secrets)) {
-    const prefixed = prefixedEnvVar(callerAlias, secretName);
-
-    if (value === "") {
-      // Delete: remove prefixed env var and mapping
-      envUpdates[prefixed] = "";
-      newMappings[secretName] = null;
-    } else {
-      // Set: save prefixed env var and add mapping
-      envUpdates[prefixed] = value;
-      newMappings[secretName] = `\${${prefixed}}`;
-    }
-  }
-
-  // 1. Write env vars to .env and process.env
-  setEnvVars(envUpdates);
-
-  // 2. Update caller's env mapping in remote.config.json
   const config = loadRemoteConfig();
-  const caller = ensureCallerConfig(config, callerAlias);
-  if (!caller.env) {
-    caller.env = {};
-  }
+  ensureCallerConfig(config, callerAlias);
 
-  for (const [secretName, mapping] of Object.entries(newMappings)) {
-    if (mapping === null) {
-      delete caller.env[secretName];
-    } else {
-      caller.env[secretName] = mapping;
-    }
-  }
-
-  // Clean up empty env object
-  if (Object.keys(caller.env).length === 0) {
-    delete caller.env;
-  }
-
-  saveRemoteConfig(config);
+  const { config: updatedConfig, status } = setCallerSecrets(secrets, callerAlias, config);
+  saveRemoteConfig(updatedConfig);
 
   log.info(`Updated ${Object.keys(secrets).length} secret(s) for caller "${callerAlias}": ${Object.keys(secrets).join(", ")}`);
 
   await reinitializeProxy();
 
-  // Return status (never values)
-  const callerEnv = config.callers[callerAlias]?.env;
-  const status: Record<string, boolean> = {};
-  for (const name of Object.keys(secrets)) {
-    status[name] = isSecretSetForCaller(name, callerAlias, callerEnv);
-  }
   return status;
 }
 
@@ -549,65 +378,162 @@ export async function deleteListenerInstance(connectionAlias: string, instanceId
 
 // ── Remote mode connections ─────────────────────────────────────────
 
+/** Helper to get the proxy client for a given caller alias. */
+function getRemoteClient(callerAlias?: string) {
+  const aliases = getConfiguredAliases();
+  if (aliases.length === 0) return null;
+  const alias = callerAlias && aliases.includes(callerAlias) ? callerAlias : aliases[0];
+  return { client: getProxy(alias), alias };
+}
+
 /**
  * List connections from a remote proxy server.
  *
- * Uses `list_routes` via the proxy client for the given key alias (or
- * the first available alias). Maps the raw route metadata to
- * `ConnectionStatus[]` with `source: "remote"`.
+ * Tries `list_connection_templates` first (new drawlatch tool with full
+ * secret status), falling back to `list_routes` for older servers.
  *
- * Remote connections are read-only in the UI — secrets and enable/disable
- * are managed on the remote server.
+ * Returns `remoteConfigManagement: true` when the new tools are available.
  */
-export async function listRemoteConnections(callerAlias?: string): Promise<{ templates: ConnectionStatus[]; callers: CallerInfo[] }> {
+export async function listRemoteConnections(callerAlias?: string): Promise<{
+  templates: ConnectionStatus[];
+  callers: CallerInfo[];
+  remoteConfigManagement: boolean;
+}> {
+  const remote = getRemoteClient(callerAlias);
+  if (!remote?.client) {
+    return { templates: [], callers: [], remoteConfigManagement: false };
+  }
+  const { client, alias } = remote;
   const aliases = getConfiguredAliases();
-  if (aliases.length === 0) {
-    return { templates: [], callers: [] };
+
+  // Try list_connection_templates first (new drawlatch tool)
+  try {
+    const result = await client.callTool("list_connection_templates");
+    const data = Array.isArray(result) ? result : [];
+
+    const templates: ConnectionStatus[] = data.map((t: any) => ({
+      alias: t.alias,
+      name: t.name,
+      ...(t.description && { description: t.description }),
+      ...(t.docsUrl && { docsUrl: t.docsUrl }),
+      ...(t.openApiUrl && { openApiUrl: t.openApiUrl }),
+      requiredSecrets: t.requiredSecrets ?? [],
+      optionalSecrets: t.optionalSecrets ?? [],
+      hasIngestor: t.hasIngestor ?? false,
+      ...(t.ingestorType && { ingestorType: t.ingestorType }),
+      allowedEndpoints: t.allowedEndpoints ?? [],
+      enabled: t.enabled ?? false,
+      requiredSecretsSet: t.requiredSecretsSet ?? {},
+      optionalSecretsSet: t.optionalSecretsSet ?? {},
+      source: "remote" as const,
+      ...(t.stability && { stability: t.stability }),
+      ...(t.category && { category: t.category }),
+    }));
+
+    const callers: CallerInfo[] = aliases.map((a) => ({
+      alias: a,
+      connectionCount: a === alias ? templates.filter((t) => t.enabled).length : 0,
+    }));
+
+    return { templates, callers, remoteConfigManagement: true };
+  } catch {
+    // Fall through to list_routes fallback
   }
 
-  // Use specified alias or first available
-  const alias = callerAlias && aliases.includes(callerAlias) ? callerAlias : aliases[0];
-  const client = getProxy(alias);
-  if (!client) {
-    return { templates: [], callers: [] };
-  }
-
-  let routes: any[] = [];
+  // Fallback: list_routes (old drawlatch server)
   try {
     const result = await client.callTool("list_routes");
-    routes = Array.isArray(result) ? result : [];
+    const routes = Array.isArray(result) ? result : [];
+
+    const templates: ConnectionStatus[] = routes.map((route: any) => ({
+      alias: route.alias || route.name || `route-${route.index}`,
+      name: route.name || `Route ${route.index}`,
+      ...(route.description && { description: route.description }),
+      ...(route.docsUrl && { docsUrl: route.docsUrl }),
+      ...(route.openApiUrl && { openApiUrl: route.openApiUrl }),
+      requiredSecrets: [],
+      optionalSecrets: [],
+      hasIngestor: route.hasIngestor ?? false,
+      ...(route.ingestorType && { ingestorType: route.ingestorType }),
+      allowedEndpoints: route.allowedEndpoints ?? [],
+      enabled: true,
+      requiredSecretsSet: {},
+      optionalSecretsSet: {},
+      source: "remote" as const,
+      ...(route.stability && { stability: route.stability }),
+      ...(route.category && { category: route.category }),
+    }));
+
+    const callers: CallerInfo[] = aliases.map((a) => ({
+      alias: a,
+      connectionCount: a === alias ? templates.length : 0,
+    }));
+
+    return { templates, callers, remoteConfigManagement: false };
   } catch (err: any) {
     log.error(`Failed to fetch remote connections for alias "${alias}": ${err.message}`);
-    return { templates: [], callers: [] };
+    return { templates: [], callers: [], remoteConfigManagement: false };
+  }
+}
+
+/**
+ * Enable or disable a connection on a remote drawlatch server.
+ */
+export async function setRemoteConnectionEnabled(alias: string, enabled: boolean, callerAlias?: string): Promise<void> {
+  const remote = getRemoteClient(callerAlias);
+  if (!remote?.client) throw new Error("No remote proxy connection available");
+
+  const result = await remote.client.callTool("set_connection_enabled", {
+    connection: alias,
+    enabled,
+  });
+
+  if (result && typeof result === "object" && "success" in result && !result.success) {
+    throw new Error(`Failed to ${enabled ? "enable" : "disable"} remote connection "${alias}"`);
   }
 
-  // Map routes to ConnectionStatus
-  const templates: ConnectionStatus[] = routes.map((route: any) => ({
-    alias: route.alias || route.name || `route-${route.index}`,
-    name: route.name || `Route ${route.index}`,
-    ...(route.description && { description: route.description }),
-    ...(route.docsUrl && { docsUrl: route.docsUrl }),
-    ...(route.openApiUrl && { openApiUrl: route.openApiUrl }),
-    requiredSecrets: [],
-    optionalSecrets: [],
-    hasIngestor: route.hasIngestor ?? false,
-    ...(route.ingestorType && { ingestorType: route.ingestorType }),
-    allowedEndpoints: route.allowedEndpoints ?? [],
-    enabled: true, // If listed by remote, it's enabled
-    requiredSecretsSet: {},
-    optionalSecretsSet: {},
-    source: "remote" as const,
-    ...(route.stability && { stability: route.stability }),
-    ...(route.category && { category: route.category }),
-  }));
+  log.info(`Remote: ${enabled ? "enabled" : "disabled"} connection "${alias}" via caller "${remote.alias}"`);
+}
 
-  // Build callers list from key aliases
-  const callers: CallerInfo[] = aliases.map((a) => ({
-    alias: a,
-    connectionCount: a === alias ? templates.length : 0,
-  }));
+/**
+ * Set secrets on a remote drawlatch server.
+ * Returns boolean status per secret name.
+ */
+export async function setRemoteSecrets(secrets: Record<string, string>, callerAlias?: string): Promise<Record<string, boolean>> {
+  const remote = getRemoteClient(callerAlias);
+  if (!remote?.client) throw new Error("No remote proxy connection available");
 
-  return { templates, callers };
+  const result: any = await remote.client.callTool("set_secrets", { secrets });
+
+  if (result && typeof result === "object" && "secretsSet" in result) {
+    return result.secretsSet as Record<string, boolean>;
+  }
+
+  throw new Error("Unexpected response from set_secrets");
+}
+
+/**
+ * Get secret status from a remote drawlatch server.
+ */
+export async function getRemoteSecretStatus(
+  connectionAlias: string,
+  callerAlias?: string,
+): Promise<{ requiredSecretsSet: Record<string, boolean>; optionalSecretsSet: Record<string, boolean> }> {
+  const remote = getRemoteClient(callerAlias);
+  if (!remote?.client) throw new Error("No remote proxy connection available");
+
+  const result: any = await remote.client.callTool("get_secret_status", {
+    connection: connectionAlias,
+  });
+
+  if (result && typeof result === "object" && "requiredSecretsSet" in result) {
+    return {
+      requiredSecretsSet: result.requiredSecretsSet ?? {},
+      optionalSecretsSet: result.optionalSecretsSet ?? {},
+    };
+  }
+
+  throw new Error("Unexpected response from get_secret_status");
 }
 
 /** Reinitialize the local proxy to pick up config/secret changes. */

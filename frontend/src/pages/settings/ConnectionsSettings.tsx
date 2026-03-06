@@ -57,6 +57,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
   const [selectedCaller, setSelectedCaller] = useState("default");
   const [localModeActive, setLocalModeActive] = useState(true);
   const [remoteModeActive, setRemoteModeActive] = useState(false);
+  const [remoteConfigManagement, setRemoteConfigManagement] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [stabilityFilter, setStabilityFilter] = useState<"stable" | "beta" | "dev">("stable");
@@ -99,6 +100,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
         setCallers(data.callers || []);
         setLocalModeActive(data.localModeActive);
         setRemoteModeActive(data.remoteModeActive ?? false);
+        setRemoteConfigManagement(data.remoteConfigManagement ?? false);
         // When switching to remote mode for the first time, pick the first available caller
         if (!data.localModeActive && data.remoteModeActive && data.callers?.length > 0 && !caller) {
           setSelectedCaller(data.callers[0].alias);
@@ -688,6 +690,29 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
           </div>
         )}
 
+        {/* Upgrade hint when connected to old drawlatch server */}
+        {remoteModeActive && !remoteConfigManagement && !loading && (
+          <div
+            style={{
+              padding: "10px 14px",
+              marginBottom: 16,
+              borderRadius: 8,
+              background: "color-mix(in srgb, var(--warning) 10%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--warning) 25%, transparent)",
+              color: "var(--warning)",
+              fontSize: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+            <span>
+              Remote server does not support connection management. Upgrade the drawlatch server to toggle connections and configure secrets remotely.
+            </span>
+          </div>
+        )}
+
         {/* Events view or connections grid */}
         {showEventsView ? (
           <ConnectionEventsView selectedCaller={selectedCaller} onBack={() => setShowEventsView(false)} />
@@ -783,6 +808,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                         caller={selectedCaller}
                         toggling={togglingAlias === conn.alias}
                         ingestorStatuses={ingestorStatuses[conn.alias]}
+                        remoteConfigManagement={remoteConfigManagement}
                         onToggle={(enabled) => handleToggle(conn.alias, enabled)}
                         onConfigure={() => setConfiguring(conn)}
                         onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
@@ -831,6 +857,7 @@ function ConnectionCard({
   caller,
   toggling,
   ingestorStatuses,
+  remoteConfigManagement,
   onToggle,
   onConfigure,
   onOpenListenerConfig,
@@ -840,6 +867,7 @@ function ConnectionCard({
   caller: string;
   toggling: boolean;
   ingestorStatuses?: IngestorStatus[];
+  remoteConfigManagement: boolean;
   onToggle: (enabled: boolean) => void;
   onConfigure: () => void;
   onOpenListenerConfig: () => void;
@@ -851,6 +879,8 @@ function ConnectionCard({
   const [controlAction, setControlAction] = useState<string | null>(null);
   const conn = connection;
   const isRemote = conn.source === "remote";
+  // Remote connections are fully manageable when the remote server supports config management
+  const canManage = !isRemote || remoteConfigManagement;
 
   // Derive primary status from array (for backward compat)
   const ingestorStatus = ingestorStatuses?.[0];
@@ -932,7 +962,7 @@ function ConnectionCard({
         flexDirection: "column",
         gap: 12,
         transition: "border-color 0.15s",
-        opacity: conn.enabled || isRemote ? 1 : 0.75,
+        opacity: conn.enabled || (isRemote && !canManage) ? 1 : 0.75,
         overflow: "hidden",
         minWidth: 0,
       }}
@@ -961,14 +991,14 @@ function ConnectionCard({
               width: 36,
               height: 36,
               borderRadius: 8,
-              background: conn.enabled || isRemote ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
+              background: conn.enabled || (isRemote && !canManage) ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
             }}
           >
-            {isRemote ? (
+            {isRemote && !canManage ? (
               <Cloud size={18} style={{ color: "var(--accent)" }} />
             ) : (
               <Wifi
@@ -1008,8 +1038,8 @@ function ConnectionCard({
           </div>
         </div>
 
-        {/* Toggle switch (local) or Remote badge */}
-        {isRemote ? (
+        {/* Toggle switch or read-only Remote badge */}
+        {!canManage ? (
           <span
             style={{
               fontSize: 11,
@@ -1150,8 +1180,8 @@ function ConnectionCard({
           </span>
         )}
 
-        {/* Secret status badge (local mode only — remote has no secret info) */}
-        {!isRemote && requiredTotal > 0 && (
+        {/* Secret status badge */}
+        {canManage && requiredTotal > 0 && (
           <span
             style={{
               fontSize: 11,
@@ -1195,8 +1225,8 @@ function ConnectionCard({
       {/* Action buttons row (when enabled or remote) */}
       {(conn.enabled || isRemote) && (
         <div style={{ display: "flex", gap: 6 }}>
-          {/* Configure button (local only) */}
-          {!isRemote && (
+          {/* Configure button (when secrets are manageable) */}
+          {canManage && (
             <button
               onClick={onConfigure}
               style={{
@@ -1223,7 +1253,7 @@ function ConnectionCard({
             onClick={handleTestConnection}
             disabled={testing !== null}
             style={{
-              flex: isRemote ? 1 : 0,
+              flex: !canManage ? 1 : 0,
               padding: "8px 12px",
               borderRadius: 8,
               border: "1px solid var(--border)",
@@ -1255,7 +1285,7 @@ function ConnectionCard({
               onClick={handleTestIngestor}
               disabled={testing !== null}
               style={{
-                flex: isRemote ? 1 : 0,
+                flex: !canManage ? 1 : 0,
                 padding: "8px 12px",
                 borderRadius: 8,
                 border: "1px solid var(--border)",
