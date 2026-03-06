@@ -78,6 +78,38 @@
   --builtin-assistant-bg: #1e293b;
   --builtin-assistant-border: #60a5fa;
   --builtin-text: #bfdbfe;
+
+  /* Chat list */
+  --chatlist-header-bg: transparent;
+  --chatlist-header-border: var(--border);
+  --chatlist-title-text: var(--text);
+  --chatlist-subtitle-text: var(--text-muted);
+  --chatlist-item-bg: transparent;
+  --chatlist-item-hover-bg: var(--surface);
+  --chatlist-item-active-bg: var(--accent-light);
+  --chatlist-item-active-border: var(--accent);
+  --chatlist-item-border: var(--border);
+  --chatlist-item-title-text: var(--text);
+  --chatlist-item-path-text: var(--text-muted);
+  --chatlist-item-time-text: var(--text-muted);
+  --chatlist-icon: var(--text-muted);
+  --chatlist-icon-active: var(--accent);
+  --chatlist-icon-delete: var(--text-muted);
+  --chatlist-icon-nav: var(--text);
+  --chatlist-icon-nav-active: var(--text-on-accent);
+  --chatlist-badge-agent-bg: color-mix(in srgb, var(--accent) 15%, transparent);
+  --chatlist-badge-agent-text: var(--accent);
+  --chatlist-badge-triggered-bg: color-mix(in srgb, var(--status-triggered) 15%, transparent);
+  --chatlist-badge-triggered-text: var(--status-triggered);
+  --chatlist-badge-session-web-bg: var(--accent);
+  --chatlist-badge-session-cli-bg: var(--status-active);
+  --chatlist-badge-session-text: var(--text-on-accent);
+  --chatlist-unread-dot: var(--accent);
+  --chatlist-bookmark-icon: var(--accent);
+  --chatlist-empty-text: var(--text-muted);
+  --chatlist-load-more-bg: var(--surface);
+  --chatlist-load-more-text: var(--text);
+  --chatlist-load-more-border: var(--border);
 }
 
 /* Light mode overrides (applied via data-theme attribute on <html>) */
@@ -150,6 +182,38 @@
   --builtin-assistant-bg: #eff6ff;
   --builtin-assistant-border: #3b82f6;
   --builtin-text: #1e40af;
+
+  /* Chat list */
+  --chatlist-header-bg: transparent;
+  --chatlist-header-border: var(--border);
+  --chatlist-title-text: var(--text);
+  --chatlist-subtitle-text: var(--text-muted);
+  --chatlist-item-bg: transparent;
+  --chatlist-item-hover-bg: var(--surface);
+  --chatlist-item-active-bg: var(--accent-light);
+  --chatlist-item-active-border: var(--accent);
+  --chatlist-item-border: var(--border);
+  --chatlist-item-title-text: var(--text);
+  --chatlist-item-path-text: var(--text-muted);
+  --chatlist-item-time-text: var(--text-muted);
+  --chatlist-icon: var(--text-muted);
+  --chatlist-icon-active: var(--accent);
+  --chatlist-icon-delete: var(--text-muted);
+  --chatlist-icon-nav: var(--text);
+  --chatlist-icon-nav-active: var(--text-on-accent);
+  --chatlist-badge-agent-bg: color-mix(in srgb, var(--accent) 15%, transparent);
+  --chatlist-badge-agent-text: var(--accent);
+  --chatlist-badge-triggered-bg: color-mix(in srgb, var(--status-triggered) 15%, transparent);
+  --chatlist-badge-triggered-text: var(--status-triggered);
+  --chatlist-badge-session-web-bg: var(--accent);
+  --chatlist-badge-session-cli-bg: var(--status-active);
+  --chatlist-badge-session-text: var(--text-on-accent);
+  --chatlist-unread-dot: var(--accent);
+  --chatlist-bookmark-icon: var(--accent);
+  --chatlist-empty-text: var(--text-muted);
+  --chatlist-load-more-bg: var(--surface);
+  --chatlist-load-more-text: var(--text);
+  --chatlist-load-more-border: var(--border);
 }
 
 html,
