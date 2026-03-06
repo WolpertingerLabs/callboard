@@ -417,7 +417,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           style={{
             fontSize: 20,
             fontWeight: 700,
-            color: "var(--accent)",
+            color: "var(--chatlist-icon-active)",
             marginBottom: 8,
             userSelect: "none",
           }}
@@ -448,10 +448,10 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           onClick={() => navigate("/queue")}
           style={{
             background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isQueueActive ? "var(--text-on-accent)" : "var(--text)",
+            color: isQueueActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
             padding: "10px",
             borderRadius: 8,
-            border: isQueueActive ? "none" : "1px solid var(--border)",
+            border: isQueueActive ? "none" : "1px solid var(--chatlist-item-border)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -464,10 +464,10 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           onClick={() => navigate("/agents")}
           style={{
             background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isAgentsActive ? "var(--text-on-accent)" : "var(--text)",
+            color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
             padding: "10px",
             borderRadius: 8,
-            border: isAgentsActive ? "none" : "1px solid var(--border)",
+            border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -480,10 +480,10 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           onClick={() => navigate("/settings")}
           style={{
             background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isSettingsActive ? "var(--text-on-accent)" : "var(--text)",
+            color: isSettingsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
             padding: "10px",
             borderRadius: 8,
-            border: isSettingsActive ? "none" : "1px solid var(--border)",
+            border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -515,7 +515,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
             onClick={onToggleSidebar}
             style={{
               background: "transparent",
-              color: "var(--text-muted)",
+              color: "var(--chatlist-icon)",
               padding: "10px",
               borderRadius: 8,
               display: "flex",
@@ -538,15 +538,16 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       <header
         style={{
           padding: "16px 20px",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "1px solid var(--chatlist-header-border)",
+          background: "var(--chatlist-header-bg)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
         }}
       >
         <div>
-          <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 1 }}>Callboard</h1>
-          {instanceName && <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 400, letterSpacing: 0.3 }}>{instanceName}</div>}
+          <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 1, color: "var(--chatlist-title-text)" }}>Callboard</h1>
+          {instanceName && <div style={{ fontSize: 10, color: "var(--chatlist-subtitle-text)", fontWeight: 400, letterSpacing: 0.3 }}>{instanceName}</div>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
@@ -569,13 +570,13 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               onClick={() => navigate("/queue")}
               style={{
                 background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
-                color: isQueueActive ? "var(--text-on-accent)" : "var(--text)",
+                color: isQueueActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
                 padding: "10px",
                 borderTopLeftRadius: 8,
                 borderBottomLeftRadius: 8,
                 borderTopRightRadius: 0,
                 borderBottomRightRadius: 0,
-                border: isQueueActive ? "none" : "1px solid var(--border)",
+                border: isQueueActive ? "none" : "1px solid var(--chatlist-item-border)",
                 borderRight: isQueueActive ? "none" : "none",
                 display: "flex",
                 alignItems: "center",
@@ -589,10 +590,10 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               onClick={() => navigate("/agents")}
               style={{
                 background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
-                color: isAgentsActive ? "var(--text-on-accent)" : "var(--text)",
+                color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
                 padding: "10px",
                 borderRadius: 0,
-                border: isAgentsActive ? "none" : "1px solid var(--border)",
+                border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
                 borderLeft: "none",
                 borderRight: isAgentsActive ? "none" : "none",
                 display: "flex",
@@ -607,13 +608,13 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               onClick={() => navigate("/settings")}
               style={{
                 background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
-                color: isSettingsActive ? "var(--text-on-accent)" : "var(--text)",
+                color: isSettingsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
                 padding: "10px",
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
                 borderTopRightRadius: 8,
                 borderBottomRightRadius: 8,
-                border: isSettingsActive ? "none" : "1px solid var(--border)",
+                border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
                 borderLeft: "none",
                 display: "flex",
                 alignItems: "center",
@@ -646,7 +647,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               onClick={onToggleSidebar}
               style={{
                 background: "transparent",
-                color: "var(--text-muted)",
+                color: "var(--chatlist-icon)",
                 padding: "6px",
                 borderRadius: 6,
                 display: "flex",
@@ -678,7 +679,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
         <div
           style={{
             padding: "12px 20px",
-            borderBottom: "1px solid var(--border)",
+            borderBottom: "1px solid var(--chatlist-header-border)",
           }}
         >
           {/* Mode Toggle */}
@@ -1008,7 +1009,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           </div>
         )}
         {filteredChats.length === 0 && !isInitialLoading && (
-          <p style={{ padding: 20, color: "var(--text-muted)", textAlign: "center" }}>
+          <p style={{ padding: 20, color: "var(--chatlist-empty-text)", textAlign: "center" }}>
             {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
           </p>
         )}
@@ -1030,7 +1031,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               padding: "8px 20px",
               textAlign: "center",
               fontSize: 12,
-              color: "var(--text-muted)",
+              color: "var(--chatlist-empty-text)",
             }}
           >
             Showing {triggeredCount} triggered {triggeredCount === 1 ? "chat" : "chats"}
@@ -1038,18 +1039,18 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
         )}
 
         {hasMore && !anyFilterActive && (
-          <div style={{ padding: "16px 20px", borderTop: "1px solid var(--border)" }}>
+          <div style={{ padding: "16px 20px", borderTop: "1px solid var(--chatlist-item-border)" }}>
             <button
               onClick={loadMore}
               disabled={isLoadingMore}
               style={{
                 width: "100%",
-                background: "var(--surface)",
-                color: "var(--text)",
+                background: "var(--chatlist-load-more-bg)",
+                color: "var(--chatlist-load-more-text)",
                 padding: "12px 16px",
                 borderRadius: 8,
                 fontSize: 14,
-                border: "1px solid var(--border)",
+                border: "1px solid var(--chatlist-load-more-border)",
                 cursor: isLoadingMore ? "default" : "pointer",
                 opacity: isLoadingMore ? 0.6 : 1,
               }}

@@ -1095,12 +1095,12 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       tool(
         "update_theme",
-        "Update an existing custom UI theme. Use get_theme first to read the current values, then pass back the modified dark/light variable maps. You can change any CSS variable values, rename the theme, or update a subset of variables (unchanged ones are preserved from the existing theme).",
+        "Update an existing custom UI theme. You only need to provide the CSS variables you want to change — any variables not included will keep their existing values. You can also optionally rename the theme.",
         {
           name: z.string().describe("Current name of the theme to update"),
-          new_name: z.string().describe("New name for the theme (same as current name to keep it unchanged)"),
-          dark: z.record(z.string(), z.string()).describe("Full dark mode CSS variable map — replaces existing dark values"),
-          light: z.record(z.string(), z.string()).describe("Full light mode CSS variable map — replaces existing light values"),
+          new_name: z.string().optional().describe("New name for the theme (omit to keep current name)"),
+          dark: z.record(z.string(), z.string()).optional().describe("Dark mode CSS variables to update — only include variables you want to change"),
+          light: z.record(z.string(), z.string()).optional().describe("Light mode CSS variables to update — only include variables you want to change"),
         },
         async (args) => {
           try {
@@ -1109,9 +1109,9 @@ export function buildAgentToolsServer(agentAlias: string) {
               return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found. Use get_theme to see available themes.` }] };
             }
             const updated: CustomTheme = {
-              name: args.new_name.trim() || existing.name,
-              dark: args.dark as Record<string, string>,
-              light: args.light as Record<string, string>,
+              name: args.new_name?.trim() || existing.name,
+              dark: { ...existing.dark, ...(args.dark as Record<string, string> | undefined) },
+              light: { ...existing.light, ...(args.light as Record<string, string> | undefined) },
               createdAt: existing.createdAt,
               updatedAt: new Date().toISOString(),
             };
