@@ -1140,6 +1140,40 @@ export async function checkClaudeStatus(): Promise<ClaudeAuthStatus> {
   return res.json();
 }
 
+// System info API
+
+export interface SystemInfoAccount {
+  email?: string;
+  organization?: string;
+  subscriptionType?: string;
+  tokenSource?: string;
+  apiKeySource?: string;
+}
+
+export interface SystemInfoModel {
+  value: string;
+  displayName: string;
+  description: string;
+}
+
+export interface SystemInfo {
+  version: string;
+  nodeVersion: string;
+  platform: string;
+  sdkVersion: string;
+  claudeCliVersion: string;
+  proxyMode?: string;
+  environment: string;
+  account?: SystemInfoAccount;
+  models?: SystemInfoModel[];
+}
+
+export async function getSystemInfo(): Promise<SystemInfo> {
+  const res = await fetch(`${BASE}/system-info`, { credentials: "include" });
+  await assertOk(res, "Failed to get system info");
+  return res.json();
+}
+
 // Server restart API
 
 export async function restartServer(): Promise<{ success: boolean; message: string }> {

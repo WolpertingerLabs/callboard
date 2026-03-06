@@ -59,6 +59,7 @@ import {
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 import { startTunnelIfEnabled, stopTunnel } from "./services/tunnel-manager.js";
+import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 
 const log = createLogger("server");
 
@@ -173,6 +174,56 @@ app.get(
       claudeStatusCache = { data: fallback, ts: now };
       res.json(fallback);
     }
+  },
+);
+
+// System info (requires auth — version, environment, SDK info)
+app.get(
+  "/api/system-info",
+  // #swagger.tags = ['System']
+  // #swagger.summary = 'Get system information'
+  // #swagger.description = 'Returns Callboard version, Node.js version, platform, Claude Agent SDK version, account info, and supported models.'
+  /* #swagger.responses[200] = { description: "System information" } */
+  async (_req, res) => {
+    let version = "unknown";
+    try {
+      const pkgPath = path.join(__pkgRoot, "package.json");
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      version = pkg.version;
+    } catch {
+      // ignore
+    }
+
+    let sdkVersion = "unknown";
+    try {
+      const sdkPkgPath = path.join(__pkgRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
+      const sdkPkg = JSON.parse(readFileSync(sdkPkgPath, "utf-8"));
+      sdkVersion = sdkPkg.version;
+    } catch {
+      // ignore
+    }
+
+    let claudeCliVersion = "unknown";
+    try {
+      claudeCliVersion = execSync("claude --version", { timeout: 5_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    } catch {
+      // ignore
+    }
+
+    // Include cached SDK info (account + models) if available
+    const sdkInfo = await getSdkInfoAsync();
+
+    res.json({
+      version,
+      nodeVersion: process.version,
+      platform: `${process.platform} (${process.arch})`,
+      sdkVersion,
+      claudeCliVersion,
+      proxyMode: process.env.MCP_PROXY_MODE || undefined,
+      environment: process.env.NODE_ENV || "development",
+      account: sdkInfo.account || undefined,
+      models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
+    });
   },
 );
 
@@ -291,6 +342,9 @@ app.listen(PORT, () => {
       log.warn(`No password configured. Set one with: callboard set-password`);
     }
   }
+
+  // Cache SDK info (account, models) in the background — non-blocking
+  initSdkInfoCache();
 
   // Initialize automation systems (non-blocking, log errors but don't crash)
   try {

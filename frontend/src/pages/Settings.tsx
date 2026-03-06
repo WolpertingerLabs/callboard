@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut } from "lucide-react";
+import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
 import PluginsSettings from "./settings/PluginsSettings";
 import ProxySettings from "./settings/ProxySettings";
 import ConnectionsSettings from "./settings/ConnectionsSettings";
 import AccountSettings from "./settings/AccountSettings";
+import AboutSettings from "./settings/AboutSettings";
 
 const tabs = [
   { key: "general", label: "General", icon: SlidersHorizontal },
@@ -14,6 +15,7 @@ const tabs = [
   { key: "proxy", label: "Proxy", icon: Globe },
   { key: "connections", label: "Connections", icon: Wifi },
   { key: "account", label: "Account", icon: LogOut },
+  { key: "about", label: "About", icon: Info },
 ];
 
 interface SettingsProps {
@@ -111,6 +113,7 @@ export default function Settings({ onLogout }: SettingsProps) {
         {activeTab === "proxy" && <ProxySettings />}
         {activeTab === "connections" && <ConnectionsSettings onSwitchTab={setActiveTab} />}
         {activeTab === "account" && <AccountSettings onLogout={onLogout} />}
+        {activeTab === "about" && <AboutSettings />}
       </div>
     </div>
   );
