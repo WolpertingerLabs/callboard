@@ -33,6 +33,8 @@ import type {
   KeyAliasInfo,
   CallerInfo,
   ConnectionStatus,
+  CustomTheme,
+  ThemeListItem,
 } from "shared/types/index.js";
 
 export type {
@@ -70,6 +72,8 @@ export type {
   KeyAliasInfo,
   CallerInfo,
   ConnectionStatus,
+  CustomTheme,
+  ThemeListItem,
 };
 
 const BASE = "/api";
@@ -1211,4 +1215,67 @@ export async function randomizeInstanceName(): Promise<string> {
   await assertOk(res, "Failed to randomize instance name");
   const data = await res.json();
   return data.name;
+}
+
+// ── Themes ──────────────────────────────────────────────────────────
+
+export async function listThemes(): Promise<ThemeListItem[]> {
+  const res = await fetch(`${BASE}/themes`, { credentials: "include" });
+  await assertOk(res, "Failed to list themes");
+  const data = await res.json();
+  return data.themes;
+}
+
+export async function getTheme(name: string): Promise<CustomTheme> {
+  const res = await fetch(`${BASE}/themes/${encodeURIComponent(name)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get theme");
+  const data = await res.json();
+  return data.theme;
+}
+
+export async function createTheme(theme: { name: string; dark: Record<string, string>; light: Record<string, string> }): Promise<CustomTheme> {
+  const res = await fetch(`${BASE}/themes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(theme),
+  });
+  await assertOk(res, "Failed to create theme");
+  const data = await res.json();
+  return data.theme;
+}
+
+export async function generateTheme(name: string, description: string): Promise<CustomTheme> {
+  const res = await fetch(`${BASE}/themes/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ name, description }),
+  });
+  await assertOk(res, "Failed to generate theme");
+  const data = await res.json();
+  return data.theme;
+}
+
+export async function updateTheme(
+  originalName: string,
+  theme: { name: string; dark: Record<string, string>; light: Record<string, string> },
+): Promise<CustomTheme> {
+  const res = await fetch(`${BASE}/themes/${encodeURIComponent(originalName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(theme),
+  });
+  await assertOk(res, "Failed to update theme");
+  const data = await res.json();
+  return data.theme;
+}
+
+export async function deleteTheme(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/themes/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete theme");
 }

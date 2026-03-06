@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
-import { Sun, Moon, Monitor, RefreshCw } from "lucide-react";
-import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode } from "../../utils/localStorage";
+import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette } from "lucide-react";
+import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
-import { fetchInstanceName, updateInstanceName, randomizeInstanceName } from "../../api";
+import { fetchInstanceName, updateInstanceName, randomizeInstanceName, listThemes, generateTheme, deleteTheme } from "../../api";
+import { reloadCustomTheme } from "../../App";
+import type { ThemeListItem } from "../../api";
 
 export default function GeneralSettings() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getThemeMode());
@@ -11,9 +13,20 @@ export default function GeneralSettings() {
   const [instanceName, setInstanceName] = useState("");
   const [nameSaved, setNameSaved] = useState(false);
 
+  // Theme selector state
+  const [customThemes, setCustomThemes] = useState<ThemeListItem[]>([]);
+  const [selectedTheme, setSelectedTheme] = useState<string | null>(() => getCustomThemeName());
+  const [newThemeName, setNewThemeName] = useState("");
+  const [newThemeDesc, setNewThemeDesc] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [themeError, setThemeError] = useState("");
+
   useEffect(() => {
     fetchInstanceName()
       .then(setInstanceName)
+      .catch(() => {});
+    listThemes()
+      .then(setCustomThemes)
       .catch(() => {});
   }, []);
 
@@ -21,6 +34,47 @@ export default function GeneralSettings() {
     setThemeMode(mode);
     saveThemeMode(mode);
     window.dispatchEvent(new Event("theme-change"));
+  };
+
+  const handleSelectTheme = (name: string | null) => {
+    setSelectedTheme(name);
+    saveCustomThemeName(name);
+    reloadCustomTheme();
+  };
+
+  const handleGenerateTheme = async () => {
+    const name = newThemeName.trim();
+    const desc = newThemeDesc.trim();
+    if (!name || !desc) {
+      setThemeError("Both name and description are required.");
+      return;
+    }
+    setGenerating(true);
+    setThemeError("");
+    try {
+      const theme = await generateTheme(name, desc);
+      setCustomThemes((prev) => [...prev, { name: theme.name, createdAt: theme.createdAt, updatedAt: theme.updatedAt }]);
+      setNewThemeName("");
+      setNewThemeDesc("");
+      // Auto-select the new theme
+      handleSelectTheme(theme.name);
+    } catch (err: any) {
+      setThemeError(err.message || "Failed to generate theme");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleDeleteTheme = async (name: string) => {
+    try {
+      await deleteTheme(name);
+      setCustomThemes((prev) => prev.filter((t) => t.name !== name));
+      if (selectedTheme === name) {
+        handleSelectTheme(null);
+      }
+    } catch {
+      /* ignore */
+    }
   };
 
   const handleSave = () => {
@@ -200,6 +254,179 @@ export default function GeneralSettings() {
               {label}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Theme Selector Section */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 20,
+          background: "var(--bg)",
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <Palette size={16} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Theme</span>
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginBottom: 12,
+          }}
+        >
+          Select a color theme or generate a new one with AI.
+        </div>
+
+        {/* Theme list */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+          {/* Classic Callboard (default) */}
+          <button
+            onClick={() => handleSelectTheme(null)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "10px 14px",
+              borderRadius: 8,
+              border: selectedTheme === null ? "2px solid var(--accent)" : "1px solid var(--border)",
+              background: selectedTheme === null ? "var(--accent-bg)" : "var(--surface)",
+              color: "var(--text)",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: selectedTheme === null ? 600 : 400,
+              textAlign: "left",
+            }}
+          >
+            <span>Classic Callboard</span>
+            {selectedTheme === null && <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 500 }}>Active</span>}
+          </button>
+
+          {/* Custom themes */}
+          {customThemes.map((theme) => (
+            <div
+              key={theme.name}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <button
+                onClick={() => handleSelectTheme(theme.name)}
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: selectedTheme === theme.name ? "2px solid var(--accent)" : "1px solid var(--border)",
+                  background: selectedTheme === theme.name ? "var(--accent-bg)" : "var(--surface)",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: selectedTheme === theme.name ? 600 : 400,
+                  textAlign: "left",
+                }}
+              >
+                <span>{theme.name}</span>
+                {selectedTheme === theme.name && <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 500 }}>Active</span>}
+              </button>
+              <button
+                onClick={() => handleDeleteTheme(theme.name)}
+                title={`Delete "${theme.name}"`}
+                style={{
+                  background: "var(--surface)",
+                  color: "var(--text-muted)",
+                  padding: 8,
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Generate new theme */}
+        <div
+          style={{
+            borderTop: "1px solid var(--border)",
+            paddingTop: 14,
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <Sparkles size={14} style={{ color: "var(--accent)" }} />
+            Generate New Theme
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <input
+              type="text"
+              placeholder="Theme name"
+              value={newThemeName}
+              onChange={(e) => setNewThemeName(e.target.value)}
+              disabled={generating}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 13,
+                boxSizing: "border-box",
+              }}
+            />
+            <textarea
+              placeholder='Describe the theme (e.g., "warm sunset colors with orange and purple accents")'
+              value={newThemeDesc}
+              onChange={(e) => setNewThemeDesc(e.target.value)}
+              disabled={generating}
+              rows={2}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 13,
+                resize: "vertical",
+                fontFamily: "inherit",
+                boxSizing: "border-box",
+              }}
+            />
+            {themeError && <div style={{ fontSize: 12, color: "var(--error)" }}>{themeError}</div>}
+            <button
+              onClick={handleGenerateTheme}
+              disabled={generating}
+              style={{
+                background: generating ? "var(--surface)" : "var(--accent)",
+                color: generating ? "var(--text-muted)" : "var(--text-on-accent)",
+                padding: "10px 20px",
+                borderRadius: 8,
+                border: generating ? "1px solid var(--border)" : "none",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: generating ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+              }}
+            >
+              <Sparkles size={14} />
+              {generating ? "Generating..." : "Generate Theme"}
+            </button>
+          </div>
         </div>
       </div>
 
