@@ -1,7 +1,17 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
-import { listChats, deleteChat, toggleBookmark, listAgents, getAgentIdentityPrompt, type Chat, type DefaultPermissions, type AgentConfig } from "../api";
+import {
+  listChats,
+  deleteChat,
+  toggleBookmark,
+  listAgents,
+  getAgentIdentityPrompt,
+  fetchInstanceName,
+  type Chat,
+  type DefaultPermissions,
+  type AgentConfig,
+} from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import ChatListItem from "../components/ChatListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
@@ -87,6 +97,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [instanceName, setInstanceName] = useState("");
   const navigate = useNavigate();
   const location = useLocation();
   const isQueueActive = location.pathname === "/queue";
@@ -156,6 +167,12 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
     load();
     onRefresh(() => load());
   }, [onRefresh, load]);
+
+  useEffect(() => {
+    fetchInstanceName()
+      .then(setInstanceName)
+      .catch(() => {});
+  }, []);
 
   // Refetch chat list when sessions start or stop (debounced to avoid rapid-fire
   // during new-chat migration: temp ID stop → real ID start).
@@ -524,7 +541,10 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           justifyContent: "space-between",
         }}
       >
-        <h1 style={{ fontSize: 20, fontWeight: 600 }}>Callboard</h1>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 1 }}>Callboard</h1>
+          {instanceName && <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 400, letterSpacing: 0.3 }}>{instanceName}</div>}
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             onClick={() => setShowNew(!showNew)}
