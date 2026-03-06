@@ -50,7 +50,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
         alignItems: "center",
         justifyContent: "space-between",
         cursor: "pointer",
-        background: isActive ? "var(--accent-light, rgba(99,102,241,0.1))" : undefined,
+        background: isActive ? "var(--accent-light)" : undefined,
         borderLeft: isActive ? "3px solid var(--accent)" : "3px solid transparent",
       }}
     >
@@ -88,8 +88,8 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                 fontWeight: 600,
                 padding: "1px 6px",
                 borderRadius: 4,
-                background: "color-mix(in srgb, #f59e0b 15%, transparent)",
-                color: "#f59e0b",
+                background: "color-mix(in srgb, var(--status-triggered) 15%, transparent)",
+                color: "var(--status-triggered)",
                 flexShrink: 0,
               }}
             >
@@ -117,8 +117,8 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                 fontSize: 10,
                 padding: "1px 4px",
                 borderRadius: 3,
-                background: sessionStatus.type === "web" ? "var(--accent)" : "#10b981",
-                color: "#fff",
+                background: sessionStatus.type === "web" ? "var(--accent)" : "var(--status-active)",
+                color: "var(--text-on-accent)",
                 fontWeight: 500,
               }}
             >

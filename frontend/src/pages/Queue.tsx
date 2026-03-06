@@ -85,7 +85,7 @@ export default function Queue() {
           style={{
             marginLeft: "auto",
             background: "var(--accent)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             padding: "6px 12px",
             borderRadius: 6,
             fontSize: 13,
@@ -102,7 +102,7 @@ export default function Queue() {
           <div
             style={{
               color: "var(--danger)",
-              background: "var(--danger-bg, rgba(255, 0, 0, 0.1))",
+              background: "var(--danger-bg)",
               padding: 12,
               borderRadius: 6,
               marginBottom: 16,
@@ -159,7 +159,7 @@ export default function Queue() {
                       disabled={executingId === item.id}
                       style={{
                         background: executingId === item.id ? "var(--border)" : "var(--accent)",
-                        color: "#fff",
+                        color: "var(--text-on-accent)",
                         padding: "6px 12px",
                         borderRadius: 4,
                         fontSize: 12,
@@ -203,7 +203,7 @@ export default function Queue() {
                       disabled={executingId === item.id}
                       style={{
                         background: executingId === item.id ? "var(--border)" : "var(--danger)",
-                        color: "#fff",
+                        color: "var(--text-on-accent)",
                         padding: "6px 12px",
                         borderRadius: 4,
                         fontSize: 12,
@@ -237,12 +237,7 @@ export default function Queue() {
         )}
       </div>
 
-      <EditDraftModal
-        isOpen={editingDraft !== null}
-        onClose={() => setEditingDraft(null)}
-        draft={editingDraft}
-        onSaved={loadDrafts}
-      />
+      <EditDraftModal isOpen={editingDraft !== null} onClose={() => setEditingDraft(null)} draft={editingDraft} onSaved={loadDrafts} />
     </div>
   );
 }

@@ -225,7 +225,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
               fontSize: 12,
               fontWeight: 500,
               background: activeSource === null ? "var(--accent)" : "var(--surface)",
-              color: activeSource === null ? "#fff" : "var(--text)",
+              color: activeSource === null ? "var(--text-on-accent)" : "var(--text)",
               border: activeSource === null ? "1px solid var(--accent)" : "1px solid var(--border)",
               cursor: "pointer",
             }}
@@ -245,7 +245,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                   fontWeight: 500,
                   fontFamily: "monospace",
                   background: activeSource === src ? "var(--accent)" : "var(--surface)",
-                  color: activeSource === src ? "#fff" : "var(--text)",
+                  color: activeSource === src ? "var(--text-on-accent)" : "var(--text)",
                   border: activeSource === src ? "1px solid var(--accent)" : "1px solid var(--border)",
                   cursor: "pointer",
                 }}

@@ -1,19 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  FolderSearch,
-  RefreshCw,
-  Trash2,
-  Plug,
-  Server,
-  Plus,
-  Loader2,
-  Eye,
-  EyeOff,
-  Save,
-  AlertTriangle,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, FolderSearch, RefreshCw, Trash2, Plug, Server, Plus, Loader2, Eye, EyeOff, Save, AlertTriangle } from "lucide-react";
 import FolderBrowser from "../../components/FolderBrowser";
 import {
   getAppPlugins,
@@ -454,7 +440,7 @@ export default function PluginsSettings() {
                       width: 16,
                       height: 16,
                       borderRadius: "50%",
-                      background: "#fff",
+                      background: "var(--toggle-knob)",
                       position: "absolute",
                       top: 2,
                       left: plugin.enabled ? 18 : 2,
@@ -574,7 +560,7 @@ export default function PluginsSettings() {
                           width: 16,
                           height: 16,
                           borderRadius: "50%",
-                          background: "#fff",
+                          background: "var(--toggle-knob)",
                           position: "absolute",
                           top: 2,
                           left: server.enabled ? 18 : 2,
@@ -601,8 +587,8 @@ export default function PluginsSettings() {
                             fontSize: 10,
                             padding: "1px 5px",
                             borderRadius: 3,
-                            background: server.type === "stdio" ? "#2d6a4f22" : "#1d3557aa",
-                            color: server.type === "stdio" ? "#2d6a4f" : "#a8dadc",
+                            background: server.type === "stdio" ? "var(--badge-env-bg)" : "var(--badge-sse-bg)",
+                            color: server.type === "stdio" ? "var(--badge-env-text)" : "var(--badge-sse-text)",
                             fontFamily: "monospace",
                           }}
                         >
@@ -642,7 +628,7 @@ export default function PluginsSettings() {
                             marginTop: 6,
                             padding: "4px 8px",
                             borderRadius: 4,
-                            background: "rgba(220, 53, 69, 0.1)",
+                            background: "var(--danger-bg)",
                             color: "var(--danger, #dc3545)",
                             fontSize: 11,
                             fontWeight: 600,
@@ -660,7 +646,7 @@ export default function PluginsSettings() {
                         onClick={() => handleExpandMcpServer(server)}
                         className={hasMissingEnv && !isExpanded ? "env-pulse" : ""}
                         style={{
-                          background: hasMissingEnv && !isExpanded ? "rgba(220, 53, 69, 0.15)" : "none",
+                          background: hasMissingEnv && !isExpanded ? "var(--danger-bg)" : "none",
                           border: hasMissingEnv && !isExpanded ? "1px solid var(--danger, #dc3545)" : "none",
                           borderRadius: 6,
                           padding: "4px 6px",
@@ -715,8 +701,8 @@ export default function PluginsSettings() {
                             gap: 6,
                             padding: "6px 10px",
                             borderRadius: 4,
-                            background: "rgba(220, 53, 69, 0.1)",
-                            border: "1px solid rgba(220, 53, 69, 0.3)",
+                            background: "var(--danger-bg)",
+                            border: "1px solid var(--danger-border)",
                             color: "var(--danger, #dc3545)",
                             fontSize: 11,
                             fontWeight: 600,
@@ -767,8 +753,8 @@ export default function PluginsSettings() {
                                     fontSize: 10,
                                     padding: "1px 5px",
                                     borderRadius: 3,
-                                    background: "#2d6a4f22",
-                                    color: "#2d6a4f",
+                                    background: "var(--badge-env-bg)",
+                                    color: "var(--badge-env-text)",
                                     fontFamily: "monospace",
                                   }}
                                 >
@@ -790,7 +776,7 @@ export default function PluginsSettings() {
                                   padding: "6px 8px",
                                   borderRadius: 4,
                                   border: isMissing ? "1px solid var(--danger, #dc3545)" : "1px solid var(--border)",
-                                  background: isMissing ? "rgba(220, 53, 69, 0.05)" : "var(--surface)",
+                                  background: isMissing ? "var(--danger-bg)" : "var(--surface)",
                                   color: "var(--text)",
                                   fontSize: 12,
                                   fontFamily: "monospace",
@@ -804,12 +790,12 @@ export default function PluginsSettings() {
                                   setEnvSaved(false);
                                 }}
                                 style={{
-                                  background: isRef ? "#2d6a4f22" : "none",
-                                  border: isRef ? "1px solid #2d6a4f" : "1px solid var(--border)",
+                                  background: isRef ? "var(--badge-env-bg)" : "none",
+                                  border: isRef ? "1px solid var(--badge-env-border)" : "1px solid var(--border)",
                                   borderRadius: 4,
                                   padding: "5px 6px",
                                   cursor: "pointer",
-                                  color: isRef ? "#2d6a4f" : "var(--text-muted)",
+                                  color: isRef ? "var(--badge-env-text)" : "var(--text-muted)",
                                   display: "flex",
                                   alignItems: "center",
                                   fontSize: 10,
@@ -857,8 +843,8 @@ export default function PluginsSettings() {
                             padding: "5px 12px",
                             borderRadius: 4,
                             border: "none",
-                            background: envSaved ? "#2d6a4f" : "var(--accent)",
-                            color: "#fff",
+                            background: envSaved ? "var(--success)" : "var(--accent)",
+                            color: "var(--text-on-accent)",
                             fontSize: 12,
                             cursor: envSaving ? "default" : "pointer",
                             opacity: envSaving ? 0.7 : 1,
@@ -916,8 +902,8 @@ export default function PluginsSettings() {
       {/* CSS for spinner and pulse animations */}
       <style>{`
         @keyframes env-pulse-anim {
-          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); }
-          50% { opacity: 0.85; box-shadow: 0 0 0 4px rgba(220, 53, 69, 0); }
+          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--danger-border); }
+          50% { opacity: 0.85; box-shadow: 0 0 0 4px transparent; }
         }
         .env-pulse {
           animation: env-pulse-anim 2s ease-in-out infinite;

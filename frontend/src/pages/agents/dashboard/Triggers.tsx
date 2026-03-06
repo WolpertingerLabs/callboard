@@ -249,7 +249,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
             alignItems: "center",
             gap: 6,
             background: showForm ? "transparent" : "var(--accent)",
-            color: showForm ? "var(--text-muted)" : "#fff",
+            color: showForm ? "var(--text-muted)" : "var(--text-on-accent)",
             padding: "8px 14px",
             borderRadius: 8,
             fontSize: 14,
@@ -523,7 +523,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
               disabled={!formName.trim() || formSaving}
               style={{
                 background: "var(--accent)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 padding: "10px 18px",
                 borderRadius: 8,
                 fontSize: 14,
@@ -844,7 +844,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
               maxWidth: 520,
               maxHeight: "80vh",
               overflow: "hidden",
-              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              boxShadow: "var(--shadow-lg)",
               border: "1px solid var(--border)",
             }}
           >

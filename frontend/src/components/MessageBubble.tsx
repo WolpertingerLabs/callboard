@@ -86,7 +86,7 @@ export function getToolSummary(toolName: string, content: string): string {
 const StatusIcon = ({ status }: { status: string }) => {
   switch (status) {
     case "completed":
-      return <Check size={14} style={{ color: "#10b981" }} />;
+      return <Check size={14} style={{ color: "var(--status-active)" }} />;
     case "in_progress":
       return <RotateCw size={14} style={{ color: "var(--accent)" }} />;
     case "pending":

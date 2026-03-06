@@ -54,7 +54,7 @@ export default function ChatFilterBar({
           onClick={onToggleBookmark}
           style={{
             background: bookmarkFilter ? "var(--accent)" : "var(--bg-secondary)",
-            color: bookmarkFilter ? "#fff" : "var(--text)",
+            color: bookmarkFilter ? "var(--text-on-accent)" : "var(--text)",
             padding: "8px",
             borderRadius: 6,
             border: bookmarkFilter ? "none" : "1px solid var(--border)",
@@ -74,7 +74,7 @@ export default function ChatFilterBar({
           onClick={onToggleTriggered}
           style={{
             background: showTriggered ? "var(--accent)" : "var(--bg-secondary)",
-            color: showTriggered ? "#fff" : "var(--text)",
+            color: showTriggered ? "var(--text-on-accent)" : "var(--text)",
             padding: "8px",
             borderRadius: 6,
             border: showTriggered ? "none" : "1px solid var(--border)",
@@ -94,7 +94,7 @@ export default function ChatFilterBar({
           onClick={() => setFilterModalOpen(true)}
           style={{
             background: filtersActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: filtersActive ? "#fff" : "var(--text)",
+            color: filtersActive ? "var(--text-on-accent)" : "var(--text)",
             padding: "8px",
             borderRadius: 6,
             border: filtersActive ? "none" : "1px solid var(--border)",

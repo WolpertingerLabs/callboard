@@ -126,7 +126,13 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
         }}
       >
         <div style={{ flex: 1, position: "relative" }}>
-          <SlashCommandAutocomplete slashCommands={slashCommands} query={value} onSelect={handleCommandSelect} visible={showAutocomplete} commandDescriptions={commandDescriptions} />
+          <SlashCommandAutocomplete
+            slashCommands={slashCommands}
+            query={value}
+            onSelect={handleCommandSelect}
+            visible={showAutocomplete}
+            commandDescriptions={commandDescriptions}
+          />
 
           <textarea
             ref={textareaRef}
@@ -165,7 +171,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
               height: 24,
               borderRadius: 6,
               background: showImageUpload ? "var(--accent)" : "var(--border)",
-              color: showImageUpload ? "#fff" : "var(--text-muted)",
+              color: showImageUpload ? "var(--text-on-accent)" : "var(--text-muted)",
               border: "none",
               fontSize: 14,
               display: "flex",
@@ -214,7 +220,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
           disabled={!canSend}
           style={{
             background: !canSend ? "var(--border)" : "var(--accent)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             width: 40,
             height: 40,
             borderRadius: 10,
