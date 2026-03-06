@@ -26,6 +26,9 @@ import { getActiveSession } from "./claude.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { resolveBranch } from "../utils/git.js";
+import { themeFileService } from "./theme-file-service.js";
+import { generateThemeCSS } from "./quick-completion.js";
+import type { CustomTheme } from "shared/types/index.js";
 
 import { createLogger } from "../utils/logger.js";
 
@@ -1029,6 +1032,115 @@ export function buildAgentToolsServer(agentAlias: string) {
           } catch (err: any) {
             log.error(`update_agent failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error updating agent: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── Themes ─────────────────────────────────────────────────
+
+      tool("list_themes", "List all custom UI themes available on the Callboard instance.", {}, async () => {
+        try {
+          const themes = themeFileService.listThemes();
+          return { content: [{ type: "text" as const, text: JSON.stringify({ themes }, null, 2) }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error listing themes: ${err.message}` }] };
+        }
+      }),
+
+      tool(
+        "get_theme",
+        "Get the full details of a custom UI theme by name, including all CSS variable values for dark and light modes.",
+        {
+          name: z.string().describe("The theme name"),
+        },
+        async (args) => {
+          try {
+            const theme = themeFileService.getTheme(args.name);
+            if (!theme) {
+              return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found.` }] };
+            }
+            return { content: [{ type: "text" as const, text: JSON.stringify(theme, null, 2) }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error getting theme: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "generate_theme",
+        "Generate a new custom UI theme using AI. Provide a name and a natural language description of the desired look and feel. The AI will create appropriate CSS variable values for both dark and light modes.",
+        {
+          name: z.string().describe("Name for the new theme (e.g. 'Ocean Breeze', 'Sunset Warmth')"),
+          description: z
+            .string()
+            .describe("Natural language description of the desired theme colors and mood (e.g. 'warm sunset colors with orange and purple accents')"),
+        },
+        async (args) => {
+          try {
+            const existing = themeFileService.getTheme(args.name);
+            if (existing) {
+              return { content: [{ type: "text" as const, text: `Theme "${args.name}" already exists. Use a different name or delete it first.` }] };
+            }
+            const theme = await generateThemeCSS(args.name, args.description);
+            if (!theme) {
+              return { content: [{ type: "text" as const, text: "Failed to generate theme. The AI did not produce valid theme data." }] };
+            }
+            themeFileService.createTheme(theme);
+            return { content: [{ type: "text" as const, text: JSON.stringify({ message: `Theme "${theme.name}" created successfully.`, theme }, null, 2) }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error generating theme: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "update_theme",
+        "Update an existing custom UI theme. Use get_theme first to read the current values, then pass back the modified dark/light variable maps. You can change any CSS variable values, rename the theme, or update a subset of variables (unchanged ones are preserved from the existing theme).",
+        {
+          name: z.string().describe("Current name of the theme to update"),
+          new_name: z.string().describe("New name for the theme (same as current name to keep it unchanged)"),
+          dark: z.record(z.string(), z.string()).describe("Full dark mode CSS variable map — replaces existing dark values"),
+          light: z.record(z.string(), z.string()).describe("Full light mode CSS variable map — replaces existing light values"),
+        },
+        async (args) => {
+          try {
+            const existing = themeFileService.getTheme(args.name);
+            if (!existing) {
+              return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found. Use get_theme to see available themes.` }] };
+            }
+            const updated: CustomTheme = {
+              name: args.new_name.trim() || existing.name,
+              dark: args.dark as Record<string, string>,
+              light: args.light as Record<string, string>,
+              createdAt: existing.createdAt,
+              updatedAt: new Date().toISOString(),
+            };
+            themeFileService.updateTheme(args.name, updated);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ message: `Theme "${updated.name}" updated successfully.`, theme: updated }, null, 2) }],
+            };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error updating theme: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "delete_theme",
+        "Delete a custom UI theme by name.",
+        {
+          name: z.string().describe("The name of the theme to delete"),
+        },
+        async (args) => {
+          try {
+            const existing = themeFileService.getTheme(args.name);
+            if (!existing) {
+              return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found.` }] };
+            }
+            themeFileService.deleteTheme(args.name);
+            return { content: [{ type: "text" as const, text: `Theme "${args.name}" deleted successfully.` }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error deleting theme: ${err.message}` }] };
           }
         },
       ),
