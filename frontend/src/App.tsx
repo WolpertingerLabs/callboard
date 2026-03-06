@@ -57,6 +57,15 @@ function applyCustomThemeVars(theme: CustomTheme, resolvedMode: string) {
 
 /** Force-reload the custom theme from server (after create/edit/delete). */
 export function reloadCustomTheme() {
+  // Clean up old theme vars before clearing cache
+  // (applyTheme's cleanup relies on cachedCustomTheme, so do it here first)
+  if (cachedCustomTheme) {
+    const root = document.documentElement;
+    const vars = { ...cachedCustomTheme.dark, ...cachedCustomTheme.light };
+    for (const key of Object.keys(vars)) {
+      root.style.removeProperty(`--${key}`);
+    }
+  }
   cachedCustomTheme = null;
   applyTheme(getThemeMode());
 }
