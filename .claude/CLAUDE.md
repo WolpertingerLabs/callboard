@@ -36,19 +36,18 @@ The frontend uses CSS custom properties (variables) for all colors, shadows, and
 
 ### CSS Variable Categories
 
-All variables must be defined in both `:root` (dark) and `[data-theme="light"]` blocks:
+The authoritative list of all CSS variables is in `frontend/src/index.css` — always reference that file for the current variable names and values. Variables are organized into commented sections in both `:root` (dark) and `[data-theme="light"]` blocks:
 
-| Category           | Variables                                                                                                                                                                                                                                    | Purpose                                    |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Core palette       | `--bg`, `--surface`, `--border`, `--text`, `--text-muted`, `--accent`, `--accent-hover`, `--user-bg`, `--assistant-bg`, `--code-bg`, `--danger`, `--error`, `--success`, `--warning`, `--bg-secondary`, `--text-secondary`, `--border-light` | Primary UI colors                          |
-| Text on colors     | `--text-on-accent`, `--text-on-danger`                                                                                                                                                                                                       | Text readable on accent/danger backgrounds |
-| Tint backgrounds   | `--accent-bg`, `--accent-light`, `--danger-bg`, `--danger-border`, `--warning-bg`, `--success-bg`                                                                                                                                            | Light semantic tints for badges, alerts    |
-| Overlays & shadows | `--overlay-bg`, `--shadow-sm`, `--shadow-md`, `--shadow-lg`                                                                                                                                                                                  | Modal overlays, elevation                  |
-| Diff view          | `--diff-added-bg`, `--diff-added-border`, `--diff-added-text`, `--diff-added-line-bg`, `--diff-removed-bg`, `--diff-removed-border`, `--diff-removed-text`, `--diff-removed-line-bg`, `--diff-hunk-bg`                                       | Git diff coloring                          |
-| UI elements        | `--toggle-knob`, `--status-active`, `--status-triggered`                                                                                                                                                                                     | Toggle switches, status dots               |
-| Badges             | `--badge-info`, `--badge-info-bg`, `--badge-trigger`, `--badge-worktree`, `--badge-env-text`, `--badge-env-bg`, `--badge-env-border`, `--badge-sse-text`, `--badge-sse-bg`                                                                   | Categorical badge colors                   |
-| Built-in commands  | `--builtin-user-bg`, `--builtin-user-border`, `--builtin-assistant-bg`, `--builtin-assistant-border`, `--builtin-text`                                                                                                                       | Slash command message styling              |
-| Layout             | `--font-mono`, `--radius`, `--safe-bottom`                                                                                                                                                                                                   | Typography, spacing                        |
+- **Core palette** — primary UI colors (`--bg`, `--surface`, `--text`, `--accent`, etc.)
+- **Text on colors** — text readable on accent/danger backgrounds
+- **Semantic tint backgrounds** — light tints for badges, alerts
+- **Overlays & shadows** — modal overlays, elevation
+- **Diff view** — git diff coloring (`--diff-*`)
+- **UI elements** — toggle switches, status dots
+- **Badges** — categorical badge colors (`--badge-*`)
+- **Built-in commands** — slash command message styling (`--builtin-*`)
+- **Chat list** — sidebar chat list styling (`--chatlist-*`)
+- **Layout** — typography, spacing
 
 ### Rules for Component Development
 

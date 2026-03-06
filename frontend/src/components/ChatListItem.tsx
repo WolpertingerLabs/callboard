@@ -45,18 +45,18 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
       onClick={onClick}
       style={{
         padding: "14px 20px",
-        borderBottom: "1px solid var(--border)",
+        borderBottom: "1px solid var(--chatlist-item-border)",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
         cursor: "pointer",
-        background: isActive ? "var(--accent-light)" : undefined,
-        borderLeft: isActive ? "3px solid var(--accent)" : "3px solid transparent",
+        background: isActive ? "var(--chatlist-item-active-bg)" : "var(--chatlist-item-bg)",
+        borderLeft: isActive ? "3px solid var(--chatlist-item-active-border)" : "3px solid transparent",
       }}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {isBookmarked && <Bookmark size={14} style={{ color: "var(--accent)", flexShrink: 0 }} fill="var(--accent)" />}
+          {isBookmarked && <Bookmark size={14} style={{ color: "var(--chatlist-bookmark-icon)", flexShrink: 0 }} fill="var(--chatlist-bookmark-icon)" />}
           {agentAlias && (
             <span
               title={`Agent: ${agentAlias}`}
@@ -68,12 +68,12 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                 fontWeight: 600,
                 padding: "1px 6px",
                 borderRadius: 4,
-                background: "color-mix(in srgb, var(--accent) 15%, transparent)",
-                color: "var(--accent)",
+                background: "var(--chatlist-badge-agent-bg)",
+                color: "var(--chatlist-badge-agent-text)",
                 flexShrink: 0,
               }}
             >
-              <Bot size={10} />
+              <Bot size={10} style={{ color: "var(--chatlist-badge-agent-text)" }} />
               {agentAlias}
             </span>
           )}
@@ -88,12 +88,12 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                 fontWeight: 600,
                 padding: "1px 6px",
                 borderRadius: 4,
-                background: "color-mix(in srgb, var(--status-triggered) 15%, transparent)",
-                color: "var(--status-triggered)",
+                background: "var(--chatlist-badge-triggered-bg)",
+                color: "var(--chatlist-badge-triggered-text)",
                 flexShrink: 0,
               }}
             >
-              <Zap size={10} />
+              <Zap size={10} style={{ color: "var(--chatlist-badge-triggered-text)" }} />
             </span>
           )}
           {hasUnread && (
@@ -103,12 +103,21 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
-                background: "var(--accent)",
+                background: "var(--chatlist-unread-dot)",
                 flexShrink: 0,
               }}
             />
           )}
-          <div style={{ fontSize: 15, fontWeight: hasUnread ? 600 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <div
+            style={{
+              fontSize: 15,
+              fontWeight: hasUnread ? 600 : 500,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: "var(--chatlist-item-title-text)",
+            }}
+          >
             {displayName}
           </div>
           {sessionStatus?.active && (
@@ -117,8 +126,8 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                 fontSize: 10,
                 padding: "1px 4px",
                 borderRadius: 3,
-                background: sessionStatus.type === "web" ? "var(--accent)" : "var(--status-active)",
-                color: "var(--text-on-accent)",
+                background: sessionStatus.type === "web" ? "var(--chatlist-badge-session-web-bg)" : "var(--chatlist-badge-session-cli-bg)",
+                color: "var(--chatlist-badge-session-text)",
                 fontWeight: 500,
               }}
             >
@@ -130,7 +139,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           title={displayPath}
           style={{
             fontSize: 12,
-            color: "var(--text-muted)",
+            color: "var(--chatlist-item-path-text)",
             marginTop: 2,
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -141,7 +150,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
         >
           {displayPath}
         </div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{time}</div>
+        <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2 }}>{time}</div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: 8, flexShrink: 0 }}>
         {onToggleBookmark && (
@@ -153,7 +162,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
             title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
             style={{
               background: "none",
-              color: isBookmarked ? "var(--accent)" : "var(--text-muted)",
+              color: isBookmarked ? "var(--chatlist-bookmark-icon)" : "var(--chatlist-icon)",
               padding: "4px",
               display: "flex",
               alignItems: "center",
@@ -169,7 +178,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           }}
           style={{
             background: "none",
-            color: "var(--text-muted)",
+            color: "var(--chatlist-icon-delete)",
             fontSize: 18,
             padding: "4px 8px",
           }}

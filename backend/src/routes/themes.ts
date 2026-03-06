@@ -94,21 +94,17 @@ themesRouter.post("/generate", async (req: Request, res: Response): Promise<void
   }
 });
 
-// Update an existing theme
+// Update an existing theme (merges provided variables with existing ones)
 themesRouter.put("/:name", (req: Request, res: Response): void => {
   const { name, dark, light } = req.body;
   const originalName = req.params.name;
 
-  if (!name || typeof name !== "string" || name.trim().length === 0) {
-    res.status(400).json({ error: "Theme name is required" });
+  if (dark && typeof dark !== "object") {
+    res.status(400).json({ error: "Dark mode variables must be an object" });
     return;
   }
-  if (!dark || typeof dark !== "object") {
-    res.status(400).json({ error: "Dark mode variables are required" });
-    return;
-  }
-  if (!light || typeof light !== "object") {
-    res.status(400).json({ error: "Light mode variables are required" });
+  if (light && typeof light !== "object") {
+    res.status(400).json({ error: "Light mode variables must be an object" });
     return;
   }
 
@@ -119,9 +115,9 @@ themesRouter.put("/:name", (req: Request, res: Response): void => {
   }
 
   const theme: CustomTheme = {
-    name: name.trim(),
-    dark,
-    light,
+    name: typeof name === "string" && name.trim().length > 0 ? name.trim() : existing.name,
+    dark: { ...existing.dark, ...(dark as Record<string, string> | undefined) },
+    light: { ...existing.light, ...(light as Record<string, string> | undefined) },
     createdAt: existing.createdAt,
     updatedAt: new Date().toISOString(),
   };
