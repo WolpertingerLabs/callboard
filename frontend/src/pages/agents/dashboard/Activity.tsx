@@ -8,10 +8,10 @@ const typeColors: Record<string, string> = {
   chat: "var(--accent)",
   event: "var(--warning)",
   cron: "var(--success)",
-  connection: "#58a6ff",
+  connection: "var(--badge-info)",
   system: "var(--text-muted)",
-  trigger: "#a78bfa",
-  consolidation: "#f59e0b",
+  trigger: "var(--badge-trigger)",
+  consolidation: "var(--status-triggered)",
 };
 
 const typeLabels: Record<string, string> = {

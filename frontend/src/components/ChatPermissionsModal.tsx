@@ -104,11 +104,7 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
         </div>
 
         {/* Error */}
-        {error && (
-          <div style={{ color: "var(--danger, #dc3545)", fontSize: 13, marginBottom: 12 }}>
-            {error}
-          </div>
-        )}
+        {error && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
         {/* Actions */}
         <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
@@ -134,7 +130,7 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
               borderRadius: 6,
               fontSize: 14,
               background: hasChanges ? "var(--accent)" : "var(--border)",
-              color: hasChanges ? "#fff" : "var(--text-muted)",
+              color: hasChanges ? "var(--text-on-accent)" : "var(--text-muted)",
               border: "none",
               cursor: hasChanges && !saving ? "pointer" : "default",
               opacity: hasChanges && !saving ? 1 : 0.6,

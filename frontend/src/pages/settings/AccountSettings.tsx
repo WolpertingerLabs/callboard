@@ -150,7 +150,7 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
             disabled={!canSubmit}
             style={{
               background: canSubmit ? "var(--accent)" : "var(--border)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "10px 20px",
               borderRadius: 8,
               border: "none",
@@ -195,7 +195,7 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
           onClick={() => setLogoutConfirmOpen(true)}
           style={{
             background: "var(--danger, #dc3545)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             padding: "10px 20px",
             borderRadius: 8,
             border: "none",

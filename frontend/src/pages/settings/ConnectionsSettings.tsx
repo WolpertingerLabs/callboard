@@ -265,7 +265,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
               alignItems: "center",
               gap: 6,
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "8px 16px",
               borderRadius: 8,
               fontSize: 13,
@@ -329,7 +329,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                   background: "var(--surface)",
                   border: "1px solid var(--border)",
                   borderRadius: 8,
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+                  boxShadow: "var(--shadow-md)",
                   zIndex: 100,
                   overflow: "hidden",
                 }}
@@ -469,7 +469,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                             onClick={handleCreateCaller}
                             style={{
                               background: "var(--accent)",
-                              color: "#fff",
+                              color: "var(--text-on-accent)",
                               padding: "5px 10px",
                               borderRadius: 6,
                               fontSize: 12,
@@ -597,7 +597,7 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                   fontSize: 12,
                   fontWeight: 500,
                   background: stabilityFilter === key ? "var(--accent)" : "var(--surface)",
-                  color: stabilityFilter === key ? "#fff" : "var(--text-muted)",
+                  color: stabilityFilter === key ? "var(--text-on-accent)" : "var(--text-muted)",
                   border: "none",
                   borderRight: i < arr.length - 1 ? "1px solid var(--border)" : "none",
                   cursor: "pointer",
@@ -1053,12 +1053,12 @@ function ConnectionCard({
                 width: 16,
                 height: 16,
                 borderRadius: "50%",
-                background: "#fff",
+                background: "var(--toggle-knob)",
                 position: "absolute",
                 top: 3,
                 left: conn.enabled ? 21 : 3,
                 transition: "left 0.2s",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                boxShadow: "var(--shadow-sm)",
               }}
             />
           </button>

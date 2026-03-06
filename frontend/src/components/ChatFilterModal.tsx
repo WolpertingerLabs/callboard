@@ -27,7 +27,7 @@ const toggleBtnStyle = (active: boolean): CSSProperties => ({
   cursor: "pointer",
   minWidth: 50,
   background: active ? "var(--accent)" : "var(--bg-secondary)",
-  color: active ? "#fff" : "var(--text-muted)",
+  color: active ? "var(--text-on-accent)" : "var(--text-muted)",
   transition: "background 0.15s, color 0.15s",
 });
 
@@ -37,7 +37,7 @@ const inputStyle = (hasError: boolean): CSSProperties => ({
   borderRadius: 6,
   fontSize: 14,
   background: "var(--surface)",
-  border: `1px solid ${hasError ? "var(--danger, #dc3545)" : "var(--border)"}`,
+  border: `1px solid ${hasError ? "var(--danger)" : "var(--border)"}`,
   color: "var(--text)",
   outline: "none",
   fontFamily: "monospace",
@@ -107,11 +107,15 @@ export default function ChatFilterModal({ isOpen, onClose, filters, onApply }: C
               placeholder="e.g. my-project|other-repo"
               style={inputStyle(!includeRegexValid)}
             />
-            <button type="button" onClick={() => update("directoryInclude", { active: !local.directoryInclude.active })} style={toggleBtnStyle(local.directoryInclude.active)}>
+            <button
+              type="button"
+              onClick={() => update("directoryInclude", { active: !local.directoryInclude.active })}
+              style={toggleBtnStyle(local.directoryInclude.active)}
+            >
               {local.directoryInclude.active ? "On" : "Off"}
             </button>
           </div>
-          {!includeRegexValid && <div style={{ fontSize: 12, color: "var(--danger, #dc3545)", marginTop: 4 }}>Invalid regex pattern</div>}
+          {!includeRegexValid && <div style={{ fontSize: 12, color: "var(--danger)", marginTop: 4 }}>Invalid regex pattern</div>}
         </div>
 
         {/* Directory Exclude Regex */}
@@ -125,11 +129,15 @@ export default function ChatFilterModal({ isOpen, onClose, filters, onApply }: C
               placeholder="e.g. node_modules|\.tmp"
               style={inputStyle(!excludeRegexValid)}
             />
-            <button type="button" onClick={() => update("directoryExclude", { active: !local.directoryExclude.active })} style={toggleBtnStyle(local.directoryExclude.active)}>
+            <button
+              type="button"
+              onClick={() => update("directoryExclude", { active: !local.directoryExclude.active })}
+              style={toggleBtnStyle(local.directoryExclude.active)}
+            >
               {local.directoryExclude.active ? "On" : "Off"}
             </button>
           </div>
-          {!excludeRegexValid && <div style={{ fontSize: 12, color: "var(--danger, #dc3545)", marginTop: 4 }}>Invalid regex pattern</div>}
+          {!excludeRegexValid && <div style={{ fontSize: 12, color: "var(--danger)", marginTop: 4 }}>Invalid regex pattern</div>}
         </div>
 
         {/* Minimum Datetime */}
@@ -207,7 +215,7 @@ export default function ChatFilterModal({ isOpen, onClose, filters, onApply }: C
                 borderRadius: 6,
                 fontSize: 14,
                 background: "var(--accent)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 border: "none",
                 cursor: "pointer",
               }}

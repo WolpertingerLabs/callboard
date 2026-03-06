@@ -484,18 +484,18 @@ export default function ProxySettings() {
                     gap: 8,
                     border: `1px solid ${
                       testResult.status === "connected"
-                        ? "color-mix(in srgb, #22c55e 30%, transparent)"
+                        ? "color-mix(in srgb, var(--success) 30%, transparent)"
                         : testResult.status === "handshake_failed"
-                          ? "color-mix(in srgb, #f59e0b 30%, transparent)"
-                          : "color-mix(in srgb, #ef4444 30%, transparent)"
+                          ? "color-mix(in srgb, var(--warning) 30%, transparent)"
+                          : "color-mix(in srgb, var(--danger) 30%, transparent)"
                     }`,
                     background:
                       testResult.status === "connected"
-                        ? "color-mix(in srgb, #22c55e 8%, transparent)"
+                        ? "var(--success-bg)"
                         : testResult.status === "handshake_failed"
-                          ? "color-mix(in srgb, #f59e0b 8%, transparent)"
-                          : "color-mix(in srgb, #ef4444 8%, transparent)",
-                    color: testResult.status === "connected" ? "#22c55e" : testResult.status === "handshake_failed" ? "#f59e0b" : "#ef4444",
+                          ? "var(--warning-bg)"
+                          : "var(--danger-bg)",
+                    color: testResult.status === "connected" ? "var(--success)" : testResult.status === "handshake_failed" ? "var(--warning)" : "var(--danger)",
                   }}
                 >
                   {testResult.status === "connected" ? (
@@ -582,7 +582,7 @@ export default function ProxySettings() {
                     width: 16,
                     height: 16,
                     borderRadius: "50%",
-                    background: "#fff",
+                    background: "var(--toggle-knob)",
                     position: "absolute",
                     top: 2,
                     left: tunnelEnabled ? 18 : 2,
@@ -613,17 +613,13 @@ export default function ProxySettings() {
                   gap: 8,
                   border: `1px solid ${
                     tunnelStatus.active
-                      ? "color-mix(in srgb, #22c55e 30%, transparent)"
+                      ? "color-mix(in srgb, var(--success) 30%, transparent)"
                       : tunnelStatus.cloudflaredAvailable === false
-                        ? "color-mix(in srgb, #ef4444 30%, transparent)"
+                        ? "color-mix(in srgb, var(--danger) 30%, transparent)"
                         : "color-mix(in srgb, var(--border) 50%, transparent)"
                   }`,
-                  background: tunnelStatus.active
-                    ? "color-mix(in srgb, #22c55e 8%, transparent)"
-                    : tunnelStatus.cloudflaredAvailable === false
-                      ? "color-mix(in srgb, #ef4444 8%, transparent)"
-                      : "var(--bg)",
-                  color: tunnelStatus.active ? "#22c55e" : tunnelStatus.cloudflaredAvailable === false ? "#ef4444" : "var(--text-muted)",
+                  background: tunnelStatus.active ? "var(--success-bg)" : tunnelStatus.cloudflaredAvailable === false ? "var(--danger-bg)" : "var(--bg)",
+                  color: tunnelStatus.active ? "var(--success)" : tunnelStatus.cloudflaredAvailable === false ? "var(--danger)" : "var(--text-muted)",
                 }}
               >
                 {tunnelStatus.active ? (
@@ -659,7 +655,7 @@ export default function ProxySettings() {
             alignItems: "center",
             gap: 6,
             background: "var(--accent)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             padding: "10px 20px",
             borderRadius: 8,
             fontSize: 14,

@@ -119,9 +119,7 @@ export default function ConnectionEventsView({ selectedCaller, onBack }: Connect
         </button>
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Connection Events</h2>
-          <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0, marginTop: 2 }}>
-            Live event feed from proxy ingestors — polled every 5 seconds
-          </p>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0, marginTop: 2 }}>Live event feed from proxy ingestors — polled every 5 seconds</p>
         </div>
       </div>
 
@@ -218,7 +216,7 @@ export default function ConnectionEventsView({ selectedCaller, onBack }: Connect
               fontSize: 12,
               fontWeight: 500,
               background: activeSource === null ? "var(--accent)" : "var(--surface)",
-              color: activeSource === null ? "#fff" : "var(--text)",
+              color: activeSource === null ? "var(--text-on-accent)" : "var(--text)",
               border: activeSource === null ? "1px solid var(--accent)" : "1px solid var(--border)",
               cursor: "pointer",
             }}
@@ -238,7 +236,7 @@ export default function ConnectionEventsView({ selectedCaller, onBack }: Connect
                   fontWeight: 500,
                   fontFamily: "monospace",
                   background: activeSource === src ? "var(--accent)" : "var(--surface)",
-                  color: activeSource === src ? "#fff" : "var(--text)",
+                  color: activeSource === src ? "var(--text-on-accent)" : "var(--text)",
                   border: activeSource === src ? "1px solid var(--accent)" : "1px solid var(--border)",
                   cursor: "pointer",
                 }}

@@ -127,7 +127,7 @@ export default function GeneralSettings() {
             onClick={handleNameSave}
             style={{
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "10px 20px",
               borderRadius: 8,
               border: "none",
@@ -192,7 +192,7 @@ export default function GeneralSettings() {
                 border: "none",
                 borderRight: idx < 2 ? "1px solid var(--border)" : "none",
                 background: themeMode === mode ? "var(--accent)" : "var(--surface)",
-                color: themeMode === mode ? "#fff" : "var(--text)",
+                color: themeMode === mode ? "var(--text-on-accent)" : "var(--text)",
                 transition: "background 0.15s, color 0.15s",
               }}
             >
@@ -258,7 +258,7 @@ export default function GeneralSettings() {
             onClick={handleSave}
             style={{
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "10px 20px",
               borderRadius: 8,
               border: "none",

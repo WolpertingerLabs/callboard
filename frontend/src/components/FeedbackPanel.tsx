@@ -69,7 +69,7 @@ export default function FeedbackPanel({ action, onRespond }: Props) {
                     style={{
                       ...optionBtn,
                       border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
-                      background: selected ? "var(--accent-light, rgba(99,102,241,0.1))" : "var(--surface)",
+                      background: selected ? "var(--accent-light)" : "var(--surface)",
                     }}
                   >
                     <div style={{ fontWeight: 500 }}>{opt.label}</div>
@@ -202,7 +202,7 @@ const preStyle: React.CSSProperties = {
 
 const allowBtn: React.CSSProperties = {
   background: "var(--accent)",
-  color: "#fff",
+  color: "var(--text-on-accent)",
   padding: "8px 20px",
   borderRadius: 6,
   fontSize: 14,
@@ -210,8 +210,8 @@ const allowBtn: React.CSSProperties = {
 };
 
 const denyBtn: React.CSSProperties = {
-  background: "var(--danger, #ef4444)",
-  color: "#fff",
+  background: "var(--danger)",
+  color: "var(--text-on-accent)",
   padding: "8px 20px",
   borderRadius: 6,
   fontSize: 14,

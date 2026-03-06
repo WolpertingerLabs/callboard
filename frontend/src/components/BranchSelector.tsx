@@ -138,7 +138,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       {loading ? (
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</span>
       ) : error ? (
-        <span style={{ fontSize: 12, color: "var(--danger, #ef4444)" }}>{error}</span>
+        <span style={{ fontSize: 12, color: "var(--danger)" }}>{error}</span>
       ) : (
         <select
           value={baseBranch}
@@ -197,7 +197,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
             flex: 1,
             background: "var(--bg)",
             color: "var(--text)",
-            border: branchError ? "1px solid var(--danger, #ef4444)" : "1px solid var(--border)",
+            border: branchError ? "1px solid var(--danger)" : "1px solid var(--border)",
             borderRadius: 5,
             padding: "4px 8px",
             fontSize: 12,
@@ -315,7 +315,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
           style={{
             marginTop: 6,
             fontSize: 11,
-            color: "var(--danger, #ef4444)",
+            color: "var(--danger)",
             fontWeight: 500,
             paddingLeft: 19,
           }}

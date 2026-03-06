@@ -7,6 +7,7 @@
 }
 
 :root {
+  /* Core palette */
   --bg: #0d1117;
   --surface: #161b22;
   --border: #30363d;
@@ -28,7 +29,50 @@
   --radius: 12px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 
-  /* Built-in command colors - optimized for dark mode */
+  /* Text on colored backgrounds */
+  --text-on-accent: #ffffff;
+  --text-on-danger: #ffffff;
+
+  /* Semantic tint backgrounds */
+  --accent-bg: rgba(99, 102, 241, 0.1);
+  --accent-light: rgba(99, 102, 241, 0.1);
+  --danger-bg: rgba(248, 81, 73, 0.1);
+  --danger-border: rgba(220, 53, 69, 0.4);
+  --warning-bg: rgba(210, 153, 34, 0.15);
+  --success-bg: rgba(63, 185, 80, 0.1);
+
+  /* Overlays & shadows */
+  --overlay-bg: rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+
+  /* Diff view */
+  --diff-added-bg: rgba(46, 160, 67, 0.15);
+  --diff-added-border: #2ea043;
+  --diff-added-text: #3fb950;
+  --diff-added-line-bg: rgba(46, 160, 67, 0.1);
+  --diff-removed-bg: rgba(248, 81, 73, 0.15);
+  --diff-removed-border: #f85149;
+  --diff-removed-text: #f85149;
+  --diff-removed-line-bg: rgba(248, 81, 73, 0.1);
+  --diff-hunk-bg: rgba(124, 106, 239, 0.08);
+
+  /* UI elements */
+  --toggle-knob: #ffffff;
+  --status-active: #10b981;
+  --status-triggered: #f59e0b;
+  --badge-info: #58a6ff;
+  --badge-info-bg: rgba(88, 166, 255, 0.15);
+  --badge-trigger: #a78bfa;
+  --badge-worktree: #8b5cf6;
+  --badge-env-text: #3fb950;
+  --badge-env-bg: rgba(63, 185, 80, 0.12);
+  --badge-env-border: #2d6a4f;
+  --badge-sse-text: #a8dadc;
+  --badge-sse-bg: rgba(29, 53, 87, 0.67);
+
+  /* Built-in command colors */
   --builtin-user-bg: #1f2937;
   --builtin-user-border: #60a5fa;
   --builtin-assistant-bg: #1e293b;
@@ -38,6 +82,7 @@
 
 /* Light mode overrides (applied via data-theme attribute on <html>) */
 [data-theme="light"] {
+  /* Core palette */
   --bg: #ffffff;
   --surface: #f8fafc;
   --border: #e2e8f0;
@@ -56,7 +101,50 @@
   --text-secondary: #64748b;
   --border-light: #e2e8f0;
 
-  /* Built-in command colors - optimized for light mode */
+  /* Text on colored backgrounds */
+  --text-on-accent: #ffffff;
+  --text-on-danger: #ffffff;
+
+  /* Semantic tint backgrounds */
+  --accent-bg: rgba(124, 106, 239, 0.08);
+  --accent-light: rgba(124, 106, 239, 0.08);
+  --danger-bg: rgba(239, 68, 68, 0.08);
+  --danger-border: rgba(239, 68, 68, 0.3);
+  --warning-bg: rgba(202, 138, 4, 0.12);
+  --success-bg: rgba(22, 163, 106, 0.08);
+
+  /* Overlays & shadows */
+  --overlay-bg: rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.03);
+
+  /* Diff view */
+  --diff-added-bg: rgba(46, 160, 67, 0.12);
+  --diff-added-border: #1a7f37;
+  --diff-added-text: #1a7f37;
+  --diff-added-line-bg: rgba(46, 160, 67, 0.08);
+  --diff-removed-bg: rgba(248, 81, 73, 0.12);
+  --diff-removed-border: #cf222e;
+  --diff-removed-text: #cf222e;
+  --diff-removed-line-bg: rgba(248, 81, 73, 0.08);
+  --diff-hunk-bg: rgba(124, 106, 239, 0.06);
+
+  /* UI elements */
+  --toggle-knob: #ffffff;
+  --status-active: #10b981;
+  --status-triggered: #f59e0b;
+  --badge-info: #2563eb;
+  --badge-info-bg: rgba(37, 99, 235, 0.1);
+  --badge-trigger: #7c3aed;
+  --badge-worktree: #7c3aed;
+  --badge-env-text: #16a34a;
+  --badge-env-bg: rgba(22, 163, 106, 0.1);
+  --badge-env-border: #16a34a;
+  --badge-sse-text: #1d4ed8;
+  --badge-sse-bg: rgba(29, 78, 216, 0.1);
+
+  /* Built-in command colors */
   --builtin-user-bg: #dbeafe;
   --builtin-user-border: #3b82f6;
   --builtin-assistant-bg: #eff6ff;
@@ -345,32 +433,32 @@ pre {
 
 /* Added lines - green */
 .diff-line-added {
-  background: rgba(46, 160, 67, 0.15);
-  border-left: 3px solid #2ea043;
+  background: var(--diff-added-bg);
+  border-left: 3px solid var(--diff-added-border);
 }
 
 .diff-line-added .diff-line-number {
-  background: rgba(46, 160, 67, 0.1);
-  color: #3fb950;
+  background: var(--diff-added-line-bg);
+  color: var(--diff-added-text);
 }
 
 .diff-line-added .diff-line-prefix {
-  color: #3fb950;
+  color: var(--diff-added-text);
 }
 
 /* Removed lines - red */
 .diff-line-removed {
-  background: rgba(248, 81, 73, 0.15);
-  border-left: 3px solid #f85149;
+  background: var(--diff-removed-bg);
+  border-left: 3px solid var(--diff-removed-border);
 }
 
 .diff-line-removed .diff-line-number {
-  background: rgba(248, 81, 73, 0.1);
-  color: #f85149;
+  background: var(--diff-removed-line-bg);
+  color: var(--diff-removed-text);
 }
 
 .diff-line-removed .diff-line-prefix {
-  color: #f85149;
+  color: var(--diff-removed-text);
 }
 
 /* Context lines - no border offset */
@@ -380,7 +468,7 @@ pre {
 
 /* Hunk header lines */
 .diff-line-hunk {
-  background: rgba(124, 106, 239, 0.08);
+  background: var(--diff-hunk-bg);
   border-left: 3px solid transparent;
   color: var(--text-muted);
   font-style: italic;
@@ -392,56 +480,15 @@ pre {
 
 /* Stat badges */
 .diff-stat-added {
-  color: #3fb950;
+  color: var(--diff-added-text);
   font-weight: 600;
   font-size: 12px;
 }
 
 .diff-stat-removed {
-  color: #f85149;
+  color: var(--diff-removed-text);
   font-weight: 600;
   font-size: 12px;
-}
-
-/* Light mode overrides for diff */
-[data-theme="light"] .diff-line-added {
-  background: rgba(46, 160, 67, 0.12);
-  border-left-color: #1a7f37;
-}
-
-[data-theme="light"] .diff-line-added .diff-line-number {
-  background: rgba(46, 160, 67, 0.08);
-  color: #1a7f37;
-}
-
-[data-theme="light"] .diff-line-added .diff-line-prefix {
-  color: #1a7f37;
-}
-
-[data-theme="light"] .diff-line-removed {
-  background: rgba(248, 81, 73, 0.12);
-  border-left-color: #cf222e;
-}
-
-[data-theme="light"] .diff-line-removed .diff-line-number {
-  background: rgba(248, 81, 73, 0.08);
-  color: #cf222e;
-}
-
-[data-theme="light"] .diff-line-removed .diff-line-prefix {
-  color: #cf222e;
-}
-
-[data-theme="light"] .diff-stat-added {
-  color: #1a7f37;
-}
-
-[data-theme="light"] .diff-stat-removed {
-  color: #cf222e;
-}
-
-[data-theme="light"] .diff-line-hunk {
-  background: rgba(124, 106, 239, 0.06);
 }
 
 /* Copy button on message hover */

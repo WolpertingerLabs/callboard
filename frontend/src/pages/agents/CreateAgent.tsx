@@ -317,7 +317,7 @@ export default function CreateAgent() {
             style={{
               width: "100%",
               background: canSubmit ? "var(--accent)" : "var(--border)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "12px",
               borderRadius: 10,
               fontSize: 15,

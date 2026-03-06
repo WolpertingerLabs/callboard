@@ -117,7 +117,7 @@ export default function AgentDashboard() {
             alignItems: "center",
             gap: 6,
             background: "var(--accent)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             padding: "8px 16px",
             borderRadius: 8,
             fontSize: 14,

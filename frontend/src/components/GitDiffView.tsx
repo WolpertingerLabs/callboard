@@ -210,7 +210,7 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
           onClick={fetchDiff}
           style={{
             background: "var(--accent)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             border: "none",
             padding: "8px 16px",
             borderRadius: 6,
@@ -353,8 +353,8 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
                     fontSize: 10,
                     padding: "1px 6px",
                     borderRadius: 4,
-                    background: "rgba(46, 160, 67, 0.2)",
-                    color: "#3fb950",
+                    background: "var(--diff-added-bg)",
+                    color: "var(--diff-added-text)",
                     fontWeight: 600,
                     flexShrink: 0,
                   }}
@@ -368,8 +368,8 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
                     fontSize: 10,
                     padding: "1px 6px",
                     borderRadius: 4,
-                    background: "rgba(46, 160, 67, 0.2)",
-                    color: "#3fb950",
+                    background: "var(--diff-added-bg)",
+                    color: "var(--diff-added-text)",
                     fontWeight: 600,
                     flexShrink: 0,
                   }}
@@ -383,8 +383,8 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
                     fontSize: 10,
                     padding: "1px 6px",
                     borderRadius: 4,
-                    background: "rgba(248, 81, 73, 0.2)",
-                    color: "#f85149",
+                    background: "var(--diff-removed-bg)",
+                    color: "var(--diff-removed-text)",
                     fontWeight: 600,
                     flexShrink: 0,
                   }}
@@ -398,8 +398,8 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
                     fontSize: 10,
                     padding: "1px 6px",
                     borderRadius: 4,
-                    background: "rgba(124, 106, 239, 0.2)",
-                    color: "#7c6aef",
+                    background: "var(--diff-hunk-bg)",
+                    color: "var(--accent)",
                     fontWeight: 600,
                     flexShrink: 0,
                   }}

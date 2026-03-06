@@ -49,7 +49,7 @@ export default function SlashCommandAutocomplete({ slashCommands, query, onSelec
         maxHeight: "200px",
         overflowY: "auto",
         zIndex: 1000,
-        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+        boxShadow: "var(--shadow-md)",
       }}
     >
       <div
@@ -81,7 +81,7 @@ export default function SlashCommandAutocomplete({ slashCommands, query, onSelec
             transition: "background 0.1s ease",
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = "var(--accent-bg, rgba(59, 130, 246, 0.1))";
+            e.currentTarget.style.background = "var(--accent-bg)";
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "transparent";

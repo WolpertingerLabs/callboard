@@ -1270,7 +1270,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   padding: "2px 6px",
                   borderRadius: 4,
                   background: "var(--accent)",
-                  color: "#fff",
+                  color: "var(--text-on-accent)",
                   fontWeight: 500,
                 }}
               >
@@ -1282,8 +1282,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   fontSize: 11,
                   padding: "2px 6px",
                   borderRadius: 4,
-                  background: globalSessionActive.type === "web" ? "var(--accent)" : "#10b981",
-                  color: "#fff",
+                  background: globalSessionActive.type === "web" ? "var(--accent)" : "var(--status-active)",
+                  color: "var(--text-on-accent)",
                   fontWeight: 500,
                 }}
               >
@@ -1297,8 +1297,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   fontSize: 11,
                   padding: "2px 6px",
                   borderRadius: 4,
-                  background: "#8b5cf6",
-                  color: "#fff",
+                  background: "var(--badge-worktree)",
+                  color: "var(--text-on-accent)",
                   fontWeight: 500,
                   display: "flex",
                   alignItems: "center",
@@ -1438,7 +1438,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 onClick={handleTodoListClick}
                 style={{
                   background: "var(--accent)",
-                  color: "#fff",
+                  color: "var(--text-on-accent)",
                   padding: "8px",
                   borderRadius: 6,
                   border: "none",
@@ -1498,7 +1498,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 onClick={handleReconnect}
                 style={{
                   background: "var(--accent)",
-                  color: "#fff",
+                  color: "var(--text-on-accent)",
                   padding: "8px",
                   borderRadius: 6,
                   border: "none",
@@ -1521,7 +1521,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           disabled={!canStop}
           style={{
             background: canStop ? "var(--danger)" : "var(--border)",
-            color: canStop ? "#fff" : "var(--text-secondary)",
+            color: canStop ? "var(--text-on-accent)" : "var(--text-secondary)",
             padding: "8px",
             borderRadius: 6,
             border: "none",
@@ -1542,7 +1542,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             onClick={() => setShowMobileActions(!showMobileActions)}
             style={{
               background: showMobileActions ? "var(--accent)" : "var(--bg-secondary)",
-              color: showMobileActions ? "#fff" : "var(--text)",
+              color: showMobileActions ? "var(--text-on-accent)" : "var(--text)",
               padding: "8px",
               borderRadius: 6,
               border: showMobileActions ? "none" : "1px solid var(--border)",
@@ -1674,7 +1674,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               onClick={handleTodoListClick}
               style={{
                 background: "var(--accent)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 padding: "8px",
                 borderRadius: 6,
                 border: "none",
@@ -1736,7 +1736,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               onClick={handleReconnect}
               style={{
                 background: "var(--accent)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 padding: "8px",
                 borderRadius: 6,
                 border: "none",
@@ -1766,7 +1766,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   <div
                     style={{
                       color: "var(--danger)",
-                      background: "var(--danger-bg, rgba(255, 0, 0, 0.1))",
+                      background: "var(--danger-bg)",
                       padding: "12px 16px",
                       borderRadius: 6,
                       marginBottom: 16,
@@ -1793,8 +1793,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
                           <span
                             style={{
-                              background: "#10b981",
-                              color: "#fff",
+                              background: "var(--status-active)",
+                              color: "var(--text-on-accent)",
                               padding: "3px 8px",
                               borderRadius: 4,
                               fontSize: 11,
@@ -2011,7 +2011,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       display: "flex",
                       alignItems: "center",
                       gap: 8,
-                      background: "var(--danger-bg, rgba(255, 0, 0, 0.1))",
+                      background: "var(--danger-bg)",
                       borderRadius: 6,
                       padding: "12px 16px",
                       margin: "8px 0",
@@ -2022,7 +2022,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       onClick={handleReconnect}
                       style={{
                         background: "var(--accent)",
-                        color: "#fff",
+                        color: "var(--text-on-accent)",
                         padding: "4px 8px",
                         borderRadius: 4,
                         fontSize: 11,
@@ -2081,7 +2081,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               bottom: "20px",
               right: "20px",
               background: autoScroll ? "var(--accent)" : "var(--bg-secondary)",
-              color: autoScroll ? "#fff" : "var(--text)",
+              color: autoScroll ? "var(--text-on-accent)" : "var(--text)",
               border: autoScroll ? "none" : "1px solid var(--border)",
               borderRadius: "50%",
               width: "40px",
@@ -2090,7 +2090,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
-              boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+              boxShadow: "var(--shadow-md)",
               zIndex: 10,
               transition: "all 0.2s ease",
             }}

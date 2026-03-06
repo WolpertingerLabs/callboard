@@ -82,7 +82,7 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
                 fontSize: 12,
                 marginBottom: 16,
                 padding: 8,
-                background: "var(--danger-bg, rgba(255, 0, 0, 0.1))",
+                background: "var(--danger-bg)",
                 borderRadius: 4,
               }}
             >
@@ -117,7 +117,7 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
                 borderRadius: 6,
                 fontSize: 14,
                 background: isSubmitting || !message.trim() ? "var(--border)" : "var(--accent)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 border: "none",
                 cursor: isSubmitting || !message.trim() ? "default" : "pointer",
               }}
