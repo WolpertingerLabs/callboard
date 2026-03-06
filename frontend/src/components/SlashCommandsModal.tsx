@@ -144,7 +144,7 @@ export default function SlashCommandsModal({
           maxWidth: "600px",
           maxHeight: "80vh",
           overflow: "hidden",
-          boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+          boxShadow: "var(--shadow-lg)",
           border: "1px solid var(--border)",
         }}
       >
@@ -247,7 +247,7 @@ export default function SlashCommandsModal({
                           width: "100%",
                         }}
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.background = "var(--accent-bg, rgba(59, 130, 246, 0.1))";
+                          e.currentTarget.style.background = "var(--accent-bg)";
                           e.currentTarget.style.borderColor = "var(--accent)";
                         }}
                         onMouseLeave={(e) => {
@@ -313,9 +313,7 @@ export default function SlashCommandsModal({
               <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {plugins.map((plugin) => {
                   const isActive = activePluginIds.has(plugin.id);
-                  const pluginCommands = plugin.commands.filter(
-                    (cmd, i, arr) => arr.findIndex((c) => c.name === cmd.name) === i,
-                  );
+                  const pluginCommands = plugin.commands.filter((cmd, i, arr) => arr.findIndex((c) => c.name === cmd.name) === i);
 
                   return (
                     <div
@@ -324,7 +322,7 @@ export default function SlashCommandsModal({
                         border: "1px solid var(--border)",
                         borderRadius: "8px",
                         padding: "16px",
-                        backgroundColor: isActive ? "var(--accent-bg, rgba(59, 130, 246, 0.05))" : "transparent",
+                        backgroundColor: isActive ? "var(--accent-bg)" : "transparent",
                         borderColor: isActive ? "var(--accent)" : "var(--border)",
                       }}
                     >
@@ -436,7 +434,7 @@ export default function SlashCommandsModal({
                                   transition: "all 0.2s ease",
                                 }}
                                 onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = "var(--accent-bg, rgba(59, 130, 246, 0.1))";
+                                  e.currentTarget.style.background = "var(--accent-bg)";
                                   e.currentTarget.style.borderColor = "var(--accent)";
                                 }}
                                 onMouseLeave={(e) => {
@@ -481,29 +479,17 @@ export default function SlashCommandsModal({
                   const hasMissingEnv = pluginHasMissingEnv(plugin);
                   const isEnabled = plugin.enabled && !hasMissingEnv;
                   const isDisabledByEnv = plugin.enabled && hasMissingEnv;
-                  const pluginCommands = plugin.commands.filter(
-                    (cmd, i, arr) => arr.findIndex((c) => c.name === cmd.name) === i,
-                  );
+                  const pluginCommands = plugin.commands.filter((cmd, i, arr) => arr.findIndex((c) => c.name === cmd.name) === i);
 
                   return (
                     <div
                       key={plugin.id}
                       style={{
-                        border: isDisabledByEnv
-                          ? "1px solid rgba(220, 53, 69, 0.4)"
-                          : "1px solid var(--border)",
+                        border: isDisabledByEnv ? "1px solid var(--danger-border)" : "1px solid var(--border)",
                         borderRadius: "8px",
                         padding: "16px",
-                        backgroundColor: isDisabledByEnv
-                          ? "rgba(220, 53, 69, 0.04)"
-                          : isEnabled
-                            ? "var(--accent-bg, rgba(59, 130, 246, 0.05))"
-                            : "transparent",
-                        borderColor: isDisabledByEnv
-                          ? "rgba(220, 53, 69, 0.4)"
-                          : isEnabled
-                            ? "var(--accent)"
-                            : "var(--border)",
+                        backgroundColor: isDisabledByEnv ? "var(--danger-bg)" : isEnabled ? "var(--accent-bg)" : "transparent",
+                        borderColor: isDisabledByEnv ? "var(--danger-border)" : isEnabled ? "var(--accent)" : "var(--border)",
                         opacity: isDisabledByEnv ? 0.7 : 1,
                       }}
                     >
@@ -563,16 +549,12 @@ export default function SlashCommandsModal({
                           onClick={() => !hasMissingEnv && handleToggleAppPlugin(plugin.id, !plugin.enabled)}
                           disabled={hasMissingEnv}
                           style={{
-                            background: isDisabledByEnv
-                              ? "rgba(220, 53, 69, 0.15)"
-                              : isEnabled
-                                ? "var(--accent)"
-                                : "transparent",
-                            border: `1px solid ${isDisabledByEnv ? "rgba(220, 53, 69, 0.4)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            background: isDisabledByEnv ? "var(--danger-bg)" : isEnabled ? "var(--accent)" : "transparent",
+                            border: `1px solid ${isDisabledByEnv ? "var(--danger-border)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
                             borderRadius: "6px",
                             padding: "6px 12px",
                             cursor: hasMissingEnv ? "not-allowed" : "pointer",
-                            color: isDisabledByEnv ? "var(--danger, #dc3545)" : isEnabled ? "white" : "var(--text)",
+                            color: isDisabledByEnv ? "var(--danger)" : isEnabled ? "white" : "var(--text)",
                             fontSize: "12px",
                             fontWeight: 600,
                             display: "flex",
@@ -596,9 +578,9 @@ export default function SlashCommandsModal({
                             gap: "6px",
                             padding: "8px 12px",
                             borderRadius: "6px",
-                            background: "rgba(220, 53, 69, 0.08)",
-                            border: "1px solid rgba(220, 53, 69, 0.2)",
-                            color: "var(--danger, #dc3545)",
+                            background: "var(--danger-bg)",
+                            border: "1px solid var(--danger-border)",
+                            color: "var(--danger)",
                             fontSize: "12px",
                             fontWeight: 500,
                             marginBottom: pluginCommands.length > 0 ? "12px" : "0",
@@ -608,8 +590,8 @@ export default function SlashCommandsModal({
                           <span>
                             MCP server{plugin.mcpServers!.filter(serverHasMissingEnv).length > 1 ? "s" : ""}{" "}
                             <strong>
-                              {plugin.mcpServers!
-                                .filter(serverHasMissingEnv)
+                              {plugin
+                                .mcpServers!.filter(serverHasMissingEnv)
                                 .map((s) => s.name)
                                 .join(", ")}
                             </strong>{" "}
@@ -664,7 +646,7 @@ export default function SlashCommandsModal({
                                   transition: "all 0.2s ease",
                                 }}
                                 onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = "var(--accent-bg, rgba(59, 130, 246, 0.1))";
+                                  e.currentTarget.style.background = "var(--accent-bg)";
                                   e.currentTarget.style.borderColor = "var(--accent)";
                                 }}
                                 onMouseLeave={(e) => {
@@ -716,21 +698,11 @@ export default function SlashCommandsModal({
                     <div
                       key={server.id}
                       style={{
-                        border: isDisabledByEnv
-                          ? "1px solid rgba(220, 53, 69, 0.4)"
-                          : "1px solid var(--border)",
+                        border: isDisabledByEnv ? "1px solid var(--danger-border)" : "1px solid var(--border)",
                         borderRadius: "8px",
                         padding: "16px",
-                        backgroundColor: isDisabledByEnv
-                          ? "rgba(220, 53, 69, 0.04)"
-                          : isEnabled
-                            ? "var(--accent-bg, rgba(59, 130, 246, 0.05))"
-                            : "transparent",
-                        borderColor: isDisabledByEnv
-                          ? "rgba(220, 53, 69, 0.4)"
-                          : isEnabled
-                            ? "var(--accent)"
-                            : "var(--border)",
+                        backgroundColor: isDisabledByEnv ? "var(--danger-bg)" : isEnabled ? "var(--accent-bg)" : "transparent",
+                        borderColor: isDisabledByEnv ? "var(--danger-border)" : isEnabled ? "var(--accent)" : "var(--border)",
                         opacity: isDisabledByEnv ? 0.7 : 1,
                       }}
                     >
@@ -811,8 +783,8 @@ export default function SlashCommandsModal({
                                 marginTop: "6px",
                                 padding: "4px 8px",
                                 borderRadius: "4px",
-                                background: "rgba(220, 53, 69, 0.08)",
-                                color: "var(--danger, #dc3545)",
+                                background: "var(--danger-bg)",
+                                color: "var(--danger)",
                                 fontSize: "11px",
                                 fontWeight: 600,
                               }}
@@ -826,16 +798,12 @@ export default function SlashCommandsModal({
                           onClick={() => !hasMissingEnv && handleToggleMcpServer(server.id, !server.enabled)}
                           disabled={hasMissingEnv}
                           style={{
-                            background: isDisabledByEnv
-                              ? "rgba(220, 53, 69, 0.15)"
-                              : isEnabled
-                                ? "var(--accent)"
-                                : "transparent",
-                            border: `1px solid ${isDisabledByEnv ? "rgba(220, 53, 69, 0.4)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
+                            background: isDisabledByEnv ? "var(--danger-bg)" : isEnabled ? "var(--accent)" : "transparent",
+                            border: `1px solid ${isDisabledByEnv ? "var(--danger-border)" : isEnabled ? "var(--accent)" : "var(--border)"}`,
                             borderRadius: "6px",
                             padding: "6px 12px",
                             cursor: hasMissingEnv ? "not-allowed" : "pointer",
-                            color: isDisabledByEnv ? "var(--danger, #dc3545)" : isEnabled ? "white" : "var(--text)",
+                            color: isDisabledByEnv ? "var(--danger)" : isEnabled ? "white" : "var(--text)",
                             fontSize: "12px",
                             fontWeight: 600,
                             display: "flex",

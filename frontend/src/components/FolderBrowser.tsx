@@ -153,7 +153,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
               onClick={handleToggleHidden}
               style={{
                 background: showHidden ? "var(--accent)" : "var(--surface)",
-                color: showHidden ? "#fff" : "var(--text)",
+                color: showHidden ? "var(--text-on-accent)" : "var(--text)",
                 padding: isMobile ? "4px 8px" : "6px 12px",
                 borderRadius: 6,
                 border: "1px solid var(--border)",
@@ -267,7 +267,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
                       width: "100%",
                       textAlign: "left",
                       background: currentPath === suggestion.path ? "var(--accent)" : "none",
-                      color: currentPath === suggestion.path ? "#fff" : "var(--text)",
+                      color: currentPath === suggestion.path ? "var(--text-on-accent)" : "var(--text)",
                       border: "none",
                       padding: "8px 12px",
                       borderRadius: 6,
@@ -440,7 +440,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
               disabled={!browseResult?.exists}
               style={{
                 background: browseResult?.exists ? "var(--accent)" : "var(--border)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 padding: isMobile ? "6px 12px" : "8px 16px",
                 borderRadius: 6,
                 border: "none",

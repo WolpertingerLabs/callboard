@@ -433,7 +433,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           }}
           style={{
             background: "var(--accent)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             padding: "10px",
             borderRadius: 8,
             display: "flex",
@@ -448,7 +448,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           onClick={() => navigate("/queue")}
           style={{
             background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isQueueActive ? "#fff" : "var(--text)",
+            color: isQueueActive ? "var(--text-on-accent)" : "var(--text)",
             padding: "10px",
             borderRadius: 8,
             border: isQueueActive ? "none" : "1px solid var(--border)",
@@ -464,7 +464,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           onClick={() => navigate("/agents")}
           style={{
             background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isAgentsActive ? "#fff" : "var(--text)",
+            color: isAgentsActive ? "var(--text-on-accent)" : "var(--text)",
             padding: "10px",
             borderRadius: 8,
             border: isAgentsActive ? "none" : "1px solid var(--border)",
@@ -480,7 +480,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           onClick={() => navigate("/settings")}
           style={{
             background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isSettingsActive ? "#fff" : "var(--text)",
+            color: isSettingsActive ? "var(--text-on-accent)" : "var(--text)",
             padding: "10px",
             borderRadius: 8,
             border: isSettingsActive ? "none" : "1px solid var(--border)",
@@ -496,7 +496,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           <button
             onClick={onShowClaudeModal}
             style={{
-              background: "rgba(210, 153, 34, 0.15)",
+              background: "var(--warning-bg)",
               color: "var(--warning)",
               padding: "10px",
               borderRadius: 8,
@@ -553,7 +553,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
             onClick={() => setShowNew(!showNew)}
             style={{
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "10px",
               borderRadius: 8,
               display: "flex",
@@ -569,7 +569,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               onClick={() => navigate("/queue")}
               style={{
                 background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
-                color: isQueueActive ? "#fff" : "var(--text)",
+                color: isQueueActive ? "var(--text-on-accent)" : "var(--text)",
                 padding: "10px",
                 borderTopLeftRadius: 8,
                 borderBottomLeftRadius: 8,
@@ -589,7 +589,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               onClick={() => navigate("/agents")}
               style={{
                 background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
-                color: isAgentsActive ? "#fff" : "var(--text)",
+                color: isAgentsActive ? "var(--text-on-accent)" : "var(--text)",
                 padding: "10px",
                 borderRadius: 0,
                 border: isAgentsActive ? "none" : "1px solid var(--border)",
@@ -607,7 +607,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
               onClick={() => navigate("/settings")}
               style={{
                 background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
-                color: isSettingsActive ? "#fff" : "var(--text)",
+                color: isSettingsActive ? "var(--text-on-accent)" : "var(--text)",
                 padding: "10px",
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
@@ -628,7 +628,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
             <button
               onClick={onShowClaudeModal}
               style={{
-                background: "rgba(210, 153, 34, 0.15)",
+                background: "var(--warning-bg)",
                 color: "var(--warning)",
                 padding: "6px",
                 borderRadius: 6,
@@ -695,7 +695,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
                 borderRadius: "8px 0 0 8px",
                 border: chatMode === "claude-code" ? "1px solid var(--accent)" : "1px solid var(--border)",
                 background: chatMode === "claude-code" ? "var(--accent)" : "var(--bg-secondary)",
-                color: chatMode === "claude-code" ? "#fff" : "var(--text)",
+                color: chatMode === "claude-code" ? "var(--text-on-accent)" : "var(--text)",
                 cursor: "pointer",
                 transition: "all 0.15s",
               }}
@@ -713,7 +713,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
                 border: chatMode === "agent" ? "1px solid var(--accent)" : "1px solid var(--border)",
                 borderLeft: "none",
                 background: chatMode === "agent" ? "var(--accent)" : "var(--bg-secondary)",
-                color: chatMode === "agent" ? "#fff" : "var(--text)",
+                color: chatMode === "agent" ? "var(--text-on-accent)" : "var(--text)",
                 cursor: "pointer",
                 transition: "all 0.15s",
               }}
@@ -891,7 +891,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
                         disabled={!folder.trim()}
                         style={{
                           background: folder.trim() ? "var(--accent)" : "var(--border)",
-                          color: "#fff",
+                          color: "var(--text-on-accent)",
                           padding: "10px 16px",
                           borderRadius: 8,
                           fontSize: 14,
@@ -916,7 +916,7 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
                     onClick={() => navigate("/agents/new")}
                     style={{
                       background: "var(--accent)",
-                      color: "#fff",
+                      color: "var(--text-on-accent)",
                       padding: "8px 16px",
                       borderRadius: 8,
                       fontSize: 14,

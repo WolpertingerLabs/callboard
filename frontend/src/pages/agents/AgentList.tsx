@@ -159,7 +159,7 @@ export default function AgentList() {
               alignItems: "center",
               gap: 6,
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "8px 14px",
               borderRadius: 8,
               fontSize: 14,
@@ -252,7 +252,7 @@ export default function AgentList() {
                 alignItems: "center",
                 gap: 6,
                 background: "var(--accent)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 padding: "10px 20px",
                 borderRadius: 10,
                 fontSize: 14,
@@ -359,7 +359,7 @@ export default function AgentList() {
                         width: 16,
                         height: 16,
                         borderRadius: "50%",
-                        background: "#fff",
+                        background: "var(--toggle-knob)",
                         transition: "left 0.2s",
                       }}
                     />
@@ -436,7 +436,7 @@ export default function AgentList() {
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0, 0, 0, 0.5)",
+            background: "var(--overlay-bg)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -481,7 +481,7 @@ export default function AgentList() {
                   fontSize: 14,
                   fontWeight: 500,
                   background: "var(--danger)",
-                  color: "#fff",
+                  color: "var(--text-on-accent)",
                 }}
               >
                 Delete

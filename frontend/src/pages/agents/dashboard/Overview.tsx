@@ -20,9 +20,9 @@ const typeColors: Record<string, string> = {
   chat: "var(--accent)",
   event: "var(--warning)",
   cron: "var(--success)",
-  connection: "#58a6ff",
+  connection: "var(--badge-info)",
   system: "var(--text-muted)",
-  trigger: "#a78bfa",
+  trigger: "var(--badge-trigger)",
 };
 
 export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig; onAgentUpdate?: (agent: AgentConfig) => void }) {
@@ -231,7 +231,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
               fontSize: 13,
               fontWeight: 500,
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               cursor: saving ? "not-allowed" : "pointer",
             }}
           >
@@ -337,7 +337,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
                       fontWeight: 500,
                       fontFamily: "monospace",
                       background: isSelected ? "var(--accent)" : "var(--bg)",
-                      color: isSelected ? "#fff" : "var(--text-muted)",
+                      color: isSelected ? "var(--text-on-accent)" : "var(--text-muted)",
                       border: isSelected ? "1px solid var(--accent)" : "1px solid var(--border)",
                       cursor: "pointer",
                       transition: "all 0.15s",

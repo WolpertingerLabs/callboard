@@ -101,7 +101,7 @@ export default function EditDraftModal({ isOpen, onClose, draft, onSaved }: Edit
               fontSize: 12,
               marginBottom: 16,
               padding: 8,
-              background: "var(--danger-bg, rgba(255, 0, 0, 0.1))",
+              background: "var(--danger-bg)",
               borderRadius: 4,
             }}
           >
@@ -136,7 +136,7 @@ export default function EditDraftModal({ isOpen, onClose, draft, onSaved }: Edit
               borderRadius: 6,
               fontSize: 14,
               background: canSave ? "var(--accent)" : "var(--border)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               border: "none",
               cursor: canSave ? "pointer" : "default",
             }}

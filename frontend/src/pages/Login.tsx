@@ -89,7 +89,7 @@ export default function Login({ onLogin, serverError }: Props) {
           style={{
             width: "100%",
             background: disabled || loading || !password ? "var(--border)" : "var(--accent)",
-            color: "#fff",
+            color: "var(--text-on-accent)",
             padding: "12px",
             borderRadius: 10,
             fontSize: 15,

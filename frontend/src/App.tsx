@@ -5,13 +5,60 @@ import Login from "./pages/Login";
 import CodeLoginModal from "./components/CodeLoginModal";
 import { SessionProvider } from "./contexts/SessionContext";
 import { checkClaudeStatus, type ClaudeAuthStatus } from "./api";
-import { getThemeMode } from "./utils/localStorage";
+import { getThemeMode, getCustomThemeName } from "./utils/localStorage";
+import { getTheme } from "./api";
 import type { ThemeMode } from "./utils/localStorage";
+import type { CustomTheme } from "./api";
+
+let cachedCustomTheme: CustomTheme | null = null;
 
 function applyTheme(mode: ThemeMode) {
   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   const resolved = mode === "system" ? (prefersDark ? "dark" : "light") : mode;
   document.documentElement.dataset.theme = resolved;
+
+  const root = document.documentElement;
+  const customName = getCustomThemeName();
+
+  if (!customName) {
+    // Clear any custom properties that were previously set
+    if (cachedCustomTheme) {
+      const vars = { ...cachedCustomTheme.dark, ...cachedCustomTheme.light };
+      for (const key of Object.keys(vars)) {
+        root.style.removeProperty(`--${key}`);
+      }
+      cachedCustomTheme = null;
+    }
+    return;
+  }
+
+  if (cachedCustomTheme && cachedCustomTheme.name === customName) {
+    applyCustomThemeVars(cachedCustomTheme, resolved);
+    return;
+  }
+
+  getTheme(customName)
+    .then((theme) => {
+      cachedCustomTheme = theme;
+      applyCustomThemeVars(theme, resolved);
+    })
+    .catch(() => {
+      cachedCustomTheme = null;
+    });
+}
+
+function applyCustomThemeVars(theme: CustomTheme, resolvedMode: string) {
+  const root = document.documentElement;
+  const vars = resolvedMode === "light" ? theme.light : theme.dark;
+  for (const [key, value] of Object.entries(vars)) {
+    root.style.setProperty(`--${key}`, value);
+  }
+}
+
+/** Force-reload the custom theme from server (after create/edit/delete). */
+export function reloadCustomTheme() {
+  cachedCustomTheme = null;
+  applyTheme(getThemeMode());
 }
 
 export default function App() {

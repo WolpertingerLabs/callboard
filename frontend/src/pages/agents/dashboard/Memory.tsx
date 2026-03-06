@@ -290,7 +290,7 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
                     fontSize: 13,
                     fontWeight: 500,
                     background: hasChanges ? "var(--accent)" : "var(--border)",
-                    color: "#fff",
+                    color: "var(--text-on-accent)",
                     cursor: hasChanges && !saving ? "pointer" : "default",
                     transition: "background 0.15s",
                     opacity: hasChanges ? 1 : 0.5,

@@ -21,6 +21,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
+import type { CustomTheme, ThemeVariables } from "shared/types/index.js";
 
 const log = createLogger("quick-completion");
 
@@ -80,8 +81,7 @@ function buildReturnResultServer(onResult: (text: string) => void) {
 // ─── Core Function ───────────────────────────────────────────────────
 
 /** Suffix appended to every system prompt to ensure the model calls the tool. */
-const RETURN_RESULT_INSTRUCTION =
-  "\n\nIMPORTANT: You MUST call the `return_result` tool with your answer. Do NOT write your answer as plain text.";
+const RETURN_RESULT_INSTRUCTION = "\n\nIMPORTANT: You MUST call the `return_result` tool with your answer. Do NOT write your answer as plain text.";
 
 /**
  * Run a single, ephemeral completion request via the Agent SDK.
@@ -177,9 +177,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
       throw new Error("Model did not call return_result tool — no result captured");
     }
 
-    log.debug(
-      `quickCompletion — done in ${durationMs}ms, tokens=${usage.inputTokens}+${usage.outputTokens}, cost=$${usage.costUsd.toFixed(4)}`,
-    );
+    log.debug(`quickCompletion — done in ${durationMs}ms, tokens=${usage.inputTokens}+${usage.outputTokens}, cost=$${usage.costUsd.toFixed(4)}`);
 
     return { text, usage, durationMs };
   } catch (err: any) {
@@ -262,6 +260,130 @@ export async function generateBranchName(request: string): Promise<string | null
     return branch;
   } catch (err: any) {
     log.warn(`generateBranchName failed: ${err.message}`);
+    return null;
+  }
+}
+
+// ─── Theme variable names that must be provided ─────────────────────
+const THEME_VARIABLE_NAMES = [
+  "bg",
+  "surface",
+  "border",
+  "text",
+  "text-muted",
+  "accent",
+  "accent-hover",
+  "user-bg",
+  "assistant-bg",
+  "code-bg",
+  "danger",
+  "error",
+  "success",
+  "warning",
+  "bg-secondary",
+  "text-secondary",
+  "border-light",
+  "text-on-accent",
+  "text-on-danger",
+  "accent-bg",
+  "accent-light",
+  "danger-bg",
+  "danger-border",
+  "warning-bg",
+  "success-bg",
+  "overlay-bg",
+  "shadow-sm",
+  "shadow-md",
+  "shadow-lg",
+  "diff-added-bg",
+  "diff-added-border",
+  "diff-added-text",
+  "diff-added-line-bg",
+  "diff-removed-bg",
+  "diff-removed-border",
+  "diff-removed-text",
+  "diff-removed-line-bg",
+  "diff-hunk-bg",
+  "toggle-knob",
+  "status-active",
+  "status-triggered",
+  "badge-info",
+  "badge-info-bg",
+  "badge-trigger",
+  "badge-worktree",
+  "badge-env-text",
+  "badge-env-bg",
+  "badge-env-border",
+  "badge-sse-text",
+  "badge-sse-bg",
+  "builtin-user-bg",
+  "builtin-user-border",
+  "builtin-assistant-bg",
+  "builtin-assistant-border",
+  "builtin-text",
+];
+
+/**
+ * Generate a complete custom theme via AI from a natural language description.
+ *
+ * Uses Sonnet for higher quality color design. The AI returns a JSON object
+ * with dark and light mode CSS variable values.
+ *
+ * Returns null if generation fails.
+ */
+export async function generateThemeCSS(name: string, description: string): Promise<CustomTheme | null> {
+  try {
+    const variableList = THEME_VARIABLE_NAMES.map((v) => `"${v}"`).join(", ");
+
+    const result = await quickCompletion({
+      prompt: `Create a theme called "${name}" based on this description: ${description}`,
+      systemPrompt:
+        `You are a UI theme designer. Generate CSS variable values for a web application theme. ` +
+        `The theme needs BOTH a dark mode and a light mode variant.\n\n` +
+        `You must provide values for ALL of these CSS variables (without the -- prefix): ${variableList}\n\n` +
+        `Rules:\n` +
+        `- Use hex colors (#rrggbb), rgba(), or valid CSS values for shadows\n` +
+        `- Dark mode: dark backgrounds, light text. Light mode: light backgrounds, dark text\n` +
+        `- Ensure sufficient contrast for readability (WCAG AA minimum)\n` +
+        `- text-on-accent and text-on-danger must be readable on accent/danger backgrounds\n` +
+        `- shadow-sm/md/lg are full box-shadow values (e.g. "0 1px 3px rgba(0,0,0,0.2)")\n` +
+        `- overlay-bg should be semi-transparent (e.g. "rgba(0,0,0,0.5)")\n` +
+        `- *-bg variables (accent-bg, danger-bg, etc.) should be very subtle tints\n` +
+        `- diff-added-* should be green-ish, diff-removed-* should be red-ish\n` +
+        `- Make the theme cohesive and visually appealing\n\n` +
+        `Return ONLY valid JSON in this exact format (no markdown, no code fences):\n` +
+        `{"dark":{<variable-name>:<value>,...},"light":{<variable-name>:<value>,...}}`,
+      model: "sonnet",
+      effort: "medium",
+    });
+
+    const parsed = JSON.parse(result.text.trim());
+    if (!parsed.dark || !parsed.light) {
+      log.warn("generateThemeCSS: AI response missing dark or light keys");
+      return null;
+    }
+
+    // Validate that at least the core variables are present
+    const darkKeys = Object.keys(parsed.dark);
+    const lightKeys = Object.keys(parsed.light);
+    const requiredCore = ["bg", "surface", "text", "accent", "border"];
+    for (const key of requiredCore) {
+      if (!darkKeys.includes(key) || !lightKeys.includes(key)) {
+        log.warn(`generateThemeCSS: Missing required variable "${key}"`);
+        return null;
+      }
+    }
+
+    const now = new Date().toISOString();
+    return {
+      name,
+      dark: parsed.dark as ThemeVariables,
+      light: parsed.light as ThemeVariables,
+      createdAt: now,
+      updatedAt: now,
+    };
+  } catch (err: any) {
+    log.warn(`generateThemeCSS failed: ${err.message}`);
     return null;
   }
 }

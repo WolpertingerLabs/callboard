@@ -434,7 +434,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
                 fontSize: 13,
                 fontWeight: 500,
                 background: "var(--accent)",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 cursor: editSaving ? "not-allowed" : "pointer",
               }}
             >
@@ -720,7 +720,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             alignItems: "center",
             gap: 6,
             background: showForm ? "transparent" : "var(--accent)",
-            color: showForm ? "var(--text-muted)" : "#fff",
+            color: showForm ? "var(--text-muted)" : "var(--text-on-accent)",
             padding: "8px 14px",
             borderRadius: 8,
             fontSize: 14,
@@ -794,7 +794,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             disabled={!formName.trim() || !formSchedule.trim() || !formDescription.trim() || formSaving}
             style={{
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--text-on-accent)",
               padding: "10px 18px",
               borderRadius: 8,
               fontSize: 14,
