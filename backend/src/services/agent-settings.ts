@@ -7,6 +7,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
+import { loadRemoteConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentSettings, KeyAliasInfo } from "shared";
@@ -79,30 +80,57 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
  * Each subdirectory under keys/local/ represents a named local identity.
  * Returns info about what key files exist in each alias directory so the
  * frontend can show which aliases are usable.
+ *
+ * In local mode, also includes caller aliases from remote.config.json
+ * since local mode doesn't require crypto keys — the proxy runs in-process.
  */
 export function discoverKeyAliases(): KeyAliasInfo[] {
+  const settings = loadSettings();
   const configDir = getActiveMcpConfigDir();
   if (!configDir) return [];
 
-  const localKeysDir = join(configDir, "keys", "local");
-  if (!existsSync(localKeysDir)) {
-    log.debug(`Local keys directory not found: ${localKeysDir}`);
-    return [];
+  const seen = new Set<string>();
+  const results: KeyAliasInfo[] = [];
+
+  // In local mode, caller aliases from remote.config.json are the primary source.
+  // No crypto keys are needed — the proxy runs in-process.
+  if (settings.proxyMode === "local") {
+    try {
+      process.env.MCP_CONFIG_DIR = configDir;
+      const config = loadRemoteConfig();
+      for (const alias of Object.keys(config.callers)) {
+        if (!seen.has(alias)) {
+          seen.add(alias);
+          results.push({ alias, hasSigningPub: false, hasExchangePub: false });
+        }
+      }
+    } catch (err: any) {
+      log.debug(`Failed to load caller aliases from remote.config.json: ${err.message}`);
+    }
   }
 
-  try {
-    const entries = readdirSync(localKeysDir, { withFileTypes: true });
-    return entries
-      .filter((e) => e.isDirectory())
-      .map((e) => ({
-        alias: e.name,
-        hasSigningPub: existsSync(join(localKeysDir, e.name, "signing.pub.pem")),
-        hasExchangePub: existsSync(join(localKeysDir, e.name, "exchange.pub.pem")),
-      }));
-  } catch (err: any) {
-    log.warn(`Failed to discover key aliases from ${localKeysDir}: ${err.message}`);
-    return [];
+  // Always scan keys/local/ for key-based aliases (used in remote mode,
+  // also surfaced in local mode if present).
+  const localKeysDir = join(configDir, "keys", "local");
+  if (existsSync(localKeysDir)) {
+    try {
+      const entries = readdirSync(localKeysDir, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isDirectory() && !seen.has(e.name)) {
+          seen.add(e.name);
+          results.push({
+            alias: e.name,
+            hasSigningPub: existsSync(join(localKeysDir, e.name, "signing.pub.pem")),
+            hasExchangePub: existsSync(join(localKeysDir, e.name, "exchange.pub.pem")),
+          });
+        }
+      }
+    } catch (err: any) {
+      log.warn(`Failed to discover key aliases from ${localKeysDir}: ${err.message}`);
+    }
   }
+
+  return results;
 }
 
 /**

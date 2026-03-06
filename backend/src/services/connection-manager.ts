@@ -61,6 +61,33 @@ function ensureCallerConfig(config: RemoteServerConfig, callerAlias: string): Ca
 }
 
 /**
+ * Ensure a caller config exists for the given alias.
+ * If the alias doesn't have an entry in remote.config.json, creates one
+ * with the same connections as "default" so the agent has immediate access.
+ * No-op if the caller already exists.
+ */
+export function ensureCallerConfigForAlias(callerAlias: string): void {
+  syncConfigDir();
+  try {
+    const config = loadRemoteConfig();
+    if (config.callers[callerAlias]) return; // already exists
+
+    // Clone the default caller's connections so the new alias starts
+    // with the same access as "default" (common expectation).
+    const defaultConnections = config.callers["default"]?.connections ?? [];
+    config.callers[callerAlias] = {
+      name: callerAlias,
+      peerKeyDir: "",
+      connections: [...defaultConnections],
+    };
+    saveRemoteConfig(config);
+    log.info(`Auto-created caller config for alias "${callerAlias}" with ${defaultConnections.length} connection(s) from default`);
+  } catch (err: any) {
+    log.warn(`Failed to auto-create caller config for "${callerAlias}": ${err.message}`);
+  }
+}
+
+/**
  * List all configured caller aliases.
  * Always includes "default" as the first entry.
  */
