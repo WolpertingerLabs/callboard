@@ -19,6 +19,7 @@ interface LocalStorageData {
   autoCreateBranch?: boolean;
   showTriggeredChats?: boolean;
   themeMode?: ThemeMode;
+  customThemeName?: string | null;
   sidebarCollapsed?: boolean;
 }
 
@@ -146,6 +147,17 @@ export function getThemeMode(): ThemeMode {
 export function saveThemeMode(mode: ThemeMode): void {
   const data = getStorageData();
   data.themeMode = mode;
+  setStorageData(data);
+}
+
+export function getCustomThemeName(): string | null {
+  const data = getStorageData();
+  return data.customThemeName ?? null;
+}
+
+export function saveCustomThemeName(name: string | null): void {
+  const data = getStorageData();
+  data.customThemeName = name;
   setStorageData(data);
 }
 
