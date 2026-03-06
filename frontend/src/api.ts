@@ -994,6 +994,7 @@ export interface ConnectionsListResponse {
   callers: CallerInfo[];
   localModeActive: boolean;
   remoteModeActive?: boolean;
+  remoteConfigManagement?: boolean;
 }
 
 export async function getConnections(caller?: string): Promise<ConnectionsListResponse> {

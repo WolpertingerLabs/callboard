@@ -20,6 +20,9 @@ import {
   createCallerAlias,
   deleteCallerAlias,
   listRemoteConnections,
+  setRemoteConnectionEnabled,
+  setRemoteSecrets,
+  getRemoteSecretStatus,
   listListenerInstances,
   addListenerInstance,
   updateListenerInstance,
@@ -175,19 +178,19 @@ connectionsRouter.get("/", async (req: Request, res: Response): Promise<void> =>
       const callerAlias = (req.query.caller as string) || "default";
       const templates = listConnectionsWithStatus(callerAlias);
       const callers = listCallerAliases();
-      res.json({ templates, callers, localModeActive: true, remoteModeActive: false });
+      res.json({ templates, callers, localModeActive: true, remoteModeActive: false, remoteConfigManagement: false });
       return;
     }
 
     if (remoteModeActive) {
       const callerAlias = (req.query.caller as string) || undefined;
-      const { templates, callers } = await listRemoteConnections(callerAlias);
-      res.json({ templates, callers, localModeActive: false, remoteModeActive: true });
+      const { templates, callers, remoteConfigManagement } = await listRemoteConnections(callerAlias);
+      res.json({ templates, callers, localModeActive: false, remoteModeActive: true, remoteConfigManagement });
       return;
     }
 
     // Neither mode is active
-    res.json({ templates: [], callers: [], localModeActive: false, remoteModeActive: false });
+    res.json({ templates: [], callers: [], localModeActive: false, remoteModeActive: false, remoteConfigManagement: false });
   } catch (err: any) {
     log.error(`Error listing connections: ${err.message}`);
     res.status(500).json({ error: "Failed to list connections" });
@@ -230,7 +233,15 @@ connectionsRouter.post("/:alias/enable", async (req: Request, res: Response): Pr
   }
 
   try {
-    await setConnectionEnabled(alias, enabled, callerAlias);
+    const settings = getAgentSettings();
+    const remoteModeActive = settings.proxyMode === "remote" && isProxyConfigured();
+
+    if (remoteModeActive) {
+      await setRemoteConnectionEnabled(alias, enabled, callerAlias);
+    } else {
+      await setConnectionEnabled(alias, enabled, callerAlias);
+    }
+
     res.json({ alias, enabled });
   } catch (err: any) {
     log.error(`Error toggling connection ${alias}: ${err.message}`);
@@ -274,7 +285,11 @@ connectionsRouter.put("/:alias/secrets", async (req: Request, res: Response): Pr
   }
 
   try {
-    const status = await setSecrets(secrets, callerAlias);
+    const settings = getAgentSettings();
+    const remoteModeActive = settings.proxyMode === "remote" && isProxyConfigured();
+
+    const status = remoteModeActive ? await setRemoteSecrets(secrets, callerAlias) : await setSecrets(secrets, callerAlias);
+
     res.json({ secretsSet: status });
   } catch (err: any) {
     log.error(`Error setting secrets for ${req.params.alias}: ${err.message}`);
@@ -293,9 +308,18 @@ connectionsRouter.put("/:alias/secrets", async (req: Request, res: Response): Pr
 // #swagger.summary = 'Check which secrets are set for a connection'
 /* #swagger.responses[200] = { description: "Secret status" } */
 /* #swagger.responses[404] = { description: "Connection not found" } */
-connectionsRouter.get("/:alias/secrets", (req: Request, res: Response): void => {
+connectionsRouter.get("/:alias/secrets", async (req: Request, res: Response): Promise<void> => {
   try {
     const callerAlias = (req.query.caller as string) || "default";
+    const settings = getAgentSettings();
+    const remoteModeActive = settings.proxyMode === "remote" && isProxyConfigured();
+
+    if (remoteModeActive) {
+      const { requiredSecretsSet, optionalSecretsSet } = await getRemoteSecretStatus(req.params.alias, callerAlias);
+      res.json({ secretsSet: { ...requiredSecretsSet, ...optionalSecretsSet } });
+      return;
+    }
+
     const status = getConnectionStatus(req.params.alias, callerAlias);
     if (!status) {
       res.status(404).json({ error: "Connection template not found" });
