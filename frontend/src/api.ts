@@ -1147,3 +1147,34 @@ export async function restartServer(): Promise<{ success: boolean; message: stri
   await assertOk(res, "Failed to restart server");
   return res.json();
 }
+
+// Instance name API
+
+export async function fetchInstanceName(): Promise<string> {
+  const res = await fetch(`${BASE}/instance-name`, { credentials: "include" });
+  await assertOk(res, "Failed to fetch instance name");
+  const data = await res.json();
+  return data.name;
+}
+
+export async function updateInstanceName(name: string): Promise<string> {
+  const res = await fetch(`${BASE}/instance-name`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ name }),
+  });
+  await assertOk(res, "Failed to update instance name");
+  const data = await res.json();
+  return data.name;
+}
+
+export async function randomizeInstanceName(): Promise<string> {
+  const res = await fetch(`${BASE}/instance-name/randomize`, {
+    method: "POST",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to randomize instance name");
+  const data = await res.json();
+  return data.name;
+}

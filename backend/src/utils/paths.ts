@@ -1,4 +1,4 @@
-import { statSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { statSync, existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -70,6 +70,159 @@ export function ensureEnvFile(): boolean {
   if (existsSync(ENV_FILE)) return false;
   writeFileSync(ENV_FILE, ENV_TEMPLATE, { mode: 0o600 });
   return true;
+}
+
+// ── Instance Naming ──────────────────────────────────────────────────
+
+const INSTANCE_NAME_WORDS = [
+  "cherry",
+  "blossom",
+  "willow",
+  "maple",
+  "cedar",
+  "birch",
+  "oak",
+  "pine",
+  "fern",
+  "moss",
+  "river",
+  "brook",
+  "meadow",
+  "valley",
+  "ridge",
+  "canyon",
+  "cliff",
+  "cove",
+  "reef",
+  "dune",
+  "coral",
+  "pebble",
+  "flint",
+  "amber",
+  "jade",
+  "opal",
+  "ruby",
+  "pearl",
+  "crystal",
+  "quartz",
+  "daisy",
+  "iris",
+  "lily",
+  "poppy",
+  "sage",
+  "clover",
+  "violet",
+  "jasmine",
+  "orchid",
+  "lotus",
+  "thistle",
+  "ivy",
+  "holly",
+  "laurel",
+  "basil",
+  "thyme",
+  "mint",
+  "rosemary",
+  "lavender",
+  "buttercup",
+  "dawn",
+  "dusk",
+  "aurora",
+  "ember",
+  "spark",
+  "frost",
+  "breeze",
+  "gale",
+  "mist",
+  "haze",
+  "cloud",
+  "rain",
+  "snow",
+  "storm",
+  "thunder",
+  "lightning",
+  "rainbow",
+  "starlight",
+  "moonbeam",
+  "sunray",
+  "crimson",
+  "scarlet",
+  "golden",
+  "silver",
+  "cobalt",
+  "indigo",
+  "teal",
+  "ivory",
+  "onyx",
+  "robin",
+  "wren",
+  "finch",
+  "falcon",
+  "heron",
+  "crane",
+  "dove",
+  "swift",
+  "lark",
+  "raven",
+  "fox",
+  "wolf",
+  "bear",
+  "deer",
+  "otter",
+  "badger",
+  "hare",
+  "lynx",
+  "hawk",
+  "owl",
+];
+
+export function generateInstanceName(): string {
+  const pick = () => INSTANCE_NAME_WORDS[Math.floor(Math.random() * INSTANCE_NAME_WORDS.length)];
+  const a = pick();
+  let b: string, c: string;
+  do {
+    b = pick();
+  } while (b === a);
+  do {
+    c = pick();
+  } while (c === a || c === b);
+  return `${a}-${b}-${c}`;
+}
+
+/**
+ * Ensure INSTANCE_NAME is set in the .env file.
+ * If not present, generates a random name and appends it.
+ */
+export function ensureInstanceName(): string {
+  ensureEnvFile();
+  const contents = readFileSync(ENV_FILE, "utf-8");
+  const match = contents.match(/^INSTANCE_NAME=(.+)$/m);
+  if (match) return match[1].trim();
+
+  const name = generateInstanceName();
+  appendFileSync(ENV_FILE, `\n# Friendly name for this Callboard instance\nINSTANCE_NAME=${name}\n`);
+  process.env.INSTANCE_NAME = name;
+  return name;
+}
+
+/** Get the current instance name. */
+export function getInstanceName(): string {
+  return process.env.INSTANCE_NAME || ensureInstanceName();
+}
+
+/** Update the instance name in the .env file and process.env. */
+export function saveInstanceName(name: string): void {
+  ensureEnvFile();
+  const contents = readFileSync(ENV_FILE, "utf-8");
+  const regex = /^INSTANCE_NAME=.+$/m;
+  let updated: string;
+  if (regex.test(contents)) {
+    updated = contents.replace(regex, `INSTANCE_NAME=${name}`);
+  } else {
+    updated = contents + `\n# Friendly name for this Callboard instance\nINSTANCE_NAME=${name}\n`;
+  }
+  writeFileSync(ENV_FILE, updated, { mode: 0o600 });
+  process.env.INSTANCE_NAME = name;
 }
 
 function isDirectory(p: string): boolean {

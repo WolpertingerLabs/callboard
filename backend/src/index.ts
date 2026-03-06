@@ -12,7 +12,7 @@ const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // Load .env: ~/.callboard/.env is the base config, then the project-root .env
 // overrides it. This lets local dev runs use a local .env to override
 // the global ~/.callboard config (e.g. different ports, passwords, log levels).
-import { ENV_FILE, ensureDataDir, ensureEnvFile } from "./utils/paths.js";
+import { ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName } from "./utils/paths.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
 migrateDrawlatchDirs();
@@ -29,6 +29,9 @@ if (existsSync(ENV_FILE)) {
     }
   }
 }
+// Ensure instance name exists in .env (generates one on first run)
+ensureInstanceName();
+
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { chatsRouter } from "./routes/chats.js";
@@ -146,6 +149,29 @@ app.use("/api/agent-settings", agentSettingsRouter);
 app.use("/api/proxy", proxyRouter);
 app.use("/api/connections", connectionsRouter);
 app.use("/api/sessions", sessionsRouter);
+
+// Instance name endpoints (requires auth)
+import { getInstanceName, saveInstanceName, generateInstanceName } from "./utils/paths.js";
+
+app.get("/api/instance-name", (_req, res) => {
+  res.json({ name: getInstanceName() });
+});
+
+app.put("/api/instance-name", (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== "string" || !name.trim()) {
+    res.status(400).json({ error: "Name is required" });
+    return;
+  }
+  saveInstanceName(name.trim());
+  res.json({ name: name.trim() });
+});
+
+app.post("/api/instance-name/randomize", (_req, res) => {
+  const name = generateInstanceName();
+  saveInstanceName(name);
+  res.json({ name });
+});
 
 // Claude Code auth status (requires auth — exposes server-side CLI state)
 let claudeStatusCache: { data: any; ts: number } | null = null;

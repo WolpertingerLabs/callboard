@@ -1,12 +1,21 @@
-import { useState } from "react";
-import { Sun, Moon, Monitor } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Sun, Moon, Monitor, RefreshCw } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
+import { fetchInstanceName, updateInstanceName, randomizeInstanceName } from "../../api";
 
 export default function GeneralSettings() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getThemeMode());
   const [maxTurns, setMaxTurns] = useState(() => getMaxTurns());
   const [saved, setSaved] = useState(false);
+  const [instanceName, setInstanceName] = useState("");
+  const [nameSaved, setNameSaved] = useState(false);
+
+  useEffect(() => {
+    fetchInstanceName()
+      .then(setInstanceName)
+      .catch(() => {});
+  }, []);
 
   const handleThemeChange = (mode: ThemeMode) => {
     setThemeMode(mode);
@@ -22,8 +31,115 @@ export default function GeneralSettings() {
     setTimeout(() => setSaved(false), 2000);
   };
 
+  const handleNameSave = async () => {
+    const trimmed = instanceName.trim();
+    if (!trimmed) return;
+    try {
+      const saved = await updateInstanceName(trimmed);
+      setInstanceName(saved);
+      setNameSaved(true);
+      setTimeout(() => setNameSaved(false), 2000);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleRandomizeName = async () => {
+    try {
+      const name = await randomizeInstanceName();
+      setInstanceName(name);
+      setNameSaved(true);
+      setTimeout(() => setNameSaved(false), 2000);
+    } catch {
+      /* ignore */
+    }
+  };
+
   return (
     <>
+      {/* Instance Name Section */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 20,
+          background: "var(--bg)",
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ marginBottom: 6 }}>
+          <label
+            htmlFor="instanceName"
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--text)",
+            }}
+          >
+            Instance Name
+          </label>
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginBottom: 10,
+          }}
+        >
+          A friendly name for this Callboard instance, displayed in the sidebar header.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            id="instanceName"
+            type="text"
+            value={instanceName}
+            onChange={(e) => setInstanceName(e.target.value)}
+            style={{
+              flex: 1,
+              maxWidth: 300,
+              padding: "10px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 14,
+              boxSizing: "border-box",
+            }}
+          />
+          <button
+            onClick={handleRandomizeName}
+            title="Generate random name"
+            style={{
+              background: "var(--surface)",
+              color: "var(--text-muted)",
+              padding: "10px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <RefreshCw size={16} />
+          </button>
+          <button
+            onClick={handleNameSave}
+            style={{
+              background: "var(--accent)",
+              color: "#fff",
+              padding: "10px 20px",
+              borderRadius: 8,
+              border: "none",
+              fontSize: 14,
+              cursor: "pointer",
+            }}
+          >
+            {nameSaved ? "Saved!" : "Save"}
+          </button>
+        </div>
+      </div>
+
       {/* Appearance Section */}
       <div
         style={{
