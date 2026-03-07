@@ -977,6 +977,38 @@ export async function getTunnelStatus(): Promise<TunnelStatus> {
   return res.json();
 }
 
+// Sync (key exchange) API functions
+
+export async function startSync(opts: { remoteUrl: string; inviteCode: string; encryptionKey: string; callerAlias: string }): Promise<{ confirmCode: string }> {
+  const res = await fetch(`${BASE}/agent-settings/sync/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(opts),
+  });
+  await assertOk(res, "Failed to start sync");
+  return res.json();
+}
+
+export async function completeSync(): Promise<{ callerAlias: string; fingerprint: string }> {
+  const res = await fetch(`${BASE}/agent-settings/sync/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to complete sync");
+  return res.json();
+}
+
+export async function cancelSync(): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/agent-settings/sync/cancel`, {
+    method: "POST",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to cancel sync");
+  return res.json();
+}
+
 // Agent activity API functions
 
 export async function getAgentActivity(alias: string, type?: string, limit?: number, offset?: number): Promise<ActivityEntry[]> {
