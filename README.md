@@ -1,239 +1,177 @@
 # Callboard
 
-> **Alpha Software:** This project is in alpha. Expect breaking changes between updates.
+A web UI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — chat with Claude agents through your browser instead of the terminal.
 
-A full-stack web interface for the [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code) agent SDK, providing real-time chat, tool permission management, image uploads, git integration, and more.
+> **Alpha Software** — Expect breaking changes between updates.
 
-## Features
+Callboard gives you a full-featured chat interface on top of the Claude Code agent SDK. You get real-time streaming responses, tool permission controls, image uploads, git integration, and more — all from a browser tab you can keep open alongside your editor.
 
-- **Real-Time Streaming Chat** - Conversations with Claude streamed via Server-Sent Events (SSE), with support for thinking, tool calls, and permission requests
-- **Tool Permission Controls** - Approve, deny, or auto-allow file reads, file writes, code execution, and web access per session
-- **Image Uploads** - Attach images to messages for visual context
-- **Git Integration** - Browse branches, create worktrees, switch branches, and view diffs directly from the UI
-- **Folder Browser** - Select and validate project directories to work in
-- **Queue Management** - Save draft messages to a queue for later execution
-- **Slash Commands** - Autocomplete-enabled slash commands from your project's configuration
-- **Plugin Support** - Load custom plugins that extend Claude's capabilities
-- **Responsive Design** - Split-pane layout for desktop, single-column for mobile
-- **Markdown Rendering** - Rich text with GitHub Flavored Markdown and syntax-highlighted code blocks
-- **Authentication** - Password-based login with secure cookie sessions, rate limiting, and auto-extending TTL
-- **API Documentation** - Auto-generated OpenAPI spec available at `/api/docs`
+## Quick Start
 
-## Tech Stack
-
-| Layer               | Technology                                   |
-| ------------------- | -------------------------------------------- |
-| **Frontend**        | React 18, TypeScript, Vite, React Router     |
-| **Backend**         | Express.js, TypeScript                       |
-| **AI Integration**  | `@anthropic-ai/claude-agent-sdk`             |
-| **Styling**         | CSS with custom properties (dark/light mode) |
-| **Icons**           | Lucide React                                 |
-| **Markdown**        | react-markdown, rehype-highlight, remark-gfm |
-| **File Uploads**    | Multer                                       |
-| **Logging**         | Winston                                      |
-| **Testing**         | Vitest                                       |
-| **Linting**         | ESLint, Prettier                             |
-| **Process Manager** | Built-in daemon (`callboard start/stop`)     |
-| **Storage**         | File-based (JSONL chat logs, JSON metadata)  |
-
-## Getting Started
-
-### Prerequisites
-
-- **Node.js** 22+ (managed via nvm)
-- **npm** 9+
-- **Claude Code CLI** installed and authenticated
-
-### Setup
-
-1. Clone the repository:
+### 1. Install
 
 ```bash
-git clone <repository-url>
+npm install -g @wolpertingerlabs/callboard
+```
+
+Requires **Node.js 22+** and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+
+### 2. Set a password
+
+```bash
+callboard set-password
+```
+
+### 3. Start the server
+
+```bash
+callboard start
+```
+
+Open **http://localhost:8000** in your browser and log in. That's it.
+
+## What You Can Do
+
+- **Chat with Claude agents** — real-time streaming with thinking, tool calls, and permission prompts
+- **Manage tool permissions** — approve, deny, or auto-allow file reads, writes, execution, and web access per session
+- **Attach images** — drag and drop images for visual context
+- **Browse and switch git branches** — create worktrees, view diffs, and manage branches from the UI
+- **Queue messages** — save drafts to send later
+- **Use slash commands** — autocomplete-enabled commands from your project's configuration
+- **Load plugins** — extend Claude's capabilities with custom plugins
+
+## Agents
+
+Callboard isn't just a chat window — it's a platform for running autonomous Claude agents. Each agent gets its own identity, workspace, memory, and schedule.
+
+### Creating Agents
+
+Agents are created from the UI. Each agent has a name, personality, role, and guidelines that shape how it behaves. Behind the scenes, an agent gets:
+
+- **A workspace** at `~/.callboard/agent-workspaces/<alias>/` with scaffold files that teach it how to maintain memory, take notes, and work proactively
+- **A two-tier memory system** — daily journal files for running notes, and a curated long-term `MEMORY.md` distilled over time
+- **Tool permissions** — agents default to full access (file read/write, code execution, web access) but you can restrict per session
+
+### Triggering Agents
+
+Agents can run in three ways:
+
+- **Cron jobs** — scheduled tasks with cron expressions and timezone support. One-off, recurring, or indefinite. A default "heartbeat" job lets agents periodically check in and do proactive work.
+- **Event triggers** — react to incoming events from external services (Discord messages, GitHub webhooks, etc.) with configurable filters and prompt templates that interpolate event data.
+- **Direct invocation** — agents can spawn other agents programmatically, creating multi-agent workflows.
+
+### Quiet Hours
+
+Agents respect quiet hours — a configurable time window where recurring cron jobs and event triggers are suppressed. One-off scheduled jobs still fire. You can scope quiet hours to just crons, just triggers, or both.
+
+### Agent Tools
+
+Agents have access to specialized tools beyond the standard Claude Code toolkit:
+
+- Start and monitor chat sessions in any directory or branch
+- Manage their own cron jobs and event triggers
+- Discover and orchestrate other agents on the platform
+- Query their own activity logs
+
+## Connections & Event Listening
+
+Callboard uses [@wolpertingerlabs/drawlatch](https://www.npmjs.com/package/@wolpertingerlabs/drawlatch) to give agents authenticated access to external APIs — Discord, GitHub, Slack, Google, Trello, and [many more](https://www.npmjs.com/package/@wolpertingerlabs/drawlatch).
+
+### How Connections Work
+
+A connection is a pre-configured API route template. Each connection defines the allowed endpoints (URL patterns), required secrets, and auth headers. When an agent makes a request, Drawlatch matches the URL against allowed patterns, injects the right credentials, and proxies the request. Agents never see the raw API keys — they just call `secure_request` with a URL and Drawlatch handles authentication.
+
+### Event Listening
+
+Drawlatch supports real-time event ingestion from external services through three mechanisms:
+
+- **WebSocket listeners** — persistent connections to services like Discord Gateway and Slack Socket Mode, with automatic reconnection and heartbeat management
+- **Webhook receivers** — HTTP endpoints that receive and verify signed payloads from GitHub, Stripe, Trello, and others
+- **Pollers** — interval-based HTTP polling for services like Notion, Linear, Reddit, and Telegram
+
+Events are buffered in per-caller ring buffers. Agents retrieve them by calling `poll_events`, which returns new events since the last cursor. This is what powers event triggers — when an agent has a trigger configured for Discord messages, Drawlatch's event listener catches the message and the trigger dispatcher routes it to the right agent.
+
+### Local vs. Remote Mode
+
+Drawlatch runs in two modes:
+
+**Local mode** (default with Callboard) runs Drawlatch in-process. Secrets are read from environment variables on the same machine. There's no encryption layer between Callboard and Drawlatch — they share the same process. This doesn't provide extra security isolation for secrets, but it gives you the full feature set: endpoint allowlisting, structured route resolution, event listening, and all the MCP tools. For a personal server on your own machine, this is the simplest way to get started.
+
+**Remote mode** separates Drawlatch into two components: a local MCP proxy (which holds no secrets) and a remote secure server (which holds all the API keys). Communication between them is encrypted end-to-end with AES-256-GCM, authenticated with Ed25519 signatures, and protected against replay attacks. The local proxy never sees plaintext secrets. The remote server enforces per-caller access control — each caller only sees routes they've been explicitly granted. This is the right choice when you want secrets isolated from the machine running agents, or when multiple users share a single Drawlatch server with different credentials.
+
+## CLI Reference
+
+```
+callboard start              Start the server (background daemon)
+callboard stop               Stop the server
+callboard restart             Restart the server
+callboard status              Show PID, port, uptime, and health
+callboard logs                View and follow server logs
+callboard config              Show effective configuration
+callboard set-password        Set or change the login password
+```
+
+### Options
+
+```
+callboard start -f            Run in the foreground
+callboard start --port 3000   Use a custom port (default: 8000)
+callboard logs -n 100         Show last 100 log lines
+callboard config --path       Print the config file path
+```
+
+## Configuration
+
+Callboard stores its config at `~/.callboard/.env` (created automatically on first run).
+
+| Variable                   | Default                         | Description                                  |
+| -------------------------- | ------------------------------- | -------------------------------------------- |
+| `PORT`                     | `8000`                          | Server port                                  |
+| `LOG_LEVEL`                | `info`                          | Log level (`error`, `warn`, `info`, `debug`) |
+| `SESSION_COOKIE_NAME`      | `callboard_session`             | Cookie name (change to avoid collisions)     |
+| `CALLBOARD_WORKSPACES_DIR` | `~/.callboard/agent-workspaces` | Where agent workspaces are created           |
+
+Passwords are stored as scrypt hashes — plaintext is never saved.
+
+## Development
+
+If you want to contribute or run from source:
+
+```bash
+git clone https://github.com/WolpertingerLabs/callboard.git
 cd callboard
-```
-
-2. Install dependencies:
-
-```bash
 npm install
-```
-
-3. Configure environment variables:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and set your `AUTH_PASSWORD`:
-
-```env
-PORT=8000
-DEV_PORT_UI=3000
-DEV_PORT_SERVER=3002
-LOG_LEVEL=info
-AUTH_PASSWORD=your-secure-password
-```
-
-| Variable          | Default      | Description                                          |
-| ----------------- | ------------ | ---------------------------------------------------- |
-| `PORT`            | `8000`       | Production server port                               |
-| `DEV_PORT_UI`     | `3000`       | Frontend dev server port                             |
-| `DEV_PORT_SERVER` | `3002`       | Backend dev server port                              |
-| `LOG_LEVEL`       | `info`       | Winston log level (`error`, `warn`, `info`, `debug`) |
-| `AUTH_PASSWORD`   | _(required)_ | Password for logging in to the UI                    |
-
-### Development
-
-Start both the frontend and backend dev servers concurrently:
-
-```bash
+cp .env.example .env       # edit .env and set AUTH_PASSWORD
 npm run dev
 ```
 
-- Frontend: `http://localhost:3000` (proxies API requests to the backend)
-- Backend: `http://localhost:3002`
+This starts the frontend on `http://localhost:3000` and the backend on `http://localhost:3002`.
 
-### Production
+### Scripts
 
-Build and start:
+| Command            | Description                          |
+| ------------------ | ------------------------------------ |
+| `npm run dev`      | Start frontend + backend dev servers |
+| `npm run build`    | Build for production                 |
+| `npm start`        | Start production server              |
+| `npm test`         | Run tests (Vitest)                   |
+| `npm run lint:all` | Lint all files                       |
 
-```bash
-npm run build
-npm start
-```
-
-The production server runs on port 8000 and serves the built frontend as static files.
-
-### CLI Management
-
-If installed globally (`npm install -g @wolpertingerlabs/callboard`):
-
-```bash
-callboard start             # Start as background daemon
-callboard stop              # Stop the server
-callboard restart           # Restart the server
-callboard status            # Show PID, port, uptime, health
-callboard logs              # View and follow server logs
-callboard config            # Show effective configuration
-```
-
-## Project Structure
+### Project Structure
 
 ```
 callboard/
-├── frontend/               # React frontend
-│   └── src/
-│       ├── components/     # UI components (MessageBubble, PromptInput, etc.)
-│       ├── pages/          # Route pages (Chat, ChatList, Queue, Login)
-│       ├── hooks/          # Custom React hooks
-│       ├── types/          # Frontend-specific types
-│       ├── utils/          # Client utilities
-│       ├── api.ts          # API client layer
-│       └── App.tsx         # Root component and routing
-├── backend/                # Express backend
-│   └── src/
-│       ├── routes/         # API route handlers (chats, stream, images, queue, git, folders)
-│       ├── services/       # Business logic (claude SDK, chat storage, sessions, etc.)
-│       ├── utils/          # Server utilities (logger, SSE, git helpers)
-│       ├── auth.ts         # Authentication middleware
-│       ├── swagger.ts      # OpenAPI spec generation
-│       └── index.ts        # Server entry point
-├── shared/                 # Shared TypeScript types (used by both frontend & backend)
-│   └── types/              # Chat, message, stream, permissions, plugin types
-├── data/                   # Runtime data (gitignored)
-│   ├── chats/              # JSONL chat session files
-│   ├── images/             # Uploaded images
-│   ├── queue/              # Draft queue items
-│   └── sessions.json       # Active auth sessions
-├── bin/                    # CLI entry point (callboard command)
-├── .env.example            # Environment variable template
-├── eslint.config.js        # ESLint configuration
-├── tsconfig.base.json      # Shared TypeScript config
-└── package.json            # Workspace root (npm workspaces)
+├── frontend/        React UI (Vite + TypeScript)
+├── backend/         Express API server (TypeScript)
+├── shared/          Shared TypeScript types
+├── bin/             CLI entry point (callboard command)
+└── data/            Runtime data — chats, images, sessions (gitignored)
 ```
 
-## API Endpoints
+### Tech Stack
 
-### Authentication
-
-| Method | Endpoint           | Description                 |
-| ------ | ------------------ | --------------------------- |
-| `POST` | `/api/auth/login`  | Log in with password        |
-| `POST` | `/api/auth/logout` | Destroy session             |
-| `GET`  | `/api/auth/check`  | Check authentication status |
-
-### Chats
-
-| Method   | Endpoint                  | Description                                                      |
-| -------- | ------------------------- | ---------------------------------------------------------------- |
-| `GET`    | `/api/chats`              | List chats (paginated)                                           |
-| `GET`    | `/api/chats/:id`          | Get chat metadata                                                |
-| `GET`    | `/api/chats/:id/messages` | Get message history                                              |
-| `DELETE` | `/api/chats/:id`          | Delete a chat                                                    |
-| `GET`    | `/api/chats/new/info`     | Get info for starting a new chat (git status, commands, plugins) |
-
-### Streaming
-
-| Method | Endpoint                 | Description                                           |
-| ------ | ------------------------ | ----------------------------------------------------- |
-| `POST` | `/api/chats/new/message` | Create a new chat and stream the first response (SSE) |
-| `POST` | `/api/chats/:id/message` | Send a message to an existing chat (SSE)              |
-| `POST` | `/api/chats/:id/respond` | Respond to a permission or user question prompt       |
-| `POST` | `/api/chats/:id/stop`    | Stop a running session                                |
-
-### Images
-
-| Method | Endpoint                    | Description             |
-| ------ | --------------------------- | ----------------------- |
-| `POST` | `/api/chats/:chatId/images` | Upload images to a chat |
-
-### Queue
-
-| Method   | Endpoint         | Description        |
-| -------- | ---------------- | ------------------ |
-| `GET`    | `/api/queue`     | List queued drafts |
-| `POST`   | `/api/queue`     | Create a draft     |
-| `DELETE` | `/api/queue/:id` | Delete a draft     |
-
-### Git
-
-| Method | Endpoint                 | Description                        |
-| ------ | ------------------------ | ---------------------------------- |
-| `GET`  | `/api/git/info`          | Get git repo info for a folder     |
-| `GET`  | `/api/git/diff`          | Get git diff for a folder          |
-| `POST` | `/api/git/switch-branch` | Switch or create a branch/worktree |
-
-### Folders
-
-| Method | Endpoint                   | Description               |
-| ------ | -------------------------- | ------------------------- |
-| `GET`  | `/api/folders/browse`      | Browse directory contents |
-| `GET`  | `/api/folders/validate`    | Validate a folder path    |
-| `GET`  | `/api/folders/suggestions` | Get folder suggestions    |
-
-### Docs
-
-| Method | Endpoint    | Description                          |
-| ------ | ----------- | ------------------------------------ |
-| `GET`  | `/api/docs` | Auto-generated OpenAPI specification |
-
-## Scripts
-
-| Command                | Description                                              |
-| ---------------------- | -------------------------------------------------------- |
-| `npm run dev`          | Start frontend and backend dev servers concurrently      |
-| `npm run build`        | Build shared types, backend, and frontend for production |
-| `npm start`            | Start the production server (`NODE_ENV=production`)      |
-| `npm test`             | Run tests (Vitest)                                       |
-| `npm run test:watch`   | Run tests in watch mode                                  |
-| `npm run lint`         | Lint staged files only                                   |
-| `npm run lint:fix`     | Lint and auto-fix staged files                           |
-| `npm run lint:all`     | Lint all project files                                   |
-| `npm run lint:all:fix` | Lint and auto-fix all project files                      |
-| `npm run prettier`     | Format changed files with Prettier                       |
-| `npm run clean`        | Remove all build artifacts                               |
+React 18, Express.js, TypeScript, Vite, Claude Agent SDK, Winston logging, Vitest, ESLint + Prettier.
 
 ## License
 
-[License information]
+MIT
