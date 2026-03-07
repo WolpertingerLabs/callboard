@@ -14,6 +14,7 @@ import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js
 import { switchProxyMode } from "../services/proxy-singleton.js";
 import { testRemoteConnection } from "../services/proxy-singleton.js";
 import { getTunnelStatusFull } from "../services/tunnel-manager.js";
+import { initSync, completeSync, cancelSync, SyncClientError } from "../services/sync-manager.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("agent-settings-routes");
@@ -90,4 +91,52 @@ agentSettingsRouter.get("/tunnel-status", async (_req: Request, res: Response): 
     log.error(`Error getting tunnel status: ${err.message}`);
     res.status(500).json({ error: "Failed to get tunnel status" });
   }
+});
+
+// ── Sync (key exchange) endpoints ────────────────────────────────────
+
+/** POST /api/agent-settings/sync/start — initiate key exchange with a remote drawlatch server */
+agentSettingsRouter.post("/sync/start", async (req: Request, res: Response): Promise<void> => {
+  const { remoteUrl, inviteCode, encryptionKey, callerAlias } = req.body;
+  if (!remoteUrl || !inviteCode || !encryptionKey || !callerAlias) {
+    res.status(400).json({ error: "remoteUrl, inviteCode, encryptionKey, and callerAlias are required" });
+    return;
+  }
+
+  try {
+    const result = await initSync({ remoteUrl, inviteCode, encryptionKey, callerAlias });
+    res.json(result);
+  } catch (err: any) {
+    log.error(`Error starting sync: ${err.message}`);
+    res.status(500).json({ error: err.message || "Failed to start sync" });
+  }
+});
+
+/** POST /api/agent-settings/sync/complete — complete the pending key exchange */
+agentSettingsRouter.post("/sync/complete", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await completeSync();
+    res.json(result);
+  } catch (err: any) {
+    log.error(`Error completing sync: ${err.message}`);
+    if (err instanceof SyncClientError) {
+      const statusMap: Record<string, number> = {
+        NO_ACTIVE_SESSION: 404,
+        CODE_MISMATCH: 403,
+        SESSION_EXPIRED: 410,
+        ALREADY_COMPLETED: 409,
+        DECRYPTION_FAILED: 400,
+        INVALID_PAYLOAD: 400,
+      };
+      res.status(statusMap[err.code] || 502).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: err.message || "Failed to complete sync" });
+  }
+});
+
+/** POST /api/agent-settings/sync/cancel — cancel a pending key exchange */
+agentSettingsRouter.post("/sync/cancel", (_req: Request, res: Response): void => {
+  cancelSync();
+  res.json({ ok: true });
 });
