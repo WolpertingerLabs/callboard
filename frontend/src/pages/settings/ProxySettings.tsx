@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, Radio } from "lucide-react";
+import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, Radio, RefreshCw, X, ArrowRight } from "lucide-react";
 import FolderBrowser from "../../components/FolderBrowser";
-import { getAgentSettings, updateAgentSettings, getKeyAliases, testProxyConnection, getTunnelStatus } from "../../api";
+import { getAgentSettings, updateAgentSettings, getKeyAliases, testProxyConnection, getTunnelStatus, startSync, completeSync, cancelSync } from "../../api";
 import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, TunnelStatus } from "../../api";
 
 export default function ProxySettings() {
@@ -22,6 +22,16 @@ export default function ProxySettings() {
   const [defaultRemoteDir, setDefaultRemoteDir] = useState("");
   const [tunnelEnabled, setTunnelEnabled] = useState(false);
   const [tunnelStatus, setTunnelStatus] = useState<TunnelStatus | null>(null);
+
+  // Sync state
+  const [syncStep, setSyncStep] = useState<"input" | "confirm" | "success">("input");
+  const [syncInviteCode, setSyncInviteCode] = useState("");
+  const [syncEncryptionKey, setSyncEncryptionKey] = useState("");
+  const [syncCallerAlias, setSyncCallerAlias] = useState("");
+  const [syncConfirmCode, setSyncConfirmCode] = useState("");
+  const [syncResult, setSyncResult] = useState<{ callerAlias: string; fingerprint: string } | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Load settings on mount
   useEffect(() => {
@@ -516,6 +526,389 @@ export default function ProxySettings() {
             </div>
           )}
         </div>
+
+        {/* Sync with Remote Server (remote mode only) */}
+        {proxyMode === "remote" && (
+          <div
+            style={{
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              padding: 20,
+              background: "var(--surface)",
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <RefreshCw size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>Sync with Remote Server</span>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+              Exchange keys with a drawlatch remote server. Run{" "}
+              <code
+                style={{
+                  fontFamily: "monospace",
+                  background: "var(--bg-secondary)",
+                  padding: "1px 5px",
+                  borderRadius: 4,
+                }}
+              >
+                drawlatch sync
+              </code>{" "}
+              on the server first to get an invite code and encryption key.
+            </div>
+
+            {syncStep === "input" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Invite Code</div>
+                  <input
+                    type="text"
+                    value={syncInviteCode}
+                    onChange={(e) => {
+                      setSyncInviteCode(e.target.value);
+                      setSyncError(null);
+                    }}
+                    placeholder="WORD-1234"
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                      fontSize: 14,
+                      fontFamily: "monospace",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Encryption Key</div>
+                  <input
+                    type="text"
+                    value={syncEncryptionKey}
+                    onChange={(e) => {
+                      setSyncEncryptionKey(e.target.value);
+                      setSyncError(null);
+                    }}
+                    placeholder="base64..."
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                      fontSize: 14,
+                      fontFamily: "monospace",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Caller Alias</div>
+                  <input
+                    type="text"
+                    value={syncCallerAlias}
+                    onChange={(e) => {
+                      setSyncCallerAlias(e.target.value);
+                      setSyncError(null);
+                    }}
+                    placeholder="my-callboard"
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                      fontSize: 14,
+                      fontFamily: "monospace",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+
+                {syncError && (
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                      background: "var(--danger-bg)",
+                      color: "var(--danger)",
+                    }}
+                  >
+                    <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div style={{ opacity: 0.85 }}>{syncError}</div>
+                  </div>
+                )}
+
+                <button
+                  onClick={async () => {
+                    if (!syncInviteCode || !syncEncryptionKey || !syncCallerAlias) {
+                      setSyncError("All fields are required");
+                      return;
+                    }
+                    if (!remoteServerUrl) {
+                      setSyncError("Set a remote server URL above first");
+                      return;
+                    }
+                    setSyncLoading(true);
+                    setSyncError(null);
+                    try {
+                      const result = await startSync({
+                        remoteUrl: remoteServerUrl,
+                        inviteCode: syncInviteCode,
+                        encryptionKey: syncEncryptionKey,
+                        callerAlias: syncCallerAlias,
+                      });
+                      setSyncConfirmCode(result.confirmCode);
+                      setSyncStep("confirm");
+                    } catch (err: any) {
+                      setSyncError(err.message || "Failed to start sync");
+                    } finally {
+                      setSyncLoading(false);
+                    }
+                  }}
+                  disabled={syncLoading || !syncInviteCode || !syncEncryptionKey || !syncCallerAlias}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "var(--accent)",
+                    color: "var(--text-on-accent)",
+                    padding: "10px 20px",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    fontWeight: 500,
+                    cursor: syncLoading ? "not-allowed" : "pointer",
+                    transition: "background 0.15s",
+                    alignSelf: "flex-start",
+                    border: "none",
+                  }}
+                  onMouseEnter={(e) => !syncLoading && (e.currentTarget.style.background = "var(--accent-hover)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
+                >
+                  {syncLoading ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <ArrowRight size={14} />}
+                  {syncLoading ? "Starting..." : "Start Sync"}
+                </button>
+              </div>
+            )}
+
+            {syncStep === "confirm" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div
+                  style={{
+                    padding: "16px 20px",
+                    borderRadius: 8,
+                    border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
+                    background: "color-mix(in srgb, var(--accent) 8%, transparent)",
+                    textAlign: "center",
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Enter this code into the drawlatch server</div>
+                  <div
+                    style={{
+                      fontSize: 28,
+                      fontWeight: 700,
+                      fontFamily: "monospace",
+                      color: "var(--accent)",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    {syncConfirmCode}
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                  Enter the code above into the drawlatch server when it asks for a confirm code, then click <strong>Complete Sync</strong> below.
+                </div>
+
+                {syncError && (
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                      background: "var(--danger-bg)",
+                      color: "var(--danger)",
+                    }}
+                  >
+                    <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div style={{ opacity: 0.85 }}>{syncError}</div>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={async () => {
+                      setSyncLoading(true);
+                      setSyncError(null);
+                      try {
+                        const result = await completeSync();
+                        setSyncResult(result);
+                        setSyncStep("success");
+                        // Refresh key aliases
+                        getKeyAliases()
+                          .then(setKeyAliases)
+                          .catch(() => setKeyAliases([]));
+                      } catch (err: any) {
+                        const msg = err.message || "Failed to complete sync";
+                        const errorMessages: Record<string, string> = {
+                          NO_ACTIVE_SESSION: "No sync session is active on the remote server. Run `drawlatch sync` first.",
+                          CODE_MISMATCH: "Code mismatch — verify the invite and confirm codes.",
+                          SESSION_EXPIRED: "Sync session expired. Start a new one on the remote server.",
+                          DECRYPTION_FAILED: "Decryption failed — check the encryption key.",
+                        };
+                        // Try to extract code from error message
+                        const codeMatch = msg.match(/:\s*(\w+)$/);
+                        const code = codeMatch?.[1];
+                        setSyncError(code && errorMessages[code] ? errorMessages[code] : msg);
+                      } finally {
+                        setSyncLoading(false);
+                      }
+                    }}
+                    disabled={syncLoading}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "var(--accent)",
+                      color: "var(--text-on-accent)",
+                      padding: "10px 20px",
+                      borderRadius: 8,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      cursor: syncLoading ? "not-allowed" : "pointer",
+                      transition: "background 0.15s",
+                      border: "none",
+                    }}
+                    onMouseEnter={(e) => !syncLoading && (e.currentTarget.style.background = "var(--accent-hover)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
+                  >
+                    {syncLoading ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={14} />}
+                    {syncLoading ? "Completing..." : "Complete Sync"}
+                  </button>
+
+                  <button
+                    onClick={async () => {
+                      await cancelSync().catch(() => {});
+                      setSyncStep("input");
+                      setSyncConfirmCode("");
+                      setSyncError(null);
+                    }}
+                    disabled={syncLoading}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text-muted)",
+                      fontSize: 14,
+                      cursor: syncLoading ? "not-allowed" : "pointer",
+                      transition: "background 0.15s",
+                    }}
+                    onMouseEnter={(e) => !syncLoading && (e.currentTarget.style.background = "var(--bg-secondary)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+                  >
+                    <X size={14} />
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {syncStep === "success" && syncResult && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div
+                  style={{
+                    padding: "14px 16px",
+                    borderRadius: 8,
+                    border: "1px solid color-mix(in srgb, var(--success) 30%, transparent)",
+                    background: "var(--success-bg)",
+                    color: "var(--success)",
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 8,
+                  }}
+                >
+                  <Check size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Sync Complete</div>
+                    <div>
+                      Registered as <strong style={{ fontFamily: "monospace" }}>{syncResult.callerAlias}</strong>
+                    </div>
+                    <div style={{ marginTop: 2 }}>
+                      Fingerprint:{" "}
+                      <code
+                        style={{
+                          fontFamily: "monospace",
+                          fontSize: 11,
+                          background: "color-mix(in srgb, var(--success) 12%, transparent)",
+                          padding: "1px 4px",
+                          borderRadius: 3,
+                        }}
+                      >
+                        {syncResult.fingerprint}
+                      </code>
+                    </div>
+                    <div style={{ marginTop: 6, opacity: 0.85 }}>
+                      The remote server&apos;s public keys have been saved. You can now test the connection above.
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSyncStep("input");
+                    setSyncInviteCode("");
+                    setSyncEncryptionKey("");
+                    setSyncCallerAlias("");
+                    setSyncConfirmCode("");
+                    setSyncResult(null);
+                    setSyncError(null);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    fontSize: 14,
+                    cursor: "pointer",
+                    transition: "background 0.15s",
+                    alignSelf: "flex-start",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
+                >
+                  Done
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Webhook Tunnel section (local mode only) */}
         {proxyMode === "local" && (
