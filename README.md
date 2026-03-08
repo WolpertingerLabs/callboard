@@ -99,6 +99,8 @@ Drawlatch runs in two modes:
 
 **Remote mode** separates Drawlatch into two components: a local MCP proxy (which holds no secrets) and a remote secure server (which holds all the API keys). Communication between them is encrypted end-to-end with AES-256-GCM, authenticated with Ed25519 signatures, and protected against replay attacks. The local proxy never sees plaintext secrets. The remote server enforces per-caller access control — each caller only sees routes they've been explicitly granted. This is the right choice when you want secrets isolated from the machine running agents, or when multiple users share a single Drawlatch server with different credentials.
 
+To connect to a remote Drawlatch server, use the sync wizard in **Settings → Proxy Settings**. It walks you through the key exchange — enter the codes from the remote server, confirm, and you're connected. New caller aliases for agents are also managed from this page.
+
 ## CLI Reference
 
 ```
