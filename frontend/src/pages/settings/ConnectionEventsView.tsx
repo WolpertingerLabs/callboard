@@ -71,7 +71,7 @@ export default function ConnectionEventsView({ selectedCaller, onBack }: Connect
   // Poll events on interval
   useEffect(() => {
     const fetchEvents = () => {
-      getProxyEvents(100)
+      getProxyEvents(selectedCaller, 100)
         .then((data) => {
           setEvents(data.events);
           setSources(data.sources);
@@ -86,7 +86,7 @@ export default function ConnectionEventsView({ selectedCaller, onBack }: Connect
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, []);
+  }, [selectedCaller]);
 
   // Filter events by active source
   const filteredEvents = activeSource ? events.filter((e) => e.source === activeSource) : events;

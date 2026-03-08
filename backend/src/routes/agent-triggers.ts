@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { agentExists } from "../services/agent-file-service.js";
+import { agentExists, getAgent } from "../services/agent-file-service.js";
 import { appendActivity } from "../services/agent-activity.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "../services/agent-triggers.js";
 import { backtestFilter } from "../services/trigger-dispatcher.js";
@@ -52,8 +52,10 @@ agentTriggersRouter.post("/backtest", (req: Request, res: Response): void => {
     return;
   }
 
-  // Load recent events from all sources
-  const allEvents = getAllEvents({ limit: limit || 500 });
+  // Load recent events scoped to this agent's caller alias
+  const agent = getAgent(alias);
+  const callerAlias = agent?.mcpKeyAlias;
+  const allEvents = callerAlias ? getAllEvents(callerAlias, { limit: limit || 500 }) : [];
   const matches = backtestFilter(allEvents, filter);
 
   res.json({

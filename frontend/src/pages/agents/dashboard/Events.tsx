@@ -71,7 +71,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
   useEffect(() => {
     if (!hasKeys) return;
     const fetchEvents = () => {
-      getProxyEvents(100)
+      getProxyEvents(agent.mcpKeyAlias!, 100)
         .then((data) => {
           setEvents(data.events);
           setSources(data.sources);
@@ -86,7 +86,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [hasKeys]);
+  }, [hasKeys, agent.mcpKeyAlias]);
 
   // Filter events by active source
   const filteredEvents = activeSource ? events.filter((e) => e.source === activeSource) : events;

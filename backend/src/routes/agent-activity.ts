@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { agentExists } from "../services/agent-file-service.js";
+import { agentExists, getAgent } from "../services/agent-file-service.js";
 import { getActivity, appendActivity } from "../services/agent-activity.js";
 import { getAllEvents } from "../services/event-log.js";
 import type { ActivityEntry } from "shared";
@@ -34,7 +34,9 @@ agentActivityRouter.get("/", (req: Request, res: Response): void => {
   let merged: ActivityEntry[] = [...agentEntries];
 
   if (!type || type === "event") {
-    const globalEvents = getAllEvents({ limit: 10000 });
+    const agent = getAgent(alias);
+    const callerAlias = agent?.mcpKeyAlias;
+    const globalEvents = callerAlias ? getAllEvents(callerAlias, { limit: 10000 }) : [];
     const eventEntries: ActivityEntry[] = globalEvents.map((e) => ({
       id: `proxy-${e.source}-${e.id}`,
       type: "event" as const,

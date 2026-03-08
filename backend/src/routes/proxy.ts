@@ -314,23 +314,33 @@ proxyRouter.delete("/listener-instance/:connection/:instanceId", async (req: Req
   res.status(status).json(result);
 });
 
-/** GET /api/proxy/events — all stored events across all connections, newest first */
+/** GET /api/proxy/events — all stored events for a caller, newest first */
 proxyRouter.get("/events", (req: Request, res: Response): void => {
+  const caller = req.query.caller as string | undefined;
+  if (!caller) {
+    res.status(400).json({ error: "Missing required query parameter: caller" });
+    return;
+  }
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
   const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
 
-  const events = getAllEvents({ limit, offset });
-  const sources = listEventSources();
+  const events = getAllEvents(caller, { limit, offset });
+  const sources = listEventSources(caller);
   res.json({ events, sources });
 });
 
-/** GET /api/proxy/events/:source — events for a specific connection alias */
+/** GET /api/proxy/events/:source — events for a specific caller + connection alias */
 proxyRouter.get("/events/:source", (req: Request, res: Response): void => {
+  const caller = req.query.caller as string | undefined;
+  if (!caller) {
+    res.status(400).json({ error: "Missing required query parameter: caller" });
+    return;
+  }
   const source = req.params.source as string;
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
   const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
   const instanceId = req.query.instance_id as string | undefined;
 
-  const events = getEvents(source, { limit, offset, instanceId });
+  const events = getEvents(caller, source, { limit, offset, instanceId });
   res.json({ events });
 });
