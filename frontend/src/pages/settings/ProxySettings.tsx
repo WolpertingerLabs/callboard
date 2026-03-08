@@ -1,7 +1,17 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, Radio, RefreshCw, X, ArrowRight } from "lucide-react";
+import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, Radio, RefreshCw, X, ArrowRight, Plus } from "lucide-react";
 import FolderBrowser from "../../components/FolderBrowser";
-import { getAgentSettings, updateAgentSettings, getKeyAliases, testProxyConnection, getTunnelStatus, startSync, completeSync, cancelSync } from "../../api";
+import {
+  getAgentSettings,
+  updateAgentSettings,
+  getKeyAliases,
+  createCallerAlias,
+  testProxyConnection,
+  getTunnelStatus,
+  startSync,
+  completeSync,
+  cancelSync,
+} from "../../api";
 import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, TunnelStatus } from "../../api";
 
 export default function ProxySettings() {
@@ -32,6 +42,11 @@ export default function ProxySettings() {
   const [syncResult, setSyncResult] = useState<{ callerAlias: string; fingerprint: string } | null>(null);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+
+  // Create alias state (local mode only)
+  const [showNewAliasInput, setShowNewAliasInput] = useState(false);
+  const [newAliasName, setNewAliasName] = useState("");
+  const [newAliasError, setNewAliasError] = useState<string | null>(null);
 
   // Load settings on mount
   useEffect(() => {
@@ -144,6 +159,20 @@ export default function ProxySettings() {
       setTestResult({ status: "unreachable", message: "Failed to reach backend" });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleCreateAlias = async () => {
+    if (!newAliasName) return;
+    try {
+      setNewAliasError(null);
+      await createCallerAlias(newAliasName);
+      const updated = await getKeyAliases();
+      setKeyAliases(updated);
+      setNewAliasName("");
+      setShowNewAliasInput(false);
+    } catch (err: any) {
+      setNewAliasError(err?.message || "Failed to create alias");
     }
   };
 
@@ -266,9 +295,16 @@ export default function ProxySettings() {
             </button>
           </div>
 
-          {/* Discovered key aliases readout */}
-          {keyAliases.length > 0 && (
-            <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
+          {/* Key Aliases section */}
+          <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
               <div
                 style={{
                   fontSize: 12,
@@ -276,11 +312,105 @@ export default function ProxySettings() {
                   color: "var(--text-muted)",
                   textTransform: "uppercase",
                   letterSpacing: "0.05em",
-                  marginBottom: 8,
                 }}
               >
-                Discovered Key Aliases ({keyAliases.length})
+                Key Aliases ({keyAliases.length})
               </div>
+              {proxyMode === "local" && !showNewAliasInput && (
+                <button
+                  type="button"
+                  onClick={() => setShowNewAliasInput(true)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    background: "var(--bg)",
+                    color: "var(--text-muted)",
+                    border: "1px dashed var(--border)",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <Plus size={12} /> New Alias
+                </button>
+              )}
+            </div>
+
+            {/* Create alias inline (local mode only) */}
+            {proxyMode === "local" && showNewAliasInput && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10 }}>
+                <input
+                  type="text"
+                  value={newAliasName}
+                  onChange={(e) => {
+                    setNewAliasName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""));
+                    setNewAliasError(null);
+                  }}
+                  placeholder="alias-name"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setShowNewAliasInput(false);
+                      setNewAliasName("");
+                      setNewAliasError(null);
+                    }
+                    if (e.key === "Enter" && newAliasName) handleCreateAlias();
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontFamily: "monospace",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    border: newAliasError ? "1px solid var(--danger)" : "1px solid var(--border)",
+                    width: 160,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleCreateAlias}
+                  disabled={!newAliasName}
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    background: newAliasName ? "var(--accent)" : "var(--bg)",
+                    color: newAliasName ? "var(--text-on-accent)" : "var(--text-muted)",
+                    border: "1px solid var(--border)",
+                    cursor: newAliasName ? "pointer" : "default",
+                  }}
+                >
+                  Create
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewAliasInput(false);
+                    setNewAliasName("");
+                    setNewAliasError(null);
+                  }}
+                  style={{
+                    padding: "5px 8px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    background: "transparent",
+                    color: "var(--text-muted)",
+                    border: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            {newAliasError && <p style={{ fontSize: 12, color: "var(--danger)", marginBottom: 8 }}>{newAliasError}</p>}
+
+            {keyAliases.length > 0 ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {keyAliases.map((ka) => (
                   <span
@@ -300,26 +430,13 @@ export default function ProxySettings() {
                   </span>
                 ))}
               </div>
-            </div>
-          )}
-
-          {displayedConfigDir && keyAliases.length === 0 && (
-            <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
+            ) : displayedConfigDir ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                No key aliases found in{" "}
-                <code
-                  style={{
-                    fontFamily: "monospace",
-                    background: "var(--bg-secondary)",
-                    padding: "1px 5px",
-                    borderRadius: 4,
-                  }}
-                >
-                  {displayedConfigDir}/keys/local/
-                </code>
+                No key aliases found.
+                {proxyMode === "remote" && " Use the Sync feature below to add aliases from a remote server."}
               </div>
-            </div>
-          )}
+            ) : null}
+          </div>
         </div>
 
         {/* Proxy Mode section */}
