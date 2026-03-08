@@ -942,8 +942,9 @@ export async function updateAgentSettings(settings: Partial<AgentSettings>): Pro
   return res.json();
 }
 
-export async function getKeyAliases(): Promise<KeyAliasInfo[]> {
-  const res = await fetch(`${BASE}/agent-settings/key-aliases`, { credentials: "include" });
+export async function getKeyAliases(proxyMode?: "local" | "remote"): Promise<KeyAliasInfo[]> {
+  const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
+  const res = await fetch(`${BASE}/agent-settings/key-aliases${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get key aliases");
   const data = await res.json();
   return data.aliases;

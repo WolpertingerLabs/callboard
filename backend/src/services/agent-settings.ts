@@ -84,9 +84,19 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
  * In local mode, also includes caller aliases from remote.config.json
  * since local mode doesn't require crypto keys — the proxy runs in-process.
  */
-export function discoverKeyAliases(): KeyAliasInfo[] {
+export function discoverKeyAliases(overrideProxyMode?: "local" | "remote"): KeyAliasInfo[] {
   const settings = loadSettings();
-  const configDir = getActiveMcpConfigDir();
+  const effectiveMode = overrideProxyMode ?? settings.proxyMode;
+
+  // Resolve config dir based on effective mode (may differ from saved settings)
+  let configDir: string | undefined;
+  if (effectiveMode === "local") {
+    configDir = settings.localMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_LOCAL_DIR;
+  } else if (effectiveMode === "remote") {
+    configDir = settings.remoteMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_REMOTE_DIR;
+  } else {
+    configDir = settings.mcpConfigDir;
+  }
   if (!configDir) return [];
 
   const seen = new Set<string>();
@@ -94,7 +104,7 @@ export function discoverKeyAliases(): KeyAliasInfo[] {
 
   // In local mode, caller aliases from remote.config.json are the primary source.
   // No crypto keys are needed — the proxy runs in-process.
-  if (settings.proxyMode === "local") {
+  if (effectiveMode === "local") {
     try {
       process.env.MCP_CONFIG_DIR = configDir;
       const config = loadRemoteConfig();

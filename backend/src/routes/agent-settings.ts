@@ -55,9 +55,10 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
 });
 
 /** GET /api/agent-settings/key-aliases — discover available key aliases */
-agentSettingsRouter.get("/key-aliases", (_req: Request, res: Response): void => {
+agentSettingsRouter.get("/key-aliases", (req: Request, res: Response): void => {
   try {
-    const aliases = discoverKeyAliases();
+    const proxyMode = req.query.proxyMode as "local" | "remote" | undefined;
+    const aliases = discoverKeyAliases(proxyMode);
     res.json({ aliases });
   } catch (err: any) {
     log.error(`Error discovering key aliases: ${err.message}`);

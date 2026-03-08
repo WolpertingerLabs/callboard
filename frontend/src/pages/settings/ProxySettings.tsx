@@ -84,24 +84,25 @@ export default function ProxySettings() {
     return mcpConfigDir;
   })();
 
-  // Load key aliases when the active MCP config dir changes
+  // Load key aliases when proxy mode or config dir changes
   useEffect(() => {
-    // Resolve from saved settings (not local state) to match what backend uses
+    if (!settings) return;
+
+    // Use the local proxyMode state (may differ from saved settings when user toggles radio)
     const activeDir = (() => {
-      if (!settings) return null;
-      if (settings.proxyMode === "local") return settings.localMcpConfigDir || settings.mcpConfigDir;
-      if (settings.proxyMode === "remote") return settings.remoteMcpConfigDir || settings.mcpConfigDir;
-      return settings.mcpConfigDir;
+      if (proxyMode === "local") return localMcpConfigDir || mcpConfigDir;
+      if (proxyMode === "remote") return remoteMcpConfigDir || mcpConfigDir;
+      return mcpConfigDir;
     })();
 
     if (activeDir) {
-      getKeyAliases()
+      getKeyAliases(proxyMode)
         .then(setKeyAliases)
         .catch(() => setKeyAliases([]));
     } else {
       setKeyAliases([]);
     }
-  }, [settings?.mcpConfigDir, settings?.localMcpConfigDir, settings?.remoteMcpConfigDir, settings?.proxyMode]);
+  }, [settings, proxyMode, localMcpConfigDir, mcpConfigDir, remoteMcpConfigDir]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -118,7 +119,7 @@ export default function ProxySettings() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       // Refresh key aliases and tunnel status after save
-      getKeyAliases()
+      getKeyAliases(updated.proxyMode)
         .then(setKeyAliases)
         .catch(() => setKeyAliases([]));
       if (updated.proxyMode === "local") {
@@ -426,7 +427,9 @@ export default function ProxySettings() {
                     }}
                   >
                     {ka.alias}
-                    {(!ka.hasSigningPub || !ka.hasExchangePub) && <span style={{ color: "var(--warning)", marginLeft: 4 }}>(missing keys)</span>}
+                    {proxyMode !== "local" && (!ka.hasSigningPub || !ka.hasExchangePub) && (
+                      <span style={{ color: "var(--warning)", marginLeft: 4 }}>(missing keys)</span>
+                    )}
                   </span>
                 ))}
               </div>
