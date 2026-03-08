@@ -32,6 +32,7 @@ import type { CustomTheme } from "shared/types/index.js";
 
 import { createLogger } from "../utils/logger.js";
 
+import { resolveAgentKeyAlias, routeKeyAliasForPersist } from "./agent-settings.js";
 import type { CronJob, Trigger, AgentConfig } from "shared";
 
 const log = createLogger("agent-tools");
@@ -988,7 +989,7 @@ export function buildAgentToolsServer(agentAlias: string) {
             }
 
             // Build updated config — only override fields present in args
-            const updated: AgentConfig = {
+            let updated: AgentConfig = {
               ...existing,
               ...(args.name !== undefined && { name: args.name.trim() }),
               ...(args.description !== undefined && { description: args.description.trim() }),
@@ -1004,8 +1005,14 @@ export function buildAgentToolsServer(agentAlias: string) {
               ...(args.userTimezone !== undefined && { userTimezone: args.userTimezone?.trim() || undefined }),
               ...(args.userLocation !== undefined && { userLocation: args.userLocation?.trim() || undefined }),
               ...(args.userContext !== undefined && { userContext: args.userContext?.trim() || undefined }),
-              ...(args.mcpKeyAlias !== undefined && { mcpKeyAlias: args.mcpKeyAlias }),
             };
+
+            // Route mcpKeyAlias to the correct per-mode field
+            if (args.mcpKeyAlias !== undefined) {
+              updated = routeKeyAliasForPersist(updated, args.mcpKeyAlias);
+            } else {
+              delete updated.mcpKeyAlias;
+            }
 
             // Validate required fields after merge
             if (!updated.name || updated.name.length === 0 || updated.name.length > 128) {
@@ -1028,7 +1035,7 @@ export function buildAgentToolsServer(agentAlias: string) {
               metadata: { updatedAlias: args.alias },
             });
 
-            return { content: [{ type: "text" as const, text: JSON.stringify({ ...updated, workspacePath }, null, 2) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify({ ...resolveAgentKeyAlias(updated), workspacePath }, null, 2) }] };
           } catch (err: any) {
             log.error(`update_agent failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error updating agent: ${err.message}` }] };

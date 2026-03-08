@@ -23,6 +23,7 @@ import { cancelAllJobsForAgent, scheduleJob } from "../services/cron-scheduler.j
 import { ensureDefaultCronJobs, listCronJobs } from "../services/agent-cron-jobs.js";
 import { appendActivity } from "../services/agent-activity.js";
 import { ensureCallerConfigForAlias } from "../services/connection-manager.js";
+import { resolveAgentKeyAlias, routeKeyAliasForPersist } from "../services/agent-settings.js";
 
 export const agentsRouter = Router();
 
@@ -38,7 +39,8 @@ const SERVER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 function withWorkspacePath(agent: AgentConfig): AgentConfig & { workspacePath: string; serverTimezone: string } {
   const workspacePath = ensureAgentWorkspaceDir(agent.alias);
-  return { ...agent, workspacePath, serverTimezone: SERVER_TIMEZONE };
+  const resolved = resolveAgentKeyAlias(agent);
+  return { ...resolved, workspacePath, serverTimezone: SERVER_TIMEZONE };
 }
 
 agentsRouter.get("/", (_req: Request, res: Response): void => {
@@ -169,7 +171,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
   } = req.body as Partial<AgentConfig>;
 
   // Build updated config — only override fields present in request body
-  const updated: AgentConfig = {
+  let updated: AgentConfig = {
     ...existing,
     ...(name !== undefined && { name: name.trim() }),
     ...(description !== undefined && { description: description.trim() }),
@@ -186,9 +188,16 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     ...(userLocation !== undefined && { userLocation: userLocation?.trim() || undefined }),
     ...(userContext !== undefined && { userContext: userContext?.trim() || undefined }),
     ...(eventSubscriptions !== undefined && { eventSubscriptions }),
-    ...(mcpKeyAlias !== undefined && { mcpKeyAlias }),
     ...(enabled !== undefined && { enabled }),
   };
+
+  // Route mcpKeyAlias to the correct per-mode field and strip before persist
+  if (mcpKeyAlias !== undefined) {
+    updated = routeKeyAliasForPersist(updated, mcpKeyAlias);
+  } else {
+    // Even if mcpKeyAlias wasn't sent, strip the transient field from persisted config
+    delete updated.mcpKeyAlias;
+  }
 
   // Validate required fields
   if (!updated.name || updated.name.length === 0 || updated.name.length > 128) {
@@ -206,12 +215,13 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
 
   // Auto-create caller config if the agent was assigned a proxy key alias
   // that doesn't yet have a corresponding entry in remote.config.json.
-  if (updated.mcpKeyAlias) {
-    ensureCallerConfigForAlias(updated.mcpKeyAlias);
+  const resolved = resolveAgentKeyAlias(updated);
+  if (resolved.mcpKeyAlias) {
+    ensureCallerConfigForAlias(resolved.mcpKeyAlias);
   }
 
   const workspacePath = ensureAgentWorkspaceDir(alias);
-  res.json({ agent: { ...updated, workspacePath, serverTimezone: SERVER_TIMEZONE } });
+  res.json({ agent: { ...resolved, workspacePath, serverTimezone: SERVER_TIMEZONE } });
 });
 
 agentsRouter.patch("/:alias/toggle", (req: Request, res: Response): void => {
@@ -252,8 +262,9 @@ agentsRouter.patch("/:alias/toggle", (req: Request, res: Response): void => {
     message: enabled ? "Agent enabled" : "Agent disabled",
   });
 
+  const resolvedToggle = resolveAgentKeyAlias(updated);
   const workspacePath = ensureAgentWorkspaceDir(alias);
-  res.json({ agent: { ...updated, workspacePath, serverTimezone: SERVER_TIMEZONE } });
+  res.json({ agent: { ...resolvedToggle, workspacePath, serverTimezone: SERVER_TIMEZONE } });
 });
 
 agentsRouter.delete("/:alias", (req: Request, res: Response): void => {

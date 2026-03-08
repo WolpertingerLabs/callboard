@@ -5,6 +5,7 @@ import { appendActivity } from "../services/agent-activity.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "../services/agent-triggers.js";
 import { backtestFilter } from "../services/trigger-dispatcher.js";
 import { getAllEvents } from "../services/event-log.js";
+import { resolveAgentKeyAlias } from "../services/agent-settings.js";
 import type { Trigger, TriggerFilter, CronAction, QuietHours } from "shared";
 
 export const agentTriggersRouter = Router({ mergeParams: true });
@@ -53,7 +54,8 @@ agentTriggersRouter.post("/backtest", (req: Request, res: Response): void => {
   }
 
   // Load recent events scoped to this agent's caller alias
-  const agent = getAgent(alias);
+  const agentRaw = getAgent(alias);
+  const agent = agentRaw ? resolveAgentKeyAlias(agentRaw) : undefined;
   const callerAlias = agent?.mcpKeyAlias;
   const allEvents = callerAlias ? getAllEvents(callerAlias, { limit: limit || 500 }) : [];
   const matches = backtestFilter(allEvents, filter);

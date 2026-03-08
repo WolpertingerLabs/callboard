@@ -31,7 +31,12 @@ export interface AgentConfig {
   eventSubscriptions?: EventSubscription[];
 
   // MCP key alias — which drawlatch caller identity this agent uses.
-  // Corresponds to a subdirectory under {mcpConfigDir}/keys/callers/.
-  // If undefined, proxy features (connections, events) are disabled for this agent.
+  // Per-mode aliases allow different identities for local vs remote proxy mode.
+  // If both per-mode fields are absent, falls back to mcpKeyAlias (legacy).
+  mcpKeyAliasLocal?: string;
+  mcpKeyAliasRemote?: string;
+
+  // Resolved alias for the current proxy mode (computed by backend, not persisted).
+  // Frontend reads this; on write the backend routes it to the correct per-mode field.
   mcpKeyAlias?: string;
 }

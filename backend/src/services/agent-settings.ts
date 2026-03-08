@@ -10,7 +10,7 @@ import { join } from "path";
 import { loadRemoteConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
-import type { AgentSettings, KeyAliasInfo } from "shared";
+import type { AgentConfig, AgentSettings, KeyAliasInfo } from "shared";
 
 const log = createLogger("agent-settings");
 const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
@@ -339,6 +339,66 @@ function copyPublicKeys(src: string, dest: string): void {
       copyFileSync(join(src, file), destFile);
     }
   }
+}
+
+// ── Per-mode key alias helpers ───────────────────────────────────────
+
+/**
+ * Resolve `mcpKeyAlias` on an agent based on the current proxy mode.
+ *
+ * Priority:
+ *   1. Per-mode field matching current proxyMode (mcpKeyAliasLocal / mcpKeyAliasRemote)
+ *   2. Legacy `mcpKeyAlias` field (old agents that haven't been migrated yet)
+ *
+ * Returns a shallow copy with `mcpKeyAlias` set to the resolved value.
+ */
+export function resolveAgentKeyAlias(agent: AgentConfig): AgentConfig {
+  const { proxyMode } = loadSettings();
+  const hasPerMode = agent.mcpKeyAliasLocal !== undefined || agent.mcpKeyAliasRemote !== undefined;
+
+  let resolved: string | undefined;
+  if (hasPerMode) {
+    resolved = proxyMode === "remote" ? agent.mcpKeyAliasRemote : agent.mcpKeyAliasLocal;
+  } else {
+    // Legacy fallback — agent only has the old single field
+    resolved = agent.mcpKeyAlias;
+  }
+
+  return { ...agent, mcpKeyAlias: resolved };
+}
+
+/**
+ * Route an incoming `mcpKeyAlias` value to the correct per-mode field
+ * and strip the transient `mcpKeyAlias` before persistence.
+ *
+ * Also migrates legacy agents: if the agent has only the old `mcpKeyAlias`
+ * field, copies it to the per-mode field for the *other* mode so the
+ * alias is preserved when switching back.
+ */
+export function routeKeyAliasForPersist(agent: AgentConfig, incomingAlias: string | undefined): AgentConfig {
+  const { proxyMode } = loadSettings();
+  const copy = { ...agent };
+
+  // Migrate legacy: if no per-mode fields exist yet but old mcpKeyAlias does,
+  // seed both per-mode fields from it (the incoming alias will overwrite the current mode).
+  if (copy.mcpKeyAliasLocal === undefined && copy.mcpKeyAliasRemote === undefined && copy.mcpKeyAlias) {
+    copy.mcpKeyAliasLocal = copy.mcpKeyAlias;
+    copy.mcpKeyAliasRemote = copy.mcpKeyAlias;
+  }
+
+  // Route the incoming value to the active mode's field
+  if (incomingAlias !== undefined) {
+    if (proxyMode === "remote") {
+      copy.mcpKeyAliasRemote = incomingAlias || undefined;
+    } else {
+      copy.mcpKeyAliasLocal = incomingAlias || undefined;
+    }
+  }
+
+  // Strip the transient computed field — never persist it
+  delete copy.mcpKeyAlias;
+
+  return copy;
 }
 
 /**

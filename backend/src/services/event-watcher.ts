@@ -13,6 +13,7 @@ import { appendEvent } from "./event-log.js";
 import { dispatchEvent } from "./trigger-dispatcher.js";
 import { getProxy, type ProxyLike, resetClient } from "./proxy-singleton.js";
 import { listAgents } from "./agent-file-service.js";
+import { resolveAgentKeyAlias } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("event-watcher");
@@ -75,8 +76,9 @@ export function initEventWatchers(): void {
   const aliases = new Set<string>();
 
   for (const agent of agents) {
-    if (agent.mcpKeyAlias) {
-      aliases.add(agent.mcpKeyAlias);
+    const resolved = resolveAgentKeyAlias(agent);
+    if (resolved.mcpKeyAlias) {
+      aliases.add(resolved.mcpKeyAlias);
     }
   }
 

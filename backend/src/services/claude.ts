@@ -13,7 +13,7 @@ import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { buildProxyToolsServer } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
-import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -578,7 +578,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   let proxyKeyAlias = "default";
   if (agentSettings.proxyMode && activeMcpConfigDir) {
     // Determine key alias: agent's alias if available, otherwise "default"
-    proxyKeyAlias = opts.agentAlias ? (getAgent(opts.agentAlias)?.mcpKeyAlias ?? "default") : "default";
+    const proxyAgent = opts.agentAlias ? getAgent(opts.agentAlias) : undefined;
+    proxyKeyAlias = proxyAgent ? (resolveAgentKeyAlias(proxyAgent).mcpKeyAlias ?? "default") : "default";
 
     try {
       const proxyServer = buildProxyToolsServer(proxyKeyAlias);
@@ -599,7 +600,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   let agentMcpKeyAlias: string | undefined;
   if (opts.agentAlias) {
     const agentConfig = getAgent(opts.agentAlias);
-    agentMcpKeyAlias = agentConfig?.mcpKeyAlias;
+    agentMcpKeyAlias = agentConfig ? resolveAgentKeyAlias(agentConfig).mcpKeyAlias : undefined;
 
     if (agentMcpKeyAlias) {
       // Override MCP_KEY_ALIAS in each MCP server's env that declares it
