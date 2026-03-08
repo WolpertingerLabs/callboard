@@ -1195,6 +1195,7 @@ export interface SystemInfoModel {
 
 export interface SystemInfo {
   version: string;
+  latestVersion?: string;
   nodeVersion: string;
   platform: string;
   sdkVersion: string;

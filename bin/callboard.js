@@ -31,11 +31,14 @@ const dotenv = require("dotenv");
 const PID_FILE = join(DATA_DIR, "callboard.pid");
 const LOG_DIR = join(DATA_DIR, "logs");
 const LOG_FILE = join(LOG_DIR, "callboard.log");
+const VERSION_CACHE_FILE = join(DATA_DIR, "version-check.json");
+const VERSION_CHECK_TTL = 4 * 60 * 60 * 1000; // 4 hours
 const DEFAULT_PORT = 8000;
 
 // Read version from package.json
 const pkgJson = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf-8"));
 const VERSION = pkgJson.version;
+const PKG_NAME = pkgJson.name;
 
 // ── Argument parsing ─────────────────────────────────────────────────
 const rawArgs = process.argv.slice(2);
@@ -69,6 +72,8 @@ if (values.version) {
 }
 if (values.help && !subcommand) {
   printHelp();
+  const latestVersion = await checkForUpdate();
+  if (latestVersion) printUpdateNotice(latestVersion);
   process.exit(0);
 }
 
@@ -125,9 +130,12 @@ switch (subcommand) {
       await cmdSetPassword();
     }
     break;
-  case "help":
+  case "help": {
     printHelp();
+    const latestVersion = await checkForUpdate();
+    if (latestVersion) printUpdateNotice(latestVersion);
     break;
+  }
   default:
     console.error(`Unknown command: ${subcommand}\n`);
     printHelp();
@@ -151,6 +159,9 @@ async function cmdDefault() {
   } else {
     printHelp();
   }
+
+  const latestVersion = await checkForUpdate();
+  if (latestVersion) printUpdateNotice(latestVersion);
 }
 
 async function cmdStart() {
@@ -614,6 +625,94 @@ is never stored.
 If the server is running, restart it to apply the new password:
   callboard restart
 `);
+}
+
+// ── Version check ────────────────────────────────────────────────────
+
+/** Read cached latest version from disk. Returns null if stale or missing. */
+function readVersionCache() {
+  try {
+    if (!existsSync(VERSION_CACHE_FILE)) return null;
+    const cache = JSON.parse(readFileSync(VERSION_CACHE_FILE, "utf-8"));
+    if (Date.now() - cache.ts < VERSION_CHECK_TTL) return cache.latestVersion;
+  } catch {
+    // Corrupt cache — ignore
+  }
+  return null;
+}
+
+/** Write latest version to cache file. */
+function writeVersionCache(latestVersion) {
+  try {
+    writeFileSync(VERSION_CACHE_FILE, JSON.stringify({ latestVersion, ts: Date.now() }) + "\n");
+  } catch {
+    // Best effort
+  }
+}
+
+/** Fetch the latest version from the npm registry (non-blocking, best effort). */
+async function fetchLatestVersion() {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`https://registry.npmjs.org/${PKG_NAME}/latest`, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.version || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compare two semver-like version strings. Returns true if remote > local. */
+function isNewerVersion(local, remote) {
+  if (!local || !remote || local === remote) return false;
+  // Normalize: split on "-" to separate base from prerelease
+  const [localBase, localPre] = local.split("-");
+  const [remoteBase, remotePre] = remote.split("-");
+  const localParts = localBase.split(".").map(Number);
+  const remoteParts = remoteBase.split(".").map(Number);
+  for (let i = 0; i < Math.max(localParts.length, remoteParts.length); i++) {
+    const l = localParts[i] || 0;
+    const r = remoteParts[i] || 0;
+    if (r > l) return true;
+    if (r < l) return false;
+  }
+  // Same base version — compare prerelease
+  // No prerelease > any prerelease (1.0.0 > 1.0.0-alpha)
+  if (!remotePre && localPre) return true;
+  if (remotePre && !localPre) return false;
+  if (remotePre && localPre) return remotePre > localPre;
+  return false;
+}
+
+/**
+ * Check for a newer version. Uses cache if fresh, otherwise fetches in background.
+ * Returns the latest version string if newer, or null.
+ */
+async function checkForUpdate() {
+  const cached = readVersionCache();
+  if (cached) {
+    return isNewerVersion(VERSION, cached) ? cached : null;
+  }
+  // Fetch and cache in background — don't block CLI
+  const latest = await fetchLatestVersion();
+  if (latest) {
+    writeVersionCache(latest);
+    return isNewerVersion(VERSION, latest) ? latest : null;
+  }
+  return null;
+}
+
+/** Print an update notice to the console. */
+function printUpdateNotice(latestVersion) {
+  console.log();
+  console.log(`  Update available: v${VERSION} → v${latestVersion}`);
+  console.log(`  Run: npm install -g ${PKG_NAME}`);
 }
 
 // ── Help text ────────────────────────────────────────────────────────
