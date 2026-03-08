@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Clock, Radio, ChevronRight, Bot, Save, Check, Plus } from "lucide-react";
+import { Clock, Radio, ChevronRight, Bot, Save, Check } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { updateAgent, getAgentCronJobs, getAgentActivity, getProxyIngestors, getKeyAliases, createCallerAlias } from "../../../api";
+import { updateAgent, getAgentCronJobs, getAgentActivity, getProxyIngestors, getKeyAliases } from "../../../api";
 import type { AgentConfig, ActivityEntry, KeyAliasInfo } from "../../../api";
 
 function timeAgo(ts: number): string {
@@ -43,9 +43,6 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
   const [availableKeys, setAvailableKeys] = useState<KeyAliasInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [showNewAliasInput, setShowNewAliasInput] = useState(false);
-  const [newAliasName, setNewAliasName] = useState("");
-  const [newAliasError, setNewAliasError] = useState<string | null>(null);
 
   // Stats from real APIs
   const [cronCount, setCronCount] = useState(0);
@@ -111,22 +108,6 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
       // ignore
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleCreateAlias = async () => {
-    if (!newAliasName) return;
-    try {
-      setNewAliasError(null);
-      await createCallerAlias(newAliasName);
-      // Refresh the list and auto-select the new alias
-      const updated = await getKeyAliases();
-      setAvailableKeys(updated);
-      setSelectedKeyAlias(newAliasName);
-      setNewAliasName("");
-      setShowNewAliasInput(false);
-    } catch (err: any) {
-      setNewAliasError(err?.message || "Failed to create alias");
     }
   };
 
@@ -325,111 +306,48 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
             />
           </div>
 
-          {/* Proxy Key Aliases section */}
+          {/* Proxy Key Alias section */}
           <div style={{ gridColumn: isMobile ? undefined : "1 / -1", borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 4 }}>
             <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
               Proxy Key Alias
             </p>
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-              Assign a local drawlatch identity to this agent. Without an assigned key, Connections and Events are disabled.
+              Assign a proxy identity to this agent. Without an assigned key, Connections and Events are disabled.
+              {availableKeys.length === 0 && " Create new aliases in Proxy Settings."}
             </p>
           </div>
           <div style={{ gridColumn: isMobile ? undefined : "1 / -1", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-            {availableKeys.map((ka) => {
-              const isSelected = selectedKeyAlias === ka.alias;
-              return (
-                <button
-                  key={ka.alias}
-                  type="button"
-                  onClick={() => {
-                    setSelectedKeyAlias(isSelected ? undefined : ka.alias);
-                  }}
-                  style={{
-                    padding: "6px 14px",
-                    borderRadius: 6,
-                    fontSize: 13,
-                    fontWeight: 500,
-                    fontFamily: "monospace",
-                    background: isSelected ? "var(--accent)" : "var(--bg)",
-                    color: isSelected ? "var(--text-on-accent)" : "var(--text-muted)",
-                    border: isSelected ? "1px solid var(--accent)" : "1px solid var(--border)",
-                    cursor: "pointer",
-                    transition: "all 0.15s",
-                  }}
-                >
-                  {ka.alias}
-                </button>
-              );
-            })}
-            {showNewAliasInput ? (
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <input
-                  type="text"
-                  value={newAliasName}
-                  onChange={(e) => { setNewAliasName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "")); setNewAliasError(null); }}
-                  placeholder="alias-name"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") { setShowNewAliasInput(false); setNewAliasName(""); setNewAliasError(null); }
-                    if (e.key === "Enter" && newAliasName) handleCreateAlias();
-                  }}
-                  style={{
-                    padding: "5px 10px",
-                    borderRadius: 6,
-                    fontSize: 13,
-                    fontFamily: "monospace",
-                    background: "var(--bg)",
-                    color: "var(--text)",
-                    border: newAliasError ? "1px solid var(--danger)" : "1px solid var(--border)",
-                    width: 140,
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={handleCreateAlias}
-                  disabled={!newAliasName}
-                  style={{
-                    padding: "5px 10px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 500,
-                    background: newAliasName ? "var(--accent)" : "var(--bg)",
-                    color: newAliasName ? "var(--text-on-accent)" : "var(--text-muted)",
-                    border: "1px solid var(--border)",
-                    cursor: newAliasName ? "pointer" : "default",
-                  }}
-                >
-                  Create
-                </button>
-              </div>
+            {availableKeys.length > 0 ? (
+              availableKeys.map((ka) => {
+                const isSelected = selectedKeyAlias === ka.alias;
+                return (
+                  <button
+                    key={ka.alias}
+                    type="button"
+                    onClick={() => {
+                      setSelectedKeyAlias(isSelected ? undefined : ka.alias);
+                    }}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontWeight: 500,
+                      fontFamily: "monospace",
+                      background: isSelected ? "var(--accent)" : "var(--bg)",
+                      color: isSelected ? "var(--text-on-accent)" : "var(--text-muted)",
+                      border: isSelected ? "1px solid var(--accent)" : "1px solid var(--border)",
+                      cursor: "pointer",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    {ka.alias}
+                  </button>
+                );
+              })
             ) : (
-              <button
-                type="button"
-                onClick={() => setShowNewAliasInput(true)}
-                title="Create new caller alias"
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 6,
-                  fontSize: 13,
-                  fontWeight: 500,
-                  background: "var(--bg)",
-                  color: "var(--text-muted)",
-                  border: "1px dashed var(--border)",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <Plus size={14} /> New
-              </button>
+              <span style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic" }}>No aliases available</span>
             )}
           </div>
-          {newAliasError && (
-            <div style={{ gridColumn: isMobile ? undefined : "1 / -1" }}>
-              <p style={{ fontSize: 12, color: "var(--danger)" }}>{newAliasError}</p>
-            </div>
-          )}
         </div>
       </div>
 
