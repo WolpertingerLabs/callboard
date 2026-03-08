@@ -1,8 +1,27 @@
 import { useEffect, useState } from "react";
-import { Info, Server, Cpu, Shield, ExternalLink, Layers } from "lucide-react";
+import { Info, Server, Cpu, Shield, ExternalLink, Layers, ArrowUpCircle } from "lucide-react";
 import { getSystemInfo, getAgentSettings } from "../../api";
 import type { SystemInfo } from "../../api";
 import type { AgentSettings } from "shared/types/index.js";
+
+/** Compare two semver-like version strings. Returns true if remote > local. */
+function isNewerVersion(local: string, remote: string): boolean {
+  if (!local || !remote || local === remote) return false;
+  const [localBase, localPre] = local.split("-");
+  const [remoteBase, remotePre] = remote.split("-");
+  const localParts = localBase.split(".").map(Number);
+  const remoteParts = remoteBase.split(".").map(Number);
+  for (let i = 0; i < Math.max(localParts.length, remoteParts.length); i++) {
+    const l = localParts[i] || 0;
+    const r = remoteParts[i] || 0;
+    if (r > l) return true;
+    if (r < l) return false;
+  }
+  if (!remotePre && localPre) return true;
+  if (remotePre && !localPre) return false;
+  if (remotePre && localPre) return remotePre > localPre;
+  return false;
+}
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -79,15 +98,44 @@ export default function AboutSettings() {
   }, []);
 
   if (loading) {
-    return (
-      <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>Loading...</div>
-    );
+    return <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>Loading...</div>;
   }
 
   const account = systemInfo?.account;
+  const hasUpdate = systemInfo?.version && systemInfo?.latestVersion && isNewerVersion(systemInfo.version, systemInfo.latestVersion);
 
   return (
     <>
+      {/* Update Notice */}
+      {hasUpdate && (
+        <div
+          style={{
+            border: "1px solid var(--accent)",
+            borderRadius: 8,
+            padding: "14px 20px",
+            background: "var(--tint-info)",
+            marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <ArrowUpCircle size={20} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>Update available</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              v{systemInfo!.version} → v{systemInfo!.latestVersion}
+              <span style={{ marginLeft: 8 }}>
+                Run:{" "}
+                <code style={{ fontSize: 11, background: "var(--surface)", padding: "2px 6px", borderRadius: 4 }}>
+                  npm install -g @wolpertingerlabs/callboard
+                </code>
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Application Info */}
       <div style={sectionStyle}>
         <div style={headerStyle}>
@@ -97,6 +145,7 @@ export default function AboutSettings() {
         <div style={subtitleStyle}>Callboard version and build information.</div>
         <div>
           <InfoRow label="Version" value={systemInfo?.version} />
+          {systemInfo?.latestVersion && <InfoRow label="Latest Version" value={`v${systemInfo.latestVersion}`} />}
           <InfoRow label="Environment" value={systemInfo?.environment} />
           <InfoRow label="Claude CLI" value={systemInfo?.claudeCliVersion} />
           <InfoRow label="Agent SDK" value={systemInfo?.sdkVersion ? `v${systemInfo.sdkVersion}` : undefined} />
@@ -115,9 +164,7 @@ export default function AboutSettings() {
           <InfoRow label="Organization" value={truncateSensitive(account?.organization, 6)} />
           <InfoRow label="Subscription" value={account?.subscriptionType} />
           <InfoRow label="Token Source" value={account?.tokenSource} />
-          {account?.apiKeySource && (
-            <InfoRow label="API Key Source" value={truncateSensitive(account.apiKeySource, 4)} />
-          )}
+          {account?.apiKeySource && <InfoRow label="API Key Source" value={truncateSensitive(account.apiKeySource, 4)} />}
         </div>
       </div>
 
@@ -134,9 +181,7 @@ export default function AboutSettings() {
               <div key={model.value} style={rowStyle}>
                 <div>
                   <span style={{ color: "var(--text)", fontWeight: 500, fontSize: 13 }}>{model.displayName}</span>
-                  {model.description && (
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{model.description}</div>
-                  )}
+                  {model.description && <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{model.description}</div>}
                 </div>
                 <span style={{ ...valueStyle, flexShrink: 0 }}>{model.value}</span>
               </div>
@@ -154,9 +199,7 @@ export default function AboutSettings() {
         <div style={subtitleStyle}>Current proxy mode and server configuration.</div>
         <div>
           <InfoRow label="Proxy Mode" value={agentSettings?.proxyMode || "local"} />
-          {agentSettings?.proxyMode === "remote" && (
-            <InfoRow label="Remote Server" value={agentSettings?.remoteServerUrl} />
-          )}
+          {agentSettings?.proxyMode === "remote" && <InfoRow label="Remote Server" value={agentSettings?.remoteServerUrl} />}
           <InfoRow label="Tunnel" value={agentSettings?.tunnelEnabled ? "Enabled" : "Disabled"} />
         </div>
       </div>

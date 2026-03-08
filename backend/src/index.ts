@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import { execSync, spawn } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -12,7 +12,7 @@ const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // Load .env: ~/.callboard/.env is the base config, then the project-root .env
 // overrides it. This lets local dev runs use a local .env to override
 // the global ~/.callboard config (e.g. different ports, passwords, log levels).
-import { ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName } from "./utils/paths.js";
+import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName } from "./utils/paths.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
 migrateDrawlatchDirs();
@@ -214,10 +214,12 @@ app.get(
   /* #swagger.responses[200] = { description: "System information" } */
   async (_req, res) => {
     let version = "unknown";
+    let pkgName = "@wolpertingerlabs/callboard";
     try {
       const pkgPath = path.join(__pkgRoot, "package.json");
       const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
       version = pkg.version;
+      pkgName = pkg.name || pkgName;
     } catch {
       // ignore
     }
@@ -238,11 +240,51 @@ app.get(
       // ignore
     }
 
+    // Fetch latest version from npm (cached, best effort)
+    let latestVersion: string | undefined;
+    try {
+      const cacheFile = path.join(DATA_DIR, "version-check.json");
+      const cacheTtl = 4 * 60 * 60 * 1000; // 4 hours
+      let cached: { latestVersion: string; ts: number } | null = null;
+      try {
+        if (existsSync(cacheFile)) {
+          cached = JSON.parse(readFileSync(cacheFile, "utf-8"));
+        }
+      } catch {
+        // ignore corrupt cache
+      }
+      if (cached && Date.now() - cached.ts < cacheTtl) {
+        latestVersion = cached.latestVersion;
+      } else {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const npmRes = await fetch(`https://registry.npmjs.org/${pkgName}/latest`, {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
+        clearTimeout(timeout);
+        if (npmRes.ok) {
+          const npmData = (await npmRes.json()) as { version?: string };
+          if (npmData.version) {
+            latestVersion = npmData.version;
+            try {
+              writeFileSync(cacheFile, JSON.stringify({ latestVersion, ts: Date.now() }) + "\n");
+            } catch {
+              // best effort
+            }
+          }
+        }
+      }
+    } catch {
+      // best effort — don't fail the endpoint
+    }
+
     // Include cached SDK info (account + models) if available
     const sdkInfo = await getSdkInfoAsync();
 
     res.json({
       version,
+      latestVersion,
       nodeVersion: process.version,
       platform: `${process.platform} (${process.arch})`,
       sdkVersion,
