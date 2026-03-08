@@ -892,6 +892,7 @@ export interface StoredEvent {
   idempotencyKey?: string;
   receivedAt: string;
   receivedAtMs?: number;
+  callerAlias: string;
   source: string;
   /** Instance ID for multi-instance listeners (e.g. "project-board") */
   instanceId?: string;
@@ -900,22 +901,24 @@ export interface StoredEvent {
   storedAt: number;
 }
 
-export async function getProxyEvents(limit?: number, offset?: number): Promise<{ events: StoredEvent[]; sources: string[] }> {
+export async function getProxyEvents(caller: string, limit?: number, offset?: number): Promise<{ events: StoredEvent[]; sources: string[] }> {
   const params = new URLSearchParams();
+  params.append("caller", caller);
   if (limit !== undefined) params.append("limit", limit.toString());
   if (offset !== undefined) params.append("offset", offset.toString());
 
-  const res = await fetch(`${BASE}/proxy/events${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
+  const res = await fetch(`${BASE}/proxy/events?${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get proxy events");
   return res.json();
 }
 
-export async function getProxyEventsBySource(source: string, limit?: number, offset?: number): Promise<{ events: StoredEvent[] }> {
+export async function getProxyEventsBySource(caller: string, source: string, limit?: number, offset?: number): Promise<{ events: StoredEvent[] }> {
   const params = new URLSearchParams();
+  params.append("caller", caller);
   if (limit !== undefined) params.append("limit", limit.toString());
   if (offset !== undefined) params.append("offset", offset.toString());
 
-  const res = await fetch(`${BASE}/proxy/events/${encodeURIComponent(source)}${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
+  const res = await fetch(`${BASE}/proxy/events/${encodeURIComponent(source)}?${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get proxy events for source");
   return res.json();
 }

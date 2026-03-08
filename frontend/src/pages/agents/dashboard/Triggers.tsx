@@ -67,10 +67,11 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
 
   // Fetch available event sources on mount
   useEffect(() => {
-    getProxyEvents(1)
+    if (!agent.mcpKeyAlias) return;
+    getProxyEvents(agent.mcpKeyAlias, 1)
       .then((data) => setAvailableSources(data.sources))
       .catch(() => setAvailableSources([]));
-  }, []);
+  }, [agent.mcpKeyAlias]);
 
   const buildFilter = (): TriggerFilter => ({
     ...(formSource && { source: formSource }),

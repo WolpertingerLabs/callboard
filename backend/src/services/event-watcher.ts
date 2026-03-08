@@ -208,6 +208,7 @@ async function pollConnection(state: WatcherState, proxyClient: ProxyLike, conne
       idempotencyKey: event.idempotencyKey,
       receivedAt: event.receivedAt,
       receivedAtMs: event.receivedAtMs,
+      callerAlias: state.alias,
       source: event.source,
       instanceId: event.instanceId,
       eventType: event.eventType,

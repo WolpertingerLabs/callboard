@@ -1,12 +1,11 @@
 /**
- * Per-connection event log.
+ * Per-caller, per-connection event log.
  *
  * Events from drawlatch ingestors are stored in append-only JSONL files
- * keyed by connection alias (the proxy route name). Each connection alias maps
- * to an API key / IAM-like profile in the proxy config.
+ * keyed by caller alias and connection alias.
  *
  * Storage layout:
- *   data/events/{connectionAlias}/events.jsonl
+ *   data/events/{callerAlias}/{connectionAlias}/events.jsonl
  *
  * Each line is a JSON object with the raw event data plus a local write timestamp.
  */
@@ -44,31 +43,38 @@ function seedSeenKeys(): void {
 
   if (!existsSync(EVENTS_DIR)) return;
 
-  const sources = readdirSync(EVENTS_DIR, { withFileTypes: true })
+  // Walk two-level directory: {callerAlias}/{source}/events.jsonl
+  const callerDirs = readdirSync(EVENTS_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name);
 
   let total = 0;
-  for (const source of sources) {
-    const path = eventsPath(source);
-    if (!existsSync(path)) continue;
+  for (const caller of callerDirs) {
+    const callerPath = join(EVENTS_DIR, caller);
+    const sourceDirs = readdirSync(callerPath, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
 
-    const raw = readFileSync(path, "utf8").trim();
-    if (!raw) continue;
+    for (const source of sourceDirs) {
+      const path = eventsPath(caller, source);
+      if (!existsSync(path)) continue;
 
-    const lines = raw.split("\n");
-    // Only read the most recent N lines to stay bounded
-    const tail = lines.slice(-SEED_TAIL_LINES);
-    for (const line of tail) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line) as StoredEvent;
-        if (entry.idempotencyKey) {
-          seenKeys.add(entry.idempotencyKey);
-          total++;
+      const raw = readFileSync(path, "utf8").trim();
+      if (!raw) continue;
+
+      const lines = raw.split("\n");
+      const tail = lines.slice(-SEED_TAIL_LINES);
+      for (const line of tail) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line) as StoredEvent;
+          if (entry.idempotencyKey) {
+            seenKeys.add(entry.idempotencyKey);
+            total++;
+          }
+        } catch {
+          // skip malformed
         }
-      } catch {
-        // skip malformed
       }
     }
   }
@@ -106,6 +112,8 @@ export interface StoredEvent {
   receivedAt: string;
   /** Unix timestamp (ms) when the event was received by the ingestor */
   receivedAtMs?: number;
+  /** Caller alias that owns this event (e.g. "default", "alice") */
+  callerAlias: string;
   /** Connection alias / route name (e.g. "discord-bot", "github") */
   source: string;
   /** Instance ID for multi-instance listeners (e.g. "project-board").
@@ -119,16 +127,16 @@ export interface StoredEvent {
   storedAt: number;
 }
 
-function connectionDir(source: string): string {
-  return join(EVENTS_DIR, source);
+function connectionDir(callerAlias: string, source: string): string {
+  return join(EVENTS_DIR, callerAlias, source);
 }
 
-function eventsPath(source: string): string {
-  return join(connectionDir(source), "events.jsonl");
+function eventsPath(callerAlias: string, source: string): string {
+  return join(connectionDir(callerAlias, source), "events.jsonl");
 }
 
-function ensureConnectionDir(source: string): void {
-  const dir = connectionDir(source);
+function ensureConnectionDir(callerAlias: string, source: string): void {
+  const dir = connectionDir(callerAlias, source);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
@@ -145,6 +153,7 @@ export function appendEvent(event: {
   idempotencyKey?: string;
   receivedAt: string;
   receivedAtMs?: number;
+  callerAlias: string;
   source: string;
   instanceId?: string;
   eventType: string;
@@ -162,12 +171,12 @@ export function appendEvent(event: {
     return null;
   }
 
-  ensureConnectionDir(event.source);
+  ensureConnectionDir(event.callerAlias, event.source);
   const stored: StoredEvent = {
     ...event,
     storedAt: Date.now(),
   };
-  appendFileSync(eventsPath(event.source), JSON.stringify(stored) + "\n");
+  appendFileSync(eventsPath(event.callerAlias, event.source), JSON.stringify(stored) + "\n");
 
   // Track for future dedup (only meaningful keys)
   if (key) {
@@ -188,10 +197,10 @@ export interface GetEventsOptions {
 }
 
 /**
- * Read events for a specific connection, newest first.
+ * Read events for a specific caller + connection, newest first.
  */
-export function getEvents(source: string, opts: GetEventsOptions = {}): StoredEvent[] {
-  const path = eventsPath(source);
+export function getEvents(callerAlias: string, source: string, opts: GetEventsOptions = {}): StoredEvent[] {
+  const path = eventsPath(callerAlias, source);
   if (!existsSync(path)) return [];
 
   const raw = readFileSync(path, "utf8").trim();
@@ -221,19 +230,20 @@ export function getEvents(source: string, opts: GetEventsOptions = {}): StoredEv
 }
 
 /**
- * Get events across all connections, newest first.
+ * Get events across all connections for a specific caller, newest first.
  */
-export function getAllEvents(opts: GetEventsOptions = {}): StoredEvent[] {
-  if (!existsSync(EVENTS_DIR)) return [];
+export function getAllEvents(callerAlias: string, opts: GetEventsOptions = {}): StoredEvent[] {
+  const callerDir = join(EVENTS_DIR, callerAlias);
+  if (!existsSync(callerDir)) return [];
 
-  const sources = readdirSync(EVENTS_DIR, { withFileTypes: true })
+  const sources = readdirSync(callerDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name);
 
   const all: StoredEvent[] = [];
   for (const source of sources) {
     // Read all from each source (we'll sort + paginate after merging)
-    all.push(...getEvents(source, { limit: 10000 }));
+    all.push(...getEvents(callerAlias, source, { limit: 10000 }));
   }
 
   // Sort newest first across all sources
@@ -245,12 +255,13 @@ export function getAllEvents(opts: GetEventsOptions = {}): StoredEvent[] {
 }
 
 /**
- * List all connection aliases that have stored events.
+ * List all connection aliases that have stored events for a specific caller.
  */
-export function listEventSources(): string[] {
-  if (!existsSync(EVENTS_DIR)) return [];
+export function listEventSources(callerAlias: string): string[] {
+  const callerDir = join(EVENTS_DIR, callerAlias);
+  if (!existsSync(callerDir)) return [];
 
-  return readdirSync(EVENTS_DIR, { withFileTypes: true })
+  return readdirSync(callerDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name)
     .sort();
