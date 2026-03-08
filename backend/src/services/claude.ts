@@ -595,7 +595,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // Resolve the agent's MCP key alias for proxy identity.
   // When an agent has mcpKeyAlias set, inject MCP_KEY_ALIAS into each MCP server's
   // env and into the subprocess env so the drawlatch plugin uses the correct
-  // local key identity (keys/local/<alias>/).
+  // caller key identity (keys/callers/<alias>/).
   let agentMcpKeyAlias: string | undefined;
   if (opts.agentAlias) {
     const agentConfig = getAgent(opts.agentAlias);

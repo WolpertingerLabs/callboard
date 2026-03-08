@@ -34,9 +34,9 @@ function findKeys(): { keysDir: string; remoteKeysDir: string } | null {
   // Common key locations to try (client keys dir, remote server pubkey dir)
   const candidates: [string, string][] = [
     // drawlatch project-local keys (dev/test setup)
-    [join(homedir(), "drawlatch/.drawlatch/keys/local"), join(homedir(), "drawlatch/.drawlatch/keys/remote")],
+    [join(homedir(), "drawlatch/.drawlatch/keys/callers"), join(homedir(), "drawlatch/.drawlatch/keys/server")],
     // Home directory keys (production MCP plugin setup)
-    [join(homedir(), ".drawlatch/keys/local"), join(homedir(), ".drawlatch/keys/peers/remote-server")],
+    [join(homedir(), ".drawlatch/keys/callers"), join(homedir(), ".drawlatch/keys/server")],
   ];
 
   for (const [k, r] of candidates) {

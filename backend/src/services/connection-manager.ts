@@ -53,7 +53,6 @@ export function loadMcpEnvIntoProcess(): void {
 function ensureCallerConfig(config: RemoteServerConfig, callerAlias: string): CallerConfig {
   if (!config.callers[callerAlias]) {
     config.callers[callerAlias] = {
-      peerKeyDir: "", // Not used in local mode
       connections: [],
     };
   }
@@ -77,7 +76,6 @@ export function ensureCallerConfigForAlias(callerAlias: string): void {
     const defaultConnections = config.callers["default"]?.connections ?? [];
     config.callers[callerAlias] = {
       name: callerAlias,
-      peerKeyDir: "",
       connections: [...defaultConnections],
     };
     saveRemoteConfig(config);
@@ -128,7 +126,6 @@ export function createCallerAlias(callerAlias: string, name?: string): CallerInf
 
   config.callers[callerAlias] = {
     name: name || callerAlias,
-    peerKeyDir: "",
     connections: [],
   };
 

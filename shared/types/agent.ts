@@ -30,8 +30,8 @@ export interface AgentConfig {
   // The event watcher wakes the agent when new events arrive from subscribed connections
   eventSubscriptions?: EventSubscription[];
 
-  // MCP key alias — which drawlatch local identity this agent uses.
-  // Corresponds to a subdirectory under {mcpConfigDir}/keys/local/.
+  // MCP key alias — which drawlatch caller identity this agent uses.
+  // Corresponds to a subdirectory under {mcpConfigDir}/keys/callers/.
   // If undefined, proxy features (connections, events) are disabled for this agent.
   mcpKeyAlias?: string;
 }

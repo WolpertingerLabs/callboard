@@ -16,6 +16,7 @@ import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName } 
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
 migrateDrawlatchDirs();
+migrateKeyDirectories();
 if (existsSync(ENV_FILE)) {
   dotenv.config({ path: ENV_FILE, override: true });
 }
@@ -59,6 +60,7 @@ import {
   ensureLocalProxyConfigDir,
   ensureRemoteProxyConfigDir,
   migrateDrawlatchDirs,
+  migrateKeyDirectories,
 } from "./services/agent-settings.js";
 import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";

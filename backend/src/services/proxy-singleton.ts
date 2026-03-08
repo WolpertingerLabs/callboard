@@ -2,9 +2,9 @@
  * Proxy client manager.
  *
  * Creates and caches ProxyClient instances per key alias. Each alias
- * corresponds to a subdirectory under {mcpConfigDir}/keys/local/{alias}/
+ * corresponds to a subdirectory under {mcpConfigDir}/keys/callers/{alias}/
  * containing the Ed25519/X25519 keypair for that identity. The remote
- * server's public keys are always at {mcpConfigDir}/keys/peers/remote-server/.
+ * server's public keys are always at {mcpConfigDir}/keys/server/.
  *
  * In local mode, a shared LocalProxy instance is used instead of per-alias
  * ProxyClient instances. getProxy() returns the appropriate implementation
@@ -61,8 +61,8 @@ function resolveKeyPaths(alias: string): { keysDir: string; remoteKeysDir: strin
   const configDir = getActiveMcpConfigDir();
   if (!configDir) return null;
 
-  const keysDir = join(configDir, "keys", "local", alias);
-  const remoteKeysDir = join(configDir, "keys", "peers", "remote-server");
+  const keysDir = join(configDir, "keys", "callers", alias);
+  const remoteKeysDir = join(configDir, "keys", "server");
 
   // Verify both directories exist with required key files
   if (
