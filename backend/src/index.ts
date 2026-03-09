@@ -81,7 +81,7 @@ app.use(cookieParser());
 // Must be registered BEFORE express.json() so webhook bodies stay as Buffers.
 app.use("/webhooks", express.raw({ type: "application/json", limit: "1mb" }));
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 // ── Rate limiting ──────────────────────────────────────────────────
 // Strict limiter for public/unauthenticated endpoints

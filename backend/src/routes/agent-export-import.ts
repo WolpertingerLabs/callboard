@@ -161,7 +161,7 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   // ── Zip bomb protection ────────────────────────────────────────
   const MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100MB
   const MAX_COMPRESSION_RATIO = 100; // 100:1
-  const MAX_ENTRY_COUNT = 100;
+  const MAX_ENTRY_COUNT = 1000;
 
   const fileEntries = entries.filter((e: AdmZip.IZipEntry) => !e.isDirectory);
 
