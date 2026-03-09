@@ -76,7 +76,16 @@ export function getToolSummary(toolName: string, content: string): string {
       case "NotebookEdit":
         return input.notebook_path ? ` - ${input.notebook_path.split("/").pop()}` : "";
       case "mcp__callboard-tools__render_file":
-        return input.file_path ? ` - ${input.file_path.split("/").pop()}` : "";
+        if (input.file_path) return ` - ${input.file_path.split("/").pop()}`;
+        if (input.url) {
+          try {
+            const urlName = new URL(input.url).pathname.split("/").pop();
+            return urlName ? ` - ${urlName}` : ` - ${input.url}`;
+          } catch {
+            return ` - ${input.url}`;
+          }
+        }
+        return "";
       default:
         return "";
     }
