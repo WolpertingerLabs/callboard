@@ -237,13 +237,12 @@ app.get(
     }
 
     try {
-      const raw = execSync("claude auth status", { timeout: 10_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      const raw = execSync("claude auth status", { timeout: 1_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
       const parsed = JSON.parse(raw.trim());
-      claudeStatusCache = { data: parsed, ts: now };
+      if (parsed.loggedIn) claudeStatusCache = { data: parsed, ts: now };
       res.json(parsed);
     } catch (err: any) {
       const fallback = { loggedIn: false, error: err.code === "ENOENT" ? "Claude CLI not installed" : `CLI error: ${err.message}` };
-      claudeStatusCache = { data: fallback, ts: now };
       res.json(fallback);
     }
   },
