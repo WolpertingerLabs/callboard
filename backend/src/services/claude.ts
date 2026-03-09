@@ -11,6 +11,7 @@ import type { McpServerConfig } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
+import { buildCallboardToolsServer } from "./callboard-tools.js";
 import { buildProxyToolsServer } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias } from "./agent-settings.js";
@@ -237,6 +238,11 @@ function categorizeToolPermission(toolName: string): keyof DefaultPermissions | 
   // Web access
   if (["WebFetch", "WebSearch"].includes(toolName)) {
     return "webAccess";
+  }
+
+  // Callboard platform tools
+  if (toolName === "mcp__callboard-tools__render_file") {
+    return "fileRead";
   }
 
   // Tools that don't need permission checks (always allowed)
@@ -571,6 +577,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // Build MCP servers map: start with configured servers, add Callboard agent tools if this is an agent session
   const mcpServers: Record<string, any> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
   const allowedTools: string[] = mcpOpts ? [...mcpOpts.allowedTools] : [];
+
+  // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
+  try {
+    const callboardToolsServer = buildCallboardToolsServer();
+    if (callboardToolsServer && callboardToolsServer.type === "sdk" && callboardToolsServer.instance) {
+      mcpServers["callboard-tools"] = callboardToolsServer;
+      allowedTools.push("mcp__callboard-tools__*");
+      log.info("Injected callboard-tools MCP server");
+    }
+  } catch (err: any) {
+    log.error(`Failed to build callboard-tools server: ${err.message}`);
+  }
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
   const agentSettings = getAgentSettings();

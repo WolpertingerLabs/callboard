@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import { getToolSummary, parseTodoItems, TodoList, MessageMetadata } from "./MessageBubble";
+import MediaRenderer from "./MediaRenderer";
 
 interface ToolCallBubbleProps {
   toolUse: ParsedMessage;
@@ -23,6 +24,23 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
 
   if (todoItems) {
     return <TodoList items={todoItems} />;
+  }
+
+  // Special case: render_file renders as MediaRenderer
+  const renderFileData = useMemo(() => {
+    if (toolUse.toolName === "mcp__callboard-tools__render_file" && toolResult) {
+      try {
+        const parsed = JSON.parse(toolResult.content);
+        if (parsed?.type === "render_file") return parsed;
+      } catch {
+        /* invalid JSON */
+      }
+    }
+    return null;
+  }, [toolUse, toolResult]);
+
+  if (renderFileData) {
+    return <MediaRenderer data={renderFileData} />;
   }
 
   const toolName = toolUse.toolName || "unknown";

@@ -75,6 +75,8 @@ export function getToolSummary(toolName: string, content: string): string {
         return input.description ? ` - ${input.description}` : "";
       case "NotebookEdit":
         return input.notebook_path ? ` - ${input.notebook_path.split("/").pop()}` : "";
+      case "mcp__callboard-tools__render_file":
+        return input.file_path ? ` - ${input.file_path.split("/").pop()}` : "";
       default:
         return "";
     }
