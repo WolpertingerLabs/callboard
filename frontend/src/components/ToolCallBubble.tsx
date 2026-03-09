@@ -22,10 +22,6 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
     return null;
   }, [toolUse]);
 
-  if (todoItems) {
-    return <TodoList items={todoItems} />;
-  }
-
   // Special case: render_file renders as MediaRenderer
   const renderFileData = useMemo(() => {
     if (toolUse.toolName === "mcp__callboard-tools__render_file" && toolResult) {
@@ -38,6 +34,10 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
     }
     return null;
   }, [toolUse, toolResult]);
+
+  if (todoItems) {
+    return <TodoList items={todoItems} />;
+  }
 
   if (renderFileData) {
     return <MediaRenderer data={renderFileData} />;
