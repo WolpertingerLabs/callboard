@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync, readdirSync, statSync } from "fs";
 import { join, extname } from "path";
 import crypto from "crypto";
@@ -49,7 +49,7 @@ export class ImageStorageService {
       const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
 
       // Generate unique filename
-      const id = uuid();
+      const id = randomUUID();
       const ext = extname(originalName) || this.getExtensionFromMimeType(mimeType);
       const storedAs = `${id}${ext}`;
       const storagePath = join(IMAGES_DIR, storedAs);

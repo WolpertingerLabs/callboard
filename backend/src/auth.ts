@@ -6,31 +6,20 @@ import { updateEnvFile } from "./utils/env-writer.js";
 
 // ── Password helpers ────────────────────────────────────────────────
 
-/** True when the .env stores a scrypt hash (new mode). */
-function isHashedMode(): boolean {
-  return !!process.env.AUTH_PASSWORD_HASH;
-}
-
-/** True when any form of password is configured (hashed or legacy plaintext). */
+/** True when a hashed password is configured. */
 export function isPasswordConfigured(): boolean {
-  return !!process.env.AUTH_PASSWORD_HASH || !!process.env.AUTH_PASSWORD;
+  return !!process.env.AUTH_PASSWORD_HASH;
 }
 
 /**
  * Verify a submitted password against the configured credential.
- *  - Hashed mode: AUTH_PASSWORD_HASH + AUTH_PASSWORD_SALT with scrypt.
- *  - Legacy plaintext mode: direct string comparison (backwards compat).
+ * Uses AUTH_PASSWORD_HASH + AUTH_PASSWORD_SALT with scrypt.
  */
 async function verifyConfiguredPassword(password: string): Promise<boolean> {
-  if (isHashedMode()) {
-    const storedHash = process.env.AUTH_PASSWORD_HASH!;
-    const salt = process.env.AUTH_PASSWORD_SALT || ""; // empty salt for backwards compat
-    return verifyPassword(password, storedHash, salt);
-  }
-  // Legacy plaintext comparison
-  const configuredPassword = process.env.AUTH_PASSWORD || null;
-  if (!configuredPassword) return false;
-  return password === configuredPassword;
+  const storedHash = process.env.AUTH_PASSWORD_HASH;
+  if (!storedHash) return false;
+  const salt = process.env.AUTH_PASSWORD_SALT || "";
+  return verifyPassword(password, storedHash, salt);
 }
 
 // ── Session constants ───────────────────────────────────────────────
@@ -153,19 +142,15 @@ export async function changePasswordHandler(req: Request, res: Response) {
   const salt = generateSalt();
   const hash = await hashPassword(newPassword, salt);
 
-  // Write to .env, removing the old plaintext AUTH_PASSWORD if present
-  updateEnvFile(
-    {
-      AUTH_PASSWORD_HASH: hash,
-      AUTH_PASSWORD_SALT: salt,
-    },
-    ["AUTH_PASSWORD"],
-  );
+  // Write to .env
+  updateEnvFile({
+    AUTH_PASSWORD_HASH: hash,
+    AUTH_PASSWORD_SALT: salt,
+  });
 
   // Update process.env so the running server uses the new credentials immediately
   process.env.AUTH_PASSWORD_HASH = hash;
   process.env.AUTH_PASSWORD_SALT = salt;
-  delete process.env.AUTH_PASSWORD;
 
   // Invalidate all sessions except the current one
   const currentToken = req.cookies?.[SESSION_COOKIE_NAME];

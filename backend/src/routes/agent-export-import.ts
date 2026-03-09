@@ -157,7 +157,39 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   }
 
   const entries = zip.getEntries();
-  const entryNames = entries.filter((e: AdmZip.IZipEntry) => !e.isDirectory).map((e: AdmZip.IZipEntry) => e.entryName);
+
+  // ── Zip bomb protection ────────────────────────────────────────
+  const MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100MB
+  const MAX_COMPRESSION_RATIO = 100; // 100:1
+  const MAX_ENTRY_COUNT = 100;
+
+  const fileEntries = entries.filter((e: AdmZip.IZipEntry) => !e.isDirectory);
+
+  if (fileEntries.length > MAX_ENTRY_COUNT) {
+    res.status(400).json({ error: `Zip contains too many entries (${fileEntries.length}, max ${MAX_ENTRY_COUNT})` });
+    return;
+  }
+
+  let totalDecompressedSize = 0;
+  for (const entry of fileEntries) {
+    const uncompressedSize = entry.header.size;
+    const compressedSize = entry.header.compressedSize;
+    totalDecompressedSize += uncompressedSize;
+
+    if (compressedSize > 0 && uncompressedSize / compressedSize > MAX_COMPRESSION_RATIO) {
+      log.warn(`Import rejected — suspicious compression ratio for ${entry.entryName}: ${uncompressedSize}/${compressedSize}`);
+      res.status(400).json({ error: "Zip file rejected: suspicious compression ratio detected" });
+      return;
+    }
+  }
+
+  if (totalDecompressedSize > MAX_DECOMPRESSED_SIZE) {
+    log.warn(`Import rejected — total decompressed size ${totalDecompressedSize} exceeds limit ${MAX_DECOMPRESSED_SIZE}`);
+    res.status(400).json({ error: `Zip decompressed size exceeds the ${MAX_DECOMPRESSED_SIZE / (1024 * 1024)}MB limit` });
+    return;
+  }
+
+  const entryNames = fileEntries.map((e: AdmZip.IZipEntry) => e.entryName);
 
   // 1. Must contain agent.json at root
   if (!entryNames.includes("agent.json")) {

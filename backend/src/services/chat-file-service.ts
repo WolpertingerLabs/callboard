@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "node:crypto";
 import type { Chat } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
@@ -83,7 +83,7 @@ export class ChatFileService {
   // Create a new chat (requires session_id)
   createChat(folder: string, sessionId: string, metadata: string = "{}"): Chat {
     log.debug(`createChat — folder=${folder}, sessionId=${sessionId}`);
-    const id = uuid();
+    const id = randomUUID();
     const now = new Date().toISOString();
 
     const chat: Chat = {

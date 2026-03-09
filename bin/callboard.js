@@ -351,7 +351,7 @@ function cmdConfig() {
   console.log(`\nCallboard Configuration`);
   console.log(`=======================`);
 
-  const passwordStatus = config.AUTH_PASSWORD_HASH ? "****  (hashed)" : config.AUTH_PASSWORD ? "****  (plaintext — run: callboard set-password)" : "(not set)";
+  const passwordStatus = config.AUTH_PASSWORD_HASH ? "****  (hashed)" : "(not set)";
   const configLines = [
     ["PASSWORD", passwordStatus],
     ["PORT", port],
@@ -464,7 +464,7 @@ function getConfiguredPort() {
 
 function warnIfNoPassword() {
   const config = loadEffectiveConfig();
-  if (!config.AUTH_PASSWORD_HASH && !config.AUTH_PASSWORD) {
+  if (!config.AUTH_PASSWORD_HASH) {
     console.log();
     console.log("  \u26A0 No password is set. Login will be disabled.");
     console.log(`    Set one with: callboard set-password`);

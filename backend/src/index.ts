@@ -35,6 +35,7 @@ ensureInstanceName();
 
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import rateLimit from "express-rate-limit";
 import { chatsRouter } from "./routes/chats.js";
 import { streamRouter } from "./routes/stream.js";
 import { imagesRouter } from "./routes/images.js";
@@ -80,9 +81,49 @@ app.use(cookieParser());
 // Must be registered BEFORE express.json() so webhook bodies stay as Buffers.
 app.use("/webhooks", express.raw({ type: "application/json", limit: "1mb" }));
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
-// Auth routes (public)
+// ── Rate limiting ──────────────────────────────────────────────────
+// Strict limiter for public/unauthenticated endpoints
+const publicLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // 20 requests per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+});
+
+// General limiter for authenticated API endpoints
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 300, // 300 requests per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+  skip: (req) => {
+    // Skip rate limiting for SSE endpoints (long-lived connections)
+    return req.path.endsWith("/stream") || req.path.endsWith("/events");
+  },
+});
+
+// Webhook limiter — moderate (external services need reliable delivery)
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests" },
+});
+
+// Apply webhook limiter before the raw body parser
+app.use("/webhooks", webhookLimiter);
+
+// Apply public rate limiter to unauthenticated auth endpoints
+app.use("/api/auth/login", publicLimiter);
+app.use("/api/auth/logout", publicLimiter);
+app.use("/api/auth/check", publicLimiter);
+
+// Auth routes (public, rate-limited)
 app.post(
   "/api/auth/login",
   // #swagger.tags = ['Auth']
@@ -124,7 +165,11 @@ app.get(
   checkAuthHandler,
 );
 
-// Serve OpenAPI spec (public, no auth required for agent access)
+// All /api routes below require auth + rate limiting
+app.use("/api", requireAuth);
+app.use("/api", apiLimiter);
+
+// Serve OpenAPI spec (requires auth)
 app.get("/api/docs", (_req, res) => {
   // #swagger.ignore = true
   const __dir = path.dirname(fileURLToPath(import.meta.url));
@@ -136,9 +181,6 @@ app.get("/api/docs", (_req, res) => {
     res.status(404).json({ error: "API spec not found. Run: npm run swagger" });
   }
 });
-
-// All /api routes below require auth
-app.use("/api", requireAuth);
 
 app.use("/api/chats", chatsRouter);
 app.use("/api/chats", streamRouter);
@@ -410,7 +452,7 @@ app.listen(PORT, () => {
 
   if (__isFirstRun) {
     log.warn(`First run detected — created ${ENV_FILE}`);
-    if (!process.env.AUTH_PASSWORD_HASH && !process.env.AUTH_PASSWORD) {
+    if (!process.env.AUTH_PASSWORD_HASH) {
       log.warn(`No password configured. Set one with: callboard set-password`);
     }
   }
