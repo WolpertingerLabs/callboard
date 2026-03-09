@@ -316,7 +316,8 @@ function scanDirectory(rootDir: string): { plugins: AppPlugin[] } {
       if (!Array.isArray(marketplace.plugins)) continue;
 
       for (const p of marketplace.plugins) {
-        if (!p.name || !p.source || !p.description) continue;
+        // Skip entries missing required fields or with non-local sources (e.g. GitHub refs)
+        if (!p.name || !p.source || !p.description || typeof p.source !== "string") continue;
 
         const absolutePluginPath = resolve(marketplaceDir, p.source);
 

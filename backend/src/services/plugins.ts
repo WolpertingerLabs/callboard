@@ -65,7 +65,7 @@ export function discoverPlugins(directory: string): Plugin[] {
     const pluginBaseDir = dirname(dirname(marketplacePath)); // Parent of .claude-plugin folder
 
     return marketplace.plugins
-      .filter((p: any) => p.name && p.source && p.description)
+      .filter((p: any) => p.name && p.source && typeof p.source === "string" && p.description)
       .map((p: any) => {
         const commands = discoverPluginCommands(p.source, pluginBaseDir);
 
