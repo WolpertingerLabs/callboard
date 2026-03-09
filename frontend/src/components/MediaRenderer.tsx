@@ -43,7 +43,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
   const [error, setError] = useState(false);
   const [trustDismissed, setTrustDismissed] = useState(false);
 
-  const contentUrl = data.url || `/api/files/serve?path=${encodeURIComponent(data.file_path!)}`;
+  const contentUrl = data.url ? `/api/files/serve?url=${encodeURIComponent(data.url)}` : `/api/files/serve?path=${encodeURIComponent(data.file_path!)}`;
   const fileName = data.url ? getFileNameFromUrl(data.url) : getFileName(data.file_path!);
 
   const handleKeyDown = useCallback(

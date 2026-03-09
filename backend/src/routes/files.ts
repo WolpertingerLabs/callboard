@@ -23,15 +23,27 @@ const ALLOWED_MIME: Record<string, string> = {
   ".pdf": "application/pdf",
 };
 
+const ALLOWED_CONTENT_TYPES = new Set(Object.values(ALLOWED_MIME));
+
 const MAX_SERVE_SIZE = 100 * 1024 * 1024; // 100MB
 
+// Serve a local file by absolute path
 filesRouter.get("/serve", (req, res) => {
-  const filePath = req.query.path as string;
+  const filePath = req.query.path as string | undefined;
+  const urlParam = req.query.url as string | undefined;
 
-  if (!filePath || typeof filePath !== "string") {
-    return res.status(400).json({ error: "Missing path query parameter" });
+  if (urlParam) {
+    return serveUrl(urlParam, res);
   }
 
+  if (!filePath || typeof filePath !== "string") {
+    return res.status(400).json({ error: "Missing path or url query parameter" });
+  }
+
+  return serveLocalFile(filePath, res);
+});
+
+function serveLocalFile(filePath: string, res: any) {
   // Validate absolute path, no null bytes
   if (!path.isAbsolute(filePath)) {
     return res.status(400).json({ error: "Path must be absolute" });
@@ -85,4 +97,104 @@ filesRouter.get("/serve", (req, res) => {
       res.status(500).json({ error: "Failed to read file" });
     }
   });
-});
+}
+
+async function serveUrl(url: string, res: any) {
+  // Validate URL format and protocol
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return res.status(400).json({ error: "Invalid URL" });
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return res.status(400).json({ error: "URL must use http or https" });
+  }
+
+  // Validate extension from URL path
+  const ext = path.extname(parsed.pathname).toLowerCase();
+  const expectedMime = ALLOWED_MIME[ext];
+  if (!expectedMime) {
+    return res.status(415).json({ error: "Unsupported file type" });
+  }
+
+  try {
+    const upstream = await fetch(url, {
+      headers: {
+        "User-Agent": "Callboard/1.0 (media proxy)",
+        Accept: expectedMime + ", */*",
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ error: `Upstream returned ${upstream.status}` });
+    }
+
+    // Validate content-type from upstream
+    const contentType = upstream.headers.get("content-type")?.split(";")[0]?.trim() || "";
+    if (!ALLOWED_CONTENT_TYPES.has(contentType) && contentType !== expectedMime) {
+      // Fall back to extension-based MIME if upstream doesn't match
+      // (some servers return generic types like application/octet-stream)
+    }
+
+    const contentLength = upstream.headers.get("content-length");
+
+    // Check size if known
+    if (contentLength && parseInt(contentLength) > MAX_SERVE_SIZE) {
+      return res.status(413).json({ error: "File too large" });
+    }
+
+    // Use upstream content-type if it's in our allowlist, otherwise use extension-based
+    const serveMime = ALLOWED_CONTENT_TYPES.has(contentType) ? contentType : expectedMime;
+
+    res.setHeader("Content-Type", serveMime);
+    if (contentLength) {
+      res.setHeader("Content-Length", contentLength);
+    }
+    res.setHeader("Content-Disposition", "inline");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+
+    // Stream the response body
+    if (!upstream.body) {
+      return res.status(502).json({ error: "No response body from upstream" });
+    }
+
+    const reader = upstream.body.getReader();
+    let totalBytes = 0;
+
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          res.end();
+          return;
+        }
+        totalBytes += value.length;
+        if (totalBytes > MAX_SERVE_SIZE) {
+          reader.cancel();
+          if (!res.headersSent) {
+            res.status(413).json({ error: "File too large" });
+          } else {
+            res.destroy();
+          }
+          return;
+        }
+        if (!res.write(value)) {
+          await new Promise<void>((resolve) => res.once("drain", resolve));
+        }
+      }
+    };
+
+    await pump();
+  } catch (err: any) {
+    if (!res.headersSent) {
+      if (err.name === "TimeoutError" || err.name === "AbortError") {
+        return res.status(504).json({ error: "Upstream request timed out" });
+      }
+      return res.status(502).json({ error: `Failed to fetch URL: ${err.message}` });
+    }
+  }
+}
