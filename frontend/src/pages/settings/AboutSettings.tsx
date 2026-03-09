@@ -4,23 +4,60 @@ import { getSystemInfo, getAgentSettings } from "../../api";
 import type { SystemInfo } from "../../api";
 import type { AgentSettings } from "shared/types/index.js";
 
-/** Compare two semver-like version strings. Returns true if remote > local. */
+/** Compare two semver strings. Returns > 0 if a > b, < 0 if a < b, 0 if equal.
+ *  Handles pre-release segments: 1.0.0 > 1.0.0-alpha.1, alpha.10 > alpha.9. */
+function compareVersions(a: string, b: string): number {
+  const parseVer = (v: string) => {
+    const [core, pre] = v.split("-", 2);
+    const parts = core.split(".").map(Number);
+    return { parts, pre: pre || null };
+  };
+  const va = parseVer(a);
+  const vb = parseVer(b);
+
+  const maxLen = Math.max(va.parts.length, vb.parts.length);
+  for (let i = 0; i < maxLen; i++) {
+    const pa = va.parts[i] || 0;
+    const pb = vb.parts[i] || 0;
+    if (pa !== pb) return pa - pb;
+  }
+
+  // Same core: no pre-release > pre-release
+  if (!va.pre && vb.pre) return 1;
+  if (va.pre && !vb.pre) return -1;
+  if (!va.pre && !vb.pre) return 0;
+
+  // Both have pre-release: compare segments
+  const aParts = va.pre!.split(".");
+  const bParts = vb.pre!.split(".");
+  const preLen = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < preLen; i++) {
+    const sa = aParts[i];
+    const sb = bParts[i];
+    if (sa === undefined) return -1;
+    if (sb === undefined) return 1;
+    const na = Number(sa);
+    const nb = Number(sb);
+    const aIsNum = !isNaN(na);
+    const bIsNum = !isNaN(nb);
+    if (aIsNum && bIsNum) {
+      if (na !== nb) return na - nb;
+    } else if (aIsNum) {
+      return -1; // numbers sort before strings
+    } else if (bIsNum) {
+      return 1;
+    } else {
+      if (sa < sb) return -1;
+      if (sa > sb) return 1;
+    }
+  }
+  return 0;
+}
+
+/** Returns true if remote version is newer than local. */
 function isNewerVersion(local: string, remote: string): boolean {
   if (!local || !remote || local === remote) return false;
-  const [localBase, localPre] = local.split("-");
-  const [remoteBase, remotePre] = remote.split("-");
-  const localParts = localBase.split(".").map(Number);
-  const remoteParts = remoteBase.split(".").map(Number);
-  for (let i = 0; i < Math.max(localParts.length, remoteParts.length); i++) {
-    const l = localParts[i] || 0;
-    const r = remoteParts[i] || 0;
-    if (r > l) return true;
-    if (r < l) return false;
-  }
-  if (!remotePre && localPre) return true;
-  if (remotePre && !localPre) return false;
-  if (remotePre && localPre) return remotePre > localPre;
-  return false;
+  return compareVersions(remote, local) > 0;
 }
 
 const sectionStyle: React.CSSProperties = {
