@@ -1,9 +1,34 @@
 {
   "name": "@wolpertingerlabs/callboard",
   "version": "1.0.0-alpha.10.0",
+  "description": "A web-based control panel for managing Claude Code sessions, autonomous agents, and multi-agent workflows",
   "license": "MIT",
   "type": "module",
   "main": "./backend/dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WolpertingerLabs/callboard.git"
+  },
+  "homepage": "https://github.com/WolpertingerLabs/callboard#readme",
+  "bugs": {
+    "url": "https://github.com/WolpertingerLabs/callboard/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "ai-agents",
+    "agent-sdk",
+    "multi-agent",
+    "mcp",
+    "model-context-protocol",
+    "control-panel",
+    "dashboard",
+    "automation",
+    "cron",
+    "webhooks",
+    "callboard"
+  ],
   "bin": {
     "callboard": "./bin/callboard.js"
   },
@@ -68,9 +93,9 @@
     "cron-parser": "^5.0.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.0",
+    "express-rate-limit": "^7.5.0",
     "multer": "^2.0.2",
     "node-cron": "^3.0.3",
-    "uuid": "^10.0.0",
     "winston": "^3.19.0"
   },
   "devDependencies": {
