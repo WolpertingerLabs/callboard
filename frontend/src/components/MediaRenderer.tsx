@@ -161,6 +161,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
           <img
             src={contentUrl}
             alt={data.caption || fileName}
+            referrerPolicy="no-referrer"
             onLoad={onLoad}
             onError={onError}
             style={{
@@ -175,7 +176,14 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
       case "audio":
         return (
-          <audio controls preload="metadata" onLoadedMetadata={onLoad} onError={onError} style={{ width: "100%", maxWidth: isModal ? "600px" : "100%" }}>
+          <audio
+            controls
+            preload="metadata"
+            {...({ referrerPolicy: "no-referrer" } as any)}
+            onLoadedMetadata={onLoad}
+            onError={onError}
+            style={{ width: "100%", maxWidth: isModal ? "600px" : "100%" }}
+          >
             <source src={contentUrl} type={data.mime_type} />
           </audio>
         );
@@ -185,6 +193,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
           <video
             controls
             preload="metadata"
+            {...({ referrerPolicy: "no-referrer" } as any)}
             onLoadedMetadata={onLoad}
             onError={onError}
             style={{
@@ -203,6 +212,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
           <iframe
             src={contentUrl}
             title={data.caption || fileName}
+            referrerPolicy="no-referrer"
             onLoad={onLoad}
             onError={onError}
             style={{
