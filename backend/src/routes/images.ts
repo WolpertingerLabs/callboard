@@ -89,6 +89,63 @@ imagesRouter.post("/:chatId/images", upload.array("images", 10), async (req, res
 });
 
 /**
+ * Upload images without associating them to a chat (e.g. for new chat creation).
+ * POST /api/images/upload
+ */
+imagesRouter.post("/upload", upload.array("images", 10), async (req, res) => {
+  // #swagger.tags = ['Images']
+  // #swagger.summary = 'Upload images (no chat required)'
+  // #swagger.description = 'Upload up to 10 images (max 10MB each) without associating them to a chat. Returns image IDs that can be passed to /new/message. Accepts PNG, JPEG, GIF, and WebP via multipart/form-data with field name "images".'
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "multipart/form-data": {
+        schema: {
+          type: "object",
+          properties: {
+            images: { type: "array", items: { type: "string", format: "binary" } }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Upload results with image metadata and any errors" } */
+  /* #swagger.responses[400] = { description: "No images provided" } */
+  const files = req.files as Express.Multer.File[];
+
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: "No images provided" });
+  }
+
+  try {
+    const uploadResults: StoredImage[] = [];
+    const errors: string[] = [];
+
+    for (const file of files) {
+      const result = await ImageStorageService.storeImage(file.buffer, file.originalname, file.mimetype);
+
+      if (result.success && result.image) {
+        uploadResults.push(result.image);
+      } else {
+        errors.push(result.error || "Unknown error");
+      }
+    }
+
+    res.json({
+      success: true,
+      images: uploadResults,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
+    console.error("Image upload error:", error);
+    res.status(500).json({
+      error: "Failed to upload images",
+      details: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+/**
  * Get an image by ID
  * GET /api/images/:imageId
  */

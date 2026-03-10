@@ -25,6 +25,7 @@ import {
   getPending,
   respondToChat,
   uploadImages,
+  uploadImagesOnly,
   getSlashCommandsAndPlugins,
   getNewChatInfo,
   markAsRead,
@@ -899,7 +900,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // NEW CHAT MODE: POST to /api/chats/new/message
           addRecentDirectory(folder);
 
+          // Upload images before creating the chat (no chatId yet)
+          let imageIds: string[] = [];
+          if (images && images.length > 0) {
+            try {
+              const uploadResult = await uploadImagesOnly(images);
+              if (uploadResult.success) {
+                imageIds = (uploadResult.images ?? []).map((img) => img.id);
+              } else {
+                console.error("Image upload failed:", uploadResult.errors);
+              }
+            } catch (error) {
+              console.error("Image upload error:", error);
+            }
+          }
+
           const requestBody: any = { folder, prompt, defaultPermissions: chatPermissions || defaultPermissions, maxTurns: getMaxTurns() };
+          if (imageIds.length > 0) {
+            requestBody.imageIds = imageIds;
+          }
           if (activePluginIds.length > 0) {
             requestBody.activePlugins = activePluginIds;
           }

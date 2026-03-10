@@ -210,6 +210,21 @@ export async function uploadImages(chatId: string, images: File[]): Promise<Imag
   return res.json();
 }
 
+/** Upload images without a chat ID (for new chat creation). */
+export async function uploadImagesOnly(images: File[]): Promise<ImageUploadResult> {
+  const formData = new FormData();
+  images.forEach((image) => {
+    formData.append("images", image);
+  });
+
+  const res = await fetch(`${BASE}/images/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  await assertOk(res, "Failed to upload images");
+  return res.json();
+}
+
 // Draft API functions
 export async function getDrafts(chatId?: string): Promise<QueueItem[]> {
   const params = new URLSearchParams();
