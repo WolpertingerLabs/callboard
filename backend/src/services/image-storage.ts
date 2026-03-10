@@ -204,5 +204,51 @@ export class ImageStorageService {
   }
 }
 
+/**
+ * Store an image from base64 data (e.g. extracted from session log).
+ * Uses SHA256 dedup: if an image with the same hash already exists on disk,
+ * returns the existing ID without writing a new file.
+ */
+export function storeBase64Image(base64Data: string, mimeType: string): string | null {
+  try {
+    const buffer = Buffer.from(base64Data, "base64");
+    const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+
+    // Check if already stored by scanning existing files for matching hash
+    const cached = base64ImageCache.get(sha256);
+    if (cached) return cached;
+
+    // Scan disk for existing file with same hash
+    if (existsSync(IMAGES_DIR)) {
+      for (const file of readdirSync(IMAGES_DIR)) {
+        const filePath = join(IMAGES_DIR, file);
+        try {
+          const existing = readFileSync(filePath);
+          const existingHash = crypto.createHash("sha256").update(existing).digest("hex");
+          if (existingHash === sha256) {
+            const existingId = file.split(".")[0];
+            base64ImageCache.set(sha256, existingId);
+            return existingId;
+          }
+        } catch {}
+      }
+    }
+
+    // Not found — store it
+    const id = randomUUID();
+    const ext = ImageStorageService["getExtensionFromMimeType"](mimeType);
+    const storedAs = `${id}${ext}`;
+    mkdirSync(IMAGES_DIR, { recursive: true });
+    writeFileSync(join(IMAGES_DIR, storedAs), buffer);
+    base64ImageCache.set(sha256, id);
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+// In-memory SHA256 → imageId cache to avoid repeated disk scans
+const base64ImageCache = new Map<string, string>();
+
 /** Convenience re-export of ImageStorageService.loadImageBuffers for direct import. */
 export const loadImageBuffers = ImageStorageService.loadImageBuffers.bind(ImageStorageService);
