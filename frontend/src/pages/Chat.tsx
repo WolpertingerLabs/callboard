@@ -565,7 +565,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // whenever globalSessionActive becomes truthy, we connect to the SSE stream.
   useEffect(() => {
     if (!id || !globalSessionActive) return;
-    if (streaming || abortRef.current) return; // Already connected
+    // Use abortRef (not streaming state) to detect an active connection.
+    // After new-chat navigation, streaming may be stale-true while there is
+    // no actual SSE connection (abortRef is null), so checking streaming here
+    // would incorrectly skip reconnection.
+    if (abortRef.current) return; // Already connected
     if (streamCompletedRef.current) return; // Stream already completed, don't reconnect
 
     setNetworkError(null);
