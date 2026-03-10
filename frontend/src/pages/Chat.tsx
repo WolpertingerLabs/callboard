@@ -165,6 +165,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Prevents the auto-connect effect from creating a reconnection loop when the
   // CLI watcher hasn't yet detected that the session ended (up to 30s delay).
   const streamCompletedRef = useRef(false);
+  // Debounce timer for coalescing rapid message_update refetches
+  const messageRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reset chatPermissions when navigating to a different chat
   useEffect(() => {
@@ -352,6 +354,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               // Handle chat_created - fires during new chat creation
               if (event.type === "chat_created" && event.chatId) {
                 tempChatIdRef.current = event.chatId;
+                // Update currentIdRef so the finally blocks in readSSE and
+                // handleSend skip their state resets (streaming/inFlightMessage).
+                // Without this, the finally guards pass and clear the state
+                // before the navigated component can pick it up from router state.
+                currentIdRef.current = event.chatId;
+                // Detach the abort controller so handleSend's finally block
+                // (which checks abortRef.current === controller) also skips cleanup.
+                abortRef.current = null;
                 // Navigate to the real chat URL, passing the in-flight message
                 // via router state so it survives the component remount.
                 navigateRef.current(`/chat/${event.chatId}`, {
@@ -458,14 +468,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 if (planApprovedRef.current) {
                   planApprovedRef.current = false;
                 }
-                // New content is available - refetch all messages to show latest state with timestamps.
-                // Clear in-flight message AFTER messages arrive to avoid a gap where the
-                // user's sent message is neither in inFlightMessage nor in the message list.
-                getMessages(streamChatId!).then((msgs) => {
-                  if (currentIdRef.current !== streamChatId) return;
-                  setMessages(Array.isArray(msgs) ? msgs : []);
-                  setInFlightMessage(null);
-                });
+                // New content is available - debounce refetch to coalesce rapid updates.
+                // Without this, every message_update fires a getMessages() call, which
+                // during heavy tool use can flood the server and cause out-of-order state.
+                if (messageRefetchTimerRef.current) {
+                  clearTimeout(messageRefetchTimerRef.current);
+                }
+                messageRefetchTimerRef.current = setTimeout(() => {
+                  messageRefetchTimerRef.current = null;
+                  getMessages(streamChatId!).then((msgs) => {
+                    if (currentIdRef.current !== streamChatId) return;
+                    setMessages(Array.isArray(msgs) ? msgs : []);
+                    setInFlightMessage(null);
+                  });
+                }, 250);
 
                 // Check if this is the first response and we should refresh chat list
                 if (!hasReceivedFirstResponseRef.current && onChatListRefresh) {
@@ -491,6 +507,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
         }
       } finally {
+        // Cancel any pending debounced message refetch
+        if (messageRefetchTimerRef.current) {
+          clearTimeout(messageRefetchTimerRef.current);
+          messageRefetchTimerRef.current = null;
+        }
         // Only update state if still on the same chat
         if (currentIdRef.current === streamChatId) {
           setStreaming(false);

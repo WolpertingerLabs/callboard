@@ -270,14 +270,14 @@ streamRouter.get("/:id/stream", (req, res) => {
   // No web session - check if we can watch CLI session
   const chat = findChatForStatus(chatId);
   if (!chat?.session_id) {
-    sendSSE(res, { type: "error", content: "No active session found" });
+    sendSSE(res, { type: "message_error", content: "No active session found" });
     res.end();
     return;
   }
 
   const logPath = findSessionLogPath(chat.session_id);
   if (!logPath || !existsSync(logPath)) {
-    sendSSE(res, { type: "error", content: "Session log not found" });
+    sendSSE(res, { type: "message_error", content: "Session log not found" });
     res.end();
     return;
   }
@@ -311,6 +311,14 @@ streamRouter.get("/:id/stream", (req, res) => {
         }
       } catch {}
     }
+  } catch {}
+
+  // Start the file watcher immediately, then define the handler below.
+  // Re-stat the file to capture any bytes written between the initial stat
+  // and now — prevents missing log lines in that gap.
+  try {
+    const freshStats = statSync(logPath);
+    lastPosition = freshStats.size;
   } catch {}
 
   // Track last activity time for inactivity timeout
