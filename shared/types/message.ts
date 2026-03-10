@@ -22,4 +22,6 @@ export interface ParsedMessage {
   };
   /** API service tier, e.g. "standard" */
   serviceTier?: string;
+  /** Image IDs attached to this user message (for rendering sent images) */
+  imageIds?: string[];
 }

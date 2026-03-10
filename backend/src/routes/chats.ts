@@ -10,6 +10,7 @@ import { CLAUDE_PROJECTS_DIR, projectDirToFolder } from "../utils/paths.js";
 import { findSessionLogPath, findSubagentFiles } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import type { ParsedMessage } from "shared/types/index.js";
+import { storeBase64Image } from "../services/image-storage.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("chats");
@@ -1049,10 +1050,21 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
 
     if (!Array.isArray(content)) continue;
 
+    // Collect image IDs from this JSONL entry's content blocks.
+    // Images are stored to disk (with SHA256 dedup) and the IDs are
+    // attached to the text message from the same entry.
+    const entryImageIds: string[] = [];
+
     for (const block of content) {
       switch (block.type) {
         case "text":
           if (block.text) result.push({ role, type: "text", content: block.text, timestamp, ...(teamName && { teamName }), ...meta });
+          break;
+        case "image":
+          if (block.source?.type === "base64" && block.source.data && block.source.media_type) {
+            const imageId = storeBase64Image(block.source.data, block.source.media_type);
+            if (imageId) entryImageIds.push(imageId);
+          }
           break;
         case "thinking":
           result.push({ role: "assistant", type: "thinking", content: block.thinking || "", timestamp, ...meta });
@@ -1079,6 +1091,16 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
             ...meta,
           });
           break;
+      }
+    }
+
+    // Attach image IDs to the last text message from this entry
+    if (entryImageIds.length > 0) {
+      for (let i = result.length - 1; i >= 0; i--) {
+        if (result[i].type === "text" && result[i].timestamp === timestamp) {
+          result[i].imageIds = entryImageIds;
+          break;
+        }
       }
     }
   }

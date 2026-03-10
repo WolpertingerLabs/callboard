@@ -1,5 +1,5 @@
-import { useState, useCallback, useMemo } from "react";
-import { Check, Copy, RotateCw, Square } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect } from "react";
+import { Check, Copy, RotateCw, Square, X } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { useRelativeTime } from "../hooks/useRelativeTime";
@@ -256,6 +256,99 @@ export function TodoList({ items }: { items: TodoItem[] }) {
   );
 }
 
+function ImageFullscreen({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        background: "var(--overlay-bg)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "zoom-out",
+      }}
+    >
+      <button
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          top: 16,
+          right: 16,
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 6,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1,
+        }}
+      >
+        <X size={18} style={{ color: "var(--text)" }} />
+      </button>
+      <img
+        src={src}
+        alt="Full size"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: "90vw",
+          maxHeight: "90vh",
+          objectFit: "contain",
+          borderRadius: 8,
+          cursor: "default",
+        }}
+      />
+    </div>
+  );
+}
+
+function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
+  const [fullscreenSrc, setFullscreenSrc] = useState<string | null>(null);
+
+  return (
+    <>
+      {fullscreenSrc && <ImageFullscreen src={fullscreenSrc} onClose={() => setFullscreenSrc(null)} />}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          marginTop: 8,
+        }}
+      >
+        {imageIds.map((id) => (
+          <img
+            key={id}
+            src={`/api/images/${id}`}
+            alt="Attached image"
+            onClick={() => setFullscreenSrc(`/api/images/${id}`)}
+            style={{
+              maxHeight: 200,
+              maxWidth: 300,
+              borderRadius: 8,
+              objectFit: "cover",
+              cursor: "zoom-in",
+              border: "1px solid var(--border)",
+            }}
+          />
+        ))}
+      </div>
+    </>
+  );
+}
+
 interface Props {
   message: ParsedMessage;
   teamColorMap?: Map<string, number>;
@@ -507,6 +600,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
         >
           <CopyButton text={message.content} />
           <MarkdownRenderer content={message.content} className="message-markdown" />
+          {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
         </div>
         <MessageMetadata message={message} align="left" />
       </div>
@@ -543,6 +637,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
       >
         <CopyButton text={message.content} />
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
+        {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
       <MessageMetadata message={message} align={isUser ? "right" : "left"} />
     </div>

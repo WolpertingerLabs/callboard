@@ -120,6 +120,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [draftMessage, setDraftMessage] = useState("");
   const [inFlightMessage, setInFlightMessage] = useState<string | null>(transitionInFlightMessage ?? null);
+  const [inFlightImageUrls, setInFlightImageUrls] = useState<string[]>([]);
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [activePluginIds, setActivePluginIds] = useState<string[]>([]);
@@ -158,6 +159,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightMessageRef = useRef<string | null>(inFlightMessage);
   inFlightMessageRef.current = inFlightMessage;
+  // Clear in-flight image URLs when in-flight message is cleared, and revoke object URLs
+  useEffect(() => {
+    if (!inFlightMessage && inFlightImageUrls.length > 0) {
+      inFlightImageUrls.forEach((url) => URL.revokeObjectURL(url));
+      setInFlightImageUrls([]);
+    }
+  }, [inFlightMessage, inFlightImageUrls]);
   // Track whether globalSessionActive was ever truthy for the current chat.
   // Used by the safety net to distinguish "session ended" from "session never started".
   const sessionWasActiveRef = useRef(false);
@@ -865,6 +873,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     async (prompt: string, images?: File[]) => {
       // Set in-flight message to show user's message immediately
       setInFlightMessage(prompt);
+      // Create object URLs for image previews in the in-flight bubble
+      if (images && images.length > 0) {
+        setInFlightImageUrls(images.map((f) => URL.createObjectURL(f)));
+      } else {
+        setInFlightImageUrls([]);
+      }
       setNetworkError(null); // Clear any previous network errors
       streamCompletedRef.current = false; // Reset so new message can stream
 
@@ -1913,6 +1927,24 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       }}
                     >
                       {inFlightMessage}
+                      {inFlightImageUrls.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                          {inFlightImageUrls.map((url, i) => (
+                            <img
+                              key={i}
+                              src={url}
+                              alt="Attached image"
+                              style={{
+                                maxHeight: 200,
+                                maxWidth: 300,
+                                borderRadius: 8,
+                                objectFit: "cover",
+                                border: "1px solid var(--border)",
+                              }}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div
                       style={{
@@ -2011,6 +2043,24 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       }}
                     >
                       {inFlightMessage}
+                      {inFlightImageUrls.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                          {inFlightImageUrls.map((url, i) => (
+                            <img
+                              key={i}
+                              src={url}
+                              alt="Attached image"
+                              style={{
+                                maxHeight: 200,
+                                maxWidth: 300,
+                                borderRadius: 8,
+                                objectFit: "cover",
+                                border: "1px solid var(--border)",
+                              }}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div
                       style={{

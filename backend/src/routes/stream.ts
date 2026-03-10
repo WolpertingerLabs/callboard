@@ -125,6 +125,10 @@ streamRouter.post("/new/message", async (req, res) => {
     const onEvent = (event: StreamEvent) => {
       if (event.type === "chat_created") {
         log.debug(`SSE chat_created — chatId=${event.chatId}`);
+        // Store image metadata now that we have the chatId
+        if (imageIds?.length && event.chatId) {
+          storeMessageImages(event.chatId, imageIds).catch((err) => log.warn(`Failed to store message images: ${err.message}`));
+        }
         sendSSE(res, { type: "chat_created", chatId: event.chatId, chat: event.chat });
         return;
       }
