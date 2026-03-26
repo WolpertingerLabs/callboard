@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { ArrowUp, Paperclip, Edit } from "lucide-react";
-import ImageUpload from "./ImageUpload";
+import { ArrowUp, Paperclip, Edit, ImageIcon } from "lucide-react";
+import ImageUpload, { ALLOWED_IMAGE_TYPES, validateImageFiles } from "./ImageUpload";
 import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
 
 interface Props {
@@ -15,9 +15,10 @@ interface Props {
 export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], commandDescriptions, onSetValue }: Props) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
-  const [showImageUpload, setShowImageUpload] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [autocompleteDismissed, setAutocompleteDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (onSetValue) {
@@ -37,7 +38,6 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
     // Clear input and images
     setValue("");
     setImages([]);
-    setShowImageUpload(false);
     setAutocompleteDismissed(false);
 
     if (textareaRef.current) {
@@ -70,17 +70,12 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
     }
   };
 
-  const toggleImageUpload = () => {
-    setShowImageUpload(!showImageUpload);
-  };
-
   const handleSaveDraft = useCallback(() => {
     if (!onSaveDraft || !value.trim() || disabled) return;
 
     const clearInput = () => {
       setValue("");
       setImages([]);
-      setShowImageUpload(false);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
@@ -88,6 +83,64 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
 
     onSaveDraft(value.trim(), images.length > 0 ? images : undefined, clearInput);
   }, [value, images, disabled, onSaveDraft]);
+
+  // Drag-and-drop handlers for the textarea area
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragActive(false);
+
+      if (disabled) return;
+
+      const files = e.dataTransfer.files;
+      if (files) {
+        const validFiles = validateImageFiles(files);
+        if (validFiles.length > 0) {
+          setImages((prev) => [...prev, ...validFiles]);
+        }
+      }
+    },
+    [disabled],
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const handleDragEnter = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      if (!disabled) {
+        setDragActive(true);
+      }
+    },
+    [disabled],
+  );
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    // Only hide drag state if leaving the component entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragActive(false);
+    }
+  }, []);
+
+  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const validFiles = validateImageFiles(e.target.files);
+      if (validFiles.length > 0) {
+        setImages((prev) => [...prev, ...validFiles]);
+      }
+    }
+    // Reset input so re-selecting the same file works
+    e.target.value = "";
+  }, []);
+
+  const openFilePicker = useCallback(() => {
+    if (!disabled) {
+      fileInputRef.current?.click();
+    }
+  }, [disabled]);
 
   // Derive autocomplete visibility from value (no effect needed)
   const showAutocomplete = !autocompleteDismissed && value.trim().startsWith("/") && slashCommands.length > 0;
@@ -110,12 +163,19 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
         flexShrink: 0,
       }}
     >
-      {/* Image upload area */}
-      {showImageUpload && (
-        <div style={{ marginBottom: 8 }}>
-          <ImageUpload images={images} onImagesChange={setImages} disabled={disabled} />
-        </div>
-      )}
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ALLOWED_IMAGE_TYPES.join(",")}
+        multiple
+        onChange={handleFileInput}
+        style={{ display: "none" }}
+        disabled={disabled}
+      />
+
+      {/* Image previews */}
+      <ImageUpload images={images} onImagesChange={setImages} />
 
       {/* Message input area */}
       <div
@@ -125,7 +185,13 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
           alignItems: "flex-end",
         }}
       >
-        <div style={{ flex: 1, position: "relative" }}>
+        <div
+          style={{ flex: 1, position: "relative" }}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+        >
           <SlashCommandAutocomplete
             slashCommands={slashCommands}
             query={value}
@@ -149,19 +215,45 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
             style={{
               width: "100%",
               background: "var(--surface)",
-              border: "1px solid var(--border)",
+              border: `1px solid ${dragActive ? "var(--accent)" : "var(--border)"}`,
               borderRadius: 10,
               padding: "10px 40px 10px 14px",
               fontSize: 15,
               resize: "none",
               maxHeight: 120,
               lineHeight: 1.4,
+              transition: "border-color 0.2s ease",
             }}
           />
 
+          {/* Drag overlay */}
+          {dragActive && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                borderRadius: 10,
+                background: "var(--accent-bg)",
+                border: "2px dashed var(--accent)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                color: "var(--accent)",
+                fontSize: 14,
+                fontWeight: 500,
+                pointerEvents: "none",
+                zIndex: 5,
+              }}
+            >
+              <ImageIcon size={16} />
+              Drop images here
+            </div>
+          )}
+
           {/* Image attachment button */}
           <button
-            onClick={toggleImageUpload}
+            onClick={openFilePicker}
             disabled={disabled}
             style={{
               position: "absolute",
@@ -170,8 +262,8 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
               width: 24,
               height: 24,
               borderRadius: 6,
-              background: showImageUpload ? "var(--accent)" : "var(--border)",
-              color: showImageUpload ? "var(--text-on-accent)" : "var(--text-muted)",
+              background: images.length > 0 ? "var(--accent)" : "var(--border)",
+              color: images.length > 0 ? "var(--text-on-accent)" : "var(--text-muted)",
               border: "none",
               fontSize: 14,
               display: "flex",
@@ -180,8 +272,9 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
               cursor: disabled ? "default" : "pointer",
               opacity: disabled ? 0.5 : 1,
               transition: "all 0.2s ease",
+              zIndex: 6,
             }}
-            title={showImageUpload ? "Hide image upload" : "Upload images"}
+            title="Upload images"
           >
             <Paperclip size={14} />
           </button>
