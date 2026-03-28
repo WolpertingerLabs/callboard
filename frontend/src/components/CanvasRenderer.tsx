@@ -24,8 +24,11 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // Natural content dimensions reported by the iframe
   const [contentHeight, setContentHeight] = useState(DEFAULT_HEIGHT);
+  const [contentWidth, setContentWidth] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const contentUrl = `/api/canvas/${encodeURIComponent(data.canvas_id)}/${data.version}`;
 
@@ -45,7 +48,7 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
     }
   }, [expanded, handleKeyDown]);
 
-  // Listen for height reports from the injected script inside the iframe
+  // Listen for size reports from the injected script inside the iframe
   useEffect(() => {
     if (data.content_type !== "html") return;
 
@@ -55,6 +58,9 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
       if (iframeRef.current && e.source === iframeRef.current.contentWindow) {
         const h = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, e.data.height));
         setContentHeight(h);
+        if (typeof e.data.width === "number" && e.data.width > 0) {
+          setContentWidth(e.data.width);
+        }
       }
     };
 
@@ -62,11 +68,30 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
     return () => window.removeEventListener("message", handler);
   }, [data.content_type]);
 
+  // Track container width so we can scale oversized content
+  const [containerWidth, setContainerWidth] = useState(0);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const onLoad = () => setLoading(false);
   const onError = () => {
     setLoading(false);
     setError(true);
   };
+
+  // If the content is wider than the container, scale it down proportionally
+  const needsScale = contentWidth > 0 && containerWidth > 0 && contentWidth > containerWidth;
+  const scale = needsScale ? containerWidth / contentWidth : 1;
+  const displayHeight = contentHeight * scale;
 
   if (error) {
     return (
@@ -92,24 +117,54 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
 
     switch (data.content_type) {
       case "html":
+        if (isModal) {
+          return (
+            <iframe
+              src={contentUrl}
+              title={data.name}
+              sandbox="allow-scripts"
+              onLoad={onLoad}
+              onError={onError}
+              style={{
+                width: "100%",
+                height: "85vh",
+                maxWidth,
+                border: "none",
+                background: "#fff",
+              }}
+            />
+          );
+        }
+        // Inline: iframe is set to the content's natural dimensions,
+        // then scaled down via CSS transform if wider than the container.
+        // The wrapper div provides the correct layout height.
         return (
-          <iframe
-            ref={isModal ? undefined : iframeRef}
-            src={contentUrl}
-            title={data.name}
-            sandbox="allow-scripts"
-            onLoad={onLoad}
-            onError={onError}
+          <div
             style={{
               width: "100%",
-              height: isModal ? "85vh" : contentHeight,
-              maxWidth,
-              border: "none",
-              borderRadius: isModal ? 0 : "var(--radius)",
-              background: "#fff",
-              transition: isModal ? undefined : "height 0.15s ease",
+              height: displayHeight,
+              overflow: "hidden",
+              borderRadius: "var(--radius)",
+              transition: "height 0.15s ease",
             }}
-          />
+          >
+            <iframe
+              ref={iframeRef}
+              src={contentUrl}
+              title={data.name}
+              sandbox="allow-scripts"
+              onLoad={onLoad}
+              onError={onError}
+              style={{
+                width: needsScale ? contentWidth : "100%",
+                height: contentHeight,
+                border: "none",
+                background: "#fff",
+                transformOrigin: "top left",
+                transform: needsScale ? `scale(${scale})` : undefined,
+              }}
+            />
+          </div>
         );
 
       case "svg":
@@ -192,7 +247,7 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
           </div>
 
           {/* Content area */}
-          <div style={{ position: "relative" }}>
+          <div ref={containerRef} style={{ position: "relative" }}>
             {loading && (
               <div
                 style={{

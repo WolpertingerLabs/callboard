@@ -8,15 +8,17 @@ const CANVAS_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * Small script injected before </body> in HTML canvases.
- * Reports document height to the parent via postMessage so the iframe
- * can auto-resize. Works even with sandbox="allow-scripts" (no
- * allow-same-origin needed). Uses ResizeObserver to track dynamic changes.
+ * Reports document dimensions to the parent via postMessage so the
+ * iframe can auto-resize and scale to fit. Works even with
+ * sandbox="allow-scripts" (no allow-same-origin needed).
+ * Uses ResizeObserver to track dynamic changes.
  */
-const HEIGHT_REPORTER_SCRIPT = `<script>
+const SIZE_REPORTER_SCRIPT = `<script>
 (function(){
   function send(){
     var h = document.documentElement.scrollHeight;
-    window.parent.postMessage({type:"canvas-resize",height:h},"*");
+    var w = document.documentElement.scrollWidth;
+    window.parent.postMessage({type:"canvas-resize",height:h,width:w},"*");
   }
   if(typeof ResizeObserver!=="undefined"){
     new ResizeObserver(send).observe(document.documentElement);
@@ -60,9 +62,9 @@ canvasRouter.get("/:canvasId/:version", (req, res) => {
 
     // Inject before </body> if present, otherwise append
     if (html.includes("</body>")) {
-      html = html.replace("</body>", HEIGHT_REPORTER_SCRIPT + "</body>");
+      html = html.replace("</body>", SIZE_REPORTER_SCRIPT + "</body>");
     } else {
-      html += HEIGHT_REPORTER_SCRIPT;
+      html += SIZE_REPORTER_SCRIPT;
     }
 
     const buf = Buffer.from(html, "utf-8");
