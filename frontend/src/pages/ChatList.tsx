@@ -589,6 +589,21 @@ export default function ChatList({
           {instanceName && <div style={{ fontSize: 10, color: "var(--chatlist-subtitle-text)", fontWeight: 400, letterSpacing: 0.3 }}>{instanceName}</div>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            onClick={() => setShowNew(!showNew)}
+            style={{
+              background: "var(--accent)",
+              color: "var(--text-on-accent)",
+              padding: "10px",
+              borderRadius: 8,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="New Chat"
+          >
+            <Plus size={18} />
+          </button>
           {onViewModeChange && (
             <div style={{ display: "flex" }}>
               <button
@@ -631,21 +646,6 @@ export default function ChatList({
               </button>
             </div>
           )}
-          <button
-            onClick={() => setShowNew(!showNew)}
-            style={{
-              background: "var(--accent)",
-              color: "var(--text-on-accent)",
-              padding: "10px",
-              borderRadius: 8,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="New Chat"
-          >
-            <Plus size={18} />
-          </button>
           <div style={{ display: "flex" }}>
             <button
               onClick={() => navigate("/agents")}
