@@ -20,8 +20,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "render_file",
     qualifiedName: "mcp__callboard-tools__render_file",
-    description:
-      "Render media in the chat UI. Supports images, audio, video, and PDFs from local files or URLs.",
+    description: "Render media in the chat UI. Supports images, audio, video, and PDFs from local files or URLs.",
     parameters: [
       { name: "file_path", type: "string", description: "Absolute path to a local file to render", required: false },
       { name: "url", type: "string", description: "URL of media content to render (http or https)", required: false },
@@ -247,6 +246,25 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       { name: "prompt", type: "string", description: "The follow-up message", required: true },
       { name: "maxTurns", type: "number", description: "Maximum agentic turns", required: false },
       { name: "waitForCompletion", type: "boolean", description: "Block until the response is ready", required: false },
+    ],
+    serverName: "callboard",
+    serverLabel: "Callboard Agent",
+    category: "agent",
+  },
+  {
+    name: "find_chats",
+    qualifiedName: "mcp__callboard__find_chats",
+    description: "Search chat sessions for a repo folder, including worktrees. Use with continue_chat to resume a previous conversation.",
+    parameters: [
+      { name: "folder", type: "string", description: "Repo working directory path (also searches worktrees)", required: true },
+      { name: "grep", type: "string", description: "Search term to grep across session conversation content", required: false },
+      { name: "gitBranch", type: "string", description: "Filter by git branch", required: false },
+      { name: "agentAlias", type: "string", description: "Filter to chats by a specific agent", required: false },
+      { name: "triggered", type: "boolean", description: "Filter to automated (true) or manual (false) sessions", required: false },
+      { name: "updatedAfter", type: "string", description: "ISO-8601 date — only chats updated after this time", required: false },
+      { name: "updatedBefore", type: "string", description: "ISO-8601 date — only chats updated before this time", required: false },
+      { name: "sort", type: "enum", description: "Sort field", required: false, enumValues: ["updated", "created"] },
+      { name: "limit", type: "number", description: "Max results (default: 10, max: 50)", required: false },
     ],
     serverName: "callboard",
     serverLabel: "Callboard Agent",

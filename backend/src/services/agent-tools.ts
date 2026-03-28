@@ -25,6 +25,7 @@ import { getActivity, appendActivity } from "./agent-activity.js";
 import { getActiveSession } from "./claude.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
+import { searchChats } from "../utils/chat-search.js";
 import { resolveBranch } from "../utils/git.js";
 import { themeFileService } from "./theme-file-service.js";
 import { generateThemeCSS } from "./quick-completion.js";
@@ -376,6 +377,42 @@ export function buildAgentToolsServer(agentAlias: string) {
           } catch (err: any) {
             log.error(`continue_chat failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error continuing chat: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "find_chats",
+        "Search chat sessions for a repo folder, including worktrees. Scans all Claude Code sessions in ~/.claude/projects/. Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
+        {
+          folder: z.string().describe("Repo working directory path (also searches worktrees of this repo)"),
+          grep: z.string().optional().describe("Search term to grep across session conversation content (messages, tool calls, code, etc.)"),
+          gitBranch: z.string().optional().describe("Filter by git branch (matches live worktree branches and stored session metadata)"),
+          agentAlias: z.string().optional().describe("Filter to chats started by a specific agent"),
+          triggered: z.boolean().optional().describe("Filter to automated (true) or manual (false) sessions"),
+          updatedAfter: z.string().optional().describe("ISO-8601 date — only chats updated after this time"),
+          updatedBefore: z.string().optional().describe("ISO-8601 date — only chats updated before this time"),
+          sort: z.enum(["updated", "created"]).optional().describe("Sort field (default: updated)"),
+          limit: z.number().optional().describe("Max results to return (default: 10, max: 50)"),
+        },
+        async (args) => {
+          try {
+            const result = searchChats({
+              folder: args.folder,
+              grep: args.grep,
+              gitBranch: args.gitBranch,
+              agentAlias: args.agentAlias,
+              triggered: args.triggered,
+              updatedAfter: args.updatedAfter,
+              updatedBefore: args.updatedBefore,
+              sort: args.sort,
+              limit: args.limit,
+            });
+
+            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          } catch (err: any) {
+            log.error(`find_chats failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error searching chats: ${err.message}` }] };
           }
         },
       ),
