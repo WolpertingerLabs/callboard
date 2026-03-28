@@ -915,6 +915,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }
 
       chatFileService.updateChat(trackingId, {});
+
+      // Detect /clear command — emit a cleared event before done so the frontend can show a marker
+      if (typeof prompt === "string" && prompt.trim().toLowerCase() === "/clear") {
+        log.debug(`Session cleared via /clear — trackingId=${trackingId}`);
+        emitter.emit("event", { type: "cleared", content: "Conversation was cleared" } as StreamEvent);
+      }
+
       log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}`);
       emitter.emit("event", { type: "done", content: "", ...(endReason && { reason: endReason }) } as StreamEvent);
     } catch (err: any) {

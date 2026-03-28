@@ -851,10 +851,15 @@ chatsRouter.get("/:id/messages", (req, res) => {
   if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
   // Load only JSONL files for sessions belonging to this chat
+  // Tag each entry with its session ID so parseMessages() can detect session transitions
   const allRaw: any[] = [];
   for (const sid of sessionIds) {
     const logPath = findSessionLogPath(sid);
-    if (logPath) allRaw.push(...readJsonlFile(logPath));
+    if (logPath) {
+      const entries = readJsonlFile(logPath);
+      for (const entry of entries) entry._sessionId = sid;
+      allRaw.push(...entries);
+    }
   }
 
   if (allRaw.length === 0) return res.json([]);
@@ -997,8 +1002,21 @@ function parseSubagentMessages(rawMessages: any[], teamName: string): ParsedMess
 
 function parseMessages(rawMessages: any[]): ParsedMessage[] {
   const result: ParsedMessage[] = [];
+  let currentSessionId: string | null = null;
 
   for (const msg of rawMessages) {
+    // Detect session boundary — inject a "Conversation was cleared" marker
+    if (msg._sessionId && currentSessionId && msg._sessionId !== currentSessionId) {
+      result.push({
+        role: "system",
+        type: "system",
+        content: "Conversation was cleared",
+        subtype: "clear_boundary",
+        timestamp: msg.timestamp,
+      });
+    }
+    if (msg._sessionId) currentSessionId = msg._sessionId;
+
     // Skip internal metadata lines
     if (msg.type === "summary" || msg.type === "queue-operation") continue;
 

@@ -147,6 +147,8 @@ streamRouter.post("/new/message", async (req, res) => {
         sendSSE(res, event as unknown as Record<string, unknown>);
       } else if (event.type === "compacting") {
         sendSSE(res, { type: "compacting" });
+      } else if (event.type === "cleared") {
+        sendSSE(res, { type: "cleared" });
       } else {
         sendSSE(res, { type: "message_update" });
       }

@@ -475,6 +475,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 continue;
               }
 
+              if (event.type === "cleared") {
+                if (currentIdRef.current !== streamChatId) return;
+                // Refetch messages to pick up the clear_boundary system message
+                getMessages(streamChatId!).then((msgs) => {
+                  if (currentIdRef.current !== streamChatId) return;
+                  setMessages(Array.isArray(msgs) ? msgs : []);
+                });
+                continue;
+              }
+
               if (event.type === "message_update") {
                 if (currentIdRef.current !== streamChatId) return;
                 setCompacting(false);
