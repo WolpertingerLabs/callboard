@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Maximize2 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 
@@ -16,10 +16,16 @@ interface CanvasRendererProps {
   data: RenderCanvasData;
 }
 
+const MIN_HEIGHT = 60;
+const MAX_HEIGHT = 2000;
+const DEFAULT_HEIGHT = 400;
+
 export default function CanvasRenderer({ data }: CanvasRendererProps) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [contentHeight, setContentHeight] = useState(DEFAULT_HEIGHT);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const contentUrl = `/api/canvas/${encodeURIComponent(data.canvas_id)}/${data.version}`;
 
@@ -38,6 +44,23 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
       return () => document.removeEventListener("keydown", handleKeyDown);
     }
   }, [expanded, handleKeyDown]);
+
+  // Listen for height reports from the injected script inside the iframe
+  useEffect(() => {
+    if (data.content_type !== "html") return;
+
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== "canvas-resize" || typeof e.data.height !== "number") return;
+      // Only accept messages from our iframe
+      if (iframeRef.current && e.source === iframeRef.current.contentWindow) {
+        const h = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, e.data.height));
+        setContentHeight(h);
+      }
+    };
+
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [data.content_type]);
 
   const onLoad = () => setLoading(false);
   const onError = () => {
@@ -71,6 +94,7 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
       case "html":
         return (
           <iframe
+            ref={isModal ? undefined : iframeRef}
             src={contentUrl}
             title={data.name}
             sandbox="allow-scripts"
@@ -78,11 +102,12 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
             onError={onError}
             style={{
               width: "100%",
-              height: isModal ? "85vh" : 400,
+              height: isModal ? "85vh" : contentHeight,
               maxWidth,
               border: "none",
               borderRadius: isModal ? 0 : "var(--radius)",
               background: "#fff",
+              transition: isModal ? undefined : "height 0.15s ease",
             }}
           />
         );
@@ -150,9 +175,7 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
               fontSize: 13,
             }}
           >
-            <span style={{ fontWeight: 600, color: "var(--text)", flex: 1, minWidth: 0 }}>
-              {data.name}
-            </span>
+            <span style={{ fontWeight: 600, color: "var(--text)", flex: 1, minWidth: 0 }}>{data.name}</span>
             <span
               style={{
                 fontSize: 11,
