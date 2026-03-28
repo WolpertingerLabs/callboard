@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ClipboardList, X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
+import { X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText } from "lucide-react";
 import {
   listChats,
   deleteChat,
@@ -8,12 +8,16 @@ import {
   listAgents,
   getAgentIdentityPrompt,
   fetchInstanceName,
+  getDrafts,
+  deleteDraft,
   type Chat,
   type DefaultPermissions,
   type AgentConfig,
+  type QueueItem,
 } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import ChatListItem from "../components/ChatListItem";
+import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import PermissionSettings from "../components/PermissionSettings";
 import ConfirmModal from "../components/ConfirmModal";
@@ -100,9 +104,47 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
   const [instanceName, setInstanceName] = useState("");
   const navigate = useNavigate();
   const location = useLocation();
-  const isQueueActive = location.pathname === "/queue";
   const isSettingsActive = location.pathname === "/settings";
   const isAgentsActive = location.pathname.startsWith("/agents");
+  const [drafts, setDrafts] = useState<QueueItem[]>([]);
+  const [stagingCollapsed, setStagingCollapsed] = useState(false);
+
+  const loadDrafts = useCallback(async () => {
+    try {
+      const items = await getDrafts();
+      setDrafts(items);
+    } catch {
+      // silently ignore — drafts are non-critical
+    }
+  }, []);
+
+  const handleDeleteDraft = useCallback(
+    async (id: string) => {
+      try {
+        await deleteDraft(id);
+        await loadDrafts();
+      } catch {}
+    },
+    [loadDrafts],
+  );
+
+  const handleDraftClick = useCallback(
+    (draft: QueueItem) => {
+      if (draft.chat_id) {
+        navigate(`/chat/${draft.chat_id}`, {
+          state: { draft: { id: draft.id, user_message: draft.user_message } },
+        });
+      } else if (draft.folder) {
+        navigate(`/chat/new?folder=${encodeURIComponent(draft.folder)}`, {
+          state: {
+            defaultPermissions: draft.defaultPermissions,
+            draft: { id: draft.id, user_message: draft.user_message },
+          },
+        });
+      }
+    },
+    [navigate],
+  );
 
   // Content search hook – only fires when user explicitly submits
   const { matchingChatIds, isSearching } = useChatSearch(submittedQuery);
@@ -165,8 +207,12 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
 
   useEffect(() => {
     load();
-    onRefresh(() => load());
-  }, [onRefresh, load]);
+    loadDrafts();
+    onRefresh(() => {
+      load();
+      loadDrafts();
+    });
+  }, [onRefresh, load, loadDrafts]);
 
   useEffect(() => {
     fetchInstanceName()
@@ -445,22 +491,6 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           <Plus size={18} />
         </button>
         <button
-          onClick={() => navigate("/queue")}
-          style={{
-            background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isQueueActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-            padding: "10px",
-            borderRadius: 8,
-            border: isQueueActive ? "none" : "1px solid var(--chatlist-item-border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-          title="Drafts"
-        >
-          <ClipboardList size={18} />
-        </button>
-        <button
           onClick={() => navigate("/agents")}
           style={{
             background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
@@ -567,35 +597,17 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
           </button>
           <div style={{ display: "flex" }}>
             <button
-              onClick={() => navigate("/queue")}
-              style={{
-                background: isQueueActive ? "var(--accent)" : "var(--bg-secondary)",
-                color: isQueueActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                padding: "10px",
-                borderTopLeftRadius: 8,
-                borderBottomLeftRadius: 8,
-                borderTopRightRadius: 0,
-                borderBottomRightRadius: 0,
-                border: isQueueActive ? "none" : "1px solid var(--chatlist-item-border)",
-                borderRight: isQueueActive ? "none" : "none",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-              title="Drafts"
-            >
-              <ClipboardList size={18} />
-            </button>
-            <button
               onClick={() => navigate("/agents")}
               style={{
                 background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
                 color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
                 padding: "10px",
-                borderRadius: 0,
+                borderTopLeftRadius: 8,
+                borderBottomLeftRadius: 8,
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: 0,
                 border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
-                borderLeft: "none",
-                borderRight: isAgentsActive ? "none" : "none",
+                borderRight: "none",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -993,6 +1005,35 @@ export default function ChatList({ activeChatId, onRefresh, sidebarCollapsed, on
       )}
 
       <div style={{ flex: 1, overflow: "auto" }}>
+        {drafts.length > 0 && (
+          <div style={{ borderBottom: "1px solid var(--chatlist-header-border)" }}>
+            <button
+              onClick={() => setStagingCollapsed(!stagingCollapsed)}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 20px",
+                background: "none",
+                border: "none",
+                color: "var(--text-muted)",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
+            >
+              {stagingCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+              <FileText size={13} />
+              Staging ({drafts.length})
+            </button>
+            {!stagingCollapsed &&
+              drafts.map((draft) => <DraftListItem key={draft.id} draft={draft} onClick={() => handleDraftClick(draft)} onDelete={handleDeleteDraft} />)}
+          </div>
+        )}
+
         {filteredChats.length === 0 && isInitialLoading && (
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", padding: 40 }}>
             <div

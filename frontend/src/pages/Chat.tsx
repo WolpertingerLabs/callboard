@@ -31,6 +31,7 @@ import {
   getNewChatInfo,
   markAsRead,
   getMcpTools,
+  deleteDraft,
   type Chat as ChatType,
   type ParsedMessage,
   type Plugin,
@@ -113,6 +114,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // doesn't become stale if the effect re-runs on id changes.
   const transitionInFlightMessageRef = useRef((location.state as any)?.inFlightMessage as string | undefined);
   const transitionInFlightMessage = transitionInFlightMessageRef.current;
+
+  // Draft loaded from staging in chat list
+  const routerDraftRef = useRef((location.state as any)?.draft as { id: string; user_message: string } | undefined);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(routerDraftRef.current?.id ?? null);
 
   const [chat, setChat] = useState<ChatType | null>(null);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
@@ -901,6 +906,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     });
   }, []);
 
+  // Pre-populate prompt input when navigating from a draft in staging
+  useEffect(() => {
+    if (routerDraftRef.current && promptInputSetValue) {
+      promptInputSetValue(routerDraftRef.current.user_message);
+      routerDraftRef.current = undefined;
+      // Clean draft from router state so back/forward doesn't re-apply
+      const { draft: _, ...rest } = (location.state ?? {}) as Record<string, unknown>;
+      navigate(location.pathname + location.search, { replace: true, state: Object.keys(rest).length > 0 ? rest : undefined });
+    }
+  }, [promptInputSetValue, navigate, location.state, location.pathname, location.search]);
+
   const handleSend = useCallback(
     async (prompt: string, images?: File[]) => {
       // Set in-flight message to show user's message immediately
@@ -1014,6 +1030,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           });
         }
 
+        // If this message came from a draft, delete the draft now that it's been sent
+        if (activeDraftId) {
+          deleteDraft(activeDraftId).catch(() => {});
+          setActiveDraftId(null);
+          onChatListRefreshRef.current?.();
+        }
+
         if (!res.ok || !res.body) {
           const errorData = await res.json().catch(() => ({}));
 
@@ -1065,7 +1088,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     },
-    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, readSSE, activePluginIds, chat, branchConfig],
+    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, readSSE, activePluginIds, chat, branchConfig, activeDraftId],
   );
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
@@ -2366,6 +2389,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         onSuccess={draftSuccessCallback || undefined}
         folder={!id ? folder : undefined}
         defaultPermissions={!id ? defaultPermissions : undefined}
+        existingDraftId={activeDraftId}
       />
 
       <SlashCommandsModal

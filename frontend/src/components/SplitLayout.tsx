@@ -3,7 +3,6 @@ import { useRef, useState, useCallback } from "react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ChatList from "../pages/ChatList";
 import Chat from "../pages/Chat";
-import Queue from "../pages/Queue";
 import Settings from "../pages/Settings";
 import AgentList from "../pages/agents/AgentList";
 import CreateAgent from "../pages/agents/CreateAgent";
@@ -33,9 +32,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   // Check if we're on the settings page
   const isSettings = location.pathname === "/settings";
 
-  // Check if we're on the queue/drafts page
-  const isQueue = location.pathname === "/queue";
-
   // Check if we're on the new chat page
   const isNewChat = location.pathname === "/chat/new";
 
@@ -57,9 +53,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   if (isMobile) {
     if (isSettings) {
       return <Settings onLogout={onLogout} />;
-    }
-    if (isQueue) {
-      return <Queue />;
     }
     if (isAgentList) {
       return <AgentList />;
@@ -134,8 +127,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
       >
         {isSettings ? (
           <Settings onLogout={onLogout} />
-        ) : isQueue ? (
-          <Queue />
         ) : isAgentList ? (
           <AgentList />
         ) : isCreateAgent ? (

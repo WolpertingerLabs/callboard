@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createDraft, type DefaultPermissions } from "../api";
+import { createDraft, updateDraft, type DefaultPermissions } from "../api";
 import ModalOverlay from "./ModalOverlay";
 
 interface DraftModalProps {
@@ -10,13 +10,16 @@ interface DraftModalProps {
   onSuccess?: () => void;
   folder?: string;
   defaultPermissions?: DefaultPermissions;
+  existingDraftId?: string | null;
 }
 
-export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess, folder, defaultPermissions }: DraftModalProps) {
+export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess, folder, defaultPermissions, existingDraftId }: DraftModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const isUpdate = !!existingDraftId;
 
   const handleSaveDraft = async () => {
     if (!message.trim()) return;
@@ -25,7 +28,11 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
     setError(null);
 
     try {
-      await createDraft(chatId, message.trim(), folder, defaultPermissions);
+      if (existingDraftId) {
+        await updateDraft(existingDraftId, message.trim());
+      } else {
+        await createDraft(chatId, message.trim(), folder, defaultPermissions);
+      }
       onSuccess?.();
       onClose();
     } catch (err: any) {
@@ -47,7 +54,7 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
           border: "1px solid var(--border)",
         }}
       >
-        <h2 style={{ margin: "0 0 16px 0", fontSize: 18 }}>{chatId ? "Save Message" : "Save New Chat Message"}</h2>
+        <h2 style={{ margin: "0 0 16px 0", fontSize: 18 }}>{isUpdate ? "Update Draft" : chatId ? "Save Message" : "Save New Chat Message"}</h2>
 
         {!chatId && folder && (
           <div style={{ marginBottom: 16 }}>
@@ -122,7 +129,7 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
                 cursor: isSubmitting || !message.trim() ? "default" : "pointer",
               }}
             >
-              {isSubmitting ? "Saving..." : "Save Draft"}
+              {isSubmitting ? "Saving..." : isUpdate ? "Update Draft" : "Save Draft"}
             </button>
           </div>
         </div>

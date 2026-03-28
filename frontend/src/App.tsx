@@ -160,7 +160,6 @@ export default function App() {
           <Route path="/" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
           <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
           <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
-          <Route path="/queue" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
           <Route path="/settings" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
 
           {/* Agent routes - rendered inside SplitLayout */}
