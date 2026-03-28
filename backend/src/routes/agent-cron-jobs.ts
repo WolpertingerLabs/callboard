@@ -65,7 +65,7 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
     return;
   }
 
-  const { name, schedule, type, description, action, status, quietHours } = req.body as Partial<CronJob>;
+  const { name, schedule, type, description, action, status, quietHours, skipIfRunning } = req.body as Partial<CronJob>;
 
   if (!name || !schedule || !type || !description) {
     res.status(400).json({ error: "name, schedule, type, and description are required" });
@@ -94,6 +94,7 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
     description: description.trim(),
     action: cronAction,
     ...(quietHours && { quietHours }),
+    ...(skipIfRunning !== undefined && { skipIfRunning }),
   });
 
   // Sync scheduler: schedule the job if it's active

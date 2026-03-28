@@ -33,6 +33,7 @@ export interface CronJob {
   description: string;
   action: CronAction;
   isDefault?: boolean; // Marks system-created default jobs (e.g., heartbeat)
+  skipIfRunning?: boolean; // Skip execution if previous run is still active
   quietHours?: QuietHours;
 }
 

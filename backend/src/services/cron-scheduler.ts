@@ -11,6 +11,7 @@ import { listAgents, getAgent } from "./agent-file-service.js";
 import { listCronJobs, updateCronJob, ensureDefaultCronJobs } from "./agent-cron-jobs.js";
 import { executeAgent } from "./agent-executor.js";
 import { appendActivity } from "./agent-activity.js";
+import { sessionRegistry } from "./session-registry.js";
 import { isInQuietHours } from "../utils/quiet-hours.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -22,6 +23,8 @@ const log = createLogger("cron-scheduler");
 const scheduledTasks = new Map<string, cron.ScheduledTask>();
 // Map of jobId → agentAlias (needed to resolve agent on fire)
 const jobAgentMap = new Map<string, string>();
+// Map of jobId → chatId of the currently-running session (for skipIfRunning)
+const runningChatIds = new Map<string, string>();
 
 /**
  * Initialize the scheduler: load all agents, load their cron jobs,
@@ -89,6 +92,21 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
 
       log.info(`Cron job fired: ${job.name} (${job.id}) for agent ${alias}`);
 
+      // Skip-if-running check — skip if previous session is still active
+      if (job.skipIfRunning) {
+        const activeChatId = runningChatIds.get(job.id);
+        if (activeChatId && sessionRegistry.has(activeChatId)) {
+          log.info(`Skipping job ${job.name} (${job.id}) — previous session ${activeChatId} still running`);
+          appendActivity(alias, {
+            type: "cron",
+            message: `Cron job "${job.name}" skipped (previous run still active)`,
+            metadata: { jobId: job.id, jobName: job.name, reason: "skip_if_running", activeChatId },
+          });
+          computeAndStoreNextRun(alias, job, timezone);
+          return;
+        }
+      }
+
       // Quiet hours check — skip repetitive jobs, let one-off jobs through
       if (job.type !== "one-off" && isInQuietHours(job.quietHours, latestConfig?.userTimezone)) {
         log.info(`Quiet hours active for agent ${alias}, skipping cron job: ${job.name} (${job.id})`);
@@ -107,13 +125,18 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
 
       // Execute the agent
       const prompt = job.action?.prompt || `Cron job "${job.name}" fired. Execute the scheduled task.`;
-      await executeAgent({
+      const result = await executeAgent({
         agentAlias: alias,
         prompt,
         triggeredBy: "cron",
         metadata: { jobId: job.id, jobName: job.name, schedule: job.schedule },
         maxTurns: job.action?.maxTurns,
       });
+
+      // Track running session for skipIfRunning
+      if (result?.chatId) {
+        runningChatIds.set(job.id, result.chatId);
+      }
 
       // For one-off jobs, mark as completed after first execution
       if (job.type === "one-off") {
@@ -149,6 +172,7 @@ export function cancelJob(jobId: string): void {
     task.stop();
     scheduledTasks.delete(jobId);
     jobAgentMap.delete(jobId);
+    runningChatIds.delete(jobId);
     log.debug(`Cancelled job ${jobId}`);
   }
 }
@@ -215,5 +239,6 @@ export function shutdownScheduler(): void {
   }
   scheduledTasks.clear();
   jobAgentMap.clear();
+  runningChatIds.clear();
   log.info("Cron scheduler shut down");
 }

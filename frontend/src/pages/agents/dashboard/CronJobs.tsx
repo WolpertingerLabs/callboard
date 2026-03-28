@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 // useOutletContext removed — agent is now passed as a prop
-import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2, Moon } from "lucide-react";
+import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2, Moon, SkipForward } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import ConfirmModal from "../../../components/ConfirmModal";
 import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob } from "../../../api";
@@ -195,6 +195,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [formQHEnabled, setFormQHEnabled] = useState(false);
   const [formQHStart, setFormQHStart] = useState("22:00");
   const [formQHEnd, setFormQHEnd] = useState("07:00");
+  const [formSkipIfRunning, setFormSkipIfRunning] = useState(false);
   const [formSaving, setFormSaving] = useState(false);
 
   // Delete confirmation state
@@ -214,6 +215,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [editQHEnabled, setEditQHEnabled] = useState(false);
   const [editQHStart, setEditQHStart] = useState("22:00");
   const [editQHEnd, setEditQHEnd] = useState("07:00");
+  const [editSkipIfRunning, setEditSkipIfRunning] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
 
   const loadJobs = () => {
@@ -277,6 +279,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         description: formDescription.trim(),
         action: { type: "start_session", prompt: formPrompt.trim() || undefined },
         ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
+        ...(formSkipIfRunning && { skipIfRunning: true }),
       });
       setJobs((prev) => [...prev, job]);
       setShowForm(false);
@@ -288,6 +291,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormQHEnabled(false);
       setFormQHStart("22:00");
       setFormQHEnd("07:00");
+      setFormSkipIfRunning(false);
     } catch {
       // ignore
     } finally {
@@ -305,6 +309,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     setEditQHEnabled(job.quietHours?.enabled || false);
     setEditQHStart(job.quietHours?.start || "22:00");
     setEditQHEnd(job.quietHours?.end || "07:00");
+    setEditSkipIfRunning(job.skipIfRunning || false);
   };
 
   const cancelEditing = () => {
@@ -324,6 +329,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         description: editDescription.trim(),
         action: { type: "start_session", prompt: editPrompt.trim() || undefined },
         quietHours: editQHEnabled ? { enabled: true, start: editQHStart, end: editQHEnd } : { enabled: false, start: editQHStart, end: editQHEnd },
+        skipIfRunning: editSkipIfRunning,
       });
       setJobs((prev) => prev.map((j) => (j.id === editingJobId ? updated : j)));
       setEditingJobId(null);
@@ -407,6 +413,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
                 </div>
               </div>
             )}
+          </div>
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={editSkipIfRunning} onChange={(e) => setEditSkipIfRunning(e.target.checked)} style={{ width: 16, height: 16 }} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Skip if running</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— skip execution if previous run is still active</span>
+            </label>
           </div>
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button
@@ -547,6 +560,23 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           <span>{describeCron(job.schedule, scheduleTz)}</span>
           <span style={{ opacity: 0.5 }}>({job.schedule})</span>
         </div>
+
+        {/* Skip if running indicator */}
+        {job.skipIfRunning && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 12,
+              color: "var(--text-muted)",
+              marginBottom: 6,
+            }}
+          >
+            <SkipForward size={12} />
+            <span>Skip if previous run active</span>
+          </div>
+        )}
 
         {/* Quiet hours indicator */}
         {job.quietHours?.enabled && (
@@ -788,6 +818,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
                 </div>
               </div>
             )}
+          </div>
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={formSkipIfRunning} onChange={(e) => setFormSkipIfRunning(e.target.checked)} style={{ width: 16, height: 16 }} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Skip if running</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— skip execution if previous run is still active</span>
+            </label>
           </div>
           <button
             type="submit"
