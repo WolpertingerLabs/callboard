@@ -3,6 +3,7 @@ import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import { getToolSummary, parseTodoItems, TodoList, MessageMetadata } from "./MessageBubble";
 import MediaRenderer from "./MediaRenderer";
+import CanvasRenderer from "./CanvasRenderer";
 
 interface ToolCallBubbleProps {
   toolUse: ParsedMessage;
@@ -35,12 +36,30 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
     return null;
   }, [toolUse, toolResult]);
 
+  // Special case: create_canvas / update_canvas renders as CanvasRenderer
+  const canvasData = useMemo(() => {
+    const isCanvasTool = toolUse.toolName === "mcp__callboard-tools__create_canvas" || toolUse.toolName === "mcp__callboard-tools__update_canvas";
+    if (isCanvasTool && toolResult) {
+      try {
+        const parsed = JSON.parse(toolResult.content);
+        if (parsed?.type === "render_canvas") return parsed;
+      } catch {
+        /* invalid JSON */
+      }
+    }
+    return null;
+  }, [toolUse, toolResult]);
+
   if (todoItems) {
     return <TodoList items={todoItems} />;
   }
 
   if (renderFileData) {
     return <MediaRenderer data={renderFileData} />;
+  }
+
+  if (canvasData) {
+    return <CanvasRenderer data={canvasData} />;
   }
 
   const toolName = toolUse.toolName || "unknown";

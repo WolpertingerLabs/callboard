@@ -44,6 +44,54 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     serverLabel: "Callboard Tools",
     category: "platform",
   },
+  {
+    name: "create_canvas",
+    qualifiedName: "mcp__callboard-tools__create_canvas",
+    description: "Create a versioned canvas to display dynamic HTML, SVG, or image content inline in the chat.",
+    parameters: [
+      { name: "name", type: "string", description: "Human-readable name for this canvas", required: true },
+      { name: "content", type: "string", description: "String content (HTML with inline CSS/JS, or SVG markup)", required: false },
+      { name: "file_path", type: "string", description: "Absolute path to a file to snapshot (for generated images)", required: false },
+      {
+        name: "content_type",
+        type: "enum",
+        description: "Content kind: html, svg, or image",
+        required: true,
+        enumValues: ["html", "svg", "image"],
+      },
+      { name: "caption", type: "string", description: "Optional caption shown below the rendered content", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "update_canvas",
+    qualifiedName: "mcp__callboard-tools__update_canvas",
+    description: "Update an existing canvas with new content, creating a new versioned snapshot.",
+    parameters: [
+      { name: "canvas_id", type: "string", description: "The canvas ID returned by create_canvas", required: true },
+      { name: "content", type: "string", description: "Full replacement content (HTML or SVG)", required: false },
+      { name: "file_path", type: "string", description: "Absolute path to a new file to snapshot", required: false },
+      { name: "description", type: "string", description: "Brief description of what changed", required: false },
+      { name: "caption", type: "string", description: "Optional updated caption", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "read_canvas",
+    qualifiedName: "mcp__callboard-tools__read_canvas",
+    description: "Read back the content of an existing canvas to reason about it before making updates.",
+    parameters: [
+      { name: "canvas_id", type: "string", description: "The canvas ID to read", required: true },
+      { name: "version", type: "number", description: "Specific version to read (defaults to latest)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
 ];
 
 // ─── Proxy Tools (injected when proxy is configured) ────────────────

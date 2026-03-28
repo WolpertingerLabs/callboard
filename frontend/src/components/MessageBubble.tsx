@@ -86,6 +86,12 @@ export function getToolSummary(toolName: string, content: string): string {
           }
         }
         return "";
+      case "mcp__callboard-tools__create_canvas":
+        return input.name ? ` - ${input.name}` : "";
+      case "mcp__callboard-tools__update_canvas":
+        return input.canvas_id ? ` - ${input.canvas_id}` : "";
+      case "mcp__callboard-tools__read_canvas":
+        return input.canvas_id ? ` - ${input.canvas_id}` : "";
       default:
         return "";
     }
