@@ -596,6 +596,7 @@ export function buildAgentToolsServer(agentAlias: string) {
           prompt: z.string().describe("The task prompt that will be sent to your agent when the job fires"),
           type: z.enum(["one-off", "recurring", "indefinite"]).optional().describe("Job type (default: recurring)"),
           description: z.string().optional().describe("Description of what this job does"),
+          skipIfRunning: z.boolean().optional().describe("Skip execution if the previous run is still active (default: false)"),
         },
         async (args) => {
           try {
@@ -609,6 +610,7 @@ export function buildAgentToolsServer(agentAlias: string) {
                 type: "start_session",
                 prompt: args.prompt,
               },
+              ...(args.skipIfRunning !== undefined && { skipIfRunning: args.skipIfRunning }),
             } as Omit<CronJob, "id">);
 
             // Sync scheduler: register with node-cron so it actually fires
@@ -640,6 +642,7 @@ export function buildAgentToolsServer(agentAlias: string) {
           prompt: z.string().optional().describe("New task prompt"),
           status: z.enum(["active", "paused", "completed"]).optional().describe("New status"),
           type: z.enum(["one-off", "recurring", "indefinite"]).optional().describe("New type"),
+          skipIfRunning: z.boolean().optional().describe("Skip execution if the previous run is still active"),
         },
         async (args) => {
           try {
@@ -648,6 +651,7 @@ export function buildAgentToolsServer(agentAlias: string) {
             if (args.schedule !== undefined) updates.schedule = args.schedule;
             if (args.status !== undefined) updates.status = args.status;
             if (args.type !== undefined) updates.type = args.type;
+            if (args.skipIfRunning !== undefined) updates.skipIfRunning = args.skipIfRunning;
             if (args.prompt !== undefined) {
               updates.action = { type: "start_session", prompt: args.prompt };
             }
