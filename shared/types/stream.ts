@@ -10,7 +10,8 @@ export interface StreamEvent {
     | "user_question"
     | "plan_review"
     | "chat_created"
-    | "compacting";
+    | "compacting"
+    | "cleared";
   content: string;
   toolName?: string;
 
