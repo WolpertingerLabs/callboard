@@ -53,6 +53,8 @@ export interface FolderSummary {
   chatStatusEmoji?: string;
   /** Whether any chat in this folder has an active summon */
   hasSummon?: boolean;
+  /** Custom title set by agent on most recent chat */
+  chatTitle?: string;
 }
 
 export interface FolderListResponse {

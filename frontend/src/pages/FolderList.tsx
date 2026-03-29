@@ -35,7 +35,7 @@ export default function FolderList({
   onShowClaudeModal,
   onViewModeChange,
 }: FolderListProps) {
-  const { activeSessions } = useSessionContext();
+  const { activeSessions, metadataVersion } = useSessionContext();
   const navigate = useNavigate();
   const location = useLocation();
   const [folders, setFolders] = useState<FolderSummary[]>([]);
@@ -79,6 +79,13 @@ export default function FolderList({
     const timer = setTimeout(load, 500);
     return () => clearTimeout(timer);
   }, [activeSessions.size, load]);
+
+  // Refetch when chat metadata changes (status, summon, title) via SSE
+  useEffect(() => {
+    if (metadataVersion === 0) return;
+    const timer = setTimeout(() => load(), 300);
+    return () => clearTimeout(timer);
+  }, [metadataVersion, load]);
 
   const handleMaxAgeChange = (days: number) => {
     setMaxAgeDays(days);

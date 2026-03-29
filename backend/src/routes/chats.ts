@@ -348,11 +348,12 @@ chatsRouter.get("/folders", (req, res) => {
         chatStatus: metadata.chatStatus || undefined,
         chatStatusEmoji: metadata.chatStatusEmoji || undefined,
         hasSummon: !!metadata.summon,
+        chatTitle: metadata.title || undefined,
       });
     }
 
-    // Sort by most recent chat created descending
-    folders.sort((a, b) => new Date(b.mostRecentChatCreatedAt).getTime() - new Date(a.mostRecentChatCreatedAt).getTime());
+    // Sort by last updated descending (most recently active folders first)
+    folders.sort((a, b) => new Date(b.lastUpdatedAt).getTime() - new Date(a.lastUpdatedAt).getTime());
 
     res.json({ folders });
   } catch (err: any) {

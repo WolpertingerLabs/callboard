@@ -148,6 +148,21 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
             {folder.displayName}
           </div>
         </div>
+        {folder.chatTitle && (
+          <div
+            title={folder.chatTitle}
+            style={{
+              fontSize: 12,
+              color: "var(--text-muted)",
+              marginTop: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {folder.chatTitle}
+          </div>
+        )}
 
         {/* Row 2: Full path */}
         <div
