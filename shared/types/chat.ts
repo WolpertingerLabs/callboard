@@ -47,6 +47,12 @@ export interface FolderSummary {
   triggeredBy?: "cron" | "event" | "trigger" | "tool";
   /** Total number of chats in this folder */
   chatCount: number;
+  /** Custom status label set by agent on most recent chat */
+  chatStatus?: string;
+  /** Emoji prefix for the custom status */
+  chatStatusEmoji?: string;
+  /** Whether any chat in this folder has an active summon */
+  hasSummon?: boolean;
 }
 
 export interface FolderListResponse {

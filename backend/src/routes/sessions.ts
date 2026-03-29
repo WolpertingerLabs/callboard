@@ -33,7 +33,10 @@ sessionsRouter.get("/events", (req, res) => {
   // Forward session change events
   const onChange = (event: SessionEvent) => {
     try {
-      res.write(`event: ${event.event}\ndata: ${JSON.stringify({ chatId: event.chatId, type: event.type })}\n\n`);
+      const payload: Record<string, unknown> = { chatId: event.chatId };
+      if (event.type) payload.type = event.type;
+      if (event.data) payload.data = event.data;
+      res.write(`event: ${event.event}\ndata: ${JSON.stringify(payload)}\n\n`);
     } catch {
       // Client may have disconnected
     }

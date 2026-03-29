@@ -85,7 +85,7 @@ export default function ChatList({
   onShowClaudeModal,
   onViewModeChange,
 }: ChatListProps) {
-  const { activeSessions } = useSessionContext();
+  const { activeSessions, metadataVersion } = useSessionContext();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -243,6 +243,13 @@ export default function ChatList({
     const timer = setTimeout(() => load(), 500);
     return () => clearTimeout(timer);
   }, [activeSessions, load]);
+
+  // Refetch when chat metadata changes (status, summon, title) via SSE
+  useEffect(() => {
+    if (metadataVersion === 0) return; // skip initial
+    const timer = setTimeout(() => load(), 300);
+    return () => clearTimeout(timer);
+  }, [metadataVersion, load]);
 
   // While any session is active, periodically refetch the chat list to pick up
   // title changes, timestamp updates, and reordering.

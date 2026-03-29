@@ -3,6 +3,8 @@ import { z } from "zod";
 import { existsSync, statSync } from "fs";
 import path from "path";
 import { createCanvas, updateCanvas, readCanvas } from "./canvas-service.js";
+import { chatFileService } from "./chat-file-service.js";
+import { sessionRegistry } from "./session-registry.js";
 
 const MIME_MAP: Record<string, { mime: string; category: string }> = {
   ".png": { mime: "image/png", category: "image" },
@@ -27,7 +29,7 @@ function error(message: string) {
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
 }
 
-export function buildCallboardToolsServer() {
+export function buildCallboardToolsServer(getChatId?: () => string) {
   return createSdkMcpServer({
     name: "callboard-tools",
     version: "1.0.0",
@@ -246,6 +248,124 @@ export function buildCallboardToolsServer() {
                 text: JSON.stringify({
                   type: "canvas_content",
                   ...result.result,
+                }),
+              },
+            ],
+          };
+        },
+      ),
+
+      // ── Chat Status & Notification Tools ─────────────────────────────
+
+      tool(
+        "set_chat_status",
+        "Set a custom status label on the current chat, visible in the Callboard dashboard sidebar. Use this to communicate what you're working on (e.g. 'Running tests', 'Deploying to staging', 'Waiting for CI'). Pass an empty status string to clear the status.",
+        {
+          status: z.string().max(160).describe("Short status label (max 160 chars). Empty string clears the status."),
+          emoji: z.string().optional().describe("Single emoji prefix for visual distinction in the sidebar (e.g. '🧪', '🚀')"),
+        },
+        async (args) => {
+          if (!getChatId) return error("Chat context not available");
+          const chatId = getChatId();
+
+          const fields: Record<string, unknown> = {
+            chatStatus: args.status || null,
+            chatStatusEmoji: args.emoji || null,
+          };
+
+          const ok = chatFileService.updateChatMetadata(chatId, fields);
+          if (!ok) return error("Chat not found — status may not be available until the session is fully initialized");
+
+          sessionRegistry.emit("change", {
+            event: "chat_metadata_updated",
+            chatId,
+            data: { chatStatus: args.status || null, chatStatusEmoji: args.emoji || null },
+          });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  chatId,
+                  status: args.status || null,
+                  emoji: args.emoji || null,
+                }),
+              },
+            ],
+          };
+        },
+      ),
+
+      tool(
+        "summon_user",
+        "Alert the user that their attention is needed in this chat. Creates a visible notification in the Callboard dashboard. Use this when you need human input, a decision, or want to flag something important. This is different from permission requests — it's an agent-initiated signal that doesn't block execution.",
+        {
+          message: z.string().max(400).describe("Why the user is needed (max 400 chars)"),
+          urgency: z.enum(["normal", "urgent"]).optional().describe("'urgent' triggers a browser notification if permitted (default: 'normal')"),
+        },
+        async (args) => {
+          if (!getChatId) return error("Chat context not available");
+          const chatId = getChatId();
+
+          const summon = {
+            message: args.message,
+            urgency: args.urgency || "normal",
+            createdAt: new Date().toISOString(),
+          };
+
+          const ok = chatFileService.updateChatMetadata(chatId, { summon });
+          if (!ok) return error("Chat not found — summon may not be available until the session is fully initialized");
+
+          sessionRegistry.emit("change", {
+            event: "user_summoned",
+            chatId,
+            data: summon,
+          });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  chatId,
+                  summon,
+                }),
+              },
+            ],
+          };
+        },
+      ),
+
+      tool(
+        "set_chat_title",
+        "Set or update the title of the current chat. Use this to give the chat a descriptive name that reflects the work being done, replacing the auto-generated title. Pass an empty string to reset to the auto-generated title.",
+        {
+          title: z.string().max(240).describe("New chat title (max 240 chars). Empty string resets to auto-generated."),
+        },
+        async (args) => {
+          if (!getChatId) return error("Chat context not available");
+          const chatId = getChatId();
+
+          const ok = chatFileService.updateChatMetadata(chatId, { title: args.title || null });
+          if (!ok) return error("Chat not found — title may not be available until the session is fully initialized");
+
+          sessionRegistry.emit("change", {
+            event: "chat_metadata_updated",
+            chatId,
+            data: { title: args.title || null },
+          });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  chatId,
+                  title: args.title || null,
                 }),
               },
             ],

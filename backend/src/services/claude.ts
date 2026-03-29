@@ -670,7 +670,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
   try {
-    const callboardToolsServer = buildCallboardToolsServer();
+    const callboardToolsServer = buildCallboardToolsServer(() => trackingId);
     if (callboardToolsServer && callboardToolsServer.type === "sdk" && callboardToolsServer.instance) {
       mcpServers["callboard-tools"] = callboardToolsServer;
       allowedTools.push("mcp__callboard-tools__*");

@@ -7,16 +7,28 @@ export interface ActiveSessionInfo {
   startedAt?: number;
 }
 
+export interface SummonInfo {
+  message: string;
+  urgency: "normal" | "urgent";
+  createdAt: string;
+}
+
 interface SessionContextValue {
   /** Map of chatId → session info for all currently active sessions */
   activeSessions: Map<string, ActiveSessionInfo>;
   /** Whether the SSE connection to the server is established */
   connected: boolean;
+  /** Incremented on chat_metadata_updated / user_summoned SSE events — use as a dependency to trigger refetch */
+  metadataVersion: number;
+  /** Set of chatIds that currently have an active summon (for immediate visual feedback) */
+  summonedChatIds: Set<string>;
 }
 
 const SessionContext = createContext<SessionContextValue>({
   activeSessions: new Map(),
   connected: false,
+  metadataVersion: 0,
+  summonedChatIds: new Set(),
 });
 
 /**
@@ -36,6 +48,21 @@ export function useIsSessionActive(chatId: string | undefined): ActiveSessionInf
   return activeSessions.get(chatId) ?? null;
 }
 
+/**
+ * Hook to get the metadata version counter. Use as a dependency to trigger
+ * refetch when chat metadata changes (status, summon, title) via SSE events.
+ */
+export function useMetadataVersion(): number {
+  return useSessionContext().metadataVersion;
+}
+
+/**
+ * Hook to get the set of chat IDs that currently have an active summon.
+ */
+export function useSummonedChatIds(): Set<string> {
+  return useSessionContext().summonedChatIds;
+}
+
 const RECONNECT_DELAY_MS = 3_000;
 
 /**
@@ -48,6 +75,8 @@ const RECONNECT_DELAY_MS = 3_000;
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Map<string, ActiveSessionInfo>>(new Map());
   const [connected, setConnected] = useState(false);
+  const [metadataVersion, setMetadataVersion] = useState(0);
+  const [summonedChatIds, setSummonedChatIds] = useState<Set<string>>(new Set());
   // Incrementing this counter triggers a reconnection attempt
   const [reconnectCount, setReconnectCount] = useState(0);
 
@@ -107,6 +136,49 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // Heartbeat — confirms the connection is alive (no action needed)
     es.addEventListener("heartbeat", () => {});
 
+    // Chat metadata updated — bump version to trigger refetches
+    es.addEventListener("chat_metadata_updated", (e: MessageEvent) => {
+      if (!mounted) return;
+      try {
+        const { chatId, data } = JSON.parse(e.data) as { chatId: string; data?: { summon?: unknown } };
+        setMetadataVersion((v) => v + 1);
+        // If summon was cleared, remove from summoned set
+        if (data && data.summon === null) {
+          setSummonedChatIds((prev) => {
+            if (!prev.has(chatId)) return prev;
+            const next = new Set(prev);
+            next.delete(chatId);
+            return next;
+          });
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    });
+
+    // User summoned — add to summoned set + bump version + browser notification
+    es.addEventListener("user_summoned", (e: MessageEvent) => {
+      if (!mounted) return;
+      try {
+        const { chatId, data } = JSON.parse(e.data) as { chatId: string; data?: SummonInfo };
+        setMetadataVersion((v) => v + 1);
+        setSummonedChatIds((prev) => {
+          const next = new Set(prev);
+          next.add(chatId);
+          return next;
+        });
+        // Browser notification for urgent summons
+        if (data?.urgency === "urgent" && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("Agent needs your attention", {
+            body: data.message,
+            tag: `summon-${chatId}`,
+          });
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    });
+
     // Handle errors (connection lost, etc.)
     es.onerror = () => {
       if (!mounted) return;
@@ -128,5 +200,5 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [reconnectCount]);
 
-  return <SessionContext.Provider value={{ activeSessions: sessions, connected }}>{children}</SessionContext.Provider>;
+  return <SessionContext.Provider value={{ activeSessions: sessions, connected, metadataVersion, summonedChatIds }}>{children}</SessionContext.Provider>;
 }

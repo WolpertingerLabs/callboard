@@ -16,9 +16,11 @@ export interface SessionInfo {
 }
 
 export interface SessionEvent {
-  event: "session_started" | "session_stopped";
+  event: "session_started" | "session_stopped" | "chat_metadata_updated" | "user_summoned";
   chatId: string;
-  type: SessionType;
+  type?: SessionType;
+  /** Optional payload for metadata/summon events */
+  data?: Record<string, unknown>;
 }
 
 /**

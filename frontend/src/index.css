@@ -104,6 +104,12 @@
   --chatlist-badge-session-web-bg: var(--accent);
   --chatlist-badge-session-cli-bg: var(--status-active);
   --chatlist-badge-session-text: var(--text-on-accent);
+  --chatlist-badge-status-bg: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  --chatlist-badge-status-text: var(--text-muted);
+  --chatlist-summon-bg: color-mix(in srgb, var(--warning) 18%, transparent);
+  --chatlist-summon-text: var(--warning);
+  --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 18%, transparent);
+  --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
   --chatlist-bookmark-icon: var(--accent);
   --chatlist-empty-text: var(--text-muted);
@@ -208,6 +214,12 @@
   --chatlist-badge-session-web-bg: var(--accent);
   --chatlist-badge-session-cli-bg: var(--status-active);
   --chatlist-badge-session-text: var(--text-on-accent);
+  --chatlist-badge-status-bg: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  --chatlist-badge-status-text: var(--text-muted);
+  --chatlist-summon-bg: color-mix(in srgb, var(--warning) 18%, transparent);
+  --chatlist-summon-text: var(--warning);
+  --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 18%, transparent);
+  --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
   --chatlist-bookmark-icon: var(--accent);
   --chatlist-empty-text: var(--text-muted);
@@ -384,6 +396,16 @@ pre {
 
   .split-main {
     width: 100% !important;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
   }
 }
 

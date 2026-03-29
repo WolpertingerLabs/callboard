@@ -158,6 +158,16 @@ export async function markAsRead(id: string): Promise<Chat> {
   return res.json();
 }
 
+export async function dismissSummon(id: string): Promise<Chat> {
+  const res = await fetch(`${BASE}/chats/${id}/summon`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dismiss: true }),
+  });
+  await assertOk(res, "Failed to dismiss summon");
+  return res.json();
+}
+
 export interface NewChatInfo {
   folder: string;
   displayFolder?: string;

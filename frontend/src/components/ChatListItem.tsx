@@ -1,5 +1,6 @@
-import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch } from "lucide-react";
+import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell } from "lucide-react";
 import type { Chat } from "../api";
+import { dismissSummon } from "../api";
 
 interface Props {
   chat: Chat;
@@ -26,6 +27,9 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let agentAlias: string | undefined;
   let isTriggered = false;
   let lastReadAt: string | undefined;
+  let chatStatus: string | undefined;
+  let chatStatusEmoji: string | undefined;
+  let summon: { message: string; urgency: string; createdAt: string } | undefined;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     title = meta.title;
@@ -34,6 +38,9 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     agentAlias = meta.agentAlias;
     isTriggered = meta.triggered === true;
     lastReadAt = meta.lastReadAt;
+    chatStatus = meta.chatStatus || undefined;
+    chatStatusEmoji = meta.chatStatusEmoji || undefined;
+    summon = meta.summon || undefined;
   } catch {}
 
   const hasUnread = lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
@@ -94,6 +101,56 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               }}
             >
               <Zap size={10} style={{ color: "var(--chatlist-badge-triggered-text)" }} />
+            </span>
+          )}
+          {summon && (
+            <span
+              title={`Summon: ${summon.message}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                dismissSummon(chat.id).catch(() => {});
+              }}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: summon.urgency === "urgent" ? "var(--chatlist-summon-urgent-bg)" : "var(--chatlist-summon-bg)",
+                color: summon.urgency === "urgent" ? "var(--chatlist-summon-urgent-text)" : "var(--chatlist-summon-text)",
+                flexShrink: 0,
+                cursor: "pointer",
+                animation: summon.urgency === "urgent" ? "pulse 2s ease-in-out infinite" : undefined,
+              }}
+            >
+              <Bell size={10} />
+              {summon.message.length > 30 ? summon.message.slice(0, 30) + "..." : summon.message}
+            </span>
+          )}
+          {chatStatus && (
+            <span
+              title={chatStatus}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                fontWeight: 500,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: "var(--chatlist-badge-status-bg)",
+                color: "var(--chatlist-badge-status-text)",
+                flexShrink: 0,
+                maxWidth: 160,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {chatStatusEmoji && <span>{chatStatusEmoji}</span>}
+              {chatStatus}
             </span>
           )}
           {hasUnread && (

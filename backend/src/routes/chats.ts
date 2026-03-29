@@ -29,7 +29,7 @@ const chatListCache = new Map<string, CachedChatListResponse>();
 const CHAT_LIST_CACHE_TTL = 5_000; // 5 seconds — fresh
 const CHAT_LIST_CACHE_MAX_AGE = 300_000; // 5 minutes — serve stale
 
-function clearChatListCache() {
+export function clearChatListCache() {
   chatListCache.clear();
 }
 
@@ -345,6 +345,9 @@ chatsRouter.get("/folders", (req, res) => {
         isTriggered: !!metadata.triggered,
         triggeredBy: metadata.triggeredBy,
         chatCount: chats.length,
+        chatStatus: metadata.chatStatus || undefined,
+        chatStatusEmoji: metadata.chatStatusEmoji || undefined,
+        hasSummon: !!metadata.summon,
       });
     }
 
@@ -816,6 +819,45 @@ chatsRouter.patch("/:id/read", (req, res) => {
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
     res.status(500).json({ error: "Failed to mark chat as read", details: err.message });
+  }
+});
+
+// Dismiss a summon on a chat
+chatsRouter.patch("/:id/summon", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Dismiss a summon on a chat'
+  // #swagger.description = 'Clear the summon notification from chat metadata.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    // Parse existing metadata and clear summon
+    let meta: Record<string, any> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+
+    meta.summon = null;
+    const updatedMetadata = JSON.stringify(meta);
+
+    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+
+    clearChatListCache();
+
+    // Emit metadata update so dashboard refreshes
+    sessionRegistry.emit("change", {
+      event: "chat_metadata_updated",
+      chatId: chat.id,
+      data: { summon: null },
+    });
+
+    res.json(updatedChat);
+  } catch (err: any) {
+    log.error(`Error dismissing summon: ${err}`);
+    res.status(500).json({ error: "Failed to dismiss summon", details: err.message });
   }
 });
 

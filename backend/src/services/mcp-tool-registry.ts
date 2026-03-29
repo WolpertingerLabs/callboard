@@ -92,6 +92,45 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     serverLabel: "Callboard Tools",
     category: "platform",
   },
+  {
+    name: "set_chat_status",
+    qualifiedName: "mcp__callboard-tools__set_chat_status",
+    description: "Set a custom status label on the current chat, visible in the dashboard sidebar.",
+    parameters: [
+      { name: "status", type: "string", description: "Short status label (max 160 chars). Empty string clears.", required: true },
+      { name: "emoji", type: "string", description: "Single emoji prefix for visual distinction", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "summon_user",
+    qualifiedName: "mcp__callboard-tools__summon_user",
+    description: "Alert the user that their attention is needed in this chat.",
+    parameters: [
+      { name: "message", type: "string", description: "Why the user is needed (max 400 chars)", required: true },
+      {
+        name: "urgency",
+        type: "enum",
+        description: "Visual prominence level",
+        required: false,
+        enumValues: ["normal", "urgent"],
+      },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "set_chat_title",
+    qualifiedName: "mcp__callboard-tools__set_chat_title",
+    description: "Set or update the title of the current chat.",
+    parameters: [{ name: "title", type: "string", description: "New chat title (max 240 chars). Empty string resets.", required: true }],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
 ];
 
 // ─── Proxy Tools (injected when proxy is configured) ────────────────

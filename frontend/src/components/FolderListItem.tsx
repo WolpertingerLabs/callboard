@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { GitBranch, Plus, Zap, Clock } from "lucide-react";
+import { GitBranch, Plus, Zap, Clock, Bell } from "lucide-react";
 import type { FolderSummary } from "../api";
 
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
@@ -91,6 +91,50 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
               {folder.triggeredBy === "cron" ? <Clock size={10} /> : <Zap size={10} />}
             </span>
           )}
+          {folder.hasSummon && (
+            <span
+              title="Attention needed"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: "var(--chatlist-summon-bg)",
+                color: "var(--chatlist-summon-text)",
+                flexShrink: 0,
+                animation: "pulse 2s ease-in-out infinite",
+              }}
+            >
+              <Bell size={10} />
+            </span>
+          )}
+          {folder.chatStatus && (
+            <span
+              title={folder.chatStatus}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                fontWeight: 500,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: "var(--chatlist-badge-status-bg)",
+                color: "var(--chatlist-badge-status-text)",
+                flexShrink: 0,
+                maxWidth: 140,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {folder.chatStatusEmoji && <span>{folder.chatStatusEmoji}</span>}
+              {folder.chatStatus}
+            </span>
+          )}
           <div
             style={{
               fontSize: 15,
@@ -124,7 +168,9 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
 
         {/* Row 3: Timestamps + branch + chat count */}
         <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <span title={`Created: ${new Date(folder.mostRecentChatCreatedAt).toLocaleString()}`}>Created {formatRelativeTime(folder.mostRecentChatCreatedAt, now)}</span>
+          <span title={`Created: ${new Date(folder.mostRecentChatCreatedAt).toLocaleString()}`}>
+            Created {formatRelativeTime(folder.mostRecentChatCreatedAt, now)}
+          </span>
           <span style={{ opacity: 0.5 }}>&middot;</span>
           <span title={`Updated: ${new Date(folder.lastUpdatedAt).toLocaleString()}`}>Updated {formatRelativeTime(folder.lastUpdatedAt, now)}</span>
           {folder.isGitRepo && folder.gitBranch && (
