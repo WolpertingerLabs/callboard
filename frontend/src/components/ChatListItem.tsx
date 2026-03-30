@@ -129,30 +129,6 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               {summon.message.length > 30 ? summon.message.slice(0, 30) + "..." : summon.message}
             </span>
           )}
-          {chatStatus && (
-            <span
-              title={chatStatus}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 3,
-                fontSize: 10,
-                fontWeight: 500,
-                padding: "1px 6px",
-                borderRadius: 4,
-                background: "var(--chatlist-badge-status-bg)",
-                color: "var(--chatlist-badge-status-text)",
-                flexShrink: 0,
-                maxWidth: 160,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {chatStatusEmoji && <span>{chatStatusEmoji}</span>}
-              {chatStatus}
-            </span>
-          )}
           {hasUnread && (
             <span
               title="Unread messages"
@@ -207,6 +183,31 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
         >
           {displayPath}
         </div>
+        {chatStatus && (
+          <div
+            title={chatStatus}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 3,
+              fontSize: 10,
+              fontWeight: 500,
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: "var(--chatlist-badge-status-bg)",
+              color: "var(--chatlist-badge-status-text)",
+              marginTop: 3,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              width: "fit-content",
+              maxWidth: "100%",
+            }}
+          >
+            {chatStatusEmoji && <span>{chatStatusEmoji}</span>}
+            {chatStatus}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
           {time}
           {chat.git_branch && (

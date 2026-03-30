@@ -1,39 +1,16 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { X, Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText, FolderOpen, List } from "lucide-react";
-import {
-  listChats,
-  deleteChat,
-  toggleBookmark,
-  listAgents,
-  getAgentIdentityPrompt,
-  fetchInstanceName,
-  getDrafts,
-  deleteDraft,
-  type Chat,
-  type DefaultPermissions,
-  type AgentConfig,
-  type QueueItem,
-} from "../api";
+import { Plus, Settings, Bot, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText, FolderOpen, List } from "lucide-react";
+import { listChats, deleteChat, toggleBookmark, fetchInstanceName, getDrafts, deleteDraft, type Chat, type QueueItem } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import ChatListItem from "../components/ChatListItem";
 import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
-import PermissionSettings from "../components/PermissionSettings";
+import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
-import FolderSelector from "../components/FolderSelector";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { DEFAULT_CHAT_FILTERS, hasActiveFilters, type ChatFilters } from "../types/chatFilters";
-import {
-  getDefaultPermissions,
-  saveDefaultPermissions,
-  getRecentDirectories,
-  addRecentDirectory,
-  removeRecentDirectory,
-  initializeSuggestedDirectories,
-  getShowTriggeredChats,
-  saveShowTriggeredChats,
-} from "../utils/localStorage";
+import { initializeSuggestedDirectories, getShowTriggeredChats, saveShowTriggeredChats } from "../utils/localStorage";
 
 interface ChatListProps {
   activeChatId?: string;
@@ -43,37 +20,6 @@ interface ChatListProps {
   claudeLoggedIn?: boolean;
   onShowClaudeModal?: () => void;
   onViewModeChange?: () => void;
-}
-
-function getPermissionsSummary(permissions: DefaultPermissions): string {
-  const labels: Record<keyof DefaultPermissions, string> = {
-    fileRead: "File Read",
-    fileWrite: "File Write",
-    codeExecution: "Code Execution",
-    webAccess: "Web Access",
-  };
-
-  const values = Object.values(permissions);
-  const allSame = values.every((v) => v === values[0]);
-  if (allSame) {
-    return `${values[0].charAt(0).toUpperCase() + values[0].slice(1)} all`;
-  }
-
-  const grouped: Record<string, string[]> = {};
-  for (const [key, level] of Object.entries(permissions)) {
-    const label = labels[key as keyof DefaultPermissions];
-    if (!grouped[level]) grouped[level] = [];
-    grouped[level].push(label);
-  }
-
-  const parts: string[] = [];
-  for (const level of ["allow", "ask", "deny"]) {
-    if (grouped[level]?.length) {
-      parts.push(`${level.charAt(0).toUpperCase() + level.slice(1)} ${grouped[level].join(", ")}`);
-    }
-  }
-
-  return parts.join("; ");
 }
 
 export default function ChatList({
@@ -94,21 +40,12 @@ export default function ChatList({
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
-  const [folder, setFolder] = useState("");
   const [showNew, setShowNew] = useState(false);
-  const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
-  const [recentDirs, setRecentDirs] = useState(() => getRecentDirectories().map((r) => r.path));
-  const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; path: string }>({ isOpen: false, path: "" });
   const [deleteConfirmModal, setDeleteConfirmModal] = useState<{ isOpen: boolean; chatId: string; chatName: string }>({
     isOpen: false,
     chatId: "",
     chatName: "",
   });
-  const [chatMode, setChatMode] = useState<"claude-code" | "agent">("claude-code");
-  const [permissionsOpen, setPermissionsOpen] = useState(false);
-  const [pathOpen, setPathOpen] = useState(true);
-  const [agents, setAgents] = useState<AgentConfig[]>([]);
-  const [agentsLoading, setAgentsLoading] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [instanceName, setInstanceName] = useState("");
   const navigate = useNavigate();
@@ -193,9 +130,6 @@ export default function ChatList({
         const chatDirectories = response.chats.map((chat) => chat.displayFolder || chat.folder);
         initializeSuggestedDirectories(chatDirectories);
       }
-
-      // Update the UI to reflect any new suggested directories
-      updateRecentDirs();
     },
     [bookmarkFilter, anyFilterActive, showTriggered],
   );
@@ -259,71 +193,6 @@ export default function ChatList({
     const interval = setInterval(() => load(), 15_000);
     return () => clearInterval(interval);
   }, [activeSessions.size, load]);
-
-  const updateRecentDirs = () => {
-    setRecentDirs(getRecentDirectories().map((r) => r.path));
-  };
-
-  const handleRemoveRecentDir = (path: string) => {
-    setConfirmModal({ isOpen: true, path });
-  };
-
-  const confirmRemoveRecentDir = () => {
-    removeRecentDirectory(confirmModal.path);
-    updateRecentDirs();
-    setConfirmModal({ isOpen: false, path: "" });
-  };
-
-  const handleCreate = (dir?: string) => {
-    const target = dir || folder.trim();
-    if (!target) return;
-
-    // Save permissions and add to recent directories
-    saveDefaultPermissions(defaultPermissions);
-    addRecentDirectory(target);
-    updateRecentDirs();
-
-    // Navigate to new chat page with folder and permissions
-    setFolder("");
-    setShowNew(false);
-    navigate(`/chat/new?folder=${encodeURIComponent(target)}`, {
-      state: { defaultPermissions },
-    });
-  };
-
-  const handleAgentCreate = async (agent: AgentConfig) => {
-    if (!agent?.workspacePath) return;
-
-    const agentPermissions: DefaultPermissions = {
-      fileRead: "allow",
-      fileWrite: "allow",
-      codeExecution: "allow",
-      webAccess: "allow",
-    };
-
-    // Fetch compiled identity prompt for the agent
-    let systemPrompt: string | undefined;
-    try {
-      systemPrompt = await getAgentIdentityPrompt(agent.alias);
-    } catch {
-      // Continue without identity prompt if fetch fails
-    }
-
-    setShowNew(false);
-    navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
-      state: { defaultPermissions: agentPermissions, systemPrompt, agentAlias: agent.alias },
-    });
-  };
-
-  // Lazy fetch agents when agent mode is first selected
-  useEffect(() => {
-    if (chatMode !== "agent" || agents.length > 0) return;
-    setAgentsLoading(true);
-    listAgents()
-      .then(setAgents)
-      .catch(() => {})
-      .finally(() => setAgentsLoading(false));
-  }, [chatMode, agents.length]);
 
   const handleDelete = (chat: Chat) => {
     let chatPreview: string | undefined;
@@ -460,7 +329,6 @@ export default function ChatList({
 
   // Determine the empty state message
   const isFiltered = bookmarkFilter || hasActiveFilters(filters) || matchingChatIds !== null;
-  const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
   if (sidebarCollapsed) {
@@ -496,23 +364,23 @@ export default function ChatList({
           style={{
             background: "var(--accent)",
             color: "var(--text-on-accent)",
-            padding: "10px",
-            borderRadius: 8,
+            padding: "6px",
+            borderRadius: 6,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
           }}
           title="New Chat"
         >
-          <Plus size={18} />
+          <Plus size={16} />
         </button>
         <button
           onClick={() => navigate("/agents")}
           style={{
             background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
             color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-            padding: "10px",
-            borderRadius: 8,
+            padding: "6px",
+            borderRadius: 6,
             border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
             display: "flex",
             alignItems: "center",
@@ -520,15 +388,15 @@ export default function ChatList({
           }}
           title="Agents"
         >
-          <Bot size={18} />
+          <Bot size={16} />
         </button>
         <button
           onClick={() => navigate("/settings")}
           style={{
             background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
             color: isSettingsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-            padding: "10px",
-            borderRadius: 8,
+            padding: "6px",
+            borderRadius: 6,
             border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
             display: "flex",
             alignItems: "center",
@@ -536,7 +404,7 @@ export default function ChatList({
           }}
           title="Settings"
         >
-          <Settings size={18} />
+          <Settings size={16} />
         </button>
         {claudeLoggedIn === false && onShowClaudeModal && (
           <button
@@ -544,8 +412,8 @@ export default function ChatList({
             style={{
               background: "var(--warning-bg)",
               color: "var(--warning)",
-              padding: "10px",
-              borderRadius: 8,
+              padding: "6px",
+              borderRadius: 6,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -553,7 +421,7 @@ export default function ChatList({
             }}
             title="Claude Code login required"
           >
-            <AlertTriangle size={18} />
+            <AlertTriangle size={16} />
           </button>
         )}
         {onToggleSidebar && (
@@ -562,8 +430,8 @@ export default function ChatList({
             style={{
               background: "transparent",
               color: "var(--chatlist-icon)",
-              padding: "10px",
-              borderRadius: 8,
+              padding: "6px",
+              borderRadius: 6,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -572,7 +440,7 @@ export default function ChatList({
             }}
             title="Expand sidebar"
           >
-            <PanelLeftOpen size={18} />
+            <PanelLeftOpen size={16} />
           </button>
         )}
       </div>
@@ -595,21 +463,21 @@ export default function ChatList({
           <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 1, color: "var(--chatlist-title-text)" }}>Callboard</h1>
           {instanceName && <div style={{ fontSize: 10, color: "var(--chatlist-subtitle-text)", fontWeight: 400, letterSpacing: 0.3 }}>{instanceName}</div>}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <button
             onClick={() => setShowNew(!showNew)}
             style={{
               background: "var(--accent)",
               color: "var(--text-on-accent)",
-              padding: "10px",
-              borderRadius: 8,
+              padding: "6px",
+              borderRadius: 6,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
             }}
             title="New Chat"
           >
-            <Plus size={18} />
+            <Plus size={16} />
           </button>
           {onViewModeChange && (
             <div style={{ display: "flex" }}>
@@ -618,9 +486,9 @@ export default function ChatList({
                 style={{
                   background: "var(--bg-secondary)",
                   color: "var(--chatlist-icon-nav)",
-                  padding: "10px",
-                  borderTopLeftRadius: 8,
-                  borderBottomLeftRadius: 8,
+                  padding: "6px",
+                  borderTopLeftRadius: 6,
+                  borderBottomLeftRadius: 6,
                   borderTopRightRadius: 0,
                   borderBottomRightRadius: 0,
                   border: "1px solid var(--chatlist-item-border)",
@@ -631,17 +499,17 @@ export default function ChatList({
                 }}
                 title="Switch to folders view"
               >
-                <FolderOpen size={18} />
+                <FolderOpen size={16} />
               </button>
               <button
                 style={{
                   background: "var(--accent)",
                   color: "var(--chatlist-icon-nav-active)",
-                  padding: "10px",
+                  padding: "6px",
                   borderTopLeftRadius: 0,
                   borderBottomLeftRadius: 0,
-                  borderTopRightRadius: 8,
-                  borderBottomRightRadius: 8,
+                  borderTopRightRadius: 6,
+                  borderBottomRightRadius: 6,
                   border: "none",
                   display: "flex",
                   alignItems: "center",
@@ -649,7 +517,7 @@ export default function ChatList({
                 }}
                 title="Chats view (active)"
               >
-                <List size={18} />
+                <List size={16} />
               </button>
             </div>
           )}
@@ -659,9 +527,9 @@ export default function ChatList({
               style={{
                 background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
                 color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                padding: "10px",
-                borderTopLeftRadius: 8,
-                borderBottomLeftRadius: 8,
+                padding: "6px",
+                borderTopLeftRadius: 6,
+                borderBottomLeftRadius: 6,
                 borderTopRightRadius: 0,
                 borderBottomRightRadius: 0,
                 border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
@@ -672,18 +540,18 @@ export default function ChatList({
               }}
               title="Agents"
             >
-              <Bot size={18} />
+              <Bot size={16} />
             </button>
             <button
               onClick={() => navigate("/settings")}
               style={{
                 background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
                 color: isSettingsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                padding: "10px",
+                padding: "6px",
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
-                borderTopRightRadius: 8,
-                borderBottomRightRadius: 8,
+                borderTopRightRadius: 6,
+                borderBottomRightRadius: 6,
                 border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
                 borderLeft: "none",
                 display: "flex",
@@ -692,7 +560,7 @@ export default function ChatList({
               }}
               title="Settings"
             >
-              <Settings size={18} />
+              <Settings size={16} />
             </button>
           </div>
           {claudeLoggedIn === false && onShowClaudeModal && (
@@ -709,7 +577,7 @@ export default function ChatList({
               }}
               title="Claude Code login required"
             >
-              <AlertTriangle size={18} />
+              <AlertTriangle size={16} />
             </button>
           )}
           {onToggleSidebar && (
@@ -726,7 +594,7 @@ export default function ChatList({
               }}
               title="Collapse sidebar"
             >
-              <PanelLeftClose size={18} />
+              <PanelLeftClose size={16} />
             </button>
           )}
         </div>
@@ -745,322 +613,7 @@ export default function ChatList({
         isSearching={isSearching}
       />
 
-      {showNew && (
-        <div
-          style={{
-            padding: "12px 20px",
-            borderBottom: "1px solid var(--chatlist-header-border)",
-          }}
-        >
-          {/* Mode Toggle */}
-          <div style={{ display: "flex", marginBottom: 12 }}>
-            <button
-              onClick={() => {
-                setChatMode("claude-code");
-              }}
-              style={{
-                flex: 1,
-                padding: "10px 16px",
-                fontSize: 14,
-                fontWeight: 500,
-                borderRadius: "8px 0 0 8px",
-                border: chatMode === "claude-code" ? "1px solid var(--accent)" : "1px solid var(--border)",
-                background: chatMode === "claude-code" ? "var(--accent)" : "var(--bg-secondary)",
-                color: chatMode === "claude-code" ? "var(--text-on-accent)" : "var(--text)",
-                cursor: "pointer",
-                transition: "all 0.15s",
-              }}
-            >
-              Callboard
-            </button>
-            <button
-              onClick={() => setChatMode("agent")}
-              style={{
-                flex: 1,
-                padding: "10px 16px",
-                fontSize: 14,
-                fontWeight: 500,
-                borderRadius: "0 8px 8px 0",
-                border: chatMode === "agent" ? "1px solid var(--accent)" : "1px solid var(--border)",
-                borderLeft: "none",
-                background: chatMode === "agent" ? "var(--accent)" : "var(--bg-secondary)",
-                color: chatMode === "agent" ? "var(--text-on-accent)" : "var(--text)",
-                cursor: "pointer",
-                transition: "all 0.15s",
-              }}
-            >
-              Agent
-            </button>
-          </div>
-
-          {chatMode === "claude-code" ? (
-            <>
-              {/* Permissions Section — collapsible, default closed */}
-              <div style={{ marginBottom: 8 }}>
-                <button
-                  onClick={() => setPermissionsOpen(!permissionsOpen)}
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "8px 0",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: "var(--text-muted)",
-                    textAlign: "left",
-                  }}
-                >
-                  {permissionsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <span>Permissions: {getPermissionsSummary(defaultPermissions)}</span>
-                </button>
-                {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />}
-              </div>
-
-              {/* Directory Section — collapsible, default open */}
-              <div>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "8px 0",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  <button
-                    onClick={() => setPathOpen(!pathOpen)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "inherit",
-                      fontSize: "inherit",
-                      fontWeight: "inherit",
-                      padding: 0,
-                    }}
-                  >
-                    {pathOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    <span>Directory{displayPath ? ":" : ""}</span>
-                  </button>
-                  {displayPath && !pathOpen ? (
-                    <span
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleCreate(displayPath);
-                      }}
-                      style={{
-                        cursor: "pointer",
-                        color: "var(--accent)",
-                        fontWeight: 500,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        direction: "rtl",
-                        flex: 1,
-                      }}
-                      title={`Open chat in ${displayPath}`}
-                    >
-                      {displayPath}
-                    </span>
-                  ) : displayPath ? (
-                    <span
-                      style={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        direction: "rtl",
-                        flex: 1,
-                      }}
-                    >
-                      {displayPath}
-                    </span>
-                  ) : null}
-                </div>
-
-                {pathOpen && (
-                  <>
-                    {recentDirs.length > 0 && (
-                      <div style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
-                        {recentDirs.map((dir) => (
-                          <div
-                            key={dir}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 4,
-                              marginBottom: 4,
-                            }}
-                          >
-                            <button
-                              onClick={() => handleCreate(dir)}
-                              title={dir}
-                              style={{
-                                flex: 1,
-                                textAlign: "left",
-                                background: "var(--surface)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 8,
-                                padding: "10px 12px",
-                                fontSize: 14,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                direction: "rtl",
-                              }}
-                            >
-                              {dir}
-                            </button>
-                            <button
-                              onClick={() => handleRemoveRecentDir(dir)}
-                              style={{
-                                background: "var(--surface)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "8px",
-                                fontSize: 12,
-                                color: "var(--text-muted)",
-                                cursor: "pointer",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                minWidth: 28,
-                                height: 28,
-                              }}
-                              title={`Remove ${dir} from recent directories`}
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        ))}
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: "var(--text-muted)",
-                            margin: "10px 0 6px",
-                          }}
-                        >
-                          Or enter a new path
-                        </div>
-                      </div>
-                    )}
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <div style={{ flex: 1 }}>
-                        <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" autoFocus />
-                      </div>
-                      <button
-                        onClick={() => handleCreate()}
-                        disabled={!folder.trim()}
-                        style={{
-                          background: folder.trim() ? "var(--accent)" : "var(--border)",
-                          color: "var(--text-on-accent)",
-                          padding: "10px 16px",
-                          borderRadius: 8,
-                          fontSize: 14,
-                          alignSelf: "flex-start",
-                        }}
-                      >
-                        Create
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              {agentsLoading ? (
-                <div style={{ padding: "20px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>Loading agents...</div>
-              ) : agents.length === 0 ? (
-                <div style={{ padding: "20px 0", textAlign: "center" }}>
-                  <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 12 }}>No agents yet.</p>
-                  <button
-                    onClick={() => navigate("/agents/new")}
-                    style={{
-                      background: "var(--accent)",
-                      color: "var(--text-on-accent)",
-                      padding: "8px 16px",
-                      borderRadius: 8,
-                      fontSize: 14,
-                      fontWeight: 500,
-                    }}
-                  >
-                    Create Agent
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 2 }}>Select an agent</div>
-                  {agents.map((agent) => (
-                    <button
-                      key={agent.alias}
-                      onClick={() => handleAgentCreate(agent)}
-                      disabled={!agent.workspacePath}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        textAlign: "left",
-                        background: "var(--surface)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 8,
-                        padding: "10px 12px",
-                        cursor: agent.workspacePath ? "pointer" : "not-allowed",
-                        transition: "border-color 0.15s",
-                        opacity: agent.workspacePath ? 1 : 0.5,
-                      }}
-                      onMouseEnter={(e) => {
-                        if (agent.workspacePath) e.currentTarget.style.borderColor = "var(--accent)";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (agent.workspacePath) e.currentTarget.style.borderColor = "var(--border)";
-                      }}
-                    >
-                      <div
-                        style={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: "50%",
-                          background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          flexShrink: 0,
-                        }}
-                      >
-                        <Bot size={16} style={{ color: "var(--accent)" }} />
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 500 }}>{agent.name}</div>
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: "var(--text-muted)",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {agent.description}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
+      {showNew && <NewChatPanel onClose={() => setShowNew(false)} />}
 
       <div style={{ flex: 1, overflow: "auto" }}>
         {drafts.length > 0 && (
@@ -1159,16 +712,6 @@ export default function ChatList({
           </div>
         )}
       </div>
-
-      <ConfirmModal
-        isOpen={confirmModal.isOpen}
-        onClose={() => setConfirmModal({ isOpen: false, path: "" })}
-        onConfirm={confirmRemoveRecentDir}
-        title="Remove Recent Directory"
-        message={`Are you sure you want to remove "${confirmModal.path}" from your recent directories? This action cannot be undone.`}
-        confirmText="Remove"
-        confirmStyle="danger"
-      />
 
       <ConfirmModal
         isOpen={deleteConfirmModal.isOpen}

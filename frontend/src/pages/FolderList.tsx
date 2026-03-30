@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Bot, PanelLeftClose, PanelLeftOpen, List, FolderOpen, AlertTriangle } from "lucide-react";
+import { Settings, Bot, PanelLeftClose, PanelLeftOpen, List, FolderOpen, AlertTriangle, Plus } from "lucide-react";
 import { listFolders, type FolderSummary } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import FolderListItem from "../components/FolderListItem";
+import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import { getFolderMaxAgeDays, saveFolderMaxAgeDays, getDefaultPermissions } from "../utils/localStorage";
 
@@ -41,6 +42,7 @@ export default function FolderList({
   const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [maxAgeDays, setMaxAgeDays] = useState(() => getFolderMaxAgeDays());
   const [isLoading, setIsLoading] = useState(true);
+  const [showNew, setShowNew] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; folder: string }>({ isOpen: false, folder: "" });
   const now = useMemo(() => Date.now(), [folders]);
 
@@ -130,7 +132,7 @@ export default function FolderList({
             }}
             title="Expand sidebar"
           >
-            <PanelLeftOpen size={18} />
+            <PanelLeftOpen size={16} />
           </button>
         )}
       </div>
@@ -153,16 +155,31 @@ export default function FolderList({
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 1, color: "var(--chatlist-title-text)" }}>Callboard</h1>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <button
+            onClick={() => setShowNew(!showNew)}
+            style={{
+              background: "var(--accent)",
+              color: "var(--text-on-accent)",
+              padding: "6px",
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="New Chat"
+          >
+            <Plus size={16} />
+          </button>
           {/* View toggle: Folders / Chats */}
           <div style={{ display: "flex" }}>
             <button
               style={{
                 background: "var(--accent)",
                 color: "var(--chatlist-icon-nav-active)",
-                padding: "10px",
-                borderTopLeftRadius: 8,
-                borderBottomLeftRadius: 8,
+                padding: "6px",
+                borderTopLeftRadius: 6,
+                borderBottomLeftRadius: 6,
                 borderTopRightRadius: 0,
                 borderBottomRightRadius: 0,
                 border: "none",
@@ -172,18 +189,18 @@ export default function FolderList({
               }}
               title="Folders view (active)"
             >
-              <FolderOpen size={18} />
+              <FolderOpen size={16} />
             </button>
             <button
               onClick={onViewModeChange}
               style={{
                 background: "var(--bg-secondary)",
                 color: "var(--chatlist-icon-nav)",
-                padding: "10px",
+                padding: "6px",
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
-                borderTopRightRadius: 8,
-                borderBottomRightRadius: 8,
+                borderTopRightRadius: 6,
+                borderBottomRightRadius: 6,
                 border: "1px solid var(--chatlist-item-border)",
                 borderLeft: "none",
                 display: "flex",
@@ -192,7 +209,7 @@ export default function FolderList({
               }}
               title="Switch to chats view"
             >
-              <List size={18} />
+              <List size={16} />
             </button>
           </div>
           <div style={{ display: "flex" }}>
@@ -201,9 +218,9 @@ export default function FolderList({
               style={{
                 background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
                 color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                padding: "10px",
-                borderTopLeftRadius: 8,
-                borderBottomLeftRadius: 8,
+                padding: "6px",
+                borderTopLeftRadius: 6,
+                borderBottomLeftRadius: 6,
                 borderTopRightRadius: 0,
                 borderBottomRightRadius: 0,
                 border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
@@ -214,18 +231,18 @@ export default function FolderList({
               }}
               title="Agents"
             >
-              <Bot size={18} />
+              <Bot size={16} />
             </button>
             <button
               onClick={() => navigate("/settings")}
               style={{
                 background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
                 color: isSettingsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                padding: "10px",
+                padding: "6px",
                 borderTopLeftRadius: 0,
                 borderBottomLeftRadius: 0,
-                borderTopRightRadius: 8,
-                borderBottomRightRadius: 8,
+                borderTopRightRadius: 6,
+                borderBottomRightRadius: 6,
                 border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
                 borderLeft: "none",
                 display: "flex",
@@ -234,7 +251,7 @@ export default function FolderList({
               }}
               title="Settings"
             >
-              <Settings size={18} />
+              <Settings size={16} />
             </button>
           </div>
           {claudeLoggedIn === false && onShowClaudeModal && (
@@ -251,7 +268,7 @@ export default function FolderList({
               }}
               title="Claude Code login required"
             >
-              <AlertTriangle size={18} />
+              <AlertTriangle size={16} />
             </button>
           )}
           {onToggleSidebar && (
@@ -260,14 +277,14 @@ export default function FolderList({
               style={{
                 background: "none",
                 color: "var(--chatlist-icon)",
-                padding: 8,
+                padding: 6,
                 borderRadius: 6,
                 display: "flex",
                 alignItems: "center",
               }}
               title="Collapse sidebar"
             >
-              <PanelLeftClose size={18} />
+              <PanelLeftClose size={16} />
             </button>
           )}
         </div>
@@ -305,6 +322,8 @@ export default function FolderList({
           ))}
         </select>
       </div>
+
+      {showNew && <NewChatPanel onClose={() => setShowNew(false)} />}
 
       {/* Folder list */}
       <div style={{ flex: 1, overflow: "auto" }}>

@@ -111,30 +111,6 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
               <Bell size={10} />
             </span>
           )}
-          {folder.chatStatus && (
-            <span
-              title={folder.chatStatus}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 3,
-                fontSize: 10,
-                fontWeight: 500,
-                padding: "1px 6px",
-                borderRadius: 4,
-                background: "var(--chatlist-badge-status-bg)",
-                color: "var(--chatlist-badge-status-text)",
-                flexShrink: 0,
-                maxWidth: 140,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {folder.chatStatusEmoji && <span>{folder.chatStatusEmoji}</span>}
-              {folder.chatStatus}
-            </span>
-          )}
           <div
             style={{
               fontSize: 15,
@@ -180,6 +156,31 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
         >
           {folder.folder}
         </div>
+        {folder.chatStatus && (
+          <div
+            title={folder.chatStatus}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 3,
+              fontSize: 10,
+              fontWeight: 500,
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: "var(--chatlist-badge-status-bg)",
+              color: "var(--chatlist-badge-status-text)",
+              marginTop: 3,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              width: "fit-content",
+              maxWidth: "100%",
+            }}
+          >
+            {folder.chatStatusEmoji && <span>{folder.chatStatusEmoji}</span>}
+            {folder.chatStatus}
+          </div>
+        )}
 
         {/* Row 3: Timestamps + branch + chat count */}
         <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
