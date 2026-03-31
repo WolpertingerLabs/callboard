@@ -1397,7 +1397,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   fontWeight: 500,
                 }}
               >
-                {globalSessionActive.type === "web" ? "🌐 Active" : "💻 CLI"}
+                {globalSessionActive.type === "web" ? (isMobile ? "🌐" : "🌐 Active") : isMobile ? "💻" : "💻 CLI"}
               </div>
             ) : null}
             {/* Worktree tag */}
@@ -1418,7 +1418,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 title="This session is running in a git worktree"
               >
                 <GitFork size={10} />
-                worktree
+                {!isMobile && "worktree"}
               </div>
             )}
           </div>
