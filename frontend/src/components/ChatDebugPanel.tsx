@@ -25,14 +25,7 @@ function fmtTok(n?: number): string {
   return n.toLocaleString();
 }
 
-type SortKey =
-  | "index"
-  | "delta"
-  | "msPerTok"
-  | "inputTokens"
-  | "outputTokens"
-  | "cacheRead"
-  | "cacheWrite";
+type SortKey = "index" | "delta" | "msPerTok" | "inputTokens" | "outputTokens" | "cacheRead" | "cacheWrite";
 
 interface DebugRow {
   index: number;
@@ -50,15 +43,73 @@ export default function ChatDebugPanel({ messages }: Props) {
   const [filterModel, setFilterModel] = useState<string | null>(null);
   const [filterStop, setFilterStop] = useState<string | null>(null);
 
-  // Build rows: only assistant messages that have usage data (completed API responses)
+  // Build rows: one row per unique API request, grouped by requestId.
+  // A single API response may produce multiple JSONL entries (one per content
+  // block: thinking, text, tool_use). These share the same requestId and have
+  // duplicated input / cache token counts. We pick the canonical entry per
+  // request (the one with stop_reason set, or the last entry) and recompute
+  // inter-response timing deltas.
   const allRows: DebugRow[] = useMemo(() => {
-    const rows: DebugRow[] = [];
-    let idx = 0;
+    // Step 1: Collect assistant messages that carry usage data
+    const assistantEntries: ParsedMessage[] = [];
     for (const m of messages) {
       if (m.role === "assistant" && m.usage) {
-        rows.push({ index: idx++, message: m });
+        assistantEntries.push(m);
       }
     }
+
+    // Step 2: Group by requestId, maintaining first-seen order.
+    // Messages without a requestId are treated as their own group.
+    const requestOrder: string[] = [];
+    const byRequest = new Map<string, ParsedMessage[]>();
+    let ungroupedIdx = 0;
+
+    for (const m of assistantEntries) {
+      const key = m.requestId || `__ungrouped_${ungroupedIdx++}`;
+      if (!byRequest.has(key)) {
+        requestOrder.push(key);
+        byRequest.set(key, []);
+      }
+      byRequest.get(key)!.push(m);
+    }
+
+    // Step 3: Pick canonical entry per group.
+    // Prefer the entry with stop_reason (the final streamed entry which has
+    // the real output_tokens total). Fall back to the last entry if the
+    // response was interrupted and no entry carries a stop_reason.
+    const canonicalEntries: ParsedMessage[] = [];
+    for (const key of requestOrder) {
+      const entries = byRequest.get(key)!;
+      const final = entries.find((e) => e.stopReason != null);
+      canonicalEntries.push(final || entries[entries.length - 1]);
+    }
+
+    // Step 4: Recompute inter-response timing deltas between grouped rows
+    const rows: DebugRow[] = [];
+    let prevTs: number | null = null;
+
+    for (let i = 0; i < canonicalEntries.length; i++) {
+      const m = { ...canonicalEntries[i] }; // shallow copy to override delta
+      const ts = m.timestamp ? new Date(m.timestamp).getTime() : NaN;
+
+      if (!isNaN(ts)) {
+        if (prevTs !== null) {
+          m.deltaMs = ts - prevTs;
+          if (m.usage?.output_tokens && m.usage.output_tokens > 0 && m.deltaMs > 0) {
+            m.msPerOutputToken = Math.round((m.deltaMs / m.usage.output_tokens) * 100) / 100;
+          } else {
+            m.msPerOutputToken = undefined;
+          }
+        } else {
+          m.deltaMs = undefined;
+          m.msPerOutputToken = undefined;
+        }
+        prevTs = ts;
+      }
+
+      rows.push({ index: i, message: m });
+    }
+
     return rows;
   }, [messages]);
 
@@ -133,7 +184,7 @@ export default function ChatDebugPanel({ messages }: Props) {
           })()
         : null;
     const avgMsPerTok = msPerToks.length > 0 ? msPerToks.reduce((a, b) => a + b, 0) / msPerToks.length : null;
-    const cacheHitRate = totalCacheRead + totalIn > 0 ? (totalCacheRead / (totalCacheRead + totalIn)) * 100 : null;
+    const cacheHitRate = totalCacheRead + totalCacheWrite + totalIn > 0 ? (totalCacheRead / (totalCacheRead + totalCacheWrite + totalIn)) * 100 : null;
 
     return { totalIn, totalOut, totalCacheRead, totalCacheWrite, avgDelta, p95Delta, avgMsPerTok, cacheHitRate, count: rows.length };
   }, [filteredRows]);
@@ -185,11 +236,7 @@ export default function ChatDebugPanel({ messages }: Props) {
   const tdLeftStyle: React.CSSProperties = { ...tdStyle, textAlign: "left" };
 
   if (allRows.length === 0) {
-    return (
-      <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>
-        No API response data available for this chat.
-      </div>
-    );
+    return <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>No API response data available for this chat.</div>;
   }
 
   return (
@@ -221,9 +268,7 @@ export default function ChatDebugPanel({ messages }: Props) {
           </div>
           <div>
             Cache read: <span style={{ fontWeight: 600, color: "var(--text)" }}>{stats.totalCacheRead.toLocaleString()}</span>
-            {stats.cacheHitRate != null && (
-              <span> ({stats.cacheHitRate.toFixed(1)}%)</span>
-            )}
+            {stats.cacheHitRate != null && <span> ({stats.cacheHitRate.toFixed(1)}%)</span>}
           </div>
           <div>
             Cache write: <span style={{ fontWeight: 600, color: "var(--text)" }}>{stats.totalCacheWrite.toLocaleString()}</span>
@@ -356,9 +401,7 @@ export default function ChatDebugPanel({ messages }: Props) {
                 }}
               >
                 <td style={tdLeftStyle}>{index + 1}</td>
-                <td style={{ ...tdLeftStyle, fontSize: 10, color: "var(--text-muted)" }}>
-                  {m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : "-"}
-                </td>
+                <td style={{ ...tdLeftStyle, fontSize: 10, color: "var(--text-muted)" }}>{m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : "-"}</td>
                 <td style={tdLeftStyle}>{m.model ?? "-"}</td>
                 <td style={tdLeftStyle}>{m.speed ?? "-"}</td>
                 <td style={tdLeftStyle}>
@@ -392,9 +435,7 @@ export default function ChatDebugPanel({ messages }: Props) {
                       onClick={() => copyRequestId(m.requestId!)}
                       title={m.requestId}
                     >
-                      <span style={{ maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {m.requestId.slice(0, 12)}...
-                      </span>
+                      <span style={{ maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>{m.requestId.slice(0, 12)}...</span>
                       {copiedReqId === m.requestId ? <Check size={10} /> : <Copy size={10} />}
                     </span>
                   ) : (
