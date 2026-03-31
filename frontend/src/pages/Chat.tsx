@@ -17,6 +17,7 @@ import {
   ArrowDownToLine,
   MoreHorizontal,
   Shield,
+  Activity,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -52,6 +53,7 @@ import SlashCommandsModal from "../components/SlashCommandsModal";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
+import ChatDebugPanel from "../components/ChatDebugPanel";
 import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions } from "../utils/localStorage";
 import { getActivePlugins } from "../utils/plugins";
 
@@ -156,7 +158,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     message: string;
   }>({ isOpen: false, prompt: "", message: "" });
   const acknowledgeBranchDriftRef = useRef(false);
-  const [viewMode, setViewMode] = useState<"chat" | "diff">("chat");
+  const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug">("chat");
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [chatPermissions, setChatPermissions] = useState<DefaultPermissions | null>(null);
@@ -1441,10 +1443,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {/* Chat / Diff view toggle - only for git repos */}
             {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
               <button
-                onClick={() => setViewMode(viewMode === "chat" ? "diff" : "chat")}
+                onClick={() => setViewMode(viewMode === "diff" ? "chat" : "diff")}
                 style={{
-                  background: "var(--bg-secondary, var(--surface))",
-                  color: "var(--text)",
+                  background: viewMode === "diff" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
+                  color: viewMode === "diff" ? "var(--text-on-accent, #fff)" : "var(--text)",
                   padding: "8px",
                   borderRadius: 6,
                   border: "1px solid var(--border)",
@@ -1454,9 +1456,31 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   justifyContent: "center",
                   transition: "all 0.15s ease",
                 }}
-                title={viewMode === "chat" ? "Show git diff" : "Back to chat"}
+                title={viewMode === "diff" ? "Back to chat" : "Show git diff"}
               >
-                {viewMode === "chat" ? <GitBranch size={16} /> : <MessageSquare size={16} />}
+                {viewMode === "diff" ? <MessageSquare size={16} /> : <GitBranch size={16} />}
+              </button>
+            )}
+
+            {/* Debug metrics panel toggle */}
+            {id && (
+              <button
+                onClick={() => setViewMode(viewMode === "debug" ? "chat" : "debug")}
+                style={{
+                  background: viewMode === "debug" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
+                  color: viewMode === "debug" ? "var(--text-on-accent, #fff)" : "var(--text)",
+                  padding: "8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                }}
+                title={viewMode === "debug" ? "Back to chat" : "Show debug metrics"}
+              >
+                <Activity size={16} />
               </button>
             )}
 
@@ -1707,10 +1731,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           {/* Chat / Diff view toggle - only for git repos */}
           {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
             <button
-              onClick={() => setViewMode(viewMode === "chat" ? "diff" : "chat")}
+              onClick={() => setViewMode(viewMode === "diff" ? "chat" : "diff")}
               style={{
-                background: "var(--bg-secondary, var(--surface))",
-                color: "var(--text)",
+                background: viewMode === "diff" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
+                color: viewMode === "diff" ? "var(--text-on-accent, #fff)" : "var(--text)",
                 padding: "8px",
                 borderRadius: 6,
                 border: "1px solid var(--border)",
@@ -1720,9 +1744,31 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 justifyContent: "center",
                 flexShrink: 0,
               }}
-              title={viewMode === "chat" ? "Show git diff" : "Back to chat"}
+              title={viewMode === "diff" ? "Back to chat" : "Show git diff"}
             >
-              {viewMode === "chat" ? <GitBranch size={16} /> : <MessageSquare size={16} />}
+              {viewMode === "diff" ? <MessageSquare size={16} /> : <GitBranch size={16} />}
+            </button>
+          )}
+
+          {/* Debug metrics panel toggle */}
+          {id && (
+            <button
+              onClick={() => setViewMode(viewMode === "debug" ? "chat" : "debug")}
+              style={{
+                background: viewMode === "debug" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
+                color: viewMode === "debug" ? "var(--text-on-accent, #fff)" : "var(--text)",
+                padding: "8px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+              title={viewMode === "debug" ? "Back to chat" : "Show debug metrics"}
+            >
+              <Activity size={16} />
             </button>
           )}
 
@@ -1916,6 +1962,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         {viewMode === "diff" ? (
           <GitDiffView folder={!id ? folder : chat?.folder || folder} />
+        ) : viewMode === "debug" ? (
+          <ChatDebugPanel messages={messages} />
         ) : (
           <div ref={chatContainerRef} style={{ height: "100%", overflow: "auto", padding: "12px 16px" }}>
             {!id ? (

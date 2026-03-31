@@ -24,4 +24,23 @@ export interface ParsedMessage {
   serviceTier?: string;
   /** Image IDs attached to this user message (for rendering sent images) */
   imageIds?: string[];
+
+  // ── Debug / metrics fields ──
+
+  /** Why the model stopped: "end_turn", "tool_use", "max_tokens", or null for streaming partials */
+  stopReason?: string | null;
+  /** Speed mode: "standard" or "fast" */
+  speed?: string;
+  /** Inference geography hint from the API */
+  inferenceGeo?: string;
+  /** API request ID from the JSONL entry (useful for support escalation) */
+  requestId?: string;
+  /** Server-side tool usage counts */
+  serverToolUse?: { webSearchRequests?: number; webFetchRequests?: number };
+  /** Ephemeral cache tier breakdown */
+  cacheCreation?: { ephemeral5m?: number; ephemeral1h?: number };
+  /** Milliseconds since the previous message in the conversation */
+  deltaMs?: number;
+  /** Milliseconds per output token (deltaMs / output_tokens), when output_tokens > 0 */
+  msPerOutputToken?: number;
 }

@@ -360,6 +360,23 @@ interface Props {
   teamColorMap?: Map<string, number>;
 }
 
+/** Format a millisecond delta as a human-readable duration */
+function formatDelta(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const min = Math.floor(sec / 60);
+  const remSec = (sec % 60).toFixed(0);
+  return `${min}m ${remSec}s`;
+}
+
+/** Format ms-per-output-token as a throughput string */
+function formatMsPerToken(msPerTok: number): string {
+  if (msPerTok < 1) return `${msPerTok.toFixed(2)} ms/tok`;
+  if (msPerTok < 10) return `${msPerTok.toFixed(1)} ms/tok`;
+  return `${Math.round(msPerTok)} ms/tok`;
+}
+
 /** Format usage object into a readable string */
 function formatUsage(usage: NonNullable<ParsedMessage["usage"]>): string {
   const parts: string[] = [];
@@ -377,7 +394,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   if (!relativeTime) return null;
 
   const displayModel = message.model || null;
-  const hasDetails = !!(message.usage || message.serviceTier);
+  const hasDetails = !!(message.usage || message.serviceTier || message.stopReason || message.deltaMs != null);
 
   return (
     <div
@@ -392,7 +409,9 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
       <span>
         {relativeTime}
         {displayModel && <span> · {displayModel}</span>}
+        {message.speed && message.speed !== "standard" && <span> · {message.speed}</span>}
         {message.gitBranch && <span> · {message.gitBranch}</span>}
+        {message.deltaMs != null && <span> · {formatDelta(message.deltaMs)}</span>}
         {hasDetails && (
           <span
             onClick={(e) => {
@@ -420,8 +439,43 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
             textAlign: align,
           }}
         >
-          {message.serviceTier && <div>Tier: {message.serviceTier}</div>}
+          {message.serviceTier && (
+            <div>
+              Tier: {message.serviceTier}
+              {message.speed ? ` · ${message.speed}` : ""}
+            </div>
+          )}
+          {message.stopReason && <div>Stop: {message.stopReason}</div>}
           {message.usage && <div>Tokens: {formatUsage(message.usage)}</div>}
+          {message.cacheCreation && (
+            <div>
+              Ephemeral cache: {message.cacheCreation.ephemeral1h?.toLocaleString() ?? 0} 1h, {message.cacheCreation.ephemeral5m?.toLocaleString() ?? 0} 5m
+            </div>
+          )}
+          {message.deltaMs != null && (
+            <div>
+              Delta: {formatDelta(message.deltaMs)}
+              {message.msPerOutputToken != null && <span> · {formatMsPerToken(message.msPerOutputToken)}</span>}
+            </div>
+          )}
+          {message.inferenceGeo && <div>Geo: {message.inferenceGeo}</div>}
+          {message.serverToolUse && (message.serverToolUse.webSearchRequests || message.serverToolUse.webFetchRequests) ? (
+            <div>
+              Server tools: {message.serverToolUse.webSearchRequests ?? 0} search, {message.serverToolUse.webFetchRequests ?? 0} fetch
+            </div>
+          ) : null}
+          {message.requestId && (
+            <div
+              style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted" as const }}
+              onClick={(e) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(message.requestId!);
+              }}
+              title="Click to copy request ID"
+            >
+              Req: {message.requestId}
+            </div>
+          )}
         </div>
       )}
     </div>

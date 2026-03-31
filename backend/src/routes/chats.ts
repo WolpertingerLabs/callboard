@@ -1178,11 +1178,32 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
         }
       : undefined;
     const serviceTier = rawUsage?.service_tier;
+
+    // Debug / metrics fields
+    const stopReason = msg.message?.stop_reason ?? undefined;
+    const speed = rawUsage?.speed ?? undefined;
+    const inferenceGeo = rawUsage?.inference_geo && rawUsage.inference_geo !== "not_available" ? rawUsage.inference_geo : undefined;
+    const requestId = msg.requestId ?? undefined;
+    const rawServerToolUse = rawUsage?.server_tool_use;
+    const serverToolUse = rawServerToolUse
+      ? { webSearchRequests: rawServerToolUse.web_search_requests, webFetchRequests: rawServerToolUse.web_fetch_requests }
+      : undefined;
+    const rawCacheCreation = rawUsage?.cache_creation;
+    const cacheCreation = rawCacheCreation
+      ? { ephemeral5m: rawCacheCreation.ephemeral_5m_input_tokens, ephemeral1h: rawCacheCreation.ephemeral_1h_input_tokens }
+      : undefined;
+
     const meta = {
       ...(model && { model }),
       ...(gitBranch && { gitBranch }),
       ...(usage && { usage }),
       ...(serviceTier && { serviceTier }),
+      ...(stopReason !== undefined && { stopReason }),
+      ...(speed && { speed }),
+      ...(inferenceGeo && { inferenceGeo }),
+      ...(requestId && { requestId }),
+      ...(serverToolUse && { serverToolUse }),
+      ...(cacheCreation && { cacheCreation }),
     };
 
     if (typeof content === "string") {
@@ -1245,6 +1266,21 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
         }
       }
     }
+  }
+
+  // Compute inter-message timing deltas and throughput
+  let prevTimestamp: number | null = null;
+  for (const m of result) {
+    if (!m.timestamp) continue;
+    const ts = new Date(m.timestamp).getTime();
+    if (isNaN(ts)) continue;
+    if (prevTimestamp !== null) {
+      m.deltaMs = ts - prevTimestamp;
+      if (m.usage?.output_tokens && m.usage.output_tokens > 0 && m.deltaMs > 0) {
+        m.msPerOutputToken = Math.round((m.deltaMs / m.usage.output_tokens) * 100) / 100;
+      }
+    }
+    prevTimestamp = ts;
   }
 
   return result;
