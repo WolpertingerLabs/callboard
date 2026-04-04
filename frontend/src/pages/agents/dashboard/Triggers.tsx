@@ -3,7 +3,15 @@ import { useState, useEffect, useRef } from "react";
 import { Plus, Zap, Play, Pause, Trash2, X, Search, ChevronDown, ChevronRight, Info, Pencil, Moon, Timer } from "lucide-react";
 import ModalOverlay from "../../../components/ModalOverlay";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { getAgentTriggers, createAgentTrigger, updateAgentTrigger, deleteAgentTrigger, backtestTriggerFilter, getProxyEvents } from "../../../api";
+import {
+  getAgentTriggers,
+  createAgentTrigger,
+  updateAgentTrigger,
+  deleteAgentTrigger,
+  backtestTriggerFilter,
+  getProxyEvents,
+  getProxyIngestors,
+} from "../../../api";
 import type { Trigger, FilterCondition, TriggerFilter, AgentConfig, BacktestResult, StoredEvent } from "../../../api";
 
 function timeAgo(ts: number): string {
@@ -68,12 +76,21 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
 
   useEffect(loadTriggers, [agent.alias]);
 
-  // Fetch available event sources on mount
+  // Fetch available event sources on mount — merge sources that already
+  // have stored events with connections that have active ingestors (can
+  // produce events but may not have received any yet).
   useEffect(() => {
     if (!agent.mcpKeyAlias) return;
-    getProxyEvents(agent.mcpKeyAlias, 1)
-      .then((data) => setAvailableSources(data.sources))
-      .catch(() => setAvailableSources([]));
+    Promise.all([
+      getProxyEvents(agent.mcpKeyAlias, 1).catch(() => ({ sources: [] as string[] })),
+      getProxyIngestors(agent.mcpKeyAlias).catch(() => ({ ingestors: [] as { connection: string }[] })),
+    ]).then(([eventsData, ingestorData]) => {
+      const merged = new Set(eventsData.sources);
+      for (const ing of ingestorData.ingestors) {
+        if (ing.connection) merged.add(ing.connection);
+      }
+      setAvailableSources([...merged].sort());
+    });
   }, [agent.mcpKeyAlias]);
 
   const buildFilter = (): TriggerFilter => ({
