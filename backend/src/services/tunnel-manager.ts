@@ -13,7 +13,7 @@
  *   startTunnelIfEnabled() → sets env vars → caller creates LocalProxy
  *   stopTunnel()           → tears down cloudflared child process
  */
-import { startTunnel, isCloudflaredAvailable } from "@wolpertingerlabs/drawlatch/remote/tunnel";
+import { startTunnel, isCloudflaredAvailable, waitForTunnelReady } from "@wolpertingerlabs/drawlatch/remote/tunnel";
 import { loadRemoteConfig, resolveCallerRoutes } from "@wolpertingerlabs/drawlatch/shared/config";
 import { getAgentSettings } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
@@ -81,6 +81,11 @@ export async function startTunnelIfEnabled(port: number | string, host = "127.0.
 
     log.info(`Tunnel active: ${tunnelUrl}`);
     log.info(`Webhook URL:   ${tunnelUrl}/webhooks/<path>`);
+
+    // Wait for the tunnel to be fully connected before returning.
+    // cloudflared reports the URL before the QUIC connection is established;
+    // services like Trello validate the callback URL at registration time.
+    await waitForTunnelReady(tunnelUrl);
 
     return tunnelUrl;
   } catch (err: any) {
@@ -168,9 +173,17 @@ function autoPopulateCallbackUrls(url: string): void {
         if (match) {
           const envVar = match[1];
           const fullUrl = `${url}/webhooks/${webhookPath}`;
+          // Set bare env var
           process.env[envVar] = fullUrl;
           autoPopulatedEnvVars.add(envVar);
           log.info(`Auto-set ${envVar}=${fullUrl}`);
+          // Also set prefixed env var so caller-scoped secret resolution
+          // (which checks PREFIX_VAR, not bare VAR) can find it.
+          const prefix = callerAlias.toUpperCase().replace(/-/g, "_");
+          const prefixedEnvVar = `${prefix}_${envVar}`;
+          process.env[prefixedEnvVar] = fullUrl;
+          autoPopulatedEnvVars.add(prefixedEnvVar);
+          log.info(`Auto-set ${prefixedEnvVar}=${fullUrl}`);
         }
       }
     }
