@@ -1,6 +1,6 @@
 {
   "name": "@wolpertingerlabs/callboard",
-  "version": "1.0.0-alpha.15.2",
+  "version": "1.0.0-alpha.16.0",
   "description": "A web-based control panel for managing Claude Code sessions, autonomous agents, and multi-agent workflows",
   "license": "MIT",
   "type": "module",

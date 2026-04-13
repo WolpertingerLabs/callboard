@@ -12,7 +12,7 @@ import type { McpServerConfig } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
-import { buildCallboardToolsServer } from "./callboard-tools.js";
+import { buildCallboardToolsServer, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildProxyToolsServer } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias } from "./agent-settings.js";
@@ -438,7 +438,12 @@ function buildFormattedPrompt(prompt: string | any, imageMetadata?: { buffer: Bu
  * Build the canUseTool permission handler for the Claude SDK.
  * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
  */
-function buildCanUseTool(emitter: EventEmitter, getDefaultPermissions: () => DefaultPermissions | null, getTrackingId: () => string, hookAskOverride?: { reason: string }) {
+function buildCanUseTool(
+  emitter: EventEmitter,
+  getDefaultPermissions: () => DefaultPermissions | null,
+  getTrackingId: () => string,
+  hookAskOverride?: { reason: string },
+) {
   return async (
     toolName: string,
     input: Record<string, unknown>,
@@ -967,6 +972,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
 // Register sendMessage as the message sender for agent-tools.ts (breaks circular dependency)
 setMessageSender(sendMessage);
+
+// Register sendMessage for callboard-tools.ts (breaks circular dependency)
+setCallboardMessageSender(sendMessage);
 
 // Register sendMessage for the shared agent executor (cron scheduler, heartbeats, event watcher)
 import { setExecutorMessageSender } from "./agent-executor.js";

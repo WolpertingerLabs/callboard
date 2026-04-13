@@ -1,10 +1,89 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { existsSync, statSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import path from "path";
 import { createCanvas, updateCanvas, readCanvas } from "./canvas-service.js";
 import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
+import { getActiveSession } from "./claude.js";
+import { findSessionLogPath } from "../utils/session-log.js";
+import { findChat } from "../utils/chat-lookup.js";
+import { searchChats } from "../utils/chat-search.js";
+import { resolveBranch } from "../utils/git.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("callboard-tools");
+
+// ─── Lazy reference to sendMessage ──────────────────────────────────
+// We use a lazy import to avoid circular dependency:
+// callboard-tools.ts → claude.ts → (uses buildCallboardToolsServer from callboard-tools.ts)
+// Instead, claude.ts registers itself at startup via setCallboardMessageSender().
+
+type MessageSender = (opts: {
+  prompt: string | AsyncIterable<any>;
+  chatId?: string;
+  folder?: string;
+  systemPrompt?: string;
+  agentAlias?: string;
+  maxTurns?: number;
+  defaultPermissions?: any;
+}) => Promise<import("events").EventEmitter>;
+
+let _sendMessage: MessageSender | null = null;
+
+/**
+ * Register the sendMessage function. Called by claude.ts on module load
+ * to break the circular dependency.
+ */
+export function setCallboardMessageSender(fn: MessageSender): void {
+  _sendMessage = fn;
+}
+
+function getSendMessage(): MessageSender {
+  if (!_sendMessage) throw new Error("sendMessage not registered — call setCallboardMessageSender() first");
+  return _sendMessage;
+}
+
+// ─── Helper: read session JSONL and extract text messages ───────────
+
+function readSessionMessages(sessionId: string, limit: number = 50): string[] {
+  const logPath = findSessionLogPath(sessionId);
+  if (!logPath) return [];
+
+  try {
+    const lines = readFileSync(logPath, "utf-8")
+      .split("\n")
+      .filter((l) => l.trim());
+    const textMessages: string[] = [];
+
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === "summary" || msg.type === "system") continue;
+        const role = msg.message?.role;
+        const content = msg.message?.content;
+        if (!content) continue;
+
+        if (typeof content === "string") {
+          textMessages.push(`[${role}] ${content}`);
+        } else if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === "text" && block.text) {
+              textMessages.push(`[${role}] ${block.text}`);
+            }
+          }
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    // Return the most recent messages up to limit
+    return textMessages.slice(-limit);
+  } catch {
+    return [];
+  }
+}
 
 const MIME_MAP: Record<string, { mime: string; category: string }> = {
   ".png": { mime: "image/png", category: "image" },
@@ -354,6 +433,313 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
                   success: true,
                   chatId,
                   title: args.title || null,
+                }),
+              },
+            ],
+          };
+        },
+      ),
+
+      // ── Chat Session Tools ──────────────────────────────────────────
+
+      tool(
+        "start_chat_session",
+        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration.",
+        {
+          prompt: z.string().describe("The task or message for the chat session"),
+          folder: z.string().describe("Absolute path to the working directory for the session"),
+          maxTurns: z.number().optional().describe("Maximum agentic turns before stopping (default: 200)"),
+          baseBranch: z.string().optional().describe("Base branch to start from (switches to this branch before starting)"),
+          newBranch: z.string().optional().describe("New branch name to create (created from baseBranch or current HEAD)"),
+          useWorktree: z.boolean().optional().describe("Create a git worktree instead of switching branches in-place (default: false)"),
+        },
+        async (args) => {
+          try {
+            const sendMessage = getSendMessage();
+
+            // Resolve effective folder based on branch configuration
+            const branchResult = resolveBranch({
+              folder: args.folder,
+              baseBranch: args.baseBranch,
+              newBranch: args.newBranch,
+              useWorktree: args.useWorktree,
+            });
+
+            if (!branchResult.ok) {
+              return { content: [{ type: "text" as const, text: JSON.stringify(branchResult) }] };
+            }
+
+            const effectiveFolder = branchResult.folder;
+
+            // Build async generator prompt (required when MCP servers are present)
+            const promptIterable = (async function* () {
+              yield {
+                type: "user" as const,
+                message: { role: "user" as const, content: args.prompt },
+              };
+            })();
+
+            const emitter = await sendMessage({
+              prompt: promptIterable,
+              folder: effectiveFolder,
+              maxTurns: args.maxTurns ?? 200,
+              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+            });
+
+            // Listen for chat_created to get the chatId
+            const chatId = await new Promise<string>((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error("Timed out waiting for session to start")), 30000);
+              emitter.on("event", (event: any) => {
+                if (event.type === "chat_created" && event.chatId) {
+                  clearTimeout(timeout);
+                  resolve(event.chatId);
+                } else if (event.type === "error") {
+                  clearTimeout(timeout);
+                  reject(new Error(event.content || "Session failed to start"));
+                }
+              });
+            });
+
+            log.info(`Started chat session ${chatId} in ${effectiveFolder}`);
+
+            return { content: [{ type: "text" as const, text: JSON.stringify({ chatId, status: "started", folder: effectiveFolder }) }] };
+          } catch (err: any) {
+            log.error(`start_chat_session failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error starting session: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "get_session_status",
+        "Check the status of a Claude Code session. Returns whether the session is active, complete, or not found.",
+        {
+          chatId: z.string().describe("The chat/session ID to check"),
+        },
+        async (args) => {
+          try {
+            // Check if there's an active web session
+            const activeSession = getActiveSession(args.chatId);
+            if (activeSession) {
+              return { content: [{ type: "text" as const, text: JSON.stringify({ status: "active", chatId: args.chatId }) }] };
+            }
+
+            // Check if the session exists in storage
+            const chat = findChat(args.chatId, false);
+            if (!chat) {
+              return { content: [{ type: "text" as const, text: JSON.stringify({ status: "not_found", chatId: args.chatId }) }] };
+            }
+
+            // Session exists but not active — it's complete
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    status: "complete",
+                    chatId: args.chatId,
+                    lastActivity: chat.updated_at,
+                  }),
+                },
+              ],
+            };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error checking status: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "read_session_messages",
+        "Read the text messages from a Claude Code session. Returns the conversation content (user and assistant messages). Useful for checking what a spawned session did.",
+        {
+          chatId: z.string().describe("The chat/session ID to read messages from"),
+          limit: z.number().optional().describe("Maximum number of messages to return (default: 50, returns most recent)"),
+        },
+        async (args) => {
+          try {
+            const chat = findChat(args.chatId, false);
+            if (!chat) {
+              return { content: [{ type: "text" as const, text: `Session "${args.chatId}" not found` }] };
+            }
+
+            // Get all session IDs for this chat
+            const meta = JSON.parse(chat.metadata || "{}");
+            const sessionIds: string[] = meta.session_ids || [];
+            if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
+
+            // Read messages from all sessions
+            const allMessages: string[] = [];
+            for (const sid of sessionIds) {
+              allMessages.push(...readSessionMessages(sid, args.limit || 50));
+            }
+
+            const messages = allMessages.slice(-(args.limit || 50));
+            if (messages.length === 0) {
+              return { content: [{ type: "text" as const, text: "No messages found in this session" }] };
+            }
+
+            return { content: [{ type: "text" as const, text: messages.join("\n\n") }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error reading messages: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "continue_chat",
+        "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. Set waitForCompletion=true to block until the response is ready.",
+        {
+          chatId: z.string().describe("The chat/session ID to continue"),
+          prompt: z.string().describe("The follow-up message to send"),
+          maxTurns: z.number().optional().describe("Maximum agentic turns for this continuation (default: 200)"),
+          waitForCompletion: z
+            .boolean()
+            .optional()
+            .describe("If true, wait for the session to complete and return the response text. Default: false (returns immediately)"),
+        },
+        async (args) => {
+          try {
+            // 1. Verify the chat exists
+            const chat = findChat(args.chatId, false);
+            if (!chat) {
+              return { content: [{ type: "text" as const, text: `Chat "${args.chatId}" not found` }] };
+            }
+
+            // 2. Check if session is currently active
+            const activeSession = getActiveSession(args.chatId);
+            if (activeSession) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Chat "${args.chatId}" already has an active session — wait for it to complete or stop it first`,
+                  },
+                ],
+              };
+            }
+
+            const sendMessage = getSendMessage();
+
+            // 3. Build async generator prompt (required when MCP servers are present)
+            const promptIterable = (async function* () {
+              yield {
+                type: "user" as const,
+                message: { role: "user" as const, content: args.prompt },
+              };
+            })();
+
+            // 4. Send the continuation message
+            const emitter = await sendMessage({
+              chatId: args.chatId,
+              prompt: promptIterable,
+              maxTurns: args.maxTurns ?? 200,
+            });
+
+            // 5. If not waiting, return immediately after session starts
+            if (!args.waitForCompletion) {
+              log.info(`Continued chat ${args.chatId} (async)`);
+
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({ chatId: args.chatId, status: "continued", waitForCompletion: false }),
+                  },
+                ],
+              };
+            }
+
+            // 6. Wait for completion and collect response
+            const responseTexts: string[] = [];
+            await new Promise<void>((resolve, reject) => {
+              const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety
+
+              emitter.on("event", (event: any) => {
+                if (event.type === "text" && event.content) {
+                  responseTexts.push(event.content);
+                } else if (event.type === "done") {
+                  clearTimeout(timeout);
+                  resolve();
+                } else if (event.type === "error") {
+                  clearTimeout(timeout);
+                  reject(new Error(event.content || "Session errored"));
+                }
+              });
+            });
+
+            log.info(`Continued chat ${args.chatId} (sync, complete)`);
+
+            const response = responseTexts.join("") || "(No text response)";
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ chatId: args.chatId, status: "complete", response }) }],
+            };
+          } catch (err: any) {
+            log.error(`continue_chat failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error continuing chat: ${err.message}` }] };
+          }
+        },
+      ),
+
+      tool(
+        "find_chats",
+        "Search chat sessions for a repo folder, including worktrees. Scans all Claude Code sessions in ~/.claude/projects/. Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
+        {
+          folder: z.string().describe("Repo working directory path (also searches worktrees of this repo)"),
+          grep: z.string().optional().describe("Search term to grep across session conversation content (messages, tool calls, code, etc.)"),
+          gitBranch: z.string().optional().describe("Filter by git branch (matches live worktree branches and stored session metadata)"),
+          agentAlias: z.string().optional().describe("Filter to chats started by a specific agent"),
+          triggered: z.boolean().optional().describe("Filter to automated (true) or manual (false) sessions"),
+          updatedAfter: z.string().optional().describe("ISO-8601 date — only chats updated after this time"),
+          updatedBefore: z.string().optional().describe("ISO-8601 date — only chats updated before this time"),
+          sort: z.enum(["updated", "created"]).optional().describe("Sort field (default: updated)"),
+          limit: z.number().optional().describe("Max results to return (default: 10, max: 50)"),
+        },
+        async (args) => {
+          try {
+            const result = searchChats({
+              folder: args.folder,
+              grep: args.grep,
+              gitBranch: args.gitBranch,
+              agentAlias: args.agentAlias,
+              triggered: args.triggered,
+              updatedAfter: args.updatedAfter,
+              updatedBefore: args.updatedBefore,
+              sort: args.sort,
+              limit: args.limit,
+            });
+
+            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          } catch (err: any) {
+            log.error(`find_chats failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error searching chats: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── Utilities ──────────────────────────────────────────────
+
+      tool(
+        "wait",
+        "Pause execution for the specified number of seconds (1-300). Useful for waiting between polling operations, giving other processes time to complete, or adding delays between actions. Include a fun, cute flavor description of what you're 'doing' while you wait.",
+        {
+          seconds: z.number().min(1).max(300).describe("Number of seconds to wait (1-300)"),
+          flavor: z.string().describe("A fun, cute flavor description of what you're doing while waiting (e.g. 'Contemplating the meaning of semicolons')"),
+          reason: z.string().optional().describe("Optional actual reason for waiting (for your own logging)"),
+        },
+        async (args) => {
+          const seconds = Math.min(Math.max(1, Math.round(args.seconds)), 300);
+
+          await new Promise<void>((resolve) => setTimeout(resolve, seconds * 1000));
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  waited: seconds,
+                  flavor: args.flavor,
+                  ...(args.reason && { reason: args.reason }),
                 }),
               },
             ],
