@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { createLogger } from "../utils/logger.js";
-import type { PrInfo, PrState } from "shared/types/index.js";
+import type { CheckConclusion, PrChecks, PrCheckItem, PrInfo, PrState } from "shared/types/index.js";
 
 const execFileAsync = promisify(execFile);
 const log = createLogger("github-pr");
@@ -20,7 +20,14 @@ interface GhPrStatusCheck {
   status?: string;
   conclusion?: string;
   state?: string;
+  name?: string;
+  workflowName?: string;
+  context?: string;
+  detailsUrl?: string;
+  targetUrl?: string;
 }
+
+const MAX_CHECK_ITEMS = 50;
 
 interface GhPrRecord {
   number: number;
@@ -185,7 +192,7 @@ class GithubPrService {
     const totalThreads = nonOutdated.length;
     const openUnresolvedThreads = nonOutdated.filter((t) => !t.isResolved).length;
 
-    const checksStatus = this.rollupChecks(pr.statusCheckRollup);
+    const checks = this.buildChecks(pr.statusCheckRollup);
 
     const repo = pr.headRepository?.nameWithOwner || pr.repository?.nameWithOwner || "";
 
@@ -200,32 +207,86 @@ class GithubPrService {
       approved: reviewDecision === "APPROVED",
       openUnresolvedThreads,
       totalThreads,
-      checksStatus,
+      checks,
       updatedAt: pr.updatedAt || "",
       title: pr.title,
     };
   }
 
-  private rollupChecks(checks?: GhPrStatusCheck[]): "success" | "failure" | "pending" | null {
+  private buildChecks(checks?: GhPrStatusCheck[]): PrChecks | null {
     if (!checks || checks.length === 0) return null;
-    let anyPending = false;
-    let anyFailure = false;
+
+    let success = 0;
+    let failure = 0;
+    let pending = 0;
+    let neutral = 0;
+    const items: PrCheckItem[] = [];
+
     for (const c of checks) {
-      // Check runs use status/conclusion; status contexts use state.
       const status = (c.status || "").toUpperCase();
       const conclusion = (c.conclusion || "").toUpperCase();
       const state = (c.state || "").toUpperCase();
 
+      let bucket: "success" | "failure" | "pending" | "neutral";
+      let itemConclusion: CheckConclusion | null;
+
       if (status === "IN_PROGRESS" || status === "QUEUED" || status === "PENDING" || state === "PENDING") {
-        anyPending = true;
+        bucket = "pending";
+        itemConclusion = null;
+      } else if (
+        conclusion === "FAILURE" ||
+        conclusion === "TIMED_OUT" ||
+        conclusion === "CANCELLED" ||
+        conclusion === "ACTION_REQUIRED" ||
+        conclusion === "STARTUP_FAILURE" ||
+        state === "FAILURE" ||
+        state === "ERROR"
+      ) {
+        bucket = "failure";
+        itemConclusion =
+          conclusion === "TIMED_OUT"
+            ? "timed_out"
+            : conclusion === "CANCELLED"
+              ? "cancelled"
+              : conclusion === "ACTION_REQUIRED"
+                ? "action_required"
+                : "failure";
+      } else if (conclusion === "NEUTRAL" || conclusion === "SKIPPED" || conclusion === "STALE") {
+        bucket = "neutral";
+        itemConclusion = conclusion === "SKIPPED" ? "skipped" : "neutral";
+      } else if (conclusion === "SUCCESS" || state === "SUCCESS") {
+        bucket = "success";
+        itemConclusion = "success";
+      } else {
+        // Unknown — treat as pending so it doesn't silently disappear.
+        bucket = "pending";
+        itemConclusion = null;
       }
-      if (conclusion === "FAILURE" || conclusion === "TIMED_OUT" || conclusion === "CANCELLED" || state === "FAILURE" || state === "ERROR") {
-        anyFailure = true;
-      }
+
+      if (bucket === "success") success++;
+      else if (bucket === "failure") failure++;
+      else if (bucket === "pending") pending++;
+      else neutral++;
+
+      const name = c.workflowName || c.name || c.context || "check";
+      const url = c.detailsUrl || c.targetUrl;
+      items.push({ name, conclusion: itemConclusion, url });
     }
-    if (anyFailure) return "failure";
-    if (anyPending) return "pending";
-    return "success";
+
+    const total = success + failure + pending + neutral;
+    const rollup: "success" | "failure" | "pending" = failure > 0 ? "failure" : pending > 0 ? "pending" : "success";
+
+    // Order: failures first, then pending, then others. Bounded to avoid unbounded payloads.
+    const bucketRank = (item: PrCheckItem): number => {
+      const c = item.conclusion;
+      if (c === "failure" || c === "timed_out" || c === "cancelled" || c === "action_required") return 0;
+      if (c === null) return 1;
+      return 2;
+    };
+    items.sort((a, b) => bucketRank(a) - bucketRank(b));
+    const trimmed = items.length > MAX_CHECK_ITEMS ? items.slice(0, MAX_CHECK_ITEMS) : items;
+
+    return { rollup, total, success, failure, pending, neutral, items: trimmed };
   }
 
   /** Bust the cache for a specific repo. Used by ?refresh=1. */

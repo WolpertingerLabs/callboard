@@ -29,7 +29,17 @@ export type { SlashCommand } from "./slashCommand.js";
 
 export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
 
-export type { PrState, PrInfo, BranchLastCommit, BranchRow, BranchOverviewFolder, BranchOverviewResponse } from "./branchOverview.js";
+export type {
+  PrState,
+  PrInfo,
+  PrChecks,
+  PrCheckItem,
+  CheckConclusion,
+  BranchLastCommit,
+  BranchRow,
+  BranchOverviewFolder,
+  BranchOverviewResponse,
+} from "./branchOverview.js";
 
 export type { SessionStatus } from "./session.js";
 

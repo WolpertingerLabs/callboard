@@ -1,5 +1,23 @@
 export type PrState = "open" | "closed" | "merged";
 
+export type CheckConclusion = "success" | "failure" | "pending" | "neutral" | "skipped" | "cancelled" | "timed_out" | "action_required";
+
+export interface PrCheckItem {
+  name: string;
+  conclusion: CheckConclusion | null;
+  url?: string;
+}
+
+export interface PrChecks {
+  rollup: "success" | "failure" | "pending";
+  total: number;
+  success: number;
+  failure: number;
+  pending: number;
+  neutral: number;
+  items: PrCheckItem[];
+}
+
 export interface PrInfo {
   number: number;
   url: string;
@@ -14,7 +32,7 @@ export interface PrInfo {
   openUnresolvedThreads: number;
   /** Total non-outdated review threads (resolved + unresolved). */
   totalThreads: number;
-  checksStatus: "success" | "failure" | "pending" | null;
+  checks: PrChecks | null;
   updatedAt: string;
   title?: string;
 }
