@@ -8,7 +8,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
-import { getApiEnvOverrides } from "./agent-settings.js";
+import { getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
 
 const log = createLogger("sdk-info");
 
@@ -55,10 +55,13 @@ async function fetchSdkInfo(): Promise<SdkInfoCache> {
       };
     })();
 
+    const claudeExecutable = getClaudeCodeExecutablePath();
+
     const conversation = query({
       prompt: inputStream,
       options: {
         cwd: tmpdir(),
+        ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
         tools: [],
         maxTurns: 1,
         persistSession: false,

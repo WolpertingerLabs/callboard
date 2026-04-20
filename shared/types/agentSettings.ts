@@ -52,6 +52,9 @@ export interface AgentSettings {
 
   /** CLAUDE_CODE_SUBAGENT_MODEL — model used by spawned subagents. */
   subagentModel?: string;
+
+  /** Path to the Claude Code executable. Overrides the SDK's bundled binary. */
+  pathToClaudeCodeExecutable?: string;
 }
 
 export interface KeyAliasInfo {

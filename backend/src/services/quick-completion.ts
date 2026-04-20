@@ -21,6 +21,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
+import { getClaudeCodeExecutablePath } from "./agent-settings.js";
 import type { CustomTheme, ThemeVariables } from "shared/types/index.js";
 
 const log = createLogger("quick-completion");
@@ -129,11 +130,14 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   let durationMs = 0;
 
   try {
+    const claudeExecutable = getClaudeCodeExecutablePath();
+
     const conversation = query({
       prompt: promptGenerator,
       options: {
         model,
         cwd: tmpdir(), // Explicit throwaway cwd — no tools use it, but avoids polluting the project directory
+        ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
         tools: [], // No built-in Claude Code tools
         allowedTools,
         mcpServers: { qc: mcpServer },

@@ -7,6 +7,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync, copyFileSync, rmSync } from "fs";
 import { join } from "path";
+import { execSync } from "child_process";
 import { loadRemoteConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
@@ -62,6 +63,48 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
   if (s.defaultHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.defaultHaikuModel;
   if (s.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.subagentModel;
   return env;
+}
+
+/**
+ * Resolve the path to the Claude Code executable.
+ *
+ * Priority:
+ *   1. User-configured pathToClaudeCodeExecutable in agent settings
+ *   2. `claude` found on PATH via `which` (native install)
+ *   3. undefined — let the SDK use its bundled binary
+ *
+ * The SDK bundles a musl-linked binary that won't work on glibc systems.
+ * This function detects the native install and returns its path so the
+ * SDK uses it instead.
+ */
+let resolvedClaudePath: string | undefined | null = null; // null = not yet resolved
+export function getClaudeCodeExecutablePath(): string | undefined {
+  if (resolvedClaudePath !== null) return resolvedClaudePath;
+
+  const settings = loadSettings();
+  if (settings.pathToClaudeCodeExecutable) {
+    if (existsSync(settings.pathToClaudeCodeExecutable)) {
+      resolvedClaudePath = settings.pathToClaudeCodeExecutable;
+      log.info(`Using configured Claude Code executable: ${resolvedClaudePath}`);
+      return resolvedClaudePath;
+    }
+    log.warn(`Configured pathToClaudeCodeExecutable not found: ${settings.pathToClaudeCodeExecutable}`);
+  }
+
+  // Try finding claude on PATH
+  try {
+    const path = execSync("which claude", { encoding: "utf-8" }).trim();
+    if (path && existsSync(path)) {
+      resolvedClaudePath = path;
+      log.info(`Found Claude Code on PATH: ${resolvedClaudePath}`);
+      return resolvedClaudePath;
+    }
+  } catch {
+    // `which` failed — claude not on PATH
+  }
+
+  resolvedClaudePath = undefined;
+  return undefined;
 }
 
 /**

@@ -15,7 +15,7 @@ import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsServer, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildProxyToolsServer } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
-import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias, getApiEnvOverrides } from "./agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias, getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -782,11 +782,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     log.info(`MCP servers for session: [${serverSummary}], allowedTools: [${allowedTools.join(", ")}]`);
   }
 
+  const claudeExecutable = getClaudeCodeExecutablePath();
+
   const queryOpts: any = {
     prompt: effectivePrompt,
     options: {
       abortController,
       cwd: folder,
+      ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
       settingSources: ["user", "project", "local"],
       maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
