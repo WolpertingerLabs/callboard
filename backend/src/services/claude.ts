@@ -15,7 +15,7 @@ import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsServer, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildProxyToolsServer } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
-import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias } from "./agent-settings.js";
+import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias, getApiEnvOverrides } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -799,6 +799,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // Propagate resolved MCP server env vars to the CLI subprocess so that plugins
         // loaded by the CLI can resolve ${VAR} templates in their .mcp.json files.
         ...(mcpOpts?.resolvedEnvVars ?? {}),
+        // User-configured API / auth / model overrides from Settings → API.
+        // Applied after process.env so they take precedence.
+        ...getApiEnvOverrides(agentSettings),
         // Propagate agent's MCP key alias so CLI-level re-resolution of ${MCP_KEY_ALIAS}
         // in .mcp.json templates also picks up the correct identity.
         ...(agentMcpKeyAlias && { MCP_KEY_ALIAS: agentMcpKeyAlias }),
