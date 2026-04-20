@@ -326,6 +326,7 @@ chatsRouter.get("/folders", (req, res) => {
 
       // Get git info
       const gitInfo = getCachedGitInfo(folder);
+      const { isWorktree } = resolveWorktreeToMainRepoCached(folder);
 
       // Extract folder display name (last path segment)
       const displayName = folder.split("/").pop() || folder;
@@ -338,6 +339,7 @@ chatsRouter.get("/folders", (req, res) => {
         lastUpdatedAt: lastUpdatedAt.toISOString(),
         status,
         isGitRepo: gitInfo.isGitRepo,
+        isWorktree,
         gitBranch: gitInfo.branch,
         isTriggered: !!metadata.triggered,
         triggeredBy: metadata.triggeredBy,
