@@ -1,7 +1,7 @@
 import { readdirSync, statSync, existsSync } from "fs";
 import { join, dirname, resolve, basename } from "path";
 import { homedir } from "os";
-import { CLAUDE_PROJECTS_DIR, projectDirToFolder, WORKSPACES_DIR } from "../utils/paths.js";
+import { CLAUDE_PROJECTS_DIR, IGNORED_PROJECT_DIRS, projectDirToFolder, WORKSPACES_DIR } from "../utils/paths.js";
 import { resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "shared/types/index.js";
 
@@ -177,6 +177,7 @@ export class FolderService {
       const folderMap = new Map<string, { lastUsed: Date; chatCount: number }>();
 
       for (const dir of projectDirs) {
+        if (IGNORED_PROJECT_DIRS.has(dir)) continue;
         const dirPath = join(CLAUDE_PROJECTS_DIR, dir);
         try {
           const dirStat = statSync(dirPath);
