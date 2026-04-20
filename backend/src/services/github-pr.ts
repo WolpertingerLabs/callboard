@@ -47,7 +47,7 @@ interface GhPrRecord {
   repository?: { nameWithOwner?: string };
 }
 
-const PR_FIELDS = [
+const PR_FIELDS_CORE = [
   "number",
   "url",
   "title",
@@ -58,11 +58,17 @@ const PR_FIELDS = [
   "reviewDecision",
   "updatedAt",
   "reviews",
-  "reviewThreads",
   "statusCheckRollup",
   "headRepository",
   "headRepositoryOwner",
-].join(",");
+];
+
+// `reviewThreads` requires gh >= 2.54 or so. Older CLIs return "Unknown JSON field",
+// which used to fail the whole query and leave every branch PR-less. We now probe for
+// support and degrade gracefully — thread counts show 0 but the rest of the PR data
+// still renders.
+const PR_FIELDS_WITH_THREADS = [...PR_FIELDS_CORE, "reviewThreads"].join(",");
+const PR_FIELDS_CORE_JOINED = PR_FIELDS_CORE.join(",");
 
 interface CacheEntry {
   data: Map<string, PrInfo[]>;
@@ -77,6 +83,8 @@ class GithubPrService {
   private cache = new Map<string, CacheEntry>();
   private ghAvailableChecked = false;
   private ghAvailable = false;
+  // null = unknown, true/false = probed result for this gh install.
+  private reviewThreadsSupported: boolean | null = null;
 
   /** Check whether the `gh` CLI is on PATH. Cached after first check. */
   async isAvailable(): Promise<boolean> {
@@ -136,20 +144,42 @@ class GithubPrService {
 
     // Fetch both open and closed PRs, but cap closed to keep the response small.
     // Users mostly care about open PRs; closed/merged PRs are for historical context.
+    const fields = this.reviewThreadsSupported === false ? PR_FIELDS_CORE_JOINED : PR_FIELDS_WITH_THREADS;
     let raw: string;
     try {
-      const { stdout } = await execFileAsync("gh", ["pr", "list", "--state", "all", "--limit", "200", "--json", PR_FIELDS], {
+      const { stdout } = await execFileAsync("gh", ["pr", "list", "--state", "all", "--limit", "200", "--json", fields], {
         cwd: repoDir,
         timeout: 15000,
         maxBuffer: 10 * 1024 * 1024,
       });
       raw = stdout;
+      if (this.reviewThreadsSupported === null) this.reviewThreadsSupported = true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // `gh` failures (not authed, no repo, etc.) — cache empty for the TTL.
-      log.debug(`gh pr list failed: ${message}`);
-      this.cache.set(repoDir, { data: new Map(), repoName: "", fetchedAt: Date.now() });
-      return;
+      const stderr = err && typeof err === "object" && "stderr" in err ? String((err as { stderr: unknown }).stderr || "") : "";
+      const unknownThreadsField = /Unknown JSON field: "reviewThreads"/i.test(message) || /Unknown JSON field: "reviewThreads"/i.test(stderr);
+      if (unknownThreadsField && this.reviewThreadsSupported !== false) {
+        log.warn("gh CLI does not support the 'reviewThreads' JSON field — review thread counts will be unavailable. Upgrade gh for full PR details.");
+        this.reviewThreadsSupported = false;
+        try {
+          const { stdout } = await execFileAsync("gh", ["pr", "list", "--state", "all", "--limit", "200", "--json", PR_FIELDS_CORE_JOINED], {
+            cwd: repoDir,
+            timeout: 15000,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+          raw = stdout;
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          log.warn(`gh pr list failed after fallback: ${retryMsg}`);
+          this.cache.set(repoDir, { data: new Map(), repoName: "", fetchedAt: Date.now() });
+          return;
+        }
+      } else {
+        // `gh` failures (not authed, no repo, etc.) — surface so operators can fix.
+        log.warn(`gh pr list failed for ${repoDir}: ${message}`);
+        this.cache.set(repoDir, { data: new Map(), repoName: "", fetchedAt: Date.now() });
+        return;
+      }
     }
 
     let prs: GhPrRecord[] = [];
