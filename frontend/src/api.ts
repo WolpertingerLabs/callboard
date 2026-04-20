@@ -352,6 +352,24 @@ export async function getBranchOverview(folder: string, refresh: boolean = false
   return res.json();
 }
 
+export async function deleteLocalBranch(folder: string, branch: string, force: boolean): Promise<void> {
+  const res = await fetch(`${BASE}/git/branches`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder, branch, force }),
+  });
+  await assertOk(res, "Failed to delete branch");
+}
+
+export async function removeGitWorktree(folder: string, worktreePath: string, force: boolean): Promise<void> {
+  const res = await fetch(`${BASE}/git/worktrees`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder, worktreePath, force }),
+  });
+  await assertOk(res, "Failed to remove worktree");
+}
+
 export async function getGitFileDiff(folder: string, filename: string): Promise<{ diff: string; additions: number; deletions: number }> {
   const params = new URLSearchParams({ folder, filename });
   const res = await fetch(`${BASE}/git/diff/file?${params}`);

@@ -1,22 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw, GitBranch, ExternalLink, ChevronUp, ChevronDown, ChevronsUpDown, Check, X, Clock, CircleDashed, AlertCircle, MessageSquareWarning } from "lucide-react";
-import { listFolders, getBranchOverview, type BranchOverviewFolder, type BranchRow, type FolderSummary, type PrInfo } from "../api";
+import {
+  RefreshCw,
+  GitBranch,
+  ExternalLink,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  X,
+  Clock,
+  CircleDashed,
+  AlertCircle,
+  MessageSquare,
+  GitMerge,
+  Trash2,
+  FolderMinus,
+  ArrowUpCircle,
+  CircleDot,
+} from "lucide-react";
+import {
+  listFolders,
+  getBranchOverview,
+  deleteLocalBranch,
+  removeGitWorktree,
+  type BranchOverviewFolder,
+  type BranchRow,
+  type FolderSummary,
+  type PrInfo,
+} from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { formatRelativeTime } from "../utils/dateFormat";
 
-type SortKey =
-  | "branch"
-  | "folder"
-  | "worktree"
-  | "ahead"
-  | "behind"
-  | "lastCommit"
-  | "pr"
-  | "prState"
-  | "approved"
-  | "comments"
-  | "checks";
+type SortKey = "branch" | "folder" | "worktree" | "ahead" | "behind" | "lastCommit" | "pr" | "prState" | "approved" | "comments" | "checks";
 
 type SortDir = "asc" | "desc";
 
@@ -31,10 +49,14 @@ function primaryPr(prs: PrInfo[]): PrInfo | null {
   return prs[0];
 }
 
-function totalUnresolved(prs: PrInfo[]): number {
-  let n = 0;
-  for (const p of prs) if (p.state === "open") n += p.openUnresolvedThreads;
-  return n;
+function threadTotals(prs: PrInfo[]): { total: number; unresolved: number; resolved: number } {
+  let total = 0;
+  let unresolved = 0;
+  for (const p of prs) {
+    total += p.totalThreads;
+    unresolved += p.openUnresolvedThreads;
+  }
+  return { total, unresolved, resolved: total - unresolved };
 }
 
 function compareRows(a: FlatRow, b: FlatRow, key: SortKey, dir: SortDir): number {
@@ -85,8 +107,8 @@ function compareRows(a: FlatRow, b: FlatRow, key: SortKey, dir: SortDir): number
       break;
     }
     case "comments":
-      av = totalUnresolved(a.prs);
-      bv = totalUnresolved(b.prs);
+      av = threadTotals(a.prs).unresolved;
+      bv = threadTotals(b.prs).unresolved;
       break;
     case "checks": {
       const rank = (p: PrInfo | null) => (!p || p.checksStatus === null ? 99 : p.checksStatus === "failure" ? 0 : p.checksStatus === "pending" ? 1 : 2);
@@ -95,8 +117,13 @@ function compareRows(a: FlatRow, b: FlatRow, key: SortKey, dir: SortDir): number
       break;
     }
   }
-  if (typeof av === "number" && typeof bv === "number") return (av - bv) * mul;
-  return String(av).localeCompare(String(bv)) * mul;
+  const primary = typeof av === "number" && typeof bv === "number" ? (av - bv) * mul : String(av).localeCompare(String(bv)) * mul;
+  if (primary !== 0) return primary;
+  // Secondary sort: most recent commit first when primary sort ties.
+  const at = a.lastCommit?.committedAt || "";
+  const bt = b.lastCommit?.committedAt || "";
+  if (at === bt) return 0;
+  return at < bt ? 1 : -1;
 }
 
 interface SortHeaderProps {
@@ -134,7 +161,14 @@ function SortHeader({ label, sortKey, currentKey, currentDir, onSort, align = "l
         width,
       }}
     >
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, justifyContent: align === "right" ? "flex-end" : align === "center" ? "center" : "flex-start" }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          justifyContent: align === "right" ? "flex-end" : align === "center" ? "center" : "flex-start",
+        }}
+      >
         {label}
         <Icon size={12} style={{ opacity: active ? 1 : 0.5 }} />
       </span>
@@ -234,9 +268,39 @@ function PrNumberCell({ prs }: { prs: PrInfo[] }) {
 }
 
 function CommentsCell({ prs }: { prs: PrInfo[] }) {
-  const count = totalUnresolved(prs);
-  if (count === 0) {
-    return prs.length === 0 ? <span style={{ color: "var(--text-muted)" }}>—</span> : <span style={{ color: "var(--text-muted)" }}>0</span>;
+  if (prs.length === 0) return <span style={{ color: "var(--text-muted)" }}>—</span>;
+  const { total, resolved } = threadTotals(prs);
+  if (total === 0) return <span style={{ color: "var(--text-muted)" }}>0</span>;
+  const allResolved = resolved === total;
+  const color = allResolved ? "var(--text-muted)" : "var(--warning, var(--danger))";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        color,
+        fontWeight: allResolved ? 400 : 600,
+        fontVariantNumeric: "tabular-nums",
+      }}
+      title={`${resolved} of ${total} review thread${total === 1 ? "" : "s"} resolved`}
+    >
+      <MessageSquare size={14} />
+      {resolved}/{total}
+    </span>
+  );
+}
+
+function MergeConflictCell({ row }: { row: FlatRow }) {
+  if (row.hasMergeConflict === null || row.hasMergeConflict === undefined) {
+    return <span style={{ color: "var(--text-muted)" }}>—</span>;
+  }
+  if (!row.hasMergeConflict) {
+    return (
+      <span title={row.mergeConflictBase ? `Merges cleanly into ${row.mergeConflictBase}` : "Merges cleanly"}>
+        <Check size={16} style={{ color: "var(--success, var(--accent))" }} />
+      </span>
+    );
   }
   return (
     <span
@@ -244,13 +308,12 @@ function CommentsCell({ prs }: { prs: PrInfo[] }) {
         display: "inline-flex",
         alignItems: "center",
         gap: 4,
-        color: "var(--danger)",
+        color: "var(--warning, var(--danger))",
         fontWeight: 600,
       }}
-      title={`${count} unresolved review thread${count === 1 ? "" : "s"}`}
+      title={row.mergeConflictBase ? `Conflicts with ${row.mergeConflictBase}` : "Conflicts with base"}
     >
-      <MessageSquareWarning size={14} />
-      {count}
+      <GitMerge size={14} />
     </span>
   );
 }
@@ -258,8 +321,9 @@ function CommentsCell({ prs }: { prs: PrInfo[] }) {
 interface Filters {
   search: string;
   hasWorktree: boolean;
-  hasOpenPr: boolean;
+  hasPr: boolean;
   hasUnresolved: boolean;
+  hasConflict: boolean;
 }
 
 export default function BranchTable() {
@@ -275,7 +339,11 @@ export default function BranchTable() {
   const [error, setError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("folder");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
-  const [filters, setFilters] = useState<Filters>({ search: "", hasWorktree: false, hasOpenPr: false, hasUnresolved: false });
+  const [filters, setFilters] = useState<Filters>({ search: "", hasWorktree: false, hasPr: false, hasUnresolved: false, hasConflict: false });
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [page, setPage] = useState<number>(1);
+  const [pendingDelete, setPendingDelete] = useState<{ kind: "branch" | "worktree"; row: FlatRow } | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const loadFolders = useCallback(async () => {
@@ -290,65 +358,62 @@ export default function BranchTable() {
     }
   }, []);
 
-  const loadOverview = useCallback(
-    async (gitFolders: FolderSummary[], scope: string, refresh: boolean) => {
-      if (gitFolders.length === 0) {
-        setOverview([]);
-        setFetchedAt(new Date().toISOString());
-        return;
-      }
-      // Abort any in-flight load
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
+  const loadOverview = useCallback(async (gitFolders: FolderSummary[], scope: string, refresh: boolean) => {
+    if (gitFolders.length === 0) {
+      setOverview([]);
+      setFetchedAt(new Date().toISOString());
+      return;
+    }
+    // Abort any in-flight load
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-      const targets = scope === "all" ? gitFolders.map((f) => f.folder) : [scope];
-      try {
-        const results = await Promise.all(
-          targets.map(async (folder) => {
-            try {
-              return await getBranchOverview(folder, refresh);
-            } catch (err) {
-              const message = err instanceof Error ? err.message : "Failed to load branches";
-              return {
-                folders: [
-                  {
-                    folder,
-                    displayName: folder.split("/").pop() || folder,
-                    branches: [],
-                    prsEnriched: false,
-                    error: message,
-                  },
-                ],
-                fetchedAt: new Date().toISOString(),
-                prFetchedAt: null,
-              };
-            }
-          }),
-        );
-        if (controller.signal.aborted) return;
-
-        // Merge & dedupe by main-repo folder path (worktrees of the same repo share branches)
-        const merged = new Map<string, BranchOverviewFolder>();
-        let latestPrTime: string | null = null;
-        for (const r of results) {
-          if (r.prFetchedAt && (!latestPrTime || r.prFetchedAt > latestPrTime)) latestPrTime = r.prFetchedAt;
-          for (const f of r.folders) {
-            if (!merged.has(f.folder)) merged.set(f.folder, f);
+    const targets = scope === "all" ? gitFolders.map((f) => f.folder) : [scope];
+    try {
+      const results = await Promise.all(
+        targets.map(async (folder) => {
+          try {
+            return await getBranchOverview(folder, refresh);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to load branches";
+            return {
+              folders: [
+                {
+                  folder,
+                  displayName: folder.split("/").pop() || folder,
+                  branches: [],
+                  prsEnriched: false,
+                  error: message,
+                },
+              ],
+              fetchedAt: new Date().toISOString(),
+              prFetchedAt: null,
+            };
           }
-        }
-        const list = [...merged.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
-        setOverview(list);
-        setFetchedAt(new Date().toISOString());
-        setPrFetchedAt(latestPrTime);
-      } catch (err) {
-        if (!controller.signal.aborted) {
-          setError(err instanceof Error ? err.message : "Failed to load branch overview");
+        }),
+      );
+      if (controller.signal.aborted) return;
+
+      // Merge & dedupe by main-repo folder path (worktrees of the same repo share branches)
+      const merged = new Map<string, BranchOverviewFolder>();
+      let latestPrTime: string | null = null;
+      for (const r of results) {
+        if (r.prFetchedAt && (!latestPrTime || r.prFetchedAt > latestPrTime)) latestPrTime = r.prFetchedAt;
+        for (const f of r.folders) {
+          if (!merged.has(f.folder)) merged.set(f.folder, f);
         }
       }
-    },
-    [],
-  );
+      const list = [...merged.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+      setOverview(list);
+      setFetchedAt(new Date().toISOString());
+      setPrFetchedAt(latestPrTime);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : "Failed to load branch overview");
+      }
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -372,6 +437,29 @@ export default function BranchTable() {
     await loadOverview(folders, selectedFolder, true);
     setRefreshing(false);
   };
+
+  const handleConfirmDelete = useCallback(
+    async (force: boolean) => {
+      if (!pendingDelete) return;
+      const { kind, row } = pendingDelete;
+      setDeleting(true);
+      try {
+        if (kind === "branch") {
+          await deleteLocalBranch(row.folder, row.branch, force);
+        } else {
+          if (!row.worktreePath) throw new Error("No worktree to remove");
+          await removeGitWorktree(row.folder, row.worktreePath, force);
+        }
+        setPendingDelete(null);
+        await loadOverview(folders, selectedFolder, true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Delete failed");
+      } finally {
+        setDeleting(false);
+      }
+    },
+    [pendingDelete, folders, selectedFolder, loadOverview],
+  );
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -397,8 +485,9 @@ export default function BranchTable() {
     return flatRows.filter((r) => {
       if (q && !r.branch.toLowerCase().includes(q) && !r.folderDisplayName.toLowerCase().includes(q)) return false;
       if (filters.hasWorktree && !r.worktreePath) return false;
-      if (filters.hasOpenPr && !r.prs.some((p) => p.state === "open")) return false;
-      if (filters.hasUnresolved && totalUnresolved(r.prs) === 0) return false;
+      if (filters.hasPr && r.prs.length === 0) return false;
+      if (filters.hasUnresolved && threadTotals(r.prs).unresolved === 0) return false;
+      if (filters.hasConflict && r.hasMergeConflict !== true) return false;
       return true;
     });
   }, [flatRows, filters]);
@@ -408,6 +497,19 @@ export default function BranchTable() {
     copy.sort((a, b) => compareRows(a, b, sortKey, sortDir));
     return copy;
   }, [filteredRows, sortKey, sortDir]);
+
+  // Reset to first page whenever filters/sort change — React's "store prev value" pattern.
+  const resetKey = `${filters.search}|${filters.hasWorktree}|${filters.hasPr}|${filters.hasUnresolved}|${filters.hasConflict}|${sortKey}|${sortDir}|${selectedFolder}|${pageSize}`;
+  const [prevResetKey, setPrevResetKey] = useState(resetKey);
+  if (prevResetKey !== resetKey) {
+    setPrevResetKey(resetKey);
+    if (page !== 1) setPage(1);
+  }
+
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const pagedRows = useMemo(() => sortedRows.slice(pageStart, pageStart + pageSize), [sortedRows, pageStart, pageSize]);
 
   const showFolderColumn = selectedFolder === "all";
 
@@ -508,8 +610,9 @@ export default function BranchTable() {
           }}
         />
         <FilterToggle label="Has worktree" value={filters.hasWorktree} onChange={(v) => setFilters((f) => ({ ...f, hasWorktree: v }))} />
-        <FilterToggle label="Has open PR" value={filters.hasOpenPr} onChange={(v) => setFilters((f) => ({ ...f, hasOpenPr: v }))} />
+        <FilterToggle label="Has PR" value={filters.hasPr} onChange={(v) => setFilters((f) => ({ ...f, hasPr: v }))} />
         <FilterToggle label="Unresolved comments" value={filters.hasUnresolved} onChange={(v) => setFilters((f) => ({ ...f, hasUnresolved: v }))} />
+        <FilterToggle label="Merge conflict" value={filters.hasConflict} onChange={(v) => setFilters((f) => ({ ...f, hasConflict: v }))} />
         <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-muted)" }}>
           {sortedRows.length} / {flatRows.length} branches
         </span>
@@ -531,7 +634,10 @@ export default function BranchTable() {
         >
           <AlertCircle size={14} />
           {error}
-          <button onClick={() => setError(null)} style={{ marginLeft: "auto", background: "transparent", border: "none", color: "var(--danger)", cursor: "pointer" }}>
+          <button
+            onClick={() => setError(null)}
+            style={{ marginLeft: "auto", background: "transparent", border: "none", color: "var(--danger)", cursor: "pointer" }}
+          >
             Dismiss
           </button>
         </div>
@@ -563,6 +669,27 @@ export default function BranchTable() {
                 <th
                   style={{
                     padding: "10px 12px",
+                    textAlign: "center",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--text-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: 0.4,
+                    background: "var(--surface)",
+                    borderBottom: "1px solid var(--border)",
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 1,
+                    whiteSpace: "nowrap",
+                    width: 80,
+                  }}
+                  title="Merge status vs base branch"
+                >
+                  Merge
+                </th>
+                <th
+                  style={{
+                    padding: "10px 12px",
                     background: "var(--surface)",
                     borderBottom: "1px solid var(--border)",
                     position: "sticky",
@@ -574,7 +701,7 @@ export default function BranchTable() {
               </tr>
             </thead>
             <tbody>
-              {sortedRows.map((row) => {
+              {pagedRows.map((row) => {
                 const primary = primaryPr(row.prs);
                 const commitRel = row.lastCommit?.committedAt ? formatRelativeTime(row.lastCommit.committedAt) : "";
                 const openChat = row.worktreePath
@@ -597,12 +724,27 @@ export default function BranchTable() {
                   >
                     <td style={cell}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                        {row.isCurrent && <span title="Current branch" style={{ color: "var(--accent)", fontSize: 10 }}>●</span>}
+                        {row.isCurrent && (
+                          <span title="Current branch" style={{ color: "var(--accent)", fontSize: 10 }}>
+                            ●
+                          </span>
+                        )}
                         <span style={{ fontFamily: "monospace", fontWeight: row.isCurrent ? 600 : 400, color: "var(--text)" }}>{row.branch}</span>
                       </span>
                     </td>
                     {showFolderColumn && <td style={cell}>{row.folderDisplayName}</td>}
-                    <td style={{ ...cell, color: "var(--text-muted)", fontFamily: "monospace", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.worktreePath || ""}>
+                    <td
+                      style={{
+                        ...cell,
+                        color: "var(--text-muted)",
+                        fontFamily: "monospace",
+                        maxWidth: 300,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={row.worktreePath || ""}
+                    >
                       {row.worktreePath ? row.worktreePath.split("/").slice(-2).join("/") : <span style={{ opacity: 0.5 }}>—</span>}
                     </td>
                     <td style={{ ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
@@ -611,11 +753,15 @@ export default function BranchTable() {
                     <td style={{ ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                       {row.behind > 0 ? <span style={{ color: "var(--danger)" }}>−{row.behind}</span> : <span style={{ color: "var(--text-muted)" }}>0</span>}
                     </td>
-                    <td style={{ ...cell, color: "var(--text-muted)" }} title={row.lastCommit ? `${row.lastCommit.author}\n${row.lastCommit.subject}\n${row.lastCommit.committedAt}` : ""}>
+                    <td
+                      style={{ ...cell, color: "var(--text-muted)" }}
+                      title={row.lastCommit ? `${row.lastCommit.author}\n${row.lastCommit.subject}\n${row.lastCommit.committedAt}` : ""}
+                    >
                       {row.lastCommit ? (
-                        <span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                           <span style={{ color: "var(--text)" }}>{commitRel}</span>
                           <span style={{ opacity: 0.7 }}> · {row.lastCommit.author}</span>
+                          <StatusBadges row={row} />
                         </span>
                       ) : (
                         "—"
@@ -635,18 +781,54 @@ export default function BranchTable() {
                       <ChecksCell pr={primary} />
                     </td>
                     <td style={{ ...cell, textAlign: "center" }}>
-                      {primary && (
-                        <a
-                          href={primary.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          style={{ color: "var(--text-muted)", display: "inline-flex" }}
-                          title="Open PR"
+                      <MergeConflictCell row={row} />
+                    </td>
+                    <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        {primary && (
+                          <a
+                            href={primary.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ color: "var(--text-muted)", display: "inline-flex" }}
+                            title="Open PR"
+                          >
+                            <ExternalLink size={14} />
+                          </a>
+                        )}
+                        {row.worktreePath && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPendingDelete({ kind: "worktree", row });
+                            }}
+                            title={`Remove worktree at ${row.worktreePath}`}
+                            aria-label="Remove worktree"
+                            style={iconButtonStyle}
+                          >
+                            <FolderMinus size={14} />
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (row.isCurrent || row.worktreePath) return;
+                            setPendingDelete({ kind: "branch", row });
+                          }}
+                          disabled={row.isCurrent || !!row.worktreePath}
+                          title={row.isCurrent ? "Cannot delete the current branch" : row.worktreePath ? "Remove the worktree first" : "Delete local branch"}
+                          aria-label="Delete branch"
+                          style={{
+                            ...iconButtonStyle,
+                            color: row.isCurrent || row.worktreePath ? "var(--text-muted)" : "var(--danger)",
+                            opacity: row.isCurrent || row.worktreePath ? 0.35 : 1,
+                            cursor: row.isCurrent || row.worktreePath ? "not-allowed" : "pointer",
+                          }}
                         >
-                          <ExternalLink size={14} />
-                        </a>
-                      )}
+                          <Trash2 size={14} />
+                        </button>
+                      </span>
                     </td>
                   </tr>
                 );
@@ -655,7 +837,332 @@ export default function BranchTable() {
           </table>
         )}
       </div>
+      {/* Pagination */}
+      {!loading && sortedRows.length > 0 && (
+        <Pagination
+          page={safePage}
+          totalPages={totalPages}
+          pageSize={pageSize}
+          totalRows={sortedRows.length}
+          pageStart={pageStart}
+          pageEnd={Math.min(pageStart + pageSize, sortedRows.length)}
+          onPage={setPage}
+          onPageSize={setPageSize}
+          isMobile={isMobile}
+        />
+      )}
+      {pendingDelete && (
+        <ConfirmModal
+          kind={pendingDelete.kind}
+          row={pendingDelete.row}
+          busy={deleting}
+          onCancel={() => (deleting ? undefined : setPendingDelete(null))}
+          onConfirm={handleConfirmDelete}
+        />
+      )}
       <style>{`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
+    </div>
+  );
+}
+
+const iconButtonStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 26,
+  height: 26,
+  background: "transparent",
+  border: "1px solid transparent",
+  borderRadius: 6,
+  color: "var(--text-muted)",
+  cursor: "pointer",
+  padding: 0,
+};
+
+function StatusBadges({ row }: { row: FlatRow }) {
+  const badges: React.ReactNode[] = [];
+  if (row.hasUncommittedChanges) {
+    badges.push(
+      <span
+        key="uncommitted"
+        title="Uncommitted changes in worktree"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 3,
+          fontSize: 11,
+          color: "var(--warning, var(--danger))",
+          fontWeight: 600,
+        }}
+      >
+        <CircleDot size={12} />
+        uncommitted
+      </span>,
+    );
+  }
+  if (row.hasUnpushedCommits) {
+    const n = row.unpushedCount || 0;
+    badges.push(
+      <span
+        key="unpushed"
+        title={n ? `${n} commit${n === 1 ? "" : "s"} not pushed to origin/${row.branch}` : "Unpushed commits"}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 3,
+          fontSize: 11,
+          color: "var(--accent)",
+          fontWeight: 600,
+        }}
+      >
+        <ArrowUpCircle size={12} />
+        {n ? `${n} unpushed` : "unpushed"}
+      </span>,
+    );
+  }
+  if (badges.length === 0) return null;
+  return <>{badges}</>;
+}
+
+interface ConfirmModalProps {
+  kind: "branch" | "worktree";
+  row: FlatRow;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (force: boolean) => void;
+}
+
+function ConfirmModal({ kind, row, busy, onCancel, onConfirm }: ConfirmModalProps) {
+  const needsForce = kind === "worktree" ? !!row.hasUncommittedChanges || row.ahead > 0 : row.ahead > 0 || !!row.hasUnpushedCommits;
+  const [force, setForce] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel, busy]);
+
+  const title = kind === "branch" ? `Delete branch “${row.branch}”?` : "Remove worktree?";
+  const confirmDisabled = busy || (needsForce && !force);
+
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "var(--overlay-bg, rgba(0,0,0,0.5))",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 50,
+        padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-delete-title"
+        style={{
+          background: "var(--surface)",
+          color: "var(--text)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          boxShadow: "var(--shadow-md, 0 10px 30px rgba(0,0,0,0.4))",
+          maxWidth: 480,
+          width: "100%",
+          padding: 20,
+        }}
+      >
+        <h2 id="confirm-delete-title" style={{ fontSize: 16, fontWeight: 600, margin: 0, marginBottom: 10 }}>
+          {title}
+        </h2>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", display: "flex", flexDirection: "column", gap: 6 }}>
+          {kind === "branch" ? (
+            <>
+              <div>
+                Repo: <span style={{ color: "var(--text)", fontFamily: "monospace" }}>{row.folderDisplayName}</span>
+              </div>
+              <div>
+                Branch: <span style={{ color: "var(--text)", fontFamily: "monospace" }}>{row.branch}</span>
+              </div>
+              {row.hasUnpushedCommits && <div style={{ color: "var(--warning, var(--danger))" }}>This branch has unpushed commits.</div>}
+              {row.ahead > 0 && !row.hasUnpushedCommits && <div style={{ color: "var(--warning, var(--danger))" }}>This branch is ahead of its upstream.</div>}
+            </>
+          ) : (
+            <>
+              <div>
+                Worktree: <span style={{ color: "var(--text)", fontFamily: "monospace" }}>{row.worktreePath}</span>
+              </div>
+              <div>
+                Branch: <span style={{ color: "var(--text)", fontFamily: "monospace" }}>{row.branch}</span>
+              </div>
+              {row.hasUncommittedChanges && <div style={{ color: "var(--warning, var(--danger))" }}>Worktree has uncommitted changes.</div>}
+            </>
+          )}
+        </div>
+
+        {needsForce && (
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginTop: 14,
+              padding: 10,
+              background: "color-mix(in srgb, var(--warning, var(--danger)) 10%, transparent)",
+              border: "1px solid var(--warning, var(--danger))",
+              borderRadius: 6,
+              fontSize: 13,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+            Force {kind === "branch" ? "delete (discards unmerged commits)" : "remove (discards uncommitted changes)"}
+          </label>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            style={{
+              background: "var(--bg-secondary)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "8px 14px",
+              fontSize: 13,
+              cursor: busy ? "not-allowed" : "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(force)}
+            disabled={confirmDisabled}
+            style={{
+              background: "var(--danger)",
+              color: "var(--text-on-accent, #fff)",
+              border: "1px solid var(--danger)",
+              borderRadius: 6,
+              padding: "8px 14px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: confirmDisabled ? "not-allowed" : "pointer",
+              opacity: confirmDisabled ? 0.5 : 1,
+            }}
+          >
+            {busy ? "Working…" : kind === "branch" ? "Delete branch" : "Remove worktree"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface PaginationProps {
+  page: number;
+  totalPages: number;
+  pageSize: number;
+  totalRows: number;
+  pageStart: number;
+  pageEnd: number;
+  onPage: (p: number) => void;
+  onPageSize: (n: number) => void;
+  isMobile: boolean;
+}
+
+function Pagination({ page, totalPages, pageSize, totalRows, pageStart, pageEnd, onPage, onPageSize, isMobile }: PaginationProps) {
+  const btnStyle: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 36,
+    height: 32,
+    padding: "0 10px",
+    fontSize: 13,
+    background: "var(--bg-secondary)",
+    color: "var(--text)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    cursor: "pointer",
+  };
+  const disabledStyle: React.CSSProperties = { opacity: 0.4, cursor: "not-allowed" };
+
+  return (
+    <div
+      style={{
+        padding: isMobile ? "10px 16px" : "10px 20px",
+        borderTop: "1px solid var(--border)",
+        background: "var(--surface)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        flexShrink: 0,
+        flexWrap: "wrap",
+      }}
+    >
+      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{totalRows === 0 ? "0 results" : `${pageStart + 1}–${pageEnd} of ${totalRows}`}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {!isMobile && (
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)" }}>
+            Rows
+            <select
+              value={pageSize}
+              onChange={(e) => onPageSize(parseInt(e.target.value, 10))}
+              style={{
+                background: "var(--bg-secondary)",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                padding: "4px 8px",
+                fontSize: 13,
+              }}
+            >
+              {[10, 25, 50, 100].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <button
+          onClick={() => onPage(Math.max(1, page - 1))}
+          disabled={page <= 1}
+          style={{ ...btnStyle, ...(page <= 1 ? disabledStyle : {}) }}
+          aria-label="Previous page"
+          title="Previous page"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <span
+          style={{
+            fontSize: 13,
+            color: "var(--text)",
+            fontVariantNumeric: "tabular-nums",
+            minWidth: 70,
+            textAlign: "center",
+          }}
+        >
+          {page} / {totalPages}
+        </span>
+        <button
+          onClick={() => onPage(Math.min(totalPages, page + 1))}
+          disabled={page >= totalPages}
+          style={{ ...btnStyle, ...(page >= totalPages ? disabledStyle : {}) }}
+          aria-label="Next page"
+          title="Next page"
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
     </div>
   );
 }

@@ -12,6 +12,8 @@ export interface PrInfo {
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   approved: boolean;
   openUnresolvedThreads: number;
+  /** Total non-outdated review threads (resolved + unresolved). */
+  totalThreads: number;
   checksStatus: "success" | "failure" | "pending" | null;
   updatedAt: string;
   title?: string;
@@ -36,6 +38,19 @@ export interface BranchRow {
   behind: number;
   lastCommit: BranchLastCommit | null;
   prs: PrInfo[];
+  /**
+   * Whether the branch conflicts with the base branch of its primary PR.
+   * `null` if no PR is associated, detection was skipped, or git lacks support.
+   */
+  hasMergeConflict: boolean | null;
+  /** Base ref the merge-conflict check was performed against (for tooltips). */
+  mergeConflictBase: string | null;
+  /** Uncommitted changes in the branch's worktree. `null` when no worktree is present. */
+  hasUncommittedChanges: boolean | null;
+  /** Commits on the branch that aren't on origin/<branch>. `null` if the remote ref is missing. */
+  hasUnpushedCommits: boolean | null;
+  /** Count of unpushed commits (best-effort; 0 when false, null when unknown). */
+  unpushedCount: number | null;
   /** Whether any tracked chat/session exists in the matching worktree */
   hasLocalSession: boolean;
   /** Most recent chat activity timestamp in worktree (ISO), or null */
