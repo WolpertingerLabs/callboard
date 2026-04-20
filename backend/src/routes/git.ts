@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { basename } from "path";
 import {
+  deleteLocalBranch,
+  detectMergeConflict,
   getBranchMeta,
+  getBranchStatusFlags,
   getGitBranches,
   getGitDiffStructured,
   getGitFileDiff,
@@ -115,9 +118,66 @@ gitRouter.delete("/worktrees", (req, res) => {
 
   try {
     removeWorktree(folder, worktreePath, !!force);
+    // Bust caches so the overview reflects the removal immediately.
+    try {
+      const { mainRepoPath } = resolveWorktreeToMainRepoCached(folder);
+      branchOverviewGitCache.delete(mainRepoPath);
+      mergeConflictCache.delete(mainRepoPath);
+    } catch {
+      // non-fatal
+    }
     res.json({ ok: true, removed: worktreePath });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to remove worktree", details: err.message });
+  }
+});
+
+/**
+ * Delete a local git branch. Safety: refuses to delete the current branch or a
+ * branch still checked out in any worktree. Uses `-D` when `force` is true.
+ */
+gitRouter.delete("/branches", (req, res) => {
+  // #swagger.tags = ['Git']
+  // #swagger.summary = 'Delete a local branch'
+  // #swagger.description = 'Deletes a local git branch. Refuses to delete the current branch or one checked out in any worktree. Use `force` to delete unmerged branches.'
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["folder", "branch"],
+          properties: {
+            folder: { type: "string", description: "Absolute path to the git repository" },
+            branch: { type: "string", description: "Branch name to delete" },
+            force: { type: "boolean", description: "Force delete unmerged branches (-D)" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Branch deleted" } */
+  /* #swagger.responses[400] = { description: "Missing fields / invalid branch / branch in use" } */
+  const { folder: rawFolder, branch, force } = req.body;
+  if (!rawFolder) return res.status(400).json({ error: "folder is required" });
+  if (!branch) return res.status(400).json({ error: "branch is required" });
+
+  let folder: string;
+  try {
+    folder = validateFolderPath(rawFolder);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    const { mainRepoPath } = resolveWorktreeToMainRepoCached(folder);
+    deleteLocalBranch(mainRepoPath, branch, !!force);
+    // Bust caches so the overview reflects the deletion immediately.
+    branchOverviewGitCache.delete(mainRepoPath);
+    mergeConflictCache.delete(mainRepoPath);
+    res.json({ ok: true, deleted: branch });
+  } catch (err: any) {
+    res.status(400).json({ error: "Failed to delete branch", details: err.message });
   }
 });
 
@@ -266,6 +326,13 @@ interface BranchOverviewCacheEntry {
 const branchOverviewGitCache = new Map<string, BranchOverviewCacheEntry>();
 const BRANCH_OVERVIEW_GIT_TTL = 30 * 1000; // 30 seconds
 
+interface MergeConflictCacheEntry {
+  map: Map<string, { hasConflict: boolean; baseRef: string }>;
+  fetchedAt: number;
+}
+const mergeConflictCache = new Map<string, MergeConflictCacheEntry>();
+const MERGE_CONFLICT_TTL = 60 * 1000; // 1 minute
+
 function buildRowsForFolder(folder: string): BranchOverviewFolder {
   // Always resolve to main repo — worktrees share branches with their parent.
   const { mainRepoPath } = resolveWorktreeToMainRepoCached(folder);
@@ -279,18 +346,27 @@ function buildRowsForFolder(folder: string): BranchOverviewFolder {
     if (wt.branch) worktreeByBranch.set(wt.branch, wt.path);
   }
 
-  const rows: BranchRow[] = meta.map((m) => ({
-    branch: m.branch,
-    isCurrent: m.isCurrent,
-    worktreePath: worktreeByBranch.get(m.branch) || null,
-    upstream: m.upstream,
-    ahead: m.ahead,
-    behind: m.behind,
-    lastCommit: m.lastCommit,
-    prs: [],
-    hasLocalSession: false,
-    lastActivityAt: null,
-  }));
+  const rows: BranchRow[] = meta.map((m) => {
+    const worktreePath = worktreeByBranch.get(m.branch) || null;
+    const flags = getBranchStatusFlags(repoDir, m.branch, worktreePath);
+    return {
+      branch: m.branch,
+      isCurrent: m.isCurrent,
+      worktreePath,
+      upstream: m.upstream,
+      ahead: m.ahead,
+      behind: m.behind,
+      lastCommit: m.lastCommit,
+      prs: [],
+      hasMergeConflict: null,
+      mergeConflictBase: null,
+      hasUncommittedChanges: flags.hasUncommittedChanges,
+      hasUnpushedCommits: flags.hasUnpushedCommits,
+      unpushedCount: flags.unpushedCount,
+      hasLocalSession: false,
+      lastActivityAt: null,
+    };
+  });
 
   // Current branch first, then alphabetical.
   rows.sort((a, b) => {
@@ -343,7 +419,7 @@ gitRouter.get("/branch-overview", async (req, res) => {
     // Clone so we don't mutate the cached objects when merging PRs below.
     const folders: BranchOverviewFolder[] = gitEntry.folders.map((f) => ({
       ...f,
-      branches: f.branches.map((b) => ({ ...b, prs: [] })),
+      branches: f.branches.map((b) => ({ ...b, prs: [], hasMergeConflict: null, mergeConflictBase: null })),
       prsEnriched: false,
     }));
 
@@ -361,6 +437,47 @@ gitRouter.get("/branch-overview", async (req, res) => {
           const list = prMap.get(row.branch);
           if (list && list.length > 0) {
             row.prs = list as PrInfo[];
+          }
+        }
+
+        // Merge-conflict detection: check each branch with an open PR against its base ref.
+        // Cached per-repo with a short TTL to amortize the git merge-tree cost across polls.
+        const checks = folderData.branches
+          .map((row) => {
+            const open = row.prs.find((p) => p.state === "open");
+            if (!open) return null;
+            return { row, base: open.baseRef };
+          })
+          .filter((x): x is { row: BranchRow; base: string } => x !== null);
+
+        const mcEntry = mergeConflictCache.get(folderData.folder);
+        const mcFresh = !!mcEntry && !force && Date.now() - mcEntry.fetchedAt < MERGE_CONFLICT_TTL;
+        const mcMap = mcFresh && mcEntry ? mcEntry.map : new Map<string, { hasConflict: boolean; baseRef: string }>();
+
+        if (!mcFresh) {
+          const results = await Promise.all(
+            checks.map(({ row, base }) =>
+              Promise.resolve().then(() => {
+                try {
+                  return detectMergeConflict(folderData.folder, row.branch, base);
+                } catch {
+                  return null;
+                }
+              }),
+            ),
+          );
+          checks.forEach(({ row }, i) => {
+            const result = results[i];
+            if (result) mcMap.set(row.branch, result);
+          });
+          mergeConflictCache.set(folderData.folder, { map: mcMap, fetchedAt: Date.now() });
+        }
+
+        for (const { row } of checks) {
+          const cached = mcMap.get(row.branch);
+          if (cached) {
+            row.hasMergeConflict = cached.hasConflict;
+            row.mergeConflictBase = cached.baseRef;
           }
         }
       }

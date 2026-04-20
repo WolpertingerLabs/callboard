@@ -177,13 +177,13 @@ class GithubPrService {
     const state: PrState = (pr.state || "").toUpperCase() === "MERGED" ? "merged" : (pr.state || "").toUpperCase() === "CLOSED" ? "closed" : "open";
 
     const reviewDecision =
-      pr.reviewDecision === "APPROVED" || pr.reviewDecision === "CHANGES_REQUESTED" || pr.reviewDecision === "REVIEW_REQUIRED"
-        ? pr.reviewDecision
-        : null;
+      pr.reviewDecision === "APPROVED" || pr.reviewDecision === "CHANGES_REQUESTED" || pr.reviewDecision === "REVIEW_REQUIRED" ? pr.reviewDecision : null;
 
-    // Count unresolved, non-outdated review threads
+    // Count non-outdated review threads (matching what GitHub's UI surfaces).
     const threads = pr.reviewThreads || [];
-    const openUnresolvedThreads = threads.filter((t) => !t.isResolved && !t.isOutdated).length;
+    const nonOutdated = threads.filter((t) => !t.isOutdated);
+    const totalThreads = nonOutdated.length;
+    const openUnresolvedThreads = nonOutdated.filter((t) => !t.isResolved).length;
 
     const checksStatus = this.rollupChecks(pr.statusCheckRollup);
 
@@ -199,6 +199,7 @@ class GithubPrService {
       reviewDecision,
       approved: reviewDecision === "APPROVED",
       openUnresolvedThreads,
+      totalThreads,
       checksStatus,
       updatedAt: pr.updatedAt || "",
       title: pr.title,

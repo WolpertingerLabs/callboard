@@ -467,6 +467,147 @@ export function getGitWorktrees(directory: string): WorktreeInfo[] {
 }
 
 /**
+ * Check whether merging `branch` into `base` would produce conflicts, without
+ * touching the working tree. Tries `origin/<base>` first, falls back to `<base>`.
+ * Returns `null` if detection is unavailable (git pre-2.38, ref missing, error).
+ */
+export function detectMergeConflict(repoDir: string, branch: string, base: string): { hasConflict: boolean; baseRef: string } | null {
+  if (!repoDir || !existsSync(repoDir) || !branch || !base) return null;
+
+  const candidates = [`origin/${base}`, base];
+  let resolvedBase: string | null = null;
+  for (const c of candidates) {
+    try {
+      execFileSync("git", ["rev-parse", "--verify", "--quiet", c], {
+        cwd: repoDir,
+        stdio: "pipe",
+        timeout: 3000,
+      });
+      resolvedBase = c;
+      break;
+    } catch {
+      // try next
+    }
+  }
+  if (!resolvedBase) return null;
+
+  try {
+    // git 2.38+: --write-tree exits 0 on clean merge, 1 on conflict.
+    execFileSync("git", ["merge-tree", "--write-tree", "--name-only", resolvedBase, branch], {
+      cwd: repoDir,
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    return { hasConflict: false, baseRef: resolvedBase };
+  } catch (err: any) {
+    // Exit 1 = merge had conflicts; anything else = unknown.
+    if (err && typeof err.status === "number" && err.status === 1) {
+      return { hasConflict: true, baseRef: resolvedBase };
+    }
+    return null;
+  }
+}
+
+/**
+ * Collect per-branch working-tree status flags. Both fields are `null` when the
+ * information can't be determined (no worktree for uncommitted, no remote ref
+ * for unpushed). Designed to be cheap — one `status` call per worktree, one
+ * `rev-list --count` per branch.
+ */
+export function getBranchStatusFlags(
+  repoDir: string,
+  branch: string,
+  worktreePath: string | null,
+): { hasUncommittedChanges: boolean | null; hasUnpushedCommits: boolean | null; unpushedCount: number | null } {
+  let hasUncommittedChanges: boolean | null = null;
+  if (worktreePath && existsSync(worktreePath)) {
+    try {
+      const out = execFileSync("git", ["status", "--porcelain", "-uall"], {
+        cwd: worktreePath,
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 5000,
+      });
+      hasUncommittedChanges = out.trim().length > 0;
+    } catch {
+      hasUncommittedChanges = null;
+    }
+  }
+
+  let hasUnpushedCommits: boolean | null = null;
+  let unpushedCount: number | null = null;
+  try {
+    // Verify origin/<branch> exists before counting — otherwise `rev-list` errors
+    // and we can't distinguish "no remote" from "nothing unpushed".
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", `origin/${branch}`], {
+      cwd: repoDir,
+      stdio: "pipe",
+      timeout: 3000,
+    });
+    const out = execFileSync("git", ["rev-list", "--count", `origin/${branch}..${branch}`], {
+      cwd: repoDir,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 5000,
+    }).trim();
+    const n = parseInt(out, 10);
+    if (!isNaN(n)) {
+      unpushedCount = n;
+      hasUnpushedCommits = n > 0;
+    }
+  } catch {
+    // No remote ref or other failure — leave as null
+  }
+
+  return { hasUncommittedChanges, hasUnpushedCommits, unpushedCount };
+}
+
+/**
+ * Delete a local branch. Refuses to delete the currently-checked-out branch or
+ * a branch still checked out in any worktree (safety matches `git branch -d`
+ * but returns a clearer error). Uses `-D` when `force` is true.
+ */
+export function deleteLocalBranch(repoDir: string, branch: string, force: boolean = false): void {
+  validateGitRef(branch);
+
+  // Block the currently checked-out branch in the main repo
+  let currentBranch = "";
+  try {
+    currentBranch = execSync("git branch --show-current", {
+      cwd: repoDir,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 5000,
+    }).trim();
+  } catch {
+    // ignore — detached HEAD etc.
+  }
+  if (currentBranch && currentBranch === branch) {
+    throw new Error("Cannot delete the currently checked-out branch. Switch branches first.");
+  }
+
+  // Block deletion if any worktree still has it checked out
+  const worktrees = getGitWorktrees(repoDir);
+  const inWorktree = worktrees.find((wt) => wt.branch === branch);
+  if (inWorktree) {
+    throw new Error(`Branch is checked out in worktree ${inWorktree.path}. Remove the worktree first.`);
+  }
+
+  const args = ["branch", force ? "-D" : "-d", branch];
+  try {
+    execFileSync("git", args, {
+      cwd: repoDir,
+      stdio: "pipe",
+      timeout: 10000,
+    });
+  } catch (err: any) {
+    // git's own error message is usually informative — surface it.
+    const stderr = (err?.stderr?.toString?.() || "").trim();
+    throw new Error(stderr || (err?.message ?? "git branch delete failed"));
+  }
+}
+
+/**
  * Remove a git worktree and prune stale references.
  * Refuses to remove the main worktree.
  *
