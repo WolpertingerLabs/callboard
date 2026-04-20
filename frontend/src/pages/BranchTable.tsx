@@ -111,7 +111,14 @@ function compareRows(a: FlatRow, b: FlatRow, key: SortKey, dir: SortDir): number
       bv = threadTotals(b.prs).unresolved;
       break;
     case "checks": {
-      const rank = (p: PrInfo | null) => (!p || p.checksStatus === null ? 99 : p.checksStatus === "failure" ? 0 : p.checksStatus === "pending" ? 1 : 2);
+      const rank = (p: PrInfo | null) => {
+        if (!p || !p.checks) return 99;
+        const r = p.checks.rollup;
+        // Failures ranked by how many; more failures = worse.
+        if (r === "failure") return -p.checks.failure;
+        if (r === "pending") return 100;
+        return 200;
+      };
       av = rank(pa);
       bv = rank(pb);
       break;
@@ -226,10 +233,33 @@ function ApprovedCell({ pr }: { pr: PrInfo | null }) {
 }
 
 function ChecksCell({ pr }: { pr: PrInfo | null }) {
-  if (!pr || pr.checksStatus === null) return <span style={{ color: "var(--text-muted)" }}>—</span>;
-  if (pr.checksStatus === "success") return <Check size={16} style={{ color: "var(--success, var(--accent))" }} />;
-  if (pr.checksStatus === "failure") return <X size={16} style={{ color: "var(--danger)" }} />;
-  return <Clock size={16} style={{ color: "var(--text-muted)" }} />;
+  if (!pr || !pr.checks) return <span style={{ color: "var(--text-muted)" }}>—</span>;
+  const { rollup, total, success, failure, pending, neutral, items } = pr.checks;
+
+  const summary = `✓ ${success}   ✗ ${failure}   ⏱ ${pending}${neutral ? `   ○ ${neutral}` : ""}   (total ${total})`;
+  const failed = items.filter(
+    (i) => i.conclusion === "failure" || i.conclusion === "timed_out" || i.conclusion === "cancelled" || i.conclusion === "action_required",
+  );
+  const pendingNames = items.filter((i) => i.conclusion === null);
+  const tipLines = [summary];
+  if (failed.length) tipLines.push(`Failed: ${failed.map((i) => i.name).join(" · ")}`);
+  if (pendingNames.length && !failed.length) tipLines.push(`Pending: ${pendingNames.map((i) => i.name).join(" · ")}`);
+  const title = tipLines.join("\n");
+
+  const icon =
+    rollup === "success" ? (
+      <Check size={16} style={{ color: "var(--success, var(--accent))" }} />
+    ) : rollup === "failure" ? (
+      <X size={16} style={{ color: "var(--danger)" }} />
+    ) : (
+      <Clock size={16} style={{ color: "var(--text-muted)" }} />
+    );
+
+  return (
+    <span title={title} style={{ display: "inline-flex", alignItems: "center" }}>
+      {icon}
+    </span>
+  );
 }
 
 function PrNumberCell({ prs }: { prs: PrInfo[] }) {
@@ -529,6 +559,20 @@ export default function BranchTable() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {isMobile && (
+            <button
+              onClick={() => navigate("/")}
+              style={{
+                background: "none",
+                padding: "4px 8px",
+                display: "flex",
+                alignItems: "center",
+                color: "var(--text)",
+              }}
+            >
+              <ChevronLeft size={20} />
+            </button>
+          )}
           <GitBranch size={20} style={{ color: "var(--accent)" }} />
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>Branches</h1>
           {fetchedAt && (
