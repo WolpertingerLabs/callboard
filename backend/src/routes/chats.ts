@@ -102,64 +102,57 @@ function discoverSessionsPaginated(
   if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
 
   try {
-    // Use the fastest approach: find + xargs + ls -t for time-sorted file listing
-    // This is orders of magnitude faster than per-file operations
+    // Enumerate jsonl files with find (fast), then stat and sort in Node.
+    // Note: we cannot delegate sorting to `xargs ... ls -lt` — when xargs splits
+    // args across multiple batches (>128KB command buffer), each batch is sorted
+    // independently and the concatenated output is NOT globally time-sorted,
+    // so recent files can be buried and missed by the first page of results.
     // Use -maxdepth 2 to only get .jsonl files directly inside project folders,
     // excluding subagents/ subdirectories (projects/<name>/subagents/<id>.jsonl)
-    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -maxdepth 2 -name "*.jsonl" -type f -print0 | xargs -0 ls -lt`;
-    const output = execSync(findCommand, { encoding: "utf8" }).trim();
+    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -maxdepth 2 -name "*.jsonl" -type f -print0`;
+    const output = execSync(findCommand, { encoding: "utf8" });
 
     if (!output) return { sessions: [], total: 0 };
 
-    // Parse ls -lt output and extract file paths
-    // Since ls -t already sorts by modification time, we can use statSync only on paginated files
-    const filePathsFromLs = output
-      .split("\n")
-      .filter((line) => line.trim() && line.includes(".jsonl"))
-      .map((line) => {
-        // Extract filepath from the end of ls -l output
-        const parts = line.trim().split(/\s+/);
-        if (parts.length < 9) return null;
+    const filePaths = output.split("\0").filter((p) => p.endsWith(".jsonl"));
 
-        const filePath = parts.slice(8).join(" "); // Handle spaces in filenames
-        if (!filePath.endsWith(".jsonl")) return null;
-
-        return filePath;
-      })
-      .filter((filePath): filePath is string => filePath !== null);
-
-    const total = filePathsFromLs.length;
-
-    // Only process the files we need for this page (already sorted by ls -t)
-    const pageFiles = filePathsFromLs.slice(offset, offset + limit);
-    const results: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
-
-    // Only call statSync on the paginated files we actually need
-    for (const filePath of pageFiles) {
+    // Stat every file so we can sort globally by mtime before paginating.
+    // statSync on local files is fast (typically <1ms per file).
+    const allStats: { filePath: string; mtimeMs: number; birthtime: Date; mtime: Date }[] = [];
+    for (const filePath of filePaths) {
       try {
-        const sessionId = filePath.split("/").pop()?.replace(".jsonl", "");
-        if (!sessionId) continue;
-
-        const projectDir = filePath.split("/").slice(0, -1).pop();
-        if (!projectDir) continue;
-
-        const originalFolder = projectDirToFolder(projectDir);
-        // Resolve worktree paths to the main repo for display/grouping only
-        const { mainRepoPath } = resolveWorktreeToMainRepoCached(originalFolder);
-
-        // Get timestamps only for paginated files (much faster than all files)
         const st = statSync(filePath);
-        results.push({
-          sessionId,
-          folder: originalFolder,
-          displayFolder: mainRepoPath,
-          filePath,
-          createdAt: st.birthtime,
-          updatedAt: st.mtime,
-        });
+        allStats.push({ filePath, mtimeMs: st.mtimeMs, birthtime: st.birthtime, mtime: st.mtime });
       } catch {
         continue;
       }
+    }
+
+    allStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    const total = allStats.length;
+    const pageStats = allStats.slice(offset, offset + limit);
+    const results: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
+
+    for (const { filePath, birthtime, mtime } of pageStats) {
+      const sessionId = filePath.split("/").pop()?.replace(".jsonl", "");
+      if (!sessionId) continue;
+
+      const projectDir = filePath.split("/").slice(0, -1).pop();
+      if (!projectDir) continue;
+
+      const originalFolder = projectDirToFolder(projectDir);
+      // Resolve worktree paths to the main repo for display/grouping only
+      const { mainRepoPath } = resolveWorktreeToMainRepoCached(originalFolder);
+
+      results.push({
+        sessionId,
+        folder: originalFolder,
+        displayFolder: mainRepoPath,
+        filePath,
+        createdAt: birthtime,
+        updatedAt: mtime,
+      });
     }
 
     return { sessions: results, total };
