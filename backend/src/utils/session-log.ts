@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "fs";
 import { join } from "path";
-import { CLAUDE_PROJECTS_DIR } from "./paths.js";
+import { CLAUDE_PROJECTS_DIR, listClaudeProjectDirs } from "./paths.js";
 
 /**
  * Find the session JSONL file in ~/.claude/projects/.
@@ -9,14 +9,9 @@ import { CLAUDE_PROJECTS_DIR } from "./paths.js";
  * resolve the cwd differently than what we passed.
  */
 export function findSessionLogPath(sessionId: string): string | null {
-  if (!existsSync(CLAUDE_PROJECTS_DIR)) return null;
-  try {
-    for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
-      const candidate = join(CLAUDE_PROJECTS_DIR, dir, `${sessionId}.jsonl`);
-      if (existsSync(candidate)) return candidate;
-    }
-  } catch {
-    // Silently handle errors (directory not accessible, etc.)
+  for (const dir of listClaudeProjectDirs()) {
+    const candidate = join(CLAUDE_PROJECTS_DIR, dir, `${sessionId}.jsonl`);
+    if (existsSync(candidate)) return candidate;
   }
   return null;
 }
@@ -29,14 +24,12 @@ export function findSessionLogPath(sessionId: string): string | null {
  * Returns an array of { agentId, filePath } objects.
  */
 export function findSubagentFiles(sessionId: string): { agentId: string; filePath: string }[] {
-  if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
-
   const results: { agentId: string; filePath: string }[] = [];
-  try {
-    for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
-      const subagentsDir = join(CLAUDE_PROJECTS_DIR, dir, sessionId, "subagents");
-      if (!existsSync(subagentsDir)) continue;
+  for (const dir of listClaudeProjectDirs()) {
+    const subagentsDir = join(CLAUDE_PROJECTS_DIR, dir, sessionId, "subagents");
+    if (!existsSync(subagentsDir)) continue;
 
+    try {
       for (const file of readdirSync(subagentsDir)) {
         if (!file.startsWith("agent-") || !file.endsWith(".jsonl")) continue;
         const agentId = file.replace("agent-", "").replace(".jsonl", "");
@@ -45,9 +38,9 @@ export function findSubagentFiles(sessionId: string): { agentId: string; filePat
           filePath: join(subagentsDir, file),
         });
       }
+    } catch {
+      continue;
     }
-  } catch {
-    // Silently handle errors (directory not accessible, etc.)
   }
   return results;
 }
