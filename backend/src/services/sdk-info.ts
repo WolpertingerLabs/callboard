@@ -8,6 +8,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
+import { getApiEnvOverrides } from "./agent-settings.js";
 
 const log = createLogger("sdk-info");
 
@@ -66,6 +67,10 @@ async function fetchSdkInfo(): Promise<SdkInfoCache> {
         allowDangerouslySkipPermissions: true,
         env: {
           ...process.env,
+          // Apply user-configured API / auth / model overrides so the
+          // account + supported models reported here match what the
+          // actual sessions will use.
+          ...getApiEnvOverrides(),
           CLAUDECODE: undefined,
         },
       },
@@ -123,4 +128,18 @@ export async function getSdkInfoAsync(): Promise<SdkInfoCache> {
   // If init was never called, do it now
   initSdkInfoCache();
   return fetchPromise!;
+}
+
+/**
+ * Invalidate the cached SDK info and re-fetch with the current env overrides.
+ * Called when the user changes API / auth / model override settings so the
+ * About page reflects the new account + supported models.
+ */
+export function refreshSdkInfoCache(): Promise<SdkInfoCache> {
+  cache = null;
+  fetchPromise = fetchSdkInfo().then((result) => {
+    cache = result;
+    return result;
+  });
+  return fetchPromise;
 }

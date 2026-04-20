@@ -5,6 +5,28 @@ import { homedir } from "os";
 
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
+/**
+ * Project dirs in ~/.claude/projects/ that should be hidden from API listings.
+ *
+ * "-tmp" is the slugified form of `/tmp`, which the Claude Agent SDK uses
+ * when callers pass `cwd: tmpdir()` (e.g. quick-completion, sdk-info). Those
+ * calls create throwaway transcripts we never want to surface as chats.
+ */
+export const IGNORED_PROJECT_DIRS: ReadonlySet<string> = new Set(["-tmp"]);
+
+/**
+ * Read ~/.claude/projects/ and return the project dir names that aren't
+ * on the ignore list. Safe to call when the dir doesn't exist.
+ */
+export function listClaudeProjectDirs(): string[] {
+  if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
+  try {
+    return readdirSync(CLAUDE_PROJECTS_DIR).filter((d) => !IGNORED_PROJECT_DIRS.has(d));
+  } catch {
+    return [];
+  }
+}
+
 // ── Claude Binary Resolution ────────────────────────────────────────
 
 /**

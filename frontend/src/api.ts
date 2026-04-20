@@ -19,6 +19,11 @@ import type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
+  BranchOverviewResponse,
+  BranchOverviewFolder,
+  BranchRow,
+  PrInfo,
+  PrState,
   AppPlugin,
   McpServerConfig,
   PluginScanRoot,
@@ -64,6 +69,11 @@ export type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
+  BranchOverviewResponse,
+  BranchOverviewFolder,
+  BranchRow,
+  PrInfo,
+  PrState,
   AppPlugin,
   McpServerConfig,
   PluginScanRoot,
@@ -331,6 +341,14 @@ export async function generateGitBranchName(prompt: string): Promise<{ branchNam
 export async function getGitDiff(folder: string): Promise<GitDiffResponse> {
   const res = await fetch(`${BASE}/git/diff?folder=${encodeURIComponent(folder)}`);
   await assertOk(res, "Failed to get diff");
+  return res.json();
+}
+
+export async function getBranchOverview(folder: string, refresh: boolean = false): Promise<BranchOverviewResponse> {
+  const params = new URLSearchParams({ folder });
+  if (refresh) params.append("refresh", "1");
+  const res = await fetch(`${BASE}/git/branch-overview?${params}`);
+  await assertOk(res, "Failed to get branch overview");
   return res.json();
 }
 

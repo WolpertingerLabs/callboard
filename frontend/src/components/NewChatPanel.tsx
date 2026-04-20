@@ -5,13 +5,7 @@ import { listAgents, getAgentIdentityPrompt, type DefaultPermissions, type Agent
 import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
-import {
-  getDefaultPermissions,
-  saveDefaultPermissions,
-  getRecentDirectories,
-  addRecentDirectory,
-  removeRecentDirectory,
-} from "../utils/localStorage";
+import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, addRecentDirectory, removeRecentDirectory } from "../utils/localStorage";
 
 interface NewChatPanelProps {
   onClose: () => void;
@@ -345,7 +339,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                   )}
                   <div style={{ display: "flex", gap: 8 }}>
                     <div style={{ flex: 1 }}>
-                      <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" autoFocus />
+                      <FolderSelector value={folder} onChange={setFolder} placeholder="Project folder path (e.g. /home/user/myproject)" />
                     </div>
                     <button
                       onClick={() => handleCreate()}

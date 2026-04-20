@@ -15,6 +15,7 @@ import { switchProxyMode } from "../services/proxy-singleton.js";
 import { testRemoteConnection } from "../services/proxy-singleton.js";
 import { getTunnelStatusFull } from "../services/tunnel-manager.js";
 import { initSync, completeSync, cancelSync, SyncClientError } from "../services/sync-manager.js";
+import { refreshSdkInfoCache } from "../services/sdk-info.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("agent-settings-routes");
@@ -34,7 +35,38 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
 
 /** PUT /api/agent-settings — update agent settings */
 agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> => {
-  const { mcpConfigDir, localMcpConfigDir, remoteMcpConfigDir, proxyMode, remoteServerUrl, tunnelEnabled } = req.body;
+  const {
+    mcpConfigDir,
+    localMcpConfigDir,
+    remoteMcpConfigDir,
+    proxyMode,
+    remoteServerUrl,
+    tunnelEnabled,
+    apiBaseUrl,
+    apiKey,
+    authToken,
+    model,
+    defaultOpusModel,
+    defaultSonnetModel,
+    defaultHaikuModel,
+    subagentModel,
+  } = req.body;
+
+  // Empty strings clear an override; undefined leaves the field untouched.
+  const normalize = (v: unknown): string | undefined => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim()) : undefined);
+
+  // Track whether any API / auth / model override field was included so we
+  // know to refresh the SDK info cache (account + supported models).
+  const apiFieldsTouched =
+    apiBaseUrl !== undefined ||
+    apiKey !== undefined ||
+    authToken !== undefined ||
+    model !== undefined ||
+    defaultOpusModel !== undefined ||
+    defaultSonnetModel !== undefined ||
+    defaultHaikuModel !== undefined ||
+    subagentModel !== undefined;
+
   try {
     const updated = updateAgentSettings({
       mcpConfigDir: mcpConfigDir ?? undefined,
@@ -43,10 +75,24 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       proxyMode: proxyMode ?? undefined,
       remoteServerUrl: remoteServerUrl ?? undefined,
       tunnelEnabled: tunnelEnabled ?? undefined,
+      ...(apiBaseUrl !== undefined && { apiBaseUrl: normalize(apiBaseUrl) }),
+      ...(apiKey !== undefined && { apiKey: normalize(apiKey) }),
+      ...(authToken !== undefined && { authToken: normalize(authToken) }),
+      ...(model !== undefined && { model: normalize(model) }),
+      ...(defaultOpusModel !== undefined && { defaultOpusModel: normalize(defaultOpusModel) }),
+      ...(defaultSonnetModel !== undefined && { defaultSonnetModel: normalize(defaultSonnetModel) }),
+      ...(defaultHaikuModel !== undefined && { defaultHaikuModel: normalize(defaultHaikuModel) }),
+      ...(subagentModel !== undefined && { subagentModel: normalize(subagentModel) }),
     });
     // Handle proxy mode switching — creates/destroys LocalProxy as needed
     // and resets cached remote ProxyClient instances
     await switchProxyMode(updated.proxyMode);
+    if (apiFieldsTouched) {
+      // Kick off a refresh so the About tab and any subsequent sessions see
+      // the updated account / models. Don't await — the client gets back
+      // quickly and the next poll of /api/system-info will pick it up.
+      refreshSdkInfoCache().catch((err) => log.warn(`SDK info refresh failed: ${err.message}`));
+    }
     res.json(updated);
   } catch (err: any) {
     log.error(`Error updating agent settings: ${err.message}`);

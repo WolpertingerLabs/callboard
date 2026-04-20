@@ -266,6 +266,149 @@ export interface WorktreeInfo {
   isBare: boolean;
 }
 
+export interface BranchMetaInfo {
+  branch: string;
+  isCurrent: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  lastCommit: {
+    sha: string;
+    shortSha: string;
+    author: string;
+    subject: string;
+    committedAt: string;
+  } | null;
+}
+
+/**
+ * Get rich metadata for every local branch in a repository. Single
+ * `git for-each-ref` call to keep this cheap.
+ */
+export function getBranchMeta(directory: string): BranchMetaInfo[] {
+  if (!directory || !existsSync(directory)) return [];
+
+  let currentBranch = "";
+  try {
+    currentBranch = execSync("git branch --show-current", {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 5000,
+    }).trim();
+  } catch {
+    // detached HEAD or git error — fine
+  }
+
+  // Use \x1f (unit separator) as the field separator; it should never appear
+  // in subjects, author names, or ref names.
+  const SEP = "\x1f";
+  const fmt = ["%(refname:short)", "%(upstream:short)", "%(objectname)", "%(authorname)", "%(committerdate:iso-strict)", "%(subject)"].join(SEP);
+
+  let lines: string[] = [];
+  try {
+    const out = execSync(`git for-each-ref --format='${fmt}' refs/heads/`, {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    lines = out.split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+
+  const results: BranchMetaInfo[] = [];
+
+  for (const line of lines) {
+    // Strip surrounding quotes if the shell added them
+    const cleaned = line.replace(/^'/, "").replace(/'$/, "");
+    const parts = cleaned.split(SEP);
+    if (parts.length < 6) continue;
+    const [branch, upstream, sha, author, committedAt, subject] = parts;
+    if (!branch) continue;
+
+    let ahead = 0;
+    let behind = 0;
+    if (upstream) {
+      try {
+        const out = execFileSync("git", ["rev-list", "--left-right", "--count", `${branch}...${upstream}`], {
+          cwd: directory,
+          encoding: "utf8",
+          stdio: "pipe",
+          timeout: 5000,
+        }).trim();
+        const [a, b] = out.split(/\s+/).map((n) => parseInt(n, 10));
+        if (!isNaN(a)) ahead = a;
+        if (!isNaN(b)) behind = b;
+      } catch {
+        // upstream may be gone
+      }
+    }
+
+    results.push({
+      branch,
+      isCurrent: branch === currentBranch,
+      upstream: upstream || null,
+      ahead,
+      behind,
+      lastCommit: sha
+        ? {
+            sha,
+            shortSha: sha.slice(0, 7),
+            author: author || "",
+            subject: subject || "",
+            committedAt: committedAt || "",
+          }
+        : null,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Get the remote URL (origin) for a repo. Returns null if not set or if
+ * git fails. Used to map branches to GitHub owner/repo for PR lookups.
+ */
+export function getOriginRemoteUrl(directory: string): string | null {
+  if (!directory || !existsSync(directory)) return null;
+  try {
+    const url = execSync("git config --get remote.origin.url", {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 5000,
+    }).trim();
+    return url || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a GitHub URL (https or ssh) into owner/repo. Returns null on any
+ * non-GitHub remote or unparseable input.
+ *
+ * Handles:
+ *   https://github.com/owner/repo(.git)?
+ *   git@github.com:owner/repo(.git)?
+ *   ssh://git@github.com/owner/repo(.git)?
+ */
+export function parseGithubRemote(url: string): { owner: string; repo: string } | null {
+  if (!url) return null;
+  const patterns = [
+    /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i,
+    /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/i,
+    /^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i,
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return { owner: m[1], repo: m[2] };
+  }
+  return null;
+}
+
 /**
  * List all git worktrees for a repository.
  * Parses `git worktree list --porcelain` output.

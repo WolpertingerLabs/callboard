@@ -1,15 +1,22 @@
 import { Router } from "express";
+import { basename } from "path";
 import {
+  getBranchMeta,
   getGitBranches,
   getGitDiffStructured,
   getGitFileDiff,
   getGitWorktrees,
+  getOriginRemoteUrl,
+  parseGithubRemote,
   readRepoFile,
   removeWorktree,
+  resolveWorktreeToMainRepoCached,
   validateFilename,
   validateFolderPath,
 } from "../utils/git.js";
 import { generateBranchName } from "../services/quick-completion.js";
+import { githubPrService } from "../services/github-pr.js";
+import type { BranchOverviewFolder, BranchOverviewResponse, BranchRow, PrInfo } from "shared/types/index.js";
 
 export const gitRouter = Router();
 
@@ -246,5 +253,126 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
     res.json({ branchName });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to generate branch name", details: err.message });
+  }
+});
+
+// ── Branch overview ──────────────────────────────────────────────────
+// Per-repo cache for the git-only portion (branches + worktrees + meta).
+// PR data has its own cache in github-pr service.
+interface BranchOverviewCacheEntry {
+  folders: BranchOverviewFolder[];
+  fetchedAt: number;
+}
+const branchOverviewGitCache = new Map<string, BranchOverviewCacheEntry>();
+const BRANCH_OVERVIEW_GIT_TTL = 30 * 1000; // 30 seconds
+
+function buildRowsForFolder(folder: string): BranchOverviewFolder {
+  // Always resolve to main repo — worktrees share branches with their parent.
+  const { mainRepoPath } = resolveWorktreeToMainRepoCached(folder);
+  const repoDir = mainRepoPath;
+  const displayName = basename(repoDir);
+
+  const meta = getBranchMeta(repoDir);
+  const worktrees = getGitWorktrees(repoDir);
+  const worktreeByBranch = new Map<string, string>();
+  for (const wt of worktrees) {
+    if (wt.branch) worktreeByBranch.set(wt.branch, wt.path);
+  }
+
+  const rows: BranchRow[] = meta.map((m) => ({
+    branch: m.branch,
+    isCurrent: m.isCurrent,
+    worktreePath: worktreeByBranch.get(m.branch) || null,
+    upstream: m.upstream,
+    ahead: m.ahead,
+    behind: m.behind,
+    lastCommit: m.lastCommit,
+    prs: [],
+    hasLocalSession: false,
+    lastActivityAt: null,
+  }));
+
+  // Current branch first, then alphabetical.
+  rows.sort((a, b) => {
+    if (a.isCurrent && !b.isCurrent) return -1;
+    if (!a.isCurrent && b.isCurrent) return 1;
+    return a.branch.localeCompare(b.branch);
+  });
+
+  return {
+    folder: repoDir,
+    displayName,
+    branches: rows,
+    prsEnriched: false,
+  };
+}
+
+gitRouter.get("/branch-overview", async (req, res) => {
+  // #swagger.tags = ['Git']
+  // #swagger.summary = 'Get branch overview with PR metadata'
+  // #swagger.description = 'Returns a table-ready overview of all local branches: worktree location, ahead/behind, last commit, and associated GitHub PRs (approval, unresolved comments, checks).'
+  /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the git repository' } */
+  /* #swagger.parameters['refresh'] = { in: 'query', required: false, type: 'string', description: 'Set to 1 to bust the cache and fetch fresh data' } */
+  /* #swagger.responses[200] = { description: "Branch overview payload" } */
+  /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
+  const rawFolder = req.query.folder as string | undefined;
+  if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
+
+  let folder: string;
+  try {
+    folder = validateFolderPath(rawFolder);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const force = req.query.refresh === "1";
+
+  try {
+    const { mainRepoPath } = resolveWorktreeToMainRepoCached(folder);
+    const repoDir = mainRepoPath;
+
+    // Git-only data (30s TTL)
+    let gitEntry = branchOverviewGitCache.get(repoDir);
+    const now = Date.now();
+    if (force || !gitEntry || now - gitEntry.fetchedAt >= BRANCH_OVERVIEW_GIT_TTL) {
+      const folderData = buildRowsForFolder(repoDir);
+      gitEntry = { folders: [folderData], fetchedAt: now };
+      branchOverviewGitCache.set(repoDir, gitEntry);
+    }
+
+    // Clone so we don't mutate the cached objects when merging PRs below.
+    const folders: BranchOverviewFolder[] = gitEntry.folders.map((f) => ({
+      ...f,
+      branches: f.branches.map((b) => ({ ...b, prs: [] })),
+      prsEnriched: false,
+    }));
+
+    // PR enrichment (stale-while-revalidate, keyed by repo remote).
+    let prFetchedAt: string | null = null;
+    const originUrl = getOriginRemoteUrl(repoDir);
+    const ghRemote = originUrl ? parseGithubRemote(originUrl) : null;
+    if (ghRemote && (await githubPrService.isAvailable())) {
+      if (force) githubPrService.invalidate(repoDir);
+      const { map: prMap, fetchedAt } = await githubPrService.getPrsForRepo(repoDir);
+      prFetchedAt = fetchedAt ? new Date(fetchedAt).toISOString() : null;
+      for (const folderData of folders) {
+        folderData.prsEnriched = true;
+        for (const row of folderData.branches) {
+          const list = prMap.get(row.branch);
+          if (list && list.length > 0) {
+            row.prs = list as PrInfo[];
+          }
+        }
+      }
+    }
+
+    const response: BranchOverviewResponse = {
+      folders,
+      fetchedAt: new Date().toISOString(),
+      prFetchedAt,
+    };
+    res.json(response);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to build branch overview", details: err.message });
   }
 });

@@ -6,7 +6,7 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
-import { CLAUDE_PROJECTS_DIR, projectDirToFolder } from "../utils/paths.js";
+import { CLAUDE_PROJECTS_DIR, IGNORED_PROJECT_DIRS, projectDirToFolder } from "../utils/paths.js";
 import { findSessionLogPath, findSubagentFiles } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import type { ParsedMessage } from "shared/types/index.js";
@@ -109,7 +109,9 @@ function discoverSessionsPaginated(
     // so recent files can be buried and missed by the first page of results.
     // Use -maxdepth 2 to only get .jsonl files directly inside project folders,
     // excluding subagents/ subdirectories (projects/<name>/subagents/<id>.jsonl)
-    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" -maxdepth 2 -name "*.jsonl" -type f -print0`;
+    // Prune ignored project dirs (e.g. "-tmp", which holds throwaway quick-completion transcripts)
+    const pruneArgs = [...IGNORED_PROJECT_DIRS].map((d) => `-path "${CLAUDE_PROJECTS_DIR}/${d}" -prune -o`).join(" ");
+    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" ${pruneArgs} -maxdepth 2 -name "*.jsonl" -type f -print0`;
     const output = execSync(findCommand, { encoding: "utf8" });
 
     if (!output) return { sessions: [], total: 0 };
@@ -175,6 +177,7 @@ function discoverAllSessionsFallback(
 } {
   const results: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
   for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
+    if (IGNORED_PROJECT_DIRS.has(dir)) continue;
     const dirPath = join(CLAUDE_PROJECTS_DIR, dir);
     try {
       const dirStat = statSync(dirPath);
@@ -229,7 +232,8 @@ chatsRouter.get("/search", (req, res) => {
     let matchingFiles: string[] = [];
     try {
       // Use execFileSync with array args to prevent shell injection
-      const output = execFileSync("grep", ["-rl", "-i", "--include=*.jsonl", query, CLAUDE_PROJECTS_DIR], {
+      const excludeDirArgs = [...IGNORED_PROJECT_DIRS].map((d) => `--exclude-dir=${d}`);
+      const output = execFileSync("grep", ["-rl", "-i", "--include=*.jsonl", ...excludeDirArgs, query, CLAUDE_PROJECTS_DIR], {
         encoding: "utf8",
         timeout: 15000, // 15 second timeout
       }).trim();
