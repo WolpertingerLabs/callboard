@@ -40,6 +40,8 @@ export interface FolderSummary {
   /** Folder status based on most recent chat */
   status: "ongoing" | "waiting" | "stopped";
   isGitRepo: boolean;
+  /** True when the folder is a git worktree rather than the main repo checkout. */
+  isWorktree: boolean;
   gitBranch?: string;
   /** Whether the most recent chat was triggered */
   isTriggered: boolean;

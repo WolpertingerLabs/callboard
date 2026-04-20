@@ -379,7 +379,7 @@ export default function BranchTable() {
   const loadFolders = useCallback(async () => {
     try {
       const resp = await listFolders(30);
-      const gitFolders = resp.folders.filter((f) => f.isGitRepo);
+      const gitFolders = resp.folders.filter((f) => f.isGitRepo && !f.isWorktree);
       setFolders(gitFolders);
       return gitFolders;
     } catch (err) {
