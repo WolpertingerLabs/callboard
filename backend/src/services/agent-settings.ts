@@ -45,6 +45,26 @@ export function getAgentSettings(): AgentSettings {
 }
 
 /**
+ * Build the subset of environment variables that should be injected into the
+ * Claude Agent SDK subprocess to reflect user-configured API / auth / model
+ * overrides. Empty/unset fields are omitted so that process.env (i.e. the
+ * regular subscription-based login flow) stays in effect.
+ */
+export function getApiEnvOverrides(settings?: AgentSettings): Record<string, string> {
+  const s = settings ?? loadSettings();
+  const env: Record<string, string> = {};
+  if (s.apiBaseUrl) env.ANTHROPIC_BASE_URL = s.apiBaseUrl;
+  if (s.apiKey) env.ANTHROPIC_API_KEY = s.apiKey;
+  if (s.authToken) env.ANTHROPIC_AUTH_TOKEN = s.authToken;
+  if (s.model) env.ANTHROPIC_MODEL = s.model;
+  if (s.defaultOpusModel) env.ANTHROPIC_DEFAULT_OPUS_MODEL = s.defaultOpusModel;
+  if (s.defaultSonnetModel) env.ANTHROPIC_DEFAULT_SONNET_MODEL = s.defaultSonnetModel;
+  if (s.defaultHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.defaultHaikuModel;
+  if (s.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.subagentModel;
+  return env;
+}
+
+/**
  * Resolve the active MCP config directory based on the current proxy mode.
  *
  * Resolution:
