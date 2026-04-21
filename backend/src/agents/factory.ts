@@ -17,3 +17,14 @@ export function getAgentProvider(): AgentProvider {
   if (!_provider) _provider = new ClaudeCodeAdapter();
   return _provider;
 }
+
+/**
+ * Test-only injection hook. Replaces the process-wide provider with a test
+ * double (e.g. `MockAgentProvider`). Pass `null` to reset to lazy default.
+ *
+ * Not intended for production use — kept intentionally undocumented in
+ * user-facing places. Phase 4 (plan) uses this to prove the seam with tests.
+ */
+export function setAgentProviderForTesting(provider: AgentProvider | null): void {
+  _provider = provider;
+}

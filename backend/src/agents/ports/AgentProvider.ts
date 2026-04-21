@@ -44,9 +44,15 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * Adapter seam. Implementations live under `agents/adapters/<name>/`.
  * Construct via {@link getAgentProvider} from `../factory.js`.
  */
+/**
+ * Discriminator used for compile-time branching when a caller genuinely needs
+ * adapter-specific behaviour (per the plan's Decision 3). New adapters extend
+ * this union.
+ */
+export type AgentProviderKind = "claude-code" | "mock";
+
 export interface AgentProvider {
-  /** Discriminator for compile-time branching (per the plan's Decision 3). */
-  readonly kind: "claude-code";
+  readonly kind: AgentProviderKind;
   /**
    * Start or resume a conversation. Returns immediately; callers drive
    * the returned AgentQuery via `for await (...)`.
