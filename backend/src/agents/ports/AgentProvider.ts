@@ -10,6 +10,7 @@
  *
  * @see plans/agent-abstraction-layer.md
  */
+import type { AgentEvent } from "./events.js";
 import type { ToolServerSpec } from "./tools.js";
 
 /**
@@ -25,18 +26,17 @@ export interface AgentQueryRequest {
 /**
  * Result of a {@link AgentProvider.query} call.
  *
- * Implements {@link AsyncIterable} over raw adapter messages (currently SDKMessage
- * from Claude Code) plus introspection helpers used by the sdk-info caller.
- *
- * Callers iterate for message events; they can also call accountInfo/supportedModels
- * without iterating (used by sdk-info.ts to pre-populate caches).
+ * Implements {@link AsyncIterable} over a normalized {@link AgentEvent} stream
+ * plus introspection helpers used by the sdk-info caller. Callers iterate for
+ * events; they can also call accountInfo/supportedModels without iterating
+ * (used by sdk-info.ts to pre-populate caches).
  */
-export interface AgentQuery extends AsyncIterable<Record<string, unknown>> {
+export interface AgentQuery extends AsyncIterable<AgentEvent> {
   /** Account / auth / org info available from the underlying harness, if any. */
   accountInfo(): Promise<Record<string, unknown> | null>;
   /** Models the underlying harness is willing to route to. */
   supportedModels(): Promise<Array<{ value: string; displayName: string; description: string }>>;
-  /** Terminate the query without draining its message stream. */
+  /** Terminate the query without draining its event stream. */
   close(): Promise<void>;
 }
 
