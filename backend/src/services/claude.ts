@@ -1,5 +1,5 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
+import { getAgentProvider } from "../agents/factory.js";
+import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { EventEmitter } from "events";
 import { execFile } from "child_process";
 import { resolve, isAbsolute } from "path";
@@ -843,7 +843,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       let sessionId: string | null = null;
       let endReason: string | undefined;
 
-      const conversation = query(queryOpts);
+      const conversation = getAgentProvider().query(queryOpts);
 
       for await (const message of conversation) {
         if (abortController.signal.aborted) break;

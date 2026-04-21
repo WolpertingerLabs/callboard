@@ -17,7 +17,8 @@
  *
  * @see https://platform.claude.com/docs/en/agent-sdk/custom-tools
  */
-import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { getAgentProvider } from "../agents/factory.js";
+import { tool, createSdkMcpServer } from "../agents/adapters/claude-code/tools.js";
 import { z } from "zod";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
@@ -132,7 +133,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   try {
     const claudeExecutable = getClaudeCodeExecutablePath();
 
-    const conversation = query({
+    const conversation = getAgentProvider().query({
       prompt: promptGenerator,
       options: {
         model,

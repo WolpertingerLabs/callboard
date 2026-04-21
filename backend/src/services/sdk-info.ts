@@ -5,7 +5,7 @@
  * (account info, supported models) without actually running a conversation.
  * Results are cached for the lifetime of the process.
  */
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { getAgentProvider } from "../agents/factory.js";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
 import { getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
@@ -57,7 +57,7 @@ async function fetchSdkInfo(): Promise<SdkInfoCache> {
 
     const claudeExecutable = getClaudeCodeExecutablePath();
 
-    const conversation = query({
+    const conversation = getAgentProvider().query({
       prompt: inputStream,
       options: {
         cwd: tmpdir(),

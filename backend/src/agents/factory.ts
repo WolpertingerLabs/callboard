@@ -1,0 +1,19 @@
+/**
+ * AgentProvider factory — resolves the single {@link AgentProvider} instance
+ * for the process.
+ *
+ * Phase 1 constructs a ClaudeCodeAdapter unconditionally. Phase 4 will select
+ * from config (e.g. `AGENT_PROVIDER=opencode` or similar) once a second adapter
+ * exists. No DI container — manual construction is sufficient at this scale.
+ *
+ * @see plans/agent-abstraction-layer.md
+ */
+import type { AgentProvider } from "./ports/AgentProvider.js";
+import { ClaudeCodeAdapter } from "./adapters/claude-code/ClaudeCodeAdapter.js";
+
+let _provider: AgentProvider | null = null;
+
+export function getAgentProvider(): AgentProvider {
+  if (!_provider) _provider = new ClaudeCodeAdapter();
+  return _provider;
+}
