@@ -11,9 +11,9 @@ import type { StreamEvent } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
-import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
-import { buildCallboardToolsServer, setCallboardMessageSender } from "./callboard-tools.js";
-import { buildProxyToolsServer } from "./proxy-tools.js";
+import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
+import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
+import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias, getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
@@ -693,9 +693,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
   try {
-    const callboardToolsServer = buildCallboardToolsServer(() => trackingId);
-    if (callboardToolsServer && callboardToolsServer.type === "sdk" && callboardToolsServer.instance) {
-      mcpServers["callboard-tools"] = callboardToolsServer;
+    const spec = buildCallboardToolsSpec(() => trackingId);
+    const server = getAgentProvider().buildToolServer(spec);
+    if (server) {
+      mcpServers["callboard-tools"] = server;
       allowedTools.push("mcp__callboard-tools__*");
       log.info("Injected callboard-tools MCP server");
     }
@@ -713,9 +714,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     proxyKeyAlias = proxyAgent ? (resolveAgentKeyAlias(proxyAgent).mcpKeyAlias ?? "default") : "default";
 
     try {
-      const proxyServer = buildProxyToolsServer(proxyKeyAlias);
-      if (proxyServer && proxyServer.type === "sdk" && proxyServer.instance) {
-        mcpServers["mcp-proxy"] = proxyServer;
+      const spec = buildProxyToolsSpec(proxyKeyAlias);
+      const server = getAgentProvider().buildToolServer(spec);
+      if (server) {
+        mcpServers["mcp-proxy"] = server;
         allowedTools.push("mcp__mcp-proxy__*");
         log.info(`Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
       }
@@ -745,15 +747,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
 
     try {
-      const callboardServer = buildAgentToolsServer(opts.agentAlias);
-      if (callboardServer && callboardServer.type === "sdk" && callboardServer.instance) {
-        mcpServers["callboard"] = callboardServer;
+      const spec = buildAgentToolsSpec(opts.agentAlias);
+      const server = getAgentProvider().buildToolServer(spec);
+      if (server) {
+        mcpServers["callboard"] = server;
         allowedTools.push("mcp__callboard__*");
-        log.info(`Injected Callboard agent tools for agent="${opts.agentAlias}" — type=${callboardServer.type}, name=${callboardServer.name}`);
+        log.info(`Injected Callboard agent tools for agent="${opts.agentAlias}" (spec.name=${spec.name}, ${spec.tools.length} tools)`);
       } else {
-        log.error(
-          `buildAgentToolsServer returned invalid server for agent="${opts.agentAlias}": ${JSON.stringify({ type: callboardServer?.type, name: callboardServer?.name, hasInstance: !!callboardServer?.instance })}`,
-        );
+        log.error(`buildAgentToolsSpec produced no server for agent="${opts.agentAlias}"`);
       }
     } catch (err: any) {
       log.error(`Failed to build Callboard agent tools for agent="${opts.agentAlias}": ${err.message}`);

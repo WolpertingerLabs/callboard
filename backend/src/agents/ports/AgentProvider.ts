@@ -1,12 +1,16 @@
 /**
  * AgentProvider — the seam between callboard and a specific agent harness.
  *
- * Phase 1 of the agent-abstraction-layer plan: this interface is a thin pass-through
- * that hides the concrete `@anthropic-ai/claude-agent-sdk` import behind one module.
- * Options and messages are intentionally still SDK-shaped here; Phase 3 normalizes them.
+ * Phase 1 introduced the query/iterate surface; Phase 2 added {@link AgentProvider.buildToolServer}
+ * so tool authors can declare specs neutrally and let the adapter translate to
+ * its engine's registration shape.
+ *
+ * Options and raw messages passed through {@link AgentProvider.query} are
+ * intentionally still SDK-shaped here; Phase 3 normalizes them.
  *
  * @see plans/agent-abstraction-layer.md
  */
+import type { ToolServerSpec } from "./tools.js";
 
 /**
  * Request shape passed to {@link AgentProvider.query}.
@@ -48,4 +52,10 @@ export interface AgentProvider {
    * the returned AgentQuery via `for await (...)`.
    */
   query(req: AgentQueryRequest): AgentQuery;
+  /**
+   * Translate a neutral {@link ToolServerSpec} into whatever the underlying
+   * engine needs to register. The returned value is opaque — callers pass it
+   * straight into `options.mcpServers` (or the adapter-specific equivalent).
+   */
+  buildToolServer(spec: ToolServerSpec): unknown;
 }

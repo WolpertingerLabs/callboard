@@ -1,5 +1,6 @@
-import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { defineTool } from "../agents/ports/tools.js";
+import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { existsSync, readFileSync, statSync } from "fs";
 import path from "path";
 import { createCanvas, updateCanvas, readCanvas } from "./canvas-service.js";
@@ -16,7 +17,7 @@ const log = createLogger("callboard-tools");
 
 // ─── Lazy reference to sendMessage ──────────────────────────────────
 // We use a lazy import to avoid circular dependency:
-// callboard-tools.ts → claude.ts → (uses buildCallboardToolsServer from callboard-tools.ts)
+// callboard-tools.ts → claude.ts → (uses buildCallboardToolsSpec from callboard-tools.ts)
 // Instead, claude.ts registers itself at startup via setCallboardMessageSender().
 
 type MessageSender = (opts: {
@@ -108,12 +109,12 @@ function error(message: string) {
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
 }
 
-export function buildCallboardToolsServer(getChatId?: () => string) {
-  return createSdkMcpServer({
+export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpec {
+  return {
     name: "callboard-tools",
     version: "1.0.0",
     tools: [
-      tool(
+      defineTool(
         "render_file",
         "Render media in the chat UI. Supports images, audio, video, and PDFs from local files (absolute path) or URLs. Use this when the user would benefit from seeing media rather than just hearing about it. Provide either file_path or url, not both. If the content is from an untrusted or suspicious source, set untrusted=true with a reason.",
         {
@@ -231,7 +232,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
 
       // ── Canvas Tools ─────────────────────────────────────────────
 
-      tool(
+      defineTool(
         "create_canvas",
         "Create a new versioned canvas to display dynamic content inline in the chat. Supports HTML pages (with inline CSS/JS), SVG graphics, or images. The content is stored as a snapshot and rendered in the chat UI. Use this when you want to show the user a live preview of something you've built — a dashboard, diagram, chart, or any visual output. Provide either content (string) or file_path (absolute path to a generated file), not both.",
         {
@@ -269,7 +270,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "update_canvas",
         "Update an existing canvas with new content, creating a new versioned snapshot. The previous version is preserved — earlier renders in the chat will continue showing their original state. Provide the full replacement content (not a diff). Provide either content or file_path, not both.",
         {
@@ -308,7 +309,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "read_canvas",
         "Read back the content of an existing canvas. Use this to recall what you previously created (e.g. after context compaction) so you can reason about it before making updates. For HTML and SVG canvases, returns the full source. For image canvases, returns metadata only.",
         {
@@ -336,7 +337,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
 
       // ── Chat Status & Notification Tools ─────────────────────────────
 
-      tool(
+      defineTool(
         "set_chat_status",
         "Set a custom status label on the current chat, visible in the Callboard dashboard sidebar. Use this to communicate what you're working on (e.g. 'Running tests', 'Deploying to staging', 'Waiting for CI'). Pass an empty status string to clear the status.",
         {
@@ -373,7 +374,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "summon_user",
         "Alert the user that their attention is needed in this chat. Creates a visible notification in the Callboard dashboard. Use this when you need human input, a decision, or want to flag something important. This is different from permission requests — it's an agent-initiated signal that doesn't block execution.",
         {
@@ -410,7 +411,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "set_chat_title",
         "Set or update the title of the current chat. Use this to give the chat a descriptive name that reflects the work being done, replacing the auto-generated title. Pass an empty string to reset to the auto-generated title.",
         {
@@ -442,7 +443,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
 
       // ── Chat Session Tools ──────────────────────────────────────────
 
-      tool(
+      defineTool(
         "start_chat_session",
         "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration.",
         {
@@ -510,7 +511,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "get_session_status",
         "Check the status of a Claude Code session. Returns whether the session is active, complete, or not found.",
         {
@@ -549,7 +550,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "read_session_messages",
         "Read the text messages from a Claude Code session. Returns the conversation content (user and assistant messages). Useful for checking what a spawned session did.",
         {
@@ -586,7 +587,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "continue_chat",
         "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. Set waitForCompletion=true to block until the response is ready.",
         {
@@ -681,7 +682,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
 
-      tool(
+      defineTool(
         "find_chats",
         "Search chat sessions for a repo folder, including worktrees. Scans all Claude Code sessions in ~/.claude/projects/. Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
         {
@@ -719,7 +720,7 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
 
       // ── Utilities ──────────────────────────────────────────────
 
-      tool(
+      defineTool(
         "wait",
         "Pause execution for the specified number of seconds (1-300). Useful for waiting between polling operations, giving other processes time to complete, or adding delays between actions. Include a fun, cute flavor description of what you're 'doing' while you wait.",
         {
@@ -747,5 +748,5 @@ export function buildCallboardToolsServer(getChatId?: () => string) {
         },
       ),
     ],
-  });
+  };
 }

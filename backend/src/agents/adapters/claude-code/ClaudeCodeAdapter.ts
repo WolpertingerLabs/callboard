@@ -9,6 +9,8 @@
  */
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentProvider, AgentQuery, AgentQueryRequest } from "../../ports/AgentProvider.js";
+import type { ToolServerSpec } from "../../ports/tools.js";
+import { buildClaudeCodeToolServer } from "./toolAdapter.js";
 
 export class ClaudeCodeAdapter implements AgentProvider {
   readonly kind = "claude-code" as const;
@@ -24,5 +26,9 @@ export class ClaudeCodeAdapter implements AgentProvider {
       prompt: req.prompt as SdkArgs["prompt"],
       options: req.options as SdkArgs["options"],
     }) as unknown as AgentQuery;
+  }
+
+  buildToolServer(spec: ToolServerSpec): unknown {
+    return buildClaudeCodeToolServer(spec);
   }
 }
