@@ -403,7 +403,12 @@ function buildFormattedPrompt(prompt: string | any, imageMetadata?: { buffer: Bu
  * Build the canUseTool permission handler for the Claude SDK.
  * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
  */
-function buildCanUseTool(emitter: EventEmitter, toolPermissionPolicy: ToolPermissionPolicy, getTrackingId: () => string, hookAskOverride?: { reason: string }) {
+export function buildCanUseTool(
+  emitter: EventEmitter,
+  toolPermissionPolicy: ToolPermissionPolicy,
+  getTrackingId: () => string,
+  hookAskOverride?: { reason: string },
+) {
   return async (
     toolName: string,
     input: Record<string, unknown>,
