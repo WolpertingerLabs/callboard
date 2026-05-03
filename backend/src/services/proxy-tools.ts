@@ -1,34 +1,34 @@
 /**
- * Proxy Tools — In-process MCP server exposing proxy tools to Claude sessions.
+ * Proxy Tools — tool-server spec exposing proxy tools to agent sessions.
  *
  * Injected into EVERY chat session — both regular chats and agent chats.
  * In local mode: calls go through LocalProxy (in-process).
  * In remote mode: calls go through ProxyClient (encrypted HTTP).
  *
- * Built with createSdkMcpServer() from @anthropic-ai/claude-agent-sdk.
- *
- * @see https://platform.claude.com/docs/en/agent-sdk/custom-tools
+ * Returns a provider-neutral {@link ToolServerSpec}; callers translate to their
+ * engine's registration shape via `provider.buildToolServer(spec)`.
  */
-import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getProxy } from "./proxy-singleton.js";
 import { createLogger } from "../utils/logger.js";
+import { defineTool } from "../agents/ports/tools.js";
+import type { ToolServerSpec } from "../agents/ports/tools.js";
 
 const log = createLogger("proxy-tools");
 
 /**
- * Build an in-process MCP server exposing proxy tools.
+ * Build a tool-server spec exposing proxy tools.
  *
  * @param keyAlias - The MCP key alias to use for proxy requests
  */
-export function buildProxyToolsServer(keyAlias: string) {
-  log.debug(`Building proxy tools server for alias="${keyAlias}"`);
+export function buildProxyToolsSpec(keyAlias: string): ToolServerSpec {
+  log.debug(`Building proxy tools spec for alias="${keyAlias}"`);
 
-  return createSdkMcpServer({
+  return {
     name: "mcp-proxy",
     version: "1.0.0",
     tools: [
-      tool(
+      defineTool(
         "secure_request",
         "Make an authenticated HTTP request through a configured connection. " +
           "Route-level headers (e.g., Authorization) are injected automatically by the server — " +
@@ -74,7 +74,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "list_routes",
         "List all available API routes/connections and their endpoints, " +
           "auto-injected headers, and available secret placeholder names. " +
@@ -101,7 +101,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "poll_events",
         "Poll for new events from ingestors (Discord messages, GitHub webhooks, etc.). " +
           "Returns events received since the given cursor. Pass after_id from the last event " +
@@ -132,7 +132,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "test_connection",
         "Verify API credentials with a non-destructive read-only test request. " +
           "Use this to check if a connection's secrets are correctly configured before making real requests.",
@@ -160,7 +160,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "test_ingestor",
         "Verify event listener configuration without starting it. " +
           "Checks credentials, webhook secrets, and listener parameters for a connection's ingestor.",
@@ -188,7 +188,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "control_listener",
         "Start, stop, or restart an event listener for a connection. " +
           "Stopping a listener pauses event collection; starting resumes it. " +
@@ -219,7 +219,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "list_listener_configs",
         "List configurable event listener schemas for all connections. " +
           "Returns field definitions (type, label, options, defaults) that can be used to render configuration forms.",
@@ -245,7 +245,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "resolve_listener_options",
         "Fetch dynamic options for a listener configuration field. " + "Some fields (like Trello boards) require an API call to populate their options list.",
         {
@@ -273,7 +273,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "get_listener_params",
         "Read current listener parameter overrides for a connection. " +
           "Returns both the active parameter values and their schema defaults. " +
@@ -303,7 +303,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "set_listener_params",
         "Set listener parameter overrides for a connection. " +
           "Validates params against the schema, merges with existing config, and persists. " +
@@ -335,7 +335,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "list_listener_instances",
         "List all configured instances for a multi-instance listener connection. " +
           "Returns every instance from config (including stopped/disabled ones), " +
@@ -364,7 +364,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "delete_listener_instance",
         "Remove a multi-instance listener instance. " + "Stops the running ingestor if active, removes from config, and cleans up.",
         {
@@ -392,7 +392,7 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "ingestor_status",
         "Get the status of all active ingestors for this caller. " + "Shows connection state, buffer sizes, event counts, and any errors.",
         {},
@@ -417,5 +417,5 @@ export function buildProxyToolsServer(keyAlias: string) {
         },
       ),
     ],
-  });
+  };
 }

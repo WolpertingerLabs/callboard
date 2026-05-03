@@ -1,5 +1,7 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
+import { getAgentProvider } from "../agents/factory.js";
+import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
+import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
+import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
 import { EventEmitter } from "events";
 import { execFile } from "child_process";
 import { resolve, isAbsolute } from "path";
@@ -11,9 +13,9 @@ import type { StreamEvent } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
-import { buildAgentToolsServer, setMessageSender } from "./agent-tools.js";
-import { buildCallboardToolsServer, setCallboardMessageSender } from "./callboard-tools.js";
-import { buildProxyToolsServer } from "./proxy-tools.js";
+import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
+import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
+import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
 import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias, getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
@@ -310,43 +312,6 @@ function buildHookOptions(hookAskOverride?: { reason: string }): Partial<Record<
   }
 }
 
-function categorizeToolPermission(toolName: string): keyof DefaultPermissions | null {
-  // File read operations (read-only)
-  if (["Read", "Glob", "Grep"].includes(toolName)) {
-    return "fileRead";
-  }
-
-  // File write operations (create, modify)
-  if (["Write", "Edit", "MultiEdit"].includes(toolName)) {
-    return "fileWrite";
-  }
-
-  // Code execution (bash commands, notebooks, shell management)
-  if (["Bash", "NotebookEdit", "KillShell"].includes(toolName)) {
-    return "codeExecution";
-  }
-
-  // Web access
-  if (["WebFetch", "WebSearch"].includes(toolName)) {
-    return "webAccess";
-  }
-
-  // Callboard platform tools
-  if (toolName === "mcp__callboard-tools__render_file") {
-    return "fileRead";
-  }
-
-  // Tools that don't need permission checks (always allowed)
-  if (
-    ["TodoWrite", "Task", "ExitPlanMode", "AskUserQuestion", "SlashCommand", "BashOutput", "Config", "ListMcpResources", "ReadMcpResource"].includes(toolName)
-  ) {
-    return null;
-  }
-
-  // Default to fileWrite for unknown tools (conservative)
-  return "fileWrite";
-}
-
 export function getActiveSession(chatId: string): ActiveSession | undefined {
   const info = sessionRegistry.get(chatId);
   if (!info || !info.abortController || !info.emitter) return undefined;
@@ -438,9 +403,9 @@ function buildFormattedPrompt(prompt: string | any, imageMetadata?: { buffer: Bu
  * Build the canUseTool permission handler for the Claude SDK.
  * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
  */
-function buildCanUseTool(
+export function buildCanUseTool(
   emitter: EventEmitter,
-  getDefaultPermissions: () => DefaultPermissions | null,
+  toolPermissionPolicy: ToolPermissionPolicy,
   getTrackingId: () => string,
   hookAskOverride?: { reason: string },
 ) {
@@ -457,30 +422,19 @@ function buildCanUseTool(
       log.info(`[PERM-DIAG] Hook override ASK: tool=${toolName}, reason=${hookOverrideReason}`);
       // Fall through to the permission prompt below
     } else {
-      const category = categorizeToolPermission(toolName);
-      if (category) {
-        try {
-          const defaultPermissions = getDefaultPermissions();
-          log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, permissions=${JSON.stringify(defaultPermissions)}`);
-          if (defaultPermissions && defaultPermissions[category]) {
-            const permission = defaultPermissions[category];
-            if (permission === "allow") {
-              log.info(`[PERM-DIAG] Auto-ALLOW: tool=${toolName}, category=${category}`);
-              return { behavior: "allow", updatedInput: input };
-            } else if (permission === "deny") {
-              log.info(`[PERM-DIAG] Auto-DENY: tool=${toolName}, category=${category}`);
-              return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
-            }
-          }
-          log.info(
-            `[PERM-DIAG] Falling through to ASK: tool=${toolName}, category=${category}, hasPerms=${!!defaultPermissions}, catValue=${defaultPermissions?.[category]}`,
-          );
-        } catch (err) {
-          log.info(`[PERM-DIAG] ERROR in permission lookup: tool=${toolName}, error=${err}`);
-          // If permission lookup fails, fall through to normal permission flow
+      try {
+        const { decision, category } = toolPermissionPolicy.decide(toolName);
+        log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}`);
+        if (decision === "allow") {
+          return { behavior: "allow", updatedInput: input };
         }
-      } else {
-        log.info(`[PERM-DIAG] No category for tool=${toolName}, skipping permission check`);
+        if (decision === "deny") {
+          return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
+        }
+        // "ask" — fall through to the user-prompt path
+      } catch (err) {
+        log.info(`[PERM-DIAG] ERROR in permission lookup: tool=${toolName}, error=${err}`);
+        // If lookup fails, fall through to normal permission flow
       }
     }
 
@@ -528,40 +482,6 @@ function buildCanUseTool(
       });
     });
   };
-}
-
-/**
- * Emit stream events for content blocks from a Claude SDK message.
- */
-function emitContentBlocks(emitter: EventEmitter, message: any): void {
-  const blocks = message.message?.content || [];
-  for (const block of blocks) {
-    switch (block.type) {
-      case "text":
-        emitter.emit("event", { type: "text", content: block.text } as StreamEvent);
-        break;
-      case "thinking":
-        emitter.emit("event", { type: "thinking", content: block.thinking } as StreamEvent);
-        break;
-      case "tool_use":
-        emitter.emit("event", {
-          type: "tool_use",
-          content: JSON.stringify(block.input),
-          toolName: block.name,
-        } as StreamEvent);
-        break;
-      case "tool_result": {
-        const content =
-          typeof block.content === "string"
-            ? block.content
-            : Array.isArray(block.content)
-              ? block.content.map((c: any) => (typeof c === "string" ? c : c.text || JSON.stringify(c))).join("\n")
-              : JSON.stringify(block.content);
-        emitter.emit("event", { type: "tool_result", content } as StreamEvent);
-        break;
-      }
-    }
-  }
 }
 
 interface SendMessageOptions {
@@ -678,6 +598,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     return initialMetadata.defaultPermissions ?? null;
   };
 
+  // Policy: Claude-specific tool-name → category map, neutral allow/deny/ask
+  // decision over the user's default-permission settings.
+  const toolPermissionPolicy = new ToolPermissionPolicy(categorizeClaudeTool, getDefaultPermissions);
+
   // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)
   const plugins = buildPluginOptions(folder, activePlugins);
   const mcpOpts = buildMcpServerOptions();
@@ -693,9 +617,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
   try {
-    const callboardToolsServer = buildCallboardToolsServer(() => trackingId);
-    if (callboardToolsServer && callboardToolsServer.type === "sdk" && callboardToolsServer.instance) {
-      mcpServers["callboard-tools"] = callboardToolsServer;
+    const spec = buildCallboardToolsSpec(() => trackingId);
+    const server = getAgentProvider().buildToolServer(spec);
+    if (server) {
+      mcpServers["callboard-tools"] = server;
       allowedTools.push("mcp__callboard-tools__*");
       log.info("Injected callboard-tools MCP server");
     }
@@ -713,9 +638,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     proxyKeyAlias = proxyAgent ? (resolveAgentKeyAlias(proxyAgent).mcpKeyAlias ?? "default") : "default";
 
     try {
-      const proxyServer = buildProxyToolsServer(proxyKeyAlias);
-      if (proxyServer && proxyServer.type === "sdk" && proxyServer.instance) {
-        mcpServers["mcp-proxy"] = proxyServer;
+      const spec = buildProxyToolsSpec(proxyKeyAlias);
+      const server = getAgentProvider().buildToolServer(spec);
+      if (server) {
+        mcpServers["mcp-proxy"] = server;
         allowedTools.push("mcp__mcp-proxy__*");
         log.info(`Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
       }
@@ -745,15 +671,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
 
     try {
-      const callboardServer = buildAgentToolsServer(opts.agentAlias);
-      if (callboardServer && callboardServer.type === "sdk" && callboardServer.instance) {
-        mcpServers["callboard"] = callboardServer;
+      const spec = buildAgentToolsSpec(opts.agentAlias);
+      const server = getAgentProvider().buildToolServer(spec);
+      if (server) {
+        mcpServers["callboard"] = server;
         allowedTools.push("mcp__callboard__*");
-        log.info(`Injected Callboard agent tools for agent="${opts.agentAlias}" — type=${callboardServer.type}, name=${callboardServer.name}`);
+        log.info(`Injected Callboard agent tools for agent="${opts.agentAlias}" (spec.name=${spec.name}, ${spec.tools.length} tools)`);
       } else {
-        log.error(
-          `buildAgentToolsServer returned invalid server for agent="${opts.agentAlias}": ${JSON.stringify({ type: callboardServer?.type, name: callboardServer?.name, hasInstance: !!callboardServer?.instance })}`,
-        );
+        log.error(`buildAgentToolsSpec produced no server for agent="${opts.agentAlias}"`);
       }
     } catch (err: any) {
       log.error(`Failed to build Callboard agent tools for agent="${opts.agentAlias}": ${err.message}`);
@@ -812,7 +737,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // when the backend was started from within a Claude Code session
         CLAUDECODE: undefined,
       },
-      canUseTool: buildCanUseTool(emitter, getDefaultPermissions, () => trackingId, hookAskOverride),
+      canUseTool: buildCanUseTool(emitter, toolPermissionPolicy, () => trackingId, hookAskOverride),
       stderr: (data: string) => {
         log.warn(`[SDK stderr] ${data.trimEnd()}`);
       },
@@ -843,107 +768,130 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       let sessionId: string | null = null;
       let endReason: string | undefined;
 
-      const conversation = query(queryOpts);
+      const conversation = getAgentProvider().query(queryOpts);
 
-      for await (const message of conversation) {
+      for await (const event of conversation) {
         if (abortController.signal.aborted) break;
 
-        // Detect SDK result messages (always the last yielded message).
-        // These tell us *why* the conversation ended — max turns, budget, error, or success.
-        if ("type" in message && (message as any).type === "result") {
-          const result = message as any;
-          if (result.subtype === "error_max_turns") {
-            endReason = "max_turns";
-            log.warn(`Session ${trackingId} ended: max turns (${result.num_turns}) reached`);
-          } else if (result.subtype === "error_max_budget_usd") {
-            endReason = "max_budget";
-            log.warn(`Session ${trackingId} ended: max budget reached`);
-          } else if (result.subtype === "error_during_execution") {
-            endReason = "execution_error";
-            log.warn(`Session ${trackingId} ended: execution error — ${result.errors?.join("; ") || "unknown"}`);
-          }
-          // For "success" subtype, endReason stays undefined (normal completion)
-          continue;
-        }
-
-        // Capture slash commands from system initialization message
-        if ("slash_commands" in message && message.slash_commands) {
-          setSlashCommandsForDirectory(folder, message.slash_commands as string[]);
-        }
-
-        // Handle session_id arrival
-        if ("session_id" in message && message.session_id && !sessionId) {
-          sessionId = message.session_id as string;
-          log.debug(`Session ID arrived: ${sessionId}`);
-
-          if (isNewChat) {
-            // New chat: create the chat record and migrate tracking from temp ID to real chat ID
-            const meta = { ...initialMetadata, session_ids: [sessionId] };
-            log.debug(`Creating chat record — sessionId=${sessionId}, folder=${folder}`);
-            const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
-              metadata: JSON.stringify(meta),
-            });
-
-            const oldTrackingId = trackingId;
-            trackingId = sessionId;
-            log.debug(`Migrated tracking ID: ${oldTrackingId} → ${trackingId}`);
-
-            sessionRegistry.migrate(oldTrackingId, trackingId);
-
-            const pending = pendingRequests.get(oldTrackingId);
-            if (pending) {
-              pendingRequests.delete(oldTrackingId);
-              pendingRequests.set(trackingId, pending);
+        switch (event.type) {
+          case "result": {
+            // Always the last yielded event: tells us why the conversation ended.
+            if (event.status === "max_turns") {
+              endReason = "max_turns";
+              log.warn(`Session ${trackingId} ended: max turns reached`);
+            } else if (event.status === "max_budget") {
+              endReason = "max_budget";
+              log.warn(`Session ${trackingId} ended: max budget reached`);
+            } else if (event.status === "error") {
+              endReason = "execution_error";
+              log.warn(`Session ${trackingId} ended: execution error — ${event.reason || "unknown"}`);
             }
+            // "success" → endReason stays undefined (normal completion)
+            break;
+          }
 
-            emitter.emit("event", {
-              type: "chat_created",
-              content: "",
-              chatId: sessionId,
-              chat: { ...chat, session_id: sessionId },
-            } as StreamEvent);
+          case "slash_commands":
+            setSlashCommandsForDirectory(folder, event.commands);
+            break;
 
-            // Log chat activity for agent sessions
-            if (initialMetadata.agentAlias) {
-              appendActivity(initialMetadata.agentAlias as string, {
-                type: "chat",
-                message: "Chat session started",
-                metadata: { chatId: sessionId },
+          case "session_started": {
+            // The adapter may re-emit this on subsequent messages; only act
+            // on first arrival.
+            if (sessionId) break;
+            sessionId = event.sessionId;
+            log.debug(`Session ID arrived: ${sessionId}`);
+
+            if (isNewChat) {
+              // New chat: create the chat record and migrate tracking from temp ID to real chat ID
+              const meta = { ...initialMetadata, session_ids: [sessionId] };
+              log.debug(`Creating chat record — sessionId=${sessionId}, folder=${folder}`);
+              const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
+                metadata: JSON.stringify(meta),
+              });
+
+              const oldTrackingId = trackingId;
+              trackingId = sessionId;
+              log.debug(`Migrated tracking ID: ${oldTrackingId} → ${trackingId}`);
+
+              sessionRegistry.migrate(oldTrackingId, trackingId);
+
+              const pending = pendingRequests.get(oldTrackingId);
+              if (pending) {
+                pendingRequests.delete(oldTrackingId);
+                pendingRequests.set(trackingId, pending);
+              }
+
+              emitter.emit("event", {
+                type: "chat_created",
+                content: "",
+                chatId: sessionId,
+                chat: { ...chat, session_id: sessionId },
+              } as StreamEvent);
+
+              // Log chat activity for agent sessions
+              if (initialMetadata.agentAlias) {
+                appendActivity(initialMetadata.agentAlias as string, {
+                  type: "chat",
+                  message: "Chat session started",
+                  metadata: { chatId: sessionId },
+                });
+              }
+
+              // Generate a title for new manual (non-triggered) chats
+              if (!opts.triggered) {
+                const promptText = typeof prompt === "string" ? prompt : null;
+                if (promptText) {
+                  const chatId = trackingId;
+                  generateChatTitle(promptText)
+                    .then((title) => {
+                      if (title) {
+                        chatFileService.updateChatMetadata(chatId, { title });
+                        log.debug(`Generated title for chat ${chatId}: "${title}"`);
+                      }
+                    })
+                    .catch(() => {}); // Title generation is non-critical
+                }
+              }
+            } else {
+              // Existing chat: append session_id to metadata
+              const ids: string[] = initialMetadata.session_ids || [];
+              if (!ids.includes(sessionId)) ids.push(sessionId);
+              initialMetadata.session_ids = ids;
+              chatFileService.upsertChat(trackingId, folder, sessionId, {
+                metadata: JSON.stringify(initialMetadata),
               });
             }
-
-            // Generate a title for new manual (non-triggered) chats
-            if (!opts.triggered) {
-              const promptText = typeof prompt === "string" ? prompt : null;
-              if (promptText) {
-                const chatId = trackingId;
-                generateChatTitle(promptText)
-                  .then((title) => {
-                    if (title) {
-                      chatFileService.updateChatMetadata(chatId, { title });
-                      log.debug(`Generated title for chat ${chatId}: "${title}"`);
-                    }
-                  })
-                  .catch(() => {}); // Title generation is non-critical
-              }
-            }
-          } else {
-            // Existing chat: append session_id to metadata
-            const ids: string[] = initialMetadata.session_ids || [];
-            if (!ids.includes(sessionId)) ids.push(sessionId);
-            initialMetadata.session_ids = ids;
-            chatFileService.upsertChat(trackingId, folder, sessionId, {
-              metadata: JSON.stringify(initialMetadata),
-            });
+            break;
           }
-        }
 
-        // Detect conversation compaction events from the SDK
-        if ("type" in message && (message as any).type === "system" && (message as any).subtype === "compact_boundary") {
-          emitter.emit("event", { type: "compacting", content: (message as any).content || "Conversation compacted" } as StreamEvent);
-        }
+          case "compaction_boundary":
+            emitter.emit("event", { type: "compacting", content: event.content || "Conversation compacted" } as StreamEvent);
+            break;
 
-        emitContentBlocks(emitter, message);
+          case "text":
+            emitter.emit("event", { type: "text", content: event.content } as StreamEvent);
+            break;
+
+          case "thinking":
+            emitter.emit("event", { type: "thinking", content: event.content } as StreamEvent);
+            break;
+
+          case "tool_use":
+            emitter.emit("event", {
+              type: "tool_use",
+              content: JSON.stringify(event.input),
+              toolName: event.toolName,
+            } as StreamEvent);
+            break;
+
+          case "tool_result":
+            emitter.emit("event", { type: "tool_result", content: event.content } as StreamEvent);
+            break;
+
+          case "adapter_specific":
+            // Escape hatch for adapter-native events; no handling required today.
+            break;
+        }
       }
 
       chatFileService.updateChat(trackingId, {});

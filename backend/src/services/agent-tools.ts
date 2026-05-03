@@ -1,19 +1,18 @@
 /**
- * Custom Callboard Agent Tools — In-process MCP server for agent sessions.
+ * Custom Callboard Agent Tools — tool-server spec for agent sessions.
  *
- * Gives agents programmatic access to platform APIs during their Claude Code sessions:
+ * Gives agents programmatic access to platform APIs during their agent sessions:
  * - Orchestrate other agents (start sessions, check status, read output)
  * - Manage their own cron jobs
  * - Query and log activity
  * - Discover other agents on the platform
  *
- * Built with createSdkMcpServer() from @anthropic-ai/claude-agent-sdk.
- * Injected into agent sessions via the mcpServers option in sendMessage().
- *
- * @see https://platform.claude.com/docs/en/agent-sdk/custom-tools
+ * Returns a provider-neutral {@link ToolServerSpec}; callers translate to their
+ * engine's registration shape via `provider.buildToolServer(spec)`.
  */
-import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { defineTool } from "../agents/ports/tools.js";
+import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir, getAgentWorkspacePath } from "./agent-file-service.js";
 import { scaffoldWorkspace, compileIdentityPrompt, compileWorkspaceContext } from "./claude-compiler.js";
 import { executeAgent } from "./agent-executor.js";
@@ -34,7 +33,7 @@ const log = createLogger("agent-tools");
 
 // ─── Lazy reference to sendMessage ──────────────────────────────────
 // We use a lazy import to avoid circular dependency:
-// agent-tools.ts → claude.ts → (uses buildAgentToolsServer from agent-tools.ts)
+// agent-tools.ts → claude.ts → (uses buildAgentToolsSpec from agent-tools.ts)
 // Instead, claude.ts registers itself at startup via setMessageSender().
 
 type MessageSender = (opts: {
@@ -65,21 +64,21 @@ function getSendMessage(): MessageSender {
 // ─── Tool Definitions ───────────────────────────────────────────────
 
 /**
- * Build a custom MCP server scoped to a specific agent.
+ * Build a tool-server spec scoped to a specific agent.
  * The agentAlias is baked into the closure so scoped tools (cron jobs, activity)
  * only access that agent's data. Orchestration tools can target other agents.
  */
-export function buildAgentToolsServer(agentAlias: string) {
+export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
   const agentConfig = getAgent(agentAlias);
   const agentTimezone = agentConfig?.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  return createSdkMcpServer({
+  return {
     name: "callboard",
     version: "1.0.0",
     tools: [
       // ── Agent Orchestration ────────────────────────────────────
 
-      tool(
+      defineTool(
         "talk_to_agent",
         "Send a message to another agent and wait for their response. The target agent runs in its own workspace with its own identity and tools. Use this for inter-agent conversation where you need the result. For fire-and-forget, use deploy_agent instead.",
         {
@@ -183,7 +182,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "deploy_agent",
         "Start a new session AS another agent. The agent runs in its own workspace with its own identity, system prompt, and tools. The session runs asynchronously — use get_session_status and read_session_messages to monitor it. Unlike talk_to_agent, this does NOT wait for completion.",
         {
@@ -236,7 +235,7 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Cron Job Management ──────────────────────────────────
 
-      tool("list_cron_jobs", "List all scheduled cron jobs for your agent.", {}, async () => {
+      defineTool("list_cron_jobs", "List all scheduled cron jobs for your agent.", {}, async () => {
         try {
           const jobs = listCronJobs(agentAlias);
           return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
@@ -245,7 +244,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         }
       }),
 
-      tool(
+      defineTool(
         "create_cron_job",
         `Create a new scheduled cron job for your agent. The job will execute on the specified schedule interpreted in the ${agentTimezone} timezone.`,
         {
@@ -292,7 +291,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "update_cron_job",
         `Update an existing cron job. You can change the name, schedule, prompt, status (active/paused), or type. Schedule times are interpreted in the ${agentTimezone} timezone.`,
         {
@@ -335,7 +334,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "delete_cron_job",
         "Delete a cron job by its ID.",
         {
@@ -361,16 +360,21 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Trigger Management ──────────────────────────────────
 
-      tool("list_triggers", "List all event triggers for your agent. Triggers automatically start sessions when matching events arrive.", {}, async () => {
-        try {
-          const triggers = listTriggers(agentAlias);
-          return { content: [{ type: "text" as const, text: JSON.stringify(triggers, null, 2) }] };
-        } catch (err: any) {
-          return { content: [{ type: "text" as const, text: `Error listing triggers: ${err.message}` }] };
-        }
-      }),
+      defineTool(
+        "list_triggers",
+        "List all event triggers for your agent. Triggers automatically start sessions when matching events arrive.",
+        {},
+        async () => {
+          try {
+            const triggers = listTriggers(agentAlias);
+            return { content: [{ type: "text" as const, text: JSON.stringify(triggers, null, 2) }] };
+          } catch (err: any) {
+            return { content: [{ type: "text" as const, text: `Error listing triggers: ${err.message}` }] };
+          }
+        },
+      ),
 
-      tool(
+      defineTool(
         "create_trigger",
         "Create a new event trigger. When events matching the filter arrive, a session starts with the prompt template. Use {{event.source}}, {{event.eventType}}, {{event.data}}, {{event.data.fieldPath}} in the prompt. You can add conditions to filter on specific data fields (AND logic).",
         {
@@ -419,7 +423,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "update_trigger",
         "Update an existing event trigger. You can change the name, status, filter source/eventType/conditions, or prompt.",
         {
@@ -473,7 +477,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "delete_trigger",
         "Delete an event trigger by its ID.",
         {
@@ -496,7 +500,7 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Activity & Events ────────────────────────────────────
 
-      tool(
+      defineTool(
         "get_activity",
         "Query your agent's activity log. Returns recent activity entries sorted newest-first.",
         {
@@ -516,7 +520,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "log_activity",
         "Record an entry in your agent's activity log. Use this to track notable events, decisions, or actions.",
         {
@@ -540,7 +544,7 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Agent Discovery ──────────────────────────────────────
 
-      tool("list_agents", "List all agents on the platform. Returns basic info: alias, name, emoji, role, and description.", {}, async () => {
+      defineTool("list_agents", "List all agents on the platform. Returns basic info: alias, name, emoji, role, and description.", {}, async () => {
         try {
           const agents = listAgents();
           const summaries = agents.map((a) => ({
@@ -556,7 +560,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         }
       }),
 
-      tool(
+      defineTool(
         "get_agent_info",
         "Get public information about another agent. Returns name, emoji, role, description, and personality.",
         {
@@ -587,7 +591,7 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Agent Management ──────────────────────────────────
 
-      tool(
+      defineTool(
         "create_agent",
         "Create a new agent on the platform. The agent will have its own workspace, identity, and can be targeted by start_agent_session. Returns the created agent config.",
         {
@@ -660,7 +664,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "update_agent",
         "Update an existing agent's configuration. Only the fields you provide will be changed — all other fields remain unchanged. You can update any agent, including yourself. Returns the full updated config.",
         {
@@ -746,7 +750,7 @@ export function buildAgentToolsServer(agentAlias: string) {
 
       // ── Themes ─────────────────────────────────────────────────
 
-      tool("list_themes", "List all custom UI themes available on the Callboard instance.", {}, async () => {
+      defineTool("list_themes", "List all custom UI themes available on the Callboard instance.", {}, async () => {
         try {
           const themes = themeFileService.listThemes();
           return { content: [{ type: "text" as const, text: JSON.stringify({ themes }, null, 2) }] };
@@ -755,7 +759,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         }
       }),
 
-      tool(
+      defineTool(
         "get_theme",
         "Get the full details of a custom UI theme by name, including all CSS variable values for dark and light modes.",
         {
@@ -774,7 +778,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "generate_theme",
         "Generate a new custom UI theme using AI. Provide a name and a natural language description of the desired look and feel. The AI will create appropriate CSS variable values for both dark and light modes.",
         {
@@ -801,7 +805,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "update_theme",
         "Update an existing custom UI theme. You only need to provide the CSS variables you want to change — any variables not included will keep their existing values. You can also optionally rename the theme.",
         {
@@ -833,7 +837,7 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
 
-      tool(
+      defineTool(
         "delete_theme",
         "Delete a custom UI theme by name.",
         {
@@ -853,5 +857,5 @@ export function buildAgentToolsServer(agentAlias: string) {
         },
       ),
     ],
-  });
+  };
 }

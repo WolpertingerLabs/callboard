@@ -17,7 +17,9 @@
  *
  * @see https://platform.claude.com/docs/en/agent-sdk/custom-tools
  */
-import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { getAgentProvider } from "../agents/factory.js";
+import { defineTool } from "../agents/ports/tools.js";
+import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { z } from "zod";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
@@ -55,16 +57,17 @@ export interface QuickCompletionResult {
 // ─── MCP Server Builder ──────────────────────────────────────────────
 
 /**
- * Build a per-call in-process MCP server with a single `return_result` tool.
+ * Build a per-call tool-server spec with a single `return_result` tool.
  * The tool handler resolves the provided callback with the result text,
- * giving us a clean, structured answer channel.
+ * giving us a clean, structured answer channel. Translated to an
+ * engine-specific server by the adapter.
  */
-function buildReturnResultServer(onResult: (text: string) => void) {
-  return createSdkMcpServer({
+function buildReturnResultSpec(onResult: (text: string) => void): ToolServerSpec {
+  return {
     name: "qc",
     version: "1.0.0",
     tools: [
-      tool(
+      defineTool(
         "return_result",
         "Return your final answer. You MUST call this tool with your result.",
         {
@@ -76,7 +79,7 @@ function buildReturnResultServer(onResult: (text: string) => void) {
         },
       ),
     ],
-  });
+  };
 }
 
 // ─── Core Function ───────────────────────────────────────────────────
@@ -104,10 +107,11 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   const resultReady = new Promise<string>((resolve) => {
     resolveResult = resolve;
   });
-  const mcpServer = buildReturnResultServer((text) => {
+  const qcSpec = buildReturnResultSpec((text) => {
     capturedResult = text;
     resolveResult(text);
   });
+  const mcpServer = getAgentProvider().buildToolServer(qcSpec);
 
   // Build the allowed tools list: always include return_result, plus any explicit CC tools
   const allowedTools = ["mcp__qc__return_result", ...tools];
@@ -132,7 +136,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   try {
     const claudeExecutable = getClaudeCodeExecutablePath();
 
-    const conversation = query({
+    const conversation = getAgentProvider().query({
       prompt: promptGenerator,
       options: {
         model,
@@ -156,19 +160,17 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
       },
     });
 
-    // Drive the SDK event loop to completion
-    for await (const message of conversation) {
-      // Capture usage/cost from the result message
-      if ("type" in message && (message as any).type === "result") {
-        const result = message as any;
-        if (result.usage) {
+    // Drive the agent loop to completion; capture usage + duration from the result event.
+    for await (const event of conversation) {
+      if (event.type === "result") {
+        if (event.usage) {
           usage = {
-            inputTokens: result.usage.input_tokens ?? 0,
-            outputTokens: result.usage.output_tokens ?? 0,
-            costUsd: result.total_cost_usd ?? 0,
+            inputTokens: event.usage.inputTokens,
+            outputTokens: event.usage.outputTokens,
+            costUsd: event.usage.costUsd ?? 0,
           };
         }
-        durationMs = result.duration_ms ?? 0;
+        if (typeof event.durationMs === "number") durationMs = event.durationMs;
       }
     }
 
