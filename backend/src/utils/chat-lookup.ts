@@ -1,12 +1,22 @@
 import { statSync } from "fs";
-import { join } from "path";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "./git.js";
-import { projectDirToFolder } from "./paths.js";
-import { findSessionLogPath } from "./session-log.js";
+import { getSessionProviders } from "../agents/factory.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("chat-lookup");
+
+/**
+ * Resolve a session ID to its log path and folder info by iterating
+ * all registered session providers.
+ */
+function resolveSessionAcrossProviders(sessionId: string): { logPath: string; folder: string; displayFolder: string } | null {
+  for (const provider of getSessionProviders()) {
+    const resolved = provider.resolveSession(sessionId);
+    if (resolved) return resolved;
+  }
+  return null;
+}
 
 /**
  * Look up a chat by ID, checking file storage first then falling back to filesystem.
@@ -27,7 +37,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
 
     if (fileChat) {
       log.debug(`findChat — found in file storage: id=${id}`);
-      const logPath = findSessionLogPath(fileChat.session_id);
+      const resolved = resolveSessionAcrossProviders(fileChat.session_id);
       // Use original folder for git info (correct branch for worktrees)
       let gitInfo: { isGitRepo: boolean; branch?: string } = { isGitRepo: false };
       if (includeGitInfo) {
@@ -42,7 +52,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
         // Keep original folder (may be a worktree) — logs are stored under this path
         folder: fileChat.folder,
         displayFolder: mainRepoPath,
-        session_log_path: logPath,
+        session_log_path: resolved?.logPath ?? null,
         ...(includeGitInfo && {
           is_git_repo: gitInfo.isGitRepo,
           git_branch: gitInfo.branch,
@@ -52,30 +62,25 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
 
     // Try filesystem fallback: id might be a session ID with no file storage
     log.debug(`findChat — not in file storage, trying filesystem fallback: id=${id}`);
-    const logPath = findSessionLogPath(id);
-    if (!logPath) return null;
+    const resolved = resolveSessionAcrossProviders(id);
+    if (!resolved) return null;
 
-    const projectDir = join(logPath, "..");
-    const dirName = projectDir.split("/").pop()!;
-    const st = statSync(logPath);
-    const originalFolder = projectDirToFolder(dirName);
+    const st = statSync(resolved.logPath);
     // Use original folder for git info (correct branch for worktrees)
     let gitInfo: { isGitRepo: boolean; branch?: string } = { isGitRepo: false };
     if (includeGitInfo) {
       try {
-        gitInfo = getGitInfo(originalFolder);
+        gitInfo = getGitInfo(resolved.folder);
       } catch {}
     }
-    // Resolve worktree paths to main repo for display/grouping only
-    const { mainRepoPath } = resolveWorktreeToMainRepoCached(originalFolder);
 
     return {
       id,
       // Keep original folder (may be a worktree) — logs are stored under this path
-      folder: originalFolder,
-      displayFolder: mainRepoPath,
+      folder: resolved.folder,
+      displayFolder: resolved.displayFolder,
       session_id: id,
-      session_log_path: logPath,
+      session_log_path: resolved.logPath,
       metadata: JSON.stringify({ session_ids: [id] }),
       created_at: st.birthtime.toISOString(),
       updated_at: st.mtime.toISOString(),
