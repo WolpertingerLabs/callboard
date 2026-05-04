@@ -28,8 +28,7 @@ import {
   parseSubagentMessages,
   buildSubagentMap,
 } from "./sessionParser.js";
-import { CLAUDE_PROJECTS_DIR, IGNORED_PROJECT_DIRS, projectDirToFolder } from "../../../utils/paths.js";
-import { findSessionLogPath, findSubagentFiles as findSubagentFilesUtil } from "../../../utils/session-log.js";
+import { CLAUDE_PROJECTS_DIR, IGNORED_PROJECT_DIRS, listClaudeProjectDirs, projectDirToFolder } from "../../../utils/paths.js";
 import { searchChats } from "../../../utils/chat-search.js";
 import { resolveWorktreeToMainRepoCached } from "../../../utils/git.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -39,6 +38,43 @@ const log = createLogger("claude-session-provider");
 
 export class ClaudeCodeSessionProvider implements SessionProvider {
   readonly kind = "claude-code" as const;
+
+  // ── Private direct-lookup helpers (no provider dispatch) ───────────
+
+  /**
+   * Find the session JSONL file directly on disk.
+   * This must NOT call the shared findSessionLogPath utility, which
+   * dispatches through all providers and would cause infinite recursion.
+   */
+  private _findLogPath(sessionId: string): string | null {
+    for (const dir of listClaudeProjectDirs()) {
+      const candidate = join(CLAUDE_PROJECTS_DIR, dir, `${sessionId}.jsonl`);
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * Find all subagent JSONL files directly on disk.
+   * Same rationale as _findLogPath — avoids provider-dispatch recursion.
+   */
+  private _findSubagentFiles(sessionId: string): SubagentFile[] {
+    const results: SubagentFile[] = [];
+    for (const dir of listClaudeProjectDirs()) {
+      const subagentsDir = join(CLAUDE_PROJECTS_DIR, dir, sessionId, "subagents");
+      if (!existsSync(subagentsDir)) continue;
+      try {
+        for (const file of readdirSync(subagentsDir)) {
+          if (!file.startsWith("agent-") || !file.endsWith(".jsonl")) continue;
+          const agentId = file.replace("agent-", "").replace(".jsonl", "");
+          results.push({ agentId, filePath: join(subagentsDir, file) });
+        }
+      } catch {
+        continue;
+      }
+    }
+    return results;
+  }
 
   // ── Discovery ───────────────────────────────────────────────────────
 
@@ -153,7 +189,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
   // ── Session resolution ──────────────────────────────────────────────
 
   resolveSession(sessionId: string): ResolvedSession | null {
-    const logPath = findSessionLogPath(sessionId);
+    const logPath = this._findLogPath(sessionId);
     if (!logPath) return null;
 
     // Derive folder from the log path's parent directory name
@@ -169,7 +205,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
   // ── Subagent files ──────────────────────────────────────────────────
 
   findSubagentFiles(sessionId: string): SubagentFile[] {
-    return findSubagentFilesUtil(sessionId);
+    return this._findSubagentFiles(sessionId);
   }
 
   // ── Message parsing ─────────────────────────────────────────────────
@@ -179,7 +215,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
     // their session ID so parseMessages() can detect session transitions
     const allRaw: any[] = [];
     for (const sid of sessionIds) {
-      const logPath = findSessionLogPath(sid);
+      const logPath = this._findLogPath(sid);
       if (logPath) {
         const entries = readJsonlFile(logPath);
         for (const entry of entries) entry._sessionId = sid;
@@ -198,7 +234,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
     // Find and parse subagent messages
     const subagentMessages: ParsedMessage[] = [];
     for (const sid of sessionIds) {
-      const subagentFiles = findSubagentFilesUtil(sid);
+      const subagentFiles = this._findSubagentFiles(sid);
       for (const { agentId, filePath } of subagentFiles) {
         const subRaw = readJsonlFile(filePath);
         if (subRaw.length === 0) continue;
@@ -239,13 +275,13 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
 
   deleteSessionFiles(sessionId: string): void {
     // Delete the JSONL session log
-    const logPath = findSessionLogPath(sessionId);
+    const logPath = this._findLogPath(sessionId);
     if (logPath && existsSync(logPath)) {
       unlinkSync(logPath);
     }
 
     // Delete subagent files
-    const subagentFiles = findSubagentFilesUtil(sessionId);
+    const subagentFiles = this._findSubagentFiles(sessionId);
     for (const sub of subagentFiles) {
       try {
         unlinkSync(sub.filePath);
