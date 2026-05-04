@@ -1,46 +1,37 @@
-import { existsSync, readdirSync } from "fs";
-import { join } from "path";
-import { CLAUDE_PROJECTS_DIR, listClaudeProjectDirs } from "./paths.js";
+/**
+ * Session log utilities — thin redirects through the {@link SessionProvider}
+ * abstraction.
+ *
+ * These functions preserve the existing call signatures so existing callers
+ * don't need to change yet (strangler migration). Internally they iterate
+ * all registered session providers to find the requested session.
+ *
+ * Once all callers are migrated to use the SessionProvider interface
+ * directly, this module can be deleted.
+ *
+ * @see plans/agent-abstraction-layer.md
+ */
+import { getSessionProviders } from "../agents/factory.js";
 
 /**
- * Find the session JSONL file in ~/.claude/projects/.
- * The SDK names project dirs by replacing / with - in the cwd.
- * We search all project dirs for the session ID since the SDK may
- * resolve the cwd differently than what we passed.
+ * Find the session log file across all registered providers.
+ * Returns the first matching path, or null if not found.
  */
 export function findSessionLogPath(sessionId: string): string | null {
-  for (const dir of listClaudeProjectDirs()) {
-    const candidate = join(CLAUDE_PROJECTS_DIR, dir, `${sessionId}.jsonl`);
-    if (existsSync(candidate)) return candidate;
+  for (const provider of getSessionProviders()) {
+    const resolved = provider.resolveSession(sessionId);
+    if (resolved) return resolved.logPath;
   }
   return null;
 }
 
 /**
- * Find all subagent JSONL files for a given session.
- * Subagent files live at:
- *   ~/.claude/projects/<project-dir>/<sessionId>/subagents/agent-<shortId>.jsonl
- *
- * Returns an array of { agentId, filePath } objects.
+ * Find all subagent/child-session files across all registered providers.
  */
 export function findSubagentFiles(sessionId: string): { agentId: string; filePath: string }[] {
-  const results: { agentId: string; filePath: string }[] = [];
-  for (const dir of listClaudeProjectDirs()) {
-    const subagentsDir = join(CLAUDE_PROJECTS_DIR, dir, sessionId, "subagents");
-    if (!existsSync(subagentsDir)) continue;
-
-    try {
-      for (const file of readdirSync(subagentsDir)) {
-        if (!file.startsWith("agent-") || !file.endsWith(".jsonl")) continue;
-        const agentId = file.replace("agent-", "").replace(".jsonl", "");
-        results.push({
-          agentId,
-          filePath: join(subagentsDir, file),
-        });
-      }
-    } catch {
-      continue;
-    }
+  for (const provider of getSessionProviders()) {
+    const files = provider.findSubagentFiles(sessionId);
+    if (files.length > 0) return files;
   }
-  return results;
+  return [];
 }

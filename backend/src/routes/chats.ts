@@ -1,18 +1,13 @@
 import { Router } from "express";
-import { readFileSync, existsSync, readdirSync, statSync, unlinkSync } from "fs";
-import { execSync, execFileSync } from "child_process";
-import { join } from "path";
+import { existsSync } from "fs";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
-import { CLAUDE_PROJECTS_DIR, IGNORED_PROJECT_DIRS, projectDirToFolder } from "../utils/paths.js";
-import { findSessionLogPath, findSubagentFiles } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
-import type { ParsedMessage } from "shared/types/index.js";
-import { storeBase64Image } from "../services/image-storage.js";
 import { hasPendingRequest } from "../services/claude.js";
 import { sessionRegistry } from "../services/session-registry.js";
+import { getSessionProviders } from "../agents/factory.js";
 import { createLogger } from "../utils/logger.js";
 import type { FolderSummary } from "shared/types/index.js";
 
@@ -60,37 +55,23 @@ function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string
 /**
  * Extract the first user message text from a JSONL session file (up to maxLength chars).
  * Used as a chat preview/title in the chat list.
+ * Delegates to the first session provider that can read the file.
  */
 function getFirstUserMessage(filePath: string, maxLength: number = 200): string | null {
-  try {
-    const content = readFileSync(filePath, "utf-8");
-    const lines = content.split("\n");
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (msg.type === "user" && msg.message?.role === "user") {
-          const contentBlocks = msg.message.content;
-          if (typeof contentBlocks === "string") {
-            return contentBlocks.slice(0, maxLength);
-          }
-          if (Array.isArray(contentBlocks)) {
-            for (const block of contentBlocks) {
-              if (block.type === "text" && block.text) {
-                return block.text.slice(0, maxLength);
-              }
-            }
-          }
-        }
-      } catch {}
-    }
-  } catch {}
+  for (const provider of getSessionProviders()) {
+    const preview = provider.getSessionPreview(filePath, maxLength);
+    if (preview) return preview;
+  }
   return null;
 }
 
 /**
  * Discover session JSONL files using filesystem-level sorting for optimal performance.
  * Only processes the files needed for the current page.
+ */
+/**
+ * Discover sessions across all registered providers.
+ * Merges results, sorts globally by mtime DESC, and paginates.
  */
 function discoverSessionsPaginated(
   limit: number,
@@ -99,173 +80,70 @@ function discoverSessionsPaginated(
   sessions: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
   total: number;
 } {
-  if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
+  const providers = getSessionProviders();
 
-  try {
-    // Enumerate jsonl files with find (fast), then stat and sort in Node.
-    // Note: we cannot delegate sorting to `xargs ... ls -lt` — when xargs splits
-    // args across multiple batches (>128KB command buffer), each batch is sorted
-    // independently and the concatenated output is NOT globally time-sorted,
-    // so recent files can be buried and missed by the first page of results.
-    // Use -maxdepth 2 to only get .jsonl files directly inside project folders,
-    // excluding subagents/ subdirectories (projects/<name>/subagents/<id>.jsonl)
-    // Prune ignored project dirs (e.g. "-tmp", which holds throwaway quick-completion transcripts)
-    const pruneArgs = [...IGNORED_PROJECT_DIRS].map((d) => `-path "${CLAUDE_PROJECTS_DIR}/${d}" -prune -o`).join(" ");
-    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" ${pruneArgs} -maxdepth 2 -name "*.jsonl" -type f -print0`;
-    const output = execSync(findCommand, { encoding: "utf8" });
-
-    if (!output) return { sessions: [], total: 0 };
-
-    const filePaths = output.split("\0").filter((p) => p.endsWith(".jsonl"));
-
-    // Stat every file so we can sort globally by mtime before paginating.
-    // statSync on local files is fast (typically <1ms per file).
-    const allStats: { filePath: string; mtimeMs: number; birthtime: Date; mtime: Date }[] = [];
-    for (const filePath of filePaths) {
-      try {
-        const st = statSync(filePath);
-        allStats.push({ filePath, mtimeMs: st.mtimeMs, birthtime: st.birthtime, mtime: st.mtime });
-      } catch {
-        continue;
-      }
-    }
-
-    allStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-    const total = allStats.length;
-    const pageStats = allStats.slice(offset, offset + limit);
-    const results: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
-
-    for (const { filePath, birthtime, mtime } of pageStats) {
-      const sessionId = filePath.split("/").pop()?.replace(".jsonl", "");
-      if (!sessionId) continue;
-
-      const projectDir = filePath.split("/").slice(0, -1).pop();
-      if (!projectDir) continue;
-
-      const originalFolder = projectDirToFolder(projectDir);
-      // Resolve worktree paths to the main repo for display/grouping only
-      const { mainRepoPath } = resolveWorktreeToMainRepoCached(originalFolder);
-
-      results.push({
-        sessionId,
-        folder: originalFolder,
-        displayFolder: mainRepoPath,
-        filePath,
-        createdAt: birthtime,
-        updatedAt: mtime,
-      });
-    }
-
-    return { sessions: results, total };
-  } catch (error) {
-    log.error(`Error in optimized session discovery: ${error}`);
-    // Fallback to Node.js method if find command fails
-    return discoverAllSessionsFallback(limit, offset);
-  }
-}
-
-/**
- * Fallback method that mimics original behavior
- */
-function discoverAllSessionsFallback(
-  limit?: number,
-  offset?: number,
-): {
-  sessions: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
-  total: number;
-} {
-  const results: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
-  for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
-    if (IGNORED_PROJECT_DIRS.has(dir)) continue;
-    const dirPath = join(CLAUDE_PROJECTS_DIR, dir);
-    try {
-      const dirStat = statSync(dirPath);
-      if (!dirStat.isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    const originalFolder = projectDirToFolder(dir);
-    const { mainRepoPath } = resolveWorktreeToMainRepoCached(originalFolder);
-    for (const file of readdirSync(dirPath)) {
-      if (!file.endsWith(".jsonl")) continue;
-      const sessionId = file.replace(".jsonl", "");
-      const filePath = join(dirPath, file);
-      try {
-        const st = statSync(filePath);
-        results.push({ sessionId, folder: originalFolder, displayFolder: mainRepoPath, filePath, createdAt: st.birthtime, updatedAt: st.mtime });
-      } catch {
-        continue;
-      }
-    }
-  }
-  results.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-
-  const total = results.length;
-
-  // Apply pagination if specified
-  if (typeof limit === "number" && typeof offset === "number") {
-    const paginatedResults = results.slice(offset, offset + limit);
-    return { sessions: paginatedResults, total };
+  if (providers.length === 1) {
+    // Single provider: delegate directly (preserves existing performance)
+    return providers[0].discoverSessions({ limit, offset });
   }
 
-  return { sessions: results, total };
+  // Multi-provider: collect all, merge, sort, paginate
+  const allSessions: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
+  for (const provider of providers) {
+    const { sessions } = provider.discoverSessions({ limit: 9999, offset: 0 });
+    allSessions.push(...sessions);
+  }
+
+  allSessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+
+  const total = allSessions.length;
+  const paginated = allSessions.slice(offset, offset + limit);
+  return { sessions: paginated, total };
 }
 
 // Search chat contents using grep for performance
 chatsRouter.get("/search", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Search chat contents'
-  // #swagger.description = 'Search through JSONL session files for matching content. Uses grep for fast filesystem-level search.'
+  // #swagger.description = 'Search through session files for matching content across all providers.'
   /* #swagger.parameters['q'] = { in: 'query', type: 'string', required: true, description: 'Search query string' } */
+  /* #swagger.parameters['folder'] = { in: 'query', type: 'string', description: 'Folder to search within' } */
   /* #swagger.responses[200] = { description: "Array of matching chat/session IDs" } */
   try {
     const query = ((req.query.q as string) || "").trim();
+    const folder = (req.query.folder as string) || "";
     if (!query) {
       return res.json({ chatIds: [] });
     }
 
-    if (!existsSync(CLAUDE_PROJECTS_DIR)) {
-      return res.json({ chatIds: [] });
+    // If folder is provided, use the structured searchSessions API
+    if (folder) {
+      const chatIds = new Set<string>();
+      for (const provider of getSessionProviders()) {
+        const results = provider.searchSessions({ folder, grep: query });
+        for (const r of results.chats) chatIds.add(r.chatId);
+      }
+      return res.json({ chatIds: Array.from(chatIds) });
     }
 
-    let matchingFiles: string[] = [];
-    try {
-      // Use execFileSync with array args to prevent shell injection
-      const excludeDirArgs = [...IGNORED_PROJECT_DIRS].map((d) => `--exclude-dir=${d}`);
-      const output = execFileSync("grep", ["-rl", "-i", "--include=*.jsonl", ...excludeDirArgs, query, CLAUDE_PROJECTS_DIR], {
-        encoding: "utf8",
-        timeout: 15000, // 15 second timeout
-      }).trim();
-
-      if (output) {
-        matchingFiles = output.split("\n").filter(Boolean);
-      }
-    } catch (err: any) {
-      // grep exits with code 1 when no matches found — that's not an error
-      if (err.status !== 1) {
-        log.error(`grep search error: ${err.message}`);
-      }
-    }
-
-    // Extract session IDs from matching file paths
-    // Files are at: ~/.claude/projects/<project-dir>/<sessionId>.jsonl
-    // or subagent files at: ~/.claude/projects/<project-dir>/<sessionId>/subagents/agent-<id>.jsonl
+    // Fallback: search all sessions across all providers by discovering
+    // all sessions and checking for matches (backwards-compatible with
+    // the old grep-based approach). For now, delegate to first provider's
+    // search with a broad filter. The old endpoint searched globally;
+    // the provider search is folder-scoped, so we replicate the old
+    // behavior by getting all sessions and checking each.
+    // TODO: Add a global grep method to SessionProvider if needed.
     const chatIds = new Set<string>();
-    for (const filePath of matchingFiles) {
-      const fileName = filePath.split("/").pop();
-      if (!fileName) continue;
-
-      // Direct session file: <sessionId>.jsonl
-      if (!filePath.includes("/subagents/")) {
-        chatIds.add(fileName.replace(".jsonl", ""));
-      } else {
-        // Subagent file: extract parent session ID from path
-        // Path: .../<project-dir>/<sessionId>/subagents/agent-<id>.jsonl
-        const parts = filePath.split("/");
-        const subagentsIdx = parts.indexOf("subagents");
-        if (subagentsIdx > 0) {
-          chatIds.add(parts[subagentsIdx - 1]);
+    for (const provider of getSessionProviders()) {
+      const { sessions } = provider.discoverSessions({ limit: 9999, offset: 0 });
+      // Group by folder and search each folder
+      const folderSet = new Set(sessions.map((s) => s.folder));
+      for (const f of folderSet) {
+        try {
+          const results = provider.searchSessions({ folder: f, grep: query, limit: 50 });
+          for (const r of results.chats) chatIds.add(r.chatId);
+        } catch {
+          // Folder may no longer exist — skip
         }
       }
     }
@@ -858,11 +736,11 @@ chatsRouter.patch("/:id/summon", (req, res) => {
   }
 });
 
-// Delete a chat (deletes both file storage metadata and JSONL session log)
+// Delete a chat (deletes both file storage metadata and native session files)
 chatsRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Delete a chat'
-  // #swagger.description = 'Delete a chat from file storage and its JSONL session log from the filesystem.'
+  // #swagger.description = 'Delete a chat from file storage and its session log from the provider\'s native storage.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "Chat deleted" } */
   try {
@@ -875,18 +753,10 @@ chatsRouter.delete("/:id", (req, res) => {
       chatFileService.deleteChat(fileChat.session_id);
     }
 
-    // Delete the JSONL session log file from ~/.claude/projects/
-    if (chat?.session_log_path && existsSync(chat.session_log_path)) {
-      unlinkSync(chat.session_log_path);
-    }
-
-    // Delete subagent files for this session
+    // Delete native session files via the session provider
     const sessionId = chat?.session_id || req.params.id;
-    const subagentFiles = findSubagentFiles(sessionId);
-    for (const sub of subagentFiles) {
-      try {
-        unlinkSync(sub.filePath);
-      } catch {}
+    for (const provider of getSessionProviders()) {
+      provider.deleteSessionFiles(sessionId);
     }
 
     clearChatListCache();
@@ -935,29 +805,11 @@ chatsRouter.get("/:id", (req, res) => {
   });
 });
 
-function readJsonlFile(path: string): any[] {
-  try {
-    return readFileSync(path, "utf-8")
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
 // Get messages from SDK session JSONL files (all sessions for this chat)
 chatsRouter.get("/:id/messages", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Get chat messages'
-  // #swagger.description = 'Returns parsed messages from all SDK session JSONL files associated with this chat. Includes text, thinking, tool_use, and tool_result blocks.'
+  // #swagger.description = 'Returns parsed messages from all session files associated with this chat. Includes text, thinking, tool_use, and tool_result blocks.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "Array of parsed messages" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
@@ -970,52 +822,12 @@ chatsRouter.get("/:id/messages", (req, res) => {
   const sessionIds: string[] = meta.session_ids || [];
   if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
-  // Load only JSONL files for sessions belonging to this chat
-  // Tag each entry with its session ID so parseMessages() can detect session transitions
-  const allRaw: any[] = [];
-  for (const sid of sessionIds) {
-    const logPath = findSessionLogPath(sid);
-    if (logPath) {
-      const entries = readJsonlFile(logPath);
-      for (const entry of entries) entry._sessionId = sid;
-      allRaw.push(...entries);
-    }
-  }
+  // Determine which provider to use (from metadata, default to claude-code)
+  const providerKind = meta.provider || "claude-code";
+  const provider = getSessionProviders().find((p) => p.kind === providerKind) || getSessionProviders()[0];
 
-  if (allRaw.length === 0) return res.json([]);
-
-  // Build agentId -> description map from parent Task tool_use blocks
-  const agentDescMap = buildSubagentMap(allRaw);
-
-  // Parse parent messages
-  const parentMessages = parseMessages(allRaw);
-
-  // Find and parse subagent messages
-  const subagentMessages: ParsedMessage[] = [];
-  for (const sid of sessionIds) {
-    const subagentFiles = findSubagentFiles(sid);
-    for (const { agentId, filePath } of subagentFiles) {
-      const subRaw = readJsonlFile(filePath);
-      if (subRaw.length === 0) continue;
-
-      // Get display name: prefer description from parent Task, fall back to slug, then agentId
-      const description = agentDescMap.get(agentId);
-      const slug = subRaw[0]?.slug;
-      const displayName = description || slug || `Agent ${agentId}`;
-
-      subagentMessages.push(...parseSubagentMessages(subRaw, displayName));
-    }
-  }
-
-  // Merge parent + subagent messages and sort by timestamp
-  const allMessages = [...parentMessages, ...subagentMessages];
-  if (subagentMessages.length > 0) {
-    allMessages.sort((a, b) => {
-      if (!a.timestamp || !b.timestamp) return 0;
-      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
-    });
-  }
-
+  // Delegate full message parsing (including subagent merging) to the provider
+  const allMessages = provider.parseSessionMessages(sessionIds);
   res.json(allMessages);
 });
 
@@ -1064,220 +876,6 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
   }
 });
 
-function extractToolResultContent(block: any): string {
-  if (typeof block.content === "string") return block.content;
-  if (Array.isArray(block.content)) {
-    return block.content
-      .map((c: any) => {
-        if (typeof c === "string") return c;
-        if (c.type === "text") return c.text;
-        return JSON.stringify(c);
-      })
-      .join("\n");
-  }
-  return JSON.stringify(block.content);
-}
-
-/**
- * Build a mapping from agentId to a human-readable display name.
- * Scans parent JSONL lines for Task tool_use blocks (which have input.description)
- * and their corresponding tool_result lines (which have toolUseResult.agentId).
- */
-function buildSubagentMap(rawMessages: any[]): Map<string, string> {
-  const toolUseDescriptions = new Map<string, string>(); // tool_use block id -> description
-  const agentDescriptions = new Map<string, string>(); // agentId -> description
-
-  for (const msg of rawMessages) {
-    const content = msg.message?.content;
-    if (!Array.isArray(content)) continue;
-
-    // Capture Task tool_use descriptions
-    for (const block of content) {
-      if (block.type === "tool_use" && block.name === "Task" && block.input?.description) {
-        toolUseDescriptions.set(block.id, block.input.description);
-      }
-    }
-
-    // The toolUseResult field is on the JSONL line itself (not inside message.content)
-    if (msg.toolUseResult?.agentId) {
-      // Find the tool_use_id from the tool_result block in this line's content
-      const toolResultBlock = Array.isArray(content) ? content.find((b: any) => b.type === "tool_result") : undefined;
-      const toolUseId = toolResultBlock?.tool_use_id;
-      const desc = toolUseId ? toolUseDescriptions.get(toolUseId) : undefined;
-      agentDescriptions.set(msg.toolUseResult.agentId, desc || `Agent ${msg.toolUseResult.agentId}`);
-    }
-  }
-
-  return agentDescriptions;
-}
-
-/**
- * Parse subagent JSONL messages and stamp them with a teamName for display.
- * Reuses the existing parseMessages() function, then adds teamName to every result.
- */
-function parseSubagentMessages(rawMessages: any[], teamName: string): ParsedMessage[] {
-  const parsed = parseMessages(rawMessages);
-  return parsed.map((msg) => ({ ...msg, teamName }));
-}
-
-function parseMessages(rawMessages: any[]): ParsedMessage[] {
-  const result: ParsedMessage[] = [];
-  let currentSessionId: string | null = null;
-
-  for (const msg of rawMessages) {
-    // Detect session boundary — inject a "Conversation was cleared" marker
-    if (msg._sessionId && currentSessionId && msg._sessionId !== currentSessionId) {
-      result.push({
-        role: "system",
-        type: "system",
-        content: "Conversation was cleared",
-        subtype: "clear_boundary",
-        timestamp: msg.timestamp,
-      });
-    }
-    if (msg._sessionId) currentSessionId = msg._sessionId;
-
-    // Skip internal metadata lines
-    if (msg.type === "summary" || msg.type === "queue-operation") continue;
-
-    // Emit system messages (e.g. compact_boundary) as visible markers
-    if (msg.type === "system" && msg.subtype === "compact_boundary") {
-      result.push({
-        role: "system",
-        type: "system",
-        content: msg.content || "Conversation compacted",
-        subtype: "compact_boundary",
-        timestamp: msg.timestamp,
-      });
-      continue;
-    }
-
-    // Skip other system messages (e.g. turn_duration) that aren't user-facing
-    if (msg.type === "system") continue;
-
-    const role: "user" | "assistant" = msg.message?.role || msg.type;
-    const content = msg.message?.content || msg.content;
-    const timestamp = msg.timestamp;
-    const teamName = msg.teamName;
-    if (!content) continue;
-
-    // Extract per-entry metadata (shared across all content blocks from this JSONL line)
-    const model = msg.message?.model;
-    const gitBranch = msg.gitBranch;
-    const rawUsage = msg.message?.usage;
-    const usage = rawUsage
-      ? {
-          input_tokens: rawUsage.input_tokens,
-          output_tokens: rawUsage.output_tokens,
-          cache_creation_input_tokens: rawUsage.cache_creation_input_tokens,
-          cache_read_input_tokens: rawUsage.cache_read_input_tokens,
-        }
-      : undefined;
-    const serviceTier = rawUsage?.service_tier;
-
-    // Debug / metrics fields
-    const stopReason = msg.message?.stop_reason ?? undefined;
-    const speed = rawUsage?.speed ?? undefined;
-    const inferenceGeo = rawUsage?.inference_geo && rawUsage.inference_geo !== "not_available" ? rawUsage.inference_geo : undefined;
-    const requestId = msg.requestId ?? undefined;
-    const rawServerToolUse = rawUsage?.server_tool_use;
-    const serverToolUse = rawServerToolUse
-      ? { webSearchRequests: rawServerToolUse.web_search_requests, webFetchRequests: rawServerToolUse.web_fetch_requests }
-      : undefined;
-    const rawCacheCreation = rawUsage?.cache_creation;
-    const cacheCreation = rawCacheCreation
-      ? { ephemeral5m: rawCacheCreation.ephemeral_5m_input_tokens, ephemeral1h: rawCacheCreation.ephemeral_1h_input_tokens }
-      : undefined;
-
-    const meta = {
-      ...(model && { model }),
-      ...(gitBranch && { gitBranch }),
-      ...(usage && { usage }),
-      ...(serviceTier && { serviceTier }),
-      ...(stopReason !== undefined && { stopReason }),
-      ...(speed && { speed }),
-      ...(inferenceGeo && { inferenceGeo }),
-      ...(requestId && { requestId }),
-      ...(serverToolUse && { serverToolUse }),
-      ...(cacheCreation && { cacheCreation }),
-    };
-
-    if (typeof content === "string") {
-      result.push({ role, type: "text", content, timestamp, ...(teamName && { teamName }), ...meta });
-      continue;
-    }
-
-    if (!Array.isArray(content)) continue;
-
-    // Collect image IDs from this JSONL entry's content blocks.
-    // Images are stored to disk (with SHA256 dedup) and the IDs are
-    // attached to the text message from the same entry.
-    const entryImageIds: string[] = [];
-
-    for (const block of content) {
-      switch (block.type) {
-        case "text":
-          if (block.text) result.push({ role, type: "text", content: block.text, timestamp, ...(teamName && { teamName }), ...meta });
-          break;
-        case "image":
-          if (block.source?.type === "base64" && block.source.data && block.source.media_type) {
-            const imageId = storeBase64Image(block.source.data, block.source.media_type);
-            if (imageId) entryImageIds.push(imageId);
-          }
-          break;
-        case "thinking":
-          result.push({ role: "assistant", type: "thinking", content: block.thinking || "", timestamp, ...meta });
-          break;
-        case "tool_use":
-          result.push({
-            role: "assistant",
-            type: "tool_use",
-            content: JSON.stringify(block.input),
-            toolName: block.name,
-            toolUseId: block.id,
-            timestamp,
-            ...meta,
-          });
-          break;
-        case "tool_result":
-          result.push({
-            role: "assistant",
-            type: "tool_result",
-            content: extractToolResultContent(block),
-            toolName: block.tool_use_id,
-            toolUseId: block.tool_use_id,
-            timestamp,
-            ...meta,
-          });
-          break;
-      }
-    }
-
-    // Attach image IDs to the last text message from this entry
-    if (entryImageIds.length > 0) {
-      for (let i = result.length - 1; i >= 0; i--) {
-        if (result[i].type === "text" && result[i].timestamp === timestamp) {
-          result[i].imageIds = entryImageIds;
-          break;
-        }
-      }
-    }
-  }
-
-  // Compute inter-message timing deltas and throughput
-  let prevTimestamp: number | null = null;
-  for (const m of result) {
-    if (!m.timestamp) continue;
-    const ts = new Date(m.timestamp).getTime();
-    if (isNaN(ts)) continue;
-    if (prevTimestamp !== null) {
-      m.deltaMs = ts - prevTimestamp;
-      if (m.usage?.output_tokens && m.usage.output_tokens > 0 && m.deltaMs > 0) {
-        m.msPerOutputToken = Math.round((m.deltaMs / m.usage.output_tokens) * 100) / 100;
-      }
-    }
-    prevTimestamp = ts;
-  }
-
-  return result;
-}
+// Session parsing functions have been extracted to
+// agents/adapters/claude-code/sessionParser.ts and are accessed
+// through the SessionProvider interface.

@@ -9,7 +9,7 @@ import { sessionRegistry } from "./session-registry.js";
 import { getActiveSession } from "./claude.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
-import { searchChats } from "../utils/chat-search.js";
+import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -698,17 +698,23 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
         },
         async (args) => {
           try {
-            const result = searchChats({
-              folder: args.folder,
-              grep: args.grep,
-              gitBranch: args.gitBranch,
-              agentAlias: args.agentAlias,
-              triggered: args.triggered,
-              updatedAfter: args.updatedAfter,
-              updatedBefore: args.updatedBefore,
-              sort: args.sort,
-              limit: args.limit,
-            });
+            // Search across all registered session providers
+            const allChats: any[] = [];
+            for (const provider of getSessionProviders()) {
+              const providerResult = provider.searchSessions({
+                folder: args.folder,
+                grep: args.grep,
+                gitBranch: args.gitBranch,
+                agentAlias: args.agentAlias,
+                triggered: args.triggered,
+                updatedAfter: args.updatedAfter,
+                updatedBefore: args.updatedBefore,
+                sort: args.sort,
+                limit: args.limit,
+              });
+              allChats.push(...providerResult.chats);
+            }
+            const result = { chats: allChats, total: allChats.length };
 
             return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
           } catch (err: any) {
