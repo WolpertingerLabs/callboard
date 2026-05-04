@@ -1,8 +1,8 @@
 import { readdirSync, statSync, existsSync } from "fs";
 import { join, dirname, resolve, basename } from "path";
 import { homedir } from "os";
-import { CLAUDE_PROJECTS_DIR, IGNORED_PROJECT_DIRS, projectDirToFolder, WORKSPACES_DIR } from "../utils/paths.js";
-import { resolveWorktreeToMainRepoCached } from "../utils/git.js";
+import { WORKSPACES_DIR } from "../utils/paths.js";
+import { getSessionProviders } from "../agents/factory.js";
 import type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "shared/types/index.js";
 
 export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion };
@@ -170,65 +170,30 @@ export class FolderService {
       return cached.data as unknown as RecentFolder[];
     }
 
-    if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
-
     try {
-      const projectDirs = readdirSync(CLAUDE_PROJECTS_DIR);
+      // Aggregate sessions from all providers into folder stats
       const folderMap = new Map<string, { lastUsed: Date; chatCount: number }>();
 
-      for (const dir of projectDirs) {
-        if (IGNORED_PROJECT_DIRS.has(dir)) continue;
-        const dirPath = join(CLAUDE_PROJECTS_DIR, dir);
-        try {
-          const dirStat = statSync(dirPath);
-          if (!dirStat.isDirectory()) continue;
-        } catch {
-          continue;
-        }
+      for (const provider of getSessionProviders()) {
+        const { sessions } = provider.discoverSessions({ limit: 9999, offset: 0 });
+        for (const s of sessions) {
+          const folder = s.displayFolder;
 
-        const rawFolder = projectDirToFolder(dir);
-        // Resolve worktree paths to the main repo so they merge with the parent
-        const { mainRepoPath: folder } = resolveWorktreeToMainRepoCached(rawFolder);
+          // Skip directories that no longer exist
+          if (!existsSync(folder)) continue;
 
-        // Skip directories that no longer exist
-        if (!existsSync(folder)) continue;
+          // Skip agent workspace directories
+          if (folder.startsWith(WORKSPACES_DIR + "/") || folder === WORKSPACES_DIR) continue;
 
-        // Skip agent workspace directories
-        if (folder.startsWith(WORKSPACES_DIR + "/") || folder === WORKSPACES_DIR) continue;
-
-        // Count .jsonl files and find most recent modification
-        let latestMtime = new Date(0);
-        let count = 0;
-
-        try {
-          const files = readdirSync(dirPath);
-          for (const file of files) {
-            if (!file.endsWith(".jsonl")) continue;
-            count++;
-            try {
-              const fileStat = statSync(join(dirPath, file));
-              if (fileStat.mtime > latestMtime) {
-                latestMtime = fileStat.mtime;
-              }
-            } catch {
-              continue;
+          const existing = folderMap.get(folder);
+          if (existing) {
+            existing.chatCount += 1;
+            if (s.updatedAt > existing.lastUsed) {
+              existing.lastUsed = s.updatedAt;
             }
+          } else {
+            folderMap.set(folder, { lastUsed: s.updatedAt, chatCount: 1 });
           }
-        } catch {
-          continue;
-        }
-
-        if (count === 0) continue;
-
-        // Merge with existing entry if same folder resolved from multiple project dirs
-        const existing = folderMap.get(folder);
-        if (existing) {
-          existing.chatCount += count;
-          if (latestMtime > existing.lastUsed) {
-            existing.lastUsed = latestMtime;
-          }
-        } else {
-          folderMap.set(folder, { lastUsed: latestMtime, chatCount: count });
         }
       }
 
