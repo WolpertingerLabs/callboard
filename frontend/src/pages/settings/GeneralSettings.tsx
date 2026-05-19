@@ -1,8 +1,17 @@
 import { useState, useEffect } from "react";
-import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette } from "lucide-react";
+import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
-import { fetchInstanceName, updateInstanceName, randomizeInstanceName, listThemes, generateTheme, deleteTheme } from "../../api";
+import {
+  fetchInstanceName,
+  updateInstanceName,
+  randomizeInstanceName,
+  listThemes,
+  generateTheme,
+  deleteTheme,
+  fetchIgnoredProjectDirs,
+  updateIgnoredProjectDirs,
+} from "../../api";
 import { reloadCustomTheme } from "../../App";
 import type { ThemeListItem } from "../../api";
 
@@ -23,6 +32,15 @@ export default function GeneralSettings() {
   const [regeneratingTheme, setRegeneratingTheme] = useState<string | null>(null);
   const [regenerateDesc, setRegenerateDesc] = useState("");
 
+  // Ignored project folders state
+  const [ignoredPrefixes, setIgnoredPrefixes] = useState<string[]>([]);
+  const [ignoredDefaults, setIgnoredDefaults] = useState<string[]>([]);
+  const [newIgnoredPrefix, setNewIgnoredPrefix] = useState("");
+  const [ignoredLoading, setIgnoredLoading] = useState(true);
+  const [ignoredSaving, setIgnoredSaving] = useState(false);
+  const [ignoredError, setIgnoredError] = useState<string | null>(null);
+  const [ignoredSaved, setIgnoredSaved] = useState(false);
+
   useEffect(() => {
     fetchInstanceName()
       .then(setInstanceName)
@@ -30,7 +48,49 @@ export default function GeneralSettings() {
     listThemes()
       .then(setCustomThemes)
       .catch(() => {});
+    fetchIgnoredProjectDirs()
+      .then((data) => {
+        setIgnoredPrefixes(data.prefixes);
+        setIgnoredDefaults(data.defaults);
+      })
+      .catch((err) => setIgnoredError(err.message || "Failed to load ignored folders"))
+      .finally(() => setIgnoredLoading(false));
   }, []);
+
+  const persistIgnoredPrefixes = async (next: string[]) => {
+    setIgnoredSaving(true);
+    setIgnoredError(null);
+    try {
+      const data = await updateIgnoredProjectDirs(next);
+      setIgnoredPrefixes(data.prefixes);
+      setIgnoredSaved(true);
+      setTimeout(() => setIgnoredSaved(false), 1500);
+    } catch (err: any) {
+      setIgnoredError(err.message || "Failed to save");
+    } finally {
+      setIgnoredSaving(false);
+    }
+  };
+
+  const handleAddIgnoredPrefix = () => {
+    const trimmed = newIgnoredPrefix.trim();
+    if (!trimmed) return;
+    if (ignoredPrefixes.includes(trimmed)) {
+      setNewIgnoredPrefix("");
+      return;
+    }
+    const next = [...ignoredPrefixes, trimmed];
+    setNewIgnoredPrefix("");
+    persistIgnoredPrefixes(next);
+  };
+
+  const handleRemoveIgnoredPrefix = (prefix: string) => {
+    persistIgnoredPrefixes(ignoredPrefixes.filter((p) => p !== prefix));
+  };
+
+  const handleResetIgnoredDefaults = () => {
+    persistIgnoredPrefixes(ignoredDefaults);
+  };
 
   const handleThemeChange = (mode: ThemeMode) => {
     setThemeMode(mode);
@@ -588,6 +648,182 @@ export default function GeneralSettings() {
             {saved ? "Saved!" : "Save"}
           </button>
         </div>
+      </div>
+
+      {/* Ignored Project Folders Section */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 20,
+          background: "var(--bg)",
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <FolderX size={16} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Ignored Project Folders</span>
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginBottom: 14,
+            lineHeight: 1.5,
+          }}
+        >
+          Sessions whose project-folder name starts with one of these prefixes are hidden from the chat list. Project folders under{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>~/.claude/projects/</code> are slugified absolute paths — each{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/</code> becomes{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-</code>. So{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/tmp</code> matches the prefix{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-tmp</code>, and{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/private/...</code> matches{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-private-</code>.
+        </div>
+
+        {/* Current list */}
+        {ignoredLoading ? (
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading…</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+            {ignoredPrefixes.length === 0 && (
+              <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic" }}>
+                No prefixes configured — every project folder is shown.
+              </div>
+            )}
+            {ignoredPrefixes.map((prefix) => {
+              const isDefault = ignoredDefaults.includes(prefix);
+              return (
+                <div
+                  key={prefix}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                  }}
+                >
+                  <code style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>{prefix}</code>
+                  {isDefault && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: "var(--text-muted)",
+                        background: "var(--bg)",
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        border: "1px solid var(--border)",
+                      }}
+                    >
+                      default
+                    </span>
+                  )}
+                  <button
+                    onClick={() => handleRemoveIgnoredPrefix(prefix)}
+                    title={`Remove "${prefix}"`}
+                    disabled={ignoredSaving}
+                    style={{
+                      background: "transparent",
+                      color: "var(--text-muted)",
+                      padding: 6,
+                      borderRadius: 6,
+                      border: "1px solid var(--border)",
+                      cursor: ignoredSaving ? "not-allowed" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Add new */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+          <input
+            type="text"
+            value={newIgnoredPrefix}
+            onChange={(e) => setNewIgnoredPrefix(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleAddIgnoredPrefix();
+              }
+            }}
+            placeholder="e.g. -private- or -tmp"
+            disabled={ignoredSaving || ignoredLoading}
+            style={{
+              flex: 1,
+              padding: "10px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 14,
+              boxSizing: "border-box",
+              fontFamily: "monospace",
+            }}
+          />
+          <button
+            onClick={handleAddIgnoredPrefix}
+            disabled={ignoredSaving || ignoredLoading || !newIgnoredPrefix.trim()}
+            style={{
+              background: !newIgnoredPrefix.trim() ? "var(--surface)" : "var(--accent)",
+              color: !newIgnoredPrefix.trim() ? "var(--text-muted)" : "var(--text-on-accent)",
+              padding: "10px 16px",
+              borderRadius: 8,
+              border: !newIgnoredPrefix.trim() ? "1px solid var(--border)" : "none",
+              fontSize: 14,
+              cursor: !newIgnoredPrefix.trim() || ignoredSaving ? "not-allowed" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <Plus size={14} />
+            Add
+          </button>
+        </div>
+
+        {/* Footer actions */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+          <button
+            onClick={handleResetIgnoredDefaults}
+            disabled={ignoredSaving || ignoredLoading}
+            style={{
+              background: "transparent",
+              color: "var(--text-muted)",
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              fontSize: 12,
+              cursor: ignoredSaving ? "not-allowed" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <RotateCcw size={12} />
+            Reset to defaults
+          </button>
+          <div style={{ fontSize: 12, color: ignoredSaved ? "var(--accent)" : "var(--text-muted)" }}>
+            {ignoredSaving ? "Saving…" : ignoredSaved ? "Saved" : ""}
+          </div>
+        </div>
+
+        {ignoredError && (
+          <div style={{ marginTop: 12, fontSize: 12, color: "var(--error)" }}>
+            {ignoredError}
+          </div>
+        )}
       </div>
     </>
   );

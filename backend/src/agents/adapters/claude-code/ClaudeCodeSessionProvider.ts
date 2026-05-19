@@ -28,7 +28,7 @@ import {
   parseSubagentMessages,
   buildSubagentMap,
 } from "./sessionParser.js";
-import { CLAUDE_PROJECTS_DIR, IGNORED_PROJECT_DIRS, listClaudeProjectDirs, projectDirToFolder } from "../../../utils/paths.js";
+import { CLAUDE_PROJECTS_DIR, getIgnoredProjectDirPrefixes, isIgnoredProjectDir, listClaudeProjectDirs, projectDirToFolder } from "../../../utils/paths.js";
 import { searchChats } from "../../../utils/chat-search.js";
 import { resolveWorktreeToMainRepoCached } from "../../../utils/git.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -94,13 +94,26 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
   private _discoverPaginated(limit: number, offset: number): DiscoverResult {
     if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
 
-    const pruneArgs = [...IGNORED_PROJECT_DIRS].map((d) => `-path "${CLAUDE_PROJECTS_DIR}/${d}" -prune -o`).join(" ");
+    // Prune directories matching any configured ignore prefix. We use a
+    // glob (`prefix*`) inside find's -path so prefix-based ignores prune
+    // correctly without walking into matching trees.
+    const pruneArgs = getIgnoredProjectDirPrefixes()
+      .map((d) => `-path "${CLAUDE_PROJECTS_DIR}/${d}*" -prune -o`)
+      .join(" ");
     const findCommand = `find "${CLAUDE_PROJECTS_DIR}" ${pruneArgs} -maxdepth 2 -name "*.jsonl" -type f -print0`;
     const output = execSync(findCommand, { encoding: "utf8" });
 
     if (!output) return { sessions: [], total: 0 };
 
-    const filePaths = output.split("\0").filter((p) => p.endsWith(".jsonl"));
+    // Belt-and-suspenders: filter again in JS in case the shell didn't
+    // honor a prune (e.g. if the user later edits the config without
+    // restarting the server and we somehow got a stale find output).
+    const filePaths = output.split("\0").filter((p) => {
+      if (!p.endsWith(".jsonl")) return false;
+      const projectDir = p.split("/").slice(0, -1).pop();
+      if (projectDir && isIgnoredProjectDir(projectDir)) return false;
+      return true;
+    });
 
     const allStats: { filePath: string; mtimeMs: number; birthtime: Date; mtime: Date }[] = [];
     for (const filePath of filePaths) {
@@ -149,7 +162,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
 
     const results = [];
     for (const dir of readdirSync(CLAUDE_PROJECTS_DIR)) {
-      if (IGNORED_PROJECT_DIRS.has(dir)) continue;
+      if (isIgnoredProjectDir(dir)) continue;
       const dirPath = join(CLAUDE_PROJECTS_DIR, dir);
       try {
         const dirStat = statSync(dirPath);

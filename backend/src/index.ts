@@ -227,6 +227,41 @@ app.post("/api/instance-name/randomize", (_req, res) => {
   res.json({ name });
 });
 
+// Ignored project directories endpoints (requires auth)
+import {
+  DEFAULT_IGNORED_PROJECT_DIR_PREFIXES,
+  getIgnoredProjectDirPrefixes,
+  saveIgnoredProjectDirPrefixes,
+} from "./utils/paths.js";
+import { clearChatListCache } from "./routes/chats.js";
+
+app.get("/api/ignored-project-dirs", (_req, res) => {
+  // #swagger.tags = ['Settings']
+  // #swagger.summary = 'Get ignored project-dir prefixes'
+  // #swagger.description = 'Returns the configured list of project-dir name prefixes filtered out of chat listings, plus the built-in defaults.'
+  res.json({
+    prefixes: getIgnoredProjectDirPrefixes(),
+    defaults: [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES],
+  });
+});
+
+app.put("/api/ignored-project-dirs", (req, res) => {
+  // #swagger.tags = ['Settings']
+  // #swagger.summary = 'Update ignored project-dir prefixes'
+  // #swagger.description = 'Replace the ignored prefix list. Any project dir whose slugified name starts with one of these is hidden from chat listings.'
+  const { prefixes } = req.body ?? {};
+  if (!Array.isArray(prefixes)) {
+    return res.status(400).json({ error: "prefixes must be an array of strings" });
+  }
+  if (prefixes.some((p) => typeof p !== "string")) {
+    return res.status(400).json({ error: "every prefix must be a string" });
+  }
+  const saved = saveIgnoredProjectDirPrefixes(prefixes);
+  // Invalidate chat list cache so the next /api/chats call reflects the change
+  clearChatListCache();
+  res.json({ prefixes: saved, defaults: [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES] });
+});
+
 // Claude Code auth status (requires auth — exposes server-side CLI state)
 let claudeStatusCache: { data: any; ts: number } | null = null;
 const CLAUDE_STATUS_TTL = 60_000; // 60 seconds

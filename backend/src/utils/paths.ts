@@ -6,13 +6,89 @@ import { homedir } from "os";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
 /**
- * Project dirs in ~/.claude/projects/ that should be hidden from API listings.
+ * Default ignored project-dir prefixes.
  *
- * "-tmp" is the slugified form of `/tmp`, which the Claude Agent SDK uses
- * when callers pass `cwd: tmpdir()` (e.g. quick-completion, sdk-info). Those
- * calls create throwaway transcripts we never want to surface as chats.
+ * Project dirs under ~/.claude/projects/ are slugified absolute paths
+ * (each `/` becomes `-`). Any project dir whose name starts with one
+ * of these prefixes is hidden from chat listings.
+ *
+ * - "-tmp" — `/tmp/...` throwaway transcripts (created by quick-completion,
+ *   sdk-info, and other SDK callers that pass `cwd: tmpdir()`).
+ * - "-private-" — macOS resolves `/tmp` to `/private/tmp`; the SDK
+ *   sometimes records the realpath, slugifying as `-private-tmp...`.
+ *   The same prefix also covers anything else under `/private/`.
  */
-export const IGNORED_PROJECT_DIRS: ReadonlySet<string> = new Set(["-tmp"]);
+export const DEFAULT_IGNORED_PROJECT_DIR_PREFIXES: readonly string[] = ["-tmp", "-private-"];
+
+/** JSON file persisting the user's configured ignored prefixes. */
+const IGNORED_DIRS_CONFIG_FILE = join(
+  process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard"),
+  "ignored-project-dirs.json",
+);
+
+let _ignoredPrefixesCache: string[] | null = null;
+
+/**
+ * Read the user-configured ignored project-dir prefixes from disk.
+ * Falls back to defaults if no config file exists or it's malformed.
+ * Results are cached in-memory and invalidated by saveIgnoredProjectDirPrefixes().
+ */
+export function getIgnoredProjectDirPrefixes(): string[] {
+  if (_ignoredPrefixesCache) return _ignoredPrefixesCache;
+  try {
+    if (existsSync(IGNORED_DIRS_CONFIG_FILE)) {
+      const raw = readFileSync(IGNORED_DIRS_CONFIG_FILE, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.prefixes)) {
+        const cleaned = parsed.prefixes.filter((p: unknown): p is string => typeof p === "string" && p.length > 0);
+        _ignoredPrefixesCache = cleaned;
+        return cleaned;
+      }
+    }
+  } catch {
+    // Fall through to defaults on any error
+  }
+  _ignoredPrefixesCache = [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES];
+  return _ignoredPrefixesCache;
+}
+
+/**
+ * Persist the user's configured ignored project-dir prefixes.
+ * Writes to ~/.callboard/ignored-project-dirs.json and refreshes the cache.
+ */
+export function saveIgnoredProjectDirPrefixes(prefixes: string[]): string[] {
+  // Normalize: trim, drop empties, dedupe, preserve order
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const p of prefixes) {
+    if (typeof p !== "string") continue;
+    const trimmed = p.trim();
+    if (!trimmed) continue;
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    cleaned.push(trimmed);
+  }
+
+  // Ensure data dir exists before writing
+  const dataDir = process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard");
+  if (!existsSync(dataDir)) {
+    mkdirSync(dataDir, { recursive: true });
+  }
+  writeFileSync(IGNORED_DIRS_CONFIG_FILE, JSON.stringify({ prefixes: cleaned }, null, 2));
+  _ignoredPrefixesCache = cleaned;
+  return cleaned;
+}
+
+/**
+ * True if the given project-dir name (e.g. "-tmp-xyz" or "-Users-foo-repo")
+ * matches any configured ignore prefix.
+ */
+export function isIgnoredProjectDir(dirName: string): boolean {
+  for (const prefix of getIgnoredProjectDirPrefixes()) {
+    if (dirName.startsWith(prefix)) return true;
+  }
+  return false;
+}
 
 /**
  * Read ~/.claude/projects/ and return the project dir names that aren't
@@ -21,7 +97,7 @@ export const IGNORED_PROJECT_DIRS: ReadonlySet<string> = new Set(["-tmp"]);
 export function listClaudeProjectDirs(): string[] {
   if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
   try {
-    return readdirSync(CLAUDE_PROJECTS_DIR).filter((d) => !IGNORED_PROJECT_DIRS.has(d));
+    return readdirSync(CLAUDE_PROJECTS_DIR).filter((d) => !isIgnoredProjectDir(d));
   } catch {
     return [];
   }

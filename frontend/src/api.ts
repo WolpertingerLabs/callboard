@@ -1336,6 +1336,30 @@ export async function randomizeInstanceName(): Promise<string> {
   return data.name;
 }
 
+// Ignored project directories API
+
+export interface IgnoredProjectDirsResponse {
+  prefixes: string[];
+  defaults: string[];
+}
+
+export async function fetchIgnoredProjectDirs(): Promise<IgnoredProjectDirsResponse> {
+  const res = await fetch(`${BASE}/ignored-project-dirs`, { credentials: "include" });
+  await assertOk(res, "Failed to fetch ignored project directories");
+  return res.json();
+}
+
+export async function updateIgnoredProjectDirs(prefixes: string[]): Promise<IgnoredProjectDirsResponse> {
+  const res = await fetch(`${BASE}/ignored-project-dirs`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ prefixes }),
+  });
+  await assertOk(res, "Failed to update ignored project directories");
+  return res.json();
+}
+
 // ── Themes ──────────────────────────────────────────────────────────
 
 export async function listThemes(): Promise<ThemeListItem[]> {
