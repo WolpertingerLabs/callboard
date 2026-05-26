@@ -109,6 +109,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const defaultPermissions = (location.state as any)?.defaultPermissions as DefaultPermissions | undefined;
   const agentSystemPrompt = (location.state as any)?.systemPrompt as string | undefined;
   const agentAlias = (location.state as any)?.agentAlias as string | undefined;
+  // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
+  // by chat metadata server-side; this value is only honored on creation.
+  const newChatProvider = (location.state as any)?.provider as "claude-code" | "openrouter" | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
@@ -194,6 +197,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     setChatPermissions(null);
   }, [id]);
+
+  // Resolve which agent provider runs this chat — drives the header badge.
+  // New chats inherit `newChatProvider` from the NewChatPanel; existing chats
+  // pull it off their stored metadata. Defaults to "claude-code" (no badge).
+  const chatProvider = useMemo((): "claude-code" | "openrouter" => {
+    if (!id) return newChatProvider ?? "claude-code";
+    if (chat?.metadata) {
+      try {
+        const meta = JSON.parse(chat.metadata);
+        if (meta.provider === "openrouter") return "openrouter";
+      } catch {
+        // ignore — fall through
+      }
+    }
+    return "claude-code";
+  }, [id, newChatProvider, chat?.metadata]);
 
   // Resolve effective permissions for this chat
   const effectivePermissions = useMemo((): DefaultPermissions => {
@@ -385,10 +404,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // (which checks abortRef.current === controller) also skips cleanup.
                 abortRef.current = null;
                 // Navigate to the real chat URL, passing the in-flight message
-                // via router state so it survives the component remount.
+                // via router state so it survives the component remount. Also
+                // forward the provider so the header badge doesn't blink off
+                // between this navigate and the chat-metadata fetch on the
+                // /chat/:id route.
                 navigateRef.current(`/chat/${event.chatId}`, {
                   replace: true,
-                  state: { inFlightMessage: inFlightMessageRef.current },
+                  state: { inFlightMessage: inFlightMessageRef.current, ...(newChatProvider && { provider: newChatProvider }) },
                 });
                 // Refresh chat list to show the new chat
                 onChatListRefreshRef.current?.();
@@ -1025,6 +1047,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (agentAlias) {
             requestBody.agentAlias = agentAlias;
           }
+          if (newChatProvider && newChatProvider !== "claude-code") {
+            requestBody.provider = newChatProvider;
+          }
 
           res = await fetch("/api/chats/new/message", {
             method: "POST",
@@ -1132,7 +1157,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     },
-    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, readSSE, activePluginIds, chat, branchConfig, activeDraftId],
+    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, newChatProvider, readSSE, activePluginIds, chat, branchConfig, activeDraftId],
   );
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
@@ -1461,6 +1486,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               >
                 <GitFork size={10} />
                 {!isMobile && "worktree"}
+              </div>
+            )}
+            {/* OpenRouter provider badge — Claude chats get no badge (the default). */}
+            {chatProvider === "openrouter" && (
+              <div
+                style={{
+                  fontSize: 11,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: "var(--badge-worktree)",
+                  color: "var(--text-on-accent)",
+                  fontWeight: 500,
+                  flexShrink: 0,
+                }}
+                title="This chat is routed through OpenRouter"
+              >
+                OR
               </div>
             )}
           </div>

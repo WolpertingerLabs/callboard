@@ -139,6 +139,11 @@ export default function ApiSettings() {
   const [defaultSonnetModel, setDefaultSonnetModel] = useState("");
   const [defaultHaikuModel, setDefaultHaikuModel] = useState("");
   const [subagentModel, setSubagentModel] = useState("");
+  // OpenRouter (alternative provider) overrides.
+  const [openRouterApiKey, setOpenRouterApiKey] = useState("");
+  const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState("");
+  const [openRouterModel, setOpenRouterModel] = useState("");
+  const [openRouterLogsRoot, setOpenRouterLogsRoot] = useState("");
 
   const loadAll = async () => {
     setLoading(true);
@@ -154,6 +159,10 @@ export default function ApiSettings() {
       setDefaultSonnetModel(s.defaultSonnetModel ?? "");
       setDefaultHaikuModel(s.defaultHaikuModel ?? "");
       setSubagentModel(s.subagentModel ?? "");
+      setOpenRouterApiKey(s.openRouterApiKey ?? "");
+      setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
+      setOpenRouterModel(s.openRouterModel ?? "");
+      setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
     } catch (err: any) {
       setError(err.message || "Failed to load settings");
     } finally {
@@ -178,6 +187,10 @@ export default function ApiSettings() {
         defaultSonnetModel,
         defaultHaikuModel,
         subagentModel,
+        openRouterApiKey,
+        openRouterBaseUrl,
+        openRouterModel,
+        openRouterLogsRoot,
       });
       setSettings(updated);
       setSaved(true);
@@ -407,6 +420,81 @@ export default function ApiSettings() {
             spellCheck={false}
             style={inputStyle}
           />
+        </div>
+      </div>
+
+      {/* OpenRouter (alternative provider) */}
+      <div style={sectionStyle}>
+        <div style={headerStyle}>
+          <Key size={16} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenRouter (alternative provider)</span>
+        </div>
+        <div style={subtitleStyle}>
+          Provide a key to enable OpenRouter as an option when starting a new chat. Existing chats continue to use Claude Code SDK. OpenRouter routes through 300+
+          models with a single key.
+        </div>
+
+        <div style={fieldWrap}>
+          <label htmlFor="openRouterApiKey" style={labelStyle}>
+            API Key<span style={envLabelStyle}>OPENROUTER_API_KEY</span>
+          </label>
+          <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={setOpenRouterApiKey} placeholder="sk-or-..." />
+          <div style={helpStyle}>Required. When set, the New Chat panel exposes an OpenRouter provider toggle.</div>
+        </div>
+
+        <div style={fieldWrap}>
+          <label htmlFor="openRouterBaseUrl" style={labelStyle}>
+            Base URL<span style={envLabelStyle}>OPENROUTER_BASE_URL</span>
+          </label>
+          <input
+            id="openRouterBaseUrl"
+            type="text"
+            value={openRouterBaseUrl}
+            onChange={(e) => setOpenRouterBaseUrl(e.target.value)}
+            placeholder="https://openrouter.ai/api/v1"
+            autoComplete="off"
+            spellCheck={false}
+            style={inputStyle}
+          />
+          <div style={helpStyle}>Optional. Override the OpenRouter API endpoint (proxies / regional mirrors).</div>
+        </div>
+
+        <div style={fieldWrap}>
+          <label htmlFor="openRouterModel" style={labelStyle}>
+            Default Model
+          </label>
+          <input
+            id="openRouterModel"
+            type="text"
+            value={openRouterModel}
+            onChange={(e) => setOpenRouterModel(e.target.value)}
+            placeholder="~anthropic/claude-sonnet-latest"
+            autoComplete="off"
+            spellCheck={false}
+            style={inputStyle}
+          />
+          <div style={helpStyle}>
+            Default model for new OR chats. Common aliases:{" "}
+            <code style={{ fontSize: 11 }}>~anthropic/claude-sonnet-latest</code>, <code style={{ fontSize: 11 }}>openai/gpt-4o</code>,{" "}
+            <code style={{ fontSize: 11 }}>google/gemini-2.0-flash</code>.
+          </div>
+        </div>
+
+        <div style={fieldWrap}>
+          <label htmlFor="openRouterLogsRoot" style={labelStyle}>
+            Logs Root
+          </label>
+          <input
+            id="openRouterLogsRoot"
+            type="text"
+            value={openRouterLogsRoot}
+            onChange={(e) => setOpenRouterLogsRoot(e.target.value)}
+            placeholder="~/.openrouter-agent-coder/logs"
+            autoComplete="off"
+            spellCheck={false}
+            style={inputStyle}
+          />
+          <div style={helpStyle}>Optional. Override where OR session state is written. Defaults to ~/.openrouter-agent-coder/logs.</div>
         </div>
       </div>
 

@@ -1,11 +1,20 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, type DefaultPermissions, type AgentConfig } from "../api";
+import { listAgents, getAgentIdentityPrompt, getSystemInfo, type DefaultPermissions, type AgentConfig } from "../api";
 import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
-import { getDefaultPermissions, saveDefaultPermissions, getRecentDirectories, addRecentDirectory, removeRecentDirectory } from "../utils/localStorage";
+import {
+  getDefaultPermissions,
+  saveDefaultPermissions,
+  getRecentDirectories,
+  addRecentDirectory,
+  removeRecentDirectory,
+  getDefaultProvider,
+  saveDefaultProvider,
+  type AgentProviderKind,
+} from "../utils/localStorage";
 
 interface NewChatPanelProps {
   onClose: () => void;
@@ -53,6 +62,15 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsFetched, setAgentsFetched] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; path: string }>({ isOpen: false, path: "" });
+  // Provider selector — defaults to whatever the user last picked. OpenRouter
+  // can only be selected once OPENROUTER_API_KEY is configured in Settings → API.
+  const [provider, setProvider] = useState<AgentProviderKind>(getDefaultProvider);
+  // `null` until the /system-info fetch returns. We use this tri-state to
+  // avoid destroying a user's saved "openrouter" preference during the
+  // first-paint race: if they click Create before the fetch resolves we
+  // optimistically honor their stored choice rather than silently
+  // downgrading to claude-code.
+  const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
   const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
@@ -78,11 +96,23 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultPermissions(defaultPermissions);
     addRecentDirectory(target);
     updateRecentDirs();
+    // Persist the user's INTENT (the radio's current value) rather than the
+    // runtime fallback. If OR is selected but later disabled, we'd rather
+    // remember "user prefers OR" so reconfiguring restores it, than silently
+    // overwrite their preference with claude-code. The runtime fallback is
+    // ephemeral.
+    saveDefaultProvider(provider);
+    // Runtime guard: only downgrade to claude-code when we KNOW OR is not
+    // configured (openRouterConfigured === false). While still loading
+    // (null), trust the user's choice — sendMessage rejects loudly if the
+    // OR key is missing, so we get a clear error rather than a silent
+    // downgrade.
+    const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
 
     setFolder("");
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(target)}`, {
-      state: { defaultPermissions },
+      state: { defaultPermissions, provider: effectiveProvider },
     });
   };
 
@@ -103,11 +133,45 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       // Continue without identity prompt if fetch fails
     }
 
+    // Agent chats honor the same provider choice the user made on the
+    // panel's top radio. Without this, picking OR + Agent would silently
+    // create a Claude chat — the inverse of what the toggle implies.
+    const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
-      state: { defaultPermissions: agentPermissions, systemPrompt, agentAlias: agent.alias },
+      state: { defaultPermissions: agentPermissions, systemPrompt, agentAlias: agent.alias, provider: effectiveProvider },
     });
   };
+
+  // Fetch system info once to learn whether OpenRouter is configured. Until
+  // the fetch resolves, openRouterConfigured stays `null` and the UI treats
+  // OR as available — the actual gate is in the radio's disabled prop below.
+  // If OR was selected from localStorage but turns out to be unconfigured,
+  // we silently flip the in-memory state to claude-code without touching
+  // localStorage (the user's saved preference is preserved for the next time
+  // they re-enable OR).
+  useEffect(() => {
+    let cancelled = false;
+    getSystemInfo()
+      .then((info) => {
+        if (cancelled) return;
+        const ok = Boolean(info.openRouterConfigured);
+        setOpenRouterConfigured(ok);
+        if (!ok && provider === "openrouter") {
+          setProvider("claude-code");
+        }
+      })
+      .catch(() => {
+        // /system-info unreachable — assume unavailable and surface the
+        // toggle as disabled rather than silently allowing a request that
+        // will 500 on submit.
+        if (!cancelled) setOpenRouterConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Lazy fetch agents when agent mode is first selected
   useEffect(() => {
@@ -179,6 +243,73 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
         {chatMode === "claude-code" ? (
           <>
+            {/* Provider toggle — Claude vs. OpenRouter. OR option is disabled
+                until OPENROUTER_API_KEY is configured in Settings → API. */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 6 }}>Provider</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={() => setProvider("claude-code")}
+                  style={{
+                    flex: 1,
+                    padding: "8px 12px",
+                    fontSize: 13,
+                    fontWeight: 500,
+                    borderRadius: 6,
+                    border: provider === "claude-code" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                    background: provider === "claude-code" ? "var(--accent)" : "var(--surface)",
+                    color: provider === "claude-code" ? "var(--text-on-accent)" : "var(--text)",
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  Claude Code
+                </button>
+                <button
+                  onClick={() => openRouterConfigured !== false && setProvider("openrouter")}
+                  disabled={openRouterConfigured === false}
+                  title={openRouterConfigured === false ? "Configure your OpenRouter API key in Settings → API to enable this provider" : "Use OpenRouter for this chat"}
+                  style={{
+                    flex: 1,
+                    padding: "8px 12px",
+                    fontSize: 13,
+                    fontWeight: 500,
+                    borderRadius: 6,
+                    border: provider === "openrouter" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                    background: provider === "openrouter" ? "var(--accent)" : "var(--surface)",
+                    color:
+                      openRouterConfigured === false
+                        ? "var(--text-muted)"
+                        : provider === "openrouter"
+                          ? "var(--text-on-accent)"
+                          : "var(--text)",
+                    cursor: openRouterConfigured === false ? "not-allowed" : "pointer",
+                    opacity: openRouterConfigured === false ? 0.6 : 1,
+                    transition: "all 0.15s",
+                  }}
+                >
+                  OpenRouter
+                </button>
+              </div>
+              {openRouterConfigured === false && (
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                  Configure your{" "}
+                  <a
+                    href="/settings/api"
+                    style={{ color: "var(--accent)", textDecoration: "underline" }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onClose();
+                      navigate("/settings/api");
+                    }}
+                  >
+                    OpenRouter API key
+                  </a>{" "}
+                  to enable.
+                </div>
+              )}
+            </div>
+
             {/* Permissions Section — collapsible, default closed */}
             <div style={{ marginBottom: 8 }}>
               <button

@@ -367,6 +367,16 @@ app.get(
     // Include cached SDK info (account + models) if available
     const sdkInfo = await getSdkInfoAsync();
 
+    // Derive openRouterConfigured from settings so the frontend can enable
+    // the New Chat panel's OpenRouter toggle without exposing the key.
+    // `getAgentSettings` is imported statically at the top of this file.
+    let openRouterConfigured = false;
+    try {
+      openRouterConfigured = Boolean(getAgentSettings().openRouterApiKey?.trim());
+    } catch {
+      // Settings unreadable — treat as unconfigured.
+    }
+
     res.json({
       version,
       latestVersion,
@@ -379,6 +389,7 @@ app.get(
       environment: process.env.NODE_ENV || "development",
       account: sdkInfo.account || undefined,
       models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
+      openRouterConfigured,
     });
   },
 );
