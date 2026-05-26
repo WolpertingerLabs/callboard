@@ -73,12 +73,19 @@ export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   setStorageData(data);
 }
 
+const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
+
 export function getDefaultProvider(): AgentProviderKind {
   const data = getStorageData();
-  return data.defaultProvider ?? "claude-code";
+  const stored = data.defaultProvider;
+  // Validate against the known set on read — protects against stale or
+  // forward-compat values (e.g. an experimental "codex" written by a
+  // future build then opened in an older one). Unknown → claude-code.
+  return stored && KNOWN_PROVIDERS.has(stored) ? stored : "claude-code";
 }
 
 export function saveDefaultProvider(provider: AgentProviderKind): void {
+  if (!KNOWN_PROVIDERS.has(provider)) return;
   const data = getStorageData();
   data.defaultProvider = provider;
   setStorageData(data);

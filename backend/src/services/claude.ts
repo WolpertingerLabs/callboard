@@ -586,9 +586,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // Pin the provider for the lifetime of this chat. Once written here,
       // the metadata-routing block below sees it and getAgentProvider()
       // returns the matching adapter for every subsequent message in the
-      // chat. Omitting it leaves the metadata in its pre-PR-D shape, which
-      // resolveProviderKind treats as "claude-code".
-      ...(opts.provider && opts.provider !== "claude-code" && { provider: opts.provider }),
+      // chat. Only write a value that resolveProviderKind would route —
+      // unknown strings would log a warn on every message in the chat,
+      // and "claude-code" is the default so writing it is redundant.
+      ...(opts.provider && ROUTABLE_PROVIDER_KINDS.has(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
     };
     // Record initial branch for drift detection on subsequent messages
     const gitInfo = getGitInfo(folder);

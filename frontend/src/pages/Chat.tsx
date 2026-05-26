@@ -404,10 +404,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // (which checks abortRef.current === controller) also skips cleanup.
                 abortRef.current = null;
                 // Navigate to the real chat URL, passing the in-flight message
-                // via router state so it survives the component remount.
+                // via router state so it survives the component remount. Also
+                // forward the provider so the header badge doesn't blink off
+                // between this navigate and the chat-metadata fetch on the
+                // /chat/:id route.
                 navigateRef.current(`/chat/${event.chatId}`, {
                   replace: true,
-                  state: { inFlightMessage: inFlightMessageRef.current },
+                  state: { inFlightMessage: inFlightMessageRef.current, ...(newChatProvider && { provider: newChatProvider }) },
                 });
                 // Refresh chat list to show the new chat
                 onChatListRefreshRef.current?.();

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
+import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
@@ -108,6 +109,17 @@ streamRouter.post("/new/message", async (req, res) => {
   try {
     const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
 
+    // Defense-in-depth: validate the provider string at the route boundary
+    // rather than relying on resolveProviderKind's warn-and-fallback path to
+    // catch garbage. Anything not in this allowlist is silently dropped so
+    // the chat falls through to the claude-code default — same outcome as
+    // omitting the field.
+    const validProviders: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
+    const safeProvider: AgentProviderKind | undefined =
+      typeof provider === "string" && validProviders.has(provider as AgentProviderKind)
+        ? (provider as AgentProviderKind)
+        : undefined;
+
     const emitter = await sendMessage({
       prompt,
       folder: effectiveFolder,
@@ -117,7 +129,7 @@ streamRouter.post("/new/message", async (req, res) => {
       maxTurns,
       systemPrompt,
       agentAlias,
-      ...(provider && { provider }),
+      ...(safeProvider && { provider: safeProvider }),
     });
 
     writeSSEHeaders(res);

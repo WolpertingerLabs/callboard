@@ -369,9 +369,9 @@ app.get(
 
     // Derive openRouterConfigured from settings so the frontend can enable
     // the New Chat panel's OpenRouter toggle without exposing the key.
+    // `getAgentSettings` is imported statically at the top of this file.
     let openRouterConfigured = false;
     try {
-      const { getAgentSettings } = await import("./services/agent-settings.js");
       openRouterConfigured = Boolean(getAgentSettings().openRouterApiKey?.trim());
     } catch {
       // Settings unreadable — treat as unconfigured.
