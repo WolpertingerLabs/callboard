@@ -27,7 +27,6 @@
  * @see plans/openrouter-adapter.md §7
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type {
@@ -38,8 +37,8 @@ import type {
   SessionSearchResponse,
   SubagentFile,
 } from "../../ports/SessionProvider.js";
-import { getAgentSettings } from "../../../services/agent-settings.js";
 import { createLogger } from "../../../utils/logger.js";
+import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 import {
   parseOpenRouterState,
   readFirstUserPrompt,
@@ -60,17 +59,13 @@ export class OpenRouterSessionProvider implements SessionProvider {
   readonly kind = "openrouter" as const;
 
   /**
-   * Resolve the OR logs root for the current process. Falls back through
-   * settings → XDG → `~/.openrouter-agent-coder/logs`. The result may be
-   * a path that doesn't exist yet — discovery returns an empty list rather
-   * than throwing for that case.
+   * Delegate to the shared resolver so the write side
+   * (`optionsAdapter` → `OpenRouterAgentRun.logsRoot`) and this read side
+   * stay in lockstep. Result may be a path that doesn't exist yet —
+   * discovery returns an empty list rather than throwing for that case.
    */
   private resolveLogsRoot(): string {
-    const fromSettings = getAgentSettings().openRouterLogsRoot?.trim();
-    if (fromSettings) return fromSettings;
-    const xdg = process.env.XDG_DATA_HOME;
-    if (xdg && xdg.trim()) return join(xdg.trim(), "openrouter-agent-coder", "logs");
-    return join(homedir(), ".openrouter-agent-coder", "logs");
+    return resolveOpenRouterLogsRoot();
   }
 
   /**
