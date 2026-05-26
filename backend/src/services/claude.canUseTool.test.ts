@@ -171,6 +171,40 @@ describe("buildCanUseTool — hook override + abort", () => {
   });
 });
 
+describe("buildCanUseTool — OpenRouter SDK arity (2-arg call)", () => {
+  // The Claude Code SDK calls canUseTool with 3 args (name, input, { signal, suggestions }).
+  // The OpenRouter SDK calls it with only 2 (name, input). Before the default-arg fix,
+  // the destructure of the missing 3rd arg threw "Cannot destructure property 'signal'
+  // of 'undefined'", which OR's wrapToolWithPermission rewrapped as
+  // {error, denied: true} — making every tool call appear denied in OR-backed chats.
+  it("auto-allow path survives a 2-arg call (no 3rd-arg destructure crash)", async () => {
+    const { canUseTool } = make({ policy: makePolicy(FULL_ALLOW) });
+    const result = await canUseTool("Read", { path: "/tmp/x" });
+    expect(result).toEqual({ behavior: "allow", updatedInput: { path: "/tmp/x" } });
+  });
+
+  it("auto-deny path survives a 2-arg call", async () => {
+    const { canUseTool } = make({ policy: makePolicy(FULL_DENY) });
+    const result = await canUseTool("Read", {});
+    expect(result).toMatchObject({ behavior: "deny", interrupt: true });
+  });
+
+  it("user-prompt path works without a signal — respondToPermission still resolves", async () => {
+    const { canUseTool, emitter, trackingId } = make({ policy: makePolicy(FULL_ASK) });
+    const events: StreamEvent[] = [];
+    emitter.on("event", (e: StreamEvent) => events.push(e));
+
+    const promise = canUseTool("Write", { path: "/tmp/x", content: "hi" });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "permission_request", toolName: "Write" });
+    expect(hasPendingRequest(trackingId)).toBe(true);
+
+    respondToPermission(trackingId, true, { path: "/tmp/x", content: "hi" });
+    await expect(promise).resolves.toMatchObject({ behavior: "allow" });
+  });
+});
+
 describe("buildCanUseTool — registry integration", () => {
   beforeEach(() => {
     // Ensure no stale registry state leaks across tests.

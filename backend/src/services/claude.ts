@@ -433,7 +433,11 @@ export function buildCanUseTool(
   return async (
     toolName: string,
     input: Record<string, unknown>,
-    { signal, suggestions }: { signal: AbortSignal; suggestions?: unknown[] },
+    // The Claude Code SDK passes this 3rd arg; the OpenRouter SDK calls
+    // canUseTool with only (name, input). Default to {} so the destructure
+    // survives — on the OR path `signal` is undefined and the abort-listener
+    // below is skipped (no abort wire-up, but the permission prompt still works).
+    { signal, suggestions }: { signal?: AbortSignal; suggestions?: unknown[] } = {},
   ): Promise<PermissionResult> => {
     // If a PreToolUse hook flagged "ask", skip auto-approval and prompt the user
     // regardless of default permissions.
@@ -497,7 +501,7 @@ export function buildCanUseTool(
       const trackingId = getTrackingId();
       pendingRequests.set(trackingId, { toolName, input, suggestions, eventType, eventData, resolve });
 
-      signal.addEventListener("abort", () => {
+      signal?.addEventListener("abort", () => {
         pendingRequests.delete(trackingId);
         resolve({ behavior: "deny", message: "Aborted" });
       });
