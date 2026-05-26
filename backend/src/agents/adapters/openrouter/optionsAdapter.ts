@@ -118,12 +118,23 @@ export function translateOptions(
   // (read_file, run_command, …). Without this, supplying any custom `tools`
   // array would replace OR's defaults — the agent would lose its file/exec
   // primitives and the run would be useless.
-  const mcpTools = collectMcpTools(opts.mcpServers);
+  const { tools: mcpTools, droppedServerNames } = collectMcpTools(opts.mcpServers);
   if (mcpTools.length > 0) {
     orOpts.tools = [
       ...allTools({ cwd, ...(orOpts.signal && { signal: orOpts.signal }) }),
       ...mcpTools,
     ];
+  }
+  if (droppedServerNames.length > 0 && opts.stderr) {
+    // External stdio/http MCP servers from .mcp.json have shapes like
+    // `{ command, args, env }` or `{ url, headers }` — no in-process `.tools`
+    // array. The OR adapter has no equivalent transport in v1 (the
+    // openrouter-agent-coder library DOES support MCP, but wiring its
+    // bridge is deferred to a later PR). Surface dropped names so users
+    // can see why their external tools disappeared under OR.
+    opts.stderr(
+      `[openrouter] dropped external MCP servers (no in-process tools): ${droppedServerNames.join(", ")}`,
+    );
   }
 
   if (opts.stderr) {
@@ -178,20 +189,28 @@ function translatePrompt(
 
 /**
  * Pull the `tools` arrays out of a Claude-shaped mcpServers record. Returns
- * a flat list typed as the OR `tools` array's element type so the caller
- * can spread it into `OpenRouterAgentRunOptions.tools` without further
- * casting.
+ * a flat list typed as the OR `tools` array's element type, plus the names
+ * of any servers whose shape has no in-process `.tools` (e.g. stdio/http
+ * configs from `.mcp.json`) so the caller can surface a warning.
  */
 type OrTool = NonNullable<OpenRouterAgentRunOptions["tools"]>[number];
 
-function collectMcpTools(mcpServers: ClaudeShapedOptions["mcpServers"]): OrTool[] {
-  if (!mcpServers) return [];
+function collectMcpTools(mcpServers: ClaudeShapedOptions["mcpServers"]): {
+  tools: OrTool[];
+  droppedServerNames: string[];
+} {
+  if (!mcpServers) return { tools: [], droppedServerNames: [] };
   const tools: OrTool[] = [];
-  for (const server of Object.values(mcpServers)) {
+  const droppedServerNames: string[] = [];
+  for (const [name, server] of Object.entries(mcpServers)) {
     const maybeTools = (server as { tools?: readonly unknown[] }).tools;
-    if (Array.isArray(maybeTools)) tools.push(...(maybeTools as OrTool[]));
+    if (Array.isArray(maybeTools)) {
+      tools.push(...(maybeTools as OrTool[]));
+    } else {
+      droppedServerNames.push(name);
+    }
   }
-  return tools;
+  return { tools, droppedServerNames };
 }
 
 function extractUserMessageContent(item: unknown): string | null {
@@ -201,5 +220,28 @@ function extractUserMessageContent(item: unknown): string | null {
   const msg = obj.message;
   if (!msg || msg.role !== "user") return null;
   if (typeof msg.content === "string") return msg.content;
+  // Claude's multimodal prompts arrive as ContentBlock[] —
+  // `[{ type: "text", text }, { type: "image", source }]`. The OR library
+  // accepts arrays directly on UserInput.content, but the OR Responses API
+  // schema is different from Claude's. For PR B we extract just the text
+  // segments and concatenate; image / file blocks are surfaced via a
+  // bracketed placeholder so the model knows something was attached but
+  // not what. Full multimodal support is deferred.
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .map((block): string => {
+        if (typeof block === "string") return block;
+        if (!block || typeof block !== "object") return "";
+        const b = block as { type?: unknown; text?: unknown; source?: { media_type?: unknown } };
+        if (b.type === "text" && typeof b.text === "string") return b.text;
+        if (b.type === "image") {
+          const mime = b.source?.media_type;
+          return `[image:${typeof mime === "string" ? mime : "unknown"}]`;
+        }
+        return `[${typeof b.type === "string" ? b.type : "unknown"}]`;
+      })
+      .filter((s) => s.length > 0)
+      .join("\n");
+  }
   return null;
 }

@@ -97,8 +97,14 @@ function stringifyOutput(output: unknown): string {
   if (typeof output === "string") return output;
   if (output === null || output === undefined) return "";
   try {
-    return JSON.stringify(output);
+    const json = JSON.stringify(output);
+    // JSON.stringify silently returns `undefined` (not a throw) for values it
+    // can't serialize — Symbol, function, top-level undefined. Fall back to
+    // String() so downstream consumers always get a real string.
+    if (json === undefined) return String(output);
+    return json;
   } catch {
+    // JSON.stringify throws on circular refs, BigInt without a toJSON, etc.
     return String(output);
   }
 }

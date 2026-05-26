@@ -79,6 +79,18 @@ describe("translateEvent — tool_result output stringification", () => {
     ).toMatchObject({ content: "" });
   });
 
+  it("falls back to String() for values JSON.stringify returns undefined for (Symbol)", () => {
+    const result = translateEvent({
+      type: "tool_result",
+      callId: "c1",
+      output: Symbol("denied"),
+      isError: false,
+    });
+    expect(result).toMatchObject({ type: "tool_result" });
+    // Symbol.toString() is "Symbol(denied)" — the real bug was content: undefined
+    expect((result as { content: string }).content).toBe("Symbol(denied)");
+  });
+
   it("falls back to String() when JSON.stringify throws (circular ref)", () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;

@@ -30,6 +30,26 @@ const log = createLogger("claude");
 
 export type { StreamEvent };
 
+/** Provider kinds that sendMessage knows how to route through. */
+const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set([
+  "claude-code",
+  "openrouter",
+]);
+
+/**
+ * Narrow a free-form metadata.provider value to a usable AgentProviderKind,
+ * falling back to "claude-code" on anything unrecognized. Logs a warn for
+ * malformed values so corrupted metadata is observable instead of silent.
+ */
+function resolveProviderKind(value: unknown): AgentProviderKind {
+  if (typeof value !== "string" || value === "") return "claude-code";
+  if (ROUTABLE_PROVIDER_KINDS.has(value as AgentProviderKind)) {
+    return value as AgentProviderKind;
+  }
+  log.warn(`Unknown chat metadata provider="${value}" — falling back to "claude-code"`);
+  return "claude-code";
+}
+
 /**
  * Build a system prompt section listing available MCP proxy connections.
  * Returns empty string if no connections are found.
@@ -571,8 +591,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // behavior). New chats default to "claude-code" too; the OpenRouter route
   // is wired up but unreachable until the New Chat UI starts writing
   // `provider: "openrouter"` into metadata (PR D).
-  const providerKind: AgentProviderKind =
-    (initialMetadata.provider as AgentProviderKind | undefined) ?? "claude-code";
+  //
+  // Validate explicitly rather than casting — `??` only triggers on
+  // null/undefined, so a corrupted metadata value like `provider: ""` or
+  // `provider: "garbage"` would otherwise hit the factory's exhaustiveness
+  // throw and 500 the user's chat permanently.
+  const providerKind = resolveProviderKind(initialMetadata.provider);
   const agentProvider = getAgentProvider(providerKind);
 
   const emitter = new EventEmitter();
