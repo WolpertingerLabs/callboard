@@ -20,6 +20,7 @@ import type { SessionProvider } from "./ports/SessionProvider.js";
 import { ClaudeCodeAdapter } from "./adapters/claude-code/ClaudeCodeAdapter.js";
 import { ClaudeCodeSessionProvider } from "./adapters/claude-code/ClaudeCodeSessionProvider.js";
 import { OpenRouterAdapter } from "./adapters/openrouter/OpenRouterAdapter.js";
+import { OpenRouterSessionProvider } from "./adapters/openrouter/OpenRouterSessionProvider.js";
 
 // ── Agent Provider (execution) ──────────────────────────────────────
 
@@ -106,7 +107,7 @@ let _sessionProviders: SessionProvider[] | null = null;
  */
 export function getSessionProviders(): readonly SessionProvider[] {
   if (!_sessionProviders) {
-    _sessionProviders = [new ClaudeCodeSessionProvider()];
+    _sessionProviders = [new ClaudeCodeSessionProvider(), new OpenRouterSessionProvider()];
   }
   return _sessionProviders;
 }
