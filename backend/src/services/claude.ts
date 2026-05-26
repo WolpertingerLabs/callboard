@@ -1,4 +1,5 @@
 import { getAgentProvider } from "../agents/factory.js";
+import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
@@ -28,6 +29,26 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("claude");
 
 export type { StreamEvent };
+
+/** Provider kinds that sendMessage knows how to route through. */
+const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set([
+  "claude-code",
+  "openrouter",
+]);
+
+/**
+ * Narrow a free-form metadata.provider value to a usable AgentProviderKind,
+ * falling back to "claude-code" on anything unrecognized. Logs a warn for
+ * malformed values so corrupted metadata is observable instead of silent.
+ */
+function resolveProviderKind(value: unknown): AgentProviderKind {
+  if (typeof value !== "string" || value === "") return "claude-code";
+  if (ROUTABLE_PROVIDER_KINDS.has(value as AgentProviderKind)) {
+    return value as AgentProviderKind;
+  }
+  log.warn(`Unknown chat metadata provider="${value}" — falling back to "claude-code"`);
+  return "claude-code";
+}
 
 /**
  * Build a system prompt section listing available MCP proxy connections.
@@ -565,6 +586,19 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     throw new Error("Either chatId or folder is required");
   }
 
+  // Resolve which agent provider runs this chat. Existing chats with no
+  // `provider` in metadata fall back to "claude-code" (preserves all current
+  // behavior). New chats default to "claude-code" too; the OpenRouter route
+  // is wired up but unreachable until the New Chat UI starts writing
+  // `provider: "openrouter"` into metadata (PR D).
+  //
+  // Validate explicitly rather than casting — `??` only triggers on
+  // null/undefined, so a corrupted metadata value like `provider: ""` or
+  // `provider: "garbage"` would otherwise hit the factory's exhaustiveness
+  // throw and 500 the user's chat permanently.
+  const providerKind = resolveProviderKind(initialMetadata.provider);
+  const agentProvider = getAgentProvider(providerKind);
+
   const emitter = new EventEmitter();
   const abortController = new AbortController();
 
@@ -618,7 +652,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
   try {
     const spec = buildCallboardToolsSpec(() => trackingId);
-    const server = getAgentProvider().buildToolServer(spec);
+    const server = agentProvider.buildToolServer(spec);
     if (server) {
       mcpServers["callboard-tools"] = server;
       allowedTools.push("mcp__callboard-tools__*");
@@ -639,7 +673,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
     try {
       const spec = buildProxyToolsSpec(proxyKeyAlias);
-      const server = getAgentProvider().buildToolServer(spec);
+      const server = agentProvider.buildToolServer(spec);
       if (server) {
         mcpServers["mcp-proxy"] = server;
         allowedTools.push("mcp__mcp-proxy__*");
@@ -672,7 +706,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
     try {
       const spec = buildAgentToolsSpec(opts.agentAlias);
-      const server = getAgentProvider().buildToolServer(spec);
+      const server = agentProvider.buildToolServer(spec);
       if (server) {
         mcpServers["callboard"] = server;
         allowedTools.push("mcp__callboard__*");
@@ -743,7 +777,29 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       },
     },
   };
-  log.debug(`SDK query options — cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);
+
+  // For OpenRouter chats, surface the per-provider settings the OR adapter's
+  // optionsAdapter looks for. Dormant until PR D writes provider:"openrouter"
+  // into chat metadata — included now so PR D is a UI/settings PR with no
+  // additional backend wiring required.
+  if (providerKind === "openrouter") {
+    const apiKey = agentSettings.openRouterApiKey?.trim();
+    if (!apiKey) {
+      const message =
+        "OpenRouter chat selected but OPENROUTER_API_KEY is not configured in Settings → API.";
+      log.error(message);
+      throw new Error(message);
+    }
+    queryOpts.options.openRouter = {
+      apiKey,
+      ...(agentSettings.openRouterBaseUrl && { baseUrl: agentSettings.openRouterBaseUrl }),
+      ...(agentSettings.openRouterModel && { model: agentSettings.openRouterModel }),
+      ...(agentSettings.openRouterLogsRoot && { logsRoot: agentSettings.openRouterLogsRoot }),
+      appTitle: "callboard",
+    };
+  }
+
+  log.debug(`SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);
 
   (async () => {
     try {
@@ -768,7 +824,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       let sessionId: string | null = null;
       let endReason: string | undefined;
 
-      const conversation = getAgentProvider().query(queryOpts);
+      const conversation = agentProvider.query(queryOpts);
 
       for await (const event of conversation) {
         if (abortController.signal.aborted) break;

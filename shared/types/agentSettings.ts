@@ -55,6 +55,23 @@ export interface AgentSettings {
 
   /** Path to the Claude Code executable. Overrides the SDK's bundled binary. */
   pathToClaudeCodeExecutable?: string;
+
+  // ── OpenRouter (alternative provider) ─────────────────────────────
+  // Populated when the user enables the OpenRouter provider in
+  // Settings → API. Empty values mean "OpenRouter unavailable" — the
+  // New Chat panel's provider toggle (PR D) is disabled in that state.
+
+  /** OPENROUTER_API_KEY — required to enable the OpenRouter provider. */
+  openRouterApiKey?: string;
+
+  /** OPENROUTER_BASE_URL — override the OR API endpoint. */
+  openRouterBaseUrl?: string;
+
+  /** Default model alias for new OR chats. Defaults to `~anthropic/claude-sonnet-latest`. */
+  openRouterModel?: string;
+
+  /** Absolute path to write OR session logs into. Defaults to `~/.openrouter-agent-coder/logs`. */
+  openRouterLogsRoot?: string;
 }
 
 export interface KeyAliasInfo {
