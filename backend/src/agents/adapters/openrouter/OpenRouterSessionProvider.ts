@@ -39,12 +39,7 @@ import type {
 } from "../../ports/SessionProvider.js";
 import { createLogger } from "../../../utils/logger.js";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
-import {
-  parseOpenRouterState,
-  readFirstUserPrompt,
-  readRequestTimestamps,
-  readStateJson,
-} from "./sessionParser.js";
+import { readFirstUserPrompt, readOpenRouterSession } from "./sessionParser.js";
 
 const log = createLogger("openrouter-session-provider");
 
@@ -216,22 +211,19 @@ export class OpenRouterSessionProvider implements SessionProvider {
     for (const sid of sessionIds) {
       const safe = this.safeSessionDir(sid);
       if (!safe) continue;
-      const state = readStateJson(safe.sessionDir);
-      if (!state) continue;
-      const timestamps = readRequestTimestamps(safe.sessionDir);
-      all.push(...parseOpenRouterState(state, timestamps));
+      // readOpenRouterSession handles the request.json + state.json
+      // interleave — necessary because OR's previousResponseId chaining
+      // means user prompts don't appear in state.messages.
+      all.push(...readOpenRouterSession(safe.sessionDir));
 
       // Inline subagent transcripts after their parent. Sequencing within a
-      // single session is preserved by state.json's array order; we don't
-      // currently splice subagent messages at their spawn point (that would
-      // require correlating spawn_subagent tool_call IDs to child session
-      // ids — a v2 refinement matching what the Claude provider does).
+      // single session is preserved; we don't currently splice subagent
+      // messages at their spawn point (that would require correlating
+      // spawn_subagent tool_call IDs to child session ids — a v2 refinement
+      // matching what the Claude provider does).
       for (const sub of this.findSubagentFiles(sid)) {
         const subDir = join(safe.logsRoot, `${sid}:${sub.agentId}`);
-        const subState = readStateJson(subDir);
-        if (!subState) continue;
-        const subTimestamps = readRequestTimestamps(subDir);
-        all.push(...parseOpenRouterState(subState, subTimestamps));
+        all.push(...readOpenRouterSession(subDir));
       }
     }
 
