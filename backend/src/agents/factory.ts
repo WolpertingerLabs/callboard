@@ -63,22 +63,33 @@ function constructProvider(kind: AgentProviderKind): AgentProvider {
 }
 
 /**
- * Test-only injection hook. Replaces the entry for `kind` with a test
- * double (e.g. `MockAgentProvider`). Pass `null` to evict the entry and
- * reset to lazy default on next access. Omitting `kind` operates on
- * `"claude-code"` for back-compat with the prior single-slot API.
+ * Test-only injection hook.
+ *
+ * - `setAgentProviderForTesting(provider)` — inject under the default
+ *   `"claude-code"` slot. Matches the historical single-slot semantics so
+ *   existing tests work unchanged.
+ * - `setAgentProviderForTesting(provider, kind)` — inject under a specific
+ *   slot. Used once tests need to mock a non-Claude provider.
+ * - `setAgentProviderForTesting(null)` — full reset; clears every slot.
+ *   Matches the prior single-slot reset so `afterEach` hooks stay correct
+ *   even when a test happens to inject under multiple kinds.
+ * - `setAgentProviderForTesting(null, kind)` — clear one specific slot.
  *
  * Not intended for production use — kept intentionally undocumented in
  * user-facing places.
  */
 export function setAgentProviderForTesting(
   provider: AgentProvider | null,
-  kind: AgentProviderKind = "claude-code",
+  kind?: AgentProviderKind,
 ): void {
   if (provider === null) {
-    _providers.delete(kind);
+    if (kind === undefined) {
+      _providers.clear();
+    } else {
+      _providers.delete(kind);
+    }
   } else {
-    _providers.set(kind, provider);
+    _providers.set(kind ?? "claude-code", provider);
   }
 }
 
