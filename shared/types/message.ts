@@ -19,7 +19,11 @@ export interface ParsedMessage {
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
+    /** Reasoning-trace tokens billed as output (OpenRouter only). */
+    reasoning_tokens?: number;
   };
+  /** USD cost for this response, when the adapter exposes it (OpenRouter). */
+  costUsd?: number;
   /** API service tier, e.g. "standard" */
   serviceTier?: string;
   /** Image IDs attached to this user message (for rendering sent images) */

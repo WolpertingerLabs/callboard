@@ -376,3 +376,246 @@ describe("OpenRouterSessionProvider — search / delete", () => {
     expect(existsSync(join(TMP_LOGS, "survivor"))).toBe(true);
   });
 });
+
+describe("OpenRouterSessionProvider — per-cycle response metadata", () => {
+  async function writeCycleWithResponse(
+    sessionId: string,
+    reqName: string,
+    opts: {
+      prompt: string;
+      requestTimestamp: string;
+      responseTimestamp: string;
+      response: Record<string, unknown>;
+    },
+  ): Promise<string> {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const sessionDir = join(TMP_LOGS, sessionId);
+    const reqDir = join(sessionDir, reqName);
+    mkdirSync(reqDir, { recursive: true });
+    writeFileSync(
+      join(reqDir, "request.json"),
+      JSON.stringify({ sessionId, requestId: reqName, prompt: opts.prompt, timestamp: opts.requestTimestamp }),
+    );
+    const genDir = join(reqDir, "gen_001");
+    mkdirSync(genDir);
+    writeFileSync(
+      join(genDir, "response.json"),
+      JSON.stringify({
+        sessionId,
+        requestId: reqName,
+        generationId: "gen_001",
+        timestamp: opts.responseTimestamp,
+        response: opts.response,
+      }),
+    );
+    return sessionDir;
+  }
+
+  it("attaches model, usage, cost, requestId, serviceTier, geo, stopReason to assistant messages", async () => {
+    const { writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    const sessionDir = writeSession("sess_meta", {
+      cwd: "/work",
+      messages: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "the answer" }] },
+      ],
+    });
+    // Overwrite state.json to drop the {role:"user", content:"hi"} shape —
+    // writeSession's `messages` is used as-is; we set only the assistant
+    // item so the test reads cleanly.
+    writeFileSync(
+      join(sessionDir, "state.json"),
+      JSON.stringify({ id: "sess_meta", messages: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "the answer" }] },
+      ] }),
+    );
+    await writeCycleWithResponse("sess_meta", "req_aaa", {
+      prompt: "what is the answer?",
+      requestTimestamp: "2026-05-26T17:00:00Z",
+      responseTimestamp: "2026-05-26T17:00:03Z",
+      response: {
+        model: "anthropic/claude-sonnet-4-6",
+        serviceTier: "standard",
+        status: "completed",
+        usage: {
+          inputTokens: 1234,
+          outputTokens: 700,
+          inputTokensDetails: { cachedTokens: 1000 },
+          outputTokensDetails: { reasoningTokens: 50 },
+          cost: 0.0042,
+        },
+        openrouterMetadata: { region: "us-east" },
+      },
+    });
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_meta"]);
+
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    expect(assistant.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(assistant.requestId).toBe("req_aaa");
+    expect(assistant.timestamp).toBe("2026-05-26T17:00:03Z");
+    expect(assistant.serviceTier).toBe("standard");
+    expect(assistant.inferenceGeo).toBe("us-east");
+    expect(assistant.stopReason).toBe("end_turn");
+    expect(assistant.costUsd).toBeCloseTo(0.0042, 6);
+    // input_tokens reported as fresh (inputTokens - cachedTokens)
+    expect(assistant.usage).toEqual({
+      input_tokens: 234,
+      output_tokens: 700,
+      cache_read_input_tokens: 1000,
+      reasoning_tokens: 50,
+    });
+  });
+
+  it("maps incomplete responses' reason onto stopReason", async () => {
+    await pointSettingsAtTmp();
+    const sessionDir = writeSession("sess_incomplete", { cwd: "/work" });
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(
+      join(sessionDir, "state.json"),
+      JSON.stringify({ id: "sess_incomplete", messages: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "truncated" }] },
+      ] }),
+    );
+    await writeCycleWithResponse("sess_incomplete", "req_x", {
+      prompt: "go",
+      requestTimestamp: "2026-05-26T17:00:00Z",
+      responseTimestamp: "2026-05-26T17:00:03Z",
+      response: {
+        model: "anthropic/claude-sonnet-4-6",
+        status: "incomplete",
+        incompleteDetails: { reason: "max_output_tokens" },
+        usage: { inputTokens: 100, outputTokens: 4096 },
+      },
+    });
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_incomplete"]);
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    expect(assistant.stopReason).toBe("max_output_tokens");
+  });
+
+  it("picks the latest gen_*/response.json when multiple exist (intra-cycle turns)", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    const sessionDir = writeSession("sess_multi_gen", { cwd: "/work" });
+    writeFileSync(
+      join(sessionDir, "state.json"),
+      JSON.stringify({ id: "sess_multi_gen", messages: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+      ] }),
+    );
+    const reqDir = join(sessionDir, "req_multi");
+    mkdirSync(reqDir);
+    writeFileSync(
+      join(reqDir, "request.json"),
+      JSON.stringify({ sessionId: "sess_multi_gen", requestId: "req_multi", prompt: "go", timestamp: "2026-05-26T17:00:00Z" }),
+    );
+    const gen1 = join(reqDir, "gen_001");
+    mkdirSync(gen1);
+    writeFileSync(
+      join(gen1, "response.json"),
+      JSON.stringify({
+        sessionId: "sess_multi_gen", requestId: "req_multi", generationId: "gen_001",
+        timestamp: "2026-05-26T17:00:01Z",
+        response: { model: "intermediate-model", status: "completed", usage: { inputTokens: 10, outputTokens: 10 } },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    const gen2 = join(reqDir, "gen_002");
+    mkdirSync(gen2);
+    writeFileSync(
+      join(gen2, "response.json"),
+      JSON.stringify({
+        sessionId: "sess_multi_gen", requestId: "req_multi", generationId: "gen_002",
+        timestamp: "2026-05-26T17:00:02Z",
+        response: { model: "final-model", status: "completed", usage: { inputTokens: 100, outputTokens: 200 } },
+      }),
+    );
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_multi_gen"]);
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    expect(assistant.model).toBe("final-model");
+    expect(assistant.usage).toMatchObject({ input_tokens: 100, output_tokens: 200 });
+  });
+
+  it("decorates assistant messages but not tool-result rows", async () => {
+    const { writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    const sessionDir = writeSession("sess_tool", { cwd: "/work" });
+    writeFileSync(
+      join(sessionDir, "state.json"),
+      JSON.stringify({ id: "sess_tool", messages: [
+        { type: "function_call", callId: "c1", name: "read", arguments: "{}" },
+        { type: "function_call_output", callId: "c1", output: "contents" },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] },
+      ] }),
+    );
+    await writeCycleWithResponse("sess_tool", "req_t", {
+      prompt: "read file",
+      requestTimestamp: "2026-05-26T17:00:00Z",
+      responseTimestamp: "2026-05-26T17:00:01Z",
+      response: { model: "m", status: "completed", usage: { inputTokens: 1, outputTokens: 1 } },
+    });
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_tool"]);
+    const toolResult = messages.find((m) => m.type === "tool_result")!;
+    const toolUse = messages.find((m) => m.type === "tool_use")!;
+    const finalText = messages.find((m) => m.type === "text" && m.role === "assistant")!;
+
+    expect(toolResult.usage).toBeUndefined();
+    expect(toolResult.model).toBeUndefined();
+    // Both assistant-side rows (tool_use + text) carry the metadata.
+    expect(toolUse.model).toBe("m");
+    expect(finalText.model).toBe("m");
+  });
+
+  it("handles a missing response.json gracefully (in-flight cycle)", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    const sessionDir = writeSession("sess_pending", { cwd: "/work", messages: [] });
+    const reqDir = join(sessionDir, "req_pending");
+    mkdirSync(reqDir);
+    writeFileSync(
+      join(reqDir, "request.json"),
+      JSON.stringify({ sessionId: "sess_pending", requestId: "req_pending", prompt: "in flight", timestamp: "2026-05-26T17:00:00Z" }),
+    );
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_pending"]);
+    expect(messages).toEqual([
+      { role: "user", type: "text", content: "in flight", timestamp: "2026-05-26T17:00:00Z" },
+    ]);
+  });
+
+  it("omits inferenceGeo when openrouterMetadata.region is empty", async () => {
+    const { writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    const sessionDir = writeSession("sess_no_geo", { cwd: "/work" });
+    writeFileSync(
+      join(sessionDir, "state.json"),
+      JSON.stringify({ id: "sess_no_geo", messages: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "x" }] },
+      ] }),
+    );
+    await writeCycleWithResponse("sess_no_geo", "req_g", {
+      prompt: "go",
+      requestTimestamp: "2026-05-26T17:00:00Z",
+      responseTimestamp: "2026-05-26T17:00:01Z",
+      response: {
+        model: "m",
+        status: "completed",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        openrouterMetadata: { region: "" },
+      },
+    });
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_no_geo"]);
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    expect(assistant.inferenceGeo).toBeUndefined();
+  });
+});

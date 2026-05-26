@@ -384,7 +384,15 @@ function formatUsage(usage: NonNullable<ParsedMessage["usage"]>): string {
   if (usage.output_tokens != null) parts.push(`${usage.output_tokens.toLocaleString()} out`);
   if (usage.cache_read_input_tokens) parts.push(`${usage.cache_read_input_tokens.toLocaleString()} cache read`);
   if (usage.cache_creation_input_tokens) parts.push(`${usage.cache_creation_input_tokens.toLocaleString()} cache write`);
+  if (usage.reasoning_tokens) parts.push(`${usage.reasoning_tokens.toLocaleString()} reasoning`);
   return parts.join(", ");
+}
+
+/** Format USD cost with adaptive precision — small numbers need more decimals. */
+function formatCost(usd: number): string {
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(4)}`;
 }
 
 export function MessageMetadata({ message, align = "right" }: { message: ParsedMessage; align?: "left" | "right" }) {
@@ -394,7 +402,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   if (!relativeTime) return null;
 
   const displayModel = message.model || null;
-  const hasDetails = !!(message.usage || message.serviceTier || message.stopReason || message.deltaMs != null);
+  const hasDetails = !!(message.usage || message.serviceTier || message.stopReason || message.deltaMs != null || message.costUsd != null);
 
   return (
     <div
@@ -447,6 +455,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
           )}
           {message.stopReason && <div>Stop: {message.stopReason}</div>}
           {message.usage && <div>Tokens: {formatUsage(message.usage)}</div>}
+          {message.costUsd != null && <div>Cost: {formatCost(message.costUsd)}</div>}
           {message.cacheCreation && (
             <div>
               Ephemeral cache: {message.cacheCreation.ephemeral1h?.toLocaleString() ?? 0} 1h, {message.cacheCreation.ephemeral5m?.toLocaleString() ?? 0} 5m

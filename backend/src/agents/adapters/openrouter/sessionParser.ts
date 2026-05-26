@@ -59,6 +59,32 @@ interface RawRequest {
 }
 
 /**
+ * Per-cycle metadata distilled from a gen_N/response.json file. Surfaced
+ * through the parser onto each assistant ParsedMessage for the cycle so the
+ * frontend can render token/cost/model/serviceTier lines.
+ *
+ * One cycle (one req_N dir) may persist multiple gen_N directories — one
+ * per intra-cycle onTurnEnd plus the final getResponse. The parser picks
+ * the latest by mtime since OR's SDK rolls usage forward and the last
+ * response carries the canonical final figures.
+ */
+interface ResponseMeta {
+  model?: string;
+  requestId?: string;
+  timestamp?: string;
+  serviceTier?: string;
+  inferenceGeo?: string;
+  stopReason?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    reasoning_tokens?: number;
+  };
+  costUsd?: number;
+}
+
+/**
  * Read an OR session directory and project it into ParsedMessage[]. This is
  * the function the SessionProvider should call — `parseOpenRouterState`
  * below is the lower-level primitive that ignores request.json files and
@@ -68,14 +94,16 @@ interface RawRequest {
 export function readOpenRouterSession(sessionDir: string): ParsedMessage[] {
   if (!existsSync(sessionDir)) return [];
   const state = readStateJson(sessionDir);
-  const requests = readRequestEntries(sessionDir);
+  const cycles = readCycleEntries(sessionDir);
+  const requests = cycles.map((c) => ({ prompt: c.prompt, timestamp: c.timestamp }));
+  const responseMetas = cycles.map((c) => c.responseMeta);
 
   // Sessions without persisted requests (rare — perhaps post-compaction or
   // recovered from a backup) fall back to the state-only parser. Sessions
   // without state.json (e.g. construction-time error) are equally rare and
   // also fall back gracefully — readStateJson returns null and we just emit
   // the user prompts.
-  if (requests.length === 0) {
+  if (cycles.length === 0) {
     return state ? parseOpenRouterState(state) : [];
   }
 
@@ -115,13 +143,36 @@ export function readOpenRouterSession(sessionDir: string): ParsedMessage[] {
     }
     const turn = turns[i];
     if (turn) {
+      const meta = responseMetas[i];
       for (const item of turn) {
         const parsed = translateItem(item, () => undefined);
-        if (parsed) result.push(...parsed);
+        if (parsed) {
+          for (const m of parsed) {
+            // Decorate ASSISTANT-side items with the cycle's response
+            // metadata. Tool results (role: "user", type: "tool_result")
+            // are part of the conversation but not API responses
+            // themselves — they get no meta so the frontend doesn't
+            // render misleading "Tokens: …" lines on tool-result rows.
+            if (meta && m.role === "assistant") applyMeta(m, meta);
+            result.push(m);
+          }
+        }
       }
     }
   }
   return result;
+}
+
+/** Attach per-cycle response metadata to an assistant ParsedMessage in-place. */
+function applyMeta(m: ParsedMessage, meta: ResponseMeta): void {
+  if (meta.model && !m.model) m.model = meta.model;
+  if (meta.requestId && !m.requestId) m.requestId = meta.requestId;
+  if (meta.timestamp && !m.timestamp) m.timestamp = meta.timestamp;
+  if (meta.serviceTier && !m.serviceTier) m.serviceTier = meta.serviceTier;
+  if (meta.inferenceGeo && !m.inferenceGeo) m.inferenceGeo = meta.inferenceGeo;
+  if (meta.stopReason !== undefined && m.stopReason === undefined) m.stopReason = meta.stopReason;
+  if (meta.costUsd !== undefined && m.costUsd === undefined) m.costUsd = meta.costUsd;
+  if (meta.usage && !m.usage) m.usage = { ...meta.usage };
 }
 
 function isAssistantMessage(item: unknown): boolean {
@@ -130,8 +181,21 @@ function isAssistantMessage(item: unknown): boolean {
   return obj.type === "message" && obj.role === "assistant";
 }
 
-/** Walk `req_<id>/request.json` files in chronological order; return each prompt + timestamp. */
-function readRequestEntries(sessionDir: string): Array<{ prompt: string; timestamp?: string }> {
+interface CycleEntry {
+  prompt: string;
+  timestamp?: string;
+  responseMeta?: ResponseMeta;
+}
+
+/**
+ * Walk `req_<id>/` directories in chronological order; for each, read the
+ * user prompt out of `request.json` and the canonical response metadata
+ * out of the latest `gen_<id>/response.json`. Cycles whose `request.json`
+ * is missing or malformed are skipped; cycles without a `response.json`
+ * yet (in-flight, aborted before model traffic) keep `responseMeta`
+ * undefined so the parser can still emit the user prompt.
+ */
+function readCycleEntries(sessionDir: string): CycleEntry[] {
   if (!existsSync(sessionDir)) return [];
   let entries;
   try {
@@ -149,25 +213,168 @@ function readRequestEntries(sessionDir: string): Array<{ prompt: string; timesta
       } catch {
         /* unreadable — skip */
       }
-      return { dir: full, mtime };
+      return { name: e.name, dir: full, mtime };
     })
     .sort((a, b) => a.mtime - b.mtime);
 
-  const result: Array<{ prompt: string; timestamp?: string }> = [];
-  for (const { dir } of reqDirs) {
+  const result: CycleEntry[] = [];
+  for (const { name, dir } of reqDirs) {
+    let raw: RawRequest;
     try {
-      const raw = JSON.parse(readFileSync(join(dir, "request.json"), "utf-8")) as RawRequest;
-      if (typeof raw.prompt === "string") {
-        result.push({
-          prompt: raw.prompt,
-          ...(typeof raw.timestamp === "string" && { timestamp: raw.timestamp }),
-        });
-      }
+      raw = JSON.parse(readFileSync(join(dir, "request.json"), "utf-8")) as RawRequest;
     } catch {
-      /* request.json missing or malformed — skip this request */
+      /* request.json missing or malformed — skip this cycle entirely */
+      continue;
     }
+    if (typeof raw.prompt !== "string") continue;
+
+    const cycle: CycleEntry = {
+      prompt: raw.prompt,
+      ...(typeof raw.timestamp === "string" && { timestamp: raw.timestamp }),
+    };
+    const responseMeta = readLatestResponseMeta(dir, name);
+    if (responseMeta) cycle.responseMeta = responseMeta;
+    result.push(cycle);
   }
   return result;
+}
+
+/**
+ * Locate the latest `<reqDir>/gen_N/response.json` by mtime (usage rolls
+ * forward across intra-cycle turns) and translate the raw OR response
+ * envelope into our ResponseMeta shape. Returns `undefined` when no
+ * response.json exists yet (the cycle is in-flight or aborted before
+ * model traffic).
+ *
+ * `requestIdFromDirName` is the dir name (`req_<uuid>`) — used as the
+ * displayed request id since OR-side request IDs aren't otherwise
+ * exposed through the response envelope.
+ */
+function readLatestResponseMeta(reqDir: string, requestIdFromDirName: string): ResponseMeta | undefined {
+  let genDirs;
+  try {
+    genDirs = readdirSync(reqDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith("gen_"))
+      .map((e) => {
+        const full = join(reqDir, e.name);
+        let mtime = 0;
+        try {
+          mtime = statSync(full).mtimeMs;
+        } catch {
+          /* unreadable — sort first; treat as oldest */
+        }
+        return { dir: full, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime); // latest first
+  } catch {
+    return undefined;
+  }
+  for (const { dir } of genDirs) {
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, "response.json"), "utf-8")) as {
+        timestamp?: string;
+        response?: Record<string, unknown>;
+      };
+      const meta = extractResponseMeta(raw, requestIdFromDirName);
+      if (meta) return meta;
+    } catch {
+      /* malformed — try the next-newest gen */
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Distill an OR `response.json` envelope (the on-disk shape written by
+ * `logGeneration`: `{ sessionId, requestId, generationId, response,
+ * timestamp }`) into the ResponseMeta we attach onto ParsedMessages.
+ *
+ * The inner `response` is a raw `OpenResponsesResult` from `@openrouter/sdk`
+ * (see `@openrouter/sdk/models/openresponsesresult.d.ts`) — we read it as
+ * loosely-typed JSON so the parser doesn't take a hard dep on the SDK
+ * runtime schema and stays forward-compatible with shape additions.
+ *
+ * Returns `undefined` if the envelope has no usable response payload.
+ */
+function extractResponseMeta(
+  envelope: { timestamp?: string; response?: Record<string, unknown> },
+  requestIdFromDirName: string,
+): ResponseMeta | undefined {
+  const response = envelope.response;
+  if (!response || typeof response !== "object") return undefined;
+
+  const meta: ResponseMeta = { requestId: requestIdFromDirName };
+  if (typeof envelope.timestamp === "string") meta.timestamp = envelope.timestamp;
+
+  if (typeof response.model === "string") meta.model = response.model;
+  if (typeof response.serviceTier === "string") meta.serviceTier = response.serviceTier;
+
+  // OpenRouterMetadata.region carries the inference geo (the region the
+  // routed-to endpoint actually ran in). Treat empty string / null the
+  // same as missing so we don't render "Geo: -" style noise.
+  const orMeta = response.openrouterMetadata;
+  if (orMeta && typeof orMeta === "object") {
+    const region = (orMeta as { region?: unknown }).region;
+    if (typeof region === "string" && region.length > 0) meta.inferenceGeo = region;
+  }
+
+  // Stop reason: prefer the precise `incompleteDetails.reason` when the
+  // run was cut short (matches Claude's `max_tokens` / `content_filter`
+  // semantics); otherwise project the lifecycle status. "completed"
+  // becomes "end_turn" for parity with Claude's display.
+  const status = typeof response.status === "string" ? response.status : undefined;
+  const incomplete = response.incompleteDetails;
+  let incompleteReason: string | undefined;
+  if (incomplete && typeof incomplete === "object") {
+    const r = (incomplete as { reason?: unknown }).reason;
+    if (typeof r === "string") incompleteReason = r;
+  }
+  if (incompleteReason) {
+    meta.stopReason = incompleteReason;
+  } else if (status === "completed") {
+    meta.stopReason = "end_turn";
+  } else if (status) {
+    meta.stopReason = status;
+  }
+
+  const usage = response.usage;
+  if (usage && typeof usage === "object") {
+    const u = usage as Record<string, unknown>;
+    const inputTokens = typeof u.inputTokens === "number" ? u.inputTokens : undefined;
+    const outputTokens = typeof u.outputTokens === "number" ? u.outputTokens : undefined;
+    const inputDetails = u.inputTokensDetails as { cachedTokens?: unknown } | undefined;
+    const cachedTokens =
+      inputDetails && typeof inputDetails.cachedTokens === "number"
+        ? inputDetails.cachedTokens
+        : undefined;
+    const outputDetails = u.outputTokensDetails as { reasoningTokens?: unknown } | undefined;
+    const reasoningTokens =
+      outputDetails && typeof outputDetails.reasoningTokens === "number"
+        ? outputDetails.reasoningTokens
+        : undefined;
+    const cost = typeof u.cost === "number" ? u.cost : undefined;
+
+    const usageOut: NonNullable<ResponseMeta["usage"]> = {};
+    if (inputTokens !== undefined) {
+      // OR reports `inputTokens` as the TOTAL input (cached + fresh). The
+      // Claude-side convention surfaced through MessageBubble is "in" =
+      // fresh input + "cache read" shown separately. Subtract so the
+      // numbers add up to the right total and the cache-hit story reads
+      // naturally next to Claude rows. Clamp at 0 in case cachedTokens
+      // exceeds inputTokens (shouldn't happen, but defends against
+      // upstream accounting drift).
+      const fresh = cachedTokens !== undefined ? Math.max(0, inputTokens - cachedTokens) : inputTokens;
+      usageOut.input_tokens = fresh;
+    }
+    if (outputTokens !== undefined) usageOut.output_tokens = outputTokens;
+    if (cachedTokens !== undefined) usageOut.cache_read_input_tokens = cachedTokens;
+    if (reasoningTokens !== undefined && reasoningTokens > 0) usageOut.reasoning_tokens = reasoningTokens;
+    if (Object.keys(usageOut).length > 0) meta.usage = usageOut;
+
+    if (cost !== undefined) meta.costUsd = cost;
+  }
+
+  return meta;
 }
 
 /**
