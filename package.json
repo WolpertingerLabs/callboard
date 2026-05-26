@@ -96,6 +96,7 @@
     "express-rate-limit": "^7.5.0",
     "multer": "^2.0.2",
     "node-cron": "^3.0.3",
+    "openrouter-agent-coder": "file:/tmp/openrouter-agent-coder-0.2.0.tgz",
     "winston": "^3.19.0"
   },
   "devDependencies": {
