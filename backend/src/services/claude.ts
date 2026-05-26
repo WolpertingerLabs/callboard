@@ -525,6 +525,13 @@ interface SendMessageOptions {
   triggered?: boolean;
   /** How this chat was triggered — stored in metadata for icon distinction */
   triggeredBy?: "cron" | "event" | "trigger" | "tool";
+  /**
+   * Which agent provider runs this chat. Only honored for new chats —
+   * existing chats route by the `provider` field already in their metadata.
+   * Defaults to `"claude-code"` when omitted; `"openrouter"` is rejected at
+   * the sendMessage boundary if OPENROUTER_API_KEY isn't configured.
+   */
+  provider?: AgentProviderKind;
 }
 
 /**
@@ -576,6 +583,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
       ...(opts.triggered && { triggered: true }),
       ...(opts.triggeredBy && { triggeredBy: opts.triggeredBy }),
+      // Pin the provider for the lifetime of this chat. Once written here,
+      // the metadata-routing block below sees it and getAgentProvider()
+      // returns the matching adapter for every subsequent message in the
+      // chat. Omitting it leaves the metadata in its pre-PR-D shape, which
+      // resolveProviderKind treats as "claude-code".
+      ...(opts.provider && opts.provider !== "claude-code" && { provider: opts.provider }),
     };
     // Record initial branch for drift detection on subsequent messages
     const gitInfo = getGitInfo(folder);

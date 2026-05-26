@@ -1289,6 +1289,8 @@ export interface SystemInfo {
   environment: string;
   account?: SystemInfoAccount;
   models?: SystemInfoModel[];
+  /** True when the user has an OPENROUTER_API_KEY configured in Settings → API. */
+  openRouterConfigured?: boolean;
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
