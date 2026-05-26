@@ -2,7 +2,7 @@
  * Unit tests for the Claude-shaped → OpenRouter options translation.
  */
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "openrouter-agent-coder";
+import { DEFAULT_INSTRUCTIONS } from "@cybourgeoisie/openrouter-agent-coder";
 import { translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
 
 const defaultExtras: OpenRouterOptionsExtras = { apiKey: "sk-or-test" };

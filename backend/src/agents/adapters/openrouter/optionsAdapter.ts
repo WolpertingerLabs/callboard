@@ -24,7 +24,7 @@ import {
   type OpenRouterAgentRunOptions,
   type SdkMcpServer,
   type SettingSource,
-} from "openrouter-agent-coder";
+} from "@cybourgeoisie/openrouter-agent-coder";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 
 /**

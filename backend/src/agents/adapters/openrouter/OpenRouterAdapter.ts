@@ -25,7 +25,7 @@ import {
   OpenRouterAgentRun,
   accountInfo as orAccountInfo,
   supportedModels as orSupportedModels,
-} from "openrouter-agent-coder";
+} from "@cybourgeoisie/openrouter-agent-coder";
 import type { AgentProvider, AgentQuery, AgentQueryRequest } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import type { ToolServerSpec } from "../../ports/tools.js";

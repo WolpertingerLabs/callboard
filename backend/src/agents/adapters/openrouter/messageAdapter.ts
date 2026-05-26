@@ -15,7 +15,7 @@
  *
  * @see plans/openrouter-adapter.md §3 (event translation table)
  */
-import { createCommandLoader, type AgentCoreEvent, type OpenRouterAgentRun } from "openrouter-agent-coder";
+import { createCommandLoader, type AgentCoreEvent, type OpenRouterAgentRun } from "@cybourgeoisie/openrouter-agent-coder";
 import type { AgentEvent, TokenUsage } from "../../ports/events.js";
 
 /**

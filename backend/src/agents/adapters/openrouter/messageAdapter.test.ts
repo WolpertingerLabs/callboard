@@ -7,7 +7,7 @@
  * the bottom against a captured event sequence.
  */
 import { describe, expect, it } from "vitest";
-import type { AgentCoreEvent } from "openrouter-agent-coder";
+import type { AgentCoreEvent } from "@cybourgeoisie/openrouter-agent-coder";
 import { translateEvent } from "./messageAdapter.js";
 
 describe("translateEvent — direct one-to-one mappings", () => {
