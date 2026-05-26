@@ -49,7 +49,7 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * adapter-specific behaviour (per the plan's Decision 3). New adapters extend
  * this union.
  */
-export type AgentProviderKind = "claude-code" | "codex" | "mock";
+export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "mock";
 
 export interface AgentProvider {
   readonly kind: AgentProviderKind;
