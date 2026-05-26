@@ -86,18 +86,31 @@ describe("OpenRouterSessionProvider — discovery", () => {
 
   it("excludes subagent dirs from the top-level listing", async () => {
     await pointSettingsAtTmp();
-    writeSession("sess_main");
-    writeSession("sess_main:sub:child1");
+    writeSession("sess_main", { cwd: "/work" });
+    writeSession("sess_main:sub:child1", { cwd: "/work" });
     const provider = new OpenRouterSessionProvider();
     const result = provider.discoverSessions({ limit: 10, offset: 0 });
     expect(result.sessions.map((s) => s.sessionId)).toEqual(["sess_main"]);
   });
 
+  it("excludes dirs without session.json or state.json (ghost-dir filter)", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    writeSession("real_session", { cwd: "/work" });
+    // A stale dir from a crashed process or unrelated junk in logsRoot
+    mkdirSync(join(TMP_LOGS, ".tmp"));
+    mkdirSync(join(TMP_LOGS, "partial_session"));
+    writeFileSync(join(TMP_LOGS, "partial_session", "junk.txt"), "x");
+    const provider = new OpenRouterSessionProvider();
+    const result = provider.discoverSessions({ limit: 10, offset: 0 });
+    expect(result.sessions.map((s) => s.sessionId)).toEqual(["real_session"]);
+  });
+
   it("paginates by mtime DESC", async () => {
     await pointSettingsAtTmp();
-    writeSession("first");
-    writeSession("second");
-    writeSession("third");
+    writeSession("first", { cwd: "/work" });
+    writeSession("second", { cwd: "/work" });
+    writeSession("third", { cwd: "/work" });
     const provider = new OpenRouterSessionProvider();
     const page1 = provider.discoverSessions({ limit: 2, offset: 0 });
     expect(page1.total).toBe(3);
@@ -177,6 +190,50 @@ describe("OpenRouterSessionProvider — parseSessionMessages", () => {
     writeSession("sess_empty", { cwd: "/work" });
     const provider = new OpenRouterSessionProvider();
     expect(provider.parseSessionMessages(["sess_empty"])).toEqual([]);
+  });
+});
+
+describe("OpenRouterSessionProvider — path-traversal hardening", () => {
+  it.each(["", ".", "..", "../foo", "foo/bar", "foo\\bar", "/abs/path"])(
+    "rejects unsafe sessionId %s in resolveSession",
+    async (badId) => {
+      await pointSettingsAtTmp();
+      const provider = new OpenRouterSessionProvider();
+      expect(provider.resolveSession(badId)).toBeNull();
+    },
+  );
+
+  it("deleteSessionFiles with empty sessionId does NOT wipe logsRoot", async () => {
+    const { existsSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    writeSession("survivor", { cwd: "/work" });
+    const provider = new OpenRouterSessionProvider();
+    provider.deleteSessionFiles("");
+    expect(existsSync(TMP_LOGS)).toBe(true);
+    expect(existsSync(join(TMP_LOGS, "survivor"))).toBe(true);
+  });
+
+  it("deleteSessionFiles with '..' does NOT escape logsRoot", async () => {
+    const { existsSync, mkdirSync } = await import("node:fs");
+    const sibling = join(TMP_LOGS, "..", `or-sibling-${Date.now()}`);
+    mkdirSync(sibling, { recursive: true });
+    try {
+      await pointSettingsAtTmp();
+      const provider = new OpenRouterSessionProvider();
+      provider.deleteSessionFiles("..");
+      expect(existsSync(sibling)).toBe(true);
+    } finally {
+      const { rmSync } = await import("node:fs");
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  it("findSubagentFiles returns [] for empty sessionId (no degenerate ':sub:' prefix)", async () => {
+    await pointSettingsAtTmp();
+    writeSession("sess", { cwd: "/work" });
+    writeSession("sess:sub:c1", { cwd: "/work", messages: [{ role: "user", content: "child" }] });
+    const provider = new OpenRouterSessionProvider();
+    expect(provider.findSubagentFiles("")).toEqual([]);
   });
 });
 

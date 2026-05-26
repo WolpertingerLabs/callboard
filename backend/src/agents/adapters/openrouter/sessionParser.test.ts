@@ -12,23 +12,27 @@ describe("extractTextContent", () => {
     expect(extractTextContent("hi")).toBe("hi");
   });
 
-  it("joins text blocks from an array", () => {
+  it("newline-joins text blocks from an array (parity with Claude provider)", () => {
     expect(
       extractTextContent([
         { type: "input_text", text: "hello" },
-        { type: "output_text", text: " world" },
+        { type: "output_text", text: "world" },
       ]),
-    ).toBe("hello world");
+    ).toBe("hello\nworld");
   });
 
   it("renders image and file blocks as placeholders", () => {
     expect(
       extractTextContent([
-        { type: "input_text", text: "see " },
+        { type: "input_text", text: "see" },
         { type: "input_image", image_url: "..." },
         { type: "input_file", filename: "x.pdf" },
       ]),
-    ).toBe("see [image][file]");
+    ).toBe("see\n[image]\n[file]");
+  });
+
+  it("falls back to String() when JSON.stringify returns undefined (Symbol)", () => {
+    expect(extractTextContent(Symbol("denied"))).toBe("Symbol(denied)");
   });
 
   it("returns empty string for null/undefined", () => {

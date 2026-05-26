@@ -121,7 +121,12 @@ function translateItem(
   if (role === "user" || role === "developer" || role === "system") {
     const content = extractTextContent(obj.content);
     if (!content) return null;
-    const ts = nextTimestamp();
+    // Only consume a request-timestamp slot for actual user turns —
+    // developer / system messages are protocol-internal (compaction
+    // summaries, injected context) and don't correspond to a
+    // req_<id>/request.json entry. Stamping them with a future user
+    // request's timestamp produces misordered timeline UI.
+    const ts = role === "user" ? nextTimestamp() : undefined;
     return [
       {
         role: role === "user" ? "user" : "system",
@@ -163,14 +168,23 @@ export function extractTextContent(content: unknown): string {
         return "";
       })
       .filter((s) => s.length > 0)
-      .join("");
+      // Newline-join multi-block text — matches Claude's behavior in
+      // claude-code/sessionParser.ts. Empty-string-join silently fuses
+      // adjacent text segments into unreadable single lines.
+      .join("\n");
   }
   if (typeof content === "object") {
     const obj = content as Record<string, unknown>;
     if (typeof obj.text === "string") return obj.text;
   }
   try {
-    return JSON.stringify(content);
+    // JSON.stringify silently returns `undefined` (not a throw) for
+    // Symbol / function / top-level-undefined values. Fall back to
+    // String() in that case so the declared `string` return holds —
+    // same pattern as messageAdapter.ts:stringifyOutput.
+    const json = JSON.stringify(content);
+    if (json === undefined) return String(content);
+    return json;
   } catch {
     return String(content);
   }

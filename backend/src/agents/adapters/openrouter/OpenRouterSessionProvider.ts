@@ -28,7 +28,7 @@
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type {
   DiscoverResult,
@@ -73,6 +73,32 @@ export class OpenRouterSessionProvider implements SessionProvider {
     return join(homedir(), ".openrouter-agent-coder", "logs");
   }
 
+  /**
+   * Resolve `<logsRoot>/<sessionId>` while rejecting any sessionId that
+   * would escape the logs root via `..`, absolute paths, or path separators.
+   * Returns `null` for unsafe inputs — callers treat that the same as "session
+   * does not exist." Closes the path-traversal vector where a corrupted chat
+   * metadata `provider: "openrouter"` could pair with a sessionId like `""`
+   * or `".."` and turn `deleteSessionFiles()` into an arbitrary-rmSync.
+   */
+  private safeSessionDir(sessionId: string): { logsRoot: string; sessionDir: string } | null {
+    if (typeof sessionId !== "string" || sessionId.length === 0) return null;
+    if (sessionId.includes("/") || sessionId.includes("\\") || sessionId.includes("\0")) return null;
+    if (sessionId === "." || sessionId === ".." || sessionId.startsWith("../") || sessionId.startsWith("..\\")) {
+      return null;
+    }
+    const logsRoot = this.resolveLogsRoot();
+    const sessionDir = resolve(logsRoot, sessionId);
+    const root = resolve(logsRoot);
+    // Belt-and-suspenders: require the resolved path to be strictly inside
+    // logsRoot. The string checks above already cover this for the
+    // typical attacker inputs, but resolve() also collapses any embedded
+    // `..` segments the validators above missed.
+    if (sessionDir === root) return null;
+    if (!sessionDir.startsWith(root + sep)) return null;
+    return { logsRoot, sessionDir };
+  }
+
   /** Read a session.json safely; returns null on missing / malformed. */
   private readSessionJson(sessionDir: string): SessionJson | null {
     const path = join(sessionDir, "session.json");
@@ -100,6 +126,14 @@ export class OpenRouterSessionProvider implements SessionProvider {
         .filter((d) => !d.name.includes(":sub:"))
         .map((d) => {
           const sessionDir = join(logsRoot, d.name);
+          // Require a recognizable session marker. Without this, any stale
+          // dir under logsRoot (`.tmp/`, partial writes, anything else the
+          // user dropped here) shows up as a ghost chat with no preview
+          // and an empty conversation. The Claude provider gets this for
+          // free because its discovery only matches `*.jsonl` files.
+          if (!existsSync(join(sessionDir, "session.json")) && !existsSync(join(sessionDir, "state.json"))) {
+            return null;
+          }
           try {
             const st = statSync(sessionDir);
             return {
@@ -145,12 +179,13 @@ export class OpenRouterSessionProvider implements SessionProvider {
   // ── Session resolution ──────────────────────────────────────────────
 
   resolveSession(sessionId: string): ResolvedSession | null {
-    const sessionDir = join(this.resolveLogsRoot(), sessionId);
-    if (!existsSync(sessionDir)) return null;
-    const sessionJson = this.readSessionJson(sessionDir);
+    const safe = this.safeSessionDir(sessionId);
+    if (!safe) return null;
+    if (!existsSync(safe.sessionDir)) return null;
+    const sessionJson = this.readSessionJson(safe.sessionDir);
     const folder = sessionJson?.cwd ?? "";
     return {
-      logPath: join(sessionDir, "session.json"),
+      logPath: join(safe.sessionDir, "session.json"),
       folder,
       displayFolder: folder,
     };
@@ -159,6 +194,9 @@ export class OpenRouterSessionProvider implements SessionProvider {
   // ── Subagent files ──────────────────────────────────────────────────
 
   findSubagentFiles(sessionId: string): SubagentFile[] {
+    // Validate sessionId so a hostile `""` doesn't degenerate the prefix to
+    // `:sub:` and match every dir in logsRoot.
+    if (this.safeSessionDir(sessionId) === null) return [];
     const logsRoot = this.resolveLogsRoot();
     if (!existsSync(logsRoot)) return [];
     const prefix = `${sessionId}:sub:`;
@@ -178,14 +216,14 @@ export class OpenRouterSessionProvider implements SessionProvider {
   // ── Message parsing ─────────────────────────────────────────────────
 
   parseSessionMessages(sessionIds: string[]): ParsedMessage[] {
-    const logsRoot = this.resolveLogsRoot();
     const all: ParsedMessage[] = [];
 
     for (const sid of sessionIds) {
-      const sessionDir = join(logsRoot, sid);
-      const state = readStateJson(sessionDir);
+      const safe = this.safeSessionDir(sid);
+      if (!safe) continue;
+      const state = readStateJson(safe.sessionDir);
       if (!state) continue;
-      const timestamps = readRequestTimestamps(sessionDir);
+      const timestamps = readRequestTimestamps(safe.sessionDir);
       all.push(...parseOpenRouterState(state, timestamps));
 
       // Inline subagent transcripts after their parent. Sequencing within a
@@ -194,7 +232,7 @@ export class OpenRouterSessionProvider implements SessionProvider {
       // require correlating spawn_subagent tool_call IDs to child session
       // ids — a v2 refinement matching what the Claude provider does).
       for (const sub of this.findSubagentFiles(sid)) {
-        const subDir = join(logsRoot, `${sid}:${sub.agentId}`);
+        const subDir = join(safe.logsRoot, `${sid}:${sub.agentId}`);
         const subState = readStateJson(subDir);
         if (!subState) continue;
         const subTimestamps = readRequestTimestamps(subDir);
@@ -292,21 +330,26 @@ export class OpenRouterSessionProvider implements SessionProvider {
   // ── Deletion ────────────────────────────────────────────────────────
 
   deleteSessionFiles(sessionId: string): void {
-    const logsRoot = this.resolveLogsRoot();
-    const sessionDir = join(logsRoot, sessionId);
-    if (existsSync(sessionDir)) {
+    // Reject malformed sessionIds outright — the most destructive operation
+    // in the provider, so validation is non-negotiable.
+    const safe = this.safeSessionDir(sessionId);
+    if (!safe) {
+      log.warn(`Refused deleteSessionFiles for unsafe sessionId="${sessionId}"`);
+      return;
+    }
+    if (existsSync(safe.sessionDir)) {
       try {
-        rmSync(sessionDir, { recursive: true, force: true });
+        rmSync(safe.sessionDir, { recursive: true, force: true });
       } catch (err) {
-        log.warn(`Failed to remove OR session dir ${sessionDir}: ${(err as Error).message}`);
+        log.warn(`Failed to remove OR session dir ${safe.sessionDir}: ${(err as Error).message}`);
       }
     }
     // Subagent dirs share the same logsRoot — remove them too.
     try {
       const subPrefix = `${sessionId}:sub:`;
-      for (const entry of readdirSync(logsRoot, { withFileTypes: true })) {
+      for (const entry of readdirSync(safe.logsRoot, { withFileTypes: true })) {
         if (!entry.isDirectory() || !entry.name.startsWith(subPrefix)) continue;
-        const subDir = join(logsRoot, entry.name);
+        const subDir = join(safe.logsRoot, entry.name);
         try {
           rmSync(subDir, { recursive: true, force: true });
         } catch (err) {
