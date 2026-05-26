@@ -50,6 +50,10 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultSonnetModel,
     defaultHaikuModel,
     subagentModel,
+    openRouterApiKey,
+    openRouterBaseUrl,
+    openRouterModel,
+    openRouterLogsRoot,
   } = req.body;
 
   // Empty strings clear an override; undefined leaves the field untouched.
@@ -83,6 +87,10 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(defaultSonnetModel !== undefined && { defaultSonnetModel: normalize(defaultSonnetModel) }),
       ...(defaultHaikuModel !== undefined && { defaultHaikuModel: normalize(defaultHaikuModel) }),
       ...(subagentModel !== undefined && { subagentModel: normalize(subagentModel) }),
+      ...(openRouterApiKey !== undefined && { openRouterApiKey: normalize(openRouterApiKey) }),
+      ...(openRouterBaseUrl !== undefined && { openRouterBaseUrl: normalize(openRouterBaseUrl) }),
+      ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
+      ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
     });
     // Handle proxy mode switching — creates/destroys LocalProxy as needed
     // and resets cached remote ProxyClient instances
