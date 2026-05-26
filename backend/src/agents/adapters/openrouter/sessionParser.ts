@@ -225,6 +225,43 @@ function translateItem(
     return [{ role: "user", type: "tool_result", content, ...(callId && { toolUseId: callId }) }];
   }
 
+  // OpenRouter server-side tools (e.g. `openrouter:datetime`,
+  // `openrouter:web_search`, `openrouter:web_fetch`). These items carry both
+  // the invocation AND the result inline — OR's server executed the tool
+  // and persisted the result back into state.messages without a preceding
+  // `function_call`. Synthesize a tool_use/tool_result pair so the UI
+  // renders them the same way as client-side tool calls.
+  if (type && type.startsWith("openrouter:")) {
+    const toolName = type.slice("openrouter:".length);
+    const id = typeof obj.id === "string" ? obj.id : undefined;
+    // The result payload is whatever non-shape fields the item carries —
+    // for `datetime` that's `{ datetime, timezone }`; for `web_search`
+    // that's a results array; etc. Skip the standard envelope keys.
+    const payload: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k !== "type" && k !== "id" && k !== "status") payload[k] = v;
+    }
+    const resultContent = Object.keys(payload).length === 0 ? "" : JSON.stringify(payload);
+    return [
+      {
+        role: "assistant",
+        type: "tool_use",
+        toolName,
+        // The model's input args aren't preserved by OR's server-side
+        // tools — we don't know what query was passed to web_search, for
+        // example. Show an empty object rather than fabricating.
+        content: "{}",
+        ...(id && { toolUseId: id }),
+      },
+      {
+        role: "user",
+        type: "tool_result",
+        content: resultContent,
+        ...(id && { toolUseId: id }),
+      },
+    ];
+  }
+
   // Reasoning trace → thinking
   if (type === "reasoning") {
     const content = extractTextContent(obj.summary ?? obj.content);

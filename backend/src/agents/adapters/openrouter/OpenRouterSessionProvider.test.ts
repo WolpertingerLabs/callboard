@@ -209,6 +209,52 @@ describe("OpenRouterSessionProvider — parseSessionMessages", () => {
     ]);
   });
 
+  it("includes openrouter:* server-side tool items in their turn", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    // Reproduces the real state.json the user shared: an `openrouter:datetime`
+    // item appears between two assistant messages — it belongs to the turn
+    // whose assistant response uses the result.
+    const sessionDir = writeSession("sess_dt", {
+      cwd: "/work",
+      messages: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello!" }] },
+        {
+          type: "openrouter:datetime",
+          id: "st_dt",
+          status: "completed",
+          datetime: "2026-05-26T17:49:00.474Z",
+          timezone: "UTC",
+        },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Today is Tuesday." }] },
+      ],
+    });
+    const req1 = join(sessionDir, "req_001");
+    mkdirSync(req1);
+    writeFileSync(join(req1, "request.json"), JSON.stringify({ sessionId: "sess_dt", requestId: "req_001", prompt: "hi", timestamp: "2026-05-26T17:48:00Z" }));
+    await new Promise((r) => setTimeout(r, 10));
+    const req2 = join(sessionDir, "req_002");
+    mkdirSync(req2);
+    writeFileSync(join(req2, "request.json"), JSON.stringify({ sessionId: "sess_dt", requestId: "req_002", prompt: "what day is it?", timestamp: "2026-05-26T17:49:00Z" }));
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_dt"]);
+
+    // Turn 1: user "hi" → assistant "Hello!"
+    // Turn 2: user "what day is it?" → openrouter:datetime (tool_use + tool_result) → assistant "Today is Tuesday."
+    expect(messages.map((m) => ({ role: m.role, type: m.type, toolName: m.toolName }))).toEqual([
+      { role: "user", type: "text", toolName: undefined },
+      { role: "assistant", type: "text", toolName: undefined },
+      { role: "user", type: "text", toolName: undefined },
+      { role: "assistant", type: "tool_use", toolName: "datetime" },
+      { role: "user", type: "tool_result", toolName: undefined },
+      { role: "assistant", type: "text", toolName: undefined },
+    ]);
+    // The datetime payload should be in the tool_result content.
+    expect(messages[4]!.content).toContain("2026-05-26T17:49:00.474Z");
+    expect(messages[4]!.content).toContain("UTC");
+  });
+
   it("falls back to state-only parser when no request.json files exist (legacy / compacted)", async () => {
     await pointSettingsAtTmp();
     writeSession("sess_legacy", {

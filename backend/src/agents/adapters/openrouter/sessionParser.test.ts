@@ -166,6 +166,58 @@ describe("parseOpenRouterState — function calls + outputs", () => {
   });
 });
 
+describe("parseOpenRouterState — openrouter:* server-side tools", () => {
+  it("renders openrouter:datetime as a tool_use + tool_result pair", () => {
+    const out = parseOpenRouterState({
+      messages: [
+        {
+          type: "openrouter:datetime",
+          id: "st_tmp_abc",
+          status: "completed",
+          datetime: "2026-05-26T17:49:00.474Z",
+          timezone: "UTC",
+        },
+      ],
+    });
+    expect(out).toEqual([
+      { role: "assistant", type: "tool_use", toolName: "datetime", content: "{}", toolUseId: "st_tmp_abc" },
+      {
+        role: "user",
+        type: "tool_result",
+        content: JSON.stringify({
+          datetime: "2026-05-26T17:49:00.474Z",
+          timezone: "UTC",
+        }),
+        toolUseId: "st_tmp_abc",
+      },
+    ]);
+  });
+
+  it("works for unknown openrouter:* tools (web_search, web_fetch, future ones)", () => {
+    const out = parseOpenRouterState({
+      messages: [
+        {
+          type: "openrouter:web_search",
+          id: "st_tmp_ws",
+          status: "completed",
+          results: [{ title: "x", url: "https://example.com" }],
+        },
+      ],
+    });
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ type: "tool_use", toolName: "web_search" });
+    expect(out[1]).toMatchObject({ type: "tool_result" });
+    expect((out[1] as { content: string }).content).toContain("example.com");
+  });
+
+  it("emits empty result content when the item carries no payload", () => {
+    const out = parseOpenRouterState({
+      messages: [{ type: "openrouter:datetime", id: "st_tmp_x", status: "completed" }],
+    });
+    expect(out[1]).toMatchObject({ type: "tool_result", content: "" });
+  });
+});
+
 describe("parseOpenRouterState — reasoning", () => {
   it("maps reasoning items onto thinking", () => {
     const out = parseOpenRouterState({
