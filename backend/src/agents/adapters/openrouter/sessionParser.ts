@@ -2,11 +2,22 @@
  * OpenRouter session parser — reads an OR session's on-disk state and
  * projects it into callboard's neutral {@link ParsedMessage} shape.
  *
- * Source of truth is `<logsRoot>/<sessionId>/state.json`, which the OR
- * library writes via `createFileStateAccessor`. It carries the full
- * `ConversationState.messages` array (every user / assistant / tool call /
- * tool result the run produced). Per-request `request.json` files supply
- * timestamps the in-memory state doesn't track.
+ * The OR library splits a session's state across two locations:
+ *
+ * 1. `<logsRoot>/<sessionId>/state.json` — the local message log. Tracks
+ *    everything the OR API server doesn't already have: assistant outputs
+ *    (`type:"message"`), tool calls (`type:"function_call"`), tool results
+ *    (`type:"function_call_output"`), and server-side tool items
+ *    (`type:"openrouter:datetime"`, etc.). When the OR run uses
+ *    `previousResponseId` chaining (the default), user prompts are NOT in
+ *    `state.messages` — the OR server owns them.
+ * 2. `<logsRoot>/<sessionId>/req_<X>/request.json` — one file per user turn,
+ *    storing the raw prompt text and an ISO timestamp.
+ *
+ * To rebuild a viewable timeline we walk request.json files in chronological
+ * order (the user-prompt timeline) and `state.messages` in array order (the
+ * assistant timeline), interleaving them at "turn boundaries" — each
+ * assistant `type:"message"` item ends a turn.
  *
  * State.json `messages[]` item shapes we know how to handle:
  *
@@ -45,6 +56,118 @@ interface RawRequest {
   requestId?: string;
   timestamp?: string;
   prompt?: string;
+}
+
+/**
+ * Read an OR session directory and project it into ParsedMessage[]. This is
+ * the function the SessionProvider should call — `parseOpenRouterState`
+ * below is the lower-level primitive that ignores request.json files and
+ * is kept for tests + post-compaction sessions where state.messages becomes
+ * self-contained.
+ */
+export function readOpenRouterSession(sessionDir: string): ParsedMessage[] {
+  if (!existsSync(sessionDir)) return [];
+  const state = readStateJson(sessionDir);
+  const requests = readRequestEntries(sessionDir);
+
+  // Sessions without persisted requests (rare — perhaps post-compaction or
+  // recovered from a backup) fall back to the state-only parser. Sessions
+  // without state.json (e.g. construction-time error) are equally rare and
+  // also fall back gracefully — readStateJson returns null and we just emit
+  // the user prompts.
+  if (requests.length === 0) {
+    return state ? parseOpenRouterState(state) : [];
+  }
+
+  const stateItems = Array.isArray(state?.messages) ? (state!.messages as unknown[]) : [];
+
+  // Slice state.messages into "turns" — sequences ending at each assistant
+  // `type:"message"` item. Most chats produce one assistant message per
+  // turn; tool-using turns produce a function_call(s) + function_call_output
+  // sequence before the final assistant text. Empty trailing items (a
+  // turn that hasn't yet produced its final assistant message) become their
+  // own group at the end.
+  const turns: unknown[][] = [];
+  let currentTurn: unknown[] = [];
+  for (const item of stateItems) {
+    currentTurn.push(item);
+    if (isAssistantMessage(item)) {
+      turns.push(currentTurn);
+      currentTurn = [];
+    }
+  }
+  if (currentTurn.length > 0) turns.push(currentTurn);
+
+  // Interleave. Imbalance between request count and turn count is expected
+  // at the edges (e.g. an in-flight final turn whose assistant message
+  // hasn't landed yet, or an abort that left a request without a response).
+  const result: ParsedMessage[] = [];
+  const maxLen = Math.max(requests.length, turns.length);
+  for (let i = 0; i < maxLen; i++) {
+    const req = requests[i];
+    if (req) {
+      result.push({
+        role: "user",
+        type: "text",
+        content: req.prompt,
+        ...(req.timestamp && { timestamp: req.timestamp }),
+      });
+    }
+    const turn = turns[i];
+    if (turn) {
+      for (const item of turn) {
+        const parsed = translateItem(item, () => undefined);
+        if (parsed) result.push(...parsed);
+      }
+    }
+  }
+  return result;
+}
+
+function isAssistantMessage(item: unknown): boolean {
+  if (!item || typeof item !== "object") return false;
+  const obj = item as { type?: unknown; role?: unknown };
+  return obj.type === "message" && obj.role === "assistant";
+}
+
+/** Walk `req_<id>/request.json` files in chronological order; return each prompt + timestamp. */
+function readRequestEntries(sessionDir: string): Array<{ prompt: string; timestamp?: string }> {
+  if (!existsSync(sessionDir)) return [];
+  let entries;
+  try {
+    entries = readdirSync(sessionDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const reqDirs = entries
+    .filter((e) => e.isDirectory() && e.name.startsWith("req_"))
+    .map((e) => {
+      const full = join(sessionDir, e.name);
+      let mtime = 0;
+      try {
+        mtime = statSync(full).mtimeMs;
+      } catch {
+        /* unreadable — skip */
+      }
+      return { dir: full, mtime };
+    })
+    .sort((a, b) => a.mtime - b.mtime);
+
+  const result: Array<{ prompt: string; timestamp?: string }> = [];
+  for (const { dir } of reqDirs) {
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, "request.json"), "utf-8")) as RawRequest;
+      if (typeof raw.prompt === "string") {
+        result.push({
+          prompt: raw.prompt,
+          ...(typeof raw.timestamp === "string" && { timestamp: raw.timestamp }),
+        });
+      }
+    } catch {
+      /* request.json missing or malformed — skip this request */
+    }
+  }
+  return result;
 }
 
 /**

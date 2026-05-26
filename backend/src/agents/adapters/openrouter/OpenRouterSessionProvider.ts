@@ -27,7 +27,6 @@
  * @see plans/openrouter-adapter.md §7
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type {
@@ -38,14 +37,9 @@ import type {
   SessionSearchResponse,
   SubagentFile,
 } from "../../ports/SessionProvider.js";
-import { getAgentSettings } from "../../../services/agent-settings.js";
 import { createLogger } from "../../../utils/logger.js";
-import {
-  parseOpenRouterState,
-  readFirstUserPrompt,
-  readRequestTimestamps,
-  readStateJson,
-} from "./sessionParser.js";
+import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
+import { readFirstUserPrompt, readOpenRouterSession } from "./sessionParser.js";
 
 const log = createLogger("openrouter-session-provider");
 
@@ -60,17 +54,13 @@ export class OpenRouterSessionProvider implements SessionProvider {
   readonly kind = "openrouter" as const;
 
   /**
-   * Resolve the OR logs root for the current process. Falls back through
-   * settings → XDG → `~/.openrouter-agent-coder/logs`. The result may be
-   * a path that doesn't exist yet — discovery returns an empty list rather
-   * than throwing for that case.
+   * Delegate to the shared resolver so the write side
+   * (`optionsAdapter` → `OpenRouterAgentRun.logsRoot`) and this read side
+   * stay in lockstep. Result may be a path that doesn't exist yet —
+   * discovery returns an empty list rather than throwing for that case.
    */
   private resolveLogsRoot(): string {
-    const fromSettings = getAgentSettings().openRouterLogsRoot?.trim();
-    if (fromSettings) return fromSettings;
-    const xdg = process.env.XDG_DATA_HOME;
-    if (xdg && xdg.trim()) return join(xdg.trim(), "openrouter-agent-coder", "logs");
-    return join(homedir(), ".openrouter-agent-coder", "logs");
+    return resolveOpenRouterLogsRoot();
   }
 
   /**
@@ -221,22 +211,19 @@ export class OpenRouterSessionProvider implements SessionProvider {
     for (const sid of sessionIds) {
       const safe = this.safeSessionDir(sid);
       if (!safe) continue;
-      const state = readStateJson(safe.sessionDir);
-      if (!state) continue;
-      const timestamps = readRequestTimestamps(safe.sessionDir);
-      all.push(...parseOpenRouterState(state, timestamps));
+      // readOpenRouterSession handles the request.json + state.json
+      // interleave — necessary because OR's previousResponseId chaining
+      // means user prompts don't appear in state.messages.
+      all.push(...readOpenRouterSession(safe.sessionDir));
 
       // Inline subagent transcripts after their parent. Sequencing within a
-      // single session is preserved by state.json's array order; we don't
-      // currently splice subagent messages at their spawn point (that would
-      // require correlating spawn_subagent tool_call IDs to child session
-      // ids — a v2 refinement matching what the Claude provider does).
+      // single session is preserved; we don't currently splice subagent
+      // messages at their spawn point (that would require correlating
+      // spawn_subagent tool_call IDs to child session ids — a v2 refinement
+      // matching what the Claude provider does).
       for (const sub of this.findSubagentFiles(sid)) {
         const subDir = join(safe.logsRoot, `${sid}:${sub.agentId}`);
-        const subState = readStateJson(subDir);
-        if (!subState) continue;
-        const subTimestamps = readRequestTimestamps(subDir);
-        all.push(...parseOpenRouterState(subState, subTimestamps));
+        all.push(...readOpenRouterSession(subDir));
       }
     }
 

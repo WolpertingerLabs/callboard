@@ -155,24 +155,93 @@ describe("OpenRouterSessionProvider — resolve / preview / subagents", () => {
 });
 
 describe("OpenRouterSessionProvider — parseSessionMessages", () => {
-  it("parses state.json into ParsedMessage[]", async () => {
+  it("interleaves user prompts (from request.json) with state.messages (assistant/tool items)", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
     await pointSettingsAtTmp();
-    writeSession("sess_q", {
+    // Reproduce the real-world shape: OR uses previousResponseId chaining so
+    // state.messages has only assistant/tool items, NO user-role items.
+    const sessionDir = writeSession("sess_real", {
       cwd: "/work",
       messages: [
-        { role: "user", content: "hi" },
         {
           type: "message",
           role: "assistant",
-          content: [{ type: "output_text", text: "hello" }],
+          content: [{ type: "output_text", text: "Hello!" }],
+        },
+        { type: "function_call", callId: "c1", name: "read_file", arguments: '{"p":"x"}' },
+        { type: "function_call_output", callId: "c1", output: "file contents" },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Found it." }],
         },
       ],
     });
+    // Two requests, each a user turn.
+    const req1 = join(sessionDir, "req_001");
+    mkdirSync(req1);
+    writeFileSync(
+      join(req1, "request.json"),
+      JSON.stringify({ sessionId: "sess_real", requestId: "req_001", prompt: "hi", timestamp: "2026-05-26T17:00:00Z" }),
+    );
+    // Force req_002's mtime to be later than req_001's so the chronological
+    // sort lands them in the right order.
+    await new Promise((r) => setTimeout(r, 10));
+    const req2 = join(sessionDir, "req_002");
+    mkdirSync(req2);
+    writeFileSync(
+      join(req2, "request.json"),
+      JSON.stringify({ sessionId: "sess_real", requestId: "req_002", prompt: "show me x", timestamp: "2026-05-26T17:01:00Z" }),
+    );
+
     const provider = new OpenRouterSessionProvider();
-    const messages = provider.parseSessionMessages(["sess_q"]);
+    const messages = provider.parseSessionMessages(["sess_real"]);
+
+    // Turn 1: user "hi" → assistant "Hello!"
+    // Turn 2: user "show me x" → function_call → function_call_output → assistant "Found it."
+    expect(messages).toEqual([
+      { role: "user", type: "text", content: "hi", timestamp: "2026-05-26T17:00:00Z" },
+      { role: "assistant", type: "text", content: "Hello!" },
+      { role: "user", type: "text", content: "show me x", timestamp: "2026-05-26T17:01:00Z" },
+      { role: "assistant", type: "tool_use", toolName: "read_file", content: '{"p":"x"}', toolUseId: "c1" },
+      { role: "user", type: "tool_result", content: "file contents", toolUseId: "c1" },
+      { role: "assistant", type: "text", content: "Found it." },
+    ]);
+  });
+
+  it("falls back to state-only parser when no request.json files exist (legacy / compacted)", async () => {
+    await pointSettingsAtTmp();
+    writeSession("sess_legacy", {
+      cwd: "/work",
+      messages: [
+        { role: "user", content: "hi" },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] },
+      ],
+    });
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_legacy"]);
+    // Without req_*/ files, the state-only fallback runs and the
+    // user-role items in messages are honored.
     expect(messages).toEqual([
       { role: "user", type: "text", content: "hi" },
       { role: "assistant", type: "text", content: "hello" },
+    ]);
+  });
+
+  it("emits user prompts even when state.messages is empty (in-flight turn)", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    const sessionDir = writeSession("sess_inflight", { cwd: "/work", messages: [] });
+    const req1 = join(sessionDir, "req_001");
+    mkdirSync(req1);
+    writeFileSync(
+      join(req1, "request.json"),
+      JSON.stringify({ sessionId: "sess_inflight", requestId: "req_001", prompt: "just asked", timestamp: "2026-05-26T18:00:00Z" }),
+    );
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_inflight"]);
+    expect(messages).toEqual([
+      { role: "user", type: "text", content: "just asked", timestamp: "2026-05-26T18:00:00Z" },
     ]);
   });
 

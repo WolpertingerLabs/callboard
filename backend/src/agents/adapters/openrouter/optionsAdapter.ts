@@ -25,6 +25,7 @@ import {
   type SdkMcpServer,
   type SettingSource,
 } from "openrouter-agent-coder";
+import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 
 /**
  * Sub-object on the options Record carrying OR-specific configuration. Set
@@ -102,7 +103,12 @@ export function translateOptions(
 
   if (orConfig.baseUrl) orOpts.baseUrl = orConfig.baseUrl;
   if (orConfig.model) orOpts.model = orConfig.model;
-  if (orConfig.logsRoot) orOpts.logsRoot = orConfig.logsRoot;
+  // Always set logsRoot — OR's own default is `<cwd>/logs` which would
+  // pollute the user's project directory and (more importantly) diverge
+  // from the path OpenRouterSessionProvider reads from, producing silent
+  // "no chat history" behavior. Route through the shared resolver so write
+  // and read sides agree.
+  orOpts.logsRoot = orConfig.logsRoot ?? resolveOpenRouterLogsRoot();
   if (instructions) orOpts.instructions = instructions;
   if (opts.maxTurns !== undefined) orOpts.maxTurns = opts.maxTurns;
   if (opts.allowedTools && opts.allowedTools.length > 0) orOpts.allowedTools = opts.allowedTools;
