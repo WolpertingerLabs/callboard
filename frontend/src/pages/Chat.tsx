@@ -112,6 +112,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
   // by chat metadata server-side; this value is only honored on creation.
   const newChatProvider = (location.state as any)?.provider as "claude-code" | "openrouter" | undefined;
+  // OpenRouter reasoning-effort for NEW chats, set by NewChatPanel. Like the
+  // provider, only honored on creation and persisted into chat metadata; the
+  // existing-chat path recovers it from metadata server-side.
+  const newChatEffort = (location.state as any)?.effort as
+    | "xhigh"
+    | "high"
+    | "medium"
+    | "low"
+    | "minimal"
+    | "none"
+    | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
@@ -1050,6 +1061,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatProvider && newChatProvider !== "claude-code") {
             requestBody.provider = newChatProvider;
           }
+          if (newChatEffort && newChatProvider === "openrouter") {
+            requestBody.effort = newChatEffort;
+          }
 
           res = await fetch("/api/chats/new/message", {
             method: "POST",
@@ -1157,7 +1171,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     },
-    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, newChatProvider, readSSE, activePluginIds, chat, branchConfig, activeDraftId],
+    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, newChatProvider, newChatEffort, readSSE, activePluginIds, chat, branchConfig, activeDraftId],
   );
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
