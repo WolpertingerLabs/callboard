@@ -185,13 +185,31 @@ describe("translateSdkMessages — content blocks", () => {
     expect(event).toEqual({ type: "tool_result", callId: "t", content: "oops", isError: true });
   });
 
-  it("defaults missing text / thinking to empty string (no undefined leaks)", async () => {
+  it("defaults missing text to empty string (no undefined leaks) and filters empty thinking", async () => {
+    // Empty/missing thinking content represents a redacted (encrypted) extended-thinking
+    // block — there's nothing to display, so we filter it out instead of yielding an
+    // empty bubble. Empty text still passes through since it's a real (if empty) reply.
     const events = await collect([
       { message: { content: [{ type: "text" }, { type: "thinking" }] } },
     ]);
+    expect(events).toEqual([{ type: "text", content: "" }]);
+  });
+
+  it("filters thinking blocks with empty content (redacted/encrypted thinking)", async () => {
+    const events = await collect([
+      {
+        message: {
+          content: [
+            { type: "text", text: "hi" },
+            { type: "thinking", thinking: "" },
+            { type: "thinking", thinking: "actual reasoning" },
+          ],
+        },
+      },
+    ]);
     expect(events).toEqual([
-      { type: "text", content: "" },
-      { type: "thinking", content: "" },
+      { type: "text", content: "hi" },
+      { type: "thinking", content: "actual reasoning" },
     ]);
   });
 
