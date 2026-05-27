@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
+import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
@@ -57,7 +58,7 @@ streamRouter.post("/new/message", async (req, res) => {
   /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
   /* #swagger.responses[409] = { description: "Uncommitted changes block branch switch. Set forceBranchChange to override." } */
-  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias, provider } = req.body;
+  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias, provider, effort } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
   );
@@ -120,6 +121,16 @@ streamRouter.post("/new/message", async (req, res) => {
         ? (provider as AgentProviderKind)
         : undefined;
 
+    // Same allowlist treatment for the OpenRouter reasoning-effort field.
+    // Forwarded only when paired with the openrouter provider — on a
+    // claude-code chat it would be persisted to metadata for nothing and
+    // confuse future debugging.
+    const validEfforts: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
+    const safeEffort: EffortLevel | undefined =
+      safeProvider === "openrouter" && typeof effort === "string" && validEfforts.has(effort)
+        ? (effort as EffortLevel)
+        : undefined;
+
     const emitter = await sendMessage({
       prompt,
       folder: effectiveFolder,
@@ -130,6 +141,7 @@ streamRouter.post("/new/message", async (req, res) => {
       systemPrompt,
       agentAlias,
       ...(safeProvider && { provider: safeProvider }),
+      ...(safeEffort && { effort: safeEffort }),
     });
 
     writeSSEHeaders(res);

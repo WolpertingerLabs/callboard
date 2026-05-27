@@ -28,6 +28,22 @@ import {
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 
 /**
+ * Reasoning-effort levels accepted by the OR `reasoning.effort` field. OR
+ * maps the requested level to each provider's native parameter (Anthropic
+ * `thinking.budget_tokens`, OpenAI `reasoning_effort`, Gemini
+ * `thinkingConfig.thinkingLevel`, Qwen `thinking_budget`, xAI
+ * `reasoning_effort`). Non-reasoning models silently ignore it.
+ *
+ * Re-declared here rather than imported from
+ * `@cybourgeoisie/openrouter-agent-coder` because the SDK doesn't re-export
+ * its `EffortLevel` type at the package root. Drift risk is minimal — six
+ * string literals — and keeping the union local lets the rest of the
+ * backend (stream.ts boundary validation, claude.ts metadata persistence)
+ * reference it without a deep-path import.
+ */
+export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
+
+/**
  * Sub-object on the options Record carrying OR-specific configuration. Set
  * by claude.ts when routing a call to the OR adapter.
  */
@@ -37,6 +53,14 @@ export interface OpenRouterOptionsExtras {
   model?: string;
   logsRoot?: string;
   appTitle?: string;
+  /**
+   * Reasoning-effort level for the OR `reasoning.effort` field. OR translates
+   * this to each provider's native parameter (Anthropic
+   * `thinking.budget_tokens`, OpenAI `reasoning_effort`, etc.). Per-chat
+   * setting — populated from chat metadata at the claude.ts call site.
+   * Omit (undefined) to skip the `reasoning` payload entirely.
+   */
+  effort?: EffortLevel;
 }
 
 /**
@@ -103,6 +127,7 @@ export function translateOptions(
 
   if (orConfig.baseUrl) orOpts.baseUrl = orConfig.baseUrl;
   if (orConfig.model) orOpts.model = orConfig.model;
+  if (orConfig.effort) orOpts.effort = orConfig.effort;
   // Always set logsRoot — OR's own default is `<cwd>/logs` which would
   // pollute the user's project directory and (more importantly) diverge
   // from the path OpenRouterSessionProvider reads from, producing silent
