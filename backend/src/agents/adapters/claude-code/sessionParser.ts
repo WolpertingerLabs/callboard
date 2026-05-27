@@ -239,7 +239,13 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
           }
           break;
         case "thinking":
-          result.push({ role: "assistant", type: "thinking", content: block.thinking || "", timestamp, ...meta });
+          // Skip redacted thinking blocks — the API stores an empty string with a
+          // cryptographic signature when extended thinking is encrypted. There is
+          // nothing useful to display, so we omit these entirely (matching the
+          // OpenRouter adapter's behaviour of filtering out empty reasoning content).
+          if (block.thinking) {
+            result.push({ role: "assistant", type: "thinking", content: block.thinking, timestamp, ...meta });
+          }
           break;
         case "tool_use":
           result.push({

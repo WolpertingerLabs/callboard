@@ -546,20 +546,27 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
   }
 
   if (message.type === "thinking") {
+    const hasContent = !!message.content;
     return (
       <div style={{ margin: "4px 0" }}>
         <div
-          onClick={() => setExpanded(!expanded)}
+          onClick={hasContent ? () => setExpanded(!expanded) : undefined}
           style={{
             padding: "6px 12px",
             fontSize: 13,
             color: "var(--text-muted)",
-            cursor: "pointer",
+            cursor: hasContent ? "pointer" : "default",
             borderLeft: "2px solid var(--border)",
           }}
         >
-          <span style={{ fontStyle: "italic" }}>{expanded ? "Thinking:" : "Thinking... (tap to expand)"}</span>
-          {expanded && <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{message.content}</pre>}
+          {hasContent ? (
+            <>
+              <span style={{ fontStyle: "italic" }}>{expanded ? "Thinking:" : "Thinking... (tap to expand)"}</span>
+              {expanded && <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{message.content}</pre>}
+            </>
+          ) : (
+            <span style={{ fontStyle: "italic", opacity: 0.6 }}>🔒 Thinking (encrypted)</span>
+          )}
         </div>
         <MessageMetadata message={message} align="left" />
       </div>

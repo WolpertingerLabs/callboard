@@ -119,7 +119,13 @@ export async function* translateSdkMessages(source: AsyncIterable<unknown>): Asy
             yield { type: "text", content: b.text ?? "" };
             break;
           case "thinking":
-            yield { type: "thinking", content: b.thinking ?? "" };
+            // Skip redacted thinking blocks — the API stores an empty string with a
+            // cryptographic `signature` when extended thinking is encrypted. There is
+            // nothing useful to display, so we omit these entirely (matching the
+            // sessionParser behaviour and the OpenRouter adapter's empty-reasoning filter).
+            if (b.thinking) {
+              yield { type: "thinking", content: b.thinking };
+            }
             break;
           case "tool_use":
             yield {
