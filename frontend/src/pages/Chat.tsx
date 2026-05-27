@@ -157,6 +157,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [compacting, setCompacting] = useState(false);
+  // Cumulative USD spend in the most recently completed run, when the
+  // adapter reports one. Currently OpenRouter only — the Claude adapter
+  // doesn't return per-run cost we can sum into a session total. Reset
+  // every time we land on a new chat so cross-chat values don't leak.
+  const [lastRunCostUsd, setLastRunCostUsd] = useState<number | null>(null);
+  // Effective per-session spend cap advertised by the adapter alongside the
+  // last cost. Used to render "$0.42 of $5.00" and to quote the cap in the
+  // max_budget end-of-session message.
+  const [effectiveMaxBudgetUsd, setEffectiveMaxBudgetUsd] = useState<number | null>(null);
   const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
   const [branchChangeConfirm, setBranchChangeConfirm] = useState<{
     isOpen: boolean;
@@ -207,6 +216,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Reset chatPermissions when navigating to a different chat
   useEffect(() => {
     setChatPermissions(null);
+    // Reset per-run cost too. The next message_complete on this chat will
+    // repopulate; without the reset, switching chats would show the prior
+    // chat's spend until a new run completes.
+    setLastRunCostUsd(null);
+    setEffectiveMaxBudgetUsd(null);
   }, [id]);
 
   // Resolve which agent provider runs this chat — drives the header badge.
@@ -437,6 +451,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // Mark that this stream session is complete so the auto-connect
                 // effect doesn't reconnect while the CLI watcher catches up.
                 streamCompletedRef.current = true;
+                // Capture run cost + the effective per-session cap. The
+                // adapter omits these fields on chats that don't track spend
+                // (currently anything other than OpenRouter), so guard the
+                // setters individually.
+                if (typeof event.costUsd === "number") {
+                  setLastRunCostUsd(event.costUsd);
+                }
+                if (typeof event.maxBudgetUsd === "number") {
+                  setEffectiveMaxBudgetUsd(event.maxBudgetUsd);
+                }
 
                 // Check if the conversation ended right after a plan approval.
                 // The SDK may end the conversation turn after ExitPlanMode is processed,
@@ -458,14 +482,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   return;
                 }
 
-                // Build a system message if the session ended for a non-normal reason
-                const reasonMessages: Record<string, string> = {
-                  max_turns: `Agent reached the maximum turn limit (${getMaxTurns()}). You can send another message to continue.`,
-                  max_budget: "Agent reached the maximum budget limit.",
-                  execution_error: "Agent stopped due to an execution error.",
-                  aborted: "Session was interrupted.",
-                };
-                const reasonMsg = event.reason ? reasonMessages[event.reason] : undefined;
+                // Build a system message if the session ended for a non-normal reason.
+                // The max_budget branch reads the cap from the event payload so
+                // the message quotes the user's CONFIGURED ceiling (or the
+                // library default if unset) — and points them at Settings → API
+                // for the most common follow-up question of "how do I raise it?"
+                let reasonMsg: string | undefined;
+                if (event.reason === "max_turns") {
+                  reasonMsg = `Agent reached the maximum turn limit (${getMaxTurns()}). You can send another message to continue.`;
+                } else if (event.reason === "max_budget") {
+                  const cap = typeof event.maxBudgetUsd === "number" ? event.maxBudgetUsd : null;
+                  const spent = typeof event.costUsd === "number" ? event.costUsd : null;
+                  const capStr = cap !== null ? `$${cap.toFixed(2)}` : "the configured cap";
+                  const spentStr = spent !== null ? ` (spent $${spent.toFixed(2)})` : "";
+                  reasonMsg = `Agent reached the maximum budget limit of ${capStr}${spentStr}. Raise it in Settings → API.`;
+                } else if (event.reason === "execution_error") {
+                  reasonMsg = "Agent stopped due to an execution error.";
+                } else if (event.reason === "aborted") {
+                  reasonMsg = "Session was interrupted.";
+                }
 
                 setStreaming(false);
                 // Refetch complete chat data and messages
@@ -1517,6 +1552,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 title="This chat is routed through OpenRouter"
               >
                 OR
+              </div>
+            )}
+            {/* Spend indicator — only meaningful for OR chats once the first
+                run has reported a cost. Coloring escalates as the run nears
+                the cap (>=80% warns, >=100% errors) so the user notices
+                BEFORE the next turn fires the max_budget cutoff. */}
+            {chatProvider === "openrouter" && lastRunCostUsd !== null && effectiveMaxBudgetUsd !== null && (
+              <div
+                onClick={() => navigate("/settings/api")}
+                style={{
+                  fontSize: 11,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background:
+                    lastRunCostUsd >= effectiveMaxBudgetUsd
+                      ? "var(--error, #c53030)"
+                      : lastRunCostUsd / Math.max(effectiveMaxBudgetUsd, 0.0001) >= 0.8
+                        ? "var(--warning, #d97706)"
+                        : "var(--surface)",
+                  color:
+                    lastRunCostUsd >= effectiveMaxBudgetUsd || lastRunCostUsd / Math.max(effectiveMaxBudgetUsd, 0.0001) >= 0.8
+                      ? "var(--text-on-accent, #fff)"
+                      : "var(--text-muted)",
+                  border: "1px solid var(--border)",
+                  fontWeight: 500,
+                  flexShrink: 0,
+                  cursor: "pointer",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+                title={`Last run spent $${lastRunCostUsd.toFixed(2)} of the $${effectiveMaxBudgetUsd.toFixed(2)} per-session cap. Click to adjust in Settings → API.`}
+              >
+                ${lastRunCostUsd.toFixed(2)} / ${effectiveMaxBudgetUsd.toFixed(2)}
               </div>
             )}
           </div>

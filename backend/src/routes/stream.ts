@@ -159,8 +159,13 @@ streamRouter.post("/new/message", async (req, res) => {
       }
 
       if (event.type === "done") {
-        log.debug(`SSE done — reason=${event.reason || "normal"}`);
-        sendSSE(res, { type: "message_complete", ...(event.reason && { reason: event.reason }) });
+        log.debug(`SSE done — reason=${event.reason || "normal"}, costUsd=${event.costUsd ?? "n/a"}`);
+        sendSSE(res, {
+          type: "message_complete",
+          ...(event.reason && { reason: event.reason }),
+          ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
+          ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
+        });
         emitter.removeListener("event", onEvent);
         res.end();
       } else if (event.type === "error") {

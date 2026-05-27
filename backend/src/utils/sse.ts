@@ -59,7 +59,12 @@ export function startSSEHeartbeat(res: Response, intervalMs = 15_000): () => voi
 export function createSSEHandler(res: Response, emitter: EventEmitter): (event: StreamEvent) => void {
   const onEvent = (event: StreamEvent) => {
     if (event.type === "done") {
-      sendSSE(res, { type: "message_complete", ...(event.reason && { reason: event.reason }) });
+      sendSSE(res, {
+        type: "message_complete",
+        ...(event.reason && { reason: event.reason }),
+        ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
+        ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
+      });
       emitter.removeListener("event", onEvent);
       res.end();
     } else if (event.type === "error") {

@@ -1291,6 +1291,13 @@ export interface SystemInfo {
   models?: SystemInfoModel[];
   /** True when the user has an OPENROUTER_API_KEY configured in Settings → API. */
   openRouterConfigured?: boolean;
+  /**
+   * Effective per-session OpenRouter spend cap, in USD. The backend resolves
+   * the user's override (if any) against the OR library's own default ($1.00)
+   * and surfaces the resolved value here so the UI can display "Spend cap:
+   * $X.XX per session" without duplicating the default.
+   */
+  openRouterMaxBudgetUsd?: number;
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {

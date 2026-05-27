@@ -79,6 +79,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // optimistically honor their stored choice rather than silently
   // downgrading to claude-code.
   const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
+  // Effective per-session spend cap surfaced from /system-info. Shown
+  // alongside the OR provider tile so users see the ceiling BEFORE hitting
+  // "Agent reached the maximum budget limit." mid-session. `null` while the
+  // fetch is in flight or unreachable — the cap line is suppressed in that
+  // state rather than showing a confusing default.
+  const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState<number | null>(null);
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
   const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
@@ -172,6 +178,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         if (cancelled) return;
         const ok = Boolean(info.openRouterConfigured);
         setOpenRouterConfigured(ok);
+        if (typeof info.openRouterMaxBudgetUsd === "number") {
+          setOpenRouterMaxBudgetUsd(info.openRouterMaxBudgetUsd);
+        }
         if (!ok && provider === "openrouter") {
           setProvider("claude-code");
         }
@@ -321,6 +330,23 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                     OpenRouter API key
                   </a>{" "}
                   to enable.
+                </div>
+              )}
+              {provider === "openrouter" && openRouterConfigured !== false && openRouterMaxBudgetUsd !== null && (
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                  Spend cap: ${openRouterMaxBudgetUsd.toFixed(2)} per session.{" "}
+                  <a
+                    href="/settings/api"
+                    style={{ color: "var(--accent)", textDecoration: "underline" }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onClose();
+                      navigate("/settings/api");
+                    }}
+                  >
+                    Adjust in Settings → API
+                  </a>
+                  .
                 </div>
               )}
             </div>

@@ -72,6 +72,15 @@ export interface AgentSettings {
 
   /** Absolute path to write OR session logs into. Defaults to `~/.openrouter-agent-coder/logs`. */
   openRouterLogsRoot?: string;
+
+  /**
+   * Per-session OpenRouter spend cap in USD. When omitted, the OR library's
+   * own default (currently $1.00) applies — which historically surprised
+   * users with an unexplained "Agent reached the maximum budget limit." after
+   * a couple dozen turns. Surfacing this knob lets users opt into a higher
+   * ceiling for long-running coding sessions.
+   */
+  openRouterMaxBudgetUsd?: number;
 }
 
 export interface KeyAliasInfo {

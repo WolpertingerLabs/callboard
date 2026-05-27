@@ -71,6 +71,7 @@ import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-s
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 import { startTunnelIfEnabled, stopTunnel } from "./services/tunnel-manager.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
+import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
 
 const log = createLogger("server");
 
@@ -371,10 +372,19 @@ app.get(
     // the New Chat panel's OpenRouter toggle without exposing the key.
     // `getAgentSettings` is imported statically at the top of this file.
     let openRouterConfigured = false;
+    // Effective per-session cap, exposed so the New Chat panel can show
+    // "Spend cap: $X.XX per session" without the frontend duplicating the
+    // library's default. Falls back to the OR library's own default when no
+    // user override is configured.
+    let openRouterMaxBudgetUsd: number = OR_LIBRARY_DEFAULT_MAX_BUDGET_USD;
     try {
-      openRouterConfigured = Boolean(getAgentSettings().openRouterApiKey?.trim());
+      const s = getAgentSettings();
+      openRouterConfigured = Boolean(s.openRouterApiKey?.trim());
+      if (typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd)) {
+        openRouterMaxBudgetUsd = s.openRouterMaxBudgetUsd;
+      }
     } catch {
-      // Settings unreadable — treat as unconfigured.
+      // Settings unreadable — treat as unconfigured and use the library default.
     }
 
     res.json({
@@ -390,6 +400,7 @@ app.get(
       account: sdkInfo.account || undefined,
       models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
       openRouterConfigured,
+      openRouterMaxBudgetUsd,
     });
   },
 );
