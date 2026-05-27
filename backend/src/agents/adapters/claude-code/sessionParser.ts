@@ -239,13 +239,16 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
           }
           break;
         case "thinking":
-          // Skip redacted thinking blocks — the API stores an empty string with a
-          // cryptographic signature when extended thinking is encrypted. There is
-          // nothing useful to display, so we omit these entirely (matching the
-          // OpenRouter adapter's behaviour of filtering out empty reasoning content).
-          if (block.thinking) {
-            result.push({ role: "assistant", type: "thinking", content: block.thinking, timestamp, ...meta });
-          }
+          // Extended-thinking blocks from Anthropic come in two shapes:
+          //   1. plaintext  — `{ thinking: "actual reasoning", signature: "..." }` (rare;
+          //      only seen in subagent compaction traces).
+          //   2. encrypted — `{ thinking: "", signature: "..." }`. The reasoning content
+          //      is not transmitted to clients; the signature is just an authenticity
+          //      proof for multi-turn echo-back. We can't decrypt it.
+          // We pass both through. The frontend renders an `🔒 Thinking (encrypted)`
+          // placeholder for the empty case so users at least see the model thought
+          // about something, instead of an expandable bubble that hides nothing.
+          result.push({ role: "assistant", type: "thinking", content: block.thinking || "", timestamp, ...meta });
           break;
         case "tool_use":
           result.push({
