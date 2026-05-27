@@ -13,7 +13,10 @@ import {
   removeRecentDirectory,
   getDefaultProvider,
   saveDefaultProvider,
+  getDefaultOpenRouterEffort,
+  saveDefaultOpenRouterEffort,
   type AgentProviderKind,
+  type EffortLevel,
 } from "../utils/localStorage";
 
 interface NewChatPanelProps {
@@ -65,6 +68,11 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // Provider selector — defaults to whatever the user last picked. OpenRouter
   // can only be selected once OPENROUTER_API_KEY is configured in Settings → API.
   const [provider, setProvider] = useState<AgentProviderKind>(getDefaultProvider);
+  // OpenRouter-only knob — surfaced under the provider tile when "openrouter"
+  // is selected. `undefined` means "don't send a reasoning payload" (preserves
+  // each model's default behavior). Persisted in localStorage independently
+  // of the provider so toggling back to OR restores the prior selection.
+  const [effort, setEffort] = useState<EffortLevel | undefined>(getDefaultOpenRouterEffort);
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -102,6 +110,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // overwrite their preference with claude-code. The runtime fallback is
     // ephemeral.
     saveDefaultProvider(provider);
+    saveDefaultOpenRouterEffort(effort);
     // Runtime guard: only downgrade to claude-code when we KNOW OR is not
     // configured (openRouterConfigured === false). While still loading
     // (null), trust the user's choice — sendMessage rejects loudly if the
@@ -112,7 +121,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     setFolder("");
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(target)}`, {
-      state: { defaultPermissions, provider: effectiveProvider },
+      // Only forward `effort` for OpenRouter chats — for Claude Code the field
+      // would just ride along and get persisted to chat metadata for nothing.
+      state: {
+        defaultPermissions,
+        provider: effectiveProvider,
+        ...(effectiveProvider === "openrouter" && effort && { effort }),
+      },
     });
   };
 
@@ -309,6 +324,54 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                 </div>
               )}
             </div>
+
+            {/* Reasoning effort — OpenRouter only. Hidden entirely for
+                claude-code so the panel layout stays compact. OR maps the
+                level to each provider's native parameter (Anthropic
+                thinking.budget_tokens, OpenAI reasoning_effort, etc.);
+                non-reasoning models silently ignore it. */}
+            {provider === "openrouter" && openRouterConfigured !== false && (
+              <div style={{ marginBottom: 12 }}>
+                <label
+                  htmlFor="newChatEffort"
+                  style={{
+                    display: "block",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--text-muted)",
+                    marginBottom: 6,
+                  }}
+                >
+                  Reasoning effort
+                </label>
+                <select
+                  id="newChatEffort"
+                  value={effort ?? ""}
+                  onChange={(e) => setEffort(e.target.value === "" ? undefined : (e.target.value as EffortLevel))}
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    fontSize: 13,
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="">(unset — model default)</option>
+                  <option value="none">none</option>
+                  <option value="minimal">minimal</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                </select>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                  Maps to each provider&apos;s native thinking parameter. Non-reasoning models ignore this.
+                </div>
+              </div>
+            )}
 
             {/* Permissions Section — collapsible, default closed */}
             <div style={{ marginBottom: 8 }}>

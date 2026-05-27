@@ -82,6 +82,29 @@ describe("translateOptions — OR config passthrough", () => {
     expect(orOpts.logsRoot).toBe("/tmp/or-logs");
     expect(orOpts.appTitle).toBe("custom-app");
   });
+
+  it("forwards effort onto orOpts.effort when set", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          effort: "medium",
+        },
+      },
+      "hi",
+    );
+    expect(orOpts.effort).toBe("medium");
+  });
+
+  it("omits effort entirely when unset (preserves model default behavior)", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: { apiKey: "sk-or-test" },
+      },
+      "hi",
+    );
+    expect(orOpts.effort).toBeUndefined();
+  });
 });
 
 describe("translateOptions — Claude option passthrough", () => {

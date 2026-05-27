@@ -13,6 +13,18 @@ export type ThemeMode = "light" | "dark" | "system";
 
 export type AgentProviderKind = "claude-code" | "openrouter";
 
+/**
+ * OpenRouter reasoning-effort levels. Maps onto the OR `reasoning.effort`
+ * field which OR translates to each provider's native parameter (Anthropic
+ * `thinking.budget_tokens`, OpenAI `reasoning_effort`, etc). Ignored by
+ * non-reasoning models.
+ *
+ * `undefined` (no value persisted) means "don't send a reasoning payload";
+ * `"none"` means "explicitly request no reasoning". Both produce the same
+ * runtime behavior on most models but are kept distinct for UI clarity.
+ */
+export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
+
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
   recentDirectories?: RecentDirectory[];
@@ -28,6 +40,10 @@ interface LocalStorageData {
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
   defaultProvider?: AgentProviderKind;
+  /** User's last-selected OpenRouter reasoning effort in the New Chat panel.
+   * Stored even when the provider is Claude Code so toggling back to OR
+   * restores the prior selection. */
+  defaultOpenRouterEffort?: EffortLevel;
 }
 
 /** Check if a path is inside the Callboard agent-workspaces directory (excluded from recommended folders). */
@@ -88,6 +104,40 @@ export function saveDefaultProvider(provider: AgentProviderKind): void {
   if (!KNOWN_PROVIDERS.has(provider)) return;
   const data = getStorageData();
   data.defaultProvider = provider;
+  setStorageData(data);
+}
+
+const KNOWN_EFFORTS: ReadonlySet<EffortLevel> = new Set([
+  "xhigh",
+  "high",
+  "medium",
+  "low",
+  "minimal",
+  "none",
+]);
+
+/**
+ * Last-selected OpenRouter effort. Returns `undefined` when nothing has been
+ * stored — the New Chat dropdown surfaces this as the "(unset)" option,
+ * which leaves the `reasoning` payload off the OR API call entirely. Any
+ * stored value not in {@link KNOWN_EFFORTS} (e.g. a forward-compat level
+ * from a newer build) also degrades to `undefined`.
+ */
+export function getDefaultOpenRouterEffort(): EffortLevel | undefined {
+  const data = getStorageData();
+  const stored = data.defaultOpenRouterEffort;
+  return stored && KNOWN_EFFORTS.has(stored) ? stored : undefined;
+}
+
+export function saveDefaultOpenRouterEffort(effort: EffortLevel | undefined): void {
+  const data = getStorageData();
+  if (effort === undefined) {
+    delete data.defaultOpenRouterEffort;
+  } else if (KNOWN_EFFORTS.has(effort)) {
+    data.defaultOpenRouterEffort = effort;
+  } else {
+    return; // unknown value — leave existing state alone
+  }
   setStorageData(data);
 }
 
