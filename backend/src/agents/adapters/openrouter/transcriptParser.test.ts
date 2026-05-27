@@ -8,7 +8,16 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Mock image-storage so tests don't write to the real ~/.callboard/images.
+// The implementation is replaced with a deterministic id-from-base64 stub
+// that lets us assert exact `imageIds` output without filesystem coupling.
+vi.mock("../../../services/image-storage.js", () => ({
+  storeBase64Image: (base64: string, mime: string) =>
+    `img-${mime.replace("/", "-")}-${base64.slice(0, 4)}`,
+}));
+
 import { readOpenRouterTranscript } from "./transcriptParser.js";
 
 let TMP_DIR: string;
@@ -272,6 +281,83 @@ describe("readOpenRouterTranscript — robustness", () => {
     const messages = readOpenRouterTranscript(sessionDir)!;
     expect(messages).toHaveLength(1);
     expect(messages[0]!.content).toBe("kept");
+  });
+
+  it("unwraps a JSON-encoded OR content-block array on a user record into text + imageIds", () => {
+    // The OR library JSON-stringifies multimodal user input before writing
+    // the transcript `text` field. Without unwrap, the bubble would render
+    // raw JSON. With unwrap, text comes from input_text blocks and image
+    // data URIs are interned via the image store.
+    const userText = JSON.stringify([
+      { type: "input_text", text: "can you see this image" },
+      { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+    ]);
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "2026-05-27T11:00:00Z", kind: "user", text: userText },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)).toEqual([
+      {
+        role: "user",
+        type: "text",
+        content: "can you see this image",
+        timestamp: "2026-05-27T11:00:00Z",
+        imageIds: ["img-image-png-iVBO"],
+      },
+    ]);
+  });
+
+  it("joins multiple input_text blocks with newlines and collects every input_image into imageIds", () => {
+    const userText = JSON.stringify([
+      { type: "input_text", text: "line a" },
+      { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+      { type: "input_text", text: "line b" },
+      { type: "input_image", image_url: "data:image/jpeg;base64,BBBB" },
+    ]);
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "t", kind: "user", text: userText },
+    ]);
+    const messages = readOpenRouterTranscript(sessionDir)!;
+    expect(messages[0]).toMatchObject({
+      content: "line a\nline b",
+      imageIds: ["img-image-png-AAAA", "img-image-jpeg-BBBB"],
+    });
+  });
+
+  it("skips remote-URL input_image blocks (we don't mirror remote images into local storage)", () => {
+    const userText = JSON.stringify([
+      { type: "input_text", text: "look" },
+      { type: "input_image", image_url: "https://example.com/x.png" },
+    ]);
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "t", kind: "user", text: userText },
+    ]);
+    const messages = readOpenRouterTranscript(sessionDir)!;
+    expect(messages[0]).toEqual({
+      role: "user",
+      type: "text",
+      content: "look",
+      timestamp: "t",
+    });
+    expect(messages[0]!.imageIds).toBeUndefined();
+  });
+
+  it("passes through user text that legitimately starts with [ but is not an OR content array", () => {
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "t", kind: "user", text: "[draft] please review" },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)![0]!.content).toBe("[draft] please review");
+  });
+
+  it("passes through a JSON array of unrecognized block kinds without mangling", () => {
+    // Defensive: if the OR library starts emitting a new block kind we don't
+    // recognize, render the raw JSON rather than silently dropping content.
+    const userText = JSON.stringify([
+      { type: "future_block", data: "x" },
+    ]);
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "t", kind: "user", text: userText },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)![0]!.content).toBe(userText);
   });
 
   it("skips malformed JSON lines without breaking the rest of the timeline", () => {
