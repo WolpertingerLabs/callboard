@@ -231,4 +231,110 @@ describe("translateOptions — prompt translation", () => {
     }
     expect(items).toEqual([{ content: "ok" }]);
   });
+
+  it("collapses text-only ContentBlock[] into a single string", async () => {
+    async function* prompt() {
+      yield {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "line one" },
+            { type: "text", text: "line two" },
+          ],
+        },
+      };
+    }
+    const { orOpts } = translateOptions({ openRouter: defaultExtras }, prompt());
+    const items: unknown[] = [];
+    for await (const item of orOpts.prompt as AsyncIterable<{
+      content: string | readonly unknown[];
+    }>) {
+      items.push(item);
+    }
+    expect(items).toEqual([{ content: "line one\nline two" }]);
+  });
+
+  it("forwards base64 image blocks as OR input_image with data: URI", async () => {
+    async function* prompt() {
+      yield {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this" },
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: "AAAA" },
+            },
+          ],
+        },
+      };
+    }
+    const { orOpts } = translateOptions({ openRouter: defaultExtras }, prompt());
+    const items: unknown[] = [];
+    for await (const item of orOpts.prompt as AsyncIterable<{
+      content: string | readonly unknown[];
+    }>) {
+      items.push(item);
+    }
+    expect(items).toEqual([
+      {
+        content: [
+          { type: "input_text", text: "describe this" },
+          { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+        ],
+      },
+    ]);
+  });
+
+  it("forwards url image blocks as OR input_image with the URL passed through", async () => {
+    async function* prompt() {
+      yield {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "url", url: "https://x/y.png" } },
+          ],
+        },
+      };
+    }
+    const { orOpts } = translateOptions({ openRouter: defaultExtras }, prompt());
+    const items: unknown[] = [];
+    for await (const item of orOpts.prompt as AsyncIterable<{
+      content: string | readonly unknown[];
+    }>) {
+      items.push(item);
+    }
+    expect(items).toEqual([
+      {
+        content: [{ type: "input_image", image_url: "https://x/y.png" }],
+      },
+    ]);
+  });
+
+  it("falls back to a text placeholder for image blocks with an unrecognized source", async () => {
+    async function* prompt() {
+      yield {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "image", source: { type: "weird", media_type: "image/heic" } },
+          ],
+        },
+      };
+    }
+    const { orOpts } = translateOptions({ openRouter: defaultExtras }, prompt());
+    const items: unknown[] = [];
+    for await (const item of orOpts.prompt as AsyncIterable<{
+      content: string | readonly unknown[];
+    }>) {
+      items.push(item);
+    }
+    // No image survived, so this collapses back to a plain string.
+    expect(items).toEqual([{ content: "hi\n[image:image/heic]" }]);
+  });
 });

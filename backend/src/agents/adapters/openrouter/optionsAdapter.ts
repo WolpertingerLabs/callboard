@@ -226,13 +226,15 @@ function resolveInstructions(
  *
  * A plain string passes through. AsyncIterable items are projected onto
  * OR's `UserInput { content }` shape — only the user-message content is
- * extracted; non-user-message items are skipped.
+ * extracted; non-user-message items are skipped. Content is either a
+ * string (text-only) or an OR-shaped content-block array when images
+ * are attached (see {@link extractUserMessageContent}).
  */
 function translatePrompt(
   prompt: string | AsyncIterable<unknown>,
 ): OpenRouterAgentRunOptions["prompt"] {
   if (typeof prompt === "string") return prompt;
-  return (async function* (): AsyncIterable<{ content: string }> {
+  return (async function* (): AsyncIterable<{ content: string | readonly unknown[] }> {
     for await (const item of prompt) {
       const content = extractUserMessageContent(item);
       if (content !== null) yield { content };
@@ -266,35 +268,89 @@ function collectMcpTools(mcpServers: ClaudeShapedOptions["mcpServers"]): {
   return { tools, droppedServerNames };
 }
 
-function extractUserMessageContent(item: unknown): string | null {
+/**
+ * Convert one Anthropic-shape image block into OR's `input_image` form. Returns
+ * `null` when the source shape isn't one we recognize so the caller can decide
+ * whether to drop the block or surface a placeholder.
+ *
+ * Recognized source shapes:
+ * - `{ type: "base64", media_type, data }` → `data:<media_type>;base64,<data>`
+ * - `{ type: "url", url }` → forwarded verbatim (URL passes through)
+ */
+function claudeImageToOrBlock(
+  source: { type?: unknown; media_type?: unknown; data?: unknown; url?: unknown } | undefined,
+): { type: "input_image"; image_url: string } | null {
+  if (!source) return null;
+  if (source.type === "base64" && typeof source.media_type === "string" && typeof source.data === "string") {
+    return { type: "input_image", image_url: `data:${source.media_type};base64,${source.data}` };
+  }
+  if (source.type === "url" && typeof source.url === "string") {
+    return { type: "input_image", image_url: source.url };
+  }
+  return null;
+}
+
+function extractUserMessageContent(item: unknown): string | readonly unknown[] | null {
   if (!item || typeof item !== "object") return null;
   const obj = item as { type?: unknown; message?: { role?: unknown; content?: unknown } };
   if (obj.type !== "user") return null;
   const msg = obj.message;
   if (!msg || msg.role !== "user") return null;
   if (typeof msg.content === "string") return msg.content;
+  if (!Array.isArray(msg.content)) return null;
+
   // Claude's multimodal prompts arrive as ContentBlock[] —
-  // `[{ type: "text", text }, { type: "image", source }]`. The OR library
-  // accepts arrays directly on UserInput.content, but the OR Responses API
-  // schema is different from Claude's. For PR B we extract just the text
-  // segments and concatenate; image / file blocks are surfaced via a
-  // bracketed placeholder so the model knows something was attached but
-  // not what. Full multimodal support is deferred.
-  if (Array.isArray(msg.content)) {
-    return msg.content
-      .map((block): string => {
-        if (typeof block === "string") return block;
-        if (!block || typeof block !== "object") return "";
-        const b = block as { type?: unknown; text?: unknown; source?: { media_type?: unknown } };
-        if (b.type === "text" && typeof b.text === "string") return b.text;
-        if (b.type === "image") {
-          const mime = b.source?.media_type;
-          return `[image:${typeof mime === "string" ? mime : "unknown"}]`;
-        }
-        return `[${typeof b.type === "string" ? b.type : "unknown"}]`;
-      })
-      .filter((s) => s.length > 0)
-      .join("\n");
+  // `[{ type: "text", text }, { type: "image", source }]`. Translate to OR's
+  // Responses-API content blocks: text → `input_text`, image → `input_image`
+  // with a data: URI (base64) or URL passthrough. UserInput.content accepts a
+  // readonly array; the OR library forwards it to `callModel` unchanged.
+  //
+  // Text-only arrays collapse back into a plain string so single-shot text
+  // turns stay on the simple wire form.
+  const orBlocks: unknown[] = [];
+  let hasImage = false;
+  for (const block of msg.content) {
+    if (typeof block === "string") {
+      if (block.length > 0) orBlocks.push({ type: "input_text", text: block });
+      continue;
+    }
+    if (!block || typeof block !== "object") continue;
+    const b = block as {
+      type?: unknown;
+      text?: unknown;
+      source?: { type?: unknown; media_type?: unknown; data?: unknown; url?: unknown };
+    };
+    if (b.type === "text" && typeof b.text === "string") {
+      if (b.text.length > 0) orBlocks.push({ type: "input_text", text: b.text });
+      continue;
+    }
+    if (b.type === "image") {
+      const orImage = claudeImageToOrBlock(b.source);
+      if (orImage) {
+        orBlocks.push(orImage);
+        hasImage = true;
+      } else {
+        // Unknown source shape — fall back to a text placeholder so the model
+        // sees that something was attached even if we couldn't forward it.
+        const mime = b.source?.media_type;
+        orBlocks.push({
+          type: "input_text",
+          text: `[image:${typeof mime === "string" ? mime : "unknown"}]`,
+        });
+      }
+      continue;
+    }
+    // Unknown block kind — placeholder so the turn isn't silently dropped.
+    orBlocks.push({
+      type: "input_text",
+      text: `[${typeof b.type === "string" ? b.type : "unknown"}]`,
+    });
   }
-  return null;
+
+  if (orBlocks.length === 0) return null;
+  if (!hasImage) {
+    // Text-only: collapse to a single string for the simple wire shape.
+    return orBlocks.map((b) => (b as { text: string }).text).join("\n");
+  }
+  return orBlocks;
 }
