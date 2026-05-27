@@ -144,6 +144,9 @@ export default function ApiSettings() {
   const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState("");
   const [openRouterModel, setOpenRouterModel] = useState("");
   const [openRouterLogsRoot, setOpenRouterLogsRoot] = useState("");
+  // Stored as a string in form state so the input can be cleared (empty
+  // string → "use library default"). Validation/parse happens on save.
+  const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState("");
 
   const loadAll = async () => {
     setLoading(true);
@@ -163,6 +166,9 @@ export default function ApiSettings() {
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
       setOpenRouterModel(s.openRouterModel ?? "");
       setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
+      setOpenRouterMaxBudgetUsd(
+        typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "",
+      );
     } catch (err: any) {
       setError(err.message || "Failed to load settings");
     } finally {
@@ -191,6 +197,14 @@ export default function ApiSettings() {
         openRouterBaseUrl,
         openRouterModel,
         openRouterLogsRoot,
+        // Send `null` to clear, or the parsed number otherwise. We
+        // intentionally avoid `undefined`: JSON.stringify would strip it and
+        // the route's `!== undefined` partial-update guard would leave the
+        // prior saved value intact, making the input unable to clear an
+        // override.
+        openRouterMaxBudgetUsd: (openRouterMaxBudgetUsd.trim() === ""
+          ? null
+          : Number(openRouterMaxBudgetUsd)) as number | undefined,
       });
       setSettings(updated);
       setSaved(true);
@@ -477,6 +491,29 @@ export default function ApiSettings() {
             Default model for new OR chats. Common aliases:{" "}
             <code style={{ fontSize: 11 }}>~anthropic/claude-sonnet-latest</code>, <code style={{ fontSize: 11 }}>openai/gpt-4o</code>,{" "}
             <code style={{ fontSize: 11 }}>google/gemini-2.0-flash</code>.
+          </div>
+        </div>
+
+        <div style={fieldWrap}>
+          <label htmlFor="openRouterMaxBudgetUsd" style={labelStyle}>
+            Max budget per session (USD)
+          </label>
+          <input
+            id="openRouterMaxBudgetUsd"
+            type="number"
+            min="0"
+            step="0.01"
+            value={openRouterMaxBudgetUsd}
+            onChange={(e) => setOpenRouterMaxBudgetUsd(e.target.value)}
+            placeholder="1.00"
+            autoComplete="off"
+            spellCheck={false}
+            style={inputStyle}
+          />
+          <div style={helpStyle}>
+            Cumulative spend cap for an OpenRouter chat session. Defaults to <code style={{ fontSize: 11 }}>$1.00</code> when empty — raise this for
+            long-running coding sessions to avoid the &ldquo;Agent reached the maximum budget limit&rdquo; cutoff. Applies per streaming session, not per
+            message.
           </div>
         </div>
 

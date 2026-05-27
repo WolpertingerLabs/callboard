@@ -105,6 +105,47 @@ describe("translateOptions — OR config passthrough", () => {
     );
     expect(orOpts.effort).toBeUndefined();
   });
+
+  it("forwards maxBudgetUsd onto orOpts.maxBudgetUsd when set", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          maxBudgetUsd: 5.5,
+        },
+      },
+      "hi",
+    );
+    expect(orOpts.maxBudgetUsd).toBe(5.5);
+  });
+
+  it("omits maxBudgetUsd when unset so the OR library falls back to its default", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: { apiKey: "sk-or-test" },
+      },
+      "hi",
+    );
+    expect(orOpts.maxBudgetUsd).toBeUndefined();
+  });
+
+  it("rejects non-finite maxBudgetUsd values (NaN, Infinity) so a corrupt setting can't poison the run", () => {
+    const { orOpts: withNaN } = translateOptions(
+      {
+        openRouter: { apiKey: "sk-or-test", maxBudgetUsd: Number.NaN },
+      },
+      "hi",
+    );
+    expect(withNaN.maxBudgetUsd).toBeUndefined();
+
+    const { orOpts: withInf } = translateOptions(
+      {
+        openRouter: { apiKey: "sk-or-test", maxBudgetUsd: Number.POSITIVE_INFINITY },
+      },
+      "hi",
+    );
+    expect(withInf.maxBudgetUsd).toBeUndefined();
+  });
 });
 
 describe("translateOptions — Claude option passthrough", () => {

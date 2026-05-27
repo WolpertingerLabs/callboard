@@ -61,7 +61,23 @@ export interface OpenRouterOptionsExtras {
    * Omit (undefined) to skip the `reasoning` payload entirely.
    */
   effort?: EffortLevel;
+  /**
+   * Per-session USD spend cap. Omit to inherit the OR library's own default
+   * ($1.00 at the time of writing — see DEFAULT_MAX_BUDGET_USD in
+   * openrouter-agent-coder/src/agent.ts). The cap is cumulative across every
+   * turn for the lifetime of the streaming-input run, not per-message.
+   */
+  maxBudgetUsd?: number;
 }
+
+/**
+ * Library-side default for `maxBudgetUsd` when no override is supplied.
+ * Mirrors `DEFAULT_MAX_BUDGET_USD` in openrouter-agent-coder/src/agent.ts so
+ * the backend can advertise the effective cap on /system-info without having
+ * to import the constant (which the OR package doesn't re-export). If the OR
+ * library bumps its own default, update this value to match.
+ */
+export const OR_LIBRARY_DEFAULT_MAX_BUDGET_USD = 1.0;
 
 /**
  * Loose typing of the Claude-SDK-shaped options blob — narrows the fields
@@ -128,6 +144,12 @@ export function translateOptions(
   if (orConfig.baseUrl) orOpts.baseUrl = orConfig.baseUrl;
   if (orConfig.model) orOpts.model = orConfig.model;
   if (orConfig.effort) orOpts.effort = orConfig.effort;
+  // Forward the user's configured spend cap. `Number.isFinite` excludes
+  // NaN/Infinity that could sneak in from a malformed setting; the absence
+  // of this field is the signal for OR to use its own DEFAULT_MAX_BUDGET_USD.
+  if (typeof orConfig.maxBudgetUsd === "number" && Number.isFinite(orConfig.maxBudgetUsd)) {
+    orOpts.maxBudgetUsd = orConfig.maxBudgetUsd;
+  }
   // Always set logsRoot — OR's own default is `<cwd>/logs` which would
   // pollute the user's project directory and (more importantly) diverge
   // from the path OpenRouterSessionProvider reads from, producing silent

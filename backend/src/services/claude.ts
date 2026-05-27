@@ -1,6 +1,7 @@
 import { getAgentProvider } from "../agents/factory.js";
 import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
+import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter/optionsAdapter.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
@@ -831,6 +832,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(agentSettings.openRouterModel && { model: agentSettings.openRouterModel }),
       ...(agentSettings.openRouterLogsRoot && { logsRoot: agentSettings.openRouterLogsRoot }),
       ...(chatEffort && { effort: chatEffort }),
+      ...(typeof agentSettings.openRouterMaxBudgetUsd === "number" &&
+        Number.isFinite(agentSettings.openRouterMaxBudgetUsd) && {
+          maxBudgetUsd: agentSettings.openRouterMaxBudgetUsd,
+        }),
       appTitle: "callboard",
     };
   }
@@ -859,6 +864,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
       let sessionId: string | null = null;
       let endReason: string | undefined;
+      // Cumulative USD spend reported by the underlying adapter on the
+      // terminal `result` event. The OR adapter accumulates this across all
+      // turns of the streaming-input run; the Claude adapter reports per-
+      // message totals. Either way, the latest value is the run total to
+      // surface to the UI for the spend indicator + max_budget message.
+      let lastCostUsd: number | undefined;
 
       const conversation = agentProvider.query(queryOpts);
 
@@ -877,6 +888,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
             } else if (event.status === "error") {
               endReason = "execution_error";
               log.warn(`Session ${trackingId} ended: execution error — ${event.reason || "unknown"}`);
+            }
+            if (typeof event.usage?.costUsd === "number") {
+              lastCostUsd = event.usage.costUsd;
             }
             // "success" → endReason stays undefined (normal completion)
             break;
@@ -994,8 +1008,25 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "cleared", content: "Conversation was cleared" } as StreamEvent);
       }
 
-      log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}`);
-      emitter.emit("event", { type: "done", content: "", ...(endReason && { reason: endReason }) } as StreamEvent);
+      // The configured OR budget cap is included on every `done` for OR
+      // chats so the UI can show "$0.84 of $1.00" even on successful
+      // completions, not just when max_budget fires. For Claude Code chats
+      // there's no equivalent cap to surface — leave maxBudgetUsd undefined.
+      const orBudget =
+        providerKind === "openrouter"
+          ? typeof agentSettings.openRouterMaxBudgetUsd === "number" &&
+            Number.isFinite(agentSettings.openRouterMaxBudgetUsd)
+            ? agentSettings.openRouterMaxBudgetUsd
+            : OR_LIBRARY_DEFAULT_MAX_BUDGET_USD
+          : undefined;
+      log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}, costUsd=${lastCostUsd ?? "n/a"}`);
+      emitter.emit("event", {
+        type: "done",
+        content: "",
+        ...(endReason && { reason: endReason }),
+        ...(typeof lastCostUsd === "number" && { costUsd: lastCostUsd }),
+        ...(typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
+      } as StreamEvent);
     } catch (err: any) {
       if (err.name === "AbortError") {
         // Emit done with reason so the frontend knows the session was aborted,

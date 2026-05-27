@@ -54,10 +54,23 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterBaseUrl,
     openRouterModel,
     openRouterLogsRoot,
+    openRouterMaxBudgetUsd,
   } = req.body;
 
   // Empty strings clear an override; undefined leaves the field untouched.
   const normalize = (v: unknown): string | undefined => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim()) : undefined);
+
+  // Numeric counterpart — accepts numbers or numeric strings, clears on
+  // empty or non-finite input (NaN, Infinity). Negative inputs are clamped
+  // to 0, which the OR library treats as "stop immediately" (a useful
+  // boundary condition for a kill-switch rather than a 400).
+  const normalizeNumber = (v: unknown): number | undefined => {
+    if (v === undefined || v === null) return undefined;
+    if (typeof v === "string" && v.trim() === "") return undefined;
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n)) return undefined;
+    return Math.max(0, n);
+  };
 
   // Track whether any API / auth / model override field was included so we
   // know to refresh the SDK info cache (account + supported models).
@@ -91,6 +104,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterBaseUrl !== undefined && { openRouterBaseUrl: normalize(openRouterBaseUrl) }),
       ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
       ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
+      ...(openRouterMaxBudgetUsd !== undefined && { openRouterMaxBudgetUsd: normalizeNumber(openRouterMaxBudgetUsd) }),
     });
     // Handle proxy mode switching — creates/destroys LocalProxy as needed
     // and resets cached remote ProxyClient instances
