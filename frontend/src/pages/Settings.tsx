@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, useParams } from "react-router-dom";
 import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
@@ -24,11 +24,17 @@ interface SettingsProps {
   onLogout: () => void;
 }
 
+const validTabKeys = new Set(tabs.map((t) => t.key));
+
 export default function Settings({ onLogout }: SettingsProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { tab: tabParam } = useParams<{ tab?: string }>();
   const isMobile = useIsMobile();
-  const [activeTab, setActiveTab] = useState(() => (location.state as { tab?: string } | null)?.tab || "general");
+  const [activeTab, setActiveTab] = useState(() => {
+    if (tabParam && validTabKeys.has(tabParam)) return tabParam;
+    return (location.state as { tab?: string } | null)?.tab || "general";
+  });
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>

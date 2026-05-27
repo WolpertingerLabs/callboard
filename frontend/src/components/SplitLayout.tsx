@@ -40,8 +40,8 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
     });
   }, []);
 
-  // Check if we're on the settings page
-  const isSettings = location.pathname === "/settings";
+  // Check if we're on the settings page (including sub-tab routes like /settings/api)
+  const isSettings = location.pathname === "/settings" || location.pathname.startsWith("/settings/");
 
   // Check if we're on the branch table page
   const isBranchTable = location.pathname === "/branches";
