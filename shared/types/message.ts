@@ -24,6 +24,8 @@ export interface ParsedMessage {
   };
   /** USD cost for this response, when the adapter exposes it (OpenRouter). */
   costUsd?: number;
+  /** End-to-end duration of the assistant turn that produced this message, in ms (OpenRouter transcript). */
+  durationMs?: number;
   /** API service tier, e.g. "standard" */
   serviceTier?: string;
   /** Image IDs attached to this user message (for rendering sent images) */
