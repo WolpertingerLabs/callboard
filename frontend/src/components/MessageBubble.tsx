@@ -402,7 +402,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   if (!relativeTime) return null;
 
   const displayModel = message.model || null;
-  const hasDetails = !!(message.usage || message.serviceTier || message.stopReason || message.deltaMs != null || message.costUsd != null);
+  const hasDetails = !!(message.usage || message.serviceTier || message.stopReason || message.deltaMs != null || message.costUsd != null || message.durationMs != null);
 
   return (
     <div
@@ -456,6 +456,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
           {message.stopReason && <div>Stop: {message.stopReason}</div>}
           {message.usage && <div>Tokens: {formatUsage(message.usage)}</div>}
           {message.costUsd != null && <div>Cost: {formatCost(message.costUsd)}</div>}
+          {message.durationMs != null && <div>Duration: {formatDelta(message.durationMs)}</div>}
           {message.cacheCreation && (
             <div>
               Ephemeral cache: {message.cacheCreation.ephemeral1h?.toLocaleString() ?? 0} 1h, {message.cacheCreation.ephemeral5m?.toLocaleString() ?? 0} 5m
@@ -602,7 +603,11 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
             borderLeft: "2px solid var(--border)",
           }}
         >
-          <span style={{ fontStyle: "italic" }}>{expanded ? "Result:" : "Tool result (tap to expand)"}</span>
+          <span style={{ fontStyle: "italic" }}>
+            {expanded
+              ? `Result${message.toolName ? `: ${message.toolName}` : ""}`
+              : `Tool result${message.toolName ? `: ${message.toolName}` : ""} (tap to expand)`}
+          </span>
           {expanded && (
             <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12, maxHeight: 300, overflow: "auto" }}>
               {message.content}
