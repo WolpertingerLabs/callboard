@@ -565,7 +565,12 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
               {expanded && <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{message.content}</pre>}
             </>
           ) : (
-            <span style={{ fontStyle: "italic", opacity: 0.6 }}>🔒 Thinking (encrypted)</span>
+            <span
+              style={{ fontStyle: "italic", opacity: 0.6 }}
+              title="Claude's extended thinking is encrypted by Anthropic and not viewable. The signature is used to verify the block on multi-turn echo-back."
+            >
+              🔒 Thinking (encrypted)
+            </span>
           )}
         </div>
         <MessageMetadata message={message} align="left" />

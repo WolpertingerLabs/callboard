@@ -185,17 +185,20 @@ describe("translateSdkMessages — content blocks", () => {
     expect(event).toEqual({ type: "tool_result", callId: "t", content: "oops", isError: true });
   });
 
-  it("defaults missing text to empty string (no undefined leaks) and filters empty thinking", async () => {
-    // Empty/missing thinking content represents a redacted (encrypted) extended-thinking
-    // block — there's nothing to display, so we filter it out instead of yielding an
-    // empty bubble. Empty text still passes through since it's a real (if empty) reply.
+  it("defaults missing text / thinking to empty string (no undefined leaks)", async () => {
+    // Empty thinking content represents a redacted (encrypted) extended-thinking
+    // block. We pass it through with empty content so the frontend can render an
+    // `🔒 Thinking (encrypted)` placeholder — see frontend/MessageBubble.tsx.
     const events = await collect([
       { message: { content: [{ type: "text" }, { type: "thinking" }] } },
     ]);
-    expect(events).toEqual([{ type: "text", content: "" }]);
+    expect(events).toEqual([
+      { type: "text", content: "" },
+      { type: "thinking", content: "" },
+    ]);
   });
 
-  it("filters thinking blocks with empty content (redacted/encrypted thinking)", async () => {
+  it("passes encrypted (empty-thinking) blocks through alongside plaintext thinking", async () => {
     const events = await collect([
       {
         message: {
@@ -209,6 +212,7 @@ describe("translateSdkMessages — content blocks", () => {
     ]);
     expect(events).toEqual([
       { type: "text", content: "hi" },
+      { type: "thinking", content: "" },
       { type: "thinking", content: "actual reasoning" },
     ]);
   });
