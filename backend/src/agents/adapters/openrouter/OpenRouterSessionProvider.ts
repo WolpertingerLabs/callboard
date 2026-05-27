@@ -40,6 +40,7 @@ import type {
 import { createLogger } from "../../../utils/logger.js";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 import { readFirstUserPrompt, readOpenRouterSession } from "./sessionParser.js";
+import { readOpenRouterTranscript } from "./transcriptParser.js";
 
 const log = createLogger("openrouter-session-provider");
 
@@ -211,10 +212,14 @@ export class OpenRouterSessionProvider implements SessionProvider {
     for (const sid of sessionIds) {
       const safe = this.safeSessionDir(sid);
       if (!safe) continue;
-      // readOpenRouterSession handles the request.json + state.json
-      // interleave — necessary because OR's previousResponseId chaining
-      // means user prompts don't appear in state.messages.
-      all.push(...readOpenRouterSession(safe.sessionDir));
+      // Prefer transcript.jsonl — the canonical user-visible view, with
+      // per-record timestamps, post-routing model names, token usage, cost,
+      // and turn durations. Falls back to the state.json + req_*/gen_*
+      // tree for legacy sessions written before the transcript landed
+      // and for utility flows that ran with `persistSession: false`
+      // (which writes nothing).
+      const fromTranscript = readOpenRouterTranscript(safe.sessionDir);
+      all.push(...(fromTranscript ?? readOpenRouterSession(safe.sessionDir)));
 
       // Inline subagent transcripts after their parent. Sequencing within a
       // single session is preserved; we don't currently splice subagent
@@ -223,7 +228,8 @@ export class OpenRouterSessionProvider implements SessionProvider {
       // matching what the Claude provider does).
       for (const sub of this.findSubagentFiles(sid)) {
         const subDir = join(safe.logsRoot, `${sid}:${sub.agentId}`);
-        all.push(...readOpenRouterSession(subDir));
+        const subFromTranscript = readOpenRouterTranscript(subDir);
+        all.push(...(subFromTranscript ?? readOpenRouterSession(subDir)));
       }
     }
 

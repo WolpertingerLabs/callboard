@@ -306,6 +306,55 @@ describe("OpenRouterSessionProvider — parseSessionMessages", () => {
     const provider = new OpenRouterSessionProvider();
     expect(provider.parseSessionMessages(["sess_empty"])).toEqual([]);
   });
+
+  it("prefers transcript.jsonl over the state.json/request.json path when present", async () => {
+    const { writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    // Write BOTH a state.json-derived tree (which would yield "from state")
+    // and a transcript.jsonl (which yields "from transcript") — the
+    // transcript must win.
+    const sessionDir = writeSession("sess_pref", {
+      cwd: "/work",
+      messages: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "from state" }] }],
+      firstPrompt: "u from state",
+    });
+    writeFileSync(
+      join(sessionDir, "transcript.jsonl"),
+      [
+        JSON.stringify({ v: 1, sessionId: "sess_pref", ts: "2026-05-27T10:00:00Z", kind: "user", text: "u from transcript" }),
+        JSON.stringify({
+          v: 1,
+          sessionId: "sess_pref",
+          ts: "2026-05-27T10:01:00Z",
+          kind: "assistant",
+          turnNumber: 1,
+          requestId: "req_t",
+          model: "anthropic/claude-3-5-sonnet",
+          text: "from transcript",
+          usage: { prompt: 1, completion: 1 },
+          costUsd: 0.0001,
+          durationMs: 500,
+        }),
+      ].join("\n"),
+    );
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_pref"]);
+    expect(messages).toEqual([
+      { role: "user", type: "text", content: "u from transcript", timestamp: "2026-05-27T10:00:00Z" },
+      {
+        role: "assistant",
+        type: "text",
+        content: "from transcript",
+        timestamp: "2026-05-27T10:01:00Z",
+        model: "anthropic/claude-3-5-sonnet",
+        requestId: "req_t",
+        costUsd: 0.0001,
+        durationMs: 500,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    ]);
+  });
 });
 
 describe("OpenRouterSessionProvider — path-traversal hardening", () => {
