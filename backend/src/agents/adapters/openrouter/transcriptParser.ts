@@ -21,6 +21,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import { storeBase64Image } from "../../../services/image-storage.js";
 import { extractTextContent } from "./sessionParser.js";
 
 /** Subset of TranscriptRecord fields we read. Mirrors the OR library's schema
@@ -99,12 +100,14 @@ export function readOpenRouterTranscript(sessionDir: string): ParsedMessage[] | 
     const ts = typeof rec.ts === "string" ? rec.ts : undefined;
     const kind = rec.kind;
     if (kind === "user") {
-      const text = typeof rec.text === "string" ? rec.text : "";
+      const rawText = typeof rec.text === "string" ? rec.text : "";
+      const { text, imageIds } = unwrapUserText(rawText);
       messages.push({
         role: "user",
         type: "text",
         content: text,
         ...(ts && { timestamp: ts }),
+        ...(imageIds.length > 0 && { imageIds }),
       });
     } else if (kind === "assistant") {
       messages.push(...translateAssistantRecord(rec, ts));
@@ -236,6 +239,71 @@ function applyAssistantMeta(m: ParsedMessage, rec: RawRecord): void {
     if (typeof u.reasoning === "number" && u.reasoning > 0) out.reasoning_tokens = u.reasoning;
     if (Object.keys(out).length > 0) m.usage = out;
   }
+}
+
+/**
+ * Detect & unwrap the OR library's JSON-stringified multimodal content shape.
+ *
+ * Multimodal user prompts (text + image attachments) reach `logTranscriptUser`
+ * as a content-block array, which agent.ts:1805 then collapses with
+ * `JSON.stringify` into a single `text` string before write. Left as-is, the
+ * UI bubble would render the raw JSON. Instead, when `text` parses as an
+ * array of OR `input_text` / `input_image` blocks, split out the displayable
+ * text portion and intern any base64 image data via the shared image store,
+ * returning the image IDs alongside so the caller can attach them to the
+ * ParsedMessage (matching the Claude-path's `imageIds` field that
+ * MessageBubble renders as thumbnails).
+ *
+ * Plain text passes through unchanged. Anything that looks like JSON but
+ * isn't a content-block array also passes through verbatim — we won't
+ * accidentally mangle a user message that legitimately starts with `[`.
+ */
+function unwrapUserText(raw: string): { text: string; imageIds: string[] } {
+  if (!raw.startsWith("[")) return { text: raw, imageIds: [] };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { text: raw, imageIds: [] };
+  }
+  if (!Array.isArray(parsed)) return { text: raw, imageIds: [] };
+
+  const textParts: string[] = [];
+  const imageIds: string[] = [];
+  let recognized = false;
+  for (const block of parsed) {
+    if (!block || typeof block !== "object") return { text: raw, imageIds: [] };
+    const b = block as { type?: unknown; text?: unknown; image_url?: unknown };
+    if (b.type === "input_text" && typeof b.text === "string") {
+      if (b.text.length > 0) textParts.push(b.text);
+      recognized = true;
+      continue;
+    }
+    if (b.type === "input_image" && typeof b.image_url === "string") {
+      const id = storeDataUriImage(b.image_url);
+      if (id) imageIds.push(id);
+      recognized = true;
+      continue;
+    }
+    // Unknown block kind — bail and treat the whole thing as plain text so
+    // we don't silently drop content we don't understand.
+    return { text: raw, imageIds: [] };
+  }
+  if (!recognized) return { text: raw, imageIds: [] };
+  return { text: textParts.join("\n"), imageIds };
+}
+
+/**
+ * Decode a `data:<mime>;base64,<data>` URI and intern it via the shared image
+ * store. Returns the resulting image ID, or `null` when the URI isn't a
+ * recognized data URL (http/https URLs are intentionally skipped — we don't
+ * mirror remote images into local storage).
+ */
+function storeDataUriImage(imageUrl: string): string | null {
+  const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  const [, mimeType, base64Data] = match;
+  return storeBase64Image(base64Data, mimeType);
 }
 
 /**
