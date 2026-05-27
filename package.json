@@ -85,8 +85,8 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.32",
-    "@cybourgeoisie/openrouter-agent-coder": "github:Cybourgeoisie/openrouter-agent-coder",
-    "@wolpertingerlabs/drawlatch": "file:/tmp/wolpertingerlabs-drawlatch-1.0.0-alpha.15.2.tgz",
+    "@cybourgeoisie/openrouter-agent-coder": "github:Cybourgeoisie/openrouter-agent-coder#bb9b36d",
+    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.15.2",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
