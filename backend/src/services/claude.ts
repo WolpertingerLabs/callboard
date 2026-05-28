@@ -364,9 +364,15 @@ export function respondToPermission(
   pendingRequests.delete(chatId);
 
   if (allow) {
+    // For AskUserQuestion the frontend only sends back the collected `answers`.
+    // The SDK tool requires the original `questions` to remain in the input
+    // (it builds `{...input, answers}`), so merge rather than replace — otherwise
+    // `questions` is undefined and the tool crashes mapping over it.
+    const resolvedInput =
+      updatedInput && pending.eventType === "user_question" ? { ...pending.input, ...updatedInput } : updatedInput || pending.input;
     pending.resolve({
       behavior: "allow",
-      updatedInput: updatedInput || pending.input,
+      updatedInput: resolvedInput,
       updatedPermissions: updatedPermissions as any,
     });
   } else {

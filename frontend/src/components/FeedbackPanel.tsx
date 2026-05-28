@@ -93,9 +93,16 @@ export default function FeedbackPanel({ action, onRespond }: Props) {
         </div>
         <button
           onClick={() => {
-            const formatted: Record<string, string | string[]> = {};
+            // The SDK schema expects answers as Record<questionText, string>,
+            // with multi-select answers joined into a comma-separated string.
+            const formatted: Record<string, string> = {};
             questions.forEach((q: any, qi: number) => {
-              if (answers[qi]) formatted[q.question] = answers[qi];
+              const val = answers[qi];
+              if (Array.isArray(val)) {
+                if (val.length > 0) formatted[q.question] = val.join(", ");
+              } else if (val) {
+                formatted[q.question] = val;
+              }
             });
             onRespond(true, { answers: formatted });
           }}
