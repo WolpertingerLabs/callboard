@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { GitBranch, Plus, Zap, Clock, Bell } from "lucide-react";
 import type { FolderSummary } from "../api";
+import ProviderBadge from "./ProviderBadge";
 
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
 
@@ -111,6 +112,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
               <Bell size={10} />
             </span>
           )}
+          <ProviderBadge provider={folder.mostRecentChatProvider} compact />
           <div
             style={{
               fontSize: 15,

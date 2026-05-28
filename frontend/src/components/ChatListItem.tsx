@@ -1,6 +1,7 @@
 import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
+import ProviderBadge from "./ProviderBadge";
 
 interface Props {
   chat: Chat;
@@ -30,6 +31,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let chatStatus: string | undefined;
   let chatStatusEmoji: string | undefined;
   let summon: { message: string; urgency: string; createdAt: string } | undefined;
+  let provider: string | undefined;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     title = meta.title;
@@ -41,6 +43,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     chatStatus = meta.chatStatus || undefined;
     chatStatusEmoji = meta.chatStatusEmoji || undefined;
     summon = meta.summon || undefined;
+    provider = meta.provider || undefined;
   } catch {}
 
   const hasUnread = lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
@@ -103,6 +106,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               <Zap size={10} style={{ color: "var(--chatlist-badge-triggered-text)" }} />
             </span>
           )}
+          <ProviderBadge provider={provider} compact />
           {summon && (
             <span
               title={`Summon: ${summon.message}`}

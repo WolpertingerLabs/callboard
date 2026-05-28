@@ -57,6 +57,8 @@ export interface FolderSummary {
   hasSummon?: boolean;
   /** Custom title set by agent on most recent chat */
   chatTitle?: string;
+  /** Provider of the most recent chat ("openrouter"); absent means Claude Code. */
+  mostRecentChatProvider?: string;
 }
 
 export interface FolderListResponse {

@@ -44,6 +44,7 @@ import {
 } from "../api";
 import { useIsSessionActive } from "../contexts/SessionContext";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
+import ProviderBadge from "../components/ProviderBadge";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
@@ -1537,23 +1538,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 {!isMobile && "worktree"}
               </div>
             )}
-            {/* OpenRouter provider badge — Claude chats get no badge (the default). */}
-            {chatProvider === "openrouter" && (
-              <div
-                style={{
-                  fontSize: 11,
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  background: "var(--badge-worktree)",
-                  color: "var(--text-on-accent)",
-                  fontWeight: 500,
-                  flexShrink: 0,
-                }}
-                title="This chat is routed through OpenRouter"
-              >
-                OR
-              </div>
-            )}
+            {/* Provider badge — "OR" for OpenRouter, "CC" for Claude Code. */}
+            <ProviderBadge provider={chatProvider} />
             {/* Spend indicator — only meaningful for OR chats once the first
                 run has reported a cost. Coloring escalates as the run nears
                 the cap (>=80% warns, >=100% errors) so the user notices

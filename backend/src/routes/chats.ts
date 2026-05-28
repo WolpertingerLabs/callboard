@@ -226,6 +226,7 @@ chatsRouter.get("/folders", (req, res) => {
         chatStatusEmoji: metadata.chatStatusEmoji || undefined,
         hasSummon: !!metadata.summon,
         chatTitle: metadata.title || undefined,
+        mostRecentChatProvider: metadata.provider || undefined,
       });
     }
 
