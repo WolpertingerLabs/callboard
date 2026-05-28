@@ -1,13 +1,12 @@
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, statSync } from "fs";
 import path from "path";
 import { createCanvas, updateCanvas, readCanvas } from "./canvas-service.js";
 import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getActiveSession } from "./claude.js";
-import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
@@ -52,37 +51,20 @@ function getSendMessage(): MessageSender {
 // ─── Helper: read session JSONL and extract text messages ───────────
 
 function readSessionMessages(sessionId: string, limit: number = 50): string[] {
-  const logPath = findSessionLogPath(sessionId);
-  if (!logPath) return [];
+  // Route through the session-provider abstraction so this works for any
+  // provider's transcript format (Claude Code JSONL, OpenRouter transcript,
+  // etc.) instead of hand-parsing one provider's on-disk schema.
+  const provider = getSessionProviders().find((p) => p.resolveSession(sessionId));
+  if (!provider) return [];
 
   try {
-    const lines = readFileSync(logPath, "utf-8")
-      .split("\n")
-      .filter((l) => l.trim());
+    const messages = provider.parseSessionMessages([sessionId]);
     const textMessages: string[] = [];
-
-    for (const line of lines) {
-      try {
-        const msg = JSON.parse(line);
-        if (msg.type === "summary" || msg.type === "system") continue;
-        const role = msg.message?.role;
-        const content = msg.message?.content;
-        if (!content) continue;
-
-        if (typeof content === "string") {
-          textMessages.push(`[${role}] ${content}`);
-        } else if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === "text" && block.text) {
-              textMessages.push(`[${role}] ${block.text}`);
-            }
-          }
-        }
-      } catch {
-        // skip malformed lines
+    for (const msg of messages) {
+      if (msg.type === "text" && msg.content) {
+        textMessages.push(`[${msg.role}] ${msg.content}`);
       }
     }
-
     // Return the most recent messages up to limit
     return textMessages.slice(-limit);
   } catch {
