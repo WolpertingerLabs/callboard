@@ -178,17 +178,18 @@ export function translateOptions(
   // primitives and the run would be useless.
   const { tools: mcpTools, droppedServerNames } = collectMcpTools(opts.mcpServers);
   if (mcpTools.length > 0) {
-    // Forward the ask_user_question host handler into allTools here too — the
-    // top-level orOpts.onAskUserQuestion above is only consulted when the
-    // library builds its own default tool set. Because callboard supplies an
-    // explicit `tools` array, the handler must be threaded into this allTools()
-    // call or the ask_user_question tool ends up with no host handler.
+    // Build OR's built-in tools and forward the ask_user_question host handler.
+    // allTools' signature is (ctx, opts) — the handler MUST go in the second
+    // arg; passing it in the ctx object silently no-ops and the tool errors with
+    // "no host handler registered". Because callboard always supplies a custom
+    // `tools` array, the library uses these tools verbatim (the top-level
+    // orOpts.onAskUserQuestion is only consulted on the library's own default
+    // tool set, which we bypass), so this is the only place the handler lands.
     orOpts.tools = [
-      ...allTools({
-        cwd,
-        ...(opts.onAskUserQuestion && { onAskUserQuestion: opts.onAskUserQuestion }),
-        ...(orOpts.signal && { signal: orOpts.signal }),
-      }),
+      ...allTools(
+        { cwd, ...(orOpts.signal && { signal: orOpts.signal }) },
+        { ...(opts.onAskUserQuestion && { onAskUserQuestion: opts.onAskUserQuestion }) },
+      ),
       ...mcpTools,
     ];
   }
