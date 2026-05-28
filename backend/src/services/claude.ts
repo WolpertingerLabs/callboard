@@ -549,6 +549,14 @@ interface SendMessageOptions {
    * any non-openrouter provider.
    */
   effort?: EffortLevel;
+  /**
+   * OpenRouter model slug for this chat (e.g. "anthropic/claude-opus-4.7" or an
+   * alias like "~anthropic/claude-sonnet-latest"). Only honored for new chats
+   * with `provider: "openrouter"` — written into chat metadata so existing-chat
+   * follow-ups reuse it. When omitted, falls back to the global
+   * `agentSettings.openRouterModel`. Ignored for non-openrouter providers.
+   */
+  model?: string;
 }
 
 /**
@@ -613,6 +621,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // paired provider isn't openrouter, so this second guard is
       // defense-in-depth.
       ...(opts.effort && opts.provider === "openrouter" && { effort: opts.effort }),
+      // Pin the per-chat model alongside provider/effort. Only meaningful for
+      // openrouter chats — the OR config block below prefers it over the global
+      // agentSettings.openRouterModel. Ignored for non-openrouter providers.
+      ...(opts.model && opts.provider === "openrouter" && { model: opts.model }),
     };
     // Record initial branch for drift detection on subsequent messages
     const gitInfo = getGitInfo(folder);
@@ -832,10 +844,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // initialMetadata read above covers both the new-chat case (just
     // written) and the existing-chat case (loaded from disk).
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
+    // Per-chat model override (from tool params, persisted to metadata) takes
+    // precedence over the global default. Covers new chats (just written above)
+    // and resumed chats (loaded from disk).
+    const chatModel = (initialMetadata.model as string | undefined) || agentSettings.openRouterModel;
     queryOpts.options.openRouter = {
       apiKey,
       ...(agentSettings.openRouterBaseUrl && { baseUrl: agentSettings.openRouterBaseUrl }),
-      ...(agentSettings.openRouterModel && { model: agentSettings.openRouterModel }),
+      ...(chatModel && { model: chatModel }),
       ...(agentSettings.openRouterLogsRoot && { logsRoot: agentSettings.openRouterLogsRoot }),
       ...(chatEffort && { effort: chatEffort }),
       ...(typeof agentSettings.openRouterMaxBudgetUsd === "number" &&

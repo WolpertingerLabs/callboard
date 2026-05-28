@@ -20,6 +20,7 @@ import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./age
 import { scheduleJob, cancelJob } from "./cron-scheduler.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "./agent-triggers.js";
 import { getActivity, appendActivity } from "./agent-activity.js";
+import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { themeFileService } from "./theme-file-service.js";
 import { generateThemeCSS } from "./quick-completion.js";
 import type { CustomTheme } from "shared/types/index.js";
@@ -44,6 +45,8 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
+  provider?: "claude-code" | "openrouter";
+  model?: string;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -85,6 +88,7 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
           targetAlias: z.string().describe("Alias of the agent to talk to"),
           message: z.string().describe("The message to send to the target agent"),
           maxTurns: z.number().optional().describe("Maximum agentic turns for the target agent (default: 50)"),
+          ...providerModelSchema,
         },
         async (args) => {
           try {
@@ -97,6 +101,11 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
             // 2. Prevent self-talk
             if (args.targetAlias === agentAlias) {
               return { content: [{ type: "text" as const, text: "Error: An agent cannot talk to itself" }] };
+            }
+
+            const providerModel = resolveProviderModelArgs(args);
+            if (!providerModel.ok) {
+              return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
 
             // 3. Compile target agent's identity and workspace context
@@ -128,6 +137,8 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               agentAlias: args.targetAlias,
               maxTurns: args.maxTurns ?? 50,
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+              provider: providerModel.provider,
+              ...(providerModel.model && { model: providerModel.model }),
             });
 
             // 7. Wait for chat_created to get chatId
@@ -189,6 +200,7 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
           targetAlias: z.string().describe("Alias of the agent to deploy (start a session as)"),
           prompt: z.string().describe("The task or message to give the agent"),
           maxTurns: z.number().optional().describe("Maximum agentic turns (default: 200)"),
+          ...providerModelSchema,
         },
         async (args) => {
           try {
@@ -198,6 +210,11 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               return { content: [{ type: "text" as const, text: `Agent "${args.targetAlias}" not found` }] };
             }
 
+            const providerModel = resolveProviderModelArgs(args);
+            if (!providerModel.ok) {
+              return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
+            }
+
             // 2. Execute the agent using the shared helper
             const result = await executeAgent({
               agentAlias: args.targetAlias,
@@ -205,6 +222,8 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               triggeredBy: "tool",
               metadata: { deployedBy: agentAlias },
               maxTurns: args.maxTurns,
+              provider: providerModel.provider,
+              ...(providerModel.model && { model: providerModel.model }),
             });
 
             if (!result) {
