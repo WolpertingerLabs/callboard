@@ -104,3 +104,40 @@ export function refreshOpenRouterModelsCache(): Promise<OpenRouterModelsCache> {
   });
   return fetchPromise;
 }
+
+/**
+ * Format an OpenRouter per-token USD price into a clean per-1M-token display:
+ *  - free -> "0"
+ *  - whole dollars >= 1 -> no decimals ("$30")
+ *  - otherwise -> two decimals ("$1.25", "$0.08")
+ */
+export function formatOpenRouterPrice(perToken: string): string {
+  const perMillion = parseFloat(perToken) * 1_000_000;
+  if (!isFinite(perMillion) || perMillion <= 0) return "0";
+  const rounded = Math.round(perMillion * 100) / 100;
+  if (rounded >= 1 && Number.isInteger(rounded)) return `$${rounded}`;
+  return `$${rounded.toFixed(2)}`;
+}
+
+// Case-insensitive subsequence test: every char of `query` appears in `target`
+// in order (not necessarily contiguous). "claop" matches "anthropic/claude-opus".
+function isSubsequence(query: string, target: string): boolean {
+  const q = query.toLowerCase();
+  const t = target.toLowerCase();
+  let i = 0;
+  for (let j = 0; j < t.length && i < q.length; j++) {
+    if (t[j] === q[i]) i++;
+  }
+  return i === q.length;
+}
+
+/**
+ * Subsequence-search the cached tool-calling models by slug.
+ * An empty query returns the full (sorted) list.
+ */
+export async function searchOpenRouterModels(query: string, limit = 50): Promise<OpenRouterModelInfo[]> {
+  const models = await getOpenRouterModelsAsync();
+  const q = query.trim();
+  const matched = q === "" ? models : models.filter((m) => isSubsequence(q, m.id));
+  return matched.slice(0, Math.max(1, limit));
+}

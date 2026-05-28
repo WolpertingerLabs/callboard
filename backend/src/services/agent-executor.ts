@@ -29,6 +29,8 @@ type MessageSender = (opts: {
   defaultPermissions?: any;
   triggered?: boolean;
   triggeredBy?: "cron" | "event" | "trigger" | "tool";
+  provider?: "claude-code" | "openrouter";
+  model?: string;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -54,6 +56,8 @@ export interface ExecuteAgentOptions {
   triggeredBy: "cron" | "event" | "trigger" | "tool";
   metadata?: Record<string, unknown>;
   maxTurns?: number;
+  provider?: "claude-code" | "openrouter";
+  model?: string;
 }
 
 export interface ExecuteAgentResult {
@@ -69,7 +73,7 @@ export interface ExecuteAgentResult {
  * Returns the chatId of the new session, or null if it failed.
  */
 export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAgentResult | null> {
-  const { agentAlias, prompt, triggeredBy, metadata, maxTurns } = opts;
+  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, model } = opts;
 
   try {
     const config = getAgent(agentAlias);
@@ -111,6 +115,8 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
         codeExecution: "allow",
         webAccess: "allow",
       },
+      ...(provider && { provider }),
+      ...(model && { model }),
     });
 
     // Wait for chat_created event to get chatId

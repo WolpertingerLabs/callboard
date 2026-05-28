@@ -11,6 +11,8 @@ import { findSessionLogPath } from "../utils/session-log.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
+import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
+import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -28,6 +30,8 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
+  provider?: "claude-code" | "openrouter";
+  model?: string;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -453,10 +457,16 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
           baseBranch: z.string().optional().describe("Base branch to start from (switches to this branch before starting)"),
           newBranch: z.string().optional().describe("New branch name to create (created from baseBranch or current HEAD)"),
           useWorktree: z.boolean().optional().describe("Create a git worktree instead of switching branches in-place (default: false)"),
+          ...providerModelSchema,
         },
         async (args) => {
           try {
             const sendMessage = getSendMessage();
+
+            const providerModel = resolveProviderModelArgs(args);
+            if (!providerModel.ok) {
+              return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
+            }
 
             // Resolve effective folder based on branch configuration
             const branchResult = resolveBranch({
@@ -485,6 +495,8 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
               folder: effectiveFolder,
               maxTurns: args.maxTurns ?? 200,
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+              provider: providerModel.provider,
+              ...(providerModel.model && { model: providerModel.model }),
             });
 
             // Listen for chat_created to get the chatId
@@ -507,6 +519,58 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
           } catch (err: any) {
             log.error(`start_chat_session failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error starting session: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── OpenRouter Model Discovery ──────────────────────────────────
+
+      defineTool(
+        "list_openrouter_models",
+        "List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug as the `model` param when starting an openrouter session. The list is cached and refreshed on app start.",
+        {
+          limit: z.number().optional().describe("Max models to return (default: all)."),
+        },
+        async (args) => {
+          try {
+            const models = await getOpenRouterModelsAsync();
+            const limited = typeof args.limit === "number" ? models.slice(0, Math.max(1, args.limit)) : models;
+            const rows = limited.map((m) => ({
+              id: m.id,
+              in: formatOpenRouterPrice(m.promptPrice),
+              out: formatOpenRouterPrice(m.completionPrice),
+            }));
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ count: rows.length, total: models.length, pricingUnit: "per 1M tokens", models: rows }) }],
+            };
+          } catch (err: any) {
+            log.error(`list_openrouter_models failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error listing models: ${err.message}` }] };
+          }
+        },
+      ),
+
+      defineTool(
+        "search_openrouter_models",
+        "Search tool-calling OpenRouter models by slug using subsequence matching (characters in order, e.g. 'claop' matches 'anthropic/claude-opus'). Returns matching slugs with input/output pricing (per 1M tokens).",
+        {
+          query: z.string().describe("Search text matched as a subsequence against the model slug."),
+          limit: z.number().optional().describe("Max results to return (default: 50)."),
+        },
+        async (args) => {
+          try {
+            const matched = await searchOpenRouterModels(args.query, args.limit ?? 50);
+            const rows = matched.map((m) => ({
+              id: m.id,
+              in: formatOpenRouterPrice(m.promptPrice),
+              out: formatOpenRouterPrice(m.completionPrice),
+            }));
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ query: args.query, count: rows.length, pricingUnit: "per 1M tokens", models: rows }) }],
+            };
+          } catch (err: any) {
+            log.error(`search_openrouter_models failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error searching models: ${err.message}` }] };
           }
         },
       ),
