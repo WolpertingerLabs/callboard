@@ -513,6 +513,89 @@ export function buildCanUseTool(
   };
 }
 
+/**
+ * Host handler for the OpenRouter library's `ask_user_question` tool.
+ *
+ * The OR tool calls this with a single question + lettered options and awaits a
+ * {@link OrUserQuestionResponse}. We reuse callboard's existing question flow:
+ * emit the same `user_question` SSE event the Claude path uses (so the
+ * FeedbackPanel renders it) and register a pending request keyed by the current
+ * tracking id, so the `/permission-response` endpoint → respondToPermission
+ * resolves it. The frontend returns answers keyed by question text with the
+ * chosen option's *label*; we map that back to the option id the library wants.
+ *
+ * The OR library single-question shape can't express Claude's multi-question /
+ * multi-select form — we wrap the one question into a length-1 questions array.
+ * The library enforces its own timeout (≤10 min), so no timeout is added here;
+ * abort cleanup resolves the promise so the run can't hang on a stale pending.
+ */
+type OrUserQuestionRequest = {
+  questionId: string;
+  question: string;
+  options: Array<{ id: string; label: string; preview?: string }>;
+  allowFreeText?: boolean;
+};
+type OrUserQuestionResponse = {
+  questionId: string;
+  selectedOptionId?: string;
+  freeTextAnswer?: string;
+};
+
+export function buildOnAskUserQuestion(emitter: EventEmitter, getTrackingId: () => string, signal: AbortSignal) {
+  return (req: OrUserQuestionRequest): Promise<OrUserQuestionResponse> =>
+    new Promise<OrUserQuestionResponse>((resolve) => {
+      const questions = [
+        {
+          question: req.question,
+          multiSelect: false,
+          options: req.options.map((o) => ({
+            label: o.label,
+            ...(o.preview !== undefined && { description: o.preview }),
+          })),
+        },
+      ];
+
+      emitter.emit("event", { type: "user_question", content: "", questions } as StreamEvent);
+
+      const trackingId = getTrackingId();
+      let settled = false;
+      const finish = (response: OrUserQuestionResponse): void => {
+        if (settled) return;
+        settled = true;
+        pendingRequests.delete(trackingId);
+        resolve(response);
+      };
+
+      pendingRequests.set(trackingId, {
+        toolName: "ask_user_question",
+        input: { questions },
+        eventType: "user_question",
+        eventData: { questions },
+        resolve: (result: PermissionResult) => {
+          if (result.behavior !== "allow") {
+            // Denied/aborted — return no selection; the library surfaces this
+            // as an answerless result and the model can decide how to proceed.
+            finish({ questionId: req.questionId });
+            return;
+          }
+          const answers = ((result.updatedInput as Record<string, unknown> | undefined)?.answers ?? {}) as Record<string, string>;
+          const chosen = answers[req.question];
+          const matched = req.options.find((o) => o.label === chosen);
+          if (matched) {
+            finish({ questionId: req.questionId, selectedOptionId: matched.id });
+          } else if (typeof chosen === "string") {
+            // "Other"/free-text answer (or label drift) — hand the raw text back.
+            finish({ questionId: req.questionId, freeTextAnswer: chosen });
+          } else {
+            finish({ questionId: req.questionId });
+          }
+        },
+      });
+
+      signal.addEventListener("abort", () => finish({ questionId: req.questionId }), { once: true });
+    });
+}
+
 interface SendMessageOptions {
   prompt: string | any;
   imageMetadata?: { buffer: Buffer; mimeType: string }[];
@@ -860,6 +943,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         }),
       appTitle: "callboard",
     };
+    // Wire the host handler for the OR ask_user_question tool, reusing the same
+    // emitter + tracking-id getter the Claude permission flow uses so the
+    // question UI and answer path behave identically across providers.
+    queryOpts.options.onAskUserQuestion = buildOnAskUserQuestion(emitter, () => trackingId, abortController.signal);
   }
 
   log.debug(`SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);

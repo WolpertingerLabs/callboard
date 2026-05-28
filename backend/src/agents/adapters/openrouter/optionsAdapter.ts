@@ -94,6 +94,7 @@ interface ClaudeShapedOptions {
   abortController?: AbortController;
   settingSources?: readonly SettingSource[];
   onHook?: OpenRouterAgentRunOptions["onHook"];
+  onAskUserQuestion?: OpenRouterAgentRunOptions["onAskUserQuestion"];
   stderr?: (data: string) => void;
   /**
    * Callboard's MCP-server bundles built via {@link OpenRouterAdapter.buildToolServer}.
@@ -164,6 +165,10 @@ export function translateOptions(
   }
   if (opts.canUseTool) orOpts.canUseTool = opts.canUseTool;
   if (opts.onHook) orOpts.onHook = opts.onHook;
+  // Host handler for the OR library's ask_user_question tool. Without it the
+  // tool returns "no host handler registered". claude.ts builds this with the
+  // session emitter + pending-request plumbing in closure.
+  if (opts.onAskUserQuestion) orOpts.onAskUserQuestion = opts.onAskUserQuestion;
   if (opts.abortController) orOpts.signal = opts.abortController.signal;
 
   // When callboard injects MCP server bundles (callboard-tools, mcp-proxy,
