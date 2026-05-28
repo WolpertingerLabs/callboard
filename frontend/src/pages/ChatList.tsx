@@ -35,6 +35,9 @@ export default function ChatList({
   const { activeSessions, metadataVersion } = useSessionContext();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
+  // Number of chats currently shown (grows via "load more"). Refreshes refetch
+  // this many so an expanded list isn't cut back to the first page.
+  const loadedCountRef = useRef(20);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
   const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
@@ -108,19 +111,21 @@ export default function ChatList({
       // When advanced filters or content search are active, fetch all chats
       // to avoid missing matches due to pagination
       const shouldFetchAll = anyFilterActive || useFilter;
-      const limit = shouldFetchAll ? 9999 : 20;
+      const limit = shouldFetchAll ? 9999 : Math.max(20, loadedCountRef.current);
       // When triggered chats are hidden, tell the API to exclude them so we
       // always get LIMIT real chats back (not LIMIT minus triggered ones)
       const excludeTriggered = !showTriggered;
       const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined);
       setChats(response.chats);
       setHasMore(shouldFetchAll ? false : response.hasMore);
+      if (!shouldFetchAll) loadedCountRef.current = response.chats.length;
 
       // If the response was stale (cached), immediately fetch fresh data
       if (response.stale) {
         const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false);
         setChats(freshResponse.chats);
         setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
+        if (!shouldFetchAll) loadedCountRef.current = freshResponse.chats.length;
       }
 
       setIsInitialLoading(false);
@@ -143,6 +148,7 @@ export default function ChatList({
       const response = await listChats(20, chats.length, bookmarkFilter || undefined, excludeTriggered || undefined);
       setChats((prev) => [...prev, ...response.chats]);
       setHasMore(response.hasMore);
+      loadedCountRef.current = chats.length + response.chats.length;
     } finally {
       setIsLoadingMore(false);
     }
