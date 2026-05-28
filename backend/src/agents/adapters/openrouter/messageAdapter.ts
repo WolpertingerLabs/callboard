@@ -9,13 +9,21 @@
  * `turn_start`, `turn_end`, and the bridge `error` event are dropped (their
  * information is folded into the eventual `stream_complete`/`result` payload).
  *
- * A synthetic `slash_commands` event is emitted at session start using
- * `createCommandLoader` so the frontend's slash-menu UI works without
- * relying on a wire-level event the OR library does not expose.
+ * A synthetic `slash_commands` event is emitted at session start using a
+ * {@link CommandLoader} so the frontend's slash-menu UI works without relying on
+ * a wire-level event the OR library does not expose. The adapter passes a loader
+ * pre-built with plugin command roots + skill convergence (see commandAdapter);
+ * when none is supplied we fall back to a bare project/user `createCommandLoader`
+ * so direct callers (and tests) keep working.
  *
  * @see plans/openrouter-adapter.md §3 (event translation table)
  */
-import { createCommandLoader, type AgentCoreEvent, type OpenRouterAgentRun } from "@cybourgeoisie/openrouter-agent-coder";
+import {
+  createCommandLoader,
+  type AgentCoreEvent,
+  type CommandLoader,
+  type OpenRouterAgentRun,
+} from "@cybourgeoisie/openrouter-agent-coder";
 import type { AgentEvent, TokenUsage } from "../../ports/events.js";
 
 /**
@@ -25,8 +33,9 @@ import type { AgentEvent, TokenUsage } from "../../ports/events.js";
 export async function* translateOpenRouterEvents(
   run: OpenRouterAgentRun,
   cwd: string,
+  commandLoader?: CommandLoader,
 ): AsyncIterable<AgentEvent> {
-  const slashCommands = await tryListSlashCommands(cwd);
+  const slashCommands = await tryListSlashCommands(cwd, commandLoader);
   if (slashCommands) yield slashCommands;
 
   for await (const event of run) {
@@ -109,9 +118,12 @@ function stringifyOutput(output: unknown): string {
   }
 }
 
-async function tryListSlashCommands(cwd: string): Promise<AgentEvent | null> {
+async function tryListSlashCommands(
+  cwd: string,
+  commandLoader?: CommandLoader,
+): Promise<AgentEvent | null> {
   try {
-    const loader = createCommandLoader({ cwd });
+    const loader = commandLoader ?? createCommandLoader({ cwd });
     const listing = await loader.list();
     const commands = listing.map((c) => c.name);
     // Suppress the synthetic event when no commands are discovered — keeps

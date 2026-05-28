@@ -103,7 +103,38 @@ interface ClaudeShapedOptions {
    * `.tools` and ignoring the rest).
    */
   mcpServers?: Record<string, SdkMcpServer | { tools?: readonly unknown[] }>;
+  /**
+   * Claude-SDK-shaped plugin descriptors built by claude.ts#buildPluginOptions
+   * (`{ type: "local", path, name }`). The Claude path forwards these to the SDK
+   * directly; the OR adapter reads only `.path` (the plugin's root directory) and
+   * feeds it to the OR library's `loadPlugins({ pluginDirs })`. Resolution is
+   * async, so it happens in OpenRouterAdapter's lazy run construction rather than
+   * here. See {@link extractPluginDirs}.
+   */
+  plugins?: ReadonlyArray<{ type?: string; path?: string; name?: string }>;
   openRouter?: OpenRouterOptionsExtras;
+}
+
+/**
+ * Pull the absolute plugin-root directories out of the Claude-shaped `plugins`
+ * descriptor array. Entries without a usable `path` (or non-`local` types the OR
+ * library can't resolve from a directory) are skipped. Exported for the OR
+ * adapter's plugin-loading step and for unit tests.
+ */
+export function extractPluginDirs(options: Record<string, unknown>): string[] {
+  const plugins = (options as ClaudeShapedOptions).plugins;
+  if (!Array.isArray(plugins)) return [];
+  const dirs: string[] = [];
+  for (const p of plugins) {
+    // Only `type: "local"` descriptors carry a filesystem path loadPlugins can
+    // walk. Other plugin source types (e.g. remote/marketplace refs) have no
+    // local directory and are skipped — the Claude path resolves those via the
+    // CLI, which the OR adapter has no equivalent for.
+    if (p && typeof p.path === "string" && p.path.length > 0 && (p.type === undefined || p.type === "local")) {
+      dirs.push(p.path);
+    }
+  }
+  return dirs;
 }
 
 export interface TranslateOptionsResult {
@@ -178,18 +209,16 @@ export function translateOptions(
   // primitives and the run would be useless.
   const { tools: mcpTools, droppedServerNames } = collectMcpTools(opts.mcpServers);
   if (mcpTools.length > 0) {
-    // Build OR's built-in tools and forward the ask_user_question host handler.
-    // allTools' signature is (ctx, opts) — the handler MUST go in the second
-    // arg; passing it in the ctx object silently no-ops and the tool errors with
-    // "no host handler registered". Because callboard always supplies a custom
-    // `tools` array, the library uses these tools verbatim (the top-level
-    // orOpts.onAskUserQuestion is only consulted on the library's own default
-    // tool set, which we bypass), so this is the only place the handler lands.
+    // Build OR's built-in tools and forward the ask_user_question host handler,
+    // then append callboard's MCP-bundled tools. Because callboard always
+    // supplies a custom `tools` array, the library uses these tools verbatim
+    // (the top-level orOpts.onAskUserQuestion is only consulted on the library's
+    // own default tool set, which we bypass), so this is the only place the
+    // handler lands. The plugin/skill wiring in OpenRouterAdapter later appends
+    // the `skill` tool to this same array — see buildDefaultOrTools' note on why
+    // the base set must be materialized here rather than left to the library.
     orOpts.tools = [
-      ...allTools(
-        { cwd, ...(orOpts.signal && { signal: orOpts.signal }) },
-        { ...(opts.onAskUserQuestion && { onAskUserQuestion: opts.onAskUserQuestion }) },
-      ),
+      ...buildDefaultOrTools(cwd, orOpts.signal, opts.onAskUserQuestion),
       ...mcpTools,
     ];
   }
@@ -263,7 +292,37 @@ function translatePrompt(
  * of any servers whose shape has no in-process `.tools` (e.g. stdio/http
  * configs from `.mcp.json`) so the caller can surface a warning.
  */
-type OrTool = NonNullable<OpenRouterAgentRunOptions["tools"]>[number];
+export type OrTool = NonNullable<OpenRouterAgentRunOptions["tools"]>[number];
+
+/**
+ * Materialize OR's built-in client tool set (read_file, run_command, …) bound
+ * to the run's cwd / abort signal, with the host `ask_user_question` handler
+ * forwarded.
+ *
+ * `allTools`' signature is `(ctx, opts)` — the handler MUST go in the second
+ * arg; passing it inside the ctx object silently no-ops and the tool errors with
+ * "no host handler registered".
+ *
+ * Why this exists as a standalone export: callboard always supplies a custom
+ * `tools` array, and the OR library appends its `skill` built-in (and binds the
+ * ask_user_question handler) ONLY when constructing its OWN default bundle —
+ * which a custom `tools` array bypasses entirely (see agent.ts `hasCustomTools`).
+ * So whenever callboard needs to add a tool the library would normally bundle
+ * (the `skill` tool, here), it must first reconstruct this default set itself and
+ * append to it, rather than relying on the library. Both the MCP-tools branch in
+ * {@link translateOptions} and the skill-wiring path in OpenRouterAdapter call
+ * through here so the base set is built identically in both places.
+ */
+export function buildDefaultOrTools(
+  cwd: string,
+  signal: AbortSignal | undefined,
+  onAskUserQuestion: ClaudeShapedOptions["onAskUserQuestion"],
+): readonly OrTool[] {
+  return allTools(
+    { cwd, ...(signal && { signal }) },
+    { ...(onAskUserQuestion && { onAskUserQuestion }) },
+  );
+}
 
 function collectMcpTools(mcpServers: ClaudeShapedOptions["mcpServers"]): {
   tools: OrTool[];
