@@ -120,6 +120,20 @@ describe("buildCanUseTool — user-prompt path", () => {
     await promise;
   });
 
+  it("AskUserQuestion merges answers into the original input, preserving questions", async () => {
+    const { canUseTool, trackingId } = make({ policy: makePolicy(FULL_ASK, () => null) });
+
+    const qs = [{ question: "pick one", options: ["a", "b"] }];
+    const promise = canUseTool("AskUserQuestion", { questions: qs }, unsignaled());
+
+    respondToPermission(trackingId, true, { answers: { "pick one": "a" } });
+    await expect(promise).resolves.toEqual({
+      behavior: "allow",
+      updatedInput: { questions: qs, answers: { "pick one": "a" } },
+      updatedPermissions: undefined,
+    });
+  });
+
   it("ExitPlanMode emits plan_review event with stringified input", async () => {
     const { canUseTool, emitter, trackingId } = make({ policy: makePolicy(FULL_ASK, () => null) });
     const events: StreamEvent[] = [];
