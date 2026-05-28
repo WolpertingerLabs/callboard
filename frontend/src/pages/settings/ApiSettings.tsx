@@ -3,6 +3,7 @@ import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getSystemInfo } from "../../api";
 import type { AgentSettings } from "shared/types/index.js";
 import type { SystemInfo } from "../../api";
+import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -477,18 +478,14 @@ export default function ApiSettings() {
           <label htmlFor="openRouterModel" style={labelStyle}>
             Default Model
           </label>
-          <input
+          <OpenRouterModelSelector
             id="openRouterModel"
-            type="text"
             value={openRouterModel}
-            onChange={(e) => setOpenRouterModel(e.target.value)}
+            onChange={setOpenRouterModel}
             placeholder="~anthropic/claude-sonnet-latest"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
           />
           <div style={helpStyle}>
-            Default model for new OR chats. Common aliases:{" "}
+            Start typing to filter tool-calling models by slug. Common aliases:{" "}
             <code style={{ fontSize: 11 }}>~anthropic/claude-sonnet-latest</code>, <code style={{ fontSize: 11 }}>openai/gpt-4o</code>,{" "}
             <code style={{ fontSize: 11 }}>google/gemini-2.0-flash</code>.
           </div>

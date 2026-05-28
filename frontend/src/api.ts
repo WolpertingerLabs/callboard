@@ -46,6 +46,7 @@ import type {
   McpToolParameter,
   McpToolServerInfo,
   McpToolsResponse,
+  OpenRouterModelInfo,
 } from "shared/types/index.js";
 
 export type {
@@ -96,6 +97,7 @@ export type {
   McpToolParameter,
   McpToolServerInfo,
   McpToolsResponse,
+  OpenRouterModelInfo,
 };
 
 const BASE = "/api";
@@ -1304,6 +1306,13 @@ export async function getSystemInfo(): Promise<SystemInfo> {
   const res = await fetch(`${BASE}/system-info`, { credentials: "include" });
   await assertOk(res, "Failed to get system info");
   return res.json();
+}
+
+export async function getOpenRouterModels(): Promise<OpenRouterModelInfo[]> {
+  const res = await fetch(`${BASE}/openrouter/models`, { credentials: "include" });
+  await assertOk(res, "Failed to get OpenRouter models");
+  const data = await res.json();
+  return Array.isArray(data.models) ? data.models : [];
 }
 
 // Server restart API

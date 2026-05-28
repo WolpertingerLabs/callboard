@@ -52,6 +52,7 @@ import { themesRouter } from "./routes/themes.js";
 import { filesRouter } from "./routes/files.js";
 import { canvasRouter } from "./routes/canvas.js";
 import { mcpToolsRouter } from "./routes/mcp-tools.js";
+import { openRouterRouter } from "./routes/openrouter.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
@@ -71,6 +72,7 @@ import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-s
 import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 import { startTunnelIfEnabled, stopTunnel } from "./services/tunnel-manager.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
+import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
 
 const log = createLogger("server");
@@ -204,6 +206,7 @@ app.use("/api/themes", themesRouter);
 app.use("/api/files", filesRouter);
 app.use("/api/canvas", canvasRouter);
 app.use("/api/mcp-tools", mcpToolsRouter);
+app.use("/api/openrouter", openRouterRouter);
 
 // Instance name endpoints (requires auth)
 import { getInstanceName, saveInstanceName, generateInstanceName } from "./utils/paths.js";
@@ -523,6 +526,9 @@ app.listen(PORT, () => {
 
   // Cache SDK info (account, models) in the background — non-blocking
   initSdkInfoCache();
+
+  // Warm the OpenRouter tool-calling model list (public endpoint) — non-blocking
+  initOpenRouterModelsCache();
 
   // Initialize automation systems (non-blocking, log errors but don't crash)
   try {

@@ -64,3 +64,5 @@ export type { CallerInfo, ConnectionStatus } from "./connections.js";
 export type { CustomTheme, ThemeVariables, ThemeListItem } from "./theme.js";
 
 export type { McpToolParameter, McpToolDefinition, McpToolServerInfo, McpToolsResponse } from "./mcpTool.js";
+
+export type { OpenRouterModelInfo } from "./openrouter.js";
