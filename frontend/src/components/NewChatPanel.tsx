@@ -146,6 +146,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const handleAgentCreate = async (agent: AgentConfig) => {
     if (!agent?.workspacePath) return;
 
+    // Persist the provider/effort selection just like the folder path
+    // (handleCreate) so the toggle remembers the user's choice regardless of
+    // which path they created the chat from.
+    saveDefaultProvider(provider);
+    saveDefaultOpenRouterEffort(effort);
+
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
       fileWrite: "allow",
