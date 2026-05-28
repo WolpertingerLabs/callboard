@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "@cybourgeoisie/openrouter-agent-coder";
-import { translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
+import { extractPluginDirs, translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
 
 const defaultExtras: OpenRouterOptionsExtras = { apiKey: "sk-or-test" };
 
@@ -196,6 +196,40 @@ describe("translateOptions — Claude option passthrough", () => {
     );
     expect(orOpts.allowedTools).toBeUndefined();
     expect(orOpts.disallowedTools).toBeUndefined();
+  });
+});
+
+describe("extractPluginDirs — plugin descriptor → loadPlugins dirs", () => {
+  it("returns [] when no plugins are present", () => {
+    expect(extractPluginDirs({})).toEqual([]);
+    expect(extractPluginDirs({ plugins: undefined })).toEqual([]);
+    expect(extractPluginDirs({ plugins: [] })).toEqual([]);
+  });
+
+  it("pulls .path from local plugin descriptors (the Claude-shaped form)", () => {
+    const dirs = extractPluginDirs({
+      plugins: [
+        { type: "local", path: "/abs/plugin-a", name: "a" },
+        { type: "local", path: "/abs/plugin-b", name: "b" },
+      ],
+    });
+    expect(dirs).toEqual(["/abs/plugin-a", "/abs/plugin-b"]);
+  });
+
+  it("treats a missing type as local (path is enough)", () => {
+    expect(extractPluginDirs({ plugins: [{ path: "/abs/p", name: "p" }] })).toEqual(["/abs/p"]);
+  });
+
+  it("skips descriptors with no usable path or a non-local source type", () => {
+    const dirs = extractPluginDirs({
+      plugins: [
+        { type: "local", path: "/abs/keep", name: "keep" },
+        { type: "local", name: "no-path" },
+        { type: "remote", path: "/abs/remote", name: "remote" },
+        { type: "local", path: "", name: "empty" },
+      ],
+    });
+    expect(dirs).toEqual(["/abs/keep"]);
   });
 });
 
