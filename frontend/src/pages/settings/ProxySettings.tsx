@@ -84,24 +84,15 @@ export default function ProxySettings() {
     return mcpConfigDir;
   })();
 
-  // Load key aliases when proxy mode or config dir changes
+  // Load key aliases when proxy mode or config dir changes.
+  // The backend resolves the effective config dir (including built-in defaults
+  // when no explicit dir is saved), so fetch unconditionally and let it return
+  // an empty list when there is nothing to show.
   useEffect(() => {
     if (!settings) return;
-
-    // Use the local proxyMode state (may differ from saved settings when user toggles radio)
-    const activeDir = (() => {
-      if (proxyMode === "local") return localMcpConfigDir || mcpConfigDir;
-      if (proxyMode === "remote") return remoteMcpConfigDir || mcpConfigDir;
-      return mcpConfigDir;
-    })();
-
-    if (activeDir) {
-      getKeyAliases(proxyMode)
-        .then(setKeyAliases)
-        .catch(() => setKeyAliases([]));
-    } else {
-      setKeyAliases([]);
-    }
+    getKeyAliases(proxyMode)
+      .then(setKeyAliases)
+      .catch(() => setKeyAliases([]));
   }, [settings, proxyMode, localMcpConfigDir, mcpConfigDir, remoteMcpConfigDir]);
 
   const handleSave = async () => {
