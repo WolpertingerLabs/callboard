@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Bot, PanelLeftClose, List, FolderOpen, AlertTriangle, Plus, GitBranch } from "lucide-react";
+import { Settings, Bot, PanelLeftClose, List, FolderOpen, AlertTriangle, Plus } from "lucide-react";
 import { fetchInstanceName } from "../api";
 
 interface SidebarHeaderProps {
@@ -18,7 +18,6 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
   const location = useLocation();
   const isSettingsActive = location.pathname === "/settings";
   const isAgentsActive = location.pathname.startsWith("/agents");
-  const isBranchesActive = location.pathname === "/branches";
 
   useEffect(() => {
     fetchInstanceName()
@@ -106,37 +105,16 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
         )}
         <div style={{ display: "flex" }}>
           <button
-            onClick={() => navigate("/branches")}
-            style={{
-              background: isBranchesActive ? "var(--accent)" : "var(--bg-secondary)",
-              color: isBranchesActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-              padding: "6px",
-              borderTopLeftRadius: 6,
-              borderBottomLeftRadius: 6,
-              borderTopRightRadius: 0,
-              borderBottomRightRadius: 0,
-              border: isBranchesActive ? "none" : "1px solid var(--chatlist-item-border)",
-              borderRight: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Branches"
-          >
-            <GitBranch size={16} />
-          </button>
-          <button
             onClick={() => navigate("/agents")}
             style={{
               background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
               color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
               padding: "6px",
-              borderTopLeftRadius: 0,
-              borderBottomLeftRadius: 0,
+              borderTopLeftRadius: 6,
+              borderBottomLeftRadius: 6,
               borderTopRightRadius: 0,
               borderBottomRightRadius: 0,
               border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
-              borderLeft: "none",
               borderRight: "none",
               display: "flex",
               alignItems: "center",

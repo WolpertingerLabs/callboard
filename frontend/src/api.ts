@@ -19,11 +19,6 @@ import type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
-  BranchOverviewResponse,
-  BranchOverviewFolder,
-  BranchRow,
-  PrInfo,
-  PrState,
   AppPlugin,
   McpServerConfig,
   PluginScanRoot,
@@ -70,11 +65,6 @@ export type {
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
-  BranchOverviewResponse,
-  BranchOverviewFolder,
-  BranchRow,
-  PrInfo,
-  PrState,
   AppPlugin,
   McpServerConfig,
   PluginScanRoot,
@@ -344,32 +334,6 @@ export async function getGitDiff(folder: string): Promise<GitDiffResponse> {
   const res = await fetch(`${BASE}/git/diff?folder=${encodeURIComponent(folder)}`);
   await assertOk(res, "Failed to get diff");
   return res.json();
-}
-
-export async function getBranchOverview(folder: string, refresh: boolean = false): Promise<BranchOverviewResponse> {
-  const params = new URLSearchParams({ folder });
-  if (refresh) params.append("refresh", "1");
-  const res = await fetch(`${BASE}/git/branch-overview?${params}`);
-  await assertOk(res, "Failed to get branch overview");
-  return res.json();
-}
-
-export async function deleteLocalBranch(folder: string, branch: string, force: boolean): Promise<void> {
-  const res = await fetch(`${BASE}/git/branches`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ folder, branch, force }),
-  });
-  await assertOk(res, "Failed to delete branch");
-}
-
-export async function removeGitWorktree(folder: string, worktreePath: string, force: boolean): Promise<void> {
-  const res = await fetch(`${BASE}/git/worktrees`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ folder, worktreePath, force }),
-  });
-  await assertOk(res, "Failed to remove worktree");
 }
 
 export async function getGitFileDiff(folder: string, filename: string): Promise<{ diff: string; additions: number; deletions: number }> {

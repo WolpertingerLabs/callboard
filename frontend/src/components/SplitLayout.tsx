@@ -8,7 +8,6 @@ import Settings from "../pages/Settings";
 import AgentList from "../pages/agents/AgentList";
 import CreateAgent from "../pages/agents/CreateAgent";
 import AgentDashboard from "../pages/agents/AgentDashboard";
-import BranchTable from "../pages/BranchTable";
 import { getSidebarCollapsed, saveSidebarCollapsed, getSidebarViewMode, saveSidebarViewMode, type SidebarViewMode } from "../utils/localStorage";
 
 interface SplitLayoutProps {
@@ -43,9 +42,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   // Check if we're on the settings page (including sub-tab routes like /settings/api)
   const isSettings = location.pathname === "/settings" || location.pathname.startsWith("/settings/");
 
-  // Check if we're on the branch table page
-  const isBranchTable = location.pathname === "/branches";
-
   // Check if we're on the new chat page
   const isNewChat = location.pathname === "/chat/new";
 
@@ -67,9 +63,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   if (isMobile) {
     if (isSettings) {
       return <Settings onLogout={onLogout} />;
-    }
-    if (isBranchTable) {
-      return <BranchTable />;
     }
     if (isAgentList) {
       return <AgentList />;
@@ -172,8 +165,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
       >
         {isSettings ? (
           <Settings onLogout={onLogout} />
-        ) : isBranchTable ? (
-          <BranchTable />
         ) : isAgentList ? (
           <AgentList />
         ) : isCreateAgent ? (
