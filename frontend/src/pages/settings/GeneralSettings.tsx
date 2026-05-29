@@ -29,7 +29,7 @@ const CONTACT_FIELDS: {
   { key: "discord", label: "Discord username", placeholder: "username", help: "Requires a working Discord integration (configure under Settings → Connections)." },
   { key: "telegram", label: "Telegram account", placeholder: "@handle", help: "Requires a working Telegram integration (configure under Settings → Connections)." },
   { key: "phone", label: "Phone number", placeholder: "+1 555 123 4567", help: "Coming soon.", disabled: true },
-  { key: "email", label: "Email address", placeholder: "you@example.com", help: "Requires the AgentMail connection (coming soon)." },
+  { key: "email", label: "Email address", placeholder: "you@example.com", help: "Requires the AgentMail connection (configure under Settings → Connections)." },
 ];
 
 function emptyContact(): UserContactInfo {
