@@ -197,6 +197,27 @@ describe("translateOptions — Claude option passthrough", () => {
     expect(orOpts.allowedTools).toBeUndefined();
     expect(orOpts.disallowedTools).toBeUndefined();
   });
+
+  it("forwards persistSession: false so ephemeral calls write no session record", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, persistSession: false },
+      "hi",
+    );
+    expect(orOpts.persistSession).toBe(false);
+  });
+
+  it("forwards persistSession: true explicitly", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, persistSession: true },
+      "hi",
+    );
+    expect(orOpts.persistSession).toBe(true);
+  });
+
+  it("leaves persistSession undefined when not specified (OR library default applies)", () => {
+    const { orOpts } = translateOptions({ openRouter: defaultExtras }, "hi");
+    expect(orOpts.persistSession).toBeUndefined();
+  });
 });
 
 describe("extractPluginDirs — plugin descriptor → loadPlugins dirs", () => {
