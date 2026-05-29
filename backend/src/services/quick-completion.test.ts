@@ -5,16 +5,37 @@
  * handler that gets built, handed to the provider via buildToolServer, and
  * eventually invoked carries the text back correctly, and the `result` event's
  * usage/duration gets mapped into QuickCompletionResult.
+ *
+ * agent-settings is mocked so provider auto-resolution and the OpenRouter
+ * config sourcing are deterministic, independent of the host's real
+ * data/agent-settings.json.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setAgentProviderForTesting } from "../agents/factory.js";
 import { MockAgentProvider } from "../agents/adapters/mock/MockAgentProvider.js";
 import type { AgentEvent } from "../agents/ports/events.js";
+
+vi.mock("./agent-settings.js", () => ({
+  getClaudeCodeExecutablePath: () => undefined,
+  isOpenRouterConfigured: vi.fn(() => false),
+  getAgentSettings: vi.fn(() => ({ proxyMode: "local" })),
+}));
+
 import { quickCompletion } from "./quick-completion.js";
+import { getAgentSettings, isOpenRouterConfigured } from "./agent-settings.js";
+
+const mockIsOpenRouterConfigured = vi.mocked(isOpenRouterConfigured);
+const mockGetAgentSettings = vi.mocked(getAgentSettings);
+
+beforeEach(() => {
+  mockIsOpenRouterConfigured.mockReturnValue(false);
+  mockGetAgentSettings.mockReturnValue({ proxyMode: "local" });
+});
 
 afterEach(() => {
   setAgentProviderForTesting(null);
+  vi.clearAllMocks();
 });
 
 /** Poll until the mock has captured at least one tool-server spec. */
@@ -117,5 +138,77 @@ describe("quickCompletion — through MockAgentProvider", () => {
     const result = await resultPromise;
     expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
     expect(result.durationMs).toBe(0);
+  });
+
+  it("falls back to the assistant's text when return_result is never called", async () => {
+    // No tool call — model answers directly via text events. The completion
+    // should still resolve using the accumulated text rather than dying.
+    const mock = new MockAgentProvider({
+      events: [
+        { type: "text", content: "Fallback " },
+        { type: "text", content: "Title" },
+        { type: "result", status: "success" },
+      ],
+    });
+    setAgentProviderForTesting(mock);
+
+    const result = await quickCompletion({ prompt: "no tool", model: "haiku" });
+    expect(result.text).toBe("Fallback Title");
+  });
+});
+
+describe("quickCompletion — provider auto-resolution", () => {
+  it("routes to the openrouter provider and forwards OR config when configured", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+      openRouterBaseUrl: "https://example.test/api/v1",
+      openRouterModel: "~anthropic/claude-sonnet-latest",
+      openRouterMaxBudgetUsd: 2.5,
+    });
+
+    const mock = new MockAgentProvider();
+    // Inject under the openrouter slot — auto-resolution should land here.
+    setAgentProviderForTesting(mock, "openrouter");
+
+    const resultPromise = quickCompletion({ prompt: "title please", model: "haiku", effort: "medium" });
+    await fireReturnResult(mock, "OR Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("OR Title");
+    expect(mock.queryRecords).toHaveLength(1);
+    const opts = mock.queryRecords[0].request.options as {
+      openRouter?: {
+        apiKey?: string;
+        baseUrl?: string;
+        model?: string;
+        maxBudgetUsd?: number;
+        effort?: string;
+        appTitle?: string;
+      };
+    };
+    expect(opts.openRouter).toMatchObject({
+      apiKey: "sk-or-test",
+      baseUrl: "https://example.test/api/v1",
+      model: "~anthropic/claude-sonnet-latest",
+      maxBudgetUsd: 2.5,
+      effort: "medium",
+      appTitle: "callboard",
+    });
+  });
+
+  it("stays on claude-code (no openRouter config) when OR is not configured", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(false);
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock); // claude-code slot
+
+    const resultPromise = quickCompletion({ prompt: "title", model: "haiku" });
+    await fireReturnResult(mock, "CC Title");
+    await resultPromise;
+
+    const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
+    expect(opts.openRouter).toBeUndefined();
   });
 });

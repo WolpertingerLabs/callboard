@@ -46,6 +46,16 @@ export function getAgentSettings(): AgentSettings {
 }
 
 /**
+ * Whether the OpenRouter provider is usable — i.e. an API key is configured.
+ * Drives provider selection for quick completions (title / branch / theme
+ * generation) and the New Chat panel's provider toggle.
+ */
+export function isOpenRouterConfigured(settings?: AgentSettings): boolean {
+  const s = settings ?? loadSettings();
+  return Boolean(s.openRouterApiKey?.trim());
+}
+
+/**
  * Build the subset of environment variables that should be injected into the
  * Claude Agent SDK subprocess to reflect user-configured API / auth / model
  * overrides. Empty/unset fields are omitted so that process.env (i.e. the
