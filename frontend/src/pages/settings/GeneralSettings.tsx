@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw } from "lucide-react";
+import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
 import {
@@ -11,9 +11,35 @@ import {
   deleteTheme,
   fetchIgnoredProjectDirs,
   updateIgnoredProjectDirs,
+  fetchUserContact,
+  updateUserContact,
 } from "../../api";
 import { reloadCustomTheme } from "../../App";
-import type { ThemeListItem } from "../../api";
+import type { ThemeListItem, UserContactInfo } from "../../api";
+
+type ContactKey = keyof UserContactInfo;
+
+const CONTACT_FIELDS: {
+  key: ContactKey;
+  label: string;
+  placeholder: string;
+  help: string;
+  disabled?: boolean;
+}[] = [
+  { key: "discord", label: "Discord username", placeholder: "username", help: "Requires a working Discord integration (configure under Settings → Connections)." },
+  { key: "telegram", label: "Telegram account", placeholder: "@handle", help: "Requires a working Telegram integration (configure under Settings → Connections)." },
+  { key: "phone", label: "Phone number", placeholder: "+1 555 123 4567", help: "Coming soon.", disabled: true },
+  { key: "email", label: "Email address", placeholder: "you@example.com", help: "Requires the AgentMail connection (coming soon)." },
+];
+
+function emptyContact(): UserContactInfo {
+  return {
+    discord: { value: "", enabled: false },
+    telegram: { value: "", enabled: false },
+    phone: { value: "", enabled: false },
+    email: { value: "", enabled: false },
+  };
+}
 
 export default function GeneralSettings() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getThemeMode());
@@ -41,6 +67,12 @@ export default function GeneralSettings() {
   const [ignoredError, setIgnoredError] = useState<string | null>(null);
   const [ignoredSaved, setIgnoredSaved] = useState(false);
 
+  // Contact info state
+  const [contact, setContact] = useState<UserContactInfo>(emptyContact);
+  const [contactSaving, setContactSaving] = useState(false);
+  const [contactSaved, setContactSaved] = useState(false);
+  const [contactError, setContactError] = useState<string | null>(null);
+
   useEffect(() => {
     fetchInstanceName()
       .then(setInstanceName)
@@ -55,7 +87,33 @@ export default function GeneralSettings() {
       })
       .catch((err) => setIgnoredError(err.message || "Failed to load ignored folders"))
       .finally(() => setIgnoredLoading(false));
+    fetchUserContact()
+      .then(setContact)
+      .catch(() => {});
   }, []);
+
+  const handleContactValueChange = (key: ContactKey, value: string) => {
+    setContact((prev) => ({ ...prev, [key]: { ...prev[key], value } }));
+  };
+
+  const handleContactToggle = (key: ContactKey) => {
+    setContact((prev) => ({ ...prev, [key]: { ...prev[key], enabled: !prev[key].enabled } }));
+  };
+
+  const handleContactSave = async () => {
+    setContactSaving(true);
+    setContactError(null);
+    try {
+      const saved = await updateUserContact(contact);
+      setContact(saved);
+      setContactSaved(true);
+      setTimeout(() => setContactSaved(false), 2000);
+    } catch (err: any) {
+      setContactError(err.message || "Failed to save contact info");
+    } finally {
+      setContactSaving(false);
+    }
+  };
 
   const persistIgnoredPrefixes = async (next: string[]) => {
     setIgnoredSaving(true);
@@ -278,6 +336,117 @@ export default function GeneralSettings() {
           >
             {nameSaved ? "Saved!" : "Save"}
           </button>
+        </div>
+      </div>
+
+      {/* Contact Info Section */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 20,
+          background: "var(--bg)",
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <Contact size={16} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Contact Info</span>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+          Provide ways for agents to reach you when you're away. When you enable a channel, the{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>notify_user</code> tool will
+          tell the agent how to message you there through your connections.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {CONTACT_FIELDS.map(({ key, label, placeholder, help, disabled }) => {
+            const channel = contact[key];
+            return (
+              <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4, opacity: disabled ? 0.55 : 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <label
+                    htmlFor={`contact-${key}`}
+                    style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 130, flexShrink: 0 }}
+                  >
+                    {label}
+                    {disabled && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 11 }}> (soon)</span>}
+                  </label>
+                  <input
+                    id={`contact-${key}`}
+                    type="text"
+                    value={channel.value}
+                    placeholder={placeholder}
+                    disabled={disabled}
+                    onChange={(e) => handleContactValueChange(key, e.target.value)}
+                    style={{
+                      flex: 1,
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      fontSize: 14,
+                      boxSizing: "border-box",
+                      cursor: disabled ? "not-allowed" : "text",
+                    }}
+                  />
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={channel.enabled}
+                    aria-label={`Toggle ${label}`}
+                    disabled={disabled}
+                    onClick={() => handleContactToggle(key)}
+                    style={{
+                      flexShrink: 0,
+                      width: 40,
+                      height: 22,
+                      borderRadius: 11,
+                      border: "none",
+                      padding: 2,
+                      background: channel.enabled ? "var(--accent)" : "var(--border)",
+                      cursor: disabled ? "not-allowed" : "pointer",
+                      display: "flex",
+                      justifyContent: channel.enabled ? "flex-end" : "flex-start",
+                      alignItems: "center",
+                      transition: "background 0.15s",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 18,
+                        height: 18,
+                        borderRadius: "50%",
+                        background: "var(--text-on-accent)",
+                        display: "block",
+                      }}
+                    />
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", paddingLeft: 140 }}>{help}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
+          <button
+            onClick={handleContactSave}
+            disabled={contactSaving}
+            style={{
+              background: "var(--accent)",
+              color: "var(--text-on-accent)",
+              padding: "10px 20px",
+              borderRadius: 8,
+              border: "none",
+              fontSize: 14,
+              cursor: contactSaving ? "not-allowed" : "pointer",
+            }}
+          >
+            {contactSaved ? "Saved!" : contactSaving ? "Saving…" : "Save"}
+          </button>
+          {contactError && <span style={{ fontSize: 12, color: "var(--error)" }}>{contactError}</span>}
         </div>
       </div>
 
