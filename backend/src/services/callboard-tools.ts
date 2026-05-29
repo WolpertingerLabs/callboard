@@ -11,6 +11,7 @@ import { findChat } from "../utils/chat-lookup.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
 import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
+import { getUserContact } from "./user-contact.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -94,6 +95,40 @@ const MIME_MAP: Record<string, { mime: string; category: string }> = {
 function error(message: string) {
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
 }
+
+// ─── notify_user channel routing ────────────────────────────────────
+// Maps a notifiable contact channel to the drawlatch connection the agent
+// should use and how to reach the user through it. Phone is intentionally
+// excluded — it is a future feature and never offered to the agent.
+type NotifyChannelKey = "discord" | "telegram" | "email";
+
+const NOTIFY_CHANNELS: Record<
+  NotifyChannelKey,
+  { label: string; connection: string; instructions: (handle: string) => string }
+> = {
+  discord: {
+    label: "Discord",
+    connection: "discord-bot",
+    instructions: (handle) =>
+      `Reach the user on Discord (username "${handle}") via the drawlatch "discord-bot" connection. ` +
+      `Use mcp__mcp-proxy__list_routes to find the discord-bot endpoints, then mcp__mcp-proxy__secure_request to ` +
+      `open a DM channel (POST /users/@me/channels with the user's recipient_id) and send your message (POST /channels/{channel_id}/messages).`,
+  },
+  telegram: {
+    label: "Telegram",
+    connection: "telegram",
+    instructions: (handle) =>
+      `Reach the user on Telegram (account "${handle}") via the drawlatch "telegram" connection. ` +
+      `Use mcp__mcp-proxy__list_routes to find the telegram endpoints, then mcp__mcp-proxy__secure_request to send the message (sendMessage with the user's chat id).`,
+  },
+  email: {
+    label: "Email",
+    connection: "agentmail",
+    instructions: (handle) =>
+      `Reach the user by email (${handle}) via the drawlatch "agentmail" connection. ` +
+      `Use mcp__mcp-proxy__list_routes to find the agentmail endpoints, then mcp__mcp-proxy__secure_request to send the email.`,
+  },
+};
 
 export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpec {
   return {
@@ -390,6 +425,62 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
                   success: true,
                   chatId,
                   summon,
+                }),
+              },
+            ],
+          };
+        },
+      ),
+
+      defineTool(
+        "notify_user",
+        "Reach the user outside of this chat through one of their configured contact channels (Discord, Telegram, or email). This tool does NOT send the message itself — it returns the user's contact handle plus instructions for which drawlatch connection and mcp-proxy tools to use. After calling it, continue by using the mcp__mcp-proxy__* tools to actually deliver the message. Use this when the user is away and you need to notify them of something (a finished task, a question, an alert).",
+        {
+          channel: z
+            .enum(["discord", "telegram", "email"])
+            .optional()
+            .describe("Reach the user on a specific channel. Omit to get instructions for all of the user's enabled channels."),
+          reason: z.string().optional().describe("Optional note about why you want to reach the user (for your own context; not sent)."),
+        },
+        async (args) => {
+          const contact = getUserContact();
+
+          const keys: NotifyChannelKey[] = args.channel ? [args.channel] : (["discord", "telegram", "email"] as NotifyChannelKey[]);
+
+          const channels = keys
+            .map((key) => {
+              const entry = contact[key];
+              // Silently omit channels the user hasn't enabled or filled in.
+              if (!entry || !entry.enabled || !entry.value.trim()) return null;
+              const def = NOTIFY_CHANNELS[key];
+              return {
+                channel: key,
+                label: def.label,
+                contact: entry.value.trim(),
+                connection: def.connection,
+                instructions: def.instructions(entry.value.trim()),
+              };
+            })
+            .filter((c): c is NonNullable<typeof c> => c !== null);
+
+          if (channels.length === 0) {
+            return error(
+              args.channel
+                ? `The user has not enabled the "${args.channel}" contact channel. Ask them to enable it under Settings → General → Contact Info, or try a different channel.`
+                : "The user has no enabled contact channels. Ask them to add and enable their contact info under Settings → General → Contact Info.",
+            );
+          }
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  guidance:
+                    "Use the drawlatch mcp__mcp-proxy__* tools with the connection named below to reach the user. " +
+                    "If a connection isn't configured, tell the user it needs to be set up under Settings → Connections.",
+                  channels,
                 }),
               },
             ],

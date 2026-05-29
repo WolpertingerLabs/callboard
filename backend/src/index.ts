@@ -266,6 +266,27 @@ app.put("/api/ignored-project-dirs", (req, res) => {
   res.json({ prefixes: saved, defaults: [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES] });
 });
 
+// User contact info endpoints (requires auth)
+import { getUserContact, saveUserContact } from "./services/user-contact.js";
+
+app.get("/api/user-contact", (_req, res) => {
+  // #swagger.tags = ['Settings']
+  // #swagger.summary = 'Get the user contact info'
+  // #swagger.description = 'Returns the user contact channels (Discord, Telegram, phone, email), each with a handle and an on/off toggle.'
+  res.json(getUserContact());
+});
+
+app.put("/api/user-contact", (req, res) => {
+  // #swagger.tags = ['Settings']
+  // #swagger.summary = 'Update the user contact info'
+  // #swagger.description = 'Replace the user contact channels. Used by the notify_user tool to decide which channels the agent may use to reach the user.'
+  const body = req.body;
+  if (!body || typeof body !== "object") {
+    return res.status(400).json({ error: "request body must be a contact info object" });
+  }
+  res.json(saveUserContact(body));
+});
+
 // Claude Code auth status (requires auth — exposes server-side CLI state)
 let claudeStatusCache: { data: any; ts: number } | null = null;
 const CLAUDE_STATUS_TTL = 60_000; // 60 seconds

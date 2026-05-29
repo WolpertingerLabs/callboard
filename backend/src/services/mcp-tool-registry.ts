@@ -123,6 +123,25 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     category: "platform",
   },
   {
+    name: "notify_user",
+    qualifiedName: "mcp__callboard-tools__notify_user",
+    description:
+      "Reach the user outside of this chat through a configured contact channel (Discord, Telegram, or email). Returns the user's contact handle plus instructions for which drawlatch connection to use.",
+    parameters: [
+      {
+        name: "channel",
+        type: "enum",
+        description: "Reach the user on a specific channel. Omit for all enabled channels.",
+        required: false,
+        enumValues: ["discord", "telegram", "email"],
+      },
+      { name: "reason", type: "string", description: "Optional note about why you want to reach the user (not sent)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
     name: "set_chat_title",
     qualifiedName: "mcp__callboard-tools__set_chat_title",
     description: "Set or update the title of the current chat.",

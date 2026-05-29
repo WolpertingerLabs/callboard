@@ -1378,6 +1378,37 @@ export async function updateIgnoredProjectDirs(prefixes: string[]): Promise<Igno
   return res.json();
 }
 
+// User contact info API
+
+export interface ContactChannel {
+  value: string;
+  enabled: boolean;
+}
+
+export interface UserContactInfo {
+  discord: ContactChannel;
+  telegram: ContactChannel;
+  phone: ContactChannel;
+  email: ContactChannel;
+}
+
+export async function fetchUserContact(): Promise<UserContactInfo> {
+  const res = await fetch(`${BASE}/user-contact`, { credentials: "include" });
+  await assertOk(res, "Failed to fetch contact info");
+  return res.json();
+}
+
+export async function updateUserContact(info: UserContactInfo): Promise<UserContactInfo> {
+  const res = await fetch(`${BASE}/user-contact`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(info),
+  });
+  await assertOk(res, "Failed to update contact info");
+  return res.json();
+}
+
 // ── Themes ──────────────────────────────────────────────────────────
 
 export async function listThemes(): Promise<ThemeListItem[]> {
