@@ -9,10 +9,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OpenRouterSessionProvider } from "./OpenRouterSessionProvider.js";
 
 const SETTINGS_MODULE = "../../../services/agent-settings.js";
+const PATHS_MODULE = "../../../utils/paths.js";
 
 vi.mock("../../../services/agent-settings.js", () => ({
   getAgentSettings: vi.fn(),
 }));
+
+// Partial mock: only override isIgnoredProjectFolder (default: ignore nothing,
+// so the rest of the suite behaves as before). Other paths.js exports are used
+// transitively by the provider's deps (e.g. DATA_DIR via image-storage), so we
+// must preserve them via importOriginal.
+vi.mock("../../../utils/paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../utils/paths.js")>();
+  return {
+    ...actual,
+    isIgnoredProjectFolder: vi.fn(() => false),
+  };
+});
+
+async function setIgnoredFolder(fn: (folder: string) => boolean) {
+  const { isIgnoredProjectFolder } = await import(PATHS_MODULE);
+  vi.mocked(isIgnoredProjectFolder).mockImplementation(fn);
+}
 
 let TMP_LOGS: string;
 
@@ -25,6 +43,9 @@ afterEach(async () => {
   rmSync(TMP_LOGS, { recursive: true, force: true });
   const { getAgentSettings } = await import(SETTINGS_MODULE);
   vi.mocked(getAgentSettings).mockReset();
+  const { isIgnoredProjectFolder } = await import(PATHS_MODULE);
+  vi.mocked(isIgnoredProjectFolder).mockReset();
+  vi.mocked(isIgnoredProjectFolder).mockImplementation(() => false);
 });
 
 async function pointSettingsAtTmp() {
@@ -82,6 +103,17 @@ describe("OpenRouterSessionProvider — discovery", () => {
     const a = result.sessions.find((s) => s.sessionId === "sess_a")!;
     expect(a.folder).toBe("/home/user/projectA");
     expect(a.displayFolder).toBe("/home/user/projectA");
+  });
+
+  it("excludes sessions whose cwd is an ignored project folder", async () => {
+    await pointSettingsAtTmp();
+    await setIgnoredFolder((folder) => folder === "/tmp/quick");
+    writeSession("sess_keep", { cwd: "/home/user/projectA" });
+    writeSession("sess_ignored", { cwd: "/tmp/quick" });
+    const provider = new OpenRouterSessionProvider();
+    const result = provider.discoverSessions({ limit: 10, offset: 0 });
+    expect(result.total).toBe(1);
+    expect(result.sessions.map((s) => s.sessionId)).toEqual(["sess_keep"]);
   });
 
   it("excludes subagent dirs from the top-level listing", async () => {
@@ -410,6 +442,16 @@ describe("OpenRouterSessionProvider — search / delete", () => {
     const provider = new OpenRouterSessionProvider();
     const res = provider.searchSessions({ folder: "/proj", grep: "find" });
     expect(res.chats.map((c) => c.sessionId)).toEqual(["sess_match"]);
+  });
+
+  it("searchSessions excludes sessions in ignored project folders", async () => {
+    await pointSettingsAtTmp();
+    await setIgnoredFolder((folder) => folder === "/tmp/quick");
+    writeSession("sess_visible", { cwd: "/proj", firstPrompt: "find the bug" });
+    writeSession("sess_ignored", { cwd: "/tmp/quick", firstPrompt: "find the bug" });
+    const provider = new OpenRouterSessionProvider();
+    const res = provider.searchSessions({ folder: "", grep: "find" });
+    expect(res.chats.map((c) => c.sessionId)).toEqual(["sess_visible"]);
   });
 
   it("deleteSessionFiles removes the session dir and its subagent siblings", async () => {

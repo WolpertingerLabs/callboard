@@ -91,6 +91,23 @@ export function isIgnoredProjectDir(dirName: string): boolean {
 }
 
 /**
+ * Slugify an absolute folder path into the project-dir name form the Claude
+ * SDK uses (every non-alphanumeric char → `-`), then test it against the
+ * configured ignore prefixes.
+ *
+ * Use this when you hold a raw folder path rather than an already-slugified
+ * project-dir name — e.g. the OpenRouter provider, whose sessions record their
+ * `cwd` verbatim in session.json instead of a slugified directory. The Claude
+ * provider's dirs are pre-slugified on disk, so it calls {@link isIgnoredProjectDir}
+ * directly; this keeps both providers checking the same prefixes against the
+ * same representation.
+ */
+export function isIgnoredProjectFolder(folderPath: string): boolean {
+  if (typeof folderPath !== "string" || folderPath.length === 0) return false;
+  return isIgnoredProjectDir(folderPath.replace(/[^a-zA-Z0-9]/g, "-"));
+}
+
+/**
  * Read ~/.claude/projects/ and return the project dir names that aren't
  * on the ignore list. Safe to call when the dir doesn't exist.
  */
