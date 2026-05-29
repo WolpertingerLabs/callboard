@@ -18,12 +18,14 @@
  * @see https://platform.claude.com/docs/en/agent-sdk/custom-tools
  */
 import { getAgentProvider } from "../agents/factory.js";
+import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
+import type { OpenRouterOptionsExtras } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { z } from "zod";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
-import { getClaudeCodeExecutablePath } from "./agent-settings.js";
+import { getAgentSettings, getClaudeCodeExecutablePath, isOpenRouterConfigured } from "./agent-settings.js";
 import type { CustomTheme, ThemeVariables } from "shared/types/index.js";
 
 const log = createLogger("quick-completion");
@@ -43,6 +45,49 @@ export interface QuickCompletionOptions {
   tools?: string[];
   /** Effort level for reasoning. Default: "low". */
   effort?: "low" | "medium" | "high";
+  /**
+   * Agent provider to run on. When omitted, resolves automatically:
+   * "openrouter" if an OpenRouter API key is configured, otherwise
+   * "claude-code". Pass an explicit value to override the auto-resolution
+   * (mainly for tests).
+   */
+  provider?: AgentProviderKind;
+}
+
+/**
+ * Pick the provider for a quick completion. Mirrors the product decision that
+ * quick completions follow whichever provider is configured globally rather
+ * than a specific chat's provider: if OpenRouter is set up, use it; otherwise
+ * fall back to the Claude Code SDK.
+ */
+function resolveQuickCompletionProvider(explicit?: AgentProviderKind): AgentProviderKind {
+  if (explicit) return explicit;
+  return isOpenRouterConfigured() ? "openrouter" : "claude-code";
+}
+
+/**
+ * Build the `openRouter` config sub-object the OR adapter's optionsAdapter
+ * requires, sourced from global agent settings. Throws when no API key is
+ * configured — callers should only reach this when {@link isOpenRouterConfigured}
+ * is true, but the explicit check keeps the failure mode legible.
+ */
+function buildOpenRouterExtras(effort: "low" | "medium" | "high"): OpenRouterOptionsExtras {
+  const s = getAgentSettings();
+  const apiKey = s.openRouterApiKey?.trim();
+  if (!apiKey) {
+    throw new Error("OpenRouter provider selected for quick completion but OPENROUTER_API_KEY is not configured in Settings → API.");
+  }
+  return {
+    apiKey,
+    ...(s.openRouterBaseUrl && { baseUrl: s.openRouterBaseUrl }),
+    ...(s.openRouterModel && { model: s.openRouterModel }),
+    ...(s.openRouterLogsRoot && { logsRoot: s.openRouterLogsRoot }),
+    ...(typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd) && { maxBudgetUsd: s.openRouterMaxBudgetUsd }),
+    // quickCompletion's effort union ("low"|"medium"|"high") is a subset of the
+    // OR EffortLevel union, so it forwards directly.
+    effort,
+    appTitle: "callboard",
+  };
 }
 
 export interface QuickCompletionResult {
@@ -99,7 +144,11 @@ const RETURN_RESULT_INSTRUCTION = "\n\nIMPORTANT: You MUST call the `return_resu
 export async function quickCompletion(opts: QuickCompletionOptions): Promise<QuickCompletionResult> {
   const { prompt, systemPrompt, model = "haiku", tools = [], effort = "low" } = opts;
 
-  log.debug(`quickCompletion — model=${model}, effort=${effort}, extraTools=[${tools.join(",")}]`);
+  const provider = resolveQuickCompletionProvider(opts.provider);
+  const agentProvider = getAgentProvider(provider);
+  const isOpenRouter = provider === "openrouter";
+
+  log.debug(`quickCompletion — provider=${provider}, model=${model}, effort=${effort}, extraTools=[${tools.join(",")}]`);
 
   // Set up the result capture channel: a Promise resolved by the MCP tool handler
   let capturedResult: string | null = null;
@@ -111,7 +160,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
     capturedResult = text;
     resolveResult(text);
   });
-  const mcpServer = getAgentProvider().buildToolServer(qcSpec);
+  const mcpServer = agentProvider.buildToolServer(qcSpec);
 
   // Build the allowed tools list: always include return_result, plus any explicit CC tools
   const allowedTools = ["mcp__qc__return_result", ...tools];
@@ -133,10 +182,17 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   let usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
   let durationMs = 0;
 
+  // Fallback channel: accumulate the assistant's plain-text output so a
+  // response that answers directly (without calling return_result) is still
+  // usable. Models behind OpenRouter are less reliable at honoring a forced
+  // tool call than Claude Code, so this keeps the completion from dying when
+  // the answer arrives as text instead.
+  let assistantText = "";
+
   try {
     const claudeExecutable = getClaudeCodeExecutablePath();
 
-    const conversation = getAgentProvider().query({
+    const conversation = agentProvider.query({
       prompt: promptGenerator,
       options: {
         model,
@@ -152,6 +208,9 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
         systemPrompt: effectiveSystemPrompt,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        // OR-specific config the OpenRouter adapter's optionsAdapter requires.
+        // Claude-code ignores this key, so it's safe to include only for OR.
+        ...(isOpenRouter && { openRouter: buildOpenRouterExtras(effort) }),
         env: {
           ...process.env,
           // Prevent "cannot be launched inside another Claude Code session" errors
@@ -160,9 +219,12 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
       },
     });
 
-    // Drive the agent loop to completion; capture usage + duration from the result event.
+    // Drive the agent loop to completion; capture usage + duration from the
+    // result event and accumulate text as the return_result fallback.
     for await (const event of conversation) {
-      if (event.type === "result") {
+      if (event.type === "text") {
+        assistantText += event.content;
+      } else if (event.type === "result") {
         if (event.usage) {
           usage = {
             inputTokens: event.usage.inputTokens,
@@ -174,13 +236,17 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
       }
     }
 
-    // If the tool was called, resultReady resolves immediately (already resolved).
-    // If not (e.g. model responded with text instead), we need a fallback.
-    // Use a short timeout to avoid hanging indefinitely.
-    const text = capturedResult ?? (await Promise.race([resultReady, timeout(5000)]));
+    // Prefer the structured return_result value. If the tool wasn't called,
+    // fall back to the assistant's plain-text output. Only when there's
+    // neither do we wait briefly for a late tool-handler resolution.
+    let text: string | null | undefined = capturedResult;
+    if (text === undefined || text === null) {
+      const trimmed = assistantText.trim();
+      text = trimmed ? trimmed : await Promise.race([resultReady, timeout(5000)]);
+    }
 
     if (text === undefined || text === null) {
-      throw new Error("Model did not call return_result tool — no result captured");
+      throw new Error("Model did not call return_result tool and produced no text — no result captured");
     }
 
     log.debug(`quickCompletion — done in ${durationMs}ms, tokens=${usage.inputTokens}+${usage.outputTokens}, cost=$${usage.costUsd.toFixed(4)}`);
