@@ -33,10 +33,7 @@ const log = createLogger("claude");
 export type { StreamEvent };
 
 /** Provider kinds that sendMessage knows how to route through. */
-const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set([
-  "claude-code",
-  "openrouter",
-]);
+const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
 
 /**
  * Narrow a free-form metadata.provider value to a usable AgentProviderKind,
@@ -368,8 +365,7 @@ export function respondToPermission(
     // The SDK tool requires the original `questions` to remain in the input
     // (it builds `{...input, answers}`), so merge rather than replace — otherwise
     // `questions` is undefined and the tool crashes mapping over it.
-    const resolvedInput =
-      updatedInput && pending.eventType === "user_question" ? { ...pending.input, ...updatedInput } : updatedInput || pending.input;
+    const resolvedInput = updatedInput && pending.eventType === "user_question" ? { ...pending.input, ...updatedInput } : updatedInput || pending.input;
     pending.resolve({
       behavior: "allow",
       updatedInput: resolvedInput,
@@ -917,8 +913,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   if (providerKind === "openrouter") {
     const apiKey = agentSettings.openRouterApiKey?.trim();
     if (!apiKey) {
-      const message =
-        "OpenRouter chat selected but OPENROUTER_API_KEY is not configured in Settings → API.";
+      const message = "OpenRouter chat selected but OPENROUTER_API_KEY is not configured in Settings → API.";
       log.error(message);
       throw new Error(message);
     }
@@ -973,6 +968,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
       let sessionId: string | null = null;
       let endReason: string | undefined;
+      // When the provider terminates the run with status "error" (e.g. an
+      // OpenRouter API error response — bad key, insufficient credits, rate
+      // limit, invalid model), the human-readable message rides in the result
+      // event's `reason`. Captured here so it can be surfaced to the user as a
+      // hard error rather than discarded behind a generic end-of-session note.
+      let errorDetail: string | undefined;
       // Cumulative USD spend reported by the underlying adapter on the
       // terminal `result` event. The OR adapter accumulates this across all
       // turns of the streaming-input run; the Claude adapter reports per-
@@ -995,7 +996,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               endReason = "max_budget";
               log.warn(`Session ${trackingId} ended: max budget reached`);
             } else if (event.status === "error") {
-              endReason = "execution_error";
+              errorDetail = event.reason || "The model provider returned an error response.";
               log.warn(`Session ${trackingId} ended: execution error — ${event.reason || "unknown"}`);
             }
             if (typeof event.usage?.costUsd === "number") {
@@ -1111,6 +1112,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
       chatFileService.updateChat(trackingId, {});
 
+      // Provider-level error: surface the actual error message to the user as a
+      // hard error (red bubble) instead of a normal completion. Skips the
+      // done/clear/budget path below — those describe a successful run.
+      if (errorDetail !== undefined) {
+        log.debug(`Session ${trackingId} surfaced provider error to user: ${errorDetail}`);
+        emitter.emit("event", { type: "error", content: errorDetail } as StreamEvent);
+        return;
+      }
+
       // Detect /clear command — emit a cleared event before done so the frontend can show a marker
       if (typeof prompt === "string" && prompt.trim().toLowerCase() === "/clear") {
         log.debug(`Session cleared via /clear — trackingId=${trackingId}`);
@@ -1123,8 +1133,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // there's no equivalent cap to surface — leave maxBudgetUsd undefined.
       const orBudget =
         providerKind === "openrouter"
-          ? typeof agentSettings.openRouterMaxBudgetUsd === "number" &&
-            Number.isFinite(agentSettings.openRouterMaxBudgetUsd)
+          ? typeof agentSettings.openRouterMaxBudgetUsd === "number" && Number.isFinite(agentSettings.openRouterMaxBudgetUsd)
             ? agentSettings.openRouterMaxBudgetUsd
             : OR_LIBRARY_DEFAULT_MAX_BUDGET_USD
           : undefined;
