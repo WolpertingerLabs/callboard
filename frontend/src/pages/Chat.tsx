@@ -116,14 +116,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // OpenRouter reasoning-effort for NEW chats, set by NewChatPanel. Like the
   // provider, only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
-  const newChatEffort = (location.state as any)?.effort as
-    | "xhigh"
-    | "high"
-    | "medium"
-    | "low"
-    | "minimal"
-    | "none"
-    | undefined;
+  const newChatEffort = (location.state as any)?.effort as "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
@@ -497,8 +490,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   const capStr = cap !== null ? `$${cap.toFixed(2)}` : "the configured cap";
                   const spentStr = spent !== null ? ` (spent $${spent.toFixed(2)})` : "";
                   reasonMsg = `Agent reached the maximum budget limit of ${capStr}${spentStr}. Raise it in Settings → API.`;
-                } else if (event.reason === "execution_error") {
-                  reasonMsg = "Agent stopped due to an execution error.";
                 } else if (event.reason === "aborted") {
                   reasonMsg = "Session was interrupted.";
                 }
@@ -1207,7 +1198,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       }
     },
-    [id, folder, defaultPermissions, chatPermissions, agentSystemPrompt, agentAlias, newChatProvider, newChatEffort, readSSE, activePluginIds, chat, branchConfig, activeDraftId],
+    [
+      id,
+      folder,
+      defaultPermissions,
+      chatPermissions,
+      agentSystemPrompt,
+      agentAlias,
+      newChatProvider,
+      newChatEffort,
+      readSSE,
+      activePluginIds,
+      chat,
+      branchConfig,
+      activeDraftId,
+    ],
   );
 
   // Keep ref in sync so readSSE can call handleSend without stale closure
