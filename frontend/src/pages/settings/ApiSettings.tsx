@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw } from "lucide-react";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getSystemInfo } from "../../api";
 import type { AgentSettings } from "shared/types/index.js";
 import type { SystemInfo } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
+import { getDefaultProvider } from "../../utils/localStorage";
+import type { AgentProviderKind } from "../../utils/localStorage";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -124,6 +126,11 @@ function SecretField({ id, value, onChange, placeholder }: SecretFieldProps) {
 }
 
 export default function ApiSettings() {
+  // Top-level integration toggle — picks which provider's settings are shown.
+  // Seeded from the user's New Chat default so the page opens on the provider
+  // they actually use; purely a view selector, not persisted back.
+  const [activeProvider, setActiveProvider] = useState<AgentProviderKind>(() => getDefaultProvider());
+
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,9 +174,7 @@ export default function ApiSettings() {
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
       setOpenRouterModel(s.openRouterModel ?? "");
       setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
-      setOpenRouterMaxBudgetUsd(
-        typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "",
-      );
+      setOpenRouterMaxBudgetUsd(typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "");
     } catch (err: any) {
       setError(err.message || "Failed to load settings");
     } finally {
@@ -203,9 +208,7 @@ export default function ApiSettings() {
         // the route's `!== undefined` partial-update guard would leave the
         // prior saved value intact, making the input unable to clear an
         // override.
-        openRouterMaxBudgetUsd: (openRouterMaxBudgetUsd.trim() === ""
-          ? null
-          : Number(openRouterMaxBudgetUsd)) as number | undefined,
+        openRouterMaxBudgetUsd: (openRouterMaxBudgetUsd.trim() === "" ? null : Number(openRouterMaxBudgetUsd)) as number | undefined,
       });
       setSettings(updated);
       setSaved(true);
@@ -242,295 +245,341 @@ export default function ApiSettings() {
 
   return (
     <>
-      {/* API Endpoint */}
-      <div style={sectionStyle}>
-        <div style={headerStyle}>
-          <Globe size={16} style={{ color: "var(--accent)" }} />
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
-        </div>
-        <div style={subtitleStyle}>
-          Override the base URL used by the Claude Agent SDK. Useful for routing through a corporate proxy or LLM gateway. Leave empty to use the default
-          Anthropic API endpoint.
-        </div>
-        <div style={fieldWrap}>
-          <label htmlFor="apiBaseUrl" style={labelStyle}>
-            Base URL<span style={envLabelStyle}>ANTHROPIC_BASE_URL</span>
-          </label>
-          <input
-            id="apiBaseUrl"
-            type="text"
-            value={apiBaseUrl}
-            onChange={(e) => setApiBaseUrl(e.target.value)}
-            placeholder="https://api.anthropic.com"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <div style={helpStyle}>When set to a non-first-party host, MCP tool search is disabled by default.</div>
-        </div>
-      </div>
-
-      {/* Authentication */}
-      <div style={sectionStyle}>
-        <div style={headerStyle}>
-          <Key size={16} style={{ color: "var(--accent)" }} />
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Authentication</span>
-        </div>
-        <div style={subtitleStyle}>
-          Claude Code normally authenticates through your Claude subscription. Set an API key or auth token here to override that — for example, to use a
-          different account or a gateway that requires a bearer token.
-        </div>
-
-        {/* Current source (view-only) */}
-        <div style={{ marginBottom: 14 }}>
-          <div style={rowStyle}>
-            <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current token source</span>
-            <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{account?.tokenSource || "—"}</span>
-          </div>
-          <div style={rowStyle}>
-            <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current API key source</span>
-            <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.apiKeySource, 4)}</span>
-          </div>
-          <div style={rowStyle}>
-            <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Account</span>
-            <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.email, 4) || "—"}</span>
-          </div>
-        </div>
-
-        <div style={fieldWrap}>
-          <label htmlFor="apiKey" style={labelStyle}>
-            API Key<span style={envLabelStyle}>ANTHROPIC_API_KEY</span>
-          </label>
-          <SecretField id="apiKey" value={apiKey} onChange={setApiKey} placeholder="sk-ant-..." />
-          <div style={helpStyle}>Sent as the X-Api-Key header. Takes precedence over your subscription login.</div>
-        </div>
-
-        <div style={fieldWrap}>
-          <label htmlFor="authToken" style={labelStyle}>
-            Auth Token<span style={envLabelStyle}>ANTHROPIC_AUTH_TOKEN</span>
-          </label>
-          <SecretField id="authToken" value={authToken} onChange={setAuthToken} placeholder="Bearer token value" />
-          <div style={helpStyle}>Sent as the Authorization: Bearer header. Use for gateways that require a bearer token.</div>
-        </div>
-      </div>
-
-      {/* Models */}
-      <div style={sectionStyle}>
-        <div style={{ ...headerStyle, justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Cpu size={16} style={{ color: "var(--accent)" }} />
-            <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Models</span>
-          </div>
+      {/* Integration toggle — Claude Code and OpenRouter as first-class providers */}
+      <div
+        style={{
+          display: "flex",
+          borderRadius: 8,
+          border: "1px solid var(--border)",
+          overflow: "hidden",
+          marginBottom: 16,
+        }}
+      >
+        {[
+          { kind: "claude-code" as AgentProviderKind, label: "Claude Code", icon: <Bot size={14} /> },
+          { kind: "openrouter" as AgentProviderKind, label: "OpenRouter", icon: <Network size={14} /> },
+        ].map(({ kind, label, icon }, idx) => (
           <button
-            onClick={handleRefresh}
-            title="Refresh models from SDK"
+            key={kind}
+            onClick={() => setActiveProvider(kind)}
             style={{
-              background: "var(--surface)",
-              color: "var(--text-muted)",
-              padding: 6,
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              cursor: "pointer",
+              flex: 1,
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              padding: "10px 12px",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: "pointer",
+              border: "none",
+              borderRight: idx < 1 ? "1px solid var(--border)" : "none",
+              background: activeProvider === kind ? "var(--accent)" : "var(--surface)",
+              color: activeProvider === kind ? "var(--text-on-accent)" : "var(--text)",
+              transition: "background 0.15s, color 0.15s",
             }}
           >
-            <RefreshCw size={14} />
+            {icon}
+            {label}
           </button>
-        </div>
-        <div style={subtitleStyle}>Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to.</div>
+        ))}
+      </div>
 
-        {/* Currently available models */}
-        {models.length > 0 && (
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Currently available to your account:</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {models.map((m) => (
-                <div key={m.value} style={rowStyle}>
-                  <span style={{ color: "var(--text)" }}>{m.displayName}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>{m.value}</span>
-                </div>
-              ))}
+      {activeProvider === "claude-code" && (
+        <>
+          {/* API Endpoint */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Globe size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
+            </div>
+            <div style={subtitleStyle}>
+              Override the base URL used by the Claude Agent SDK. Useful for routing through a corporate proxy or LLM gateway. Leave empty to use the default
+              Anthropic API endpoint.
+            </div>
+            <div style={fieldWrap}>
+              <label htmlFor="apiBaseUrl" style={labelStyle}>
+                Base URL<span style={envLabelStyle}>ANTHROPIC_BASE_URL</span>
+              </label>
+              <input
+                id="apiBaseUrl"
+                type="text"
+                value={apiBaseUrl}
+                onChange={(e) => setApiBaseUrl(e.target.value)}
+                placeholder="https://api.anthropic.com"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>When set to a non-first-party host, MCP tool search is disabled by default.</div>
             </div>
           </div>
-        )}
 
-        <div style={fieldWrap}>
-          <label htmlFor="model" style={labelStyle}>
-            Default Model<span style={envLabelStyle}>ANTHROPIC_MODEL</span>
-          </label>
-          <input
-            id="model"
-            type="text"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="e.g. opus, sonnet, claude-opus-4-7"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <div style={helpStyle}>Alias (opus, sonnet, haiku, opusplan) or full model ID. Applies to new sessions.</div>
-        </div>
+          {/* Authentication */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Key size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Authentication</span>
+            </div>
+            <div style={subtitleStyle}>
+              Claude Code normally authenticates through your Claude subscription. Set an API key or auth token here to override that — for example, to use a
+              different account or a gateway that requires a bearer token.
+            </div>
 
-        <div style={fieldWrap}>
-          <label htmlFor="opusModel" style={labelStyle}>
-            Opus Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_OPUS_MODEL</span>
-          </label>
-          <input
-            id="opusModel"
-            type="text"
-            value={defaultOpusModel}
-            onChange={(e) => setDefaultOpusModel(e.target.value)}
-            placeholder="claude-opus-4-7"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-        </div>
+            {/* Current source (view-only) */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={rowStyle}>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current token source</span>
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{account?.tokenSource || "—"}</span>
+              </div>
+              <div style={rowStyle}>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current API key source</span>
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.apiKeySource, 4)}</span>
+              </div>
+              <div style={rowStyle}>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Account</span>
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.email, 4) || "—"}</span>
+              </div>
+            </div>
 
-        <div style={fieldWrap}>
-          <label htmlFor="sonnetModel" style={labelStyle}>
-            Sonnet Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_SONNET_MODEL</span>
-          </label>
-          <input
-            id="sonnetModel"
-            type="text"
-            value={defaultSonnetModel}
-            onChange={(e) => setDefaultSonnetModel(e.target.value)}
-            placeholder="claude-sonnet-4-6"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-        </div>
+            <div style={fieldWrap}>
+              <label htmlFor="apiKey" style={labelStyle}>
+                API Key<span style={envLabelStyle}>ANTHROPIC_API_KEY</span>
+              </label>
+              <SecretField id="apiKey" value={apiKey} onChange={setApiKey} placeholder="sk-ant-..." />
+              <div style={helpStyle}>Sent as the X-Api-Key header. Takes precedence over your subscription login.</div>
+            </div>
 
-        <div style={fieldWrap}>
-          <label htmlFor="haikuModel" style={labelStyle}>
-            Haiku Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_HAIKU_MODEL</span>
-          </label>
-          <input
-            id="haikuModel"
-            type="text"
-            value={defaultHaikuModel}
-            onChange={(e) => setDefaultHaikuModel(e.target.value)}
-            placeholder="claude-haiku-4-5"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <div style={helpStyle}>Also used for background tasks. Replaces the deprecated ANTHROPIC_SMALL_FAST_MODEL.</div>
-        </div>
-
-        <div style={fieldWrap}>
-          <label htmlFor="subagentModel" style={labelStyle}>
-            Subagent Model<span style={envLabelStyle}>CLAUDE_CODE_SUBAGENT_MODEL</span>
-          </label>
-          <input
-            id="subagentModel"
-            type="text"
-            value={subagentModel}
-            onChange={(e) => setSubagentModel(e.target.value)}
-            placeholder="e.g. haiku"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-        </div>
-      </div>
-
-      {/* OpenRouter (alternative provider) */}
-      <div style={sectionStyle}>
-        <div style={headerStyle}>
-          <Key size={16} style={{ color: "var(--accent)" }} />
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenRouter (alternative provider)</span>
-        </div>
-        <div style={subtitleStyle}>
-          Provide a key to enable OpenRouter as an option when starting a new chat. Existing chats continue to use Claude Code SDK. OpenRouter routes through 300+
-          models with a single key.
-        </div>
-
-        <div style={fieldWrap}>
-          <label htmlFor="openRouterApiKey" style={labelStyle}>
-            API Key<span style={envLabelStyle}>OPENROUTER_API_KEY</span>
-          </label>
-          <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={setOpenRouterApiKey} placeholder="sk-or-..." />
-          <div style={helpStyle}>Required. When set, the New Chat panel exposes an OpenRouter provider toggle.</div>
-        </div>
-
-        <div style={fieldWrap}>
-          <label htmlFor="openRouterBaseUrl" style={labelStyle}>
-            Base URL<span style={envLabelStyle}>OPENROUTER_BASE_URL</span>
-          </label>
-          <input
-            id="openRouterBaseUrl"
-            type="text"
-            value={openRouterBaseUrl}
-            onChange={(e) => setOpenRouterBaseUrl(e.target.value)}
-            placeholder="https://openrouter.ai/api/v1"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <div style={helpStyle}>Optional. Override the OpenRouter API endpoint (proxies / regional mirrors).</div>
-        </div>
-
-        <div style={fieldWrap}>
-          <label htmlFor="openRouterModel" style={labelStyle}>
-            Default Model
-          </label>
-          <OpenRouterModelSelector
-            id="openRouterModel"
-            value={openRouterModel}
-            onChange={setOpenRouterModel}
-            placeholder="~anthropic/claude-sonnet-latest"
-          />
-          <div style={helpStyle}>
-            Start typing to filter tool-calling models by slug. Common aliases:{" "}
-            <code style={{ fontSize: 11 }}>~anthropic/claude-sonnet-latest</code>, <code style={{ fontSize: 11 }}>openai/gpt-4o</code>,{" "}
-            <code style={{ fontSize: 11 }}>google/gemini-2.0-flash</code>.
+            <div style={fieldWrap}>
+              <label htmlFor="authToken" style={labelStyle}>
+                Auth Token<span style={envLabelStyle}>ANTHROPIC_AUTH_TOKEN</span>
+              </label>
+              <SecretField id="authToken" value={authToken} onChange={setAuthToken} placeholder="Bearer token value" />
+              <div style={helpStyle}>Sent as the Authorization: Bearer header. Use for gateways that require a bearer token.</div>
+            </div>
           </div>
-        </div>
 
-        <div style={fieldWrap}>
-          <label htmlFor="openRouterMaxBudgetUsd" style={labelStyle}>
-            Max budget per session (USD)
-          </label>
-          <input
-            id="openRouterMaxBudgetUsd"
-            type="number"
-            min="0"
-            step="0.01"
-            value={openRouterMaxBudgetUsd}
-            onChange={(e) => setOpenRouterMaxBudgetUsd(e.target.value)}
-            placeholder="1.00"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <div style={helpStyle}>
-            Cumulative spend cap for an OpenRouter chat session. Defaults to <code style={{ fontSize: 11 }}>$1.00</code> when empty — raise this for
-            long-running coding sessions to avoid the &ldquo;Agent reached the maximum budget limit&rdquo; cutoff. Applies per streaming session, not per
-            message.
+          {/* Models */}
+          <div style={sectionStyle}>
+            <div style={{ ...headerStyle, justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Cpu size={16} style={{ color: "var(--accent)" }} />
+                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Models</span>
+              </div>
+              <button
+                onClick={handleRefresh}
+                title="Refresh models from SDK"
+                style={{
+                  background: "var(--surface)",
+                  color: "var(--text-muted)",
+                  padding: 6,
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+            <div style={subtitleStyle}>Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to.</div>
+
+            {/* Currently available models */}
+            {models.length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Currently available to your account:</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {models.map((m) => (
+                    <div key={m.value} style={rowStyle}>
+                      <span style={{ color: "var(--text)" }}>{m.displayName}</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>{m.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={fieldWrap}>
+              <label htmlFor="model" style={labelStyle}>
+                Default Model<span style={envLabelStyle}>ANTHROPIC_MODEL</span>
+              </label>
+              <input
+                id="model"
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="e.g. opus, sonnet, claude-opus-4-7"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>Alias (opus, sonnet, haiku, opusplan) or full model ID. Applies to new sessions.</div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="opusModel" style={labelStyle}>
+                Opus Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_OPUS_MODEL</span>
+              </label>
+              <input
+                id="opusModel"
+                type="text"
+                value={defaultOpusModel}
+                onChange={(e) => setDefaultOpusModel(e.target.value)}
+                placeholder="claude-opus-4-7"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="sonnetModel" style={labelStyle}>
+                Sonnet Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_SONNET_MODEL</span>
+              </label>
+              <input
+                id="sonnetModel"
+                type="text"
+                value={defaultSonnetModel}
+                onChange={(e) => setDefaultSonnetModel(e.target.value)}
+                placeholder="claude-sonnet-4-6"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="haikuModel" style={labelStyle}>
+                Haiku Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_HAIKU_MODEL</span>
+              </label>
+              <input
+                id="haikuModel"
+                type="text"
+                value={defaultHaikuModel}
+                onChange={(e) => setDefaultHaikuModel(e.target.value)}
+                placeholder="claude-haiku-4-5"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>Also used for background tasks. Replaces the deprecated ANTHROPIC_SMALL_FAST_MODEL.</div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="subagentModel" style={labelStyle}>
+                Subagent Model<span style={envLabelStyle}>CLAUDE_CODE_SUBAGENT_MODEL</span>
+              </label>
+              <input
+                id="subagentModel"
+                type="text"
+                value={subagentModel}
+                onChange={(e) => setSubagentModel(e.target.value)}
+                placeholder="e.g. haiku"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </div>
           </div>
-        </div>
+        </>
+      )}
 
-        <div style={fieldWrap}>
-          <label htmlFor="openRouterLogsRoot" style={labelStyle}>
-            Logs Root
-          </label>
-          <input
-            id="openRouterLogsRoot"
-            type="text"
-            value={openRouterLogsRoot}
-            onChange={(e) => setOpenRouterLogsRoot(e.target.value)}
-            placeholder="~/.openrouter-agent-coder/logs"
-            autoComplete="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <div style={helpStyle}>Optional. Override where OR session state is written. Defaults to ~/.openrouter-agent-coder/logs.</div>
-        </div>
-      </div>
+      {activeProvider === "openrouter" && (
+        <>
+          {/* OpenRouter */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Network size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenRouter</span>
+            </div>
+            <div style={subtitleStyle}>
+              Provide a key to enable OpenRouter as an option when starting a new chat. OpenRouter routes through 300+ models with a single key.
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterApiKey" style={labelStyle}>
+                API Key<span style={envLabelStyle}>OPENROUTER_API_KEY</span>
+              </label>
+              <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={setOpenRouterApiKey} placeholder="sk-or-..." />
+              <div style={helpStyle}>Required. When set, the New Chat panel exposes an OpenRouter provider toggle.</div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterBaseUrl" style={labelStyle}>
+                Base URL<span style={envLabelStyle}>OPENROUTER_BASE_URL</span>
+              </label>
+              <input
+                id="openRouterBaseUrl"
+                type="text"
+                value={openRouterBaseUrl}
+                onChange={(e) => setOpenRouterBaseUrl(e.target.value)}
+                placeholder="https://openrouter.ai/api/v1"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>Optional. Override the OpenRouter API endpoint (proxies / regional mirrors).</div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterModel" style={labelStyle}>
+                Default Model
+              </label>
+              <OpenRouterModelSelector
+                id="openRouterModel"
+                value={openRouterModel}
+                onChange={setOpenRouterModel}
+                placeholder="~anthropic/claude-sonnet-latest"
+              />
+              <div style={helpStyle}>
+                Start typing to filter tool-calling models by slug. Common aliases: <code style={{ fontSize: 11 }}>~anthropic/claude-sonnet-latest</code>,{" "}
+                <code style={{ fontSize: 11 }}>openai/gpt-4o</code>, <code style={{ fontSize: 11 }}>google/gemini-2.0-flash</code>.
+              </div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterMaxBudgetUsd" style={labelStyle}>
+                Max budget per session (USD)
+              </label>
+              <input
+                id="openRouterMaxBudgetUsd"
+                type="number"
+                min="0"
+                step="0.01"
+                value={openRouterMaxBudgetUsd}
+                onChange={(e) => setOpenRouterMaxBudgetUsd(e.target.value)}
+                placeholder="1.00"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>
+                Cumulative spend cap for an OpenRouter chat session. Defaults to <code style={{ fontSize: 11 }}>$1.00</code> when empty — raise this for
+                long-running coding sessions to avoid the &ldquo;Agent reached the maximum budget limit&rdquo; cutoff. Applies per streaming session, not per
+                message.
+              </div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="openRouterLogsRoot" style={labelStyle}>
+                Logs Root
+              </label>
+              <input
+                id="openRouterLogsRoot"
+                type="text"
+                value={openRouterLogsRoot}
+                onChange={(e) => setOpenRouterLogsRoot(e.target.value)}
+                placeholder="~/.openrouter-agent-coder/logs"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>Optional. Override where OR session state is written. Defaults to ~/.openrouter-agent-coder/logs.</div>
+            </div>
+          </div>
+        </>
+      )}
 
       {error && <div style={{ fontSize: 13, color: "var(--error)", marginBottom: 12 }}>{error}</div>}
 
@@ -553,11 +602,18 @@ export default function ApiSettings() {
         </button>
       </div>
 
-      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
-        Overrides are applied as environment variables when Callboard spawns the Claude Agent SDK. They take effect for new sessions; resume an existing chat to
-        pick up the new settings. Leave a field empty to fall back to the ambient environment (
-        {settings?.apiKey || settings?.authToken ? "your saved value" : "your subscription login"}).
-      </div>
+      {activeProvider === "claude-code" ? (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
+          Overrides are applied as environment variables when Callboard spawns the Claude Agent SDK. They take effect for new sessions; resume an existing chat
+          to pick up the new settings. Leave a field empty to fall back to the ambient environment (
+          {settings?.apiKey || settings?.authToken ? "your saved value" : "your subscription login"}).
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
+          Overrides are applied as environment variables when Callboard spawns an OpenRouter session. They take effect for new sessions; resume an existing chat
+          to pick up the new settings. Leave a field empty to fall back to the ambient environment.
+        </div>
+      )}
     </>
   );
 }
