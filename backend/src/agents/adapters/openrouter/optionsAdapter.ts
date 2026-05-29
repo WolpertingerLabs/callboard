@@ -92,6 +92,7 @@ interface ClaudeShapedOptions {
   disallowedTools?: readonly string[];
   canUseTool?: OpenRouterAgentRunOptions["canUseTool"];
   abortController?: AbortController;
+  persistSession?: boolean;
   settingSources?: readonly SettingSource[];
   onHook?: OpenRouterAgentRunOptions["onHook"];
   onAskUserQuestion?: OpenRouterAgentRunOptions["onAskUserQuestion"];
@@ -194,6 +195,11 @@ export function translateOptions(
   if (opts.disallowedTools && opts.disallowedTools.length > 0) {
     orOpts.disallowedTools = opts.disallowedTools;
   }
+  // Forward persistSession so callers that opt out of on-disk session records
+  // (e.g. quick completions passing `persistSession: false`) are honored.
+  // Without this the OR library falls back to its own default (true) and writes
+  // a full session/transcript/state record for every ephemeral one-off call.
+  if (typeof opts.persistSession === "boolean") orOpts.persistSession = opts.persistSession;
   if (opts.canUseTool) orOpts.canUseTool = opts.canUseTool;
   if (opts.onHook) orOpts.onHook = opts.onHook;
   // Host handler for the OR library's ask_user_question tool. Without it the

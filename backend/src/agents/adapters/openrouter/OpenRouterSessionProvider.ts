@@ -38,6 +38,7 @@ import type {
   SubagentFile,
 } from "../../ports/SessionProvider.js";
 import { createLogger } from "../../../utils/logger.js";
+import { isIgnoredProjectFolder } from "../../../utils/paths.js";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 import { readFirstUserPrompt, readOpenRouterSession } from "./sessionParser.js";
 import { readOpenRouterTranscript } from "./transcriptParser.js";
@@ -125,6 +126,14 @@ export class OpenRouterSessionProvider implements SessionProvider {
           if (!existsSync(join(sessionDir, "session.json")) && !existsSync(join(sessionDir, "state.json"))) {
             return null;
           }
+          // Hide sessions whose working folder matches a configured ignore
+          // prefix — same rule the Claude provider applies, kept in lockstep
+          // via the shared slugify-and-match helper. session.json's `cwd` is a
+          // raw path (e.g. tmpdir for quick completions), so we slugify before
+          // testing. Done here (not in the page map) so total/pagination
+          // reflect only visible sessions.
+          const folder = this.readSessionJson(sessionDir)?.cwd ?? "";
+          if (folder && isIgnoredProjectFolder(folder)) return null;
           try {
             const st = statSync(sessionDir);
             return {
@@ -282,6 +291,10 @@ export class OpenRouterSessionProvider implements SessionProvider {
 
       const sessionJson = this.readSessionJson(sessionDir);
       const cwd = sessionJson?.cwd ?? "";
+
+      // Hide sessions in ignored project folders — mirrors discoverSessions
+      // and the Claude provider. Slugify the raw cwd before prefix-matching.
+      if (cwd && isIgnoredProjectFolder(cwd)) continue;
 
       // Folder filter — OR's session.json carries cwd verbatim; Claude's
       // folder filter is exact-match, so we mirror that.

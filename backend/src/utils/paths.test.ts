@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { projectDirToFolder } from "./paths.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isIgnoredProjectFolder, projectDirToFolder, saveIgnoredProjectDirPrefixes } from "./paths.js";
 
 /**
  * Tests for projectDirToFolder — decoding Claude SDK encoded project directory
@@ -711,5 +713,27 @@ describe("projectDirToFolder", () => {
       // Result: /a/b/c which exists → returned directly
       expect(projectDirToFolder("-a-b-c")).toBe("/a/b/c");
     });
+  });
+});
+
+describe("isIgnoredProjectFolder", () => {
+  beforeEach(() => {
+    // Point the prefix-config at a throwaway dir so we never touch the real
+    // ~/.callboard config, then prime the in-memory cache with known prefixes.
+    process.env.CALLBOARD_DATA_DIR = join(tmpdir(), `cb-paths-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    saveIgnoredProjectDirPrefixes(["-tmp", "-private-"]);
+  });
+
+  it("slugifies a raw folder path before matching ignore prefixes", () => {
+    expect(isIgnoredProjectFolder("/tmp/foo")).toBe(true); // → "-tmp-foo"
+    expect(isIgnoredProjectFolder("/private/var/folders/t2/x/T")).toBe(true); // → "-private-..."
+  });
+
+  it("does not ignore unrelated folders", () => {
+    expect(isIgnoredProjectFolder("/Users/me/repo")).toBe(false); // → "-Users-me-repo"
+  });
+
+  it("returns false for empty input", () => {
+    expect(isIgnoredProjectFolder("")).toBe(false);
   });
 });
