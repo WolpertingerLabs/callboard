@@ -106,6 +106,16 @@ describe("translateOptions — OR config passthrough", () => {
     expect(orOpts.effort).toBeUndefined();
   });
 
+  it("always sets cacheControl to ephemeral (auto prompt caching for Anthropic; no-op elsewhere)", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: { apiKey: "sk-or-test" },
+      },
+      "hi",
+    );
+    expect(orOpts.cacheControl).toEqual({ type: "ephemeral" });
+  });
+
   it("forwards maxBudgetUsd onto orOpts.maxBudgetUsd when set", () => {
     const { orOpts } = translateOptions(
       {

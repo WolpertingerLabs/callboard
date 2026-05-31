@@ -177,6 +177,11 @@ export function translateOptions(
   if (orConfig.baseUrl) orOpts.baseUrl = orConfig.baseUrl;
   if (orConfig.model) orOpts.model = orConfig.model;
   if (orConfig.effort) orOpts.effort = orConfig.effort;
+  // Always-on auto prompt caching. OR honors this only for Anthropic Claude
+  // models (the directive turns into a cache breakpoint on the last cacheable
+  // block); other providers silently ignore it, so it's safe to set
+  // unconditionally. TTL is omitted so OR's own default (~5min) applies.
+  orOpts.cacheControl = { type: "ephemeral" };
   // Forward the user's configured spend cap. `Number.isFinite` excludes
   // NaN/Infinity that could sneak in from a malformed setting; the absence
   // of this field is the signal for OR to use its own DEFAULT_MAX_BUDGET_USD.
