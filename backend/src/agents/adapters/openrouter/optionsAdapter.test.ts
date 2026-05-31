@@ -132,14 +132,13 @@ describe("translateOptions — OR config passthrough", () => {
   it("disableServerTools defaults to true when the setting is unset (cache-friendly default)", () => {
     vi.mocked(getAgentSettings).mockReturnValue({});
     const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
-    // Field is on the upstream type once openrouter-agent-coder ships it; widen for the assertion.
-    expect((orOpts as { disableServerTools?: boolean }).disableServerTools).toBe(true);
+    expect(orOpts.disableServerTools).toBe(true);
   });
 
   it("disableServerTools is false when openRouterServerToolsEnabled is true (user opted in)", () => {
     vi.mocked(getAgentSettings).mockReturnValue({ openRouterServerToolsEnabled: true });
     const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
-    expect((orOpts as { disableServerTools?: boolean }).disableServerTools).toBe(false);
+    expect(orOpts.disableServerTools).toBe(false);
   });
 
   it("forwards maxBudgetUsd onto orOpts.maxBudgetUsd when set", () => {

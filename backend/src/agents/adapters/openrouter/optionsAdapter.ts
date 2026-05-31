@@ -189,11 +189,8 @@ export function translateOptions(
   // with user-defined tools, so we suppress them unless the user opts in.
   // `disableServerTools` is the upstream-facing knob; settings.enabled is
   // the user-facing one (negated polarity to match "feature enabled" UX).
-  // Widened-type cast: the field exists on OpenRouterAgentRunOptions in
-  // openrouter-agent-coder ≥ (PR pending) but the pinned-at-commit dep may
-  // not have it yet — drop the cast once the version bumps.
   const serverToolsEnabled = getAgentSettings().openRouterServerToolsEnabled === true;
-  (orOpts as OpenRouterAgentRunOptions & { disableServerTools?: boolean }).disableServerTools = !serverToolsEnabled;
+  orOpts.disableServerTools = !serverToolsEnabled;
   // Forward the user's configured spend cap. `Number.isFinite` excludes
   // NaN/Infinity that could sneak in from a malformed setting; the absence
   // of this field is the signal for OR to use its own DEFAULT_MAX_BUDGET_USD.
