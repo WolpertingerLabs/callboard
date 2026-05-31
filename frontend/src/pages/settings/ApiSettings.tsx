@@ -155,6 +155,7 @@ export default function ApiSettings() {
   // Stored as a string in form state so the input can be cleared (empty
   // string → "use library default"). Validation/parse happens on save.
   const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState("");
+  const [openRouterServerToolsEnabled, setOpenRouterServerToolsEnabled] = useState(false);
 
   const loadAll = async () => {
     setLoading(true);
@@ -175,6 +176,7 @@ export default function ApiSettings() {
       setOpenRouterModel(s.openRouterModel ?? "");
       setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
       setOpenRouterMaxBudgetUsd(typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "");
+      setOpenRouterServerToolsEnabled(s.openRouterServerToolsEnabled === true);
     } catch (err: any) {
       setError(err.message || "Failed to load settings");
     } finally {
@@ -209,6 +211,7 @@ export default function ApiSettings() {
         // prior saved value intact, making the input unable to clear an
         // override.
         openRouterMaxBudgetUsd: (openRouterMaxBudgetUsd.trim() === "" ? null : Number(openRouterMaxBudgetUsd)) as number | undefined,
+        openRouterServerToolsEnabled,
       });
       setSettings(updated);
       setSaved(true);
@@ -559,6 +562,25 @@ export default function ApiSettings() {
                 long-running coding sessions to avoid the &ldquo;Agent reached the maximum budget limit&rdquo; cutoff. Applies per streaming session, not per
                 message.
               </div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={openRouterServerToolsEnabled}
+                  onChange={(e) => setOpenRouterServerToolsEnabled(e.target.checked)}
+                  style={{ width: 16, height: 16, marginTop: 2 }}
+                />
+                <span>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>Enable OpenRouter server-side tools</span>
+                  <div style={{ ...helpStyle, marginTop: 4 }}>
+                    Off by default. When on, OpenRouter injects its built-in <code style={{ fontSize: 11 }}>datetime</code>, <code style={{ fontSize: 11 }}>web_search</code>, and{" "}
+                    <code style={{ fontSize: 11 }}>web_fetch</code> tools into every request. Currently these tools defeat OpenRouter&apos;s prompt-cache routing for Anthropic models when combined with user-defined tools, costing ~10x on multi-turn Opus/Sonnet
+                    sessions — leave off unless you specifically need server-side datetime or web access.
+                  </div>
+                </span>
+              </label>
             </div>
 
             <div style={fieldWrap}>

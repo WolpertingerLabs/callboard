@@ -81,6 +81,20 @@ export interface AgentSettings {
    * ceiling for long-running coding sessions.
    */
   openRouterMaxBudgetUsd?: number;
+
+  /**
+   * Enable OpenRouter's built-in server-side tools (`openrouter:datetime`,
+   * `openrouter:web_search`, `openrouter:web_fetch`). Default `false`
+   * (disabled) because — empirically — their presence in the request body
+   * disables OR's `cache_control` auto-prompt-caching on Anthropic models
+   * when combined with user-defined tools (the cache-key path OR uses to
+   * forward to Anthropic appears to be invalidated by the server-tools
+   * rewrite). Turning these tools off restores caching and yields ~10x
+   * cost reduction on Opus/Sonnet multi-turn sessions. Re-enable when you
+   * actually need OR to handle datetime/web access server-side and accept
+   * the loss of prompt caching.
+   */
+  openRouterServerToolsEnabled?: boolean;
 }
 
 export interface KeyAliasInfo {

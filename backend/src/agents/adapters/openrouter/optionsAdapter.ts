@@ -25,6 +25,7 @@ import {
   type SdkMcpServer,
   type SettingSource,
 } from "@cybourgeoisie/openrouter-agent-coder";
+import { getAgentSettings } from "../../../services/agent-settings.js";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 
 /**
@@ -182,6 +183,17 @@ export function translateOptions(
   // block); other providers silently ignore it, so it's safe to set
   // unconditionally. TTL is omitted so OR's own default (~5min) applies.
   orOpts.cacheControl = { type: "ephemeral" };
+  // Server-tools toggle (Settings → API). Default OFF — empirically, OR's
+  // built-in `openrouter:datetime`/`web_search`/`web_fetch` server tools
+  // disable cache_control auto-caching on Anthropic models when combined
+  // with user-defined tools, so we suppress them unless the user opts in.
+  // `disableServerTools` is the upstream-facing knob; settings.enabled is
+  // the user-facing one (negated polarity to match "feature enabled" UX).
+  // Widened-type cast: the field exists on OpenRouterAgentRunOptions in
+  // openrouter-agent-coder ≥ (PR pending) but the pinned-at-commit dep may
+  // not have it yet — drop the cast once the version bumps.
+  const serverToolsEnabled = getAgentSettings().openRouterServerToolsEnabled === true;
+  (orOpts as OpenRouterAgentRunOptions & { disableServerTools?: boolean }).disableServerTools = !serverToolsEnabled;
   // Forward the user's configured spend cap. `Number.isFinite` excludes
   // NaN/Infinity that could sneak in from a malformed setting; the absence
   // of this field is the signal for OR to use its own DEFAULT_MAX_BUDGET_USD.

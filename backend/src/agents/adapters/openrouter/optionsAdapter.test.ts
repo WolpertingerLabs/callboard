@@ -1,9 +1,22 @@
 /**
  * Unit tests for the Claude-shaped → OpenRouter options translation.
  */
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "@cybourgeoisie/openrouter-agent-coder";
 import { extractPluginDirs, translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
+import { getAgentSettings } from "../../../services/agent-settings.js";
+
+// Mock the settings module so the server-tools toggle (and any other
+// getAgentSettings()-driven branch) is controllable per test. Default
+// return is an empty settings object — matches the "no settings file"
+// production fallback.
+vi.mock("../../../services/agent-settings.js", () => ({
+  getAgentSettings: vi.fn(() => ({})),
+}));
+
+beforeEach(() => {
+  vi.mocked(getAgentSettings).mockReturnValue({});
+});
 
 const defaultExtras: OpenRouterOptionsExtras = { apiKey: "sk-or-test" };
 
@@ -114,6 +127,19 @@ describe("translateOptions — OR config passthrough", () => {
       "hi",
     );
     expect(orOpts.cacheControl).toEqual({ type: "ephemeral" });
+  });
+
+  it("disableServerTools defaults to true when the setting is unset (cache-friendly default)", () => {
+    vi.mocked(getAgentSettings).mockReturnValue({});
+    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
+    // Field is on the upstream type once openrouter-agent-coder ships it; widen for the assertion.
+    expect((orOpts as { disableServerTools?: boolean }).disableServerTools).toBe(true);
+  });
+
+  it("disableServerTools is false when openRouterServerToolsEnabled is true (user opted in)", () => {
+    vi.mocked(getAgentSettings).mockReturnValue({ openRouterServerToolsEnabled: true });
+    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
+    expect((orOpts as { disableServerTools?: boolean }).disableServerTools).toBe(false);
   });
 
   it("forwards maxBudgetUsd onto orOpts.maxBudgetUsd when set", () => {
