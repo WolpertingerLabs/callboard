@@ -13,6 +13,14 @@ import { resolveBranch } from "../utils/git.js";
 import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
 import { getUserContact } from "./user-contact.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
+import { getAgentSettings } from "./agent-settings.js";
+import {
+  addCallback,
+  countPending,
+  getChatDepth,
+  DEFAULT_MAX_CALLBACK_CHAIN_DEPTH,
+  DEFAULT_MAX_PENDING_CALLBACKS,
+} from "./session-callbacks.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -130,7 +138,7 @@ const NOTIFY_CHANNELS: Record<
   },
 };
 
-export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpec {
+export function buildCallboardToolsSpec(getChatId?: () => string, getAgentAlias?: () => string | undefined): ToolServerSpec {
   return {
     name: "callboard-tools",
     version: "1.0.0",
@@ -522,7 +530,7 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
 
       defineTool(
         "start_chat_session",
-        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration.",
+        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration. Set onComplete=true to be automatically notified (a new turn in THIS chat) when the spawned session finishes — no polling required.",
         {
           prompt: z.string().describe("The task or message for the chat session"),
           folder: z.string().describe("Absolute path to the working directory for the session"),
@@ -530,6 +538,12 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
           baseBranch: z.string().optional().describe("Base branch to start from (switches to this branch before starting)"),
           newBranch: z.string().optional().describe("New branch name to create (created from baseBranch or current HEAD)"),
           useWorktree: z.boolean().optional().describe("Create a git worktree instead of switching branches in-place (default: false)"),
+          onComplete: z
+            .boolean()
+            .optional()
+            .describe(
+              "If true, automatically re-invoke THIS chat with a notification when the spawned session completes (success, error, or stop), so you can read its results and continue without polling. Default: false.",
+            ),
           ...providerModelSchema,
         },
         async (args) => {
@@ -588,7 +602,51 @@ export function buildCallboardToolsSpec(getChatId?: () => string): ToolServerSpe
 
             log.info(`Started chat session ${chatId} in ${effectiveFolder}`);
 
-            return { content: [{ type: "text" as const, text: JSON.stringify({ chatId, status: "started", folder: effectiveFolder }) }] };
+            // ── "Phone home" on-complete callback registration ──
+            let onComplete: { registered: boolean; note?: string } | undefined;
+            if (args.onComplete) {
+              const parentChatId = getChatId?.();
+              if (!parentChatId) {
+                onComplete = { registered: false, note: "No parent chat context available — cannot register completion callback." };
+              } else {
+                const settings = getAgentSettings();
+                const maxDepth = settings.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH;
+                const maxPending = settings.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS;
+                const newDepth = getChatDepth(parentChatId) + 1;
+
+                if (newDepth > maxDepth) {
+                  onComplete = {
+                    registered: false,
+                    note: `Callback chain depth limit reached (${maxDepth}). The session was started, but it will not phone home to avoid runaway loops.`,
+                  };
+                  log.warn(`start_chat_session: callback depth ${newDepth} exceeds limit ${maxDepth} for parent ${parentChatId} — skipping callback`);
+                } else if (countPending() >= maxPending) {
+                  onComplete = {
+                    registered: false,
+                    note: `Pending callback limit reached (${maxPending}). The session was started, but it will not phone home until existing callbacks drain.`,
+                  };
+                  log.warn(`start_chat_session: pending callbacks at limit ${maxPending} — skipping callback for parent ${parentChatId}`);
+                } else {
+                  addCallback({
+                    childChatId: chatId,
+                    parentChatId,
+                    parentAgentAlias: getAgentAlias?.(),
+                    depth: newDepth,
+                  });
+                  onComplete = { registered: true, note: `This chat will be notified automatically when session ${chatId} completes.` };
+                  log.info(`Registered on-complete callback: child ${chatId} → parent ${parentChatId} (depth ${newDepth})`);
+                }
+              }
+            }
+
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ chatId, status: "started", folder: effectiveFolder, ...(onComplete && { onComplete }) }),
+                },
+              ],
+            };
           } catch (err: any) {
             log.error(`start_chat_session failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error starting session: ${err.message}` }] };

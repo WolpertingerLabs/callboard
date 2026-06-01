@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact } from "lucide-react";
+import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
 import {
@@ -13,7 +13,12 @@ import {
   updateIgnoredProjectDirs,
   fetchUserContact,
   updateUserContact,
+  getAgentSettings,
+  updateAgentSettings,
 } from "../../api";
+
+const DEFAULT_MAX_CALLBACK_CHAIN_DEPTH = 10;
+const DEFAULT_MAX_PENDING_CALLBACKS = 25;
 import { reloadCustomTheme } from "../../App";
 import type { ThemeListItem, UserContactInfo } from "../../api";
 
@@ -73,6 +78,13 @@ export default function GeneralSettings() {
   const [contactSaved, setContactSaved] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
 
+  // Session completion callback ("phone home") loop-safety state
+  const [maxChainDepth, setMaxChainDepth] = useState<number>(DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
+  const [maxPending, setMaxPending] = useState<number>(DEFAULT_MAX_PENDING_CALLBACKS);
+  const [callbackSaving, setCallbackSaving] = useState(false);
+  const [callbackSaved, setCallbackSaved] = useState(false);
+  const [callbackError, setCallbackError] = useState<string | null>(null);
+
   useEffect(() => {
     fetchInstanceName()
       .then(setInstanceName)
@@ -90,7 +102,31 @@ export default function GeneralSettings() {
     fetchUserContact()
       .then(setContact)
       .catch(() => {});
+    getAgentSettings()
+      .then((s) => {
+        setMaxChainDepth(s.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
+        setMaxPending(s.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS);
+      })
+      .catch(() => {});
   }, []);
+
+  const handleCallbackSave = async () => {
+    setCallbackSaving(true);
+    setCallbackError(null);
+    try {
+      const depth = Math.max(0, Math.floor(maxChainDepth || 0));
+      const pending = Math.max(0, Math.floor(maxPending || 0));
+      const updated = await updateAgentSettings({ maxCallbackChainDepth: depth, maxPendingCallbacks: pending });
+      setMaxChainDepth(updated.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
+      setMaxPending(updated.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS);
+      setCallbackSaved(true);
+      setTimeout(() => setCallbackSaved(false), 2000);
+    } catch (err: any) {
+      setCallbackError(err.message || "Failed to save callback limits");
+    } finally {
+      setCallbackSaving(false);
+    }
+  };
 
   const handleContactValueChange = (key: ContactKey, value: string) => {
     setContact((prev) => ({ ...prev, [key]: { ...prev[key], value } }));
@@ -354,7 +390,7 @@ export default function GeneralSettings() {
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Contact Info</span>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
-          Provide ways for agents to reach you when you're away. When you enable a channel, the{" "}
+          Provide ways for agents to reach you when you&apos;re away. When you enable a channel, the{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>notify_user</code> tool will
           tell the agent how to message you there through your connections.
         </div>
@@ -816,6 +852,108 @@ export default function GeneralSettings() {
           >
             {saved ? "Saved!" : "Save"}
           </button>
+        </div>
+      </div>
+
+      {/* Session Completion Callbacks Section */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 20,
+          background: "var(--bg)",
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <PhoneOutgoing size={16} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Session Completion Callbacks</span>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+          When a session spawns another with{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>start_chat_session</code> using{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>onComplete</code>, the spawning chat is
+          automatically re-invoked when the child finishes — no polling. These limits guard against runaway loops. Set either to{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>0</code> to disable new callbacks entirely.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label htmlFor="maxChainDepth" style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+                Max callback chain depth
+              </label>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                How deep a parent→child→parent re-invocation chain may go. Default {DEFAULT_MAX_CALLBACK_CHAIN_DEPTH}.
+              </div>
+            </div>
+            <input
+              id="maxChainDepth"
+              type="number"
+              min={0}
+              max={1000}
+              value={maxChainDepth}
+              onChange={(e) => setMaxChainDepth(parseInt(e.target.value, 10) || 0)}
+              style={{
+                width: 110,
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 14,
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label htmlFor="maxPending" style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+                Max concurrent pending callbacks
+              </label>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                Most undelivered callbacks allowed across the instance at once. Default {DEFAULT_MAX_PENDING_CALLBACKS}.
+              </div>
+            </div>
+            <input
+              id="maxPending"
+              type="number"
+              min={0}
+              max={10000}
+              value={maxPending}
+              onChange={(e) => setMaxPending(parseInt(e.target.value, 10) || 0)}
+              style={{
+                width: 110,
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 14,
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
+          <button
+            onClick={handleCallbackSave}
+            disabled={callbackSaving}
+            style={{
+              background: "var(--accent)",
+              color: "var(--text-on-accent)",
+              padding: "10px 20px",
+              borderRadius: 8,
+              border: "none",
+              fontSize: 14,
+              cursor: callbackSaving ? "not-allowed" : "pointer",
+            }}
+          >
+            {callbackSaved ? "Saved!" : callbackSaving ? "Saving…" : "Save"}
+          </button>
+          {callbackError && <span style={{ fontSize: 12, color: "var(--error)" }}>{callbackError}</span>}
         </div>
       </div>
 

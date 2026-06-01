@@ -161,6 +161,12 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       { name: "baseBranch", type: "string", description: "Base branch to start from", required: false },
       { name: "newBranch", type: "string", description: "New branch name to create", required: false },
       { name: "useWorktree", type: "boolean", description: "Create a git worktree instead of switching branches", required: false },
+      {
+        name: "onComplete",
+        type: "boolean",
+        description: "Automatically re-invoke this chat when the spawned session completes (no polling)",
+        required: false,
+      },
       { name: "provider", type: "enum", description: 'Agent provider. Defaults to "claude-code".', required: false, enumValues: ["claude-code", "openrouter"] },
       { name: "model", type: "string", description: 'OpenRouter model slug (only valid with provider="openrouter")', required: false },
     ],

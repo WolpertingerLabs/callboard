@@ -95,6 +95,25 @@ export interface AgentSettings {
    * the loss of prompt caching.
    */
   openRouterServerToolsEnabled?: boolean;
+
+  // ── Session completion callbacks ("phone home") loop-safety ───────
+  // Bounds on the start_chat_session onComplete feature, which automatically
+  // re-invokes a parent chat when a spawned child session finishes.
+
+  /**
+   * Max callback-chain depth. A re-invoked parent that spawns another
+   * onComplete child increments depth; once a new child would exceed this, it
+   * still runs but does not register a callback. Guards against runaway
+   * parent↔child recursion. Default: 10.
+   */
+  maxCallbackChainDepth?: number;
+
+  /**
+   * Max number of outstanding (undelivered) completion callbacks across the
+   * whole instance. New onComplete registrations beyond this are skipped (the
+   * session still starts). Caps fan-out breadth. Default: 25.
+   */
+  maxPendingCallbacks?: number;
 }
 
 export interface KeyAliasInfo {
