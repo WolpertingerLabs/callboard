@@ -779,7 +779,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
   try {
-    const spec = buildCallboardToolsSpec(() => trackingId);
+    const spec = buildCallboardToolsSpec(
+      () => trackingId,
+      () => opts.agentAlias,
+    );
     const server = agentProvider.buildToolServer(spec);
     if (server) {
       mcpServers["callboard-tools"] = server;
@@ -1174,3 +1177,8 @@ setCallboardMessageSender(sendMessage);
 // Register sendMessage for the shared agent executor (cron scheduler, heartbeats, event watcher)
 import { setExecutorMessageSender } from "./agent-executor.js";
 setExecutorMessageSender(sendMessage);
+
+// Wire up the "phone home" completion handler: re-invokes parent chats when the
+// child sessions they spawned (via start_chat_session onComplete) finish.
+import { initSessionCompletionHandler } from "./session-completion-handler.js";
+initSessionCompletionHandler({ sendMessage, getActiveSession });

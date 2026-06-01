@@ -55,6 +55,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterModel,
     openRouterLogsRoot,
     openRouterMaxBudgetUsd,
+    maxCallbackChainDepth,
+    maxPendingCallbacks,
   } = req.body;
 
   // Empty strings clear an override; undefined leaves the field untouched.
@@ -70,6 +72,12 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     const n = typeof v === "number" ? v : Number(v);
     if (!Number.isFinite(n)) return undefined;
     return Math.max(0, n);
+  };
+
+  // Non-negative integer counterpart for callback loop-safety caps.
+  const normalizeCount = (v: unknown): number | undefined => {
+    const n = normalizeNumber(v);
+    return n === undefined ? undefined : Math.floor(n);
   };
 
   // Track whether any API / auth / model override field was included so we
@@ -105,6 +113,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
       ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
       ...(openRouterMaxBudgetUsd !== undefined && { openRouterMaxBudgetUsd: normalizeNumber(openRouterMaxBudgetUsd) }),
+      ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
+      ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });
     // Handle proxy mode switching — creates/destroys LocalProxy as needed
     // and resets cached remote ProxyClient instances
