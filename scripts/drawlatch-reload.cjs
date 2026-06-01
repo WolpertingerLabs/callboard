@@ -28,6 +28,10 @@
  * errors and asks you to run `npm run drawlatch:prod` first.
  *
  * Both modes restore your package.json files exactly as they were on exit.
+ *
+ * The global install (`npm install -g`) transparently falls back to sudo when
+ * the npm global modules dir is not writable by the current user (e.g. a
+ * root-owned /usr prefix).
  */
 
 const { execSync } = require("child_process");
@@ -55,6 +59,47 @@ function writePkg(relPath, obj) {
 function run(cmd, opts = {}) {
   console.log(`\n> ${cmd}`);
   execSync(cmd, { stdio: "inherit", ...opts });
+}
+
+/**
+ * Whether `npm install -g` can write to the global modules dir as the current
+ * user. When the prefix is root-owned (e.g. /usr), it can't — and we fall back
+ * to sudo for the global install step.
+ */
+function canWriteGlobalModules() {
+  let prefix;
+  try {
+    prefix = execSync("npm prefix -g", { encoding: "utf8" }).trim();
+  } catch {
+    return true; // can't determine — let npm error naturally rather than force sudo
+  }
+  const candidates = [path.join(prefix, "lib", "node_modules"), path.join(prefix, "node_modules"), prefix];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) {
+      try {
+        fs.accessSync(dir, fs.constants.W_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true; // nothing exists yet — assume creatable, let npm decide
+}
+
+/** Global-install a tarball, transparently using sudo if the global dir isn't writable. */
+function globalInstall(tgz) {
+  if (canWriteGlobalModules()) {
+    run(`npm install -g "${tgz}"`);
+    return;
+  }
+  console.log("  Global node_modules is not writable by the current user — using sudo for the global install.");
+  try {
+    execSync("sudo -n true", { stdio: "ignore" });
+  } catch {
+    console.log("  (sudo may prompt for your password)");
+  }
+  run(`sudo npm install -g "${tgz}"`);
 }
 
 /** Read drawlatch's own version from the sibling checkout, or null if absent. */
@@ -138,7 +183,7 @@ try {
   const cbTgz = `/tmp/wolpertingerlabs-callboard-${cbVersion}.tgz`;
 
   run("npm pack --pack-destination /tmp");
-  run(`npm install -g "${cbTgz}"`);
+  globalInstall(cbTgz);
 
   // 4. Cleanup tarballs
   for (const f of [dlTgz, cbTgz]) {
