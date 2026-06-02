@@ -1,6 +1,6 @@
 /**
  * OpenRouter adapter — concrete {@link AgentProvider} backed by the
- * `openrouter-agent-coder` library.
+ * `openrouter-agent-harness` library.
  *
  * Construction is config-free; per-call configuration (API key, base URL,
  * default model, logsRoot) rides in via the `openRouter` sub-object on
@@ -33,7 +33,7 @@ import {
   supportedModels as orSupportedModels,
   type CommandLoader,
   type OpenRouterAgentRunOptions,
-} from "@cybourgeoisie/openrouter-agent-coder";
+} from "@wolpertingerlabs/openrouter-agent-harness";
 import type { AgentProvider, AgentQuery, AgentQueryRequest } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import type { ToolServerSpec } from "../../ports/tools.js";

@@ -1,5 +1,5 @@
 /**
- * Event translation: openrouter-agent-coder `AgentCoreEvent` →
+ * Event translation: openrouter-agent-harness `AgentCoreEvent` →
  * callboard `AgentEvent`.
  *
  * The OR library yields a discriminated union of low-level run events; this
@@ -23,7 +23,7 @@ import {
   type AgentCoreEvent,
   type CommandLoader,
   type OpenRouterAgentRun,
-} from "@cybourgeoisie/openrouter-agent-coder";
+} from "@wolpertingerlabs/openrouter-agent-harness";
 import type { AgentEvent, TokenUsage } from "../../ports/events.js";
 
 /**

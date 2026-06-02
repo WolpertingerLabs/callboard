@@ -21,7 +21,7 @@
  * @see plans/openrouter-adapter.md §6 (tool exposure)
  */
 import { z } from "zod";
-import { createSdkMcpServer, tool, type SdkMcpServer } from "@cybourgeoisie/openrouter-agent-coder";
+import { createSdkMcpServer, tool, type SdkMcpServer } from "@wolpertingerlabs/openrouter-agent-harness";
 import type { AnyToolDefinition, ToolCallResult, ToolServerSpec } from "../../ports/tools.js";
 
 /**

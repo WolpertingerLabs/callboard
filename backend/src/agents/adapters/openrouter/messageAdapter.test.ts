@@ -1,5 +1,5 @@
 /**
- * Unit tests for the openrouter-agent-coder → AgentEvent translation.
+ * Unit tests for the openrouter-agent-harness → AgentEvent translation.
  *
  * Pins the contract callers rely on for the OR adapter. Pure translation of
  * a single AgentCoreEvent is the most useful unit to test directly; the
@@ -7,7 +7,7 @@
  * the bottom against a captured event sequence.
  */
 import { describe, expect, it } from "vitest";
-import type { AgentCoreEvent } from "@cybourgeoisie/openrouter-agent-coder";
+import type { AgentCoreEvent } from "@wolpertingerlabs/openrouter-agent-harness";
 import { translateEvent } from "./messageAdapter.js";
 
 describe("translateEvent — direct one-to-one mappings", () => {

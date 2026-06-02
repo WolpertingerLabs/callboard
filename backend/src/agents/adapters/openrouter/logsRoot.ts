@@ -8,8 +8,8 @@
  *
  * Resolution order (first match wins):
  *   1. `getAgentSettings().openRouterLogsRoot` if set
- *   2. `$XDG_DATA_HOME/openrouter-agent-coder/logs` if env is set
- *   3. `<os.homedir()>/.openrouter-agent-coder/logs` (default)
+ *   2. `$XDG_DATA_HOME/openrouter-agent-harness/logs` if env is set
+ *   3. `<os.homedir()>/.openrouter-agent-harness/logs` (default)
  *
  * @see plans/openrouter-adapter.md §7 (SessionProvider — logsRoot)
  */
@@ -21,6 +21,6 @@ export function resolveOpenRouterLogsRoot(): string {
   const fromSettings = getAgentSettings().openRouterLogsRoot?.trim();
   if (fromSettings) return fromSettings;
   const xdg = process.env.XDG_DATA_HOME;
-  if (xdg && xdg.trim()) return join(xdg.trim(), "openrouter-agent-coder", "logs");
-  return join(homedir(), ".openrouter-agent-coder", "logs");
+  if (xdg && xdg.trim()) return join(xdg.trim(), "openrouter-agent-harness", "logs");
+  return join(homedir(), ".openrouter-agent-harness", "logs");
 }

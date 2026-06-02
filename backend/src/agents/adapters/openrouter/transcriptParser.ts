@@ -1,7 +1,7 @@
 /**
  * Transcript-based session reader for the OpenRouter adapter.
  *
- * The `openrouter-agent-coder` library writes an append-only JSONL side-car
+ * The `openrouter-agent-harness` library writes an append-only JSONL side-car
  * at `<logsRoot>/<sessionId>/transcript.jsonl` containing every user-visible
  * record (`session_start`, `user`, `assistant`, `tool_result`, `compact`,
  * `session_end`) with per-record timestamps, post-routing model names,
@@ -16,7 +16,7 @@
  * callers fall back to {@link readOpenRouterSession} (state.json plus the
  * req_*&#47;gen_* tree) for those.
  *
- * @see ../../../node_modules/@cybourgeoisie/openrouter-agent-coder/dist/logging/transcript.d.ts
+ * @see ../../../node_modules/@wolpertingerlabs/openrouter-agent-harness/dist/logging/transcript.d.ts
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

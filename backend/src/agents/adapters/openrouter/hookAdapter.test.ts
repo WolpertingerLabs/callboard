@@ -4,7 +4,7 @@
  * execution so the stdin→stdout→decision path is tested end-to-end.
  */
 import { describe, expect, it } from "vitest";
-import type { HookPayload, LoadedPlugin } from "@cybourgeoisie/openrouter-agent-coder";
+import type { HookPayload, LoadedPlugin } from "@wolpertingerlabs/openrouter-agent-harness";
 import { buildOpenRouterHookDispatcher, composeOnHook } from "./hookAdapter.js";
 
 /** Build a minimal LoadedPlugin carrying just a hooks map. */

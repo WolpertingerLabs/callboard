@@ -27,7 +27,7 @@ import {
   type LoadedPlugin,
   type OnHook,
   type PreToolUseAction,
-} from "@cybourgeoisie/openrouter-agent-coder";
+} from "@wolpertingerlabs/openrouter-agent-harness";
 import type { OrAdapterLogger } from "./pluginAdapter.js";
 
 /** One executable hook command resolved from a plugin's hooks.json matcher. */

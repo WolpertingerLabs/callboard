@@ -31,7 +31,7 @@
  * OR — the same documented limitation as external `.mcp.json` stdio/HTTP
  * servers. Wiring the OR MCP bridge is a separate follow-up.
  */
-import { loadPlugins, type LoadedPlugin } from "@cybourgeoisie/openrouter-agent-coder";
+import { loadPlugins, type LoadedPlugin } from "@wolpertingerlabs/openrouter-agent-harness";
 import { extractPluginDirs } from "./optionsAdapter.js";
 
 /** Diagnostic logger shape shared across the OR adapter's plugin helpers. */

@@ -33,7 +33,7 @@ import {
   type SkillLoader,
   type SkillInfo,
   type SubstitutionContext,
-} from "@cybourgeoisie/openrouter-agent-coder";
+} from "@wolpertingerlabs/openrouter-agent-harness";
 import type { EffortLevel, OrTool } from "./optionsAdapter.js";
 import type { OrAdapterLogger } from "./pluginAdapter.js";
 

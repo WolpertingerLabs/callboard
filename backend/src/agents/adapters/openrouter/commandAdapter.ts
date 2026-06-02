@@ -21,7 +21,7 @@ import {
   type LoadedPlugin,
   type SkillLoader,
   type OpenRouterAgentRunOptions,
-} from "@cybourgeoisie/openrouter-agent-coder";
+} from "@wolpertingerlabs/openrouter-agent-harness";
 import type { OrAdapterLogger } from "./pluginAdapter.js";
 
 /**

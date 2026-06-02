@@ -70,7 +70,7 @@ export interface AgentSettings {
   /** Default model alias for new OR chats. Defaults to `~anthropic/claude-sonnet-latest`. */
   openRouterModel?: string;
 
-  /** Absolute path to write OR session logs into. Defaults to `~/.openrouter-agent-coder/logs`. */
+  /** Absolute path to write OR session logs into. Defaults to `~/.openrouter-agent-harness/logs`. */
   openRouterLogsRoot?: string;
 
   /**

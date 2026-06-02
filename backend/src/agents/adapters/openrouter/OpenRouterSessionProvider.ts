@@ -1,6 +1,6 @@
 /**
  * OpenRouter session provider — concrete {@link SessionProvider} backed by
- * `openrouter-agent-coder`'s on-disk session logs.
+ * `openrouter-agent-harness`'s on-disk session logs.
  *
  * Layout:
  *
@@ -14,8 +14,8 @@
  *
  * `logsRoot` resolution (first match wins):
  *   1. `getAgentSettings().openRouterLogsRoot` if set
- *   2. `$XDG_DATA_HOME/openrouter-agent-coder/logs` if env is set
- *   3. `<os.homedir()>/.openrouter-agent-coder/logs`
+ *   2. `$XDG_DATA_HOME/openrouter-agent-harness/logs` if env is set
+ *   3. `<os.homedir()>/.openrouter-agent-harness/logs`
  *
  * Subagents are NOT discovered as separate session files in v1 — OR
  * subagents reuse the `<parentSessionId>:sub:<uuid>` naming scheme, so

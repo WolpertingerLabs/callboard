@@ -2,7 +2,7 @@
  * Unit tests for the Claude-shaped → OpenRouter options translation.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "@cybourgeoisie/openrouter-agent-coder";
+import { DEFAULT_INSTRUCTIONS } from "@wolpertingerlabs/openrouter-agent-harness";
 import { extractPluginDirs, translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
 import { getAgentSettings } from "../../../services/agent-settings.js";
 

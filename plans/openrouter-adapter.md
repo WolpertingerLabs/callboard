@@ -1,6 +1,6 @@
 # Plan: OpenRouter Adapter
 
-Add `openrouter-agent-coder` as callboard's first alternative `AgentProvider` + `SessionProvider`, alongside the in-tree `claude-code` adapter. Claude Code stays the default for every code path; OpenRouter is opt-in per chat once an API key is configured.
+Add `openrouter-agent-harness` as callboard's first alternative `AgentProvider` + `SessionProvider`, alongside the in-tree `claude-code` adapter. Claude Code stays the default for every code path; OpenRouter is opt-in per chat once an API key is configured.
 
 Status: **Not started.** Prerequisites landed.
 
@@ -10,7 +10,7 @@ Status: **Not started.** Prerequisites landed.
 
 Both adapters are scoped in the abstraction-layer plan as ~40h Phase-2 work. OpenRouter goes first because:
 
-- **The library is finished.** `openrouter-agent-coder` (in this user's tree at `/home/cybil/openrouter-agent-coder`) shipped Phases 0–1 of `plans/callboard-compatibility.md` — 18 PRs, 166 tests, ~97% coverage. Its public surface (`OpenRouterAgentRun`, `tool()`, `createSdkMcpServer`, `accountInfo`, `supportedModels`) was deliberately shaped to drop in where `@anthropic-ai/claude-agent-sdk` does.
+- **The library is finished.** `openrouter-agent-harness` (in this user's tree at `/home/cybil/openrouter-agent-harness`) shipped Phases 0–1 of `plans/callboard-compatibility.md` — 18 PRs, 166 tests, ~97% coverage. Its public surface (`OpenRouterAgentRun`, `tool()`, `createSdkMcpServer`, `accountInfo`, `supportedModels`) was deliberately shaped to drop in where `@anthropic-ai/claude-agent-sdk` does.
 - **No subprocess shell-out.** Unlike Codex (which spawns a Rust CLI binary and exchanges JSONL), OR runs in-process — same model as Claude Code SDK in callboard. MCP tool exposure collapses into a same-process Zod re-wrap; no MCP stdio server launcher to write.
 - **Single-key, 300+ models.** Replaces "pay Anthropic / use Claude binary" with "pay OpenRouter / pick from anyone" while keeping every Claude-style feature (subagents, skills, slash commands, plugins, MCP, compaction, checkpointing, forking, streaming input).
 
@@ -28,8 +28,8 @@ Codex remains queued behind this in `plans/codex-adapter.md`.
 
 ## Library being integrated
 
-- **Name:** `openrouter-agent-coder`
-- **Source:** `/home/cybil/openrouter-agent-coder` (Apache-2.0, library-only)
+- **Name:** `openrouter-agent-harness`
+- **Source:** `/home/cybil/openrouter-agent-harness` (Apache-2.0, library-only)
 - **Version target:** 0.2.x (current); pin exact version, treat upgrades as adapter PRs not casual bumps
 - **Packaging decision:** _open question — see below_. Initial cycle: vendor the dist via local `file:` reference; switch to npm publish once the integration stabilizes.
 
@@ -55,7 +55,7 @@ backend/src/agents/adapters/openrouter/
   sessionParser.ts                 # <logsRoot>/<id>/*/response.json → ParsedMessage[]
   optionsAdapter.ts                # Claude-SDK-shaped options → OpenRouterAgentRunOptions
   permissionAdapter.ts             # canUseTool wrapper preserving callboard's PermissionPolicy
-  toolAdapter.ts                   # ToolServerSpec → openrouter-agent-coder createSdkMcpServer
+  toolAdapter.ts                   # ToolServerSpec → openrouter-agent-harness createSdkMcpServer
   hookAdapter.ts                   # neutral hook events → onHook callback
   types.ts                         # Shared adapter-local types
 ```
@@ -81,7 +81,7 @@ Per-call sites that need the provider:
 ### Library integration
 
 ```ts
-import { OpenRouterAgentRun } from "openrouter-agent-coder";
+import { OpenRouterAgentRun } from "openrouter-agent-harness";
 
 class OpenRouterAdapter implements AgentProvider {
   readonly kind = "openrouter" as const;
@@ -170,7 +170,7 @@ Claude Code emits `slash_commands` on its init payload, which callboard consumes
 | _(none)_                                            | `baseUrl: getAgentSettings().openRouterBaseUrl` (optional)                                                                              |
 | _(none)_                                            | `model: getAgentSettings().openRouterModel ?? "~anthropic/claude-sonnet-latest"`                                                        |
 | _(none)_                                            | `appTitle: "callboard"`                                                                                                                 |
-| _(none)_                                            | `logsRoot: <home>/.openrouter-agent-coder/logs` (XDG-tolerant resolution; see SessionProvider §logsRoot below)                          |
+| _(none)_                                            | `logsRoot: <home>/.openrouter-agent-harness/logs` (XDG-tolerant resolution; see SessionProvider §logsRoot below)                          |
 
 ### Permission system (`permissionAdapter.ts`)
 
@@ -190,7 +190,7 @@ Option A — branch on `kind` in the policy factory, single-file change in `clau
 Callboard's 4 in-process tool servers (`callboard`, `callboard-tools`, `mcp-proxy`, `qc`) are authored as `ToolServerSpec { name, version, tools: ToolDefinition[] }`. OR's `createSdkMcpServer` accepts an identical shape — re-export and bridge:
 
 ```ts
-import { createSdkMcpServer, tool } from "openrouter-agent-coder";
+import { createSdkMcpServer, tool } from "openrouter-agent-harness";
 import type { ToolServerSpec, AnyToolDefinition } from "../../ports/tools.js";
 
 export function buildOpenRouterToolServer(spec: ToolServerSpec): unknown {
@@ -218,7 +218,7 @@ function translateToolDef(def: AnyToolDefinition) {
 }
 ```
 
-**Zod-version gotcha:** `openrouter-agent-coder` pins `zod/v4`; callboard imports `zod` as a peer dep. Lock callboard's `zod` to the same major; CI check verifies. The codex-adapter plan has the same constraint.
+**Zod-version gotcha:** `openrouter-agent-harness` pins `zod/v4`; callboard imports `zod` as a peer dep. Lock callboard's `zod` to the same major; CI check verifies. The codex-adapter plan has the same constraint.
 
 **Image content blocks:** Callboard's `ToolContentBlock` union includes `{ type: "image", data, mimeType }`. OR's execute return doesn't support image attachments; stringify as `[image:<mime>]` placeholder for v1. Bug-bash later if image-returning tools become important.
 
@@ -245,8 +245,8 @@ Adapter strategy:
 OR writes session logs under `<logsRoot>/<sessionId>/{state.json, session.json, req_*/, gen_*/}`. The constructor option defaults to `<cwd>/logs`, but callboard needs a stable absolute path that survives directory changes. Resolution order:
 
 1. `getAgentSettings().openRouterLogsRoot` if set.
-2. `${XDG_DATA_HOME}/openrouter-agent-coder/logs` if `XDG_DATA_HOME` is set.
-3. `<os.homedir()>/.openrouter-agent-coder/logs` (default).
+2. `${XDG_DATA_HOME}/openrouter-agent-harness/logs` if `XDG_DATA_HOME` is set.
+3. `<os.homedir()>/.openrouter-agent-harness/logs` (default).
 
 This mirrors `~/.claude/projects/` and `~/.codex/sessions/`.
 
@@ -366,7 +366,7 @@ openRouterApiKey?: string;
 openRouterBaseUrl?: string;
 /** Default model alias for new OR chats. Defaults to ~anthropic/claude-sonnet-latest. */
 openRouterModel?: string;
-/** Absolute path to write OR session logs into. Defaults to ~/.openrouter-agent-coder/logs. */
+/** Absolute path to write OR session logs into. Defaults to ~/.openrouter-agent-harness/logs. */
 openRouterLogsRoot?: string;
 ```
 
@@ -473,7 +473,7 @@ Add OR provider to the existing `agents.integration.test.ts` parameterized-by-ki
 
 | Step | What                                                                                                                                                                                                                                | Est. |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 1    | Install `openrouter-agent-coder` (vendor via `file:` or local link initially), pin exact version, verify build                                                                                                                  | 1h   |
+| 1    | Install `openrouter-agent-harness` (vendor via `file:` or local link initially), pin exact version, verify build                                                                                                                  | 1h   |
 | 2    | Extend `AgentProviderKind` union (`AgentProvider.ts:52`) — single-line                                                                                                                                                            | 15m  |
 | 3    | Refactor `factory.ts` to per-kind singleton map; preserve no-arg behavior (default `claude-code`)                                                                                                                                  | 1h   |
 | 4    | `OpenRouterAdapter.ts` skeleton + `query()` stub returning an empty async-iterable                                                                                                                                                  | 1h   |
@@ -495,7 +495,7 @@ Add OR provider to the existing `agents.integration.test.ts` parameterized-by-ki
 | 20   | Frontend: shared types update (`AgentSettings`, `SystemInfo.openRouterConfigured`)                                                                                                                                                | 1h   |
 | 21   | Integration tests against recorded OR stream + parameterize `agents.integration.test.ts` over both kinds                                                                                                                            | 4h   |
 
-**Total: ~50h** (~1.25 sprints). Slightly above the 40h estimate in `openrouter-agent-coder/plans/callboard-compatibility.md` because that estimate omitted Step 16 (synthetic slash commands), Step 9 (hook adapter — they assumed pass-through), and the search/delete portions of Step 11/13.
+**Total: ~50h** (~1.25 sprints). Slightly above the 40h estimate in `openrouter-agent-harness/plans/callboard-compatibility.md` because that estimate omitted Step 16 (synthetic slash commands), Step 9 (hook adapter — they assumed pass-through), and the search/delete portions of Step 11/13.
 
 Land in 4 PRs to keep diffs reviewable:
 
@@ -508,25 +508,25 @@ Land in 4 PRs to keep diffs reviewable:
 
 ## Key Risks
 
-1. **Zod version drift.** `openrouter-agent-coder` pins `zod/v4`; callboard's `package.json` should be aligned before Step 1. Lock both sides; CI verifies via a `zod` peer-dep check in the adapter.
+1. **Zod version drift.** `openrouter-agent-harness` pins `zod/v4`; callboard's `package.json` should be aligned before Step 1. Lock both sides; CI verifies via a `zod` peer-dep check in the adapter.
 
 2. **MCP image content blocks lose information.** Callboard's `ToolContentBlock.image` becomes `[image:<mime>]` string under OR. Acceptable for v1 because no callboard tool currently returns image content (all 48 tools return text/JSON). Add a TODO + ratchet a vitest assertion against `ToolDefinition`s if image content gets added later.
 
 3. **Server-side tool permission gap.** `web_search` / `web_fetch` / `datetime` cannot be gated by `canUseTool` because they execute on OR's backend. Workaround for `webAccess: "deny"`: filter them out of the OR `tools` array at registration. Document as a known limitation in the new ApiSettings section.
 
-4. **OR library version churn.** `openrouter-agent-coder` is v0.2.x; even though the public API is well-shaped, minor versions may rev. Pin exact version (`^0.2.x` → `0.2.x`) and treat upgrades as adapter-update PRs.
+4. **OR library version churn.** `openrouter-agent-harness` is v0.2.x; even though the public API is well-shaped, minor versions may rev. Pin exact version (`^0.2.x` → `0.2.x`) and treat upgrades as adapter-update PRs.
 
 5. **No `compaction_boundary` wire event.** OR handles compaction internally and exposes `PreCompact` via `onHook`, but doesn't emit a stream-level boundary event. Callboard's "Conversation compacted" banner won't render for OR chats in v1. Workaround: synthesize from the `PreCompact` hook into an `adapter_specific` event the frontend filters on. Defer to a follow-up PR.
 
 6. **Subagent cost-tracking double-count risk.** Callboard has its own subagent concept (compiled into `systemPrompt` via `compileIdentityPrompt()`). With OR's own `spawn_subagent` opt-in, two distinct subagent paths exist. v1: keep OR's `enableSubagents: false` (default), let callboard's subagent path handle everything. Revisit if a use case wants OR's deeper recursion.
 
-7. **`logsRoot` collision.** If two callboard processes run on the same machine (worktrees), they share `<home>/.openrouter-agent-coder/logs/`. OR session IDs are UUIDs so no actual collision, but discovery returns all sessions across worktrees. Same behavior as `~/.claude/projects/` today — fine.
+7. **`logsRoot` collision.** If two callboard processes run on the same machine (worktrees), they share `<home>/.openrouter-agent-harness/logs/`. OR session IDs are UUIDs so no actual collision, but discovery returns all sessions across worktrees. Same behavior as `~/.claude/projects/` today — fine.
 
 ---
 
 ## Open Questions
 
-- **Packaging.** Vendor (`file:../openrouter-agent-coder`) for the initial integration cycle, or npm publish the OR library first? Vendoring is faster for PR A but means callboard pins to a specific git revision. Decide before Step 1. **Recommendation:** vendor for PRs A–C; switch to npm by PR D.
+- **Packaging.** Vendor (`file:../openrouter-agent-harness`) for the initial integration cycle, or npm publish the OR library first? Vendoring is faster for PR A but means callboard pins to a specific git revision. Decide before Step 1. **Recommendation:** vendor for PRs A–C; switch to npm by PR D.
 
 - **Per-chat model override storage.** Where does the per-chat model selection from NewChatPanel actually go — chat metadata (`model: "google/gemini-2.0-flash"`)? AgentSettings (one default per provider)? **Recommendation:** chat metadata, with AgentSettings holding the default. Mirrors how `agentAlias` flows today.
 
@@ -542,5 +542,5 @@ Land in 4 PRs to keep diffs reviewable:
 
 - This repo: [`plans/agent-abstraction-layer.md`](agent-abstraction-layer.md) — defines the ports this plan implements against
 - This repo: [`plans/codex-adapter.md`](codex-adapter.md) — the worked example with the same shape
-- `openrouter-agent-coder` repo: [`plans/callboard-compatibility.md`](file:///home/cybil/openrouter-agent-coder/plans/callboard-compatibility.md) — the library-side prerequisite, already shipped
-- `openrouter-agent-coder` repo: [`README.md`](file:///home/cybil/openrouter-agent-coder/README.md) — public API surface and feature reference
+- `openrouter-agent-harness` repo: [`plans/callboard-compatibility.md`](file:///home/cybil/openrouter-agent-harness/plans/callboard-compatibility.md) — the library-side prerequisite, already shipped
+- `openrouter-agent-harness` repo: [`README.md`](file:///home/cybil/openrouter-agent-harness/README.md) — public API surface and feature reference

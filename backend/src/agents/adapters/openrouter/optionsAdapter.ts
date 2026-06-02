@@ -24,7 +24,7 @@ import {
   type OpenRouterAgentRunOptions,
   type SdkMcpServer,
   type SettingSource,
-} from "@cybourgeoisie/openrouter-agent-coder";
+} from "@wolpertingerlabs/openrouter-agent-harness";
 import { getAgentSettings } from "../../../services/agent-settings.js";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 
@@ -36,7 +36,7 @@ import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
  * `reasoning_effort`). Non-reasoning models silently ignore it.
  *
  * Re-declared here rather than imported from
- * `@cybourgeoisie/openrouter-agent-coder` because the SDK doesn't re-export
+ * `@wolpertingerlabs/openrouter-agent-harness` because the SDK doesn't re-export
  * its `EffortLevel` type at the package root. Drift risk is minimal — six
  * string literals — and keeping the union local lets the rest of the
  * backend (stream.ts boundary validation, claude.ts metadata persistence)
@@ -65,7 +65,7 @@ export interface OpenRouterOptionsExtras {
   /**
    * Per-session USD spend cap. Omit to inherit the OR library's own default
    * ($1.00 at the time of writing — see DEFAULT_MAX_BUDGET_USD in
-   * openrouter-agent-coder/src/agent.ts). The cap is cumulative across every
+   * openrouter-agent-harness/src/agent.ts). The cap is cumulative across every
    * turn for the lifetime of the streaming-input run, not per-message.
    */
   maxBudgetUsd?: number;
@@ -73,7 +73,7 @@ export interface OpenRouterOptionsExtras {
 
 /**
  * Library-side default for `maxBudgetUsd` when no override is supplied.
- * Mirrors `DEFAULT_MAX_BUDGET_USD` in openrouter-agent-coder/src/agent.ts so
+ * Mirrors `DEFAULT_MAX_BUDGET_USD` in openrouter-agent-harness/src/agent.ts so
  * the backend can advertise the effective cap on /system-info without having
  * to import the constant (which the OR package doesn't re-export). If the OR
  * library bumps its own default, update this value to match.
@@ -246,7 +246,7 @@ export function translateOptions(
     // External stdio/http MCP servers from .mcp.json have shapes like
     // `{ command, args, env }` or `{ url, headers }` — no in-process `.tools`
     // array. The OR adapter has no equivalent transport in v1 (the
-    // openrouter-agent-coder library DOES support MCP, but wiring its
+    // openrouter-agent-harness library DOES support MCP, but wiring its
     // bridge is deferred to a later PR). Surface dropped names so users
     // can see why their external tools disappeared under OR.
     opts.stderr(

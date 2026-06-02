@@ -592,12 +592,12 @@ export default function ApiSettings() {
                 type="text"
                 value={openRouterLogsRoot}
                 onChange={(e) => setOpenRouterLogsRoot(e.target.value)}
-                placeholder="~/.openrouter-agent-coder/logs"
+                placeholder="~/.openrouter-agent-harness/logs"
                 autoComplete="off"
                 spellCheck={false}
                 style={inputStyle}
               />
-              <div style={helpStyle}>Optional. Override where OR session state is written. Defaults to ~/.openrouter-agent-coder/logs.</div>
+              <div style={helpStyle}>Optional. Override where OR session state is written. Defaults to ~/.openrouter-agent-harness/logs.</div>
             </div>
           </div>
         </>
