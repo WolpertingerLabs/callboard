@@ -1,22 +1,9 @@
 /**
  * Unit tests for the Claude-shaped → OpenRouter options translation.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "@wolpertingerlabs/openrouter-agent-harness";
 import { extractPluginDirs, translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
-import { getAgentSettings } from "../../../services/agent-settings.js";
-
-// Mock the settings module so the server-tools toggle (and any other
-// getAgentSettings()-driven branch) is controllable per test. Default
-// return is an empty settings object — matches the "no settings file"
-// production fallback.
-vi.mock("../../../services/agent-settings.js", () => ({
-  getAgentSettings: vi.fn(() => ({})),
-}));
-
-beforeEach(() => {
-  vi.mocked(getAgentSettings).mockReturnValue({});
-});
 
 const defaultExtras: OpenRouterOptionsExtras = { apiKey: "sk-or-test" };
 
@@ -129,14 +116,7 @@ describe("translateOptions — OR config passthrough", () => {
     expect(orOpts.cacheControl).toEqual({ type: "ephemeral" });
   });
 
-  it("disableServerTools defaults to true when the setting is unset (cache-friendly default)", () => {
-    vi.mocked(getAgentSettings).mockReturnValue({});
-    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
-    expect(orOpts.disableServerTools).toBe(true);
-  });
-
-  it("disableServerTools is false when openRouterServerToolsEnabled is true (user opted in)", () => {
-    vi.mocked(getAgentSettings).mockReturnValue({ openRouterServerToolsEnabled: true });
+  it("always enables OpenRouter server tools (disableServerTools is false)", () => {
     const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
     expect(orOpts.disableServerTools).toBe(false);
   });

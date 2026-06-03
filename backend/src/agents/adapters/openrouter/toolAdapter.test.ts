@@ -12,8 +12,8 @@ import { buildOpenRouterToolServer, renderToolResult } from "./toolAdapter.js";
  * WithGenerator / Manual); the bridge always produces WithExecute. Narrow
  * here for test-time access to `.execute`.
  */
-function fnWithExecute(tool: { function: unknown }): { execute: (input: unknown) => Promise<unknown> } {
-  return tool.function as { execute: (input: unknown) => Promise<unknown> };
+function fnWithExecute(tool: unknown): { execute: (input: unknown) => Promise<unknown> } {
+  return (tool as { function: unknown }).function as { execute: (input: unknown) => Promise<unknown> };
 }
 
 describe("renderToolResult", () => {
@@ -72,7 +72,7 @@ describe("buildOpenRouterToolServer", () => {
       tools: [def],
     });
     expect(server.tools).toHaveLength(1);
-    const fn = server.tools[0]!.function as { name: string; description?: string };
+    const fn = (server.tools[0]! as unknown as { function: unknown }).function as { name: string; description?: string };
     expect(fn.name).toBe("read_thing");
     expect(fn.description).toBe("Reads a thing");
   });
@@ -88,7 +88,7 @@ describe("buildOpenRouterToolServer", () => {
     // OR's tool() helper calls z.toJSONSchema(inputSchema) at construction.
     // If our raw-shape → ZodObject wrap is wrong, the call would have thrown
     // synchronously above. Reaching here is the green-path assertion.
-    const fn = server.tools[0]!.function as { inputSchema?: unknown };
+    const fn = (server.tools[0]! as unknown as { function: unknown }).function as { inputSchema?: unknown };
     expect(fn.inputSchema).toBeDefined();
   });
 
