@@ -7,7 +7,7 @@
   "main": "./backend/dist/index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/WolpertingerLabs/callboard.git"
+    "url": "git+https://github.com/WolpertingerLabs/callboard.git"
   },
   "homepage": "https://github.com/WolpertingerLabs/callboard#readme",
   "bugs": {
@@ -30,7 +30,7 @@
     "callboard"
   ],
   "bin": {
-    "callboard": "./bin/callboard.js"
+    "callboard": "bin/callboard.js"
   },
   "files": [
     "backend/dist",
