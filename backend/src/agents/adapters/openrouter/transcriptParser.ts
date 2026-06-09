@@ -48,7 +48,7 @@ interface RawRecord {
   // tool_result
   callId?: unknown;
   name?: unknown;
-  isError?: unknown;
+  isError?: boolean;
   output?: unknown;
   // compact
   reason?: unknown;
