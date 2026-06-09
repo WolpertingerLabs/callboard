@@ -16,6 +16,8 @@ import {
   saveDefaultProvider,
   getDefaultOpenRouterEffort,
   saveDefaultOpenRouterEffort,
+  getDefaultOpenRouterModel,
+  saveDefaultOpenRouterModel,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -74,6 +76,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // each model's default behavior). Persisted in localStorage independently
   // of the provider so toggling back to OR restores the prior selection.
   const [effort, setEffort] = useState<EffortLevel | undefined>(getDefaultOpenRouterEffort);
+  // OpenRouter model slug. Empty string = "use the global default from Settings → API".
+  // Persisted across reloads via localStorage, like provider/effort.
+  const [model, setModel] = useState<string>(getDefaultOpenRouterModel);
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -123,22 +128,26 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // ephemeral.
     saveDefaultProvider(provider);
     saveDefaultOpenRouterEffort(effort);
+    saveDefaultOpenRouterModel(model);
     // Runtime guard: only downgrade to claude-code when we KNOW OR is not
     // configured (openRouterConfigured === false). While still loading
     // (null), trust the user's choice — sendMessage rejects loudly if the
     // OR key is missing, so we get a clear error rather than a silent
     // downgrade.
     const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
+    const trimmedModel = model.trim();
 
     setFolder("");
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(target)}`, {
-      // Only forward `effort` for OpenRouter chats — for Claude Code the field
-      // would just ride along and get persisted to chat metadata for nothing.
+      // Only forward `effort`/`model` for OpenRouter chats — on Claude Code
+      // those fields would just ride along and get persisted to chat metadata
+      // for nothing.
       state: {
         defaultPermissions,
         provider: effectiveProvider,
         ...(effectiveProvider === "openrouter" && effort && { effort }),
+        ...(effectiveProvider === "openrouter" && trimmedModel && { model: trimmedModel }),
       },
     });
   };
@@ -151,6 +160,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // which path they created the chat from.
     saveDefaultProvider(provider);
     saveDefaultOpenRouterEffort(effort);
+    saveDefaultOpenRouterModel(model);
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -170,9 +180,16 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // panel's top radio. Without this, picking OR + Agent would silently
     // create a Claude chat — the inverse of what the toggle implies.
     const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
+    const trimmedModel = model.trim();
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
-      state: { defaultPermissions: agentPermissions, systemPrompt, agentAlias: agent.alias, provider: effectiveProvider },
+      state: {
+        defaultPermissions: agentPermissions,
+        systemPrompt,
+        agentAlias: agent.alias,
+        provider: effectiveProvider,
+        ...(effectiveProvider === "openrouter" && trimmedModel && { model: trimmedModel }),
+      },
     });
   };
 
@@ -284,6 +301,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onProviderChange={setProvider}
               effort={effort}
               onEffortChange={setEffort}
+              model={model}
+              onModelChange={setModel}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={openApiSettings}
@@ -480,6 +499,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onProviderChange={setProvider}
               effort={effort}
               onEffortChange={setEffort}
+              model={model}
+              onModelChange={setModel}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={openApiSettings}

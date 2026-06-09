@@ -45,6 +45,7 @@ import {
 import { useIsSessionActive } from "../contexts/SessionContext";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
+import OpenRouterModelSelector from "../components/OpenRouterModelSelector";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
@@ -117,6 +118,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // provider, only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
   const newChatEffort = (location.state as any)?.effort as "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | undefined;
+  // OpenRouter model slug for NEW chats, set by NewChatPanel. Like the
+  // provider/effort, only honored on creation and persisted into chat metadata.
+  const newChatModel = (location.state as any)?.model as string | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
@@ -232,6 +236,37 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
     return "claude-code";
   }, [id, newChatProvider, chat?.metadata]);
+
+  // Current per-chat OpenRouter model (from metadata). Empty string = no
+  // override, chat falls back to the global default in Settings → API.
+  // Only meaningful when chatProvider === "openrouter".
+  const currentModel = useMemo((): string => {
+    if (!id) return newChatModel ?? "";
+    if (chat?.metadata) {
+      try {
+        const meta = JSON.parse(chat.metadata);
+        if (typeof meta.model === "string") return meta.model;
+      } catch {
+        // ignore
+      }
+    }
+    return "";
+  }, [id, newChatModel, chat?.metadata]);
+
+  // Pending model selected in the header switcher that hasn't been sent yet.
+  // `null` means "no pending change — use currentModel". A non-null value
+  // (including "") is attached to the next existing-chat send and persisted
+  // to metadata server-side, then cleared on success.
+  const [pendingModel, setPendingModel] = useState<string | null>(null);
+  // Whether the header model popover is open.
+  const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
+
+  // Clear any pending model change when navigating to a different chat — the
+  // selection is per-chat, not global.
+  useEffect(() => {
+    setPendingModel(null);
+    setModelPopoverOpen(false);
+  }, [id]);
 
   // Resolve effective permissions for this chat
   const effectivePermissions = useMemo((): DefaultPermissions => {
@@ -495,6 +530,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 }
 
                 setStreaming(false);
+                // Pending model has now been persisted to metadata (if any) —
+                // the refetched chat will reflect it via currentModel, so
+                // drop the staged value.
+                setPendingModel(null);
                 // Refetch complete chat data and messages
                 getChat(streamChatId!).then((chatData) => {
                   if (currentIdRef.current !== streamChatId) return;
@@ -1091,6 +1130,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatEffort && newChatProvider === "openrouter") {
             requestBody.effort = newChatEffort;
           }
+          if (newChatModel && newChatProvider === "openrouter") {
+            requestBody.model = newChatModel;
+          }
 
           res = await fetch("/api/chats/new/message", {
             method: "POST",
@@ -1129,6 +1171,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
           if (acknowledgeBranchDriftRef.current) {
             body.acknowledgeBranchDrift = true;
+          }
+          // Per-chat model override staged from the header switcher. Only
+          // attach for OR chats — the backend silently drops it on claude-code
+          // anyway, but keep the boundary clean here too. `pendingModel === ""`
+          // is a deliberate clear (revert to global default); only `null`
+          // means "no change."
+          if (pendingModel !== null && chatProvider === "openrouter") {
+            body.model = pendingModel;
           }
 
           res = await fetch(`/api/chats/${id}/message`, {
@@ -1207,6 +1257,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       agentAlias,
       newChatProvider,
       newChatEffort,
+      newChatModel,
+      pendingModel,
+      chatProvider,
       readSSE,
       activePluginIds,
       chat,
@@ -1545,6 +1598,82 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             )}
             {/* Provider badge — "OR" for OpenRouter, "CC" for Claude Code. */}
             <ProviderBadge provider={chatProvider} />
+            {/* In-header model switcher — OpenRouter chats only. Selection is
+                staged in `pendingModel` and applied on the next message send;
+                the backend persists it into chat metadata before sendMessage
+                re-reads it from disk. Hidden while streaming so the model
+                can't change mid-run. */}
+            {chatProvider === "openrouter" && !streaming && (
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <button
+                  onClick={() => setModelPopoverOpen((v) => !v)}
+                  title={
+                    pendingModel !== null
+                      ? `Pending — applies on next message (currently: ${currentModel || "default"})`
+                      : `Per-chat model${currentModel ? `: ${currentModel}` : " — using global default"}`
+                  }
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: pendingModel !== null ? "var(--badge-worktree)" : "var(--surface)",
+                    color: pendingModel !== null ? "var(--text-on-accent)" : "var(--text-muted)",
+                    border: "1px solid var(--border)",
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    fontFamily: "monospace",
+                    maxWidth: isMobile ? 100 : 220,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {pendingModel !== null ? pendingModel || "default" : currentModel || "default"}
+                </button>
+                {modelPopoverOpen && (
+                  <>
+                    {/* Click-away overlay */}
+                    <div
+                      onClick={() => setModelPopoverOpen(false)}
+                      style={{ position: "fixed", inset: 0, zIndex: 50 }}
+                    />
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 6px)",
+                        right: 0,
+                        zIndex: 51,
+                        width: 320,
+                        padding: 10,
+                        borderRadius: 8,
+                        background: "var(--surface)",
+                        border: "1px solid var(--border)",
+                        boxShadow: "var(--shadow-md)",
+                      }}
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 6 }}>
+                        Model for this chat
+                      </div>
+                      <OpenRouterModelSelector
+                        value={pendingModel ?? currentModel}
+                        onChange={(v) => {
+                          // Treat the user choosing the same value as the
+                          // persisted one as "no change" so we don't write the
+                          // metadata for nothing.
+                          setPendingModel(v === currentModel ? null : v);
+                        }}
+                        placeholder="(default — uses Settings → API)"
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+                        {pendingModel !== null
+                          ? "Applies on your next message."
+                          : "Empty falls back to the global default in Settings → API."}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             {/* Spend indicator — only meaningful for OR chats once the first
                 run has reported a cost. Coloring escalates as the run nears
                 the cap (>=80% warns, >=100% errors) so the user notices

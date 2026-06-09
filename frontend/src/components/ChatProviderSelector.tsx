@@ -1,10 +1,15 @@
 import type { AgentProviderKind, EffortLevel } from "../utils/localStorage";
+import OpenRouterModelSelector from "./OpenRouterModelSelector";
 
 interface ChatProviderSelectorProps {
   provider: AgentProviderKind;
   onProviderChange: (provider: AgentProviderKind) => void;
   effort: EffortLevel | undefined;
   onEffortChange: (effort: EffortLevel | undefined) => void;
+  // Empty string = "use global default from Settings → API". Free-form text;
+  // OR validates the slug server-side.
+  model: string;
+  onModelChange: (model: string) => void;
   // `null` while /system-info is in flight — OR is treated as available until
   // we know otherwise (the disabled gate only kicks in on an explicit false).
   openRouterConfigured: boolean | null;
@@ -23,6 +28,8 @@ export default function ChatProviderSelector({
   onProviderChange,
   effort,
   onEffortChange,
+  model,
+  onModelChange,
   openRouterConfigured,
   openRouterMaxBudgetUsd,
   onOpenApiSettings,
@@ -155,6 +162,34 @@ export default function ChatProviderSelector({
           </select>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
             Maps to each provider&apos;s native thinking parameter. Non-reasoning models ignore this.
+          </div>
+        </div>
+      )}
+
+      {/* Per-chat model override — OpenRouter only. Empty value falls back to
+          the global default configured in Settings → API. */}
+      {provider === "openrouter" && openRouterConfigured !== false && (
+        <div style={{ marginBottom: 12 }}>
+          <label
+            htmlFor="newChatModel"
+            style={{
+              display: "block",
+              fontSize: 13,
+              fontWeight: 600,
+              color: "var(--text-muted)",
+              marginBottom: 6,
+            }}
+          >
+            Model
+          </label>
+          <OpenRouterModelSelector
+            id="newChatModel"
+            value={model}
+            onChange={onModelChange}
+            placeholder="(default — uses Settings → API)"
+          />
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+            Optional — leave empty to use the global default from Settings → API.
           </div>
         </div>
       )}
