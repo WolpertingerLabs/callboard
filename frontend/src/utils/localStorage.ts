@@ -44,6 +44,9 @@ interface LocalStorageData {
    * Stored even when the provider is Claude Code so toggling back to OR
    * restores the prior selection. */
   defaultOpenRouterEffort?: EffortLevel;
+  /** User's last-selected OpenRouter model slug in the New Chat panel.
+   * Empty/absent means "use the global default from Settings → API". */
+  defaultOpenRouterModel?: string;
 }
 
 /** Check if a path is inside the Callboard agent-workspaces directory (excluded from recommended folders). */
@@ -137,6 +140,27 @@ export function saveDefaultOpenRouterEffort(effort: EffortLevel | undefined): vo
     data.defaultOpenRouterEffort = effort;
   } else {
     return; // unknown value — leave existing state alone
+  }
+  setStorageData(data);
+}
+
+/**
+ * Last-selected OpenRouter model slug. Returns `""` when nothing has been
+ * stored — the New Chat selector treats empty as "use the global default
+ * configured in Settings → API".
+ */
+export function getDefaultOpenRouterModel(): string {
+  const data = getStorageData();
+  return typeof data.defaultOpenRouterModel === "string" ? data.defaultOpenRouterModel : "";
+}
+
+export function saveDefaultOpenRouterModel(model: string): void {
+  const data = getStorageData();
+  const trimmed = model.trim();
+  if (trimmed.length === 0) {
+    delete data.defaultOpenRouterModel;
+  } else {
+    data.defaultOpenRouterModel = trimmed;
   }
   setStorageData(data);
 }

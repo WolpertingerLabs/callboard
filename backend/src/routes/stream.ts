@@ -40,6 +40,7 @@ streamRouter.post("/new/message", async (req, res) => {
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             systemPrompt: { type: "string", description: "Custom system prompt appended to Claude Code's preset system prompt" },
             agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
+            model: { type: "string", description: "OpenRouter model slug (e.g. 'anthropic/claude-opus-4.7'). Only honored when provider is 'openrouter'; ignored otherwise." },
             branchConfig: {
               type: "object",
               properties: {
@@ -58,7 +59,7 @@ streamRouter.post("/new/message", async (req, res) => {
   /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
   /* #swagger.responses[409] = { description: "Uncommitted changes block branch switch. Set forceBranchChange to override." } */
-  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias, provider, effort } = req.body;
+  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias, provider, effort, model } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
   );
@@ -131,6 +132,13 @@ streamRouter.post("/new/message", async (req, res) => {
         ? (effort as EffortLevel)
         : undefined;
 
+    // OpenRouter model slug — only honored when paired with the openrouter
+    // provider. On claude-code it would be persisted to metadata for nothing.
+    const safeModel: string | undefined =
+      safeProvider === "openrouter" && typeof model === "string" && model.trim().length > 0
+        ? model.trim()
+        : undefined;
+
     const emitter = await sendMessage({
       prompt,
       folder: effectiveFolder,
@@ -142,6 +150,7 @@ streamRouter.post("/new/message", async (req, res) => {
       agentAlias,
       ...(safeProvider && { provider: safeProvider }),
       ...(safeEffort && { effort: safeEffort }),
+      ...(safeModel && { model: safeModel }),
     });
 
     writeSSEHeaders(res);
@@ -213,7 +222,8 @@ streamRouter.post("/:id/message", async (req, res) => {
             imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image IDs to attach" },
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
-            acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" }
+            acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
+            model: { type: "string", description: "OpenRouter model slug to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Empty string clears the per-chat override and reverts to the global default." }
           }
         }
       }
@@ -221,7 +231,7 @@ streamRouter.post("/:id/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with message_update, permission_request, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
-  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift } = req.body;
+  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
@@ -247,6 +257,16 @@ streamRouter.post("/:id/message", async (req, res) => {
     // Update lastBranch to current (after check passes)
     if (currentBranch) {
       chatFileService.updateChatMetadata(req.params.id, { lastBranch: currentBranch });
+    }
+
+    // Persist a per-chat OpenRouter model override before sendMessage re-reads
+    // initialMetadata from disk. Only honored when this chat is OR; silently
+    // dropped for claude-code (defense in depth — the UI hides the switcher
+    // anyway). An empty string clears the override so the chat falls back to
+    // agentSettings.openRouterModel (JSON.stringify drops undefined keys).
+    if (typeof model === "string" && meta.provider === "openrouter") {
+      const trimmed = model.trim();
+      chatFileService.updateChatMetadata(req.params.id, { model: trimmed.length > 0 ? trimmed : undefined });
     }
   }
   // ── End branch drift guard ──────────────────────────────────
