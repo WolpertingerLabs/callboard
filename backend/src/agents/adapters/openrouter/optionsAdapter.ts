@@ -221,7 +221,7 @@ export function translateOptions(
 
   // When callboard injects MCP server bundles (callboard-tools, mcp-proxy,
   // agent tools), surface their tools alongside OR's built-in client tools
-  // (read_file, run_command, …). Without this, supplying any custom `tools`
+  // (read_file, bash, …). Without this, supplying any custom `tools`
   // array would replace OR's defaults — the agent would lose its file/exec
   // primitives and the run would be useless.
   const { tools: mcpTools, droppedServerNames } = collectMcpTools(opts.mcpServers);
@@ -312,7 +312,7 @@ function translatePrompt(
 export type OrTool = NonNullable<OpenRouterAgentRunOptions["tools"]>[number];
 
 /**
- * Materialize OR's built-in client tool set (read_file, run_command, …) bound
+ * Materialize OR's built-in client tool set (read_file, bash, …) bound
  * to the run's cwd / abort signal, with the host `ask_user_question` handler
  * forwarded.
  *

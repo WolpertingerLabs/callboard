@@ -175,7 +175,7 @@ describe("translateOptions — Claude option passthrough", () => {
         cwd: "/tmp/work",
         maxTurns: 7,
         allowedTools: ["read_file"],
-        disallowedTools: ["run_command"],
+        disallowedTools: ["bash"],
         canUseTool,
         onHook,
         abortController: ac,
@@ -186,7 +186,7 @@ describe("translateOptions — Claude option passthrough", () => {
     expect(orOpts.cwd).toBe("/tmp/work");
     expect(orOpts.maxTurns).toBe(7);
     expect(orOpts.allowedTools).toEqual(["read_file"]);
-    expect(orOpts.disallowedTools).toEqual(["run_command"]);
+    expect(orOpts.disallowedTools).toEqual(["bash"]);
     expect(orOpts.canUseTool).toBe(canUseTool);
     expect(orOpts.onHook).toBe(onHook);
     expect(orOpts.signal).toBe(ac.signal);
