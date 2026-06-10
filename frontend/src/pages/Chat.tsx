@@ -2655,20 +2655,75 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       {pendingAction ? (
         <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
       ) : (
-        <PromptInput
-          onSend={handleSend}
-          disabled={!id && streaming}
-          onSaveDraft={handleSaveDraft}
-          slashCommands={allSlashCommands}
-          commandDescriptions={pluginCommandDescriptions}
-          onSetValue={setPromptInputSetValue}
-          extraActions={
-            chatProvider === "openrouter" && !streaming ? (
-              // Toggle-able model/effort picker — sits next to draft/send so
-              // it's discoverable without crowding the message area. Hidden
-              // while streaming so the model can't change mid-run; the
-              // header shows the active provider via ProviderBadge.
-              <div style={{ position: "relative", flexShrink: 0 }}>
+        // Wrap the composer in a positioned container so the model/effort
+        // popover can anchor to the composer's edges (not the toggle button,
+        // which sits inside the composer with two other buttons to its right
+        // — anchoring to the toggle would push the popover off the left edge
+        // on narrow viewports).
+        <div style={{ position: "relative" }}>
+          {modelPopoverOpen && chatProvider === "openrouter" && (
+            <>
+              {/* Click-away overlay */}
+              <div
+                onClick={() => setModelPopoverOpen(false)}
+                style={{ position: "fixed", inset: 0, zIndex: 50 }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  bottom: "calc(100% + 8px)",
+                  // Span the composer's horizontal padding (12px each side)
+                  // so the popover hugs the chat column on mobile. On wide
+                  // viewports `maxWidth` + `marginLeft: auto` keeps it
+                  // pinned to the right-hand side (where the toggle is) at
+                  // a comfortable size rather than stretching across the
+                  // whole chat column.
+                  left: 12,
+                  right: 12,
+                  maxWidth: 480,
+                  marginLeft: "auto",
+                  zIndex: 51,
+                  padding: 12,
+                  borderRadius: 8,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  boxShadow: "var(--shadow-md)",
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
+                  Model &amp; reasoning effort for this chat
+                </div>
+                <ProviderConfigPicker
+                  provider="openrouter"
+                  onProviderChange={() => {}}
+                  showProviderToggle={false}
+                  mode="inline"
+                  effort={pendingEffort !== null ? pendingEffort : currentEffort}
+                  onEffortChange={(v) => setPendingEffort(v === currentEffort ? null : v)}
+                  model={pendingModel ?? currentModel}
+                  onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                  openRouterConfigured={true}
+                  openRouterMaxBudgetUsd={null}
+                  onOpenApiSettings={() => navigate("/settings/api")}
+                />
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+                  Applies on your next message.
+                </div>
+              </div>
+            </>
+          )}
+          <PromptInput
+            onSend={handleSend}
+            disabled={!id && streaming}
+            onSaveDraft={handleSaveDraft}
+            slashCommands={allSlashCommands}
+            commandDescriptions={pluginCommandDescriptions}
+            onSetValue={setPromptInputSetValue}
+            extraActions={
+              chatProvider === "openrouter" && !streaming ? (
+                // Toggle button — opens the popover above the composer.
+                // Hidden while streaming so the model can't change mid-run;
+                // the header shows the active provider via ProviderBadge.
                 <button
                   onClick={() => setModelPopoverOpen((v) => !v)}
                   disabled={!id && streaming}
@@ -2696,65 +2751,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 >
                   <SlidersHorizontal size={16} />
                 </button>
-                {modelPopoverOpen && (
-                  <>
-                    {/* Click-away overlay */}
-                    <div
-                      onClick={() => setModelPopoverOpen(false)}
-                      style={{ position: "fixed", inset: 0, zIndex: 50 }}
-                    />
-                    <div
-                      style={{
-                        position: "absolute",
-                        bottom: "calc(100% + 8px)",
-                        right: 0,
-                        zIndex: 51,
-                        // Anchored to the toggle button on the right; grows
-                        // leftward. On desktop, cap at 480px so it doesn't
-                        // overflow the chat column. On mobile, maxWidth wins
-                        // and fills the composer (24px gutter = 12px each
-                        // side, matching the composer's horizontal padding).
-                        width: 480,
-                        maxWidth: "calc(100vw - 24px)",
-                        padding: 12,
-                        borderRadius: 8,
-                        background: "var(--surface)",
-                        border: "1px solid var(--border)",
-                        boxShadow: "var(--shadow-md)",
-                      }}
-                    >
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
-                        Model &amp; reasoning effort for this chat
-                      </div>
-                      <ProviderConfigPicker
-                        provider="openrouter"
-                        onProviderChange={() => {}}
-                        showProviderToggle={false}
-                        mode="inline"
-                        effort={pendingEffort !== null ? pendingEffort : currentEffort}
-                        onEffortChange={(v) =>
-                          setPendingEffort(v === currentEffort ? null : v)
-                        }
-                        model={pendingModel ?? currentModel}
-                        onModelChange={(v) =>
-                          setPendingModel(v === currentModel ? null : v)
-                        }
-                        openRouterConfigured={true}
-                        openRouterMaxBudgetUsd={null}
-                        onOpenApiSettings={() => navigate("/settings/api")}
-                      />
-                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
-                        {pendingModel !== null || pendingEffort !== null
-                          ? "Applies on your next message."
-                          : "Changes apply to your next message."}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : undefined
-          }
-        />
+              ) : undefined
+            }
+          />
+        </div>
       )}
 
       <DraftModal
