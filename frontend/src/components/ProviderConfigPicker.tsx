@@ -73,7 +73,7 @@ export default function ProviderConfigPicker({
           provider's native parameter (Anthropic thinking.budget_tokens,
           OpenAI reasoning_effort, etc.); non-reasoning models silently
           ignore it. */}
-      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "0 0 auto" : undefined, minWidth: inline ? 140 : undefined }}>
+      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "0 0 auto" : undefined, width: inline ? 90 : undefined }}>
         <label
           htmlFor={inline ? "inlineEffort" : "newChatEffort"}
           style={{
@@ -118,7 +118,7 @@ export default function ProviderConfigPicker({
 
       {/* Per-chat model override — OpenRouter only. Empty value falls back to
           the global default configured in Settings → API. */}
-      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: 0 }}>
+      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
         <label
           htmlFor={inline ? "inlineModel" : "newChatModel"}
           style={{
