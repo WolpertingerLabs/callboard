@@ -25,6 +25,9 @@ import {
   type OpenRouterAgentRun,
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import type { AgentEvent, TokenUsage } from "../../ports/events.js";
+import { createLogger } from "../../../utils/logger.js";
+
+const log = createLogger("openrouter-events");
 
 /**
  * Drives the OR run's async iteration and yields translated callboard
@@ -35,12 +38,93 @@ export async function* translateOpenRouterEvents(
   cwd: string,
   commandLoader?: CommandLoader,
 ): AsyncIterable<AgentEvent> {
+  log.debug(`translateOpenRouterEvents start — cwd=${cwd}`);
   const slashCommands = await tryListSlashCommands(cwd, commandLoader);
   if (slashCommands) yield slashCommands;
 
-  for await (const event of run) {
-    const translated = translateEvent(event);
-    if (translated) yield translated;
+  let eventCount = 0;
+  try {
+    for await (const event of run) {
+      eventCount++;
+      logEvent(event);
+      const translated = translateEvent(event);
+      if (translated) yield translated;
+    }
+  } catch (err) {
+    log.error(
+      `OR run iteration threw after ${eventCount} events: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`,
+    );
+    throw err;
+  }
+  log.debug(`translateOpenRouterEvents end — eventCount=${eventCount}`);
+}
+
+/**
+ * Per-event diagnostic logging. Verbose by design — debug level is the right
+ * dial for "show me everything the OR run produced." Errors and bridge
+ * `error` events also surface at warn/error so they aren't lost when the log
+ * level is info.
+ */
+function logEvent(event: AgentCoreEvent): void {
+  switch (event.type) {
+    case "session_started":
+      log.debug(`event session_started — sessionId=${event.sessionId}`);
+      break;
+    case "text_delta":
+      log.debug(`event text_delta — chars=${event.content.length}`);
+      break;
+    case "tool_call":
+      log.debug(`event tool_call — name=${event.name}, callId=${event.callId}`);
+      break;
+    case "tool_result": {
+      const out = event.output;
+      const preview =
+        typeof out === "string"
+          ? out.slice(0, 200)
+          : (() => {
+              try {
+                return JSON.stringify(out).slice(0, 200);
+              } catch {
+                return String(out).slice(0, 200);
+              }
+            })();
+      log.debug(
+        `event tool_result — callId=${event.callId}, isError=${!!event.isError}, preview=${JSON.stringify(preview)}`,
+      );
+      if (event.isError) {
+        log.warn(`tool_result error — callId=${event.callId}, output=${preview}`);
+      }
+      break;
+    }
+    case "turn_start":
+      log.debug(`event turn_start`);
+      break;
+    case "turn_end":
+      log.debug(`event turn_end`);
+      break;
+    case "error":
+      // Bridge-level error: the OR library always follows with a
+      // stream_complete carrying the same reason, but log here too so the
+      // wire-order is visible.
+      log.error(
+        `event error — ${(event as { message?: string }).message ?? JSON.stringify(event)}`,
+      );
+      break;
+    case "stream_complete":
+      if (event.status === "error") {
+        log.error(
+          `event stream_complete status=error — reason=${event.reason ?? "(none)"}, durationMs=${event.durationMs ?? "n/a"}, costUsd=${event.costUsd ?? "n/a"}`,
+        );
+      } else if (event.status === "max_turns" || event.status === "max_budget") {
+        log.warn(
+          `event stream_complete status=${event.status} — reason=${event.reason ?? "(none)"}, durationMs=${event.durationMs ?? "n/a"}, costUsd=${event.costUsd ?? "n/a"}`,
+        );
+      } else {
+        log.debug(
+          `event stream_complete status=${event.status} — durationMs=${event.durationMs ?? "n/a"}, costUsd=${event.costUsd ?? "n/a"}, inputTokens=${event.usage?.inputTokens ?? "n/a"}, outputTokens=${event.usage?.outputTokens ?? "n/a"}`,
+        );
+      }
+      break;
   }
 }
 
@@ -126,14 +210,18 @@ async function tryListSlashCommands(
     const loader = commandLoader ?? createCommandLoader({ cwd });
     const listing = await loader.list();
     const commands = listing.map((c) => c.name);
+    log.debug(`slash command discovery — count=${commands.length}, cwd=${cwd}`);
     // Suppress the synthetic event when no commands are discovered — keeps
     // the iter shape identical to "no commands wired" sessions and matches
     // how the Claude adapter handles missing slash-command init payloads.
     if (commands.length === 0) return null;
     return { type: "slash_commands", commands };
-  } catch {
+  } catch (err) {
     // Discovery failures are non-fatal — slash commands are a convenience,
     // not a load-bearing feature for the run.
+    log.warn(
+      `slash command discovery failed — cwd=${cwd}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
 }
