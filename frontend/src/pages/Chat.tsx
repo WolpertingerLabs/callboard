@@ -18,6 +18,7 @@ import {
   MoreHorizontal,
   Shield,
   Activity,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -45,7 +46,6 @@ import {
 import { useIsSessionActive } from "../contexts/SessionContext";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
-import OpenRouterModelSelector from "../components/OpenRouterModelSelector";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
@@ -56,7 +56,8 @@ import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
-import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions } from "../utils/localStorage";
+import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions, type EffortLevel } from "../utils/localStorage";
+import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { getActivePlugins } from "../utils/plugins";
 
 interface ToolGroup {
@@ -253,18 +254,39 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return "";
   }, [id, newChatModel, chat?.metadata]);
 
-  // Pending model selected in the header switcher that hasn't been sent yet.
-  // `null` means "no pending change — use currentModel". A non-null value
-  // (including "") is attached to the next existing-chat send and persisted
-  // to metadata server-side, then cleared on success.
+  // Current per-chat OpenRouter reasoning effort (from metadata). `undefined`
+  // = no override; chat falls back to each model's default. Only meaningful
+  // when chatProvider === "openrouter".
+  const currentEffort = useMemo((): EffortLevel | undefined => {
+    if (!id) return (location.state as any)?.effort as EffortLevel | undefined;
+    if (chat?.metadata) {
+      try {
+        const meta = JSON.parse(chat.metadata);
+        if (typeof meta.effort === "string") return meta.effort as EffortLevel;
+      } catch {
+        // ignore
+      }
+    }
+    return undefined;
+  }, [id, location.state, chat?.metadata]);
+
+  // Pending model/effort selected in the composer toggle that haven't been
+  // sent yet. `null` means "no pending change". A non-null value (including
+  // "" for model / `undefined` for effort) is attached to the next existing-
+  // chat send and persisted to metadata server-side, then cleared on success.
   const [pendingModel, setPendingModel] = useState<string | null>(null);
-  // Whether the header model popover is open.
+  // For effort we need a tri-state: `null` = no change pending,
+  // `undefined` = user explicitly cleared (revert to model default),
+  // an EffortLevel = user picked a new level.
+  const [pendingEffort, setPendingEffort] = useState<EffortLevel | undefined | null>(null);
+  // Whether the composer-side model/effort popover is open.
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
 
-  // Clear any pending model change when navigating to a different chat — the
-  // selection is per-chat, not global.
+  // Clear any pending change when navigating to a different chat — selection
+  // is per-chat, not global.
   useEffect(() => {
     setPendingModel(null);
+    setPendingEffort(null);
     setModelPopoverOpen(false);
   }, [id]);
 
@@ -530,10 +552,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 }
 
                 setStreaming(false);
-                // Pending model has now been persisted to metadata (if any) —
-                // the refetched chat will reflect it via currentModel, so
-                // drop the staged value.
+                // Pending model/effort have now been persisted to metadata
+                // (if any) — the refetched chat will reflect them via
+                // currentModel/currentEffort, so drop the staged values.
                 setPendingModel(null);
+                setPendingEffort(null);
                 // Refetch complete chat data and messages
                 getChat(streamChatId!).then((chatData) => {
                   if (currentIdRef.current !== streamChatId) return;
@@ -1172,13 +1195,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (acknowledgeBranchDriftRef.current) {
             body.acknowledgeBranchDrift = true;
           }
-          // Per-chat model override staged from the header switcher. Only
-          // attach for OR chats — the backend silently drops it on claude-code
-          // anyway, but keep the boundary clean here too. `pendingModel === ""`
-          // is a deliberate clear (revert to global default); only `null`
-          // means "no change."
+          // Per-chat model override staged from the composer-side toggle.
+          // Only attach for OR chats — the backend silently drops it on
+          // claude-code anyway, but keep the boundary clean here too.
+          // `pendingModel === ""` is a deliberate clear (revert to global
+          // default); only `null` means "no change."
           if (pendingModel !== null && chatProvider === "openrouter") {
             body.model = pendingModel;
+          }
+          // Per-chat reasoning effort. Same tri-state semantics as model:
+          // `null` skips the field; `undefined` sends "" (clear override);
+          // an EffortLevel sends the level.
+          if (pendingEffort !== null && chatProvider === "openrouter") {
+            body.effort = pendingEffort ?? "";
           }
 
           res = await fetch(`/api/chats/${id}/message`, {
@@ -1596,84 +1625,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 {!isMobile && "worktree"}
               </div>
             )}
-            {/* Provider badge — "OR" for OpenRouter, "CC" for Claude Code. */}
+            {/* Provider badge — "OR" for OpenRouter, "CC" for Claude Code.
+                Model + effort selection has moved out of the header and into
+                a toggle next to the draft/send buttons (see PromptInput's
+                `extraActions` slot below). */}
             <ProviderBadge provider={chatProvider} />
-            {/* In-header model switcher — OpenRouter chats only. Selection is
-                staged in `pendingModel` and applied on the next message send;
-                the backend persists it into chat metadata before sendMessage
-                re-reads it from disk. Hidden while streaming so the model
-                can't change mid-run. */}
-            {chatProvider === "openrouter" && !streaming && (
-              <div style={{ position: "relative", flexShrink: 0 }}>
-                <button
-                  onClick={() => setModelPopoverOpen((v) => !v)}
-                  title={
-                    pendingModel !== null
-                      ? `Pending — applies on next message (currently: ${currentModel || "default"})`
-                      : `Per-chat model${currentModel ? `: ${currentModel}` : " — using global default"}`
-                  }
-                  style={{
-                    fontSize: 11,
-                    padding: "2px 6px",
-                    borderRadius: 4,
-                    background: pendingModel !== null ? "var(--badge-worktree)" : "var(--surface)",
-                    color: pendingModel !== null ? "var(--text-on-accent)" : "var(--text-muted)",
-                    border: "1px solid var(--border)",
-                    fontWeight: 500,
-                    cursor: "pointer",
-                    fontFamily: "monospace",
-                    maxWidth: isMobile ? 100 : 220,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {pendingModel !== null ? pendingModel || "default" : currentModel || "default"}
-                </button>
-                {modelPopoverOpen && (
-                  <>
-                    {/* Click-away overlay */}
-                    <div
-                      onClick={() => setModelPopoverOpen(false)}
-                      style={{ position: "fixed", inset: 0, zIndex: 50 }}
-                    />
-                    <div
-                      style={{
-                        position: "absolute",
-                        top: "calc(100% + 6px)",
-                        right: 0,
-                        zIndex: 51,
-                        width: 320,
-                        padding: 10,
-                        borderRadius: 8,
-                        background: "var(--surface)",
-                        border: "1px solid var(--border)",
-                        boxShadow: "var(--shadow-md)",
-                      }}
-                    >
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 6 }}>
-                        Model for this chat
-                      </div>
-                      <OpenRouterModelSelector
-                        value={pendingModel ?? currentModel}
-                        onChange={(v) => {
-                          // Treat the user choosing the same value as the
-                          // persisted one as "no change" so we don't write the
-                          // metadata for nothing.
-                          setPendingModel(v === currentModel ? null : v);
-                        }}
-                        placeholder="(default — uses Settings → API)"
-                      />
-                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-                        {pendingModel !== null
-                          ? "Applies on your next message."
-                          : "Empty falls back to the global default in Settings → API."}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
             {/* Spend indicator — only meaningful for OR chats once the first
                 run has reported a cost. Coloring escalates as the run nears
                 the cap (>=80% warns, >=100% errors) so the user notices
@@ -2706,6 +2662,92 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           slashCommands={allSlashCommands}
           commandDescriptions={pluginCommandDescriptions}
           onSetValue={setPromptInputSetValue}
+          extraActions={
+            chatProvider === "openrouter" && !streaming ? (
+              // Toggle-able model/effort picker — sits next to draft/send so
+              // it's discoverable without crowding the message area. Hidden
+              // while streaming so the model can't change mid-run; the
+              // header shows the active provider via ProviderBadge.
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <button
+                  onClick={() => setModelPopoverOpen((v) => !v)}
+                  disabled={!id && streaming}
+                  title={
+                    pendingModel !== null || pendingEffort !== null
+                      ? "Model/effort change pending — applies on next message"
+                      : "Change model / reasoning effort for this chat"
+                  }
+                  style={{
+                    background:
+                      pendingModel !== null || pendingEffort !== null ? "var(--accent)" : "var(--bg-secondary)",
+                    color:
+                      pendingModel !== null || pendingEffort !== null ? "var(--text-on-accent)" : "var(--text)",
+                    width: 40,
+                    height: 40,
+                    borderRadius: 10,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    border: "1px solid var(--border)",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  <SlidersHorizontal size={16} />
+                </button>
+                {modelPopoverOpen && (
+                  <>
+                    {/* Click-away overlay */}
+                    <div
+                      onClick={() => setModelPopoverOpen(false)}
+                      style={{ position: "fixed", inset: 0, zIndex: 50 }}
+                    />
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: "calc(100% + 8px)",
+                        right: 0,
+                        zIndex: 51,
+                        width: 320,
+                        padding: 12,
+                        borderRadius: 8,
+                        background: "var(--surface)",
+                        border: "1px solid var(--border)",
+                        boxShadow: "var(--shadow-md)",
+                      }}
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
+                        Model &amp; reasoning effort for this chat
+                      </div>
+                      <ProviderConfigPicker
+                        provider="openrouter"
+                        onProviderChange={() => {}}
+                        showProviderToggle={false}
+                        mode="inline"
+                        effort={pendingEffort !== null ? pendingEffort : currentEffort}
+                        onEffortChange={(v) =>
+                          setPendingEffort(v === currentEffort ? null : v)
+                        }
+                        model={pendingModel ?? currentModel}
+                        onModelChange={(v) =>
+                          setPendingModel(v === currentModel ? null : v)
+                        }
+                        openRouterConfigured={true}
+                        openRouterMaxBudgetUsd={null}
+                        onOpenApiSettings={() => navigate("/settings/api")}
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+                        {pendingModel !== null || pendingEffort !== null
+                          ? "Applies on your next message."
+                          : "Changes apply to your next message."}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : undefined
+          }
         />
       )}
 

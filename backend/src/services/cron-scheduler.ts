@@ -123,7 +123,11 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
       const now = Date.now();
       updateCronJob(alias, job.id, { lastRun: now });
 
-      // Execute the agent
+      // Execute the agent. Provider/model/effort, when set on the action,
+      // override the agent's default — that's how a single agent can have
+      // some cron jobs running on Claude Code and others on OpenRouter
+      // with custom reasoning budgets. The executor forwards them to
+      // claude.ts#sendMessage which persists into chat metadata.
       const prompt = job.action?.prompt || `Cron job "${job.name}" fired. Execute the scheduled task.`;
       const result = await executeAgent({
         agentAlias: alias,
@@ -131,6 +135,9 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
         triggeredBy: "cron",
         metadata: { jobId: job.id, jobName: job.name, schedule: job.schedule },
         maxTurns: job.action?.maxTurns,
+        ...(job.action?.provider && { provider: job.action.provider }),
+        ...(job.action?.model && { model: job.action.model }),
+        ...(job.action?.effort && { effort: job.action.effort }),
       });
 
       // Track running session for skipIfRunning

@@ -1,4 +1,8 @@
 import type { DefaultPermissions } from "../api";
+import type { EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
+
+export type { EffortLevel };
+export type AgentProviderKind = UiAgentProviderKind;
 
 const STORAGE_KEYS = {
   SETTINGS: "claude-code-settings",
@@ -10,20 +14,6 @@ interface RecentDirectory {
 }
 
 export type ThemeMode = "light" | "dark" | "system";
-
-export type AgentProviderKind = "claude-code" | "openrouter";
-
-/**
- * OpenRouter reasoning-effort levels. Maps onto the OR `reasoning.effort`
- * field which OR translates to each provider's native parameter (Anthropic
- * `thinking.budget_tokens`, OpenAI `reasoning_effort`, etc). Ignored by
- * non-reasoning models.
- *
- * `undefined` (no value persisted) means "don't send a reasoning payload";
- * `"none"` means "explicitly request no reasoning". Both produce the same
- * runtime behavior on most models but are kept distinct for UI clarity.
- */
-export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
 
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;

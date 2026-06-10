@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-// useOutletContext removed — agent is now passed as a prop
 import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2, Moon, SkipForward } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import ConfirmModal from "../../../components/ConfirmModal";
-import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob } from "../../../api";
+import ProviderConfigPicker from "../../../components/ProviderConfigPicker";
+import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob, getSystemInfo } from "../../../api";
 import type { CronJob, AgentConfig } from "../../../api";
+import type { AgentProviderKind, EffortLevel } from "../../../utils/localStorage";
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -197,6 +198,28 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [formQHEnd, setFormQHEnd] = useState("07:00");
   const [formSkipIfRunning, setFormSkipIfRunning] = useState(false);
   const [formSaving, setFormSaving] = useState(false);
+  // Provider config — defaults to "claude-code" so existing behavior is
+  // preserved for crons created without picking. Empty model = use the
+  // global default; undefined effort = use the model default.
+  const [formProvider, setFormProvider] = useState<AgentProviderKind>("claude-code");
+  const [formModel, setFormModel] = useState<string>("");
+  const [formEffort, setFormEffort] = useState<EffortLevel | undefined>(undefined);
+
+  // System-info fetch — drives whether the OpenRouter option is enabled in
+  // ProviderConfigPicker. Mirrors NewChatPanel's tri-state (`null` while in
+  // flight so the OR toggle stays clickable optimistically).
+  const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
+  const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState<number | null>(null);
+  useEffect(() => {
+    getSystemInfo()
+      .then((info) => {
+        setOpenRouterConfigured(info.openRouterConfigured ?? false);
+        setOpenRouterMaxBudgetUsd(typeof info.openRouterMaxBudgetUsd === "number" ? info.openRouterMaxBudgetUsd : null);
+      })
+      .catch(() => {
+        setOpenRouterConfigured(false);
+      });
+  }, []);
 
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<CronJob | null>(null);
@@ -217,6 +240,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [editQHEnd, setEditQHEnd] = useState("07:00");
   const [editSkipIfRunning, setEditSkipIfRunning] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
+  const [editProvider, setEditProvider] = useState<AgentProviderKind>("claude-code");
+  const [editModel, setEditModel] = useState<string>("");
+  const [editEffort, setEditEffort] = useState<EffortLevel | undefined>(undefined);
 
   const loadJobs = () => {
     setLoading(true);
@@ -277,7 +303,17 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         type: formType,
         status: "active",
         description: formDescription.trim(),
-        action: { type: "start_session", prompt: formPrompt.trim() || undefined },
+        action: {
+          type: "start_session",
+          prompt: formPrompt.trim() || undefined,
+          // Only persist provider/model/effort when they diverge from
+          // "agent default" — `provider: "claude-code"` with empty model and
+          // undefined effort is the same as omitting the fields, and
+          // omitting keeps stored JSON tidy.
+          ...(formProvider === "openrouter" && { provider: formProvider }),
+          ...(formProvider === "openrouter" && formModel.trim() && { model: formModel.trim() }),
+          ...(formProvider === "openrouter" && formEffort && { effort: formEffort }),
+        },
         ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
         ...(formSkipIfRunning && { skipIfRunning: true }),
       });
@@ -292,6 +328,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormQHStart("22:00");
       setFormQHEnd("07:00");
       setFormSkipIfRunning(false);
+      setFormProvider("claude-code");
+      setFormModel("");
+      setFormEffort(undefined);
     } catch {
       // ignore
     } finally {
@@ -310,6 +349,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     setEditQHStart(job.quietHours?.start || "22:00");
     setEditQHEnd(job.quietHours?.end || "07:00");
     setEditSkipIfRunning(job.skipIfRunning || false);
+    setEditProvider(job.action?.provider ?? "claude-code");
+    setEditModel(job.action?.model ?? "");
+    setEditEffort(job.action?.effort);
   };
 
   const cancelEditing = () => {
@@ -327,7 +369,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         schedule: editSchedule.trim(),
         type: editType,
         description: editDescription.trim(),
-        action: { type: "start_session", prompt: editPrompt.trim() || undefined },
+        action: {
+          type: "start_session",
+          prompt: editPrompt.trim() || undefined,
+          ...(editProvider === "openrouter" && { provider: editProvider }),
+          ...(editProvider === "openrouter" && editModel.trim() && { model: editModel.trim() }),
+          ...(editProvider === "openrouter" && editEffort && { effort: editEffort }),
+        },
         quietHours: editQHEnabled ? { enabled: true, start: editQHStart, end: editQHEnd } : { enabled: false, start: editQHStart, end: editQHEnd },
         skipIfRunning: editSkipIfRunning,
       });
@@ -395,6 +443,28 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             rows={3}
             style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
           />
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+            }}
+          >
+            <ProviderConfigPicker
+              provider={editProvider}
+              onProviderChange={setEditProvider}
+              effort={editEffort}
+              onEffortChange={setEditEffort}
+              model={editModel}
+              onModelChange={setEditModel}
+              openRouterConfigured={openRouterConfigured}
+              openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
+              onOpenApiSettings={() => {
+                window.location.href = "/settings/api";
+              }}
+            />
+          </div>
           <div>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
               <input type="checkbox" checked={editQHEnabled} onChange={(e) => setEditQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
@@ -542,6 +612,34 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               <StatusIcon size={12} />
               {sConf.label}
             </span>
+            {/* Provider/model/effort badge — only rendered when the cron job
+                opts into a non-default provider. Claude Code crons (the
+                majority today) skip the badge to keep the row uncluttered. */}
+            {job.action?.provider === "openrouter" && (
+              <span
+                title={`OpenRouter${job.action.model ? ` · ${job.action.model}` : ""}${job.action.effort ? ` · ${job.action.effort}` : ""}`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  color: "var(--text)",
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  padding: "3px 8px",
+                  borderRadius: 6,
+                  maxWidth: 220,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                OR
+                {job.action.model && <span style={{ opacity: 0.7, fontFamily: "monospace" }}>· {job.action.model}</span>}
+                {job.action.effort && <span style={{ opacity: 0.7 }}>· {job.action.effort}</span>}
+              </span>
+            )}
           </div>
         </div>
 
@@ -800,6 +898,28 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             rows={3}
             style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
           />
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+            }}
+          >
+            <ProviderConfigPicker
+              provider={formProvider}
+              onProviderChange={setFormProvider}
+              effort={formEffort}
+              onEffortChange={setFormEffort}
+              model={formModel}
+              onModelChange={setFormModel}
+              openRouterConfigured={openRouterConfigured}
+              openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
+              onOpenApiSettings={() => {
+                window.location.href = "/settings/api";
+              }}
+            />
+          </div>
           <div>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
               <input type="checkbox" checked={formQHEnabled} onChange={(e) => setFormQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />

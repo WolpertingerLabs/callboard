@@ -160,7 +160,9 @@ agentCronJobsRouter.post("/:jobId/run", (req: Request, res: Response): void => {
   const now = Date.now();
   const updated = updateCronJob(alias, jobId, { lastRun: now });
 
-  // Fire the agent execution in the background (don't await)
+  // Fire the agent execution in the background (don't await). Mirrors the
+  // forwarding in cron-scheduler.ts so a manually-triggered run uses the
+  // same provider/model/effort as a scheduled run.
   const prompt = job.action?.prompt || `Cron job "${job.name}" fired (manual run). Execute the scheduled task.`;
   executeAgent({
     agentAlias: alias,
@@ -168,6 +170,9 @@ agentCronJobsRouter.post("/:jobId/run", (req: Request, res: Response): void => {
     triggeredBy: "cron",
     metadata: { jobId: job.id, jobName: job.name, schedule: job.schedule, manual: true },
     maxTurns: job.action?.maxTurns,
+    ...(job.action?.provider && { provider: job.action.provider }),
+    ...(job.action?.model && { model: job.action.model }),
+    ...(job.action?.effort && { effort: job.action.effort }),
   }).catch((err) => {
     log.error(`Manual cron run failed for job ${jobId}: ${err}`);
   });
