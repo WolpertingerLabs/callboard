@@ -209,6 +209,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Prevents the auto-connect effect from creating a reconnection loop when the
   // CLI watcher hasn't yet detected that the session ended (up to 30s delay).
   const streamCompletedRef = useRef(false);
+  // startedAt of the session the current/last SSE connection attached to.
+  // A follow-up sendMessage stops the running session and registers a new one
+  // (fresh startedAt), so the old stream's message_complete (reason: aborted)
+  // must only block reconnection for the SAME session — a different startedAt
+  // in the registry means the session was replaced and the tab should
+  // reconnect to follow the new run.
+  const connectedSessionStartedAtRef = useRef<number | undefined>(undefined);
   // Debounce timer for coalescing rapid message_update refetches
   const messageRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -726,25 +733,34 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // whenever globalSessionActive becomes truthy, we connect to the SSE stream.
   useEffect(() => {
     if (!id || !globalSessionActive) return;
+    sessionWasActiveRef.current = true;
     // Use abortRef (not streaming state) to detect an active connection.
     // After new-chat navigation, streaming may be stale-true while there is
     // no actual SSE connection (abortRef is null), so checking streaming here
     // would incorrectly skip reconnection.
     if (abortRef.current) return; // Already connected
-    if (streamCompletedRef.current) return; // Stream already completed, don't reconnect
+    if (streamCompletedRef.current) {
+      // The stream completed for the session we were attached to. Only block
+      // reconnection while the registry still reports that SAME session (the
+      // CLI watcher can lag up to 30s after completion). A different
+      // startedAt means the session was REPLACED — a follow-up sendMessage
+      // aborted the old run and registered a new one — so the new run is
+      // live and the tab must reconnect to keep streaming it.
+      if (globalSessionActive.startedAt === connectedSessionStartedAtRef.current) return;
+      streamCompletedRef.current = false;
+      // Catch up on anything missed between the aborted stream and the
+      // replacement run (e.g. the follow-up user message).
+      getMessages(id).then((msgs) => {
+        if (currentIdRef.current !== id) return;
+        setMessages(Array.isArray(msgs) ? msgs : []);
+      });
+    }
 
+    connectedSessionStartedAtRef.current = globalSessionActive.startedAt;
     setNetworkError(null);
     setStreaming(true);
     connectToStream();
   }, [id, globalSessionActive, streaming, connectToStream]);
-
-  // Track when the session registry first reports this chat as active.
-  useEffect(() => {
-    if (globalSessionActive) {
-      sessionWasActiveRef.current = true;
-      streamCompletedRef.current = false; // Reset for new session
-    }
-  }, [globalSessionActive]);
 
   // Safety net: if the session registry reports the session *transitioned* from
   // active → inactive, always clean up streaming state.

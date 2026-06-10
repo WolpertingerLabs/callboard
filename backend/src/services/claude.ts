@@ -1172,8 +1172,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {
-      sessionRegistry.unregister(trackingId);
-      pendingRequests.delete(trackingId);
+      // Only clean up if the registry entry still belongs to THIS run. A
+      // follow-up sendMessage to the same chat calls stopSession() and then
+      // register()s a REPLACEMENT session under the same chatId — and this
+      // (aborted) run's unwind can land seconds later. Unregistering here
+      // unconditionally would tear down the replacement's registry entry
+      // (and its pending permission request), making the UI lose track of a
+      // run that is still active. stopSession() already cleaned up our own
+      // entries when the replacement took over.
+      if (sessionRegistry.get(trackingId)?.emitter === emitter) {
+        sessionRegistry.unregister(trackingId);
+        pendingRequests.delete(trackingId);
+      }
     }
   })();
 
