@@ -55,6 +55,7 @@ import { mcpToolsRouter } from "./routes/mcp-tools.js";
 import { openRouterRouter } from "./routes/openrouter.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
+import { installProcessGuards } from "./utils/process-guards.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
@@ -76,6 +77,11 @@ import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
 
 const log = createLogger("server");
+
+// Process-level guards: survive stray unhandled rejections (e.g. from
+// provider SDKs), log-and-exit on uncaught exceptions. Must be installed
+// before any async subsystem starts.
+installProcessGuards();
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
