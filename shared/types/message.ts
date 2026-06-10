@@ -41,6 +41,16 @@ export interface ParsedMessage {
   inferenceGeo?: string;
   /** API request ID from the JSONL entry (useful for support escalation) */
   requestId?: string;
+  /**
+   * Unique key identifying a single model generation within the responses
+   * debug table. For Claude Code this equals `requestId` (every API call
+   * already has its own id). For OpenRouter the harness reuses the same
+   * `requestId` across all intra-cycle turns, so the transcript parser
+   * synthesises `generationKey` as `"<requestId>/<turnNumber>"` — giving
+   * each generation a distinct identity the debug panel can group on.
+   * Falls back to `requestId` when absent (all Claude rows, legacy OR rows).
+   */
+  generationKey?: string;
   /** Server-side tool usage counts */
   serverToolUse?: { webSearchRequests?: number; webFetchRequests?: number };
   /** Ephemeral cache tier breakdown */

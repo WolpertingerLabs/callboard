@@ -216,7 +216,18 @@ function translateAssistantRecord(rec: RawRecord, ts: string | undefined): Parse
 
 function applyAssistantMeta(m: ParsedMessage, rec: RawRecord): void {
   if (typeof rec.model === "string" && rec.model.length > 0) m.model = rec.model;
-  if (typeof rec.requestId === "string" && rec.requestId.length > 0) m.requestId = rec.requestId;
+  if (typeof rec.requestId === "string" && rec.requestId.length > 0) {
+    m.requestId = rec.requestId;
+    // Synthesise a per-generation key so the responses debug table can list
+    // each generation as its own row. The OR harness reuses the same
+    // cycleRequestId across all intra-cycle turns (turn 0 = initial response,
+    // turn 1 = first tool follow-up, etc.), so requestId alone cannot
+    // distinguish them. Appending turnNumber produces a unique key per
+    // generation while staying compatible with Claude rows that leave
+    // generationKey unset (the panel falls back to requestId for those).
+    const turnNumber = typeof rec.turnNumber === "number" ? rec.turnNumber : undefined;
+    m.generationKey = turnNumber !== undefined ? `${rec.requestId}/${turnNumber}` : rec.requestId;
+  }
   if (typeof rec.costUsd === "number") m.costUsd = rec.costUsd;
   if (typeof rec.durationMs === "number") m.durationMs = rec.durationMs;
 
