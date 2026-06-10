@@ -225,6 +225,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Resolve which agent provider runs this chat — drives the header badge.
   // New chats inherit `newChatProvider` from the NewChatPanel; existing chats
   // pull it off their stored metadata. Defaults to "claude-code" (no badge).
+  // Sum of costUsd across all assistant messages in this session. Derived
+  // directly from `messages` so it updates live as messages arrive — no
+  // longer depends on waiting for a message_complete event. Returns null
+  // when no message carries cost data (Claude Code sessions, empty chats).
+  const sessionTotalCost = useMemo((): number | null => {
+    let total = 0;
+    let found = false;
+    for (const m of messages) {
+      if (m.role === "assistant" && m.costUsd != null) {
+        total += m.costUsd;
+        found = true;
+      }
+    }
+    return found ? total : null;
+  }, [messages]);
+
   const chatProvider = useMemo((): "claude-code" | "openrouter" => {
     if (!id) return newChatProvider ?? "claude-code";
     if (chat?.metadata) {
@@ -1630,38 +1646,49 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 a toggle next to the draft/send buttons (see PromptInput's
                 `extraActions` slot below). */}
             <ProviderBadge provider={chatProvider} />
-            {/* Spend indicator — only meaningful for OR chats once the first
-                run has reported a cost. Coloring escalates as the run nears
-                the cap (>=80% warns, >=100% errors) so the user notices
-                BEFORE the next turn fires the max_budget cutoff. */}
-            {chatProvider === "openrouter" && lastRunCostUsd !== null && effectiveMaxBudgetUsd !== null && (
-              <div
-                onClick={() => navigate("/settings/api")}
-                style={{
-                  fontSize: 11,
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  background:
-                    lastRunCostUsd >= effectiveMaxBudgetUsd
+            {/* Spend indicator — shown for OR chats whenever any cost data is
+                available. Derived from the live messages array so it updates
+                incrementally without waiting for a run to complete.
+                When a per-session budget cap is configured, the badge shows
+                "total / cap" and escalates colour as the cap is approached
+                (>=80% warns, >=100% errors). Without a cap it shows just the
+                running total in a neutral style. Click navigates to Settings → API. */}
+            {chatProvider === "openrouter" && sessionTotalCost !== null && (() => {
+              const hasCap = effectiveMaxBudgetUsd !== null;
+              const overCap = hasCap && sessionTotalCost >= effectiveMaxBudgetUsd!;
+              const nearCap = hasCap && !overCap && sessionTotalCost / Math.max(effectiveMaxBudgetUsd!, 0.0001) >= 0.8;
+              const costStr = sessionTotalCost >= 0.01
+                ? `${sessionTotalCost.toFixed(2)}`
+                : `${sessionTotalCost.toFixed(4)}`;
+              const label = hasCap ? `${costStr} / ${effectiveMaxBudgetUsd!.toFixed(2)}` : costStr;
+              const titleStr = hasCap
+                ? `Session spent ${costStr} of the ${effectiveMaxBudgetUsd!.toFixed(2)} per-session cap. Click to adjust in Settings → API.`
+                : `Session total cost: ${costStr}. Click to configure a budget cap in Settings → API.`;
+              return (
+                <div
+                  onClick={() => navigate("/settings/api")}
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: overCap
                       ? "var(--error, #c53030)"
-                      : lastRunCostUsd / Math.max(effectiveMaxBudgetUsd, 0.0001) >= 0.8
+                      : nearCap
                         ? "var(--warning, #d97706)"
                         : "var(--surface)",
-                  color:
-                    lastRunCostUsd >= effectiveMaxBudgetUsd || lastRunCostUsd / Math.max(effectiveMaxBudgetUsd, 0.0001) >= 0.8
-                      ? "var(--text-on-accent, #fff)"
-                      : "var(--text-muted)",
-                  border: "1px solid var(--border)",
-                  fontWeight: 500,
-                  flexShrink: 0,
-                  cursor: "pointer",
-                  fontVariantNumeric: "tabular-nums",
-                }}
-                title={`Last run spent $${lastRunCostUsd.toFixed(2)} of the $${effectiveMaxBudgetUsd.toFixed(2)} per-session cap. Click to adjust in Settings → API.`}
-              >
-                ${lastRunCostUsd.toFixed(2)} / ${effectiveMaxBudgetUsd.toFixed(2)}
-              </div>
-            )}
+                    color: overCap || nearCap ? "var(--text-on-accent, #fff)" : "var(--text-muted)",
+                    border: "1px solid var(--border)",
+                    fontWeight: 500,
+                    flexShrink: 0,
+                    cursor: "pointer",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                  title={titleStr}
+                >
+                  {label}
+                </div>
+              );
+            })()}
           </div>
           <div
             title={!id ? folder : chat?.folder}

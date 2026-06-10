@@ -25,7 +25,15 @@ function fmtTok(n?: number): string {
   return n.toLocaleString();
 }
 
-type SortKey = "index" | "delta" | "msPerTok" | "inputTokens" | "outputTokens" | "cacheRead" | "cacheWrite";
+/** Format USD cost with adaptive precision */
+function fmtCost(usd: number): string {
+  if (usd >= 1) return `${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `${usd.toFixed(3)}`;
+  if (usd >= 0.001) return `${usd.toFixed(4)}`;
+  return `${usd.toFixed(5)}`;
+}
+
+type SortKey = "index" | "delta" | "msPerTok" | "inputTokens" | "outputTokens" | "cacheRead" | "cacheWrite" | "cost";
 
 interface DebugRow {
   index: number;
@@ -158,6 +166,8 @@ export default function ChatDebugPanel({ messages }: Props) {
           return ((am.usage?.cache_read_input_tokens ?? 0) - (bm.usage?.cache_read_input_tokens ?? 0)) * dir;
         case "cacheWrite":
           return ((am.usage?.cache_creation_input_tokens ?? 0) - (bm.usage?.cache_creation_input_tokens ?? 0)) * dir;
+        case "cost":
+          return ((am.costUsd ?? 0) - (bm.costUsd ?? 0)) * dir;
         default:
           return 0;
       }
@@ -172,7 +182,9 @@ export default function ChatDebugPanel({ messages }: Props) {
     let totalIn = 0,
       totalOut = 0,
       totalCacheRead = 0,
-      totalCacheWrite = 0;
+      totalCacheWrite = 0,
+      totalCost = 0;
+    let hasCost = false;
     const deltas: number[] = [];
     const msPerToks: number[] = [];
 
@@ -181,6 +193,7 @@ export default function ChatDebugPanel({ messages }: Props) {
       totalOut += m.usage?.output_tokens ?? 0;
       totalCacheRead += m.usage?.cache_read_input_tokens ?? 0;
       totalCacheWrite += m.usage?.cache_creation_input_tokens ?? 0;
+      if (m.costUsd != null) { totalCost += m.costUsd; hasCost = true; }
       if (m.deltaMs != null) deltas.push(m.deltaMs);
       if (m.msPerOutputToken != null) msPerToks.push(m.msPerOutputToken);
     }
@@ -196,7 +209,7 @@ export default function ChatDebugPanel({ messages }: Props) {
     const avgMsPerTok = msPerToks.length > 0 ? msPerToks.reduce((a, b) => a + b, 0) / msPerToks.length : null;
     const cacheHitRate = totalCacheRead + totalCacheWrite + totalIn > 0 ? (totalCacheRead / (totalCacheRead + totalCacheWrite + totalIn)) * 100 : null;
 
-    return { totalIn, totalOut, totalCacheRead, totalCacheWrite, avgDelta, p95Delta, avgMsPerTok, cacheHitRate, count: rows.length };
+    return { totalIn, totalOut, totalCacheRead, totalCacheWrite, totalCost: hasCost ? totalCost : null, avgDelta, p95Delta, avgMsPerTok, cacheHitRate, count: rows.length };
   }, [filteredRows]);
 
   function handleSort(key: SortKey) {
@@ -298,6 +311,11 @@ export default function ChatDebugPanel({ messages }: Props) {
               Avg ms/tok: <span style={{ fontWeight: 600, color: "var(--text)" }}>{fmtMsPerTok(stats.avgMsPerTok)}</span>
             </div>
           )}
+          {stats.totalCost != null && (
+            <div>
+              Total cost: <span style={{ fontWeight: 600, color: "var(--text)" }}>{fmtCost(stats.totalCost)}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -397,6 +415,9 @@ export default function ChatDebugPanel({ messages }: Props) {
               <th style={thStyle} onClick={() => handleSort("msPerTok")}>
                 ms/tok{sortIndicator("msPerTok")}
               </th>
+              <th style={thStyle} onClick={() => handleSort("cost")}>
+                Cost{sortIndicator("cost")}
+              </th>
               <th style={thLeftStyle}>Tier</th>
               <th style={thLeftStyle}>Geo</th>
               <th style={thLeftStyle}>Req ID</th>
@@ -436,6 +457,7 @@ export default function ChatDebugPanel({ messages }: Props) {
                 <td style={tdStyle}>{fmtTok(m.usage?.cache_creation_input_tokens)}</td>
                 <td style={tdStyle}>{m.deltaMs != null ? fmtDelta(m.deltaMs) : "-"}</td>
                 <td style={tdStyle}>{m.msPerOutputToken != null ? fmtMsPerTok(m.msPerOutputToken) : "-"}</td>
+                <td style={tdStyle}>{m.costUsd != null ? fmtCost(m.costUsd) : "-"}</td>
                 <td style={tdLeftStyle}>{m.serviceTier ?? "-"}</td>
                 <td style={tdLeftStyle}>{m.inferenceGeo ?? "-"}</td>
                 <td style={tdLeftStyle}>
