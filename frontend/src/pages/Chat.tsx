@@ -2710,6 +2710,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         right: 0,
                         zIndex: 51,
                         width: 320,
+                        // On narrow viewports, cap to the visible area so the
+                        // popover doesn't overflow the right edge. 24px gutter
+                        // matches the composer's horizontal padding.
+                        maxWidth: "calc(100vw - 24px)",
                         padding: 12,
                         borderRadius: 8,
                         background: "var(--surface)",
