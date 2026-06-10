@@ -2709,10 +2709,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         bottom: "calc(100% + 8px)",
                         right: 0,
                         zIndex: 51,
-                        width: 320,
-                        // On narrow viewports, cap to the visible area so the
-                        // popover doesn't overflow the right edge. 24px gutter
-                        // matches the composer's horizontal padding.
+                        // Anchored to the toggle button on the right; grows
+                        // leftward. On desktop, cap at 480px so it doesn't
+                        // overflow the chat column. On mobile, maxWidth wins
+                        // and fills the composer (24px gutter = 12px each
+                        // side, matching the composer's horizontal padding).
+                        width: 480,
                         maxWidth: "calc(100vw - 24px)",
                         padding: 12,
                         borderRadius: 8,
