@@ -1658,11 +1658,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               const overCap = hasCap && sessionTotalCost >= effectiveMaxBudgetUsd!;
               const nearCap = hasCap && !overCap && sessionTotalCost / Math.max(effectiveMaxBudgetUsd!, 0.0001) >= 0.8;
               const costStr = sessionTotalCost >= 0.01
-                ? `${sessionTotalCost.toFixed(2)}`
-                : `${sessionTotalCost.toFixed(4)}`;
-              const label = hasCap ? `${costStr} / ${effectiveMaxBudgetUsd!.toFixed(2)}` : costStr;
+                ? `$${sessionTotalCost.toFixed(2)}`
+                : `$${sessionTotalCost.toFixed(4)}`;
+              const label = hasCap ? `${costStr} / $${effectiveMaxBudgetUsd!.toFixed(2)}` : costStr;
               const titleStr = hasCap
-                ? `Session spent ${costStr} of the ${effectiveMaxBudgetUsd!.toFixed(2)} per-session cap. Click to adjust in Settings → API.`
+                ? `Session spent ${costStr} of the $${effectiveMaxBudgetUsd!.toFixed(2)} per-session cap. Click to adjust in Settings → API.`
                 : `Session total cost: ${costStr}. Click to configure a budget cap in Settings → API.`;
               return (
                 <div
