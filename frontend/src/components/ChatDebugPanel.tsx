@@ -43,11 +43,21 @@ export default function ChatDebugPanel({ messages }: Props) {
   const [filterModel, setFilterModel] = useState<string | null>(null);
   const [filterStop, setFilterStop] = useState<string | null>(null);
 
-  // Build rows: one row per unique API request, grouped by requestId.
-  // A single API response may produce multiple JSONL entries (one per content
-  // block: thinking, text, tool_use). These share the same requestId and have
-  // duplicated input / cache token counts. We pick the canonical entry per
-  // request (the one with stop_reason set, or the last entry) and recompute
+  // Build rows: one row per unique model generation.
+  //
+  // Grouping key selection:
+  //   • OpenRouter (transcript path): `generationKey` = "<requestId>/<turnNumber>"
+  //     Each intra-cycle generation gets a distinct key, so multi-generation
+  //     agentic turns produce multiple rows instead of collapsing to one.
+  //   • OpenRouter (legacy state.json path): `generationKey` = "<reqDirName>/<genIndex>"
+  //     Same granularity — one row per gen_N directory.
+  //   • Claude Code: `generationKey` is absent; falls back to `requestId`,
+  //     which is already unique per API call — behaviour unchanged.
+  //
+  // A single generation may produce multiple ParsedMessage entries (thinking,
+  // tool_use(s), final text) that share the same generationKey/requestId and
+  // carry duplicated input/cache token counts. We pick the canonical entry per
+  // group (the one with stopReason set, or the last entry) and recompute
   // inter-response timing deltas.
   const allRows: DebugRow[] = useMemo(() => {
     // Step 1: Collect assistant messages that carry usage data
@@ -58,14 +68,14 @@ export default function ChatDebugPanel({ messages }: Props) {
       }
     }
 
-    // Step 2: Group by requestId, maintaining first-seen order.
-    // Messages without a requestId are treated as their own group.
+    // Step 2: Group by generationKey (OR) or requestId (Claude), maintaining
+    // first-seen order. Messages without either are treated as their own group.
     const requestOrder: string[] = [];
     const byRequest = new Map<string, ParsedMessage[]>();
     let ungroupedIdx = 0;
 
     for (const m of assistantEntries) {
-      const key = m.requestId || `__ungrouped_${ungroupedIdx++}`;
+      const key = m.generationKey ?? m.requestId ?? `__ungrouped_${ungroupedIdx++}`;
       if (!byRequest.has(key)) {
         requestOrder.push(key);
         byRequest.set(key, []);

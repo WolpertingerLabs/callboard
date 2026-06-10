@@ -381,6 +381,9 @@ describe("OpenRouterSessionProvider — parseSessionMessages", () => {
         timestamp: "2026-05-27T10:01:00Z",
         model: "anthropic/claude-3-5-sonnet",
         requestId: "req_t",
+        // generationKey = "<requestId>/<turnNumber>": unique per-generation identity
+        // used by the debug panel to list each intra-cycle model call as its own row.
+        generationKey: "req_t/1",
         costUsd: 0.0001,
         durationMs: 500,
         usage: { input_tokens: 1, output_tokens: 1 },

@@ -98,6 +98,9 @@ describe("readOpenRouterTranscript — record projection", () => {
         timestamp: "2026-05-27T10:01:00Z",
         model: "anthropic/claude-3-5-sonnet",
         requestId: "req_abc",
+        // generationKey is synthesised as "<requestId>/<turnNumber>" so each
+        // intra-cycle generation can be listed as its own row in the debug panel.
+        generationKey: "req_abc/1",
         costUsd: 0.0001,
         durationMs: 1234,
         usage: { input_tokens: 10, output_tokens: 5 },

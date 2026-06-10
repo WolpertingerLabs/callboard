@@ -59,18 +59,26 @@ interface RawRequest {
 }
 
 /**
- * Per-cycle metadata distilled from a gen_N/response.json file. Surfaced
+ * Per-generation metadata distilled from a gen_N/response.json file. Surfaced
  * through the parser onto each assistant ParsedMessage for the cycle so the
  * frontend can render token/cost/model/serviceTier lines.
  *
- * One cycle (one req_N dir) may persist multiple gen_N directories — one
- * per intra-cycle onTurnEnd plus the final getResponse. The parser picks
- * the latest by mtime since OR's SDK rolls usage forward and the last
- * response carries the canonical final figures.
+ * One cycle (one req_N dir) may persist multiple gen_N directories — one per
+ * intra-cycle `response.completed` event plus the final `getResponse`. Each
+ * represents a distinct model invocation that the responses debug table should
+ * show as its own row.
  */
 interface ResponseMeta {
   model?: string;
   requestId?: string;
+  /**
+   * Per-generation unique key for the responses debug table. Synthesised as
+   * `"<reqDirName>/<genIndex>"` so that multiple generations within the same
+   * cycle each get a distinct panel row. Matches the transcript parser's
+   * `"<requestId>/<turnNumber>"` convention so both code paths produce the
+   * same grouping semantics.
+   */
+  generationKey?: string;
   timestamp?: string;
   serviceTier?: string;
   inferenceGeo?: string;
@@ -163,10 +171,11 @@ export function readOpenRouterSession(sessionDir: string): ParsedMessage[] {
   return result;
 }
 
-/** Attach per-cycle response metadata to an assistant ParsedMessage in-place. */
+/** Attach per-generation response metadata to an assistant ParsedMessage in-place. */
 function applyMeta(m: ParsedMessage, meta: ResponseMeta): void {
   if (meta.model && !m.model) m.model = meta.model;
   if (meta.requestId && !m.requestId) m.requestId = meta.requestId;
+  if (meta.generationKey && !m.generationKey) m.generationKey = meta.generationKey;
   if (meta.timestamp && !m.timestamp) m.timestamp = meta.timestamp;
   if (meta.serviceTier && !m.serviceTier) m.serviceTier = meta.serviceTier;
   if (meta.inferenceGeo && !m.inferenceGeo) m.inferenceGeo = meta.inferenceGeo;
@@ -246,9 +255,10 @@ function readCycleEntries(sessionDir: string): CycleEntry[] {
  * response.json exists yet (the cycle is in-flight or aborted before
  * model traffic).
  *
- * `requestIdFromDirName` is the dir name (`req_<uuid>`) — used as the
- * displayed request id since OR-side request IDs aren't otherwise
- * exposed through the response envelope.
+ * `requestIdFromDirName` is the req dir name (`req_<uuid>`) — used as the
+ * `requestId` on the returned meta. A `generationKey` equal to `requestId`
+ * is also set so that legacy sessions surface a consistent key in the
+ * debug panel (matching Claude rows that use `requestId` as their key).
  */
 function readLatestResponseMeta(reqDir: string, requestIdFromDirName: string): ResponseMeta | undefined {
   let genDirs;
@@ -276,7 +286,13 @@ function readLatestResponseMeta(reqDir: string, requestIdFromDirName: string): R
         response?: Record<string, unknown>;
       };
       const meta = extractResponseMeta(raw, requestIdFromDirName);
-      if (meta) return meta;
+      if (meta) {
+        // Set generationKey = requestId for legacy sessions so the debug
+        // panel gets a consistent grouping field without needing to fall
+        // back to the raw requestId (which also works — this is additive).
+        if (!meta.generationKey) meta.generationKey = meta.requestId;
+        return meta;
+      }
     } catch {
       /* malformed — try the next-newest gen */
     }
