@@ -941,6 +941,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         }),
       appTitle: "callboard",
     };
+    log.info(
+      `OpenRouter chat config — trackingId=${trackingId}, model=${chatModel ?? "(default)"}, ` +
+        `effort=${chatEffort ?? "(unset)"}, ` +
+        `maxBudgetUsd=${queryOpts.options.openRouter.maxBudgetUsd ?? "(library default)"}, ` +
+        `baseUrl=${queryOpts.options.openRouter.baseUrl ?? "(default)"}, ` +
+        `logsRoot=${queryOpts.options.openRouter.logsRoot ?? "(default)"}, ` +
+        `apiKeyTail=…${apiKey.slice(-4)}`,
+    );
     // Wire the host handler for the OR ask_user_question tool, reusing the same
     // emitter + tracking-id getter the Claude permission flow uses so the
     // question UI and answer path behave identically across providers.
@@ -1000,7 +1008,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               log.warn(`Session ${trackingId} ended: max budget reached`);
             } else if (event.status === "error") {
               errorDetail = event.reason || "The model provider returned an error response.";
-              log.warn(`Session ${trackingId} ended: execution error — ${event.reason || "unknown"}`);
+              log.error(
+                `Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`,
+              );
             }
             if (typeof event.usage?.costUsd === "number") {
               lastCostUsd = event.usage.costUsd;
@@ -1152,11 +1162,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       if (err.name === "AbortError") {
         // Emit done with reason so the frontend knows the session was aborted,
         // rather than silently swallowing the event.
-        log.warn(`Session ${trackingId} ended: aborted`);
+        log.warn(`Session ${trackingId} (provider=${providerKind}) ended: aborted`);
         chatFileService.updateChat(trackingId, {});
         emitter.emit("event", { type: "done", content: "", reason: "aborted" } as StreamEvent);
       } else {
-        log.error(`Session ${trackingId} error: ${err.message}`);
+        log.error(
+          `Session ${trackingId} (provider=${providerKind}) error: ${err.message}${err.stack ? `\n${err.stack}` : ""}`,
+        );
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {

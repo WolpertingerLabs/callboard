@@ -48,6 +48,9 @@ import { loadOpenRouterPlugins, type OrAdapterLogger } from "./pluginAdapter.js"
 import { buildSkillSupport } from "./skillAdapter.js";
 import { buildCommandLoader, resolveCommandPrompt } from "./commandAdapter.js";
 import { buildOpenRouterHookDispatcher, composeOnHook } from "./hookAdapter.js";
+import { createLogger } from "../../../utils/logger.js";
+
+const log = createLogger("openrouter-adapter");
 
 /**
  * Wraps an {@link OpenRouterAgentRun} as a callboard {@link AgentQuery}.
@@ -75,12 +78,27 @@ class OpenRouterAgentQuery implements AgentQuery {
   }
 
   private async *iterate(): AsyncIterable<AgentEvent> {
-    const { run, commandLoader } = await this.buildRun();
+    log.debug(`iterate() start — sessionId=${this.baseOpts.sessionId}, cwd=${this.cwd}`);
+    let run: OpenRouterAgentRun;
+    let commandLoader: CommandLoader;
+    try {
+      ({ run, commandLoader } = await this.buildRun());
+    } catch (err) {
+      log.error(
+        `buildRun failed — sessionId=${this.baseOpts.sessionId}: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`,
+      );
+      throw err;
+    }
     // close() may have fired during async setup — don't start a run we'd
     // immediately have to abort.
-    if (this.aborted) return;
+    if (this.aborted) {
+      log.debug(`iterate() aborted before run start — sessionId=${this.baseOpts.sessionId}`);
+      return;
+    }
     this.run = run;
+    log.debug(`iterate() entering event translation — sessionId=${this.baseOpts.sessionId}`);
     yield* translateOpenRouterEvents(run, this.cwd, commandLoader);
+    log.debug(`iterate() finished — sessionId=${this.baseOpts.sessionId}`);
   }
 
   /**
@@ -96,6 +114,12 @@ class OpenRouterAgentQuery implements AgentQuery {
       : undefined;
 
     const loadedPlugins = await loadOpenRouterPlugins(this.rawOptions, logger);
+    log.debug(
+      `buildRun — sessionId=${opts.sessionId}, loadedPlugins=${loadedPlugins.length}` +
+        (loadedPlugins.length > 0
+          ? ` (${loadedPlugins.map((p) => p.manifest.name).join(", ")})`
+          : ""),
+    );
 
     // ── Skills: build the loader + skill tool + listing, append to custom tools.
     const skill = await buildSkillSupport(
@@ -122,14 +146,26 @@ class OpenRouterAgentQuery implements AgentQuery {
           ? `${opts.instructions}\n\n${skill.listing}`
           : skill.listing;
       }
+      log.debug(
+        `buildRun skills wired — sessionId=${opts.sessionId}, tools=${opts.tools.length}, listingChars=${skill.listing.length}`,
+      );
+    } else {
+      log.debug(`buildRun skills — sessionId=${opts.sessionId}, none wired`);
     }
 
     // ── Slash commands: build a plugin-aware loader for listing + resolution.
     const commandLoader = buildCommandLoader(this.cwd, loadedPlugins, skill?.loader, logger);
+    const promptBefore = typeof opts.prompt === "string" ? opts.prompt : null;
     opts.prompt = await resolveCommandPrompt(opts.prompt, commandLoader, opts.sessionId, this.cwd);
+    if (promptBefore !== null && typeof opts.prompt === "string" && opts.prompt !== promptBefore) {
+      log.debug(
+        `buildRun slash command resolved — sessionId=${opts.sessionId}, before="${promptBefore.slice(0, 80)}", afterChars=${opts.prompt.length}`,
+      );
+    }
 
     // ── Plugin hook dispatch: the OR library does not execute plugin hook
     // commands, so wire an onHook that does (composed with any passthrough).
+    const hasPassthroughHook = !!opts.onHook;
     const dispatcher = buildOpenRouterHookDispatcher(loadedPlugins, {
       getSessionId: () => opts.sessionId,
       cwd: this.cwd,
@@ -138,34 +174,56 @@ class OpenRouterAgentQuery implements AgentQuery {
     });
     const composed = composeOnHook(dispatcher, opts.onHook);
     if (composed) opts.onHook = composed;
+    log.debug(
+      `buildRun hooks wired — sessionId=${opts.sessionId}, pluginDispatcher=${dispatcher ? "yes" : "no"}, passthrough=${hasPassthroughHook ? "yes" : "no"}`,
+    );
 
     return { run: new OpenRouterAgentRun(opts), commandLoader };
   }
 
   async accountInfo(): Promise<Record<string, unknown> | null> {
-    const info = await orAccountInfo({
-      apiKey: this.extras.apiKey,
-      ...(this.extras.baseUrl && { baseUrl: this.extras.baseUrl }),
-    });
-    if (info === null) return null;
-    return info as unknown as Record<string, unknown>;
+    try {
+      const info = await orAccountInfo({
+        apiKey: this.extras.apiKey,
+        ...(this.extras.baseUrl && { baseUrl: this.extras.baseUrl }),
+      });
+      if (info === null) {
+        log.debug(`accountInfo returned null — baseUrl=${this.extras.baseUrl ?? "(default)"}`);
+        return null;
+      }
+      return info as unknown as Record<string, unknown>;
+    } catch (err) {
+      log.error(
+        `accountInfo failed — baseUrl=${this.extras.baseUrl ?? "(default)"}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
   }
 
   async supportedModels(): Promise<
     Array<{ value: string; displayName: string; description: string }>
   > {
-    const models = await orSupportedModels({
-      apiKey: this.extras.apiKey,
-      ...(this.extras.baseUrl && { baseUrl: this.extras.baseUrl }),
-    });
-    return models.map((m) => ({
-      value: m.value,
-      displayName: m.displayName,
-      description: m.description,
-    }));
+    try {
+      const models = await orSupportedModels({
+        apiKey: this.extras.apiKey,
+        ...(this.extras.baseUrl && { baseUrl: this.extras.baseUrl }),
+      });
+      log.debug(`supportedModels — count=${models.length}, baseUrl=${this.extras.baseUrl ?? "(default)"}`);
+      return models.map((m) => ({
+        value: m.value,
+        displayName: m.displayName,
+        description: m.description,
+      }));
+    } catch (err) {
+      log.error(
+        `supportedModels failed — baseUrl=${this.extras.baseUrl ?? "(default)"}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
   }
 
   async close(): Promise<void> {
+    log.debug(`close() — sessionId=${this.baseOpts.sessionId}, runConstructed=${!!this.run}`);
     this.aborted = true;
     this.run?.abort();
   }
@@ -175,12 +233,23 @@ export class OpenRouterAdapter implements AgentProvider {
   readonly kind = "openrouter" as const;
 
   query(req: AgentQueryRequest): AgentQuery {
-    const { orOpts, cwd } = translateOptions(req.options, req.prompt);
+    log.debug(
+      `query() — promptType=${typeof req.prompt === "string" ? `string(${req.prompt.length})` : "asyncIterable"}`,
+    );
+    let orOpts;
+    let cwd;
+    try {
+      ({ orOpts, cwd } = translateOptions(req.options, req.prompt));
+    } catch (err) {
+      log.error(`translateOptions failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
     const extras = (req.options as { openRouter?: OpenRouterOptionsExtras }).openRouter!;
     return new OpenRouterAgentQuery(orOpts, cwd, extras, req.options);
   }
 
   buildToolServer(spec: ToolServerSpec): unknown {
+    log.debug(`buildToolServer — spec=${spec.name}, tools=${spec.tools.length}`);
     return buildOpenRouterToolServer(spec);
   }
 }

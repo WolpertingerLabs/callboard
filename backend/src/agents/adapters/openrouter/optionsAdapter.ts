@@ -26,7 +26,10 @@ import {
   type SettingSource,
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
+import { createLogger } from "../../../utils/logger.js";
 import type { EffortLevel } from "shared/types/index.js";
+
+const log = createLogger("openrouter");
 
 export type { EffortLevel };
 
@@ -238,11 +241,26 @@ export function translateOptions(
     );
   }
 
-  if (opts.stderr) {
-    orOpts.logger = (level, message) => {
-      if (level === "warn" || level === "error") opts.stderr!(message);
-    };
-  }
+  // Forward every level from the OR library through Winston so debugging the
+  // OR path is symmetrical with the Claude path (which gets full SDK logging
+  // via createLogger("claude")). Also keep the stderr forward for warn/error
+  // so user-facing diagnostics still surface via the existing channel.
+  orOpts.logger = (level, message) => {
+    log[level](`[or-lib] ${message}`);
+    if ((level === "warn" || level === "error") && opts.stderr) {
+      opts.stderr(message);
+    }
+  };
+
+  log.debug(
+    `translateOptions resolved — sessionId=${sessionId}, model=${orOpts.model ?? "(default)"}, ` +
+      `effort=${orOpts.effort ?? "(unset)"}, maxBudgetUsd=${orOpts.maxBudgetUsd ?? "(library default)"}, ` +
+      `baseUrl=${orOpts.baseUrl ?? "(default)"}, logsRoot=${orOpts.logsRoot}, ` +
+      `maxTurns=${orOpts.maxTurns ?? "(default)"}, persistSession=${orOpts.persistSession ?? "(default)"}, ` +
+      `cwd=${cwd}, instructions=${orOpts.instructions ? `${orOpts.instructions.length}chars` : "(none)"}, ` +
+      `tools=${orOpts.tools?.length ?? 0}, allowedTools=${orOpts.allowedTools?.length ?? 0}, ` +
+      `disallowedTools=${orOpts.disallowedTools?.length ?? 0}`,
+  );
 
   return { orOpts, cwd };
 }
