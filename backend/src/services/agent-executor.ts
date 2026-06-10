@@ -12,7 +12,7 @@ import { compileIdentityPrompt, compileWorkspaceContext } from "./claude-compile
 import { appendActivity } from "./agent-activity.js";
 import { createLogger } from "../utils/logger.js";
 
-import type { ActivityEntry } from "shared";
+import type { ActivityEntry, EffortLevel } from "shared";
 
 const log = createLogger("agent-executor");
 
@@ -31,6 +31,7 @@ type MessageSender = (opts: {
   triggeredBy?: "cron" | "event" | "trigger" | "tool";
   provider?: "claude-code" | "openrouter";
   model?: string;
+  effort?: EffortLevel;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -58,6 +59,8 @@ export interface ExecuteAgentOptions {
   maxTurns?: number;
   provider?: "claude-code" | "openrouter";
   model?: string;
+  /** OR-only reasoning effort. Ignored when provider is claude-code. */
+  effort?: EffortLevel;
 }
 
 export interface ExecuteAgentResult {
@@ -73,7 +76,7 @@ export interface ExecuteAgentResult {
  * Returns the chatId of the new session, or null if it failed.
  */
 export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAgentResult | null> {
-  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, model } = opts;
+  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, model, effort } = opts;
 
   try {
     const config = getAgent(agentAlias);
@@ -117,6 +120,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       },
       ...(provider && { provider }),
       ...(model && { model }),
+      ...(effort && { effort }),
     });
 
     // Wait for chat_created event to get chatId

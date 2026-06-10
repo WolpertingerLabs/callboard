@@ -26,22 +26,9 @@ import {
   type SettingSource,
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
+import type { EffortLevel } from "shared/types/index.js";
 
-/**
- * Reasoning-effort levels accepted by the OR `reasoning.effort` field. OR
- * maps the requested level to each provider's native parameter (Anthropic
- * `thinking.budget_tokens`, OpenAI `reasoning_effort`, Gemini
- * `thinkingConfig.thinkingLevel`, Qwen `thinking_budget`, xAI
- * `reasoning_effort`). Non-reasoning models silently ignore it.
- *
- * Re-declared here rather than imported from
- * `@wolpertingerlabs/openrouter-agent-harness` because the SDK doesn't re-export
- * its `EffortLevel` type at the package root. Drift risk is minimal — six
- * string literals — and keeping the union local lets the rest of the
- * backend (stream.ts boundary validation, claude.ts metadata persistence)
- * reference it without a deep-path import.
- */
-export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
+export type { EffortLevel };
 
 /**
  * Sub-object on the options Record carrying OR-specific configuration. Set

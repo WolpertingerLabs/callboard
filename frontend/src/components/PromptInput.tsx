@@ -10,9 +10,16 @@ interface Props {
   slashCommands?: string[];
   commandDescriptions?: Record<string, string>;
   onSetValue?: (setValue: (value: string) => void) => void;
+  /**
+   * Optional extra action(s) rendered to the LEFT of the Save Draft / Send
+   * buttons. Used by Chat.tsx to mount the OpenRouter model/effort picker
+   * toggle next to the send button per the design note: model selection
+   * should be toggle-able, not always-visible in the message area.
+   */
+  extraActions?: React.ReactNode;
 }
 
-export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], commandDescriptions, onSetValue }: Props) {
+export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], commandDescriptions, onSetValue, extraActions }: Props) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -279,6 +286,9 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
             <Paperclip size={14} />
           </button>
         </div>
+
+        {/* Caller-supplied extra actions (e.g. model/effort toggle on OR chats) */}
+        {extraActions}
 
         {/* Save Draft button */}
         {onSaveDraft && (

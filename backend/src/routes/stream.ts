@@ -17,6 +17,12 @@ import { generateBranchName } from "../services/quick-completion.js";
 
 const log = createLogger("stream");
 
+// Defense-in-depth allowlists shared by /new/message (initial creation) and
+// /:id/message (mid-chat updates). Anything not in these sets is silently
+// dropped at the route boundary so we never persist garbage to chat metadata.
+const VALID_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
+const VALID_EFFORTS: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
+
 export const streamRouter = Router();
 
 // Send first message to create a new chat (no existing chat ID required)
@@ -111,24 +117,19 @@ streamRouter.post("/new/message", async (req, res) => {
   try {
     const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
 
-    // Defense-in-depth: validate the provider string at the route boundary
-    // rather than relying on resolveProviderKind's warn-and-fallback path to
-    // catch garbage. Anything not in this allowlist is silently dropped so
-    // the chat falls through to the claude-code default — same outcome as
-    // omitting the field.
-    const validProviders: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
+    // Validate provider at the route boundary rather than relying on
+    // resolveProviderKind's warn-and-fallback path. Anything not in the
+    // allowlist is silently dropped — same outcome as omitting the field.
     const safeProvider: AgentProviderKind | undefined =
-      typeof provider === "string" && validProviders.has(provider as AgentProviderKind)
+      typeof provider === "string" && VALID_PROVIDERS.has(provider as AgentProviderKind)
         ? (provider as AgentProviderKind)
         : undefined;
 
-    // Same allowlist treatment for the OpenRouter reasoning-effort field.
-    // Forwarded only when paired with the openrouter provider — on a
+    // Effort forwarded only when paired with the openrouter provider — on a
     // claude-code chat it would be persisted to metadata for nothing and
     // confuse future debugging.
-    const validEfforts: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
     const safeEffort: EffortLevel | undefined =
-      safeProvider === "openrouter" && typeof effort === "string" && validEfforts.has(effort)
+      safeProvider === "openrouter" && typeof effort === "string" && VALID_EFFORTS.has(effort)
         ? (effort as EffortLevel)
         : undefined;
 
@@ -223,7 +224,8 @@ streamRouter.post("/:id/message", async (req, res) => {
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
-            model: { type: "string", description: "OpenRouter model slug to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Empty string clears the per-chat override and reverts to the global default." }
+            model: { type: "string", description: "OpenRouter model slug to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Empty string clears the per-chat override and reverts to the global default." },
+            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "OpenRouter reasoning-effort level to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." }
           }
         }
       }
@@ -231,7 +233,7 @@ streamRouter.post("/:id/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with message_update, permission_request, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
-  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model } = req.body;
+  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
@@ -267,6 +269,18 @@ streamRouter.post("/:id/message", async (req, res) => {
     if (typeof model === "string" && meta.provider === "openrouter") {
       const trimmed = model.trim();
       chatFileService.updateChatMetadata(req.params.id, { model: trimmed.length > 0 ? trimmed : undefined });
+    }
+
+    // Same treatment for per-chat reasoning effort. Empty string clears the
+    // override (so the chat falls back to the model default); any other
+    // non-allowlisted value is silently dropped.
+    if (typeof effort === "string" && meta.provider === "openrouter") {
+      const trimmed = effort.trim();
+      if (trimmed.length === 0) {
+        chatFileService.updateChatMetadata(req.params.id, { effort: undefined });
+      } else if (VALID_EFFORTS.has(trimmed)) {
+        chatFileService.updateChatMetadata(req.params.id, { effort: trimmed });
+      }
     }
   }
   // ── End branch drift guard ──────────────────────────────────

@@ -55,4 +55,6 @@ export type { McpToolParameter, McpToolDefinition, McpToolServerInfo, McpToolsRe
 
 export type { OpenRouterModelInfo } from "./openrouter.js";
 
+export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./providers.js";
+
 export type { ContactChannel, UserContactInfo, NotifiableChannel } from "./userContact.js";

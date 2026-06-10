@@ -1,11 +1,33 @@
 // ── Cron Action ───────────────────────────────────────
-// Defines what happens when a cron job fires.
+// Defines what happens when a cron job fires. Also reused by `Trigger`
+// below — fields added here automatically apply to both schedule-driven
+// and event-driven dispatch.
+
+import type { UiAgentProviderKind, EffortLevel } from "./providers.js";
 
 export interface CronAction {
   type: "start_session" | "send_message";
   prompt?: string; // Message or task description for the agent
   folder?: string; // Override agent's default workspace folder
   maxTurns?: number;
+  /**
+   * Agent provider to run this action against. Omit (undefined) to use the
+   * agent's default — typically Claude Code unless the agent has been
+   * configured otherwise. Persisted as part of CronAction so each cron job
+   * can independently target Claude Code or OpenRouter.
+   */
+  provider?: UiAgentProviderKind;
+  /**
+   * OpenRouter model slug. Only honored when {@link provider} is
+   * "openrouter"; ignored for claude-code. Empty/undefined falls through to
+   * the global default in Settings → API.
+   */
+  model?: string;
+  /**
+   * OpenRouter reasoning-effort level. Only honored when {@link provider}
+   * is "openrouter". `undefined` skips the `reasoning` payload entirely.
+   */
+  effort?: EffortLevel;
 }
 
 // ── Quiet Hours ──────────────────────────────────────

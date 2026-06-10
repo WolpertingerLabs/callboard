@@ -5,7 +5,7 @@ import { listAgents, getAgentIdentityPrompt, getSystemInfo, type DefaultPermissi
 import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
-import ChatProviderSelector from "./ChatProviderSelector";
+import ProviderConfigPicker from "./ProviderConfigPicker";
 import {
   getDefaultPermissions,
   saveDefaultPermissions,
@@ -296,7 +296,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
         {chatMode === "claude-code" ? (
           <>
-            <ChatProviderSelector
+            <ProviderConfigPicker
               provider={provider}
               onProviderChange={setProvider}
               effort={effort}
@@ -494,7 +494,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
             {/* Same provider/effort knob as the folder path — the agent chat
                 honors this selection (see handleAgentCreate), so it must be
                 visible and editable here too. */}
-            <ChatProviderSelector
+            <ProviderConfigPicker
               provider={provider}
               onProviderChange={setProvider}
               effort={effort}

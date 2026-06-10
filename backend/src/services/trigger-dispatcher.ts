@@ -84,6 +84,9 @@ export function dispatchEvent(event: StoredEvent): void {
           idempotencyKey: event.idempotencyKey,
         },
         maxTurns: trigger.action.maxTurns,
+        ...(trigger.action.provider && { provider: trigger.action.provider }),
+        ...(trigger.action.model && { model: trigger.action.model }),
+        ...(trigger.action.effort && { effort: trigger.action.effort }),
       }).catch((err) => {
         log.error(`Trigger dispatch failed for ${agent.alias}/${trigger.id}: ${err.message}`);
       });
