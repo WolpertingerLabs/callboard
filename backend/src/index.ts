@@ -49,6 +49,7 @@ import { proxyRouter } from "./routes/proxy.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { themesRouter } from "./routes/themes.js";
+import { customSkillsRouter } from "./routes/custom-skills.js";
 import { filesRouter } from "./routes/files.js";
 import { canvasRouter } from "./routes/canvas.js";
 import { mcpToolsRouter } from "./routes/mcp-tools.js";
@@ -209,6 +210,7 @@ app.use("/api/proxy", proxyRouter);
 app.use("/api/connections", connectionsRouter);
 app.use("/api/sessions", sessionsRouter);
 app.use("/api/themes", themesRouter);
+app.use("/api/custom-skills", customSkillsRouter);
 app.use("/api/files", filesRouter);
 app.use("/api/canvas", canvasRouter);
 app.use("/api/mcp-tools", mcpToolsRouter);
@@ -238,11 +240,7 @@ app.post("/api/instance-name/randomize", (_req, res) => {
 });
 
 // Ignored project directories endpoints (requires auth)
-import {
-  DEFAULT_IGNORED_PROJECT_DIR_PREFIXES,
-  getIgnoredProjectDirPrefixes,
-  saveIgnoredProjectDirPrefixes,
-} from "./utils/paths.js";
+import { DEFAULT_IGNORED_PROJECT_DIR_PREFIXES, getIgnoredProjectDirPrefixes, saveIgnoredProjectDirPrefixes } from "./utils/paths.js";
 import { clearChatListCache } from "./routes/chats.js";
 
 app.get("/api/ignored-project-dirs", (_req, res) => {

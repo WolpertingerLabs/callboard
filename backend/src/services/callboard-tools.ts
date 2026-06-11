@@ -18,6 +18,7 @@ import {
   formatOpenRouterPrice,
 } from "./openrouter-models.js";
 import { getUserContact } from "./user-contact.js";
+import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
@@ -937,6 +938,95 @@ export function buildCallboardToolsSpec(getChatId?: () => string, getAgentAlias?
           } catch (err: any) {
             log.error(`find_chats failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error searching chats: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── Custom skills ──────────────────────────────────────────
+      // Manages Callboard custom skills only (~/.callboard/custom-skills/) —
+      // never framework, plugin, user (~/.claude), or project skills.
+
+      defineTool(
+        "list_custom_skills",
+        "List Callboard custom skills — user-created skills managed in Settings → Skills and stored by Callboard itself (not framework, plugin, or ~/.claude skills). Each is invocable in chats as callboard:<name>. Returns names, descriptions, and last-updated timestamps.",
+        {},
+        async () => {
+          try {
+            const skills = customSkillsService.listSkills();
+            return { content: [{ type: "text" as const, text: JSON.stringify({ skills }) }] };
+          } catch (err: any) {
+            log.error(`list_custom_skills failed: ${err.message}`);
+            return error(`Failed to list custom skills: ${err.message}`);
+          }
+        },
+      ),
+
+      defineTool(
+        "read_custom_skill",
+        "Read a Callboard custom skill's full definition — its description and markdown instructions. Only reads Callboard-managed custom skills (see list_custom_skills), not framework or ~/.claude skills.",
+        {
+          name: z.string().describe("Skill name (kebab-case, as returned by list_custom_skills)"),
+        },
+        async (args) => {
+          try {
+            const skill = customSkillsService.getSkill(args.name);
+            if (!skill) {
+              return error(`Custom skill "${args.name}" not found — use list_custom_skills to see available skills`);
+            }
+            return { content: [{ type: "text" as const, text: JSON.stringify({ skill }) }] };
+          } catch (err: any) {
+            log.error(`read_custom_skill failed: ${err.message}`);
+            return error(`Failed to read custom skill: ${err.message}`);
+          }
+        },
+      ),
+
+      defineTool(
+        "write_custom_skill",
+        "Create or update a Callboard custom skill. If a skill with this name exists it is updated (only the provided fields change); otherwise a new one is created (description and content are then required). The name is kebab-cased automatically. Changes apply from the next message in any chat; the skill is invoked as callboard:<name>. Only manages Callboard custom skills — never edits framework, plugin, or ~/.claude skills. Deletion is only available in Settings → Skills.",
+        {
+          name: z.string().describe("Skill name — kebab-cased automatically (e.g. 'Release Notes' → release-notes)"),
+          description: z.string().optional().describe("One-line description the model sees when deciding to use the skill (required when creating)"),
+          content: z.string().optional().describe("Markdown instructions — the body of SKILL.md, without frontmatter (required when creating)"),
+        },
+        async (args) => {
+          try {
+            const slug = slugifySkillName(args.name);
+            const existing = customSkillsService.getSkill(slug);
+            let skill;
+            let action: "created" | "updated";
+            if (existing) {
+              skill = customSkillsService.updateSkill(slug, {
+                ...(args.description !== undefined && { description: args.description }),
+                ...(args.content !== undefined && { content: args.content }),
+              });
+              action = "updated";
+            } else {
+              if (!args.description || !args.content) {
+                return error(`Custom skill "${slug}" does not exist — provide both description and content to create it`);
+              }
+              skill = customSkillsService.createSkill({
+                name: slug,
+                description: args.description,
+                content: args.content,
+              });
+              action = "created";
+            }
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    action,
+                    skill: { name: skill.name, description: skill.description, updatedAt: skill.updatedAt },
+                    note: `Invocable as callboard:${skill.name} starting with the next message in any chat.`,
+                  }),
+                },
+              ],
+            };
+          } catch (err: any) {
+            log.error(`write_custom_skill failed: ${err.message}`);
+            return error(`Failed to write custom skill: ${err.message}`);
           }
         },
       ),
