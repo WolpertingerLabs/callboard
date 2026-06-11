@@ -147,4 +147,19 @@ export interface SessionProvider {
    * cleaned up. No-op if the session is not found.
    */
   deleteSessionFiles(sessionId: string): void;
+
+  /**
+   * Fork a session at a point in time: copy the native session log(s) up
+   * to and including the last entry at or before `cutoffTimestamp` into a
+   * new session keyed by `newSessionId`, so the new session can be resumed
+   * independently of the original.
+   *
+   * Optional — providers whose storage can't be truncated this way (e.g.
+   * OpenRouter's response-chained state) simply don't implement it, and
+   * the fork route rejects the request.
+   *
+   * Returns the new session log path, or null if the source session is
+   * missing or no entries fall at/before the cutoff.
+   */
+  forkSession?(sessionIds: string[], cutoffTimestamp: string, newSessionId: string): { logPath: string } | null;
 }

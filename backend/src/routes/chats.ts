@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { existsSync } from "fs";
+import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
@@ -543,6 +544,88 @@ chatsRouter.post("/", (req, res) => {
       slash_commands: slashCommands,
       plugins: plugins,
     });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fork a chat: copy session history up to a message into a new chat
+chatsRouter.post("/:id/fork", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Fork a chat'
+  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["timestamp"],
+          properties: {
+            timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[201] = { description: "Forked chat created" } */
+  /* #swagger.responses[400] = { description: "Missing timestamp or provider does not support forking" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const { timestamp } = req.body;
+  if (!timestamp || typeof timestamp !== "string") {
+    return res.status(400).json({ error: "timestamp is required" });
+  }
+
+  const chat = findChat(req.params.id, false) as any;
+  if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+  let meta: Record<string, any> = {};
+  try {
+    meta = JSON.parse(chat.metadata || "{}");
+  } catch {}
+
+  const providerKind = meta.provider || "claude-code";
+  const provider = getSessionProviders().find((p) => p.kind === providerKind);
+  if (!provider?.forkSession) {
+    return res.status(400).json({ error: "Forking is not supported for this chat's provider" });
+  }
+
+  const sessionIds: string[] = meta.session_ids || [];
+  if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
+
+  const newSessionId = randomUUID();
+  let forked: { logPath: string } | null = null;
+  try {
+    forked = provider.forkSession(sessionIds, timestamp, newSessionId);
+  } catch (error) {
+    log.error(`Failed to fork session: ${error}`);
+  }
+  if (!forked) {
+    return res.status(400).json({ error: "Could not fork: no messages found at or before the fork point" });
+  }
+
+  // Title the fork off the original's title, falling back to its first-
+  // user-message preview so the fork is distinguishable in the chat list.
+  let baseTitle: string | null = meta.title || null;
+  if (!baseTitle && chat.session_log_path) {
+    baseTitle = provider.getSessionPreview(chat.session_log_path, 60);
+  }
+  baseTitle = baseTitle ? baseTitle.replace(/\s+/g, " ").trim() : null;
+
+  const forkMeta = {
+    session_ids: [newSessionId],
+    title: baseTitle ? `Fork: ${baseTitle}` : "Fork",
+    forkedFrom: chat.id,
+    ...(meta.defaultPermissions && { defaultPermissions: meta.defaultPermissions }),
+    ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
+    ...(meta.lastBranch && { lastBranch: meta.lastBranch }),
+  };
+
+  try {
+    const newChat = chatFileService.createChat(chat.folder, newSessionId, JSON.stringify(forkMeta));
+    clearChatListCache();
+    res.status(201).json(newChat);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

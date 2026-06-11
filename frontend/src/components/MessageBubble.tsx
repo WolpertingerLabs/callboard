@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
-import { Check, Copy, RotateCw, Square, X } from "lucide-react";
+import { Check, Copy, GitFork, RotateCw, Square, X } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import JsonContentView from "./JsonContentView";
@@ -182,6 +182,35 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function ForkButton({ onFork }: { onFork: () => void }) {
+  return (
+    <button
+      className="fork-btn"
+      onClick={(e) => {
+        e.stopPropagation();
+        onFork();
+      }}
+      title="Fork conversation from here"
+      style={{
+        position: "absolute",
+        top: 6,
+        right: 36,
+        padding: 4,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1,
+      }}
+    >
+      <GitFork size={14} style={{ color: "var(--text-muted)" }} />
+    </button>
+  );
+}
+
 export function TodoList({ items }: { items: TodoItem[] }) {
   const completedCount = items.filter((t) => t.status === "completed").length;
   const total = items.length;
@@ -359,6 +388,8 @@ function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
 interface Props {
   message: ParsedMessage;
   teamColorMap?: Map<string, number>;
+  /** When set, shows a hover button that forks the conversation at this message. */
+  onFork?: () => void;
 }
 
 /** Format a millisecond delta as a human-readable duration */
@@ -500,7 +531,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   );
 }
 
-export default function MessageBubble({ message, teamColorMap }: Props) {
+export default function MessageBubble({ message, teamColorMap, onFork }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -754,6 +785,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
         }}
       >
         <CopyButton text={message.content} />
+        {onFork && <ForkButton onFork={onFork} />}
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>

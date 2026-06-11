@@ -197,6 +197,21 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
   return res.json();
 }
 
+/**
+ * Fork a chat at a message: creates a new chat whose history is a copy of
+ * this one up to and including the message at `timestamp`. The forked chat
+ * is not auto-started — the user sends the next message themselves.
+ */
+export async function forkChat(id: string, timestamp: string): Promise<Chat> {
+  const res = await fetch(`${BASE}/chats/${id}/fork`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ timestamp }),
+  });
+  await assertOk(res, "Failed to fork chat");
+  return res.json();
+}
+
 export async function deleteChat(id: string): Promise<void> {
   const res = await fetch(`${BASE}/chats/${id}`, { method: "DELETE" });
   await assertOk(res, "Failed to delete chat");
