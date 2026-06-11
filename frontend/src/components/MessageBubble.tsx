@@ -526,6 +526,29 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
   }
 
   if (message.type === "system") {
+    // Provider/API failure persisted on the session record (e.g. an
+    // OpenRouter upstream error with provider attempts and routing detail).
+    // Rendered as a hard error block — unlike boundary markers, the user
+    // needs to actually read this one.
+    if (message.subtype === "session_error") {
+      return (
+        <div
+          style={{
+            margin: "12px 0",
+            padding: "10px 14px",
+            background: "var(--danger-bg)",
+            border: "1px solid var(--danger-border)",
+            borderRadius: 8,
+            fontSize: 13,
+            color: "var(--danger)",
+            wordBreak: "break-word",
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>⚠ Model provider error</div>
+          <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>
+        </div>
+      );
+    }
     return (
       <div
         style={{

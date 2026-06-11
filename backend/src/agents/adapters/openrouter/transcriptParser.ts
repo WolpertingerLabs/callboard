@@ -54,7 +54,16 @@ interface RawRecord {
   reason?: unknown;
   droppedMessages?: unknown;
   summaryText?: unknown;
+  // session_end
+  status?: unknown;
 }
+
+/**
+ * `session_end` reason written by the OR library when the run was aborted by
+ * the user (its `ABORT_REASON` constant). Aborts are user-initiated stops, not
+ * failures — they get no error bubble.
+ */
+const OR_ABORT_REASON = "aborted";
 
 const SUPPORTED_SCHEMA_VERSION = 1;
 
@@ -140,9 +149,28 @@ export function readOpenRouterTranscript(sessionDir: string): ParsedMessage[] | 
         content: summary,
         ...(ts && { timestamp: ts }),
       });
+    } else if (kind === "session_end") {
+      // A run that terminated with a provider/API error persists the
+      // human-readable reason here (since openrouter-agent-harness#215 it
+      // includes the upstream provider, per-attempt statuses, and routing
+      // summary). Project it as a system error message so the failure
+      // survives reloads instead of living only in the live SSE stream.
+      // Aborts are user-initiated stops, not failures — skip those, and
+      // skip reason-less errors (nothing useful to show). success /
+      // max_turns / max_budget end states already surface through the
+      // `done` event's reason chip.
+      const reason = typeof rec.reason === "string" ? rec.reason : "";
+      if (rec.status === "error" && reason.length > 0 && reason !== OR_ABORT_REASON) {
+        messages.push({
+          role: "system",
+          type: "system",
+          subtype: "session_error",
+          content: reason,
+          ...(ts && { timestamp: ts }),
+        });
+      }
     }
-    // session_start / session_end carry only run-level metadata (cwd,
-    // status totals). Not user-facing per-message data — skip.
+    // session_start carries only run-level metadata (cwd, config) — skip.
   }
   return messages;
 }
