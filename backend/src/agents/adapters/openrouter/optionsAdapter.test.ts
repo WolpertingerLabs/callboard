@@ -204,6 +204,26 @@ describe("translateOptions — Claude option passthrough", () => {
     expect(captured).toEqual(["warn msg", "error msg"]);
   });
 
+  it("appends the harness logger's structured fields to forwarded messages", () => {
+    // The harness reports failures as a bare label + fields, e.g.
+    // ('error', 'OpenRouterAgentRun stream errored', { message }) — dropping
+    // the third argument would forward a log line with no error in it.
+    const captured: string[] = [];
+    const stderr = (msg: string) => captured.push(msg);
+    const { orOpts } = translateOptions({ openRouter: defaultExtras, stderr }, "hi");
+    orOpts.logger!("error", "OpenRouterAgentRun stream errored", {
+      message: "server_error: Internal Server Error",
+      detail: { responseId: "resp_abc" },
+    });
+    orOpts.logger!("warn", "no fields warn");
+    orOpts.logger!("warn", "empty fields warn", {});
+    expect(captured).toEqual([
+      'OpenRouterAgentRun stream errored {"message":"server_error: Internal Server Error","detail":{"responseId":"resp_abc"}}',
+      "no fields warn",
+      "empty fields warn",
+    ]);
+  });
+
   it("drops empty allowedTools/disallowedTools arrays", () => {
     const { orOpts } = translateOptions(
       { openRouter: defaultExtras, allowedTools: [], disallowedTools: [] },

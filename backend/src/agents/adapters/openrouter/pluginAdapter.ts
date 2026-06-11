@@ -34,10 +34,15 @@
 import { loadPlugins, type LoadedPlugin } from "@wolpertingerlabs/openrouter-agent-harness";
 import { extractPluginDirs } from "./optionsAdapter.js";
 
-/** Diagnostic logger shape shared across the OR adapter's plugin helpers. */
+/**
+ * Diagnostic logger shape shared across the OR adapter's plugin helpers.
+ * Mirrors the harness's `AgentLogger`: structured context (error messages,
+ * failure detail, retry telemetry) rides in the optional `fields` argument.
+ */
 export type OrAdapterLogger = (
   level: "debug" | "info" | "warn" | "error",
   message: string,
+  fields?: Record<string, unknown>,
 ) => void;
 
 /**
