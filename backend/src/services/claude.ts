@@ -1159,11 +1159,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               type: "tool_use",
               content: JSON.stringify(event.input),
               toolName: event.toolName,
+              ...(event.toolSource && { toolSource: event.toolSource }),
             } as StreamEvent);
             break;
 
           case "tool_result":
-            emitter.emit("event", { type: "tool_result", content: event.content } as StreamEvent);
+            emitter.emit("event", {
+              type: "tool_result",
+              content: event.content,
+              ...(event.toolSource && { toolSource: event.toolSource }),
+            } as StreamEvent);
             break;
 
           case "adapter_specific": {

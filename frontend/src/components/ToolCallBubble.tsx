@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
-import { getToolSummary, parseTodoItems, TodoList, MessageMetadata } from "./MessageBubble";
+import { getToolSummary, parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge } from "./MessageBubble";
 import MediaRenderer from "./MediaRenderer";
 import CanvasRenderer from "./CanvasRenderer";
 import JsonContentView from "./JsonContentView";
@@ -92,6 +92,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
           <span style={{ fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {toolName}
             {summary}
+            <ToolSourceBadge toolSource={toolUse.toolSource} />
           </span>
           {isRunning && (
             <RotateCw

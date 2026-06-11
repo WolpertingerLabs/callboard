@@ -43,6 +43,76 @@ describe("translateEvent — direct one-to-one mappings", () => {
   });
 });
 
+describe("translateEvent — server_tool fan-out", () => {
+  it("translates a server_tool event into a tool_use + tool_result pair with openrouter_server provenance", () => {
+    expect(
+      translateEvent({
+        type: "server_tool",
+        toolType: "openrouter:web_search",
+        callId: "st_ws_1",
+        status: "completed",
+        input: { query: "latest node lts" },
+        output: { results: [{ title: "Node.js", url: "https://nodejs.org" }] },
+        isError: false,
+      }),
+    ).toEqual([
+      {
+        type: "tool_use",
+        toolName: "web_search",
+        input: { query: "latest node lts" },
+        callId: "st_ws_1",
+        toolSource: "openrouter_server",
+      },
+      {
+        type: "tool_result",
+        callId: "st_ws_1",
+        content: JSON.stringify({ results: [{ title: "Node.js", url: "https://nodejs.org" }] }),
+        isError: false,
+        toolSource: "openrouter_server",
+      },
+    ]);
+  });
+
+  it("defaults input to {} and callId to '' when the event carries neither (datetime / web_fetch)", () => {
+    expect(
+      translateEvent({
+        type: "server_tool",
+        toolType: "openrouter:datetime",
+        status: "completed",
+        output: { datetime: "2026-05-27T10:03:00Z", timezone: "UTC" },
+        isError: false,
+      }),
+    ).toEqual([
+      {
+        type: "tool_use",
+        toolName: "datetime",
+        input: {},
+        callId: "",
+        toolSource: "openrouter_server",
+      },
+      {
+        type: "tool_result",
+        callId: "",
+        content: JSON.stringify({ datetime: "2026-05-27T10:03:00Z", timezone: "UTC" }),
+        isError: false,
+        toolSource: "openrouter_server",
+      },
+    ]);
+  });
+
+  it("flows isError through to the synthesized tool_result", () => {
+    const pair = translateEvent({
+      type: "server_tool",
+      toolType: "openrouter:web_fetch",
+      callId: "st_wf_1",
+      status: "completed",
+      output: { error: "404 not found" },
+      isError: true,
+    }) as Array<Record<string, unknown>>;
+    expect(pair[1]).toMatchObject({ type: "tool_result", isError: true });
+  });
+});
+
 describe("translateEvent — tool_result output stringification", () => {
   it("passes through string outputs verbatim", () => {
     expect(

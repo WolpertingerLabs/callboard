@@ -180,10 +180,19 @@ describe("parseOpenRouterState — openrouter:* server-side tools", () => {
       ],
     });
     expect(out).toEqual([
-      { role: "assistant", type: "tool_use", toolName: "datetime", content: "{}", toolUseId: "st_tmp_abc" },
+      {
+        role: "assistant",
+        type: "tool_use",
+        toolName: "datetime",
+        toolSource: "openrouter_server",
+        content: "{}",
+        toolUseId: "st_tmp_abc",
+      },
       {
         role: "user",
         type: "tool_result",
+        toolName: "datetime",
+        toolSource: "openrouter_server",
         content: JSON.stringify({
           datetime: "2026-05-26T17:49:00.474Z",
           timezone: "UTC",
@@ -205,9 +214,28 @@ describe("parseOpenRouterState — openrouter:* server-side tools", () => {
       ],
     });
     expect(out).toHaveLength(2);
-    expect(out[0]).toMatchObject({ type: "tool_use", toolName: "web_search" });
-    expect(out[1]).toMatchObject({ type: "tool_result" });
+    expect(out[0]).toMatchObject({ type: "tool_use", toolName: "web_search", toolSource: "openrouter_server" });
+    expect(out[1]).toMatchObject({ type: "tool_result", toolSource: "openrouter_server" });
     expect((out[1] as { content: string }).content).toContain("example.com");
+  });
+
+  it("recovers web_search's query from action.query as the tool_use input", () => {
+    const out = parseOpenRouterState({
+      messages: [
+        {
+          type: "openrouter:web_search",
+          id: "st_tmp_q",
+          status: "completed",
+          action: { query: "latest node lts" },
+          results: [],
+        },
+      ],
+    });
+    expect(out[0]).toMatchObject({
+      type: "tool_use",
+      toolName: "web_search",
+      content: JSON.stringify({ query: "latest node lts" }),
+    });
   });
 
   it("emits empty result content when the item carries no payload", () => {

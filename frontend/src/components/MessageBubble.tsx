@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
-import { Check, Copy, RotateCw, Square, X } from "lucide-react";
+import { Check, Copy, GitFork, RotateCw, Square, X } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import JsonContentView from "./JsonContentView";
@@ -41,12 +41,56 @@ export const TEAM_COLORS = [
   "#0ea5e9", // Sky
 ] as const;
 
+// Small pill marking tools executed on OpenRouter's servers (datetime /
+// web_search / web_fetch) rather than by the local agent process. Renders
+// nothing for local tools so call sites can include it unconditionally.
+export function ToolSourceBadge({ toolSource }: { toolSource?: ParsedMessage["toolSource"] }) {
+  if (toolSource !== "openrouter_server") return null;
+  return (
+    <span
+      title="Executed on OpenRouter's servers"
+      style={{
+        marginLeft: 6,
+        padding: "1px 6px",
+        borderRadius: 9999,
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: 0.5,
+        textTransform: "uppercase",
+        verticalAlign: "middle",
+        color: "var(--badge-info)",
+        background: "var(--badge-info-bg)",
+        flexShrink: 0,
+      }}
+    >
+      Server
+    </span>
+  );
+}
+
 // Generate contextual summary for tool usage
 export function getToolSummary(toolName: string, content: string): string {
   try {
     const input = JSON.parse(content);
 
     switch (toolName) {
+      // OpenRouter server tools — the model's input usually isn't preserved
+      // (content is "{}"), so fall back to a generic label when the
+      // recoverable fields are absent.
+      case "datetime":
+        return " - current date/time";
+      case "web_search":
+        return input.query ? ` - '${input.query}'` : " - web search";
+      case "web_fetch": {
+        if (input.url) {
+          try {
+            return ` - ${new URL(input.url).hostname}`;
+          } catch {
+            return ` - ${input.url}`;
+          }
+        }
+        return input.title ? ` - ${input.title}` : " - web fetch";
+      }
       case "Read":
         return input.file_path ? ` - ${input.file_path.split("/").pop()}` : "";
       case "Write":
@@ -178,6 +222,35 @@ function CopyButton({ text }: { text: string }) {
       }}
     >
       {copied ? <Check size={14} style={{ color: "var(--success)" }} /> : <Copy size={14} style={{ color: "var(--text-muted)" }} />}
+    </button>
+  );
+}
+
+function ForkButton({ onFork }: { onFork: () => void }) {
+  return (
+    <button
+      className="fork-btn"
+      onClick={(e) => {
+        e.stopPropagation();
+        onFork();
+      }}
+      title="Fork conversation from here"
+      style={{
+        position: "absolute",
+        top: 6,
+        right: 36,
+        padding: 4,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1,
+      }}
+    >
+      <GitFork size={14} style={{ color: "var(--text-muted)" }} />
     </button>
   );
 }
@@ -359,6 +432,8 @@ function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
 interface Props {
   message: ParsedMessage;
   teamColorMap?: Map<string, number>;
+  /** When set, shows a hover button that forks the conversation at this message. */
+  onFork?: () => void;
 }
 
 /** Format a millisecond delta as a human-readable duration */
@@ -500,7 +575,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   );
 }
 
-export default function MessageBubble({ message, teamColorMap }: Props) {
+export default function MessageBubble({ message, teamColorMap, onFork }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -625,6 +700,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
           <span style={{ fontWeight: 500 }}>
             Tool: {message.toolName || "unknown"}
             {getToolSummary(message.toolName || "", message.content)}
+            <ToolSourceBadge toolSource={message.toolSource} />
           </span>
           {expanded && <JsonContentView content={message.content} preStyle={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }} />}
         </div>
@@ -650,6 +726,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
             {expanded
               ? `Result${message.toolName ? `: ${message.toolName}` : ""}`
               : `Tool result${message.toolName ? `: ${message.toolName}` : ""} (tap to expand)`}
+            <ToolSourceBadge toolSource={message.toolSource} />
           </span>
           {expanded && (
             <JsonContentView
@@ -754,6 +831,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
         }}
       >
         <CopyButton text={message.content} />
+        {onFork && <ForkButton onFork={onFork} />}
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>

@@ -29,6 +29,7 @@ import {
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import type { AgentEvent, TokenUsage } from "../../ports/events.js";
 import { describeErrorCause, safeStringify } from "./logFields.js";
+import { serverToolName, serverToolOutputContent } from "./serverTools.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("openrouter-events");
@@ -52,7 +53,11 @@ export async function* translateOpenRouterEvents(
       eventCount++;
       logEvent(event);
       const translated = translateEvent(event);
-      if (translated) yield translated;
+      if (Array.isArray(translated)) {
+        yield* translated;
+      } else if (translated) {
+        yield translated;
+      }
     }
   } catch (err) {
     log.error(
@@ -103,6 +108,23 @@ function logEvent(event: AgentCoreEvent): void {
       }
       break;
     }
+    case "server_tool": {
+      const out = event.output;
+      const preview = (() => {
+        try {
+          return JSON.stringify(out)?.slice(0, 200) ?? String(out).slice(0, 200);
+        } catch {
+          return String(out).slice(0, 200);
+        }
+      })();
+      log.debug(
+        `event server_tool — toolType=${event.toolType}, callId=${event.callId ?? "(none)"}, status=${event.status}, isError=${event.isError}, preview=${JSON.stringify(preview)}`,
+      );
+      if (event.isError) {
+        log.warn(`server_tool error — toolType=${event.toolType}, callId=${event.callId ?? "(none)"}, output=${preview}`);
+      }
+      break;
+    }
     case "turn_start":
       log.debug(`event turn_start`);
       break;
@@ -150,9 +172,12 @@ function logEvent(event: AgentCoreEvent): void {
  * Pure translation of a single {@link AgentCoreEvent} — exported for unit
  * tests that don't want to drive a full run iterator. Returns `null` for
  * variants that should be dropped (turn starts, bridge errors, zero-cost
- * turn ends).
+ * turn ends). One variant fans out: `server_tool` carries both the invocation
+ * and its result in a single event, so it translates to a `tool_use` +
+ * `tool_result` PAIR (matching how the session/transcript parsers project
+ * these onto history — see serverTools.ts).
  */
-export function translateEvent(event: AgentCoreEvent): AgentEvent | null {
+export function translateEvent(event: AgentCoreEvent): AgentEvent | AgentEvent[] | null {
   switch (event.type) {
     case "session_started":
       return { type: "session_started", sessionId: event.sessionId };
@@ -172,6 +197,31 @@ export function translateEvent(event: AgentCoreEvent): AgentEvent | null {
         content: stringifyOutput(event.output),
         isError: event.isError,
       };
+    case "server_tool": {
+      // OpenRouter server tools (datetime / web_search / web_fetch) execute
+      // on OR's servers and arrive as a single event carrying both the
+      // invocation and its result. Synthesize the pair with provenance so
+      // live rendering matches what the transcript parser produces on
+      // refetch. `callId` may be absent (provider-supplied id) — fall back
+      // to "" to satisfy the neutral union; nothing downstream keys on it.
+      const callId = event.callId ?? "";
+      return [
+        {
+          type: "tool_use",
+          toolName: serverToolName(event.toolType),
+          input: event.input ?? {},
+          callId,
+          toolSource: "openrouter_server",
+        },
+        {
+          type: "tool_result",
+          callId,
+          content: serverToolOutputContent(event.output),
+          isError: event.isError,
+          toolSource: "openrouter_server",
+        },
+      ];
+    }
     case "stream_complete": {
       const usage = buildUsage(event);
       return {
