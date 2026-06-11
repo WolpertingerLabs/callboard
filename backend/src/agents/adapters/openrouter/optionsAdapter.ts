@@ -91,6 +91,15 @@ interface ClaudeShapedOptions {
   settingSources?: readonly SettingSource[];
   onHook?: OpenRouterAgentRunOptions["onHook"];
   onAskUserQuestion?: OpenRouterAgentRunOptions["onAskUserQuestion"];
+  /**
+   * Shared mutable cell claude.ts also closes `buildCanUseTool` over. Not
+   * consumed by translateOptions — OpenRouterAdapter threads it into the
+   * plugin hook dispatcher so a PreToolUse `ask` decision can stash its
+   * reason where the forwarded canUseTool will see it (and prompt the user
+   * instead of auto-approving). Declared here so the claude.ts ↔ OR-adapter
+   * options contract is visible in one place.
+   */
+  hookAskOverride?: { reason: string };
   stderr?: (data: string) => void;
   /**
    * MCP servers, two distinct shapes under one record:

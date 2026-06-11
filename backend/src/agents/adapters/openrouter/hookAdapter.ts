@@ -11,14 +11,22 @@
  * driven off the OR library's own loaded-plugin output so the two paths stay
  * independent.
  *
- * Scope note (the deferred follow-up flagged in OpenRouterAdapter.ts): this
- * implements the full dispatch plumbing AND bash-command execution. Each command
- * receives a Claude-shaped {@link HookInput} JSON on stdin and may emit a
- * {@link HookJSONOutput} JSON on stdout. The only PreToolUse decision honored
- * under OR is `deny`/`block` (mapped to the library's `{ action: "block" }`),
- * because the OR `onHook` contract has no `ask` channel — `ask` falls back to
- * `continue` (the surrounding canUseTool flow still gates the call). Hook
- * `modify` output is not yet surfaced; that and `ask` are remaining gaps.
+ * Scope note: this implements the full dispatch plumbing AND bash-command
+ * execution. Each command receives a Claude-shaped {@link HookInput} JSON on
+ * stdin and may emit a {@link HookJSONOutput} JSON on stdout. PreToolUse
+ * decisions honored under OR:
+ *
+ * - `deny`/`block` → the library's `{ action: "block" }` (tool never runs).
+ * - `ask` → stash the reason on the shared {@link HookContext.hookAskOverride}
+ *   and continue. The OR `onHook` contract has no `ask` channel, but it
+ *   doesn't need one: in the harness, PreToolUse hooks fire BEFORE canUseTool
+ *   (the hook wrapper composes OUTSIDE the permission wrapper — see harness
+ *   agent.ts `wrapTool`), and the canUseTool callboard forwards to the OR run
+ *   is the SAME buildCanUseTool product the Claude path uses, which checks
+ *   the override, skips auto-approval, and prompts the user. Identical
+ *   stash-then-check sequencing to the Claude path.
+ * - `hookSpecificOutput.updatedInput` → the library's `{ action: "modify",
+ *   input }` (the substituted input is what canUseTool and the tool see).
  */
 import { execFile } from "node:child_process";
 import {
@@ -45,6 +53,13 @@ interface HookContext {
   getSessionId: () => string;
   cwd: string;
   logger?: OrAdapterLogger;
+  /**
+   * Shared mutable cell claude.ts threads through the options blob (same
+   * object instance buildCanUseTool closes over). A PreToolUse hook that
+   * decides `ask` writes its reason here; the forwarded canUseTool sees a
+   * non-empty reason, skips auto-approval, prompts the user, and resets it.
+   */
+  hookAskOverride?: { reason: string };
 }
 
 /**
@@ -103,6 +118,12 @@ export function buildOpenRouterHookDispatcher(
     const toolName = toolNameForEvent(payload);
     const input = buildHookInput(event, payload, ctx);
 
+    // Last `updatedInput` seen across matching hooks. Held until the loop
+    // ends so a later hook's deny still wins over an earlier hook's modify
+    // (parity with the Claude SDK, which runs every matching hook before
+    // acting on the merged output).
+    let pendingModify: PreToolUseAction | undefined;
+
     for (const hook of hooks) {
       if (toolName !== undefined && !matchesTool(hook.matcher, toolName)) continue;
       const output = await runHookCommand(hook, input, ctx);
@@ -118,8 +139,22 @@ export function buildOpenRouterHookDispatcher(
             "Blocked by plugin hook";
           return { action: "block", reason };
         }
+        if (decision === "ask" && ctx.hookAskOverride) {
+          // No `ask` action exists on the OR PreToolUseAction union — none is
+          // needed. Stash the reason and continue: the harness runs PreToolUse
+          // hooks before canUseTool, and the forwarded canUseTool (claude.ts
+          // buildCanUseTool) treats a non-empty override reason as "skip
+          // auto-approval, prompt the user" — exactly the Claude-path flow.
+          ctx.hookAskOverride.reason =
+            output.hookSpecificOutput?.permissionDecisionReason || "Hook requested user approval";
+        }
+        const updatedInput = output.hookSpecificOutput?.updatedInput;
+        if (updatedInput && typeof updatedInput === "object") {
+          pendingModify = { action: "modify", input: updatedInput };
+        }
       }
     }
+    return pendingModify;
   };
 }
 
@@ -186,7 +221,12 @@ function buildHookInput(
 interface HookJSONOutput {
   decision?: string;
   reason?: string;
-  hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+  hookSpecificOutput?: {
+    permissionDecision?: string;
+    permissionDecisionReason?: string;
+    /** Substituted tool input (Claude SDK PreToolUseHookSpecificOutput shape). */
+    updatedInput?: Record<string, unknown>;
+  };
 }
 
 /**

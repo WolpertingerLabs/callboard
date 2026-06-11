@@ -984,6 +984,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // emitter + tracking-id getter the Claude permission flow uses so the
     // question UI and answer path behave identically across providers.
     queryOpts.options.onAskUserQuestion = buildOnAskUserQuestion(emitter, () => trackingId, abortController.signal);
+    // Same shared ask-override cell buildCanUseTool (above) closes over. On
+    // the Claude path the SDK runs our hook callbacks, which stash into it
+    // directly; on the OR path the adapter runs plugin hooks itself, so it
+    // needs the cell to honor a PreToolUse "ask" decision. The harness fires
+    // PreToolUse hooks before canUseTool, so the stash-then-prompt sequencing
+    // matches the Claude path exactly.
+    queryOpts.options.hookAskOverride = hookAskOverride;
   }
 
   log.debug(`SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);
