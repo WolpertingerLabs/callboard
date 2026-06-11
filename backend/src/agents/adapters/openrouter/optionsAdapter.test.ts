@@ -255,6 +255,139 @@ describe("translateOptions — Claude option passthrough", () => {
   });
 });
 
+describe("translateOptions — env → skillEnv forwarding", () => {
+  it("forwards env entries as orOpts.skillEnv (the harness's only env surface)", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, env: { MCP_KEY_ALIAS: "agent-a", HOME: "/home/u" } },
+      "hi",
+    );
+    expect(orOpts.skillEnv).toEqual({ MCP_KEY_ALIAS: "agent-a", HOME: "/home/u" });
+  });
+
+  it("drops entries claude.ts unset via the `KEY: undefined` subprocess idiom", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, env: { KEEP: "yes", CLAUDECODE: undefined } },
+      "hi",
+    );
+    expect(orOpts.skillEnv).toEqual({ KEEP: "yes" });
+  });
+
+  it("leaves skillEnv undefined when no env is supplied", () => {
+    const { orOpts } = translateOptions({ openRouter: defaultExtras }, "hi");
+    expect(orOpts.skillEnv).toBeUndefined();
+  });
+});
+
+describe("translateOptions — MCP server translation", () => {
+  const inProcessServer = { tools: [{ type: "function", function: { name: "fake_tool" } }] };
+
+  it("splices in-process .tools bundles into orOpts.tools (unchanged behavior)", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, mcpServers: { "callboard-tools": inProcessServer } },
+      "hi",
+    );
+    // Default OR client tools + the bundled tool; never a bridge config.
+    expect(orOpts.tools?.some((t) => (t as { function?: { name?: string } }).function?.name === "fake_tool")).toBe(true);
+    expect(orOpts.mcpServers).toBeUndefined();
+  });
+
+  it("translates Claude stdio configs into harness bridge entries with args/env passthrough", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: defaultExtras,
+        mcpServers: {
+          drawlatch: { command: "npx", args: ["-y", "drawlatch"], env: { MCP_KEY_ALIAS: "default" } },
+        },
+      },
+      "hi",
+    );
+    expect(orOpts.mcpServers).toEqual([
+      {
+        transport: "stdio",
+        name: "drawlatch",
+        command: "npx",
+        args: ["-y", "drawlatch"],
+        env: { MCP_KEY_ALIAS: "default" },
+        source: "callboard:options",
+      },
+    ]);
+  });
+
+  it("omits args/env on stdio entries when the source config has none", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, mcpServers: { bare: { command: "/usr/bin/server" } } },
+      "hi",
+    );
+    expect(orOpts.mcpServers).toEqual([
+      { transport: "stdio", name: "bare", command: "/usr/bin/server", source: "callboard:options" },
+    ]);
+  });
+
+  it("translates http configs with headers passthrough", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: defaultExtras,
+        mcpServers: {
+          remote: { type: "http", url: "https://mcp.example.com/rpc", headers: { Authorization: "Bearer t" } },
+        },
+      },
+      "hi",
+    );
+    expect(orOpts.mcpServers).toEqual([
+      {
+        transport: "http",
+        name: "remote",
+        url: "https://mcp.example.com/rpc",
+        headers: { Authorization: "Bearer t" },
+        source: "callboard:options",
+      },
+    ]);
+  });
+
+  it("maps sse configs onto the http transport (harness bridge handles SSE fallback)", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, mcpServers: { legacy: { type: "sse", url: "https://sse.example.com" } } },
+      "hi",
+    );
+    expect(orOpts.mcpServers).toEqual([
+      { transport: "http", name: "legacy", url: "https://sse.example.com", source: "callboard:options" },
+    ]);
+  });
+
+  it("mixes in-process and external servers without cross-contamination", () => {
+    const stderrLines: string[] = [];
+    const { orOpts } = translateOptions(
+      {
+        openRouter: defaultExtras,
+        stderr: (msg: string) => stderrLines.push(msg),
+        mcpServers: {
+          "callboard-tools": inProcessServer,
+          external: { command: "node", args: ["server.js"] },
+        },
+      },
+      "hi",
+    );
+    expect(orOpts.tools?.some((t) => (t as { function?: { name?: string } }).function?.name === "fake_tool")).toBe(true);
+    expect(orOpts.mcpServers).toHaveLength(1);
+    expect(orOpts.mcpServers?.[0]).toMatchObject({ transport: "stdio", name: "external" });
+    expect(stderrLines.join("\n")).toContain("wired external MCP servers: external(stdio)");
+  });
+
+  it("still warns (and drops) genuinely untranslatable server shapes", () => {
+    const stderrLines: string[] = [];
+    const { orOpts } = translateOptions(
+      {
+        openRouter: defaultExtras,
+        stderr: (msg: string) => stderrLines.push(msg),
+        mcpServers: { mystery: { type: "websocket", address: "wss://x" } as never },
+      },
+      "hi",
+    );
+    expect(orOpts.mcpServers).toBeUndefined();
+    expect(stderrLines.join("\n")).toContain("unrecognized config shape: mystery");
+  });
+});
+
 describe("extractPluginDirs — plugin descriptor → loadPlugins dirs", () => {
   it("returns [] when no plugins are present", () => {
     expect(extractPluginDirs({})).toEqual([]);
