@@ -4,7 +4,7 @@
  * Provides tool definitions for display in the frontend chat UI.
  * Tool metadata is maintained as a parallel static structure mirroring
  * the actual tool definitions in callboard-tools.ts, proxy-tools.ts,
- * and agent-tools.ts.
+ * agent-tools.ts, and job-management-tools.ts.
  *
  * IMPORTANT: When adding/removing/modifying tools in the *-tools.ts files,
  * update the corresponding definitions here as well.
@@ -261,144 +261,105 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     serverLabel: "Callboard Tools",
     category: "platform",
   },
-  {
-    name: "list_jobs",
-    qualifiedName: "mcp__callboard-tools__list_jobs",
-    description: "List all job definitions (deterministic multi-step agent workflows).",
-    parameters: [],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "get_job",
-    qualifiedName: "mcp__callboard-tools__get_job",
-    description: "Read a job definition in full (steps, inputs, defaults).",
-    parameters: [{ name: "jobId", type: "string", description: "The job id (slug)", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "create_job",
-    qualifiedName: "mcp__callboard-tools__create_job",
-    description: "Create a reusable deterministic multi-step job from a JSON definition.",
-    parameters: [{ name: "definition_json", type: "string", description: "Full job definition as a JSON string", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "update_job",
-    qualifiedName: "mcp__callboard-tools__update_job",
-    description: "Replace a job definition (bumps version; in-flight runs unaffected).",
-    parameters: [
-      { name: "jobId", type: "string", description: "The job id to update", required: true },
-      { name: "definition_json", type: "string", description: "Full replacement definition as a JSON string", required: true },
-    ],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "delete_job",
-    qualifiedName: "mcp__callboard-tools__delete_job",
-    description: "Delete a job definition.",
-    parameters: [{ name: "jobId", type: "string", description: "The job id to delete", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "spawn_job",
-    qualifiedName: "mcp__callboard-tools__spawn_job",
-    description: "Spawn a run of a job — freezes the definition and starts the first step.",
-    parameters: [
-      { name: "jobId", type: "string", description: "The job id to spawn", required: true },
-      { name: "inputs", type: "object", description: "Values for the job's declared inputs", required: false },
-    ],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "list_job_runs",
-    qualifiedName: "mcp__callboard-tools__list_job_runs",
-    description: "List job runs with status and progress.",
-    parameters: [
-      { name: "jobId", type: "string", description: "Only runs of this job", required: false },
-      {
-        name: "status",
-        type: "enum",
-        description: "Only runs in this status",
-        required: false,
-        enumValues: ["running", "waiting_approval", "waiting_event", "sleeping", "paused", "succeeded", "failed", "cancelled"],
-      },
-      { name: "limit", type: "number", description: "Max results (default 20)", required: false },
-    ],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "get_job_run",
-    qualifiedName: "mcp__callboard-tools__get_job_run",
-    description: "Get a job run's full state: status, current step, history, step session chatIds.",
-    parameters: [{ name: "runId", type: "string", description: "The run id", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "respond_job_approval",
-    qualifiedName: "mcp__callboard-tools__respond_job_approval",
-    description: "Relay the user's approve/reject decision to a run waiting at an approval step.",
-    parameters: [
-      { name: "runId", type: "string", description: "The run id waiting for approval", required: true },
-      { name: "decision", type: "enum", description: "The user's decision", required: true, enumValues: ["approve", "reject"] },
-      { name: "comment", type: "string", description: "Optional comment recorded in the run history", required: false },
-    ],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "cancel_job_run",
-    qualifiedName: "mcp__callboard-tools__cancel_job_run",
-    description: "Cancel a job run (aborts any in-flight step session).",
-    parameters: [{ name: "runId", type: "string", description: "The run id to cancel", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "pause_job_run",
-    qualifiedName: "mcp__callboard-tools__pause_job_run",
-    description: "Pause a waiting/sleeping job run.",
-    parameters: [{ name: "runId", type: "string", description: "The run id to pause", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "resume_job_run",
-    qualifiedName: "mcp__callboard-tools__resume_job_run",
-    description: "Resume a paused job run.",
-    parameters: [{ name: "runId", type: "string", description: "The run id to resume", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "retry_job_step",
-    qualifiedName: "mcp__callboard-tools__retry_job_step",
-    description: "Retry the current step of a failed job run.",
-    parameters: [{ name: "runId", type: "string", description: "The failed run id to retry", required: true }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
 ];
+
+// ─── Job Management Tools ───────────────────────────────────────────
+// Shared definitions (job-management-tools.ts) injected on two servers:
+// regular chats get them on "callboard-tools", agent sessions on "callboard".
+
+function jobToolDefs(serverName: string, serverLabel: string, category: McpToolDefinition["category"]): McpToolDefinition[] {
+  const defs: Pick<McpToolDefinition, "name" | "description" | "parameters">[] = [
+    {
+      name: "list_jobs",
+      description: "List all job definitions (deterministic multi-step agent workflows).",
+      parameters: [],
+    },
+    {
+      name: "get_job",
+      description: "Read a job definition in full (steps, inputs, defaults).",
+      parameters: [{ name: "jobId", type: "string", description: "The job id (slug)", required: true }],
+    },
+    {
+      name: "create_job",
+      description: "Create a reusable deterministic multi-step job from a JSON definition.",
+      parameters: [{ name: "definition_json", type: "string", description: "Full job definition as a JSON string", required: true }],
+    },
+    {
+      name: "update_job",
+      description: "Replace a job definition (bumps version; in-flight runs unaffected).",
+      parameters: [
+        { name: "jobId", type: "string", description: "The job id to update", required: true },
+        { name: "definition_json", type: "string", description: "Full replacement definition as a JSON string", required: true },
+      ],
+    },
+    {
+      name: "delete_job",
+      description: "Delete a job definition.",
+      parameters: [{ name: "jobId", type: "string", description: "The job id to delete", required: true }],
+    },
+    {
+      name: "spawn_job",
+      description: "Spawn a run of a job — freezes the definition and starts the first step.",
+      parameters: [
+        { name: "jobId", type: "string", description: "The job id to spawn", required: true },
+        { name: "inputs", type: "object", description: "Values for the job's declared inputs", required: false },
+      ],
+    },
+    {
+      name: "list_job_runs",
+      description: "List job runs with status and progress.",
+      parameters: [
+        { name: "jobId", type: "string", description: "Only runs of this job", required: false },
+        {
+          name: "status",
+          type: "enum",
+          description: "Only runs in this status",
+          required: false,
+          enumValues: ["running", "waiting_approval", "waiting_event", "sleeping", "paused", "succeeded", "failed", "cancelled"],
+        },
+        { name: "limit", type: "number", description: "Max results (default 20)", required: false },
+      ],
+    },
+    {
+      name: "get_job_run",
+      description: "Get a job run's full state: status, current step, history, step session chatIds.",
+      parameters: [{ name: "runId", type: "string", description: "The run id", required: true }],
+    },
+    {
+      name: "respond_job_approval",
+      description: "Relay the user's approve/reject decision to a run waiting at an approval step.",
+      parameters: [
+        { name: "runId", type: "string", description: "The run id waiting for approval", required: true },
+        { name: "decision", type: "enum", description: "The user's decision", required: true, enumValues: ["approve", "reject"] },
+        { name: "comment", type: "string", description: "Optional comment recorded in the run history", required: false },
+      ],
+    },
+    {
+      name: "cancel_job_run",
+      description: "Cancel a job run (aborts any in-flight step session).",
+      parameters: [{ name: "runId", type: "string", description: "The run id to cancel", required: true }],
+    },
+    {
+      name: "pause_job_run",
+      description: "Pause a waiting/sleeping job run.",
+      parameters: [{ name: "runId", type: "string", description: "The run id to pause", required: true }],
+    },
+    {
+      name: "resume_job_run",
+      description: "Resume a paused job run.",
+      parameters: [{ name: "runId", type: "string", description: "The run id to resume", required: true }],
+    },
+    {
+      name: "retry_job_step",
+      description: "Retry the current step of a failed job run.",
+      parameters: [{ name: "runId", type: "string", description: "The failed run id to retry", required: true }],
+    },
+  ];
+  return defs.map((def) => ({ ...def, qualifiedName: `mcp__${serverName}__${def.name}`, serverName, serverLabel, category }));
+}
+
+const CHAT_JOB_TOOLS = jobToolDefs("callboard-tools", "Callboard Tools", "platform");
+const AGENT_JOB_TOOLS = jobToolDefs("callboard", "Callboard Agent", "agent");
 
 // ─── Proxy Tools (injected when proxy is configured) ────────────────
 
@@ -822,13 +783,16 @@ export function getMcpToolsManifest(context?: "chat" | "agent"): McpToolsRespons
   const tools: McpToolDefinition[] = [];
   const servers: McpToolServerInfo[] = [];
 
-  // 1. Callboard platform tools — always available
-  tools.push(...CALLBOARD_TOOLS);
+  // 1. Callboard platform tools — always available. Job management tools
+  //    ride on this server for regular chats; agent sessions get them on the
+  //    "callboard" agent server instead (see claude.ts).
+  const chatJobTools = context !== "agent" ? CHAT_JOB_TOOLS : [];
+  tools.push(...CALLBOARD_TOOLS, ...chatJobTools);
   servers.push({
     name: "callboard-tools",
     label: "Callboard Tools",
     category: "platform",
-    toolCount: CALLBOARD_TOOLS.length,
+    toolCount: CALLBOARD_TOOLS.length + chatJobTools.length,
     enabled: true,
   });
 
@@ -848,12 +812,12 @@ export function getMcpToolsManifest(context?: "chat" | "agent"): McpToolsRespons
 
   // 3. Agent tools — only for agent sessions
   if (context !== "chat") {
-    tools.push(...AGENT_TOOLS);
+    tools.push(...AGENT_TOOLS, ...AGENT_JOB_TOOLS);
     servers.push({
       name: "callboard",
       label: "Callboard Agent",
       category: "agent",
-      toolCount: AGENT_TOOLS.length,
+      toolCount: AGENT_TOOLS.length + AGENT_JOB_TOOLS.length,
       enabled: true,
     });
   }

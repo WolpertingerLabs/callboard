@@ -17,6 +17,7 @@ import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAge
 import { scaffoldWorkspace, compileSystemPrompt } from "./claude-compiler.js";
 import { executeAgent } from "./agent-executor.js";
 import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./agent-cron-jobs.js";
+import { buildJobManagementTools } from "./job-management-tools.js";
 import { scheduleJob, cancelJob } from "./cron-scheduler.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "./agent-triggers.js";
 import { getActivity, appendActivity } from "./agent-activity.js";
@@ -873,6 +874,17 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
           }
         },
       ),
+
+      // ── Jobs: deterministic multi-step workflows ──────────────────
+      // Definitions are reusable templates; spawning one creates a run — a
+      // persisted state machine driven by the backend job runner, with agent
+      // sessions doing the work inside steps. Shared with the chat-session
+      // callboard-tools server — see job-management-tools.ts.
+
+      ...buildJobManagementTools({
+        getCreatedBy: () => ({ kind: "agent", ref: agentAlias }),
+        via: "agent",
+      }),
     ],
   };
 }
