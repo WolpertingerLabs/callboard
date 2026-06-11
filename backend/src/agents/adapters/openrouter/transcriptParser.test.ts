@@ -252,6 +252,71 @@ describe("readOpenRouterTranscript — record projection", () => {
     expect(messages[0]!.content).toBe("hit one\nhit two");
   });
 
+  it("projects a server_tool record into a tool_use + tool_result pair with openrouter_server provenance", () => {
+    const sessionDir = writeTranscript([
+      {
+        v: 1,
+        sessionId: "sess",
+        ts: "2026-05-27T10:03:00Z",
+        kind: "server_tool",
+        toolType: "openrouter:web_search",
+        callId: "st_ws_1",
+        status: "completed",
+        input: { query: "latest node lts" },
+        output: { results: [{ title: "Node.js releases", url: "https://nodejs.org" }] },
+        isError: false,
+      },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)).toEqual([
+      {
+        role: "assistant",
+        type: "tool_use",
+        toolName: "web_search",
+        toolSource: "openrouter_server",
+        content: JSON.stringify({ query: "latest node lts" }),
+        toolUseId: "st_ws_1",
+        timestamp: "2026-05-27T10:03:00Z",
+      },
+      {
+        role: "user",
+        type: "tool_result",
+        toolName: "web_search",
+        toolSource: "openrouter_server",
+        content: JSON.stringify({ results: [{ title: "Node.js releases", url: "https://nodejs.org" }] }),
+        toolUseId: "st_ws_1",
+        timestamp: "2026-05-27T10:03:00Z",
+      },
+    ]);
+  });
+
+  it("falls back to '{}' tool_use content when a server_tool record has no recoverable input (datetime / web_fetch)", () => {
+    const sessionDir = writeTranscript([
+      {
+        v: 1,
+        sessionId: "sess",
+        ts: "t",
+        kind: "server_tool",
+        toolType: "openrouter:datetime",
+        status: "completed",
+        output: { datetime: "2026-05-27T10:03:00Z", timezone: "UTC" },
+        isError: false,
+      },
+    ]);
+    const messages = readOpenRouterTranscript(sessionDir)!;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ type: "tool_use", toolName: "datetime", content: "{}" });
+    // No callId on the record — toolUseId must be absent, not "".
+    expect(messages[0]!.toolUseId).toBeUndefined();
+    expect(messages[1]!.content).toContain("UTC");
+  });
+
+  it("skips server_tool records with no toolType (malformed line, defensive)", () => {
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "t", kind: "server_tool", status: "completed", output: {}, isError: false },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)).toEqual([]);
+  });
+
   it("projects compact record as a system message with subtype compact_boundary", () => {
     const sessionDir = writeTranscript([
       {

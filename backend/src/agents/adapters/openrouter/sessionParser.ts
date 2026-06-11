@@ -41,6 +41,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import { SERVER_TOOL_PREFIX, normalizeServerToolItem, serverToolToMessages } from "./serverTools.js";
 
 /** Loose typing of the on-disk state.json — only the fields we read. */
 interface RawState {
@@ -452,37 +453,11 @@ function translateItem(
   // `openrouter:web_search`, `openrouter:web_fetch`). These items carry both
   // the invocation AND the result inline — OR's server executed the tool
   // and persisted the result back into state.messages without a preceding
-  // `function_call`. Synthesize a tool_use/tool_result pair so the UI
-  // renders them the same way as client-side tool calls.
-  if (type && type.startsWith("openrouter:")) {
-    const toolName = type.slice("openrouter:".length);
-    const id = typeof obj.id === "string" ? obj.id : undefined;
-    // The result payload is whatever non-shape fields the item carries —
-    // for `datetime` that's `{ datetime, timezone }`; for `web_search`
-    // that's a results array; etc. Skip the standard envelope keys.
-    const payload: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (k !== "type" && k !== "id" && k !== "status") payload[k] = v;
-    }
-    const resultContent = Object.keys(payload).length === 0 ? "" : JSON.stringify(payload);
-    return [
-      {
-        role: "assistant",
-        type: "tool_use",
-        toolName,
-        // The model's input args aren't preserved by OR's server-side
-        // tools — we don't know what query was passed to web_search, for
-        // example. Show an empty object rather than fabricating.
-        content: "{}",
-        ...(id && { toolUseId: id }),
-      },
-      {
-        role: "user",
-        type: "tool_result",
-        content: resultContent,
-        ...(id && { toolUseId: id }),
-      },
-    ];
+  // `function_call`. Synthesize a tool_use/tool_result pair (stamped with
+  // `toolSource: "openrouter_server"`) so the UI renders them the same way
+  // as client-side tool calls, with a provenance badge.
+  if (type && type.startsWith(SERVER_TOOL_PREFIX)) {
+    return serverToolToMessages(normalizeServerToolItem(obj as { type: string } & Record<string, unknown>));
   }
 
   // Reasoning trace → thinking

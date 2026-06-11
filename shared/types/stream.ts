@@ -14,6 +14,12 @@ export interface StreamEvent {
     | "cleared";
   content: string;
   toolName?: string;
+  /**
+   * Where the tool executed — "openrouter_server" for OpenRouter server
+   * tools (datetime / web_search / web_fetch), "local"/absent for tools run
+   * by the agent process. Attached to "tool_use" / "tool_result" events.
+   */
+  toolSource?: "local" | "openrouter_server";
 
   input?: Record<string, unknown>;
   questions?: unknown[];

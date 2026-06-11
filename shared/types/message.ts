@@ -4,6 +4,13 @@ export interface ParsedMessage {
   content: string;
   toolName?: string;
   toolUseId?: string;
+  /**
+   * Where the tool executed: "local" for tools run by the agent process
+   * (Claude Code tools, MCP tools, OR function calls), "openrouter_server"
+   * for OpenRouter server tools (`openrouter:datetime`, `openrouter:web_search`,
+   * `openrouter:web_fetch`) executed on OpenRouter's servers. Absent ⇒ local.
+   */
+  toolSource?: "local" | "openrouter_server";
   isBuiltInCommand?: boolean;
   timestamp?: string;
   teamName?: string;

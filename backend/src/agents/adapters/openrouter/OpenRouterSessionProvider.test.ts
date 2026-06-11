@@ -279,12 +279,60 @@ describe("OpenRouterSessionProvider — parseSessionMessages", () => {
       { role: "assistant", type: "text", toolName: undefined },
       { role: "user", type: "text", toolName: undefined },
       { role: "assistant", type: "tool_use", toolName: "datetime" },
-      { role: "user", type: "tool_result", toolName: undefined },
+      { role: "user", type: "tool_result", toolName: "datetime" },
       { role: "assistant", type: "text", toolName: undefined },
     ]);
+    // Server-executed tools carry provenance so the UI can badge them.
+    expect(messages[3]!.toolSource).toBe("openrouter_server");
+    expect(messages[4]!.toolSource).toBe("openrouter_server");
     // The datetime payload should be in the tool_result content.
     expect(messages[4]!.content).toContain("2026-05-26T17:49:00.474Z");
     expect(messages[4]!.content).toContain("UTC");
+  });
+
+  it("renders server_tool transcript records with provenance (transcript-preferred path)", async () => {
+    const { writeFileSync } = await import("node:fs");
+    await pointSettingsAtTmp();
+    // Transcript present → it is preferred over state.json, so the pair must
+    // come out of the transcript's `server_tool` record, not the state items.
+    const sessionDir = writeSession("sess_st", { cwd: "/work" });
+    const records = [
+      { v: 1, sessionId: "sess_st", ts: "2026-05-27T10:00:00Z", kind: "user", text: "what day is it?" },
+      {
+        v: 1,
+        sessionId: "sess_st",
+        ts: "2026-05-27T10:00:01Z",
+        kind: "server_tool",
+        toolType: "openrouter:datetime",
+        callId: "st_dt_1",
+        status: "completed",
+        output: { datetime: "2026-05-27T10:00:01.000Z", timezone: "UTC" },
+        isError: false,
+      },
+      {
+        v: 1,
+        sessionId: "sess_st",
+        ts: "2026-05-27T10:00:02Z",
+        kind: "assistant",
+        turnNumber: 1,
+        requestId: "req_x",
+        model: "m",
+        text: "Today is Wednesday.",
+      },
+    ];
+    writeFileSync(join(sessionDir, "transcript.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+    const provider = new OpenRouterSessionProvider();
+    const messages = provider.parseSessionMessages(["sess_st"]);
+
+    expect(messages.map((m) => ({ role: m.role, type: m.type, toolName: m.toolName, toolSource: m.toolSource }))).toEqual([
+      { role: "user", type: "text", toolName: undefined, toolSource: undefined },
+      { role: "assistant", type: "tool_use", toolName: "datetime", toolSource: "openrouter_server" },
+      { role: "user", type: "tool_result", toolName: "datetime", toolSource: "openrouter_server" },
+      { role: "assistant", type: "text", toolName: undefined, toolSource: undefined },
+    ]);
+    expect(messages[1]!.toolUseId).toBe("st_dt_1");
+    expect(messages[2]!.content).toContain("UTC");
   });
 
   it("falls back to state-only parser when no request.json files exist (legacy / compacted)", async () => {
