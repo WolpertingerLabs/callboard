@@ -56,6 +56,27 @@ export function isOpenRouterConfigured(settings?: AgentSettings): boolean {
 }
 
 /**
+ * Resolve a user-defined OpenRouter model alias to its target slug.
+ *
+ * Lookup is case-insensitive on the alias name. An alias shadows a real
+ * model slug of the same name (custom overrides the OpenRouter namespace);
+ * anything that doesn't match an alias passes through unchanged, so raw
+ * slugs keep working everywhere aliases are accepted. Resolution is one hop
+ * by construction — the settings route rejects alias targets that are
+ * themselves aliases.
+ */
+export function resolveOpenRouterModel(value: string | undefined, settings?: AgentSettings): string | undefined {
+  if (!value) return value;
+  const aliases = (settings ?? loadSettings()).openRouterModelAliases;
+  if (!aliases) return value;
+  const needle = value.trim().toLowerCase();
+  for (const [alias, target] of Object.entries(aliases)) {
+    if (alias.trim().toLowerCase() === needle) return target;
+  }
+  return value;
+}
+
+/**
  * Build the subset of environment variables that should be injected into the
  * Claude Agent SDK subprocess to reflect user-configured API / auth / model
  * overrides. Empty/unset fields are omitted so that process.env (i.e. the

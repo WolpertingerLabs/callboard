@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getOpenRouterModels, type OpenRouterModelInfo } from "../api";
+import { getOpenRouterCatalog, type OpenRouterModelInfo, type OpenRouterModelAliasInfo } from "../api";
 
 interface Props {
   id?: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  /**
+   * Hide user-defined aliases from the dropdown. Used by the alias manager's
+   * target picker — alias targets must be real model slugs, not other aliases.
+   */
+  excludeAliases?: boolean;
 }
 
 const MAX_RESULTS = 50;
+
+// One dropdown row — either a user-defined alias (pinned first) or a model.
+type Entry = { kind: "alias"; alias: OpenRouterModelAliasInfo } | { kind: "model"; model: OpenRouterModelInfo };
 
 // Case-insensitive subsequence test: every char of `query` appears in `target`
 // in order (not necessarily contiguous). "claop" matches "anthropic/claude-opus".
@@ -46,17 +54,29 @@ const inputStyle: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
-export default function OpenRouterModelSelector({ id, value, onChange, placeholder }: Props) {
+const rowLabelStyle: React.CSSProperties = {
+  fontFamily: "monospace",
+  fontSize: 12,
+  color: "var(--text)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+export default function OpenRouterModelSelector({ id, value, onChange, placeholder, excludeAliases }: Props) {
   const [models, setModels] = useState<OpenRouterModelInfo[]>([]);
+  const [aliases, setAliases] = useState<OpenRouterModelAliasInfo[]>([]);
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getOpenRouterModels()
-      .then((m) => {
-        if (!cancelled) setModels(m);
+    getOpenRouterCatalog()
+      .then(({ models: m, aliases: a }) => {
+        if (cancelled) return;
+        setModels(m);
+        setAliases(a);
       })
       .catch(() => {
         // Offline / not configured — the field still works as free text entry.
@@ -77,14 +97,21 @@ export default function OpenRouterModelSelector({ id, value, onChange, placehold
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, []);
 
+  // Aliases match on either the alias name or the target slug, and are
+  // pinned above the model list so custom names surface first.
   const matches = useMemo(() => {
     const q = value.trim();
-    const filtered = q === "" ? models : models.filter((m) => isSubsequence(q, m.id));
-    return filtered.slice(0, MAX_RESULTS);
-  }, [models, value]);
+    const aliasMatches = excludeAliases ? [] : q === "" ? aliases : aliases.filter((a) => isSubsequence(q, a.alias) || isSubsequence(q, a.modelId));
+    const modelMatches = q === "" ? models : models.filter((m) => isSubsequence(q, m.id));
+    const entries: Entry[] = [
+      ...aliasMatches.map((alias) => ({ kind: "alias" as const, alias })),
+      ...modelMatches.map((model) => ({ kind: "model" as const, model })),
+    ];
+    return entries.slice(0, MAX_RESULTS);
+  }, [models, aliases, value, excludeAliases]);
 
-  const select = (model: OpenRouterModelInfo) => {
-    onChange(model.id);
+  const select = (entry: Entry) => {
+    onChange(entry.kind === "alias" ? entry.alias.alias : entry.model.id);
     setOpen(false);
   };
 
@@ -143,52 +170,55 @@ export default function OpenRouterModelSelector({ id, value, onChange, placehold
             boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
           }}
         >
-          {matches.map((m, i) => (
-            <div
-              key={m.id}
-              onMouseDown={(e) => {
-                // mousedown (not click) so it fires before the input blur.
-                e.preventDefault();
-                select(m);
-              }}
-              onMouseEnter={() => setHighlight(i)}
-              title={m.name}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                padding: "8px 12px",
-                cursor: "pointer",
-                background: i === highlight ? "var(--chatlist-item-active-bg)" : "transparent",
-                borderBottom: "1px solid var(--border)",
-              }}
-            >
-              <span
+          {matches.map((entry, i) => {
+            const key = entry.kind === "alias" ? `alias:${entry.alias.alias}` : entry.model.id;
+            const title = entry.kind === "alias" ? (entry.alias.name ?? entry.alias.modelId) : entry.model.name;
+            const promptPrice = entry.kind === "alias" ? entry.alias.promptPrice : entry.model.promptPrice;
+            const completionPrice = entry.kind === "alias" ? entry.alias.completionPrice : entry.model.completionPrice;
+            const hasPricing = promptPrice !== undefined && completionPrice !== undefined;
+            return (
+              <div
+                key={key}
+                onMouseDown={(e) => {
+                  // mousedown (not click) so it fires before the input blur.
+                  e.preventDefault();
+                  select(entry);
+                }}
+                onMouseEnter={() => setHighlight(i)}
+                title={title}
                 style={{
-                  fontFamily: "monospace",
-                  fontSize: 12,
-                  color: "var(--text)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  background: i === highlight ? "var(--chatlist-item-active-bg)" : "transparent",
+                  borderBottom: "1px solid var(--border)",
                 }}
               >
-                {m.id}
-              </span>
-              <span
-                title={`Pricing per 1M tokens — in: ${formatPrice(m.promptPrice)}, out: ${formatPrice(m.completionPrice)}`}
-                style={{
-                  flexShrink: 0,
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  fontVariantNumeric: "tabular-nums",
-                }}
-              >
-                {formatPrice(m.promptPrice)} / {formatPrice(m.completionPrice)}
-              </span>
-            </div>
-          ))}
+                {entry.kind === "alias" ? (
+                  <span style={rowLabelStyle}>
+                    <span style={{ color: "var(--accent)" }}>{entry.alias.alias}</span>
+                    <span style={{ color: "var(--text-muted)" }}> → {entry.alias.modelId}</span>
+                  </span>
+                ) : (
+                  <span style={rowLabelStyle}>{entry.model.id}</span>
+                )}
+                <span
+                  title={hasPricing ? `Pricing per 1M tokens — in: ${formatPrice(promptPrice)}, out: ${formatPrice(completionPrice)}` : "Pricing unknown"}
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 11,
+                    color: "var(--text-muted)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {hasPricing ? `${formatPrice(promptPrice)} / ${formatPrice(completionPrice)}` : "—"}
+                </span>
+              </div>
+            );
+          })}
           <div style={{ padding: "4px 12px", fontSize: 10, color: "var(--text-muted)", textAlign: "right" }}>in / out per 1M tokens</div>
         </div>
       )}

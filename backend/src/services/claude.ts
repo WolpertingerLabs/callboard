@@ -20,7 +20,14 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
-import { getAgentSettings, getActiveMcpConfigDir, resolveAgentKeyAlias, getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
+import {
+  getAgentSettings,
+  getActiveMcpConfigDir,
+  resolveAgentKeyAlias,
+  getApiEnvOverrides,
+  getClaudeCodeExecutablePath,
+  resolveOpenRouterModel,
+} from "./agent-settings.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -927,8 +934,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
     // Per-chat model override (from tool params, persisted to metadata) takes
     // precedence over the global default. Covers new chats (just written above)
-    // and resumed chats (loaded from disk).
-    const chatModel = (initialMetadata.model as string | undefined) || agentSettings.openRouterModel;
+    // and resumed chats (loaded from disk). Metadata stores the user-facing
+    // value — possibly a custom alias like "low coder" — resolved to a real
+    // slug here on every session start, so re-pointing an alias in Settings
+    // applies to existing chats too.
+    const requestedModel = (initialMetadata.model as string | undefined) || agentSettings.openRouterModel;
+    const chatModel = resolveOpenRouterModel(requestedModel, agentSettings);
     queryOpts.options.openRouter = {
       apiKey,
       ...(agentSettings.openRouterBaseUrl && { baseUrl: agentSettings.openRouterBaseUrl }),
@@ -942,7 +953,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       appTitle: "callboard",
     };
     log.info(
-      `OpenRouter chat config — trackingId=${trackingId}, model=${chatModel ?? "(default)"}, ` +
+      `OpenRouter chat config — trackingId=${trackingId}, model=${chatModel ?? "(default)"}` +
+        `${requestedModel && requestedModel !== chatModel ? ` (alias "${requestedModel}")` : ""}, ` +
         `effort=${chatEffort ?? "(unset)"}, ` +
         `maxBudgetUsd=${queryOpts.options.openRouter.maxBudgetUsd ?? "(library default)"}, ` +
         `baseUrl=${queryOpts.options.openRouter.baseUrl ?? "(default)"}, ` +
@@ -1008,9 +1020,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               log.warn(`Session ${trackingId} ended: max budget reached`);
             } else if (event.status === "error") {
               errorDetail = event.reason || "The model provider returned an error response.";
-              log.error(
-                `Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`,
-              );
+              log.error(`Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`);
             }
             if (typeof event.usage?.costUsd === "number") {
               lastCostUsd = event.usage.costUsd;
@@ -1166,9 +1176,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         chatFileService.updateChat(trackingId, {});
         emitter.emit("event", { type: "done", content: "", reason: "aborted" } as StreamEvent);
       } else {
-        log.error(
-          `Session ${trackingId} (provider=${providerKind}) error: ${err.message}${err.stack ? `\n${err.stack}` : ""}`,
-        );
+        log.error(`Session ${trackingId} (provider=${providerKind}) error: ${err.message}${err.stack ? `\n${err.stack}` : ""}`);
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {
