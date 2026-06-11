@@ -14,7 +14,7 @@ import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir, getAgentWorkspacePath } from "./agent-file-service.js";
-import { scaffoldWorkspace, compileIdentityPrompt, compileWorkspaceContext } from "./claude-compiler.js";
+import { scaffoldWorkspace, compileSystemPrompt } from "./claude-compiler.js";
 import { executeAgent } from "./agent-executor.js";
 import { listCronJobs, createCronJob, updateCronJob, deleteCronJob } from "./agent-cron-jobs.js";
 import { scheduleJob, cancelJob } from "./cron-scheduler.js";
@@ -109,10 +109,8 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
             }
 
             // 3. Compile target agent's identity and workspace context
-            const identityPrompt = compileIdentityPrompt(targetConfig);
             const workspacePath = getAgentWorkspacePath(args.targetAlias);
-            const workspaceContext = compileWorkspaceContext(workspacePath);
-            const fullSystemPrompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
+            const fullSystemPrompt = compileSystemPrompt(targetConfig, workspacePath).prompt;
 
             // 4. Build prompt with caller context
             const callerConfig = getAgent(agentAlias);

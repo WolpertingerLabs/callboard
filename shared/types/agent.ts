@@ -40,3 +40,33 @@ export interface AgentConfig {
   // Frontend reads this; on write the backend routes it to the correct per-mode field.
   mcpKeyAlias?: string;
 }
+
+/** One section of the compiled per-agent system prompt append. */
+export interface SystemPromptSection {
+  /** Stable identifier: "identity", a workspace filename ("SOUL.md"), or a journal path ("memory/2026-06-11.md") */
+  key: string;
+  /** Human-readable label, e.g. "Agent Identity", "Soul & Personality" */
+  label: string;
+  source: "agent.json" | "workspace" | "memory-journal";
+  /** The section's contribution, exactly as embedded in the prompt. Empty when not included. */
+  content: string;
+  chars: number;
+  /** chars / 4, rounded */
+  estTokens: number;
+  /** False when the file is missing/empty and therefore omitted from the prompt */
+  included: boolean;
+}
+
+/** Response of GET /api/agents/:alias/system-message-preview */
+export interface SystemMessagePreview {
+  sections: SystemPromptSection[];
+  /** The full assembled append string — identical to what sessions receive */
+  fullPrompt: string;
+  /** Measured on fullPrompt (separators/headers count), not the sum of sections */
+  totalChars: number;
+  totalEstTokens: number;
+  notes: {
+    basePrompt: string;
+    runtimeAdditions: string;
+  };
+}

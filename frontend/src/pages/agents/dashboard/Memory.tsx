@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 // useOutletContext removed — agent is now passed as a prop
-import { Save, FileText, Calendar, ChevronRight, Check } from "lucide-react";
+import { Save, FileText, Calendar, ChevronRight, Check, ScrollText } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { getWorkspaceFiles, getWorkspaceFile, updateWorkspaceFile, getAgentMemory, getAgentDailyMemory } from "../../../api";
-import type { AgentConfig } from "../../../api";
+import { getWorkspaceFiles, getWorkspaceFile, updateWorkspaceFile, getAgentMemory, getAgentDailyMemory, getAgentSystemMessagePreview } from "../../../api";
+import type { AgentConfig, SystemMessagePreview as SystemMessagePreviewData } from "../../../api";
+import SystemMessagePreview, { formatTokenCount } from "./SystemMessagePreview";
 
 const FILE_LABELS: Record<string, string> = {
   "SOUL.md": "Soul & Personality",
@@ -37,6 +38,20 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [dailyContent, setDailyContent] = useState("");
   const [showDaily, setShowDaily] = useState(false);
+
+  // System message preview
+  const [preview, setPreview] = useState<SystemMessagePreviewData | null>(null);
+  const [showSystemMessage, setShowSystemMessage] = useState(false);
+
+  const refreshPreview = useCallback(() => {
+    getAgentSystemMessagePreview(agent.alias)
+      .then(setPreview)
+      .catch(() => setPreview(null));
+  }, [agent.alias]);
+
+  useEffect(() => {
+    refreshPreview();
+  }, [refreshPreview]);
 
   // Load workspace file list
   useEffect(() => {
@@ -99,12 +114,13 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
       setOriginalContent(content);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      refreshPreview();
     } catch {
       // ignore
     } finally {
       setSaving(false);
     }
-  }, [agent.alias, selectedFile, content, hasChanges]);
+  }, [agent.alias, selectedFile, content, hasChanges, refreshPreview]);
 
   // Ctrl+S shortcut
   useEffect(() => {
@@ -139,6 +155,76 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
               marginBottom: 8,
             }}
           >
+            System Message
+          </h3>
+          <div
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              overflow: "hidden",
+              marginBottom: 16,
+            }}
+          >
+            <button
+              onClick={() => {
+                setShowSystemMessage(true);
+                setShowDaily(false);
+              }}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "10px 14px",
+                background: showSystemMessage ? "var(--bg-secondary)" : "transparent",
+                textAlign: "left",
+                cursor: "pointer",
+                transition: "background 0.1s",
+              }}
+              onMouseEnter={(e) => {
+                if (!showSystemMessage) e.currentTarget.style.background = "var(--bg-secondary)";
+              }}
+              onMouseLeave={(e) => {
+                if (!showSystemMessage) e.currentTarget.style.background = "transparent";
+              }}
+            >
+              <ScrollText size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>Preview</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  Sent with every session
+                </div>
+              </div>
+              {preview && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    color: "var(--accent)",
+                    background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                    padding: "2px 6px",
+                    borderRadius: 6,
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  {formatTokenCount(preview.totalEstTokens)}
+                </span>
+              )}
+            </button>
+          </div>
+
+          <h3
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--text-muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              marginBottom: 8,
+            }}
+          >
             Workspace Files
           </h3>
           <div
@@ -156,6 +242,7 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
                 onClick={() => {
                   setSelectedFile(file);
                   setShowDaily(false);
+                  setShowSystemMessage(false);
                 }}
                 style={{
                   width: "100%",
@@ -163,17 +250,17 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
                   alignItems: "center",
                   gap: 8,
                   padding: "10px 14px",
-                  background: selectedFile === file && !showDaily ? "var(--bg-secondary)" : "transparent",
+                  background: selectedFile === file && !showDaily && !showSystemMessage ? "var(--bg-secondary)" : "transparent",
                   borderBottom: i < files.length - 1 ? "1px solid var(--border)" : "none",
                   textAlign: "left",
                   cursor: "pointer",
                   transition: "background 0.1s",
                 }}
                 onMouseEnter={(e) => {
-                  if (selectedFile !== file || showDaily) e.currentTarget.style.background = "var(--bg-secondary)";
+                  if (selectedFile !== file || showDaily || showSystemMessage) e.currentTarget.style.background = "var(--bg-secondary)";
                 }}
                 onMouseLeave={(e) => {
-                  if (selectedFile !== file || showDaily) e.currentTarget.style.background = "transparent";
+                  if (selectedFile !== file || showDaily || showSystemMessage) e.currentTarget.style.background = "transparent";
                 }}
               >
                 <FileText size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
@@ -219,6 +306,7 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
                   onClick={() => {
                     setSelectedDate(file);
                     setShowDaily(true);
+                    setShowSystemMessage(false);
                   }}
                   style={{
                     width: "100%",
@@ -246,7 +334,9 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
 
         {/* Editor area */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          {showDaily && selectedDate ? (
+          {showSystemMessage ? (
+            <SystemMessagePreview preview={preview} />
+          ) : showDaily && selectedDate ? (
             <>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                 <div>

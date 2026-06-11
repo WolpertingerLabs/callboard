@@ -31,7 +31,7 @@ export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from 
 
 export type { SessionStatus } from "./session.js";
 
-export type { AgentConfig } from "./agent.js";
+export type { AgentConfig, SystemPromptSection, SystemMessagePreview } from "./agent.js";
 
 export type {
   CronAction,
