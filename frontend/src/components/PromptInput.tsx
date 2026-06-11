@@ -1,7 +1,18 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { ArrowUp, Paperclip, Edit, ImageIcon } from "lucide-react";
+import { ArrowUp, Paperclip, Edit, ImageIcon, Menu } from "lucide-react";
 import ImageUpload, { ALLOWED_IMAGE_TYPES, validateImageFiles } from "./ImageUpload";
 import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
+
+export interface PromptMenuItem {
+  key: string;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  /** Accent styling — e.g. a pending model/effort change awaiting the next message. */
+  active?: boolean;
+  title?: string;
+}
 
 interface Props {
   onSend: (prompt: string, images?: File[]) => void;
@@ -11,19 +22,61 @@ interface Props {
   commandDescriptions?: Record<string, string>;
   onSetValue?: (setValue: (value: string) => void) => void;
   /**
-   * Optional extra action(s) rendered to the LEFT of the Save Draft / Send
-   * buttons. Used by Chat.tsx to mount the OpenRouter model/effort picker
-   * toggle next to the send button per the design note: model selection
-   * should be toggle-able, not always-visible in the message area.
+   * Optional extra entries for the hamburger menu next to the Send button.
+   * Used by Chat.tsx to mount the OpenRouter model/effort picker per the
+   * design note: model selection should be toggle-able, not always-visible
+   * in the message area. Save-as-draft is a built-in entry (when onSaveDraft
+   * is provided); these render below it.
    */
-  extraActions?: React.ReactNode;
+  menuItems?: PromptMenuItem[];
 }
 
-export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], commandDescriptions, onSetValue, extraActions }: Props) {
+function MenuRow({ icon, label, onClick, disabled, active, title }: Omit<PromptMenuItem, "key">) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        width: "100%",
+        minHeight: 44,
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: "none",
+        background: active ? "var(--accent)" : "transparent",
+        color: disabled ? "var(--text-muted)" : active ? "var(--text-on-accent)" : "var(--text)",
+        fontSize: 14,
+        textAlign: "left",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.6 : 1,
+        transition: "background 0.15s ease",
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled && !active) {
+          e.currentTarget.style.background = "var(--bg-secondary)";
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!active) {
+          e.currentTarget.style.background = "transparent";
+        }
+      }}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], commandDescriptions, onSetValue, menuItems = [] }: Props) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [autocompleteDismissed, setAutocompleteDismissed] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -160,6 +213,22 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
 
   const canSend = (value.trim() || images.length > 0) && !disabled;
 
+  const hasMenu = Boolean(onSaveDraft) || menuItems.length > 0;
+  const menuHasActiveItem = menuItems.some((item) => item.active);
+
+  // Close the menu on Escape
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        textareaRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
+
   return (
     <div
       style={{
@@ -287,34 +356,98 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
           </button>
         </div>
 
-        {/* Caller-supplied extra actions (e.g. model/effort toggle on OR chats) */}
-        {extraActions}
-
-        {/* Save Draft button */}
-        {onSaveDraft && (
-          <button
-            onClick={handleSaveDraft}
-            disabled={!value.trim() || disabled}
-            style={{
-              background: !value.trim() || disabled ? "var(--border)" : "var(--bg-secondary)",
-              color: !value.trim() || disabled ? "var(--text-muted)" : "var(--text)",
-              width: 40,
-              height: 40,
-              borderRadius: 10,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 16,
-              flexShrink: 0,
-              border: "1px solid var(--border)",
-              cursor: !value.trim() || disabled ? "default" : "pointer",
-              opacity: disabled ? 0.5 : 1,
-              transition: "all 0.2s ease",
-            }}
-            title="Save as draft"
-          >
-            <Edit size={16} />
-          </button>
+        {/* Hamburger menu — consolidates save-draft and caller-supplied
+            actions (e.g. model/effort picker on OR chats) into a single
+            button whose menu expands upward above the composer. */}
+        {hasMenu && (
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            {menuOpen && (
+              <>
+                {/* Click-away overlay */}
+                <div onClick={() => setMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: "calc(100% + 8px)",
+                    right: 0,
+                    minWidth: 220,
+                    zIndex: 51,
+                    padding: 4,
+                    borderRadius: 10,
+                    background: "var(--surface)",
+                    border: "1px solid var(--border)",
+                    boxShadow: "var(--shadow-md)",
+                  }}
+                >
+                  {/* Built-in save-draft entry, followed by caller-supplied
+                      entries (e.g. the OpenRouter model/effort picker). */}
+                  {onSaveDraft && (
+                    <MenuRow
+                      icon={<Edit size={16} />}
+                      label="Save as draft"
+                      title="Save as draft"
+                      disabled={!value.trim() || disabled}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        handleSaveDraft();
+                      }}
+                    />
+                  )}
+                  {menuItems.map((item) => (
+                    <MenuRow
+                      key={item.key}
+                      icon={item.icon}
+                      label={item.label}
+                      title={item.title}
+                      disabled={item.disabled}
+                      active={item.active}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        item.onClick();
+                      }}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+            <button
+              onClick={() => setMenuOpen((v) => !v)}
+              title="More actions"
+              style={{
+                background: menuOpen ? "var(--border)" : "var(--bg-secondary)",
+                color: "var(--text)",
+                width: 40,
+                height: 40,
+                borderRadius: 10,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 16,
+                flexShrink: 0,
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+                position: "relative",
+              }}
+            >
+              <Menu size={16} />
+              {/* Pending-change badge (e.g. model/effort change awaiting next message) */}
+              {menuHasActiveItem && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: -3,
+                    right: -3,
+                    width: 10,
+                    height: 10,
+                    borderRadius: "50%",
+                    background: "var(--accent)",
+                    border: "2px solid var(--bg)",
+                  }}
+                />
+              )}
+            </button>
+          </div>
         )}
 
         {/* Send button */}

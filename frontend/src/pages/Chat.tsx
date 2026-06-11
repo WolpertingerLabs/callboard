@@ -1659,8 +1659,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             )}
             {/* Provider badge — "OR" for OpenRouter, "CC" for Claude Code.
                 Model + effort selection has moved out of the header and into
-                a toggle next to the draft/send buttons (see PromptInput's
-                `extraActions` slot below). */}
+                the composer's hamburger menu (see PromptInput's `menuItems`
+                prop below). */}
             <ProviderBadge provider={chatProvider} />
             {/* Spend indicator — shown for OR chats whenever any cost data is
                 available. Derived from the live messages array so it updates
@@ -2695,10 +2695,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
       ) : (
         // Wrap the composer in a positioned container so the model/effort
-        // popover can anchor to the composer's edges (not the toggle button,
-        // which sits inside the composer with two other buttons to its right
-        // — anchoring to the toggle would push the popover off the left edge
-        // on narrow viewports).
+        // popover can anchor to the composer's edges (not the hamburger menu
+        // that opens it — anchoring to a button inside the composer would
+        // push the popover off the left edge on narrow viewports).
         <div style={{ position: "relative" }}>
           {modelPopoverOpen && chatProvider === "openrouter" && (
             <>
@@ -2751,37 +2750,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             slashCommands={allSlashCommands}
             commandDescriptions={pluginCommandDescriptions}
             onSetValue={setPromptInputSetValue}
-            extraActions={
-              chatProvider === "openrouter" && !streaming ? (
-                // Toggle button — opens the popover above the composer.
-                // Hidden while streaming so the model can't change mid-run;
-                // the header shows the active provider via ProviderBadge.
-                <button
-                  onClick={() => setModelPopoverOpen((v) => !v)}
-                  disabled={!id && streaming}
-                  title={
-                    pendingModel !== null || pendingEffort !== null
-                      ? "Model/effort change pending — applies on next message"
-                      : "Change model / reasoning effort for this chat"
-                  }
-                  style={{
-                    background: pendingModel !== null || pendingEffort !== null ? "var(--accent)" : "var(--bg-secondary)",
-                    color: pendingModel !== null || pendingEffort !== null ? "var(--text-on-accent)" : "var(--text)",
-                    width: 40,
-                    height: 40,
-                    borderRadius: 10,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                    border: "1px solid var(--border)",
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                  }}
-                >
-                  <SlidersHorizontal size={16} />
-                </button>
-              ) : undefined
+            menuItems={
+              chatProvider === "openrouter" && !streaming
+                ? [
+                    // Opens the model/effort popover above the composer.
+                    // Hidden while streaming so the model can't change
+                    // mid-run; the header shows the active provider via
+                    // ProviderBadge.
+                    {
+                      key: "model",
+                      icon: <SlidersHorizontal size={16} />,
+                      label: "Model & reasoning effort",
+                      onClick: () => setModelPopoverOpen(true),
+                      active: pendingModel !== null || pendingEffort !== null,
+                      title:
+                        pendingModel !== null || pendingEffort !== null
+                          ? "Model/effort change pending — applies on next message"
+                          : "Change model / reasoning effort for this chat",
+                    },
+                  ]
+                : []
             }
           />
         </div>
