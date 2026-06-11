@@ -817,6 +817,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const spec = buildCallboardToolsSpec(
       () => trackingId,
       () => opts.agentAlias,
+      // Agent sessions get the job management tools on the "callboard" agent
+      // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
+      { includeJobTools: !opts.agentAlias },
     );
     const server = agentProvider.buildToolServer(spec);
     if (server) {
