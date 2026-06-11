@@ -582,13 +582,15 @@ pre {
   position: relative;
 }
 
-.msg-bubble > .copy-btn {
+.msg-bubble > .copy-btn,
+.msg-bubble > .fork-btn {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
 }
 
-.msg-bubble:hover > .copy-btn {
+.msg-bubble:hover > .copy-btn,
+.msg-bubble:hover > .fork-btn {
   opacity: 1;
   pointer-events: auto;
 }

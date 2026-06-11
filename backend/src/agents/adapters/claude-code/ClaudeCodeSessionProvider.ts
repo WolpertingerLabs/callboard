@@ -10,9 +10,10 @@
  *
  * @see plans/agent-abstraction-layer.md
  */
-import { existsSync, readdirSync, statSync, unlinkSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
-import { join } from "path";
+import { dirname, join } from "path";
+import { randomUUID } from "node:crypto";
 import type {
   SessionProvider,
   DiscoverResult,
@@ -21,13 +22,7 @@ import type {
   SessionSearchFilters,
   SessionSearchResponse,
 } from "../../ports/SessionProvider.js";
-import {
-  readJsonlFile,
-  getFirstUserMessage,
-  parseMessages,
-  parseSubagentMessages,
-  buildSubagentMap,
-} from "./sessionParser.js";
+import { readJsonlFile, getFirstUserMessage, parseMessages, parseSubagentMessages, buildSubagentMap } from "./sessionParser.js";
 import { CLAUDE_PROJECTS_DIR, getIgnoredProjectDirPrefixes, isIgnoredProjectDir, listClaudeProjectDirs, projectDirToFolder } from "../../../utils/paths.js";
 import { searchChats } from "../../../utils/chat-search.js";
 import { resolveWorktreeToMainRepoCached } from "../../../utils/git.js";
@@ -282,6 +277,115 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
 
   searchSessions(filters: SessionSearchFilters): SessionSearchResponse {
     return searchChats(filters);
+  }
+
+  // ── Forking ─────────────────────────────────────────────────────────
+
+  /**
+   * Fork a session at a message timestamp by writing a truncated copy of
+   * the session JSONL under a new session ID. The Claude Agent SDK resumes
+   * sessions by reading `<projectDir>/<sessionId>.jsonl`, so a truncated
+   * copy with rewritten per-line `sessionId` fields is a fully resumable
+   * session in its own right.
+   */
+  forkSession(sessionIds: string[], cutoffTimestamp: string, newSessionId: string): { logPath: string } | null {
+    const cutoffMs = new Date(cutoffTimestamp).getTime();
+    if (isNaN(cutoffMs)) return null;
+
+    // Gather raw lines from all session files in order (multi-session
+    // chats concatenate chronologically, matching parseSessionMessages).
+    const lines: any[] = [];
+    let destDir: string | null = null;
+    const foundSessionIds: string[] = [];
+    for (const sid of sessionIds) {
+      const logPath = this._findLogPath(sid);
+      if (!logPath) continue;
+      destDir = dirname(logPath);
+      foundSessionIds.push(sid);
+      lines.push(...readJsonlFile(logPath));
+    }
+    if (!destDir || lines.length === 0) return null;
+
+    // Positional cutoff: everything up to and including the last line
+    // whose timestamp is at or before the fork point. Untimestamped lines
+    // (summary, queue-operation) ride along with their neighbors.
+    let cutoffIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].timestamp) continue;
+      const ts = new Date(lines[i].timestamp).getTime();
+      if (!isNaN(ts) && ts <= cutoffMs) cutoffIdx = i;
+    }
+    if (cutoffIdx === -1) return null;
+    const copied = lines.slice(0, cutoffIdx + 1);
+
+    // The cutoff line may carry tool_use blocks whose tool_result lines sit
+    // just past the cutoff — a resumed session must not have dangling
+    // tool_use, so extend forward through consecutive resolving lines.
+    const unresolved = new Set<string>();
+    const scanLine = (line: any) => {
+      const content = line.message?.content;
+      if (!Array.isArray(content)) return;
+      for (const block of content) {
+        if (block.type === "tool_use" && block.id) unresolved.add(block.id);
+        else if (block.type === "tool_result" && block.tool_use_id) unresolved.delete(block.tool_use_id);
+      }
+    };
+    for (const line of copied) scanLine(line);
+    for (let j = cutoffIdx + 1; unresolved.size > 0 && j < lines.length; j++) {
+      const content = lines[j].message?.content;
+      const resolves = Array.isArray(content) && content.some((b: any) => b.type === "tool_result" && unresolved.has(b.tool_use_id));
+      if (!resolves) break;
+      copied.push(lines[j]);
+      scanLine(lines[j]);
+    }
+
+    // Anything still unresolved (e.g. the original session was aborted
+    // mid-tool) gets a synthetic interrupted tool_result, mirroring what
+    // the SDK itself writes when a user interrupts a running tool.
+    let prevUuid: string | null = copied[copied.length - 1]?.uuid ?? null;
+    for (const toolUseId of unresolved) {
+      const uuid = randomUUID();
+      copied.push({
+        parentUuid: prevUuid,
+        isSidechain: false,
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: toolUseId, content: "[Request interrupted by user]", is_error: true }],
+        },
+        uuid,
+        timestamp: cutoffTimestamp,
+      });
+      prevUuid = uuid;
+    }
+
+    // Write the forked log with every line re-keyed to the new session ID.
+    const destPath = join(destDir, `${newSessionId}.jsonl`);
+    writeFileSync(destPath, copied.map((l) => JSON.stringify({ ...l, sessionId: newSessionId })).join("\n") + "\n");
+
+    // Copy subagent transcripts referenced by the copied lines so Task
+    // bubbles in the forked chat still expand. Display-only — the SDK
+    // doesn't read these on resume.
+    const referencedAgents = new Set<string>();
+    for (const line of copied) {
+      if (line.toolUseResult?.agentId) referencedAgents.add(line.toolUseResult.agentId);
+    }
+    if (referencedAgents.size > 0) {
+      const destSubagentsDir = join(destDir, newSessionId, "subagents");
+      for (const sid of foundSessionIds) {
+        for (const { agentId, filePath } of this._findSubagentFiles(sid)) {
+          if (!referencedAgents.has(agentId)) continue;
+          try {
+            mkdirSync(destSubagentsDir, { recursive: true });
+            copyFileSync(filePath, join(destSubagentsDir, `agent-${agentId}.jsonl`));
+          } catch (error) {
+            log.error(`Failed to copy subagent file for fork: ${error}`);
+          }
+        }
+      }
+    }
+
+    return { logPath: destPath };
   }
 
   // ── Deletion ────────────────────────────────────────────────────────

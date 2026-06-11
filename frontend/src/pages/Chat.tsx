@@ -34,6 +34,7 @@ import {
   markAsRead,
   getMcpTools,
   deleteDraft,
+  forkChat,
   type Chat as ChatType,
   type ParsedMessage,
   type Plugin,
@@ -260,6 +261,28 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
     return "claude-code";
   }, [id, newChatProvider, chat?.metadata]);
+
+  // Fork the conversation at a message: the backend copies session history
+  // up to and including that message into a new chat, which we navigate to.
+  // No agent run is started — the user sends the next message from there.
+  const forkingRef = useRef(false);
+  const handleFork = useCallback(
+    async (timestamp: string) => {
+      if (!id || forkingRef.current) return;
+      forkingRef.current = true;
+      try {
+        const newChat = await forkChat(id, timestamp);
+        onChatListRefresh?.();
+        navigate(`/chat/${newChat.id}`);
+      } catch (err) {
+        console.error("Failed to fork chat:", err);
+        window.alert(err instanceof Error ? err.message : "Failed to fork chat");
+      } finally {
+        forkingRef.current = false;
+      }
+    },
+    [id, navigate, onChatListRefresh],
+  );
 
   // Current per-chat OpenRouter model (from metadata). Empty string = no
   // override, chat falls back to the global default in Settings → API.
@@ -615,16 +638,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 getMessages(streamChatId!).then((msgs) => {
                   if (currentIdRef.current !== streamChatId) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
-                  const alreadyPersisted = msgArray
-                    .slice(-3)
-                    .some((m) => m.subtype === "session_error" && m.content === event.content);
+                  const alreadyPersisted = msgArray.slice(-3).some((m) => m.subtype === "session_error" && m.content === event.content);
                   setMessages(
-                    alreadyPersisted
-                      ? msgArray
-                      : [
-                          ...msgArray,
-                          { role: "system", type: "system", subtype: "session_error", content: event.content ?? "" },
-                        ],
+                    alreadyPersisted ? msgArray : [...msgArray, { role: "system", type: "system", subtype: "session_error", content: event.content ?? "" }],
                   );
                 });
                 return;
@@ -2534,9 +2550,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       </div>
                     );
                   }
+                  // Forkable: persisted conversational text messages on the
+                  // main timeline. Subagent messages and OpenRouter chats
+                  // (response-chained state can't be truncated) are excluded.
+                  const msgTimestamp = item.message.timestamp;
+                  const canFork = chatProvider !== "openrouter" && item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
-                      <MessageBubble message={item.message} teamColorMap={teamColorMap} />
+                      <MessageBubble message={item.message} teamColorMap={teamColorMap} onFork={canFork ? () => handleFork(msgTimestamp!) : undefined} />
                     </div>
                   );
                 })}
