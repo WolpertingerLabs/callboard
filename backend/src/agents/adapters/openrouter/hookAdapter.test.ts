@@ -102,6 +102,115 @@ describe("buildOpenRouterHookDispatcher", () => {
     expect(action).toBeUndefined();
   });
 
+  it("stashes the reason on hookAskOverride and continues when a hook decides 'ask'", async () => {
+    const hookAskOverride = { reason: "" };
+    const dispatcher = buildOpenRouterHookDispatcher(
+      [
+        pluginWithHooks("p", {
+          PreToolUse: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: `echo '{"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"needs human eyes"}}'`,
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+      { ...baseCtx, hookAskOverride },
+    )!;
+    const action = await dispatcher("PreToolUse", preToolUse("Bash"));
+    // No block/modify action — the tool call continues to canUseTool, which
+    // reads the stashed reason and prompts the user instead of auto-approving.
+    expect(action).toBeUndefined();
+    expect(hookAskOverride.reason).toBe("needs human eyes");
+  });
+
+  it("falls back to a default ask reason when the hook gives none", async () => {
+    const hookAskOverride = { reason: "" };
+    const dispatcher = buildOpenRouterHookDispatcher(
+      [
+        pluginWithHooks("p", {
+          PreToolUse: [
+            {
+              hooks: [
+                { type: "command", command: `echo '{"hookSpecificOutput":{"permissionDecision":"ask"}}'` },
+              ],
+            },
+          ],
+        }),
+      ],
+      { ...baseCtx, hookAskOverride },
+    )!;
+    await dispatcher("PreToolUse", preToolUse("Bash"));
+    expect(hookAskOverride.reason).toBe("Hook requested user approval");
+  });
+
+  it("ignores an 'ask' decision when no hookAskOverride cell was provided (continue)", async () => {
+    const dispatcher = buildOpenRouterHookDispatcher(
+      [
+        pluginWithHooks("p", {
+          PreToolUse: [
+            {
+              hooks: [
+                { type: "command", command: `echo '{"hookSpecificOutput":{"permissionDecision":"ask"}}'` },
+              ],
+            },
+          ],
+        }),
+      ],
+      baseCtx,
+    )!;
+    expect(await dispatcher("PreToolUse", preToolUse("Bash"))).toBeUndefined();
+  });
+
+  it("maps hookSpecificOutput.updatedInput to the library's modify action", async () => {
+    const dispatcher = buildOpenRouterHookDispatcher(
+      [
+        pluginWithHooks("p", {
+          PreToolUse: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: `echo '{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"ls -la"}}}'`,
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+      baseCtx,
+    )!;
+    const action = await dispatcher("PreToolUse", preToolUse("Bash"));
+    expect(action).toEqual({ action: "modify", input: { command: "ls -la" } });
+  });
+
+  it("lets a later hook's deny win over an earlier hook's updatedInput", async () => {
+    const dispatcher = buildOpenRouterHookDispatcher(
+      [
+        pluginWithHooks("p", {
+          PreToolUse: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: `echo '{"hookSpecificOutput":{"updatedInput":{"command":"ls"}}}'`,
+                },
+                { type: "command", command: `echo '{"decision":"block","reason":"nope"}'` },
+              ],
+            },
+          ],
+        }),
+      ],
+      baseCtx,
+    )!;
+    const action = await dispatcher("PreToolUse", preToolUse("Bash"));
+    expect(action).toEqual({ action: "block", reason: "nope" });
+  });
+
   it("continues (no block) on a non-zero exit / broken hook", async () => {
     const dispatcher = buildOpenRouterHookDispatcher(
       [

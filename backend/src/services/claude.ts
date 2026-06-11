@@ -984,6 +984,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // emitter + tracking-id getter the Claude permission flow uses so the
     // question UI and answer path behave identically across providers.
     queryOpts.options.onAskUserQuestion = buildOnAskUserQuestion(emitter, () => trackingId, abortController.signal);
+    // Same shared ask-override cell buildCanUseTool (above) closes over. On
+    // the Claude path the SDK runs our hook callbacks, which stash into it
+    // directly; on the OR path the adapter runs plugin hooks itself, so it
+    // needs the cell to honor a PreToolUse "ask" decision. The harness fires
+    // PreToolUse hooks before canUseTool, so the stash-then-prompt sequencing
+    // matches the Claude path exactly.
+    queryOpts.options.hookAskOverride = hookAskOverride;
   }
 
   log.debug(`SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);
@@ -1022,6 +1029,19 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // message totals. Either way, the latest value is the run total to
       // surface to the UI for the spend indicator + max_budget message.
       let lastCostUsd: number | undefined;
+
+      // The configured OR budget cap, resolved once so the mid-run `budget`
+      // events (from per-turn cost beacons) and the final `done` advertise
+      // the same ceiling. Surfaced on every `done` for OR chats so the UI
+      // can show "$0.84 of $1.00" even on successful completions, not just
+      // when max_budget fires. For Claude Code chats there's no equivalent
+      // cap to surface — stays undefined.
+      const orBudget =
+        providerKind === "openrouter"
+          ? typeof agentSettings.openRouterMaxBudgetUsd === "number" && Number.isFinite(agentSettings.openRouterMaxBudgetUsd)
+            ? agentSettings.openRouterMaxBudgetUsd
+            : OR_LIBRARY_DEFAULT_MAX_BUDGET_USD
+          : undefined;
 
       const conversation = agentProvider.query(queryOpts);
 
@@ -1151,9 +1171,27 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
             } as StreamEvent);
             break;
 
-          case "adapter_specific":
-            // Escape hatch for adapter-native events; no handling required today.
+          case "adapter_specific": {
+            // OR per-turn cost beacons → live `budget` StreamEvents. The
+            // harness reports the CUMULATIVE run cost at each turn boundary;
+            // forwarding it lets the UI move the spend indicator mid-run
+            // instead of waiting for `done`. Track it as lastCostUsd too so
+            // an abnormal end (e.g. abort before the result event) still has
+            // the freshest spend on hand.
+            if (event.adapter === "openrouter") {
+              const payload = event.payload as { kind?: string; costUsd?: number } | null;
+              if (payload?.kind === "turn_cost" && typeof payload.costUsd === "number") {
+                lastCostUsd = payload.costUsd;
+                emitter.emit("event", {
+                  type: "budget",
+                  content: "",
+                  costUsd: payload.costUsd,
+                  ...(typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
+                } as StreamEvent);
+              }
+            }
             break;
+          }
         }
       }
 
@@ -1174,16 +1212,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "cleared", content: "Conversation was cleared" } as StreamEvent);
       }
 
-      // The configured OR budget cap is included on every `done` for OR
-      // chats so the UI can show "$0.84 of $1.00" even on successful
-      // completions, not just when max_budget fires. For Claude Code chats
-      // there's no equivalent cap to surface — leave maxBudgetUsd undefined.
-      const orBudget =
-        providerKind === "openrouter"
-          ? typeof agentSettings.openRouterMaxBudgetUsd === "number" && Number.isFinite(agentSettings.openRouterMaxBudgetUsd)
-            ? agentSettings.openRouterMaxBudgetUsd
-            : OR_LIBRARY_DEFAULT_MAX_BUDGET_USD
-          : undefined;
+      // `orBudget` (hoisted above the event loop, shared with the mid-run
+      // `budget` emissions) rides on the `done` here so the final spend
+      // display always quotes the same cap the live indicator used.
       log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}, costUsd=${lastCostUsd ?? "n/a"}`);
       emitter.emit("event", {
         type: "done",

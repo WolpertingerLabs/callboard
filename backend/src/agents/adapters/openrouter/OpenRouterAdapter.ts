@@ -17,13 +17,13 @@
  *
  * Remaining deliberate non-wirings:
  *
- * - **Plugin-embedded + external MCP servers:** in-process callboard tool
- *   bundles cross over, but stdio/HTTP servers from `.mcp.json` (plugin or
- *   project) are still dropped — the OR MCP bridge wiring is a follow-up.
  * - **Server-side OR tools:** `web_search`, `web_fetch`, and `datetime`
  *   execute on OpenRouter's backend and cannot be gated by `canUseTool`.
- * - **Hook `ask`/`modify`:** plugin PreToolUse hooks can `deny`/`block` under
- *   OR, but the `ask` and `modify` decisions have no OR `onHook` channel yet.
+ * - **MCP allowlist patterns:** external stdio/http servers now ride the
+ *   harness's MCP bridge (see optionsAdapter's collectMcpTools), but the
+ *   claude path's `mcp__<server>__*` allowedTools patterns aren't translated
+ *   to the bridge's `<server>__<tool>` naming — bridge tools fall through to
+ *   the canUseTool prompt instead of auto-approving.
  *
  * @see plans/openrouter-adapter.md
  */
@@ -165,12 +165,20 @@ class OpenRouterAgentQuery implements AgentQuery {
 
     // ── Plugin hook dispatch: the OR library does not execute plugin hook
     // commands, so wire an onHook that does (composed with any passthrough).
+    // `hookAskOverride` is the shared mutable cell claude.ts also closes
+    // buildCanUseTool over — the dispatcher writes an "ask" reason into it
+    // and the forwarded canUseTool (which the harness invokes AFTER
+    // PreToolUse hooks) reads + resets it. Same object, same sequencing as
+    // the Claude path.
     const hasPassthroughHook = !!opts.onHook;
+    const hookAskOverride = (this.rawOptions as { hookAskOverride?: { reason: string } })
+      .hookAskOverride;
     const dispatcher = buildOpenRouterHookDispatcher(loadedPlugins, {
       getSessionId: () => opts.sessionId,
       cwd: this.cwd,
       ...(opts.signal && { signal: opts.signal }),
       ...(logger && { logger }),
+      ...(hookAskOverride && { hookAskOverride }),
     });
     const composed = composeOnHook(dispatcher, opts.onHook);
     if (composed) opts.onHook = composed;

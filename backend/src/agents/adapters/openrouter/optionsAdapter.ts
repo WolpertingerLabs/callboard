@@ -5,10 +5,13 @@
  * `claude.ts:sendMessage` builds a single loose `Record<string, unknown>` that
  * the Claude adapter consumes nearly verbatim. The OR adapter consumes the
  * same shape — fields with a direct equivalent map across (`cwd`, `maxTurns`,
- * `allowedTools`, `canUseTool`); Claude-specific fields are silently dropped
- * (`pathToClaudeCodeExecutable`, `plugins`, `mcpServers`, `env`); OR-specific
- * settings ride in via the `openRouter` sub-object claude.ts will populate
- * for OpenRouter chats (PR D).
+ * `allowedTools`, `canUseTool`, `mcpServers` — in-process bundles become
+ * tools, external stdio/http/sse configs become harness `mcpServers` bridge
+ * entries, see {@link collectMcpTools}); `env` is deliberately dropped (the
+ * harness is in-process — see the secret-leak note in
+ * {@link translateOptions}); truly Claude-specific fields are silently
+ * dropped (`pathToClaudeCodeExecutable`); OR-specific settings ride in via
+ * the `openRouter` sub-object claude.ts populates for OpenRouter chats.
  *
  * The `prompt` and `sessionId` are passed in separately rather than read off
  * the options Record — the port carries `prompt` on `AgentQueryRequest` and
@@ -21,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import {
   DEFAULT_INSTRUCTIONS,
   allTools,
+  type McpServerConfig,
   type OpenRouterAgentRunOptions,
   type SdkMcpServer,
   type SettingSource,
@@ -87,14 +91,35 @@ interface ClaudeShapedOptions {
   settingSources?: readonly SettingSource[];
   onHook?: OpenRouterAgentRunOptions["onHook"];
   onAskUserQuestion?: OpenRouterAgentRunOptions["onAskUserQuestion"];
+  /**
+   * Shared mutable cell claude.ts also closes `buildCanUseTool` over. Not
+   * consumed by translateOptions — OpenRouterAdapter threads it into the
+   * plugin hook dispatcher so a PreToolUse `ask` decision can stash its
+   * reason where the forwarded canUseTool will see it (and prompt the user
+   * instead of auto-approving). Declared here so the claude.ts ↔ OR-adapter
+   * options contract is visible in one place.
+   */
+  hookAskOverride?: { reason: string };
   stderr?: (data: string) => void;
   /**
-   * Callboard's MCP-server bundles built via {@link OpenRouterAdapter.buildToolServer}.
-   * Each value is an OR-shaped {@link SdkMcpServer} (Claude's shape is a
-   * superset; we tolerate the extra `type`/`command` fields by reading only
-   * `.tools` and ignoring the rest).
+   * MCP servers, two distinct shapes under one record:
+   *
+   * - In-process bundles built via {@link OpenRouterAdapter.buildToolServer}
+   *   — OR-shaped {@link SdkMcpServer}s whose `.tools` arrays we splice into
+   *   `orOpts.tools` directly (no bridge round-trip needed).
+   * - External server configs from `.mcp.json` / plugin manifests — Claude's
+   *   stdio shape (`{ command, args?, env? }`) or http/sse shape
+   *   (`{ type: "http" | "sse", url, headers? }`). These translate to the
+   *   harness's `mcpServers` bridge configs (see {@link collectMcpTools}).
    */
-  mcpServers?: Record<string, SdkMcpServer | { tools?: readonly unknown[] }>;
+  mcpServers?: Record<string, SdkMcpServer | ClaudeExternalMcpServer | { tools?: readonly unknown[] }>;
+  /**
+   * Subprocess environment the Claude path hands to the SDK CLI. The harness
+   * runs in-process, so there is no subprocess to populate — this field is
+   * accepted for shape compatibility and deliberately NOT forwarded (see the
+   * secret-leak note in {@link translateOptions}).
+   */
+  env?: Record<string, string | undefined>;
   /**
    * Claude-SDK-shaped plugin descriptors built by claude.ts#buildPluginOptions
    * (`{ type: "local", path, name }`). The Claude path forwards these to the SDK
@@ -210,12 +235,26 @@ export function translateOptions(
   if (opts.onAskUserQuestion) orOpts.onAskUserQuestion = opts.onAskUserQuestion;
   if (opts.abortController) orOpts.signal = opts.abortController.signal;
 
+  // `opts.env` is deliberately NOT forwarded. The Claude path needs it because
+  // the SDK runs as a CLI subprocess whose environment must be populated; the
+  // harness runs IN-PROCESS, so every place env actually matters is already
+  // covered: bash/monitor children and skill `` !`cmd` `` shell execution
+  // inherit process.env, and per-MCP-server env rides on each server's bridge
+  // config (translated below). The only remaining harness surface is
+  // `skillEnv` — values resolvable via generic `${VAR}` substitution in skill
+  // BODIES, i.e. rendered straight into the model prompt. claude.ts builds
+  // `opts.env` from the full process.env plus API-key overrides, and Claude
+  // Code does not substitute arbitrary env vars into skill bodies either, so
+  // forwarding it here would let any skill render `${OPENROUTER_API_KEY}`
+  // into a prompt — a secret-leak vector, not parity. skillEnv stays at its
+  // narrow library default (only the well-known `CLAUDE_*` keys resolve).
+
   // When callboard injects MCP server bundles (callboard-tools, mcp-proxy,
   // agent tools), surface their tools alongside OR's built-in client tools
   // (read_file, bash, …). Without this, supplying any custom `tools`
   // array would replace OR's defaults — the agent would lose its file/exec
   // primitives and the run would be useless.
-  const { tools: mcpTools, droppedServerNames } = collectMcpTools(opts.mcpServers);
+  const { tools: mcpTools, externalServers, droppedServerNames } = collectMcpTools(opts.mcpServers);
   if (mcpTools.length > 0) {
     // Build OR's built-in tools and forward the ask_user_question host handler,
     // then append callboard's MCP-bundled tools. Because callboard always
@@ -230,15 +269,31 @@ export function translateOptions(
       ...mcpTools,
     ];
   }
+  if (externalServers.length > 0) {
+    // External stdio/http/sse servers ride the harness's own MCP bridge: it
+    // spawns/connects them at run start, lists their tools over the
+    // `initialize` handshake, and merges the resulting bridge tools into the
+    // model's pool EVEN when a custom `tools` array (above) is supplied —
+    // agent.ts builds `initialPool = [...baseTools, ...bridgeTools]` where
+    // baseTools is the custom array. Per-server init failures are logged and
+    // skipped by the bridge; they never fail the run.
+    //
+    // Known asymmetry (not fixed here): the claude path auto-allowlists
+    // external servers as `mcp__<server>__*`, but the bridge names its tools
+    // `<server>__<tool>` — those allowedTools patterns don't match, so bridge
+    // tools aren't auto-approved and fall through to the canUseTool prompt.
+    // Allowlist-pattern translation is a follow-up.
+    orOpts.mcpServers = externalServers;
+    const summary = externalServers.map((s) => `${s.name}(${s.transport})`).join(", ");
+    log.info(`wired external MCP servers via harness bridge: ${summary}`);
+    if (opts.stderr) opts.stderr(`[openrouter] wired external MCP servers: ${summary}`);
+  }
   if (droppedServerNames.length > 0 && opts.stderr) {
-    // External stdio/http MCP servers from .mcp.json have shapes like
-    // `{ command, args, env }` or `{ url, headers }` — no in-process `.tools`
-    // array. The OR adapter has no equivalent transport in v1 (the
-    // openrouter-agent-harness library DOES support MCP, but wiring its
-    // bridge is deferred to a later PR). Surface dropped names so users
-    // can see why their external tools disappeared under OR.
+    // Only genuinely untranslatable shapes land here now: no in-process
+    // `.tools` array AND no recognizable stdio/http/sse config. Surface the
+    // names so users can see why a server's tools disappeared under OR.
     opts.stderr(
-      `[openrouter] dropped external MCP servers (no in-process tools): ${droppedServerNames.join(", ")}`,
+      `[openrouter] dropped MCP servers with unrecognized config shape: ${droppedServerNames.join(", ")}`,
     );
   }
 
@@ -263,7 +318,8 @@ export function translateOptions(
       `baseUrl=${orOpts.baseUrl ?? "(default)"}, logsRoot=${orOpts.logsRoot}, ` +
       `maxTurns=${orOpts.maxTurns ?? "(default)"}, persistSession=${orOpts.persistSession ?? "(default)"}, ` +
       `cwd=${cwd}, instructions=${orOpts.instructions ? `${orOpts.instructions.length}chars` : "(none)"}, ` +
-      `tools=${orOpts.tools?.length ?? 0}, allowedTools=${orOpts.allowedTools?.length ?? 0}, ` +
+      `tools=${orOpts.tools?.length ?? 0}, mcpServers=${orOpts.mcpServers?.length ?? 0}, ` +
+      `allowedTools=${orOpts.allowedTools?.length ?? 0}, ` +
       `disallowedTools=${orOpts.disallowedTools?.length ?? 0}`,
   );
 
@@ -313,13 +369,67 @@ function translatePrompt(
   })();
 }
 
-/**
- * Pull the `tools` arrays out of a Claude-shaped mcpServers record. Returns
- * a flat list typed as the OR `tools` array's element type, plus the names
- * of any servers whose shape has no in-process `.tools` (e.g. stdio/http
- * configs from `.mcp.json`) so the caller can surface a warning.
- */
 export type OrTool = NonNullable<OpenRouterAgentRunOptions["tools"]>[number];
+
+/**
+ * Claude-SDK-shaped EXTERNAL MCP server config, as claude.ts's
+ * buildMcpServerOptions emits them: stdio servers are `{ command, args?,
+ * env? }` (no `type` field — the SDK infers stdio from `command`), remote
+ * servers are `{ type: "http" | "sse", url, headers? }`. Extra fields (e.g.
+ * the `env` claude.ts attaches to remote entries for the CLI's `${VAR}`
+ * resolution) are tolerated and ignored where the harness has no slot for
+ * them.
+ */
+interface ClaudeExternalMcpServer {
+  type?: string;
+  command?: string;
+  args?: readonly string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * Synthetic `source` marker for harness {@link McpServerConfig}s built from
+ * callboard's options blob. The harness normally stamps the originating
+ * `.mcp.json` path here and uses it ONLY in log/notification context (see
+ * its src/mcp/bridge.ts failure paths) — there is no file for it to point at
+ * on this path, so a recognizable marker keeps the logs honest.
+ */
+const MCP_SOURCE_MARKER = "callboard:options";
+
+/**
+ * Translate one Claude-shaped external server config into a harness
+ * {@link McpServerConfig}, or `null` when the shape is unrecognizable.
+ *
+ * - stdio (`command` present) → `{ transport: "stdio", command, args?, env? }`
+ * - http/sse (`type` + `url`) → `{ transport: "http", url, headers? }` — the
+ *   harness has no separate SSE transport config; its bridge speaks
+ *   streamableHttp first and falls back to SSE on its own, so Claude's
+ *   `type: "sse"` entries map to the same http config.
+ */
+function translateExternalMcpServer(name: string, server: ClaudeExternalMcpServer): McpServerConfig | null {
+  if (typeof server.command === "string" && server.command.length > 0) {
+    return {
+      transport: "stdio",
+      name,
+      command: server.command,
+      ...(Array.isArray(server.args) && { args: [...server.args] as string[] }),
+      ...(server.env && typeof server.env === "object" && { env: { ...server.env } }),
+      source: MCP_SOURCE_MARKER,
+    };
+  }
+  if ((server.type === "http" || server.type === "sse") && typeof server.url === "string" && server.url.length > 0) {
+    return {
+      transport: "http",
+      name,
+      url: server.url,
+      ...(server.headers && typeof server.headers === "object" && { headers: { ...server.headers } }),
+      source: MCP_SOURCE_MARKER,
+    };
+  }
+  return null;
+}
 
 /**
  * Materialize OR's built-in client tool set (read_file, bash, …) bound
@@ -351,22 +461,40 @@ export function buildDefaultOrTools(
   );
 }
 
+/**
+ * Split a Claude-shaped mcpServers record into the three things the OR run
+ * can do with it:
+ *
+ * - `tools` — flattened `.tools` arrays from in-process bundles, spliced
+ *   straight into `orOpts.tools` (no bridge round-trip).
+ * - `externalServers` — harness {@link McpServerConfig}s translated from
+ *   external stdio/http/sse configs, destined for `orOpts.mcpServers`.
+ * - `droppedServerNames` — entries matching neither shape, so the caller can
+ *   surface a warning instead of silently losing them.
+ */
 function collectMcpTools(mcpServers: ClaudeShapedOptions["mcpServers"]): {
   tools: OrTool[];
+  externalServers: McpServerConfig[];
   droppedServerNames: string[];
 } {
-  if (!mcpServers) return { tools: [], droppedServerNames: [] };
+  if (!mcpServers) return { tools: [], externalServers: [], droppedServerNames: [] };
   const tools: OrTool[] = [];
+  const externalServers: McpServerConfig[] = [];
   const droppedServerNames: string[] = [];
   for (const [name, server] of Object.entries(mcpServers)) {
     const maybeTools = (server as { tools?: readonly unknown[] }).tools;
     if (Array.isArray(maybeTools)) {
       tools.push(...(maybeTools as OrTool[]));
+      continue;
+    }
+    const external = translateExternalMcpServer(name, server as ClaudeExternalMcpServer);
+    if (external) {
+      externalServers.push(external);
     } else {
       droppedServerNames.push(name);
     }
   }
-  return { tools, droppedServerNames };
+  return { tools, externalServers, droppedServerNames };
 }
 
 /**
