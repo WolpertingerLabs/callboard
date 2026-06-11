@@ -25,6 +25,8 @@ import type {
   AppPluginsData,
   ScanResult,
   AgentConfig,
+  SystemPromptSection,
+  SystemMessagePreview,
   CronJob,
   ActivityEntry,
   Trigger,
@@ -71,6 +73,8 @@ export type {
   AppPluginsData,
   ScanResult,
   AgentConfig,
+  SystemPromptSection,
+  SystemMessagePreview,
   CronJob,
   ActivityEntry,
   Trigger,
@@ -523,6 +527,12 @@ export async function getAgentIdentityPrompt(alias: string): Promise<string> {
   await assertOk(res, "Failed to get agent identity prompt");
   const data = await res.json();
   return data.prompt;
+}
+
+export async function getAgentSystemMessagePreview(alias: string): Promise<SystemMessagePreview> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/system-message-preview`, { credentials: "include" });
+  await assertOk(res, "Failed to get system message preview");
+  return res.json();
 }
 
 // Agent export/import API functions

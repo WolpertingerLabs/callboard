@@ -12,7 +12,7 @@ import {
   getAgentWorkspacePath,
   ensureAgentWorkspaceDir,
 } from "../services/agent-file-service.js";
-import { compileIdentityPrompt, compileWorkspaceContext, scaffoldWorkspace } from "../services/claude-compiler.js";
+import { compileSystemPrompt, scaffoldWorkspace } from "../services/claude-compiler.js";
 import { agentWorkspaceRouter } from "./agent-workspace.js";
 import { agentMemoryRouter } from "./agent-memory.js";
 import { agentCronJobsRouter } from "./agent-cron-jobs.js";
@@ -122,11 +122,34 @@ agentsRouter.get("/:alias/identity-prompt", (req: Request, res: Response): void 
     return;
   }
 
-  const identityPrompt = compileIdentityPrompt(agent);
   const workspacePath = getAgentWorkspacePath(alias);
-  const workspaceContext = compileWorkspaceContext(workspacePath);
-  const prompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
+  const prompt = compileSystemPrompt(agent, workspacePath).prompt;
   res.json({ prompt });
+});
+
+// System message preview — full append string plus a per-section breakdown with
+// size estimates, for the dashboard preview UI
+agentsRouter.get("/:alias/system-message-preview", (req: Request, res: Response): void => {
+  const alias = req.params.alias as string;
+  const agent = getAgent(alias);
+
+  if (!agent) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+
+  const workspacePath = getAgentWorkspacePath(alias);
+  const compiled = compileSystemPrompt(agent, workspacePath);
+  res.json({
+    sections: compiled.sections,
+    fullPrompt: compiled.prompt,
+    totalChars: compiled.totalChars,
+    totalEstTokens: compiled.totalEstTokens,
+    notes: {
+      basePrompt: "This content is appended to the provider's base system prompt (e.g. the Claude Code preset), whose size is not included here.",
+      runtimeAdditions: "When proxy mode is enabled, a listing of available API connections is also appended at session start.",
+    },
+  });
 });
 
 agentsRouter.get("/:alias", (req: Request, res: Response): void => {

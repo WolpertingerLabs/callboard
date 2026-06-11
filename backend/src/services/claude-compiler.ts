@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, copyFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import type { AgentConfig } from "shared";
+import type { AgentConfig, SystemPromptSection } from "shared";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // From backend/dist/services/ (or backend/src/services/ via tsx) → backend/src/scaffold
@@ -105,21 +105,38 @@ function formatDateForMemory(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-/**
- * Pre-load workspace files into a string suitable for inclusion in the system prompt.
- *
- * Reads workspace files (SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md, MEMORY.md,
- * and recent memory journals) and concatenates them for context injection.
- */
-export function compileWorkspaceContext(workspacePath: string): string {
-  const sections: string[] = [];
+const CORE_WORKSPACE_FILES: { filename: string; label: string }[] = [
+  { filename: "SOUL.md", label: "Soul & Personality" },
+  { filename: "USER.md", label: "Human Context" },
+  { filename: "TOOLS.md", label: "Environment & Tools" },
+  { filename: "HEARTBEAT.md", label: "Heartbeat Tasks" },
+  { filename: "MEMORY.md", label: "Curated Memory" },
+];
 
-  const coreFiles = ["SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md"];
-  for (const filename of coreFiles) {
+interface WorkspaceSectionEntry {
+  key: string;
+  label: string;
+  source: "workspace" | "memory-journal";
+  /** The exact text embedded in the prompt, or undefined when the file is missing/empty */
+  embedded?: string;
+}
+
+/**
+ * Collect workspace files (core files + today/yesterday memory journals) as
+ * prompt sections. Missing/empty files are returned without `embedded` so
+ * callers can list them as not included.
+ */
+function collectWorkspaceSections(workspacePath: string): WorkspaceSectionEntry[] {
+  const entries: WorkspaceSectionEntry[] = [];
+
+  for (const { filename, label } of CORE_WORKSPACE_FILES) {
     const content = readWorkspaceFile(workspacePath, filename);
-    if (content && content.trim()) {
-      sections.push(`This is the current content of ${filename}:\n${content.trim()}`);
-    }
+    entries.push({
+      key: filename,
+      label,
+      source: "workspace",
+      embedded: content && content.trim() ? `This is the current content of ${filename}:\n${content.trim()}` : undefined,
+    });
   }
 
   // Memory journal files: today and yesterday
@@ -127,13 +144,30 @@ export function compileWorkspaceContext(workspacePath: string): string {
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
 
-  const memoryFiles = [`memory/${formatDateForMemory(today)}.md`, `memory/${formatDateForMemory(yesterday)}.md`];
-  for (const memFile of memoryFiles) {
+  for (const date of [formatDateForMemory(today), formatDateForMemory(yesterday)]) {
+    const memFile = `memory/${date}.md`;
     const content = readWorkspaceFile(workspacePath, memFile);
-    if (content && content.trim()) {
-      sections.push(`This is the current content of ${memFile}:\n${content.trim()}`);
-    }
+    entries.push({
+      key: memFile,
+      label: `Daily Journal (${date})`,
+      source: "memory-journal",
+      embedded: content && content.trim() ? `This is the current content of ${memFile}:\n${content.trim()}` : undefined,
+    });
   }
+
+  return entries;
+}
+
+/**
+ * Pre-load workspace files into a string suitable for inclusion in the system prompt.
+ *
+ * Reads workspace files (SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md, MEMORY.md,
+ * and recent memory journals) and concatenates them for context injection.
+ */
+export function compileWorkspaceContext(workspacePath: string): string {
+  const sections = collectWorkspaceSections(workspacePath)
+    .map((s) => s.embedded)
+    .filter((s): s is string => Boolean(s));
 
   if (sections.length === 0) return "";
 
@@ -143,4 +177,61 @@ export function compileWorkspaceContext(workspacePath: string): string {
     "You do not need to read them again unless checking for updates made during this session.";
 
   return header + "\n\n---\n\n" + sections.join("\n\n---\n\n");
+}
+
+function estimateTokens(chars: number): number {
+  return Math.round(chars / 4);
+}
+
+export interface CompiledSystemPrompt {
+  /** The full assembled append string — exactly what sessions receive */
+  prompt: string;
+  sections: SystemPromptSection[];
+  /** Measured on `prompt` (joiners/headers count), not the sum of sections */
+  totalChars: number;
+  totalEstTokens: number;
+}
+
+/**
+ * Compile the full per-agent system prompt append (identity + pre-loaded
+ * workspace context) along with a per-section breakdown for preview UIs.
+ *
+ * The `prompt` field is the single source of truth for what gets appended to
+ * the session system prompt — all session-launch paths assemble it from here.
+ */
+export function compileSystemPrompt(config: AgentConfig, workspacePath: string): CompiledSystemPrompt {
+  const identity = compileIdentityPrompt(config);
+  const workspaceContext = compileWorkspaceContext(workspacePath);
+  const prompt = [identity, workspaceContext].filter(Boolean).join("\n\n");
+
+  const sections: SystemPromptSection[] = [
+    {
+      key: "identity",
+      label: "Agent Identity & Instructions",
+      source: "agent.json",
+      content: identity,
+      chars: identity.length,
+      estTokens: estimateTokens(identity.length),
+      included: identity.length > 0,
+    },
+    ...collectWorkspaceSections(workspacePath).map((s): SystemPromptSection => {
+      const content = s.embedded ?? "";
+      return {
+        key: s.key,
+        label: s.label,
+        source: s.source,
+        content,
+        chars: content.length,
+        estTokens: estimateTokens(content.length),
+        included: content.length > 0,
+      };
+    }),
+  ];
+
+  return {
+    prompt,
+    sections,
+    totalChars: prompt.length,
+    totalEstTokens: estimateTokens(prompt.length),
+  };
 }

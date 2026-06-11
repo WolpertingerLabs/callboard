@@ -8,7 +8,7 @@
  * circular dependency with claude.ts.
  */
 import { getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
-import { compileIdentityPrompt, compileWorkspaceContext } from "./claude-compiler.js";
+import { compileSystemPrompt } from "./claude-compiler.js";
 import { appendActivity } from "./agent-activity.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -90,10 +90,8 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       return null;
     }
 
-    const identityPrompt = compileIdentityPrompt(config);
     const workspacePath = getAgentWorkspacePath(agentAlias);
-    const workspaceContext = compileWorkspaceContext(workspacePath);
-    const fullSystemPrompt = [identityPrompt, workspaceContext].filter(Boolean).join("\n\n");
+    const fullSystemPrompt = compileSystemPrompt(config, workspacePath).prompt;
     const sendMessage = getSendMessage();
 
     // Build async generator prompt (required when MCP servers are present)
