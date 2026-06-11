@@ -273,6 +273,56 @@ describe("readOpenRouterTranscript — record projection", () => {
       timestamp: "2026-05-27T10:08:00Z",
     });
   });
+
+  it("projects a session_end error record into a session_error system message", () => {
+    const reason =
+      "server_error: Internal Server Error (resp_abc123 openai/gpt-5.4; attempts: openai→500)";
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "2026-05-27T10:00:00Z", kind: "user", text: "hi" },
+      {
+        v: 1,
+        sessionId: "sess",
+        ts: "2026-05-27T10:01:00Z",
+        kind: "session_end",
+        status: "error",
+        reason,
+      },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)).toEqual([
+      { role: "user", type: "text", content: "hi", timestamp: "2026-05-27T10:00:00Z" },
+      {
+        role: "system",
+        type: "system",
+        subtype: "session_error",
+        content: reason,
+        timestamp: "2026-05-27T10:01:00Z",
+      },
+    ]);
+  });
+
+  it("skips session_end records that are not user-facing failures", () => {
+    const sessionDir = writeTranscript([
+      // Non-error end states surface through the done-event reason chip.
+      { v: 1, sessionId: "sess", ts: "t1", kind: "session_end", status: "success" },
+      { v: 1, sessionId: "sess", ts: "t2", kind: "session_end", status: "max_budget", reason: "max budget" },
+      // User-initiated stop, not a failure.
+      { v: 1, sessionId: "sess", ts: "t3", kind: "session_end", status: "error", reason: "aborted" },
+      // Error with no reason — nothing useful to render.
+      { v: 1, sessionId: "sess", ts: "t4", kind: "session_end", status: "error" },
+      // Malformed reason type.
+      { v: 1, sessionId: "sess", ts: "t5", kind: "session_end", status: "error", reason: 42 },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)).toEqual([]);
+  });
+
+  it("omits the timestamp on a session_error message when the record has none", () => {
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", kind: "session_end", status: "error", reason: "boom" },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)).toEqual([
+      { role: "system", type: "system", subtype: "session_error", content: "boom" },
+    ]);
+  });
 });
 
 describe("readOpenRouterTranscript — robustness", () => {

@@ -607,11 +607,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 setCompacting(false);
                 setStreaming(false);
                 setInFlightMessage(null);
-                // Refetch messages to show any partial content, then add error
+                // Refetch messages to show any partial content, then add error.
+                // OpenRouter sessions persist the failure on the session
+                // record (transcript session_end → session_error system
+                // message), so the refetch may already include it — only
+                // append when it doesn't, to avoid a double error bubble.
                 getMessages(streamChatId!).then((msgs) => {
                   if (currentIdRef.current !== streamChatId) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
-                  setMessages([...msgArray, { role: "assistant", type: "text", content: `Error: ${event.content}` }]);
+                  const alreadyPersisted = msgArray
+                    .slice(-3)
+                    .some((m) => m.subtype === "session_error" && m.content === event.content);
+                  setMessages(
+                    alreadyPersisted
+                      ? msgArray
+                      : [
+                          ...msgArray,
+                          { role: "system", type: "system", subtype: "session_error", content: event.content ?? "" },
+                        ],
+                  );
                 });
                 return;
               }
