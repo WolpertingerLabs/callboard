@@ -55,6 +55,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterModel,
     openRouterLogsRoot,
     openRouterMaxBudgetUsd,
+    openRouterModelAliases,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -80,6 +81,36 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     return n === undefined ? undefined : Math.floor(n);
   };
 
+  // Sanitize the OpenRouter model alias map. Returns undefined when the map
+  // ends up empty (clears the setting), or a string error for invalid input
+  // the user must fix (the UI surfaces it inline).
+  const normalizeAliases = (v: unknown): { aliases?: Record<string, string>; error?: string } => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) {
+      return { error: "openRouterModelAliases must be an object mapping alias names to model slugs" };
+    }
+    const aliases: Record<string, string> = {};
+    const seenNames = new Set<string>();
+    for (const [rawAlias, rawTarget] of Object.entries(v)) {
+      const alias = rawAlias.trim();
+      const target = typeof rawTarget === "string" ? rawTarget.trim() : "";
+      if (!alias || !target) continue; // blank rows are dropped, not errors
+      const key = alias.toLowerCase();
+      if (seenNames.has(key)) {
+        return { error: `Duplicate alias name (case-insensitive): "${alias}"` };
+      }
+      seenNames.add(key);
+      aliases[alias] = target;
+    }
+    // Resolution is intentionally one hop — an alias pointing at another
+    // alias would either chain or cycle, so reject it at write time.
+    for (const [alias, target] of Object.entries(aliases)) {
+      if (seenNames.has(target.toLowerCase())) {
+        return { error: `Alias "${alias}" points to another alias ("${target}") — targets must be real model slugs` };
+      }
+    }
+    return { aliases: Object.keys(aliases).length > 0 ? aliases : undefined };
+  };
+
   // Track whether any API / auth / model override field was included so we
   // know to refresh the SDK info cache (account + supported models).
   const apiFieldsTouched =
@@ -91,6 +122,17 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultSonnetModel !== undefined ||
     defaultHaikuModel !== undefined ||
     subagentModel !== undefined;
+
+  // Validate the alias map up front so bad input 400s before anything is written.
+  let normalizedAliases: Record<string, string> | undefined;
+  if (openRouterModelAliases !== undefined) {
+    const result = normalizeAliases(openRouterModelAliases);
+    if (result.error) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    normalizedAliases = result.aliases;
+  }
 
   try {
     const updated = updateAgentSettings({
@@ -113,6 +155,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
       ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
       ...(openRouterMaxBudgetUsd !== undefined && { openRouterMaxBudgetUsd: normalizeNumber(openRouterMaxBudgetUsd) }),
+      ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });

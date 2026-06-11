@@ -8,7 +8,7 @@
  *
  * Mirrors the cache shape of {@link ./sdk-info.ts}.
  */
-import type { OpenRouterModelInfo } from "shared/types/index.js";
+import type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "shared/types/index.js";
 import { getAgentSettings } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -139,5 +139,40 @@ export async function searchOpenRouterModels(query: string, limit = 50): Promise
   const models = await getOpenRouterModelsAsync();
   const q = query.trim();
   const matched = q === "" ? models : models.filter((m) => isSubsequence(q, m.id));
+  return matched.slice(0, Math.max(1, limit));
+}
+
+/**
+ * List user-defined model aliases, each joined with its target model's name
+ * and pricing from the cached catalog. Targets that aren't in the cache
+ * (stale cache, typo, non-tool-calling model) come back without the joined
+ * fields rather than being dropped — the alias still resolves at run time.
+ */
+export async function getOpenRouterModelAliasesAsync(): Promise<OpenRouterModelAliasInfo[]> {
+  const aliasMap = getAgentSettings().openRouterModelAliases;
+  const entries = Object.entries(aliasMap ?? {});
+  if (entries.length === 0) return [];
+  const models = await getOpenRouterModelsAsync();
+  const byId = new Map(models.map((m) => [m.id, m]));
+  return entries
+    .map(([alias, modelId]) => {
+      const target = byId.get(modelId);
+      return {
+        alias,
+        modelId,
+        ...(target && { name: target.name, promptPrice: target.promptPrice, completionPrice: target.completionPrice }),
+      };
+    })
+    .sort((a, b) => a.alias.localeCompare(b.alias));
+}
+
+/**
+ * Subsequence-search user-defined aliases by alias name or target slug.
+ * An empty query returns all aliases.
+ */
+export async function searchOpenRouterModelAliases(query: string, limit = 50): Promise<OpenRouterModelAliasInfo[]> {
+  const aliases = await getOpenRouterModelAliasesAsync();
+  const q = query.trim();
+  const matched = q === "" ? aliases : aliases.filter((a) => isSubsequence(q, a.alias) || isSubsequence(q, a.modelId));
   return matched.slice(0, Math.max(1, limit));
 }

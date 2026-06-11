@@ -10,17 +10,17 @@ import { getActiveSession } from "./claude.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
-import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
+import {
+  getOpenRouterModelsAsync,
+  searchOpenRouterModels,
+  getOpenRouterModelAliasesAsync,
+  searchOpenRouterModelAliases,
+  formatOpenRouterPrice,
+} from "./openrouter-models.js";
 import { getUserContact } from "./user-contact.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { getAgentSettings } from "./agent-settings.js";
-import {
-  addCallback,
-  countPending,
-  getChatDepth,
-  DEFAULT_MAX_CALLBACK_CHAIN_DEPTH,
-  DEFAULT_MAX_PENDING_CALLBACKS,
-} from "./session-callbacks.js";
+import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -110,10 +110,7 @@ function error(message: string) {
 // excluded — it is a future feature and never offered to the agent.
 type NotifyChannelKey = "discord" | "telegram" | "email";
 
-const NOTIFY_CHANNELS: Record<
-  NotifyChannelKey,
-  { label: string; connection: string; instructions: (handle: string) => string }
-> = {
+const NOTIFY_CHANNELS: Record<NotifyChannelKey, { label: string; connection: string; instructions: (handle: string) => string }> = {
   discord: {
     label: "Discord",
     connection: "discord-bot",
@@ -658,21 +655,33 @@ export function buildCallboardToolsSpec(getChatId?: () => string, getAgentAlias?
 
       defineTool(
         "list_openrouter_models",
-        "List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug as the `model` param when starting an openrouter session. The list is cached and refreshed on app start.",
+        'List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug as the `model` param when starting an openrouter session. Also returns user-defined model aliases (e.g. "low coder" -> a real slug) — an alias is equally valid as the `model` param. The list is cached and refreshed on app start.',
         {
-          limit: z.number().optional().describe("Max models to return (default: all)."),
+          limit: z.number().optional().describe("Max models to return (default: all). Aliases are always returned in full."),
         },
         async (args) => {
           try {
-            const models = await getOpenRouterModelsAsync();
+            const [models, aliases] = await Promise.all([getOpenRouterModelsAsync(), getOpenRouterModelAliasesAsync()]);
             const limited = typeof args.limit === "number" ? models.slice(0, Math.max(1, args.limit)) : models;
             const rows = limited.map((m) => ({
               id: m.id,
               in: formatOpenRouterPrice(m.promptPrice),
               out: formatOpenRouterPrice(m.completionPrice),
             }));
+            const aliasRows = aliases.map((a) => ({ alias: a.alias, target: a.modelId }));
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ count: rows.length, total: models.length, pricingUnit: "per 1M tokens", models: rows }) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    count: rows.length,
+                    total: models.length,
+                    pricingUnit: "per 1M tokens",
+                    ...(aliasRows.length > 0 && { aliases: aliasRows }),
+                    models: rows,
+                  }),
+                },
+              ],
             };
           } catch (err: any) {
             log.error(`list_openrouter_models failed: ${err.message}`);
@@ -683,21 +692,34 @@ export function buildCallboardToolsSpec(getChatId?: () => string, getAgentAlias?
 
       defineTool(
         "search_openrouter_models",
-        "Search tool-calling OpenRouter models by slug using subsequence matching (characters in order, e.g. 'claop' matches 'anthropic/claude-opus'). Returns matching slugs with input/output pricing (per 1M tokens).",
+        "Search tool-calling OpenRouter models by slug using subsequence matching (characters in order, e.g. 'claop' matches 'anthropic/claude-opus'). Also matches user-defined model aliases by alias name or target slug — an alias is equally valid as the `model` param. Returns matching slugs with input/output pricing (per 1M tokens).",
         {
-          query: z.string().describe("Search text matched as a subsequence against the model slug."),
+          query: z.string().describe("Search text matched as a subsequence against the model slug (and alias names)."),
           limit: z.number().optional().describe("Max results to return (default: 50)."),
         },
         async (args) => {
           try {
-            const matched = await searchOpenRouterModels(args.query, args.limit ?? 50);
+            const limit = args.limit ?? 50;
+            const [matched, matchedAliases] = await Promise.all([searchOpenRouterModels(args.query, limit), searchOpenRouterModelAliases(args.query, limit)]);
             const rows = matched.map((m) => ({
               id: m.id,
               in: formatOpenRouterPrice(m.promptPrice),
               out: formatOpenRouterPrice(m.completionPrice),
             }));
+            const aliasRows = matchedAliases.map((a) => ({ alias: a.alias, target: a.modelId }));
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ query: args.query, count: rows.length, pricingUnit: "per 1M tokens", models: rows }) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    query: args.query,
+                    count: rows.length,
+                    pricingUnit: "per 1M tokens",
+                    ...(aliasRows.length > 0 && { aliases: aliasRows }),
+                    models: rows,
+                  }),
+                },
+              ],
             };
           } catch (err: any) {
             log.error(`search_openrouter_models failed: ${err.message}`);

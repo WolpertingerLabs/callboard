@@ -14,3 +14,22 @@ export interface OpenRouterModelInfo {
   /** Completion (output) price in USD per token, as a string. */
   completionPrice: string;
 }
+
+/**
+ * A user-defined model alias joined with its target model's catalog info.
+ * Returned by GET /api/openrouter/models alongside the model list. The
+ * target fields are absent when the target slug isn't in the cached
+ * tool-calling model list (stale cache, typo, or a non-tool-calling model).
+ */
+export interface OpenRouterModelAliasInfo {
+  /** The user-chosen alias name, e.g. "low coder". */
+  alias: string;
+  /** The target model slug, e.g. "deepseek/deepseek-chat". */
+  modelId: string;
+  /** Human-readable name of the target model, if known. */
+  name?: string;
+  /** Prompt (input) price of the target in USD per token, if known. */
+  promptPrice?: string;
+  /** Completion (output) price of the target in USD per token, if known. */
+  completionPrice?: string;
+}

@@ -82,6 +82,18 @@ export interface AgentSettings {
    */
   openRouterMaxBudgetUsd?: number;
 
+  /**
+   * User-defined model aliases — maps a custom name (e.g. "low coder") to a
+   * real OpenRouter model slug (e.g. "deepseek/deepseek-chat"). Aliases are
+   * accepted anywhere an OpenRouter model is configured (new chats, per-chat
+   * overrides, the global default above, cron/trigger actions, MCP tools)
+   * and resolve to the target slug when the session starts. Lookup is
+   * case-insensitive; an alias shadows a real model slug of the same name.
+   * Targets must be real slugs, never other aliases (keeps resolution one
+   * hop and cycle-free).
+   */
+  openRouterModelAliases?: Record<string, string>;
+
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the start_chat_session onComplete feature, which automatically
   // re-invokes a parent chat when a spawned child session finishes.

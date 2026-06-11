@@ -44,6 +44,7 @@ import type {
   McpToolServerInfo,
   McpToolsResponse,
   OpenRouterModelInfo,
+  OpenRouterModelAliasInfo,
 } from "shared/types/index.js";
 
 export type {
@@ -92,6 +93,7 @@ export type {
   McpToolServerInfo,
   McpToolsResponse,
   OpenRouterModelInfo,
+  OpenRouterModelAliasInfo,
 };
 
 const BASE = "/api";
@@ -1287,6 +1289,17 @@ export async function getOpenRouterModels(): Promise<OpenRouterModelInfo[]> {
   await assertOk(res, "Failed to get OpenRouter models");
   const data = await res.json();
   return Array.isArray(data.models) ? data.models : [];
+}
+
+/** Models plus user-defined aliases (joined with target pricing) in one fetch. */
+export async function getOpenRouterCatalog(): Promise<{ models: OpenRouterModelInfo[]; aliases: OpenRouterModelAliasInfo[] }> {
+  const res = await fetch(`${BASE}/openrouter/models`, { credentials: "include" });
+  await assertOk(res, "Failed to get OpenRouter models");
+  const data = await res.json();
+  return {
+    models: Array.isArray(data.models) ? data.models : [],
+    aliases: Array.isArray(data.aliases) ? data.aliases : [],
+  };
 }
 
 // Server restart API
