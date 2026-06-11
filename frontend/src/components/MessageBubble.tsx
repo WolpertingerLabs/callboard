@@ -41,12 +41,56 @@ export const TEAM_COLORS = [
   "#0ea5e9", // Sky
 ] as const;
 
+// Small pill marking tools executed on OpenRouter's servers (datetime /
+// web_search / web_fetch) rather than by the local agent process. Renders
+// nothing for local tools so call sites can include it unconditionally.
+export function ToolSourceBadge({ toolSource }: { toolSource?: ParsedMessage["toolSource"] }) {
+  if (toolSource !== "openrouter_server") return null;
+  return (
+    <span
+      title="Executed on OpenRouter's servers"
+      style={{
+        marginLeft: 6,
+        padding: "1px 6px",
+        borderRadius: 9999,
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: 0.5,
+        textTransform: "uppercase",
+        verticalAlign: "middle",
+        color: "var(--badge-info)",
+        background: "var(--badge-info-bg)",
+        flexShrink: 0,
+      }}
+    >
+      Server
+    </span>
+  );
+}
+
 // Generate contextual summary for tool usage
 export function getToolSummary(toolName: string, content: string): string {
   try {
     const input = JSON.parse(content);
 
     switch (toolName) {
+      // OpenRouter server tools — the model's input usually isn't preserved
+      // (content is "{}"), so fall back to a generic label when the
+      // recoverable fields are absent.
+      case "datetime":
+        return " - current date/time";
+      case "web_search":
+        return input.query ? ` - '${input.query}'` : " - web search";
+      case "web_fetch": {
+        if (input.url) {
+          try {
+            return ` - ${new URL(input.url).hostname}`;
+          } catch {
+            return ` - ${input.url}`;
+          }
+        }
+        return input.title ? ` - ${input.title}` : " - web fetch";
+      }
       case "Read":
         return input.file_path ? ` - ${input.file_path.split("/").pop()}` : "";
       case "Write":
@@ -625,6 +669,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
           <span style={{ fontWeight: 500 }}>
             Tool: {message.toolName || "unknown"}
             {getToolSummary(message.toolName || "", message.content)}
+            <ToolSourceBadge toolSource={message.toolSource} />
           </span>
           {expanded && <JsonContentView content={message.content} preStyle={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }} />}
         </div>
@@ -650,6 +695,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
             {expanded
               ? `Result${message.toolName ? `: ${message.toolName}` : ""}`
               : `Tool result${message.toolName ? `: ${message.toolName}` : ""} (tap to expand)`}
+            <ToolSourceBadge toolSource={message.toolSource} />
           </span>
           {expanded && (
             <JsonContentView

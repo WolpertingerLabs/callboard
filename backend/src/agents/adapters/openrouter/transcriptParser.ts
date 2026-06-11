@@ -23,6 +23,7 @@ import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
 import { extractTextContent } from "./sessionParser.js";
+import { serverToolToMessages } from "./serverTools.js";
 
 /** Subset of TranscriptRecord fields we read. Mirrors the OR library's schema
  *  loosely so we tolerate forward-compatible field additions without a
@@ -50,6 +51,9 @@ interface RawRecord {
   name?: unknown;
   isError?: boolean;
   output?: unknown;
+  // server_tool
+  toolType?: unknown;
+  input?: unknown;
   // compact
   reason?: unknown;
   droppedMessages?: unknown;
@@ -136,6 +140,22 @@ export function readOpenRouterTranscript(sessionDir: string): ParsedMessage[] | 
         // a stray empty label.
         ...(name && { toolName: name }),
       });
+    } else if (kind === "server_tool") {
+      // OpenRouter server tools (datetime / web_search / web_fetch) execute
+      // on OR's servers — one record carries both the invocation and its
+      // result. Synthesize the tool_use/tool_result pair with provenance so
+      // the UI renders them alongside client-side tool calls (harness ≥0.3.0
+      // writes these; older transcripts simply have none).
+      const toolType = typeof rec.toolType === "string" ? rec.toolType : "";
+      if (toolType) {
+        const callId = typeof rec.callId === "string" ? rec.callId : undefined;
+        messages.push(
+          ...serverToolToMessages(
+            { toolType, ...(callId && { callId }), input: rec.input, output: rec.output },
+            ts,
+          ),
+        );
+      }
     } else if (kind === "compact") {
       // Mirror the Claude provider's compact_boundary projection so the
       // UI can render the boundary line the same way regardless of

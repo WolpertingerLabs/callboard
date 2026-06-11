@@ -29,8 +29,26 @@ export type AgentEvent =
   | { type: "session_started"; sessionId: string }
   | { type: "text"; content: string }
   | { type: "thinking"; content: string }
-  | { type: "tool_use"; toolName: string; input: unknown; callId: string }
-  | { type: "tool_result"; callId: string; content: string; isError?: boolean }
+  | {
+      type: "tool_use";
+      toolName: string;
+      input: unknown;
+      callId: string;
+      /**
+       * Where the tool executed: "openrouter_server" for OpenRouter server
+       * tools (datetime / web_search / web_fetch) run on OR's servers,
+       * "local" (or absent) for tools run by the agent process.
+       */
+      toolSource?: "local" | "openrouter_server";
+    }
+  | {
+      type: "tool_result";
+      callId: string;
+      content: string;
+      isError?: boolean;
+      /** Mirrors the paired tool_use's provenance. Absent ⇒ local. */
+      toolSource?: "local" | "openrouter_server";
+    }
   | { type: "slash_commands"; commands: string[] }
   | { type: "compaction_boundary"; content?: string }
   | {
