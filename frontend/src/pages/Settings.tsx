@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
-import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles } from "lucide-react";
+import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
 import PluginsSettings from "./settings/PluginsSettings";
@@ -10,11 +10,13 @@ import AccountSettings from "./settings/AccountSettings";
 import AboutSettings from "./settings/AboutSettings";
 import ApiSettings from "./settings/ApiSettings";
 import SkillsSettings from "./settings/SkillsSettings";
+import JobsSettings from "./settings/JobsSettings";
 
 const tabs = [
   { key: "general", label: "General", icon: SlidersHorizontal },
   { key: "api", label: "API", icon: Key },
   { key: "skills", label: "Skills", icon: Sparkles },
+  { key: "jobs", label: "Jobs", icon: Workflow },
   { key: "plugins", label: "Plugins & MCP", icon: Plug },
   { key: "proxy", label: "Proxy", icon: Globe },
   { key: "connections", label: "Connections", icon: Wifi },
@@ -121,6 +123,7 @@ export default function Settings({ onLogout }: SettingsProps) {
         {activeTab === "general" && <GeneralSettings />}
         {activeTab === "api" && <ApiSettings />}
         {activeTab === "skills" && <SkillsSettings />}
+        {activeTab === "jobs" && <JobsSettings />}
         {activeTab === "plugins" && <PluginsSettings />}
         {activeTab === "proxy" && <ProxySettings />}
         {activeTab === "connections" && <ConnectionsSettings onSwitchTab={setActiveTab} />}

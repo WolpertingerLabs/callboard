@@ -47,6 +47,12 @@ import type {
   McpToolsResponse,
   OpenRouterModelInfo,
   OpenRouterModelAliasInfo,
+  JobDefinition,
+  JobStep,
+  JobRun,
+  JobRunListItem,
+  JobRunStatus,
+  JobRunHistoryEntry,
 } from "shared/types/index.js";
 
 export type {
@@ -98,6 +104,12 @@ export type {
   McpToolsResponse,
   OpenRouterModelInfo,
   OpenRouterModelAliasInfo,
+  JobDefinition,
+  JobStep,
+  JobRun,
+  JobRunListItem,
+  JobRunStatus,
+  JobRunHistoryEntry,
 };
 
 const BASE = "/api";
@@ -1533,4 +1545,125 @@ export async function getMcpTools(context?: "chat" | "agent"): Promise<McpToolsR
   const res = await fetch(`${BASE}/mcp-tools${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get MCP tools");
   return res.json();
+}
+
+// ── Jobs ─────────────────────────────────────────────────────────────
+
+export async function listJobs(): Promise<JobDefinition[]> {
+  const res = await fetch(`${BASE}/jobs`, { credentials: "include" });
+  await assertOk(res, "Failed to list jobs");
+  const data = await res.json();
+  return data.jobs;
+}
+
+export async function getJob(id: string): Promise<JobDefinition> {
+  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get job");
+  const data = await res.json();
+  return data.job;
+}
+
+export interface JobDefinitionPayload {
+  id?: string;
+  name: string;
+  description?: string;
+  inputs?: JobDefinition["inputs"];
+  defaults?: JobDefinition["defaults"];
+  limits?: JobDefinition["limits"];
+  steps: JobStep[];
+}
+
+export async function createJob(payload: JobDefinitionPayload): Promise<JobDefinition> {
+  const res = await fetch(`${BASE}/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  await assertOk(res, "Failed to create job");
+  const data = await res.json();
+  return data.job;
+}
+
+export async function updateJob(id: string, payload: JobDefinitionPayload): Promise<JobDefinition> {
+  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  await assertOk(res, "Failed to update job");
+  const data = await res.json();
+  return data.job;
+}
+
+export async function deleteJob(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete job");
+}
+
+export async function spawnJob(id: string, inputs: Record<string, string>): Promise<JobRun> {
+  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}/spawn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ inputs }),
+  });
+  await assertOk(res, "Failed to spawn job");
+  const data = await res.json();
+  return data.run;
+}
+
+export async function listJobRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number }): Promise<JobRunListItem[]> {
+  const params = new URLSearchParams();
+  if (filter?.jobId) params.set("jobId", filter.jobId);
+  if (filter?.status) params.set("status", filter.status);
+  if (filter?.limit) params.set("limit", String(filter.limit));
+  const qs = params.toString();
+  const res = await fetch(`${BASE}/jobs/runs${qs ? `?${qs}` : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to list job runs");
+  const data = await res.json();
+  return data.runs;
+}
+
+export async function getJobRun(runId: string): Promise<JobRun> {
+  const res = await fetch(`${BASE}/jobs/runs/${encodeURIComponent(runId)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get job run");
+  const data = await res.json();
+  return data.run;
+}
+
+async function postJobRunAction(runId: string, action: string, body?: unknown): Promise<JobRun> {
+  const res = await fetch(`${BASE}/jobs/runs/${encodeURIComponent(runId)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+  });
+  await assertOk(res, `Failed to ${action} job run`);
+  const data = await res.json();
+  return data.run;
+}
+
+export function respondJobApproval(runId: string, decision: "approve" | "reject", comment?: string): Promise<JobRun> {
+  return postJobRunAction(runId, "approval", { decision, ...(comment && { comment }) });
+}
+
+export function cancelJobRun(runId: string): Promise<JobRun> {
+  return postJobRunAction(runId, "cancel");
+}
+
+export function pauseJobRun(runId: string): Promise<JobRun> {
+  return postJobRunAction(runId, "pause");
+}
+
+export function resumeJobRun(runId: string): Promise<JobRun> {
+  return postJobRunAction(runId, "resume");
+}
+
+export function retryJobStep(runId: string): Promise<JobRun> {
+  return postJobRunAction(runId, "retry-step");
 }
