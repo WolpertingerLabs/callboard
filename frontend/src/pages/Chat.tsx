@@ -160,7 +160,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // adapter reports one. Currently OpenRouter only — the Claude adapter
   // doesn't return per-run cost we can sum into a session total. Reset
   // every time we land on a new chat so cross-chat values don't leak.
-  const [lastRunCostUsd, setLastRunCostUsd] = useState<number | null>(null);
+  const [_lastRunCostUsd, setLastRunCostUsd] = useState<number | null>(null);
   // Effective per-session spend cap advertised by the adapter alongside the
   // last cost. Used to render "$0.42 of $5.00" and to quote the cap in the
   // max_budget end-of-session message.
@@ -1669,42 +1669,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 "total / cap" and escalates colour as the cap is approached
                 (>=80% warns, >=100% errors). Without a cap it shows just the
                 running total in a neutral style. Click navigates to Settings → API. */}
-            {chatProvider === "openrouter" && sessionTotalCost !== null && (() => {
-              const hasCap = effectiveMaxBudgetUsd !== null;
-              const overCap = hasCap && sessionTotalCost >= effectiveMaxBudgetUsd!;
-              const nearCap = hasCap && !overCap && sessionTotalCost / Math.max(effectiveMaxBudgetUsd!, 0.0001) >= 0.8;
-              const costStr = sessionTotalCost >= 0.01
-                ? `$${sessionTotalCost.toFixed(2)}`
-                : `$${sessionTotalCost.toFixed(4)}`;
-              const label = hasCap ? `${costStr} / $${effectiveMaxBudgetUsd!.toFixed(2)}` : costStr;
-              const titleStr = hasCap
-                ? `Session spent ${costStr} of the $${effectiveMaxBudgetUsd!.toFixed(2)} per-session cap. Click to adjust in Settings → API.`
-                : `Session total cost: ${costStr}. Click to configure a budget cap in Settings → API.`;
-              return (
-                <div
-                  onClick={() => navigate("/settings/api")}
-                  style={{
-                    fontSize: 11,
-                    padding: "2px 6px",
-                    borderRadius: 4,
-                    background: overCap
-                      ? "var(--error, #c53030)"
-                      : nearCap
-                        ? "var(--warning, #d97706)"
-                        : "var(--surface)",
-                    color: overCap || nearCap ? "var(--text-on-accent, #fff)" : "var(--text-muted)",
-                    border: "1px solid var(--border)",
-                    fontWeight: 500,
-                    flexShrink: 0,
-                    cursor: "pointer",
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                  title={titleStr}
-                >
-                  {label}
-                </div>
-              );
-            })()}
+            {chatProvider === "openrouter" &&
+              sessionTotalCost !== null &&
+              (() => {
+                const hasCap = effectiveMaxBudgetUsd !== null;
+                const overCap = hasCap && sessionTotalCost >= effectiveMaxBudgetUsd!;
+                const nearCap = hasCap && !overCap && sessionTotalCost / Math.max(effectiveMaxBudgetUsd!, 0.0001) >= 0.8;
+                const costStr = sessionTotalCost >= 0.01 ? `$${sessionTotalCost.toFixed(2)}` : `$${sessionTotalCost.toFixed(4)}`;
+                const label = hasCap ? `${costStr} / $${effectiveMaxBudgetUsd!.toFixed(2)}` : costStr;
+                const titleStr = hasCap
+                  ? `Session spent ${costStr} of the $${effectiveMaxBudgetUsd!.toFixed(2)} per-session cap. Click to adjust in Settings → API.`
+                  : `Session total cost: ${costStr}. Click to configure a budget cap in Settings → API.`;
+                return (
+                  <div
+                    onClick={() => navigate("/settings/api")}
+                    style={{
+                      fontSize: 11,
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                      background: overCap ? "var(--error, #c53030)" : nearCap ? "var(--warning, #d97706)" : "var(--surface)",
+                      color: overCap || nearCap ? "var(--text-on-accent, #fff)" : "var(--text-muted)",
+                      border: "1px solid var(--border)",
+                      fontWeight: 500,
+                      flexShrink: 0,
+                      cursor: "pointer",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                    title={titleStr}
+                  >
+                    {label}
+                  </div>
+                );
+              })()}
           </div>
           <div
             title={!id ? folder : chat?.folder}
@@ -2707,10 +2703,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           {modelPopoverOpen && chatProvider === "openrouter" && (
             <>
               {/* Click-away overlay */}
-              <div
-                onClick={() => setModelPopoverOpen(false)}
-                style={{ position: "fixed", inset: 0, zIndex: 50 }}
-              />
+              <div onClick={() => setModelPopoverOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
               <div
                 style={{
                   position: "absolute",
@@ -2733,9 +2726,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   boxShadow: "var(--shadow-md)",
                 }}
               >
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
-                  Model &amp; reasoning effort for this chat
-                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>Model &amp; reasoning effort for this chat</div>
                 <ProviderConfigPicker
                   provider="openrouter"
                   onProviderChange={() => {}}
@@ -2749,9 +2740,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   openRouterMaxBudgetUsd={null}
                   onOpenApiSettings={() => navigate("/settings/api")}
                 />
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
-                  Applies on your next message.
-                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>
               </div>
             </>
           )}
@@ -2776,10 +2765,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       : "Change model / reasoning effort for this chat"
                   }
                   style={{
-                    background:
-                      pendingModel !== null || pendingEffort !== null ? "var(--accent)" : "var(--bg-secondary)",
-                    color:
-                      pendingModel !== null || pendingEffort !== null ? "var(--text-on-accent)" : "var(--text)",
+                    background: pendingModel !== null || pendingEffort !== null ? "var(--accent)" : "var(--bg-secondary)",
+                    color: pendingModel !== null || pendingEffort !== null ? "var(--text-on-accent)" : "var(--text)",
                     width: 40,
                     height: 40,
                     borderRadius: 10,

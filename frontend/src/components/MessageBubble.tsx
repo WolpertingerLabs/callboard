@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useEffect } from "react";
 import { Check, Copy, RotateCw, Square, X } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
+import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
 
 interface TodoItem {
@@ -402,7 +403,14 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   if (!relativeTime) return null;
 
   const displayModel = message.model || null;
-  const hasDetails = !!(message.usage || message.serviceTier || message.stopReason || message.deltaMs != null || message.costUsd != null || message.durationMs != null);
+  const hasDetails = !!(
+    message.usage ||
+    message.serviceTier ||
+    message.stopReason ||
+    message.deltaMs != null ||
+    message.costUsd != null ||
+    message.durationMs != null
+  );
 
   return (
     <div
@@ -595,7 +603,7 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
             Tool: {message.toolName || "unknown"}
             {getToolSummary(message.toolName || "", message.content)}
           </span>
-          {expanded && <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{message.content}</pre>}
+          {expanded && <JsonContentView content={message.content} preStyle={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }} />}
         </div>
         <MessageMetadata message={message} align="left" />
       </div>
@@ -621,9 +629,10 @@ export default function MessageBubble({ message, teamColorMap }: Props) {
               : `Tool result${message.toolName ? `: ${message.toolName}` : ""} (tap to expand)`}
           </span>
           {expanded && (
-            <pre style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12, maxHeight: 300, overflow: "auto" }}>
-              {message.content}
-            </pre>
+            <JsonContentView
+              content={message.content}
+              preStyle={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12, maxHeight: 300, overflow: "auto" }}
+            />
           )}
         </div>
         <MessageMetadata message={message} align="left" />

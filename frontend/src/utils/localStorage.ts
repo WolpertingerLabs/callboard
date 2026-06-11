@@ -37,6 +37,9 @@ interface LocalStorageData {
   /** User's last-selected OpenRouter model slug in the New Chat panel.
    * Empty/absent means "use the global default from Settings → API". */
   defaultOpenRouterModel?: string;
+  /** Whether tool call inputs/results render JSON pretty-printed (true) or
+   * as the raw string (false). Toggled inline from any tool view. */
+  jsonPrettyPrint?: boolean;
 }
 
 /** Check if a path is inside the Callboard agent-workspaces directory (excluded from recommended folders). */
@@ -100,14 +103,7 @@ export function saveDefaultProvider(provider: AgentProviderKind): void {
   setStorageData(data);
 }
 
-const KNOWN_EFFORTS: ReadonlySet<EffortLevel> = new Set([
-  "xhigh",
-  "high",
-  "medium",
-  "low",
-  "minimal",
-  "none",
-]);
+const KNOWN_EFFORTS: ReadonlySet<EffortLevel> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
 
 /**
  * Last-selected OpenRouter effort. Returns `undefined` when nothing has been
@@ -225,6 +221,17 @@ export function getShowTriggeredChats(): boolean {
 export function saveShowTriggeredChats(value: boolean): void {
   const data = getStorageData();
   data.showTriggeredChats = value;
+  setStorageData(data);
+}
+
+export function getJsonPrettyPrint(): boolean {
+  const data = getStorageData();
+  return data.jsonPrettyPrint ?? true;
+}
+
+export function saveJsonPrettyPrint(value: boolean): void {
+  const data = getStorageData();
+  data.jsonPrettyPrint = value;
   setStorageData(data);
 }
 
