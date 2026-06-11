@@ -651,6 +651,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 continue;
               }
 
+              if (event.type === "budget") {
+                if (currentIdRef.current !== streamChatId) return;
+                // Mid-run spend beacon (OpenRouter per-turn cost). Updates the
+                // same state message_complete populates, so the spend badge's
+                // "of $X.XX" cap appears on the first turn boundary instead of
+                // waiting for the run to finish. The badge's spent figure
+                // itself derives from per-message costUsd (sessionTotalCost),
+                // which already updates live via message refetches.
+                if (typeof event.costUsd === "number") {
+                  setLastRunCostUsd(event.costUsd);
+                }
+                if (typeof event.maxBudgetUsd === "number") {
+                  setEffectiveMaxBudgetUsd(event.maxBudgetUsd);
+                }
+                continue;
+              }
+
               if (event.type === "message_update") {
                 if (currentIdRef.current !== streamChatId) return;
                 setCompacting(false);

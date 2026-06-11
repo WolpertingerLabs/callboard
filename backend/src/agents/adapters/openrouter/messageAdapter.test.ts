@@ -24,6 +24,13 @@ describe("translateEvent — direct one-to-one mappings", () => {
     });
   });
 
+  it("reasoning_delta → thinking (live reasoning text)", () => {
+    expect(translateEvent({ type: "reasoning_delta", content: "let me think" })).toEqual({
+      type: "thinking",
+      content: "let me think",
+    });
+  });
+
   it("tool_call → tool_use with field rename (name → toolName)", () => {
     expect(
       translateEvent({ type: "tool_call", callId: "c1", name: "read_file", input: { path: "x" } }),
@@ -189,10 +196,49 @@ describe("translateEvent — stream_complete → result", () => {
   });
 });
 
+describe("translateEvent — turn_end → adapter_specific turn_cost", () => {
+  it("emits a turn_cost beacon carrying turnNumber, cumulative costUsd, and usage", () => {
+    const usage = {
+      inputTokens: 100,
+      inputTokensDetails: { cachedTokens: 0 },
+      outputTokens: 50,
+      outputTokensDetails: { reasoningTokens: 0 },
+      totalTokens: 150,
+    };
+    expect(
+      translateEvent({ type: "turn_end", turnNumber: 3, usage, costUsd: 0.42 }),
+    ).toEqual({
+      type: "adapter_specific",
+      adapter: "openrouter",
+      payload: { kind: "turn_cost", turnNumber: 3, costUsd: 0.42, usage },
+    });
+  });
+
+  it("passes null usage through on the payload (cost-only providers)", () => {
+    expect(
+      translateEvent({ type: "turn_end", turnNumber: 1, usage: null, costUsd: 0.01 }),
+    ).toMatchObject({ payload: { kind: "turn_cost", usage: null } });
+  });
+
+  it("drops zero-cost turn ends (providers that don't report cost emit 0 every turn)", () => {
+    expect(
+      translateEvent({ type: "turn_end", turnNumber: 0, usage: null, costUsd: 0 }),
+    ).toBeNull();
+  });
+
+  it("drops non-finite and negative costs (no garbage budget events on the wire)", () => {
+    expect(
+      translateEvent({ type: "turn_end", turnNumber: 0, usage: null, costUsd: Number.NaN }),
+    ).toBeNull();
+    expect(
+      translateEvent({ type: "turn_end", turnNumber: 0, usage: null, costUsd: -0.5 }),
+    ).toBeNull();
+  });
+});
+
 describe("translateEvent — dropped variants", () => {
   it.each<AgentCoreEvent>([
     { type: "turn_start", turnNumber: 0 },
-    { type: "turn_end", turnNumber: 0, usage: null, costUsd: 0 },
     { type: "error", message: "boom" },
   ])("drops $type events (returns null)", (event) => {
     expect(translateEvent(event)).toBeNull();

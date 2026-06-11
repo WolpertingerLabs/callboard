@@ -4,10 +4,13 @@
  *
  * The OR library yields a discriminated union of low-level run events; this
  * adapter projects them onto the callboard-neutral {@link AgentEvent} shape
- * that frontend code already consumes (text/text/tool_use/tool_result/result
- * etc.). Variants the core union does not cover ride through unchanged —
- * `turn_start`, `turn_end`, and the bridge `error` event are dropped (their
- * information is folded into the eventual `stream_complete`/`result` payload).
+ * that frontend code already consumes (text/thinking/tool_use/tool_result/
+ * result etc.). `reasoning_delta` maps to `thinking` (live reasoning text —
+ * same wire shape the Claude adapter produces for thinking deltas).
+ * `turn_end` becomes an `adapter_specific` "turn_cost" beacon so the service
+ * layer can surface live per-turn spend (see translateEvent). `turn_start`
+ * and the bridge `error` event are dropped (their information is folded into
+ * the eventual `stream_complete`/`result` payload).
  *
  * A synthetic `slash_commands` event is emitted at session start using a
  * {@link CommandLoader} so the frontend's slash-menu UI works without relying on
@@ -74,6 +77,9 @@ function logEvent(event: AgentCoreEvent): void {
     case "text_delta":
       log.debug(`event text_delta — chars=${event.content.length}`);
       break;
+    case "reasoning_delta":
+      log.debug(`event reasoning_delta — chars=${event.content.length}`);
+      break;
     case "tool_call":
       log.debug(`event tool_call — name=${event.name}, callId=${event.callId}`);
       break;
@@ -101,7 +107,10 @@ function logEvent(event: AgentCoreEvent): void {
       log.debug(`event turn_start`);
       break;
     case "turn_end":
-      log.debug(`event turn_end`);
+      log.debug(
+        `event turn_end — turnNumber=${event.turnNumber}, costUsd=${event.costUsd}, ` +
+          `inputTokens=${event.usage?.inputTokens ?? "n/a"}, outputTokens=${event.usage?.outputTokens ?? "n/a"}`,
+      );
       break;
     case "error": {
       // Bridge-level error: the OR library always follows with a
@@ -140,7 +149,8 @@ function logEvent(event: AgentCoreEvent): void {
 /**
  * Pure translation of a single {@link AgentCoreEvent} — exported for unit
  * tests that don't want to drive a full run iterator. Returns `null` for
- * variants that should be dropped (turn boundaries, bridge errors).
+ * variants that should be dropped (turn starts, bridge errors, zero-cost
+ * turn ends).
  */
 export function translateEvent(event: AgentCoreEvent): AgentEvent | null {
   switch (event.type) {
@@ -148,6 +158,11 @@ export function translateEvent(event: AgentCoreEvent): AgentEvent | null {
       return { type: "session_started", sessionId: event.sessionId };
     case "text_delta":
       return { type: "text", content: event.content };
+    case "reasoning_delta":
+      // Live reasoning text from the model — same callboard event the Claude
+      // adapter emits for thinking deltas, so claude.ts forwards it as a
+      // `thinking` StreamEvent with zero provider-specific handling.
+      return { type: "thinking", content: event.content };
     case "tool_call":
       return { type: "tool_use", toolName: event.name, input: event.input, callId: event.callId };
     case "tool_result":
@@ -167,12 +182,33 @@ export function translateEvent(event: AgentCoreEvent): AgentEvent | null {
         ...(event.durationMs !== undefined && { durationMs: event.durationMs }),
       };
     }
-    case "turn_start":
     case "turn_end":
+      // Surface the harness's per-turn cost accounting as an
+      // `adapter_specific` "turn_cost" beacon — claude.ts turns it into a
+      // live `budget` StreamEvent so the UI can update the spend indicator
+      // mid-run instead of waiting for the terminal `done`. `costUsd` is the
+      // CUMULATIVE run cost so far (not the turn's increment). Zero /
+      // non-finite costs are dropped: providers that don't report cost emit
+      // 0 on every turn, and a stream of no-op budget events would just be
+      // wire noise.
+      if (Number.isFinite(event.costUsd) && event.costUsd > 0) {
+        return {
+          type: "adapter_specific",
+          adapter: "openrouter",
+          payload: {
+            kind: "turn_cost",
+            turnNumber: event.turnNumber,
+            costUsd: event.costUsd,
+            usage: event.usage,
+          },
+        };
+      }
+      return null;
+    case "turn_start":
     case "error":
-      // Per-turn boundaries roll up into the final stream_complete; bridge
-      // `error` events are always followed by a stream_complete with
-      // status: "error" carrying the same message in `reason`.
+      // Turn starts roll up into the final stream_complete; bridge `error`
+      // events are always followed by a stream_complete with status: "error"
+      // carrying the same message in `reason`.
       return null;
   }
 }

@@ -51,7 +51,7 @@ export function startSSEHeartbeat(res: Response, intervalMs = 15_000): () => voi
  * Create a standard SSE event handler that forwards StreamEvents to the client.
  *
  * Handles: done → message_complete, error → message_error,
- * permission_request/user_question/plan_review → forwarded as-is,
+ * permission_request/user_question/plan_review/budget → forwarded as-is,
  * everything else → message_update notification.
  *
  * Returns the handler function so the caller can attach/detach it from an emitter.
@@ -77,6 +77,15 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
       sendSSE(res, { type: "compacting" });
     } else if (event.type === "cleared") {
       sendSSE(res, { type: "cleared" });
+    } else if (event.type === "budget") {
+      // Mid-run spend beacon (OpenRouter per-turn cost). Must be forwarded
+      // with its payload — collapsing it into the bare message_update below
+      // would discard the cost numbers the spend indicator needs.
+      sendSSE(res, {
+        type: "budget",
+        ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
+        ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
+      });
     } else {
       sendSSE(res, { type: "message_update" });
     }

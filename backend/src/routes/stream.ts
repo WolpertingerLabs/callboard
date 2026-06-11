@@ -189,6 +189,14 @@ streamRouter.post("/new/message", async (req, res) => {
         sendSSE(res, { type: "compacting" });
       } else if (event.type === "cleared") {
         sendSSE(res, { type: "cleared" });
+      } else if (event.type === "budget") {
+        // Mid-run spend beacon (OpenRouter per-turn cost) — forwarded with
+        // its payload, mirroring createSSEHandler in utils/sse.ts.
+        sendSSE(res, {
+          type: "budget",
+          ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
+          ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
+        });
       } else {
         sendSSE(res, { type: "message_update" });
       }
