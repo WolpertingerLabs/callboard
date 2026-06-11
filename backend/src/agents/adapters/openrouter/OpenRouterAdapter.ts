@@ -110,7 +110,7 @@ class OpenRouterAgentQuery implements AgentQuery {
   private async buildRun(): Promise<{ run: OpenRouterAgentRun; commandLoader: CommandLoader }> {
     const opts: OpenRouterAgentRunOptions = { ...this.baseOpts };
     const logger: OrAdapterLogger | undefined = opts.logger
-      ? (level, msg) => opts.logger!(level, msg)
+      ? (level, msg, fields) => opts.logger!(level, msg, fields)
       : undefined;
 
     const loadedPlugins = await loadOpenRouterPlugins(this.rawOptions, logger);

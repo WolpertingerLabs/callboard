@@ -25,6 +25,7 @@ import {
   type OpenRouterAgentRun,
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import type { AgentEvent, TokenUsage } from "../../ports/events.js";
+import { describeErrorCause, safeStringify } from "./logFields.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("openrouter-events");
@@ -102,14 +103,22 @@ function logEvent(event: AgentCoreEvent): void {
     case "turn_end":
       log.debug(`event turn_end`);
       break;
-    case "error":
+    case "error": {
       // Bridge-level error: the OR library always follows with a
       // stream_complete carrying the same reason, but log here too so the
-      // wire-order is visible.
+      // wire-order is visible. The cause (HTTP statusCode/body on SDK
+      // errors) and the harness's structured `detail` (provider attempts,
+      // routing summary — read defensively, older harness versions don't
+      // send it) carry the actual upstream failure, so include both.
+      const message = (event as { message?: string }).message;
+      const detail = (event as { detail?: Record<string, unknown> }).detail;
       log.error(
-        `event error — ${(event as { message?: string }).message ?? JSON.stringify(event)}`,
+        `event error — ${message ?? JSON.stringify(event)}` +
+          describeErrorCause((event as { cause?: unknown }).cause, message) +
+          (detail ? `, detail: ${safeStringify(detail)}` : ""),
       );
       break;
+    }
     case "stream_complete":
       if (event.status === "error") {
         log.error(

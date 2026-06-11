@@ -26,6 +26,7 @@ import {
   type SettingSource,
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
+import { formatLogFields } from "./logFields.js";
 import { createLogger } from "../../../utils/logger.js";
 import type { EffortLevel } from "shared/types/index.js";
 
@@ -245,10 +246,14 @@ export function translateOptions(
   // OR path is symmetrical with the Claude path (which gets full SDK logging
   // via createLogger("claude")). Also keep the stderr forward for warn/error
   // so user-facing diagnostics still surface via the existing channel.
-  orOpts.logger = (level, message) => {
-    log[level](`[or-lib] ${message}`);
+  // The harness puts the actual failure context (error message, structured
+  // detail, serialized failed event, retry telemetry) in the third `fields`
+  // argument — append it or the log line is just a bare label.
+  orOpts.logger = (level, message, fields) => {
+    const suffix = formatLogFields(fields);
+    log[level](`[or-lib] ${message}${suffix}`);
     if ((level === "warn" || level === "error") && opts.stderr) {
-      opts.stderr(message);
+      opts.stderr(`${message}${suffix}`);
     }
   };
 
