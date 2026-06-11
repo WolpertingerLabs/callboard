@@ -255,21 +255,13 @@ describe("translateOptions — Claude option passthrough", () => {
   });
 });
 
-describe("translateOptions — env → skillEnv forwarding", () => {
-  it("forwards env entries as orOpts.skillEnv (the harness's only env surface)", () => {
+describe("translateOptions — env is deliberately not forwarded", () => {
+  it("never populates skillEnv from opts.env (claude.ts env carries process.env + API keys; generic ${VAR} skill substitution would render secrets into prompts)", () => {
     const { orOpts } = translateOptions(
-      { openRouter: defaultExtras, env: { MCP_KEY_ALIAS: "agent-a", HOME: "/home/u" } },
+      { openRouter: defaultExtras, env: { OPENROUTER_API_KEY: "sk-secret", HOME: "/home/u" } },
       "hi",
     );
-    expect(orOpts.skillEnv).toEqual({ MCP_KEY_ALIAS: "agent-a", HOME: "/home/u" });
-  });
-
-  it("drops entries claude.ts unset via the `KEY: undefined` subprocess idiom", () => {
-    const { orOpts } = translateOptions(
-      { openRouter: defaultExtras, env: { KEEP: "yes", CLAUDECODE: undefined } },
-      "hi",
-    );
-    expect(orOpts.skillEnv).toEqual({ KEEP: "yes" });
+    expect(orOpts.skillEnv).toBeUndefined();
   });
 
   it("leaves skillEnv undefined when no env is supplied", () => {

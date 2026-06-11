@@ -7,9 +7,9 @@
  * same shape — fields with a direct equivalent map across (`cwd`, `maxTurns`,
  * `allowedTools`, `canUseTool`, `mcpServers` — in-process bundles become
  * tools, external stdio/http/sse configs become harness `mcpServers` bridge
- * entries, see {@link collectMcpTools}); `env` narrows to the harness's
- * `skillEnv` (the only env surface an in-process engine has — see the note
- * in {@link translateOptions}); truly Claude-specific fields are silently
+ * entries, see {@link collectMcpTools}); `env` is deliberately dropped (the
+ * harness is in-process — see the secret-leak note in
+ * {@link translateOptions}); truly Claude-specific fields are silently
  * dropped (`pathToClaudeCodeExecutable`); OR-specific settings ride in via
  * the `openRouter` sub-object claude.ts populates for OpenRouter chats.
  *
@@ -115,9 +115,9 @@ interface ClaudeShapedOptions {
   mcpServers?: Record<string, SdkMcpServer | ClaudeExternalMcpServer | { tools?: readonly unknown[] }>;
   /**
    * Subprocess environment the Claude path hands to the SDK CLI. The harness
-   * runs in-process, so there is no subprocess to inherit this — the only
-   * env surface it exposes is `skillEnv` (values resolvable via `${VAR}` in
-   * skill bodies). See the forwarding note in {@link translateOptions}.
+   * runs in-process, so there is no subprocess to populate — this field is
+   * accepted for shape compatibility and deliberately NOT forwarded (see the
+   * secret-leak note in {@link translateOptions}).
    */
   env?: Record<string, string | undefined>;
   /**
@@ -235,23 +235,19 @@ export function translateOptions(
   if (opts.onAskUserQuestion) orOpts.onAskUserQuestion = opts.onAskUserQuestion;
   if (opts.abortController) orOpts.signal = opts.abortController.signal;
 
-  // Narrow env forwarding. The Claude path hands `opts.env` to the SDK's CLI
-  // subprocess wholesale; the harness runs IN-PROCESS, so there is no
-  // subprocess env to populate — bash/tool children already inherit
-  // process.env, and per-MCP-server env rides on each server's bridge config
-  // (translated below). The one env surface the harness does expose is
-  // `skillEnv`: values resolvable via `${VAR}` substitution in skill bodies
-  // (deliberately narrow so skills can't read arbitrary host env). Forward
-  // the same env the Claude-path skills would see, minus entries claude.ts
-  // unset via `KEY: undefined` (the subprocess-deletion idiom — skillEnv
-  // values must be strings).
-  if (opts.env) {
-    const skillEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(opts.env)) {
-      if (typeof value === "string") skillEnv[key] = value;
-    }
-    orOpts.skillEnv = skillEnv;
-  }
+  // `opts.env` is deliberately NOT forwarded. The Claude path needs it because
+  // the SDK runs as a CLI subprocess whose environment must be populated; the
+  // harness runs IN-PROCESS, so every place env actually matters is already
+  // covered: bash/monitor children and skill `` !`cmd` `` shell execution
+  // inherit process.env, and per-MCP-server env rides on each server's bridge
+  // config (translated below). The only remaining harness surface is
+  // `skillEnv` — values resolvable via generic `${VAR}` substitution in skill
+  // BODIES, i.e. rendered straight into the model prompt. claude.ts builds
+  // `opts.env` from the full process.env plus API-key overrides, and Claude
+  // Code does not substitute arbitrary env vars into skill bodies either, so
+  // forwarding it here would let any skill render `${OPENROUTER_API_KEY}`
+  // into a prompt — a secret-leak vector, not parity. skillEnv stays at its
+  // narrow library default (only the well-known `CLAUDE_*` keys resolve).
 
   // When callboard injects MCP server bundles (callboard-tools, mcp-proxy,
   // agent tools), surface their tools alongside OR's built-in client tools
