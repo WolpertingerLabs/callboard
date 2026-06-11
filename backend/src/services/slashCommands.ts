@@ -1,6 +1,7 @@
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getPluginsForDirectory, Plugin, pluginToSlashCommands } from "./plugins.js";
+import { customSkillsService } from "./custom-skills-service.js";
 import { DATA_DIR, ensureDataDir } from "../utils/paths.js";
 
 const SLASH_COMMANDS_FILE = join(DATA_DIR, "slash-commands.json");
@@ -65,14 +66,25 @@ export function setSlashCommandsForDirectory(directory: string, commands: string
 }
 
 /**
- * Get both slash commands and plugins for a directory
+ * Get both slash commands and plugins for a directory.
+ * Callboard custom skills are appended as `callboard:<name>` entries (deduped
+ * against CLI-reported commands) so they show up in autocomplete immediately,
+ * before any session has run in the directory.
  */
 export function getCommandsAndPluginsForDirectory(directory: string): DirectoryCommandsAndPlugins {
-  const slashCommands = getSlashCommandsForDirectory(directory);
+  const slashCommands = new Set(getSlashCommandsForDirectory(directory));
   const plugins = getPluginsForDirectory(directory);
 
+  try {
+    for (const cmd of customSkillsService.listSlashCommands()) {
+      slashCommands.add(cmd);
+    }
+  } catch (error) {
+    console.warn("Failed to append custom skill commands:", error);
+  }
+
   return {
-    slashCommands,
+    slashCommands: Array.from(slashCommands),
     plugins,
   };
 }

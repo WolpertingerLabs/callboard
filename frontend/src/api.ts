@@ -39,6 +39,8 @@ import type {
   ConnectionStatus,
   CustomTheme,
   ThemeListItem,
+  CustomSkill,
+  CustomSkillListItem,
   McpToolDefinition,
   McpToolParameter,
   McpToolServerInfo,
@@ -88,6 +90,8 @@ export type {
   ConnectionStatus,
   CustomTheme,
   ThemeListItem,
+  CustomSkill,
+  CustomSkillListItem,
   McpToolDefinition,
   McpToolParameter,
   McpToolServerInfo,
@@ -1457,6 +1461,54 @@ export async function deleteTheme(name: string): Promise<void> {
     credentials: "include",
   });
   await assertOk(res, "Failed to delete theme");
+}
+
+// ── Custom Skills ───────────────────────────────────────────────────
+
+export async function listCustomSkills(): Promise<CustomSkillListItem[]> {
+  const res = await fetch(`${BASE}/custom-skills`, { credentials: "include" });
+  await assertOk(res, "Failed to list skills");
+  const data = await res.json();
+  return data.skills;
+}
+
+export async function getCustomSkill(name: string): Promise<CustomSkill> {
+  const res = await fetch(`${BASE}/custom-skills/${encodeURIComponent(name)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get skill");
+  const data = await res.json();
+  return data.skill;
+}
+
+export async function createCustomSkill(skill: { name: string; description: string; content: string }): Promise<CustomSkill> {
+  const res = await fetch(`${BASE}/custom-skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(skill),
+  });
+  await assertOk(res, "Failed to create skill");
+  const data = await res.json();
+  return data.skill;
+}
+
+export async function updateCustomSkill(originalName: string, updates: { name?: string; description?: string; content?: string }): Promise<CustomSkill> {
+  const res = await fetch(`${BASE}/custom-skills/${encodeURIComponent(originalName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update skill");
+  const data = await res.json();
+  return data.skill;
+}
+
+export async function deleteCustomSkill(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/custom-skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete skill");
 }
 
 // ── MCP Tools ────────────────────────────────────────────────────────

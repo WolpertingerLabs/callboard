@@ -16,6 +16,7 @@ import type { StreamEvent } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
+import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-service.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
@@ -150,6 +151,24 @@ function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
     }
   } catch (error) {
     log.warn(`Failed to build app-wide plugin options: ${error}`);
+  }
+
+  // Callboard custom skills — a synthetic plugin so both providers pick them
+  // up: the Claude SDK loads it natively, and the OR adapter reads this same
+  // descriptor array via extractPluginDirs → loadPlugins. Null when no
+  // custom skills exist.
+  try {
+    const customSkillsDir = customSkillsService.getPluginDir();
+    if (customSkillsDir && !includedNames.has(CUSTOM_SKILLS_PLUGIN_NAME)) {
+      sdkPlugins.push({
+        type: "local",
+        path: customSkillsDir,
+        name: CUSTOM_SKILLS_PLUGIN_NAME,
+      });
+      includedNames.add(CUSTOM_SKILLS_PLUGIN_NAME);
+    }
+  } catch (error) {
+    log.warn(`Failed to build custom-skills plugin options: ${error}`);
   }
 
   return sdkPlugins;
