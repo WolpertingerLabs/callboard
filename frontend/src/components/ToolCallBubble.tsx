@@ -4,6 +4,7 @@ import type { ParsedMessage } from "../api";
 import { getToolSummary, parseTodoItems, TodoList, MessageMetadata } from "./MessageBubble";
 import MediaRenderer from "./MediaRenderer";
 import CanvasRenderer from "./CanvasRenderer";
+import JsonContentView from "./JsonContentView";
 
 interface ToolCallBubbleProps {
   toolUse: ParsedMessage;
@@ -106,8 +107,9 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
 
         {/* Expandable: tool input JSON */}
         {inputExpanded && (
-          <pre
-            style={{
+          <JsonContentView
+            content={toolUse.content}
+            preStyle={{
               padding: "6px 12px",
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
@@ -117,9 +119,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
               margin: 0,
               background: "transparent",
             }}
-          >
-            {toolUse.content}
-          </pre>
+          />
         )}
 
         {/* Tool result section */}
@@ -146,8 +146,9 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
               <span style={{ fontStyle: "italic" }}>Result</span>
             </div>
             {resultExpanded && (
-              <pre
-                style={{
+              <JsonContentView
+                content={toolResult.content}
+                preStyle={{
                   marginTop: 4,
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
@@ -155,9 +156,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
                   maxHeight: 300,
                   overflow: "auto",
                 }}
-              >
-                {toolResult.content}
-              </pre>
+              />
             )}
           </div>
         )}
