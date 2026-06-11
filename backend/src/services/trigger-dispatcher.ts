@@ -19,6 +19,28 @@ import type { StoredEvent } from "./event-log.js";
 
 const log = createLogger("trigger-dispatcher");
 
+// ── Ephemeral event listeners ───────────────────────────────────
+// One-shot programmatic listeners (e.g. a job run's wait_event step) that
+// share the trigger filter machinery without being persisted as triggers.
+// The owner is responsible for unregistering (typically inside its callback).
+
+interface EphemeralEventListener {
+  id: string;
+  filter: TriggerFilter;
+  callback: (event: StoredEvent) => void;
+}
+
+const ephemeralListeners = new Map<string, EphemeralEventListener>();
+
+export function registerEphemeralEventListener(id: string, filter: TriggerFilter, callback: (event: StoredEvent) => void): void {
+  ephemeralListeners.set(id, { id, filter, callback });
+  log.debug(`Registered ephemeral event listener "${id}"`);
+}
+
+export function unregisterEphemeralEventListener(id: string): void {
+  if (ephemeralListeners.delete(id)) log.debug(`Unregistered ephemeral event listener "${id}"`);
+}
+
 // ── Public API ──────────────────────────────────────────────────
 
 /**
@@ -29,6 +51,17 @@ const log = createLogger("trigger-dispatcher");
  * so the event watcher polling loop is not blocked.
  */
 export function dispatchEvent(event: StoredEvent): void {
+  // Ephemeral listeners first — snapshot the values so a callback that
+  // registers/unregisters listeners doesn't mutate the live iteration.
+  for (const listener of [...ephemeralListeners.values()]) {
+    if (!matchesFilter(event, listener.filter)) continue;
+    try {
+      listener.callback(event);
+    } catch (err: any) {
+      log.error(`Ephemeral listener "${listener.id}" callback failed: ${err.message}`);
+    }
+  }
+
   const agents = listAgents();
 
   for (const agent of agents) {

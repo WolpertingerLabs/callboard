@@ -19,6 +19,7 @@ import {
   Shield,
   Activity,
   SlidersHorizontal,
+  Workflow,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -57,6 +58,7 @@ import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
+import JobRunPanel from "../components/JobRunPanel";
 import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions, type EffortLevel } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { getActivePlugins } from "../utils/plugins";
@@ -181,7 +183,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     message: string;
   }>({ isOpen: false, prompt: "", message: "" });
   const acknowledgeBranchDriftRef = useRef(false);
-  const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug">("chat");
+  const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug" | "job">("chat");
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [chatPermissions, setChatPermissions] = useState<DefaultPermissions | null>(null);
@@ -248,6 +250,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
     return found ? total : null;
   }, [messages]);
+
+  // When this chat is a job-run step session, the run id from metadata —
+  // enables the "Job" view-mode tab showing the run's progress.
+  const chatJobRunId = useMemo((): string | undefined => {
+    if (!id || !chat?.metadata) return undefined;
+    try {
+      const meta = JSON.parse(chat.metadata);
+      return typeof meta.jobRunId === "string" ? meta.jobRunId : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [id, chat?.metadata]);
 
   const chatProvider = useMemo((): "claude-code" | "openrouter" => {
     if (!id) return newChatProvider ?? "claude-code";
@@ -1781,6 +1795,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       color: viewMode === "debug" ? "var(--text-on-accent, #fff)" : "var(--text)",
                       padding: "8px",
                       border: "none",
+                      borderRight: chatJobRunId ? "1px solid var(--border)" : "none",
                       cursor: "pointer",
                       display: "flex",
                       alignItems: "center",
@@ -1790,6 +1805,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     title={viewMode === "debug" ? "Back to chat" : "Show debug metrics"}
                   >
                     <Activity size={16} />
+                  </button>
+                )}
+                {chatJobRunId && (
+                  <button
+                    onClick={() => setViewMode(viewMode === "job" ? "chat" : "job")}
+                    style={{
+                      background: viewMode === "job" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
+                      color: viewMode === "job" ? "var(--text-on-accent, #fff)" : "var(--text)",
+                      padding: "8px",
+                      border: "none",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      transition: "all 0.15s ease",
+                    }}
+                    title={viewMode === "job" ? "Back to chat" : "Show job run progress"}
+                  >
+                    <Workflow size={16} />
                   </button>
                 )}
               </div>
@@ -2069,6 +2103,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     color: viewMode === "debug" ? "var(--text-on-accent, #fff)" : "var(--text)",
                     padding: "8px",
                     border: "none",
+                    borderRight: chatJobRunId ? "1px solid var(--border)" : "none",
                     cursor: "pointer",
                     display: "flex",
                     alignItems: "center",
@@ -2078,6 +2113,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   title={viewMode === "debug" ? "Back to chat" : "Show debug metrics"}
                 >
                   <Activity size={16} />
+                </button>
+              )}
+              {chatJobRunId && (
+                <button
+                  onClick={() => setViewMode(viewMode === "job" ? "chat" : "job")}
+                  style={{
+                    background: viewMode === "job" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
+                    color: viewMode === "job" ? "var(--text-on-accent, #fff)" : "var(--text)",
+                    padding: "8px",
+                    border: "none",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transition: "all 0.15s ease",
+                  }}
+                  title={viewMode === "job" ? "Back to chat" : "Show job run progress"}
+                >
+                  <Workflow size={16} />
                 </button>
               )}
             </div>
@@ -2273,6 +2327,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           <GitDiffView folder={!id ? folder : chat?.folder || folder} />
         ) : viewMode === "debug" ? (
           <ChatDebugPanel messages={messages} />
+        ) : viewMode === "job" && chatJobRunId ? (
+          <div style={{ height: "100%", overflow: "auto" }}>
+            <JobRunPanel runId={chatJobRunId} />
+          </div>
         ) : (
           <div ref={chatContainerRef} style={{ height: "100%", overflow: "auto", padding: "12px 16px" }}>
             {!id ? (

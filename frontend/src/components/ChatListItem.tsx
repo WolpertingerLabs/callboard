@@ -1,4 +1,4 @@
-import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell } from "lucide-react";
+import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell, Workflow } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
 import ProviderBadge from "./ProviderBadge";
@@ -32,6 +32,8 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let chatStatusEmoji: string | undefined;
   let summon: { message: string; urgency: string; createdAt: string } | undefined;
   let provider: string | undefined;
+  let jobRunId: string | undefined;
+  let jobStepId: string | undefined;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     title = meta.title;
@@ -44,6 +46,8 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     chatStatusEmoji = meta.chatStatusEmoji || undefined;
     summon = meta.summon || undefined;
     provider = meta.provider || undefined;
+    jobRunId = meta.jobRunId || undefined;
+    jobStepId = meta.jobStepId || undefined;
   } catch {}
 
   const hasUnread = lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
@@ -87,7 +91,27 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               {agentAlias}
             </span>
           )}
-          {isTriggered && (
+          {jobRunId && (
+            <span
+              title={`Job step${jobStepId ? `: ${jobStepId}` : ""} (run ${jobRunId})`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: "var(--chatlist-badge-agent-bg)",
+                color: "var(--chatlist-badge-agent-text)",
+                flexShrink: 0,
+              }}
+            >
+              <Workflow size={10} style={{ color: "var(--chatlist-badge-agent-text)" }} />
+              {jobStepId || "job"}
+            </span>
+          )}
+          {isTriggered && !jobRunId && (
             <span
               title="Triggered (automated)"
               style={{

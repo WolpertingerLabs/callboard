@@ -60,3 +60,24 @@ export type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "./openrouter
 export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./providers.js";
 
 export type { ContactChannel, UserContactInfo, NotifiableChannel } from "./userContact.js";
+
+export type {
+  JobStepType,
+  JobInputDef,
+  AgentJobStep,
+  ApprovalJobStep,
+  PollJobStep,
+  WaitEventJobStep,
+  JobGateOp,
+  JobGateCondition,
+  GateJobStep,
+  NotifyJobStep,
+  JobStep,
+  JobDefinition,
+  JobRunStatus,
+  JobStepResult,
+  JobRunHistoryEntry,
+  JobRunActiveStep,
+  JobRun,
+  JobRunListItem,
+} from "./jobs.js";

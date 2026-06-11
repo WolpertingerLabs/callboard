@@ -54,10 +54,12 @@ import { filesRouter } from "./routes/files.js";
 import { canvasRouter } from "./routes/canvas.js";
 import { mcpToolsRouter } from "./routes/mcp-tools.js";
 import { openRouterRouter } from "./routes/openrouter.js";
+import { jobsRouter } from "./routes/jobs.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { installProcessGuards } from "./utils/process-guards.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
+import { initJobRunner, shutdownJobRunner } from "./services/job-runner.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
@@ -215,6 +217,7 @@ app.use("/api/files", filesRouter);
 app.use("/api/canvas", canvasRouter);
 app.use("/api/mcp-tools", mcpToolsRouter);
 app.use("/api/openrouter", openRouterRouter);
+app.use("/api/jobs", jobsRouter);
 
 // Instance name endpoints (requires auth)
 import { getInstanceName, saveInstanceName, generateInstanceName } from "./utils/paths.js";
@@ -562,6 +565,13 @@ app.listen(PORT, () => {
     log.error(`Scheduler init failed: ${err.message}`);
   }
   try {
+    // Resumes non-terminal job runs (re-arms timers/event waits, harvests
+    // step sessions that finished during downtime).
+    initJobRunner();
+  } catch (err: any) {
+    log.error(`Job runner init failed: ${err.message}`);
+  }
+  try {
     initCliWatcher();
   } catch (err: any) {
     log.error(`CLI watcher init failed: ${err.message}`);
@@ -629,6 +639,7 @@ app.listen(PORT, () => {
 async function gracefulShutdown(signal: string) {
   log.info(`${signal} received, shutting down gracefully`);
   shutdownScheduler();
+  shutdownJobRunner();
   shutdownDebounce();
   shutdownEventWatchers();
   shutdownCliWatcher();

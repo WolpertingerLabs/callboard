@@ -19,6 +19,7 @@ import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-service.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
+import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
 import {
@@ -637,7 +638,13 @@ interface SendMessageOptions {
   /** Whether this chat was triggered by an automated system (cron, trigger, heartbeat, etc.) */
   triggered?: boolean;
   /** How this chat was triggered — stored in metadata for icon distinction */
-  triggeredBy?: "cron" | "event" | "trigger" | "tool";
+  triggeredBy?: "cron" | "event" | "trigger" | "tool" | "job";
+  /**
+   * Set by the job runner when this session executes a job step. Tags the
+   * chat metadata (jobRunId/jobStepId) and injects the job-tools MCP server
+   * (complete_job_step) unless the session is advisory.
+   */
+  jobContext?: import("./job-runner.js").JobContext;
   /**
    * Which agent provider runs this chat. Only honored for new chats —
    * existing chats route by the `provider` field already in their metadata.
@@ -713,6 +720,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
       ...(opts.triggered && { triggered: true }),
       ...(opts.triggeredBy && { triggeredBy: opts.triggeredBy }),
+      // Tag job-step chats so the UI can badge them and link to the run.
+      ...(opts.jobContext && { jobRunId: opts.jobContext.runId, jobStepId: opts.jobContext.stepId }),
       // Pin the provider for the lifetime of this chat. Once written here,
       // the metadata-routing block below sees it and getAgentProvider()
       // returns the matching adapter for every subsequent message in the
@@ -817,6 +826,21 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
   } catch (err: any) {
     log.error(`Failed to build callboard-tools server: ${err.message}`);
+  }
+
+  // ── Job step tools: injected only for job runner step sessions ──
+  if (opts.jobContext && !opts.jobContext.advisory) {
+    try {
+      const spec = buildJobStepToolsSpec(() => opts.jobContext);
+      const server = agentProvider.buildToolServer(spec);
+      if (server) {
+        mcpServers["job-tools"] = server;
+        allowedTools.push("mcp__job-tools__*");
+        log.info(`Injected job-tools MCP server (run=${opts.jobContext.runId}, step=${opts.jobContext.stepId})`);
+      }
+    } catch (err: any) {
+      log.error(`Failed to build job-tools server: ${err.message}`);
+    }
   }
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
@@ -1236,3 +1260,7 @@ setExecutorMessageSender(sendMessage);
 // child sessions they spawned (via start_chat_session onComplete) finish.
 import { initSessionCompletionHandler } from "./session-completion-handler.js";
 initSessionCompletionHandler({ sendMessage, getActiveSession });
+
+// Register dependencies for the job runner (deterministic multi-step jobs).
+import { setJobRunnerDeps } from "./job-runner.js";
+setJobRunnerDeps({ sendMessage, stopSession, getActiveSession });
