@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { PanelLeftOpen, Settings2 } from "lucide-react";
-import { getJobsOverview, type JobOverviewItem } from "../api";
+import { listJobRuns, type JobRunListItem } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
 import JobListItem, { ACTIVE_JOB_RUN_STATUSES } from "../components/JobListItem";
 import NewChatPanel from "../components/NewChatPanel";
 import type { SidebarViewMode } from "../utils/localStorage";
+
+const RUN_LIMIT = 50;
 
 interface JobListProps {
   activeChatId?: string;
@@ -29,17 +31,17 @@ export default function JobList({
 }: JobListProps) {
   const { metadataVersion } = useSessionContext();
   const navigate = useNavigate();
-  const [jobs, setJobs] = useState<JobOverviewItem[]>([]);
+  const [runs, setRuns] = useState<JobRunListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
-  const now = useMemo(() => Date.now(), [jobs]);
+  const now = useMemo(() => Date.now(), [runs]);
 
   const load = useCallback(async () => {
     try {
-      const items = await getJobsOverview();
-      setJobs(items);
+      const items = await listJobRuns({ limit: RUN_LIMIT });
+      setRuns(items);
     } catch (err) {
-      console.error("Failed to load jobs overview:", err);
+      console.error("Failed to load job runs:", err);
     } finally {
       setIsLoading(false);
     }
@@ -54,8 +56,8 @@ export default function JobList({
     onRefresh(load);
   }, [onRefresh, load]);
 
-  // Poll while any job has an active (non-terminal, non-paused) run
-  const hasActiveRun = jobs.some((j) => j.latestRun && ACTIVE_JOB_RUN_STATUSES.includes(j.latestRun.status));
+  // Poll while any run is active (non-terminal, non-paused)
+  const hasActiveRun = runs.some((r) => ACTIVE_JOB_RUN_STATUSES.includes(r.status));
   useEffect(() => {
     if (!hasActiveRun) return;
     const interval = setInterval(load, 5_000);
@@ -70,11 +72,11 @@ export default function JobList({
     return () => clearTimeout(timer);
   }, [metadataVersion, load]);
 
-  const handleJobClick = (job: JobOverviewItem) => {
-    if (job.latestRun?.latestChatId) {
-      navigate(`/chat/${job.latestRun.latestChatId}`);
+  const handleRunClick = (run: JobRunListItem) => {
+    if (run.latestChatId) {
+      navigate(`/chat/${run.latestChatId}`);
     } else {
-      // No run chat to show — fall back to the jobs management page
+      // No step chat yet — fall back to the jobs management page
       navigate("/settings/jobs");
     }
   };
@@ -136,9 +138,7 @@ export default function JobList({
           color: "var(--text-muted)",
         }}
       >
-        <span>
-          {jobs.length} {jobs.length === 1 ? "job" : "jobs"}
-        </span>
+        <span>{runs.length === RUN_LIMIT ? `Last ${RUN_LIMIT} runs` : `${runs.length} ${runs.length === 1 ? "run" : "runs"}`}</span>
         <button
           onClick={() => navigate("/settings/jobs")}
           title="Create and manage jobs"
@@ -161,19 +161,19 @@ export default function JobList({
 
       {showNew && <NewChatPanel onClose={() => setShowNew(false)} />}
 
-      {/* Job list */}
+      {/* Run list */}
       <div style={{ flex: 1, overflow: "auto" }}>
         {isLoading ? (
           <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)" }}>Loading...</div>
-        ) : jobs.length === 0 ? (
-          <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)" }}>No jobs yet. Create one in Settings → Jobs.</div>
+        ) : runs.length === 0 ? (
+          <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)" }}>No job runs yet. Spawn one from Settings → Jobs.</div>
         ) : (
-          jobs.map((job) => (
+          runs.map((run) => (
             <JobListItem
-              key={job.jobId}
-              job={job}
-              isActive={!!activeChatId && activeChatId === job.latestRun?.latestChatId}
-              onClick={() => handleJobClick(job)}
+              key={run.runId}
+              run={run}
+              isActive={!!activeChatId && activeChatId === run.latestChatId}
+              onClick={() => handleRunClick(run)}
               now={now}
             />
           ))

@@ -11,7 +11,7 @@
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
-import { recordStepResult } from "./job-store.js";
+import { recordStepResult, setRunTitle } from "./job-store.js";
 import type { JobContext } from "./job-runner.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -27,14 +27,17 @@ export function buildJobStepToolsSpec(getJobContext: () => JobContext | undefine
         "Report the result of the job step this session is running. This session is one step of a deterministic job run — " +
           "the job runner harvests what you report here when the session ends, and uses it to decide the next step. " +
           "Call this exactly once, as the LAST thing you do. For steps with declared outputs, every declared key must be present " +
-          "in `outputs`. For poll/checker steps, set `verdict` to \"done\" or \"not_yet\". You may call it again before the " +
+          'in `outputs`. For poll/checker steps, set `verdict` to "done" or "not_yet". You may call it again before the ' +
           "session ends to overwrite an earlier report.",
         {
           outputs: z
             .record(z.string(), z.any())
             .optional()
             .describe("Structured outputs for this step (keyed values that later steps reference as {{steps.<id>.outputs.<key>}})"),
-          verdict: z.string().optional().describe('For poll steps: "done" or "not_yet". For review-style steps: e.g. "pass" / "fail" (also fine as an output).'),
+          verdict: z
+            .string()
+            .optional()
+            .describe('For poll steps: "done" or "not_yet". For review-style steps: e.g. "pass" / "fail" (also fine as an output).'),
           summary: z.string().optional().describe("One-line human-readable summary of what this step did"),
         },
         async (args) => {
@@ -62,10 +65,35 @@ export function buildJobStepToolsSpec(getJobContext: () => JobContext | undefine
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify({ success: true, runId: ctx.runId, stepId: ctx.stepId, note: "Result recorded. Finish your turn — the job runner advances when this session ends." }),
+                text: JSON.stringify({
+                  success: true,
+                  runId: ctx.runId,
+                  stepId: ctx.stepId,
+                  note: "Result recorded. Finish your turn — the job runner advances when this session ends.",
+                }),
               },
             ],
           };
+        },
+      ),
+      defineTool(
+        "set_job_run_title",
+        "Set a short human-readable title on the job run this session belongs to. The title is shown in the jobs list " +
+          'instead of the generic job name, so make it specific to this run (e.g. "Deploy v2.3.1 to prod" rather than "Deploy Pipeline"). ' +
+          "Call it early if the run has no title yet; calling again overwrites the previous title.",
+        {
+          title: z.string().min(1).max(120).describe("Title for this job run (1-120 characters)"),
+        },
+        async (args) => {
+          const ctx = getJobContext();
+          if (!ctx) {
+            return { content: [{ type: "text" as const, text: JSON.stringify({ error: "No job context — this session is not a job step" }) }] };
+          }
+          if (!setRunTitle(ctx.runId, args.title)) {
+            return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Run ${ctx.runId} not found` }) }] };
+          }
+          log.info(`Set title for run ${ctx.runId}: "${args.title}"`);
+          return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, runId: ctx.runId, title: args.title }) }] };
         },
       ),
     ],
