@@ -1,5 +1,6 @@
 import type { AgentProviderKind, EffortLevel } from "../utils/localStorage";
 import OpenRouterModelSelector from "./OpenRouterModelSelector";
+import ClaudeModelSelector from "./ClaudeModelSelector";
 
 export type ProviderConfigPickerMode = "panel" | "inline";
 
@@ -8,10 +9,16 @@ interface ProviderConfigPickerProps {
   onProviderChange: (provider: AgentProviderKind) => void;
   effort: EffortLevel | undefined;
   onEffortChange: (effort: EffortLevel | undefined) => void;
-  // Empty string = "use global default from Settings → API". Free-form text;
-  // OR validates the slug server-side.
+  // OpenRouter model. Empty string = "use global default from Settings → API".
+  // Free-form text; OR validates the slug server-side.
   model: string;
   onModelChange: (model: string) => void;
+  // Anthropic model for Claude Code chats (alias like "opus" or full ID like
+  // "claude-sonnet-4-6"). Empty string = "use global default from Settings →
+  // API". Kept separate from `model` so toggling providers restores each
+  // one's prior selection. Free-form text; the CLI validates server-side.
+  claudeModel: string;
+  onClaudeModelChange: (model: string) => void;
   // `null` while /system-info is in flight — OR is treated as available until
   // we know otherwise (the disabled gate only kicks in on an explicit false).
   openRouterConfigured: boolean | null;
@@ -40,8 +47,10 @@ interface ProviderConfigPickerProps {
  *
  * The OR-specific knobs (effort, model) only render when the active
  * provider is "openrouter" AND OR is configured (`openRouterConfigured !==
- * false`). Switching the toggle back to claude-code collapses them — the
- * caller's stored values are preserved so toggling forward restores them.
+ * false`). Claude Code shows its own model knob (Anthropic alias or full
+ * ID, no effort). Each provider's model value lives in a separate prop —
+ * switching the toggle swaps the controls while preserving both values, so
+ * toggling back restores the prior selection.
  */
 export default function ProviderConfigPicker({
   provider,
@@ -50,6 +59,8 @@ export default function ProviderConfigPicker({
   onEffortChange,
   model,
   onModelChange,
+  claudeModel,
+  onClaudeModelChange,
   openRouterConfigured,
   openRouterMaxBudgetUsd,
   onOpenApiSettings,
@@ -58,17 +69,12 @@ export default function ProviderConfigPicker({
 }: ProviderConfigPickerProps) {
   const inline = mode === "inline";
   const showOrKnobs = provider === "openrouter" && openRouterConfigured !== false;
+  const showClaudeKnobs = provider === "claude-code";
 
   // `inline` mode lays the OR controls side-by-side; `panel` mode stacks
   // them. Hoisted so both render paths share the same controls below.
   const orControls = showOrKnobs ? (
-    <div
-      style={
-        inline
-          ? { display: "flex", gap: 8, alignItems: "flex-start" }
-          : { display: "block" }
-      }
-    >
+    <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
       {/* Reasoning effort — OpenRouter only. OR maps the level to each
           provider's native parameter (Anthropic thinking.budget_tokens,
           OpenAI reasoning_effort, etc.); non-reasoning models silently
@@ -138,11 +144,39 @@ export default function ProviderConfigPicker({
           placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
         />
         {!inline && (
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-            Optional — leave empty to use the global default from Settings → API.
-          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Optional — leave empty to use the global default from Settings → API.</div>
         )}
       </div>
+    </div>
+  ) : null;
+
+  // Per-chat Anthropic model — Claude Code only. Empty value falls back to
+  // the global default configured in Settings → API (ANTHROPIC_MODEL).
+  const claudeControls = showClaudeKnobs ? (
+    <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
+      <label
+        htmlFor={inline ? "inlineClaudeModel" : "newChatClaudeModel"}
+        style={{
+          display: "block",
+          fontSize: inline ? 11 : 13,
+          fontWeight: 600,
+          color: "var(--text-muted)",
+          marginBottom: inline ? 4 : 6,
+        }}
+      >
+        Model
+      </label>
+      <ClaudeModelSelector
+        id={inline ? "inlineClaudeModel" : "newChatClaudeModel"}
+        value={claudeModel}
+        onChange={onClaudeModelChange}
+        placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+      />
+      {!inline && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          Optional — alias (opus, sonnet, haiku, opusplan) or full model ID. Leave empty to use the global default from Settings → API.
+        </div>
+      )}
     </div>
   ) : null;
 
@@ -150,9 +184,7 @@ export default function ProviderConfigPicker({
     <>
       {showProviderToggle && (
         <div style={{ marginBottom: inline ? 8 : 12 }}>
-          <div style={{ fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}>
-            Provider
-          </div>
+          <div style={{ fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}>Provider</div>
           <div style={{ display: "flex", gap: 6 }}>
             <button
               type="button"
@@ -176,7 +208,9 @@ export default function ProviderConfigPicker({
               type="button"
               onClick={() => openRouterConfigured !== false && onProviderChange("openrouter")}
               disabled={openRouterConfigured === false}
-              title={openRouterConfigured === false ? "Configure your OpenRouter API key in Settings → API to enable this provider" : "Use OpenRouter for this chat"}
+              title={
+                openRouterConfigured === false ? "Configure your OpenRouter API key in Settings → API to enable this provider" : "Use OpenRouter for this chat"
+              }
               style={{
                 flex: 1,
                 padding: inline ? "6px 10px" : "8px 12px",
@@ -185,12 +219,7 @@ export default function ProviderConfigPicker({
                 borderRadius: 6,
                 border: provider === "openrouter" ? "1px solid var(--accent)" : "1px solid var(--border)",
                 background: provider === "openrouter" ? "var(--accent)" : "var(--surface)",
-                color:
-                  openRouterConfigured === false
-                    ? "var(--text-muted)"
-                    : provider === "openrouter"
-                      ? "var(--text-on-accent)"
-                      : "var(--text)",
+                color: openRouterConfigured === false ? "var(--text-muted)" : provider === "openrouter" ? "var(--text-on-accent)" : "var(--text)",
                 cursor: openRouterConfigured === false ? "not-allowed" : "pointer",
                 opacity: openRouterConfigured === false ? 0.6 : 1,
                 transition: "all 0.15s",
@@ -235,6 +264,7 @@ export default function ProviderConfigPicker({
       )}
 
       {orControls}
+      {claudeControls}
     </>
   );
 }

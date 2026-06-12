@@ -17,6 +17,7 @@ import {
   searchOpenRouterModelAliases,
   formatOpenRouterPrice,
 } from "./openrouter-models.js";
+import { getSdkInfoAsync } from "./sdk-info.js";
 import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
@@ -668,6 +669,39 @@ export function buildCallboardToolsSpec(
           } catch (err: any) {
             log.error(`start_chat_session failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error starting session: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── Anthropic Model Discovery ───────────────────────────────────
+
+      defineTool(
+        "list_anthropic_models",
+        'List the Anthropic models available to this Claude Code installation (reflects the configured auth/subscription). Use the returned value as the `model` param when starting a claude-code session. Aliases like "opus", "sonnet", "haiku", and "opusplan" are also always valid.',
+        {},
+        async () => {
+          try {
+            const info = await getSdkInfoAsync();
+            const rows = info.models.map((m) => ({
+              value: m.value,
+              name: m.displayName,
+              ...(m.description && { description: m.description }),
+            }));
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    count: rows.length,
+                    aliases: ["opus", "sonnet", "haiku", "opusplan"],
+                    models: rows,
+                  }),
+                },
+              ],
+            };
+          } catch (err: any) {
+            log.error(`list_anthropic_models failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error listing models: ${err.message}` }] };
           }
         },
       ),

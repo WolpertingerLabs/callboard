@@ -664,11 +664,18 @@ interface SendMessageOptions {
    */
   effort?: EffortLevel;
   /**
-   * OpenRouter model slug for this chat (e.g. "anthropic/claude-opus-4.7" or an
-   * alias like "~anthropic/claude-sonnet-latest"). Only honored for new chats
-   * with `provider: "openrouter"` — written into chat metadata so existing-chat
-   * follow-ups reuse it. When omitted, falls back to the global
-   * `agentSettings.openRouterModel`. Ignored for non-openrouter providers.
+   * Model for this chat. Only honored for new chats — written into chat
+   * metadata so existing-chat follow-ups reuse it.
+   *
+   * For `provider: "openrouter"`: an OR slug (e.g. "anthropic/claude-opus-4.7")
+   * or an alias like "~anthropic/claude-sonnet-latest". Falls back to the
+   * global `agentSettings.openRouterModel` when omitted.
+   *
+   * For `provider: "claude-code"` (or omitted provider): an Anthropic model
+   * alias ("opus", "sonnet", "haiku", "opusplan") or full model ID (e.g.
+   * "claude-sonnet-4-6"), passed to the SDK as `options.model`. When omitted,
+   * the SDK default applies — including the global ANTHROPIC_MODEL env
+   * override from Settings → API.
    */
   model?: string;
   /**
@@ -763,10 +770,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // paired provider isn't openrouter, so this second guard is
       // defense-in-depth.
       ...(opts.effort && opts.provider === "openrouter" && { effort: opts.effort }),
-      // Pin the per-chat model alongside provider/effort. Only meaningful for
-      // openrouter chats — the OR config block below prefers it over the global
-      // agentSettings.openRouterModel. Ignored for non-openrouter providers.
-      ...(opts.model && opts.provider === "openrouter" && { model: opts.model }),
+      // Pin the per-chat model alongside provider/effort. Meaningful for both
+      // user-facing providers: openrouter chats prefer it over the global
+      // agentSettings.openRouterModel (OR config block below); claude-code
+      // chats pass it to the SDK as options.model. Ignored for other
+      // providers (codex/mock).
+      ...(opts.model && (opts.provider === "openrouter" || (opts.provider ?? "claude-code") === "claude-code") && { model: opts.model }),
       // Pin the explicit-completion requirement so follow-up messages to
       // this chat keep nudging for objective_complete without every caller
       // having to re-thread the flag.
@@ -1004,12 +1013,26 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     : "";
   const systemPromptAppend = [opts.systemPrompt, completionInstruction].filter(Boolean).join("\n\n");
 
+  // Per-chat Anthropic model override for claude-code chats. Read from chat
+  // metadata (covers both new chats — just written above — and resumed chats
+  // loaded from disk) and passed to the SDK as `options.model`, which maps to
+  // the CLI's --model flag and takes precedence over the global
+  // ANTHROPIC_MODEL env override from Settings → API. When unset, no model is
+  // passed so the existing env-var / subscription default behavior is
+  // unchanged. OR chats route their model through options.openRouter.model
+  // instead (below).
+  const claudeCodeModel =
+    providerKind === "claude-code" && typeof initialMetadata.model === "string" && initialMetadata.model.trim().length > 0
+      ? initialMetadata.model.trim()
+      : undefined;
+
   const queryOpts: any = {
     prompt: effectivePrompt,
     options: {
       abortController,
       cwd: folder,
       ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+      ...(claudeCodeModel ? { model: claudeCodeModel } : {}),
       settingSources: ["user", "project", "local"],
       maxTurns: opts.maxTurns ?? 200,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
@@ -1097,7 +1120,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     queryOpts.options.hookAskOverride = hookAskOverride;
   }
 
-  log.debug(`SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, resume=${resumeSessionId || "none"}`);
+  log.debug(
+    `SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, ` +
+      `model=${queryOpts.options.model || "(default)"}, resume=${resumeSessionId || "none"}`,
+  );
 
   (async () => {
     try {

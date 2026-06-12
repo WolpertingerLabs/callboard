@@ -18,9 +18,10 @@ export interface CronAction {
    */
   provider?: UiAgentProviderKind;
   /**
-   * OpenRouter model slug. Only honored when {@link provider} is
-   * "openrouter"; ignored for claude-code. Empty/undefined falls through to
-   * the global default in Settings → API.
+   * Model for the action's provider — an OR slug/alias when {@link provider}
+   * is "openrouter", an Anthropic model alias ("opus", "sonnet", "haiku",
+   * "opusplan") or full model ID when "claude-code". Empty/undefined falls
+   * through to the provider's global default in Settings → API.
    */
   model?: string;
   /**

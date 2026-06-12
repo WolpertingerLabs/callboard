@@ -36,7 +36,11 @@ interface JobSessionFields {
   /** Working directory for the session. Falls back to defaults.folder. */
   folder?: string;
   provider?: UiAgentProviderKind;
-  /** OpenRouter model slug/alias — only valid with provider "openrouter". */
+  /**
+   * Model for the step's provider — an OR slug/alias for "openrouter", an
+   * Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or full ID
+   * for "claude-code". Omit to use the provider's configured default.
+   */
   model?: string;
   /** OpenRouter reasoning effort — only valid with provider "openrouter". */
   effort?: EffortLevel;
