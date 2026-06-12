@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
-import type { JobDefinition, JobRun, JobRunListItem, JobRunStatus, JobStep, JobStepResult } from "shared";
+import type { JobDefinition, JobOverviewItem, JobRun, JobRunListItem, JobRunStatus, JobStep, JobStepResult } from "shared";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -176,6 +176,63 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
   }
   items.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   return filter?.limit ? items.slice(0, filter.limit) : items;
+}
+
+/**
+ * Per-job summaries for the sidebar jobs view: every definition paired with
+ * its most recently spawned run (status, current step, backing chat).
+ * Sorted by latest activity (run updatedAt, falling back to definition
+ * updatedAt) descending.
+ */
+export function listJobsOverview(): JobOverviewItem[] {
+  // Latest run per jobId, by spawn time.
+  const latestByJob = new Map<string, JobRun>();
+  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
+    try {
+      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
+      const existing = latestByJob.get(run.jobId);
+      if (!existing || run.createdAt > existing.createdAt) latestByJob.set(run.jobId, run);
+    } catch (err: any) {
+      log.error(`Failed to read job run ${file}: ${err.message}`);
+    }
+  }
+
+  const sortKeys = new Map<string, string>();
+  const items: JobOverviewItem[] = listJobs().map((job) => {
+    const run = latestByJob.get(job.id);
+    sortKeys.set(job.id, run?.updatedAt ?? job.updatedAt);
+    if (!run) return { jobId: job.id, jobName: job.name, ...(job.description && { description: job.description }), stepCount: job.steps.length };
+
+    const stepIndex = run.currentStepId ? run.definition.steps.findIndex((s) => s.id === run.currentStepId) : -1;
+    const currentStep = stepIndex >= 0 ? run.definition.steps[stepIndex] : undefined;
+    // Active step session, else the most recent step that ran in a chat.
+    const latestChatId = run.activeStep?.chatId ?? [...run.history].reverse().find((h) => h.chatId)?.chatId;
+    const completedSteps = new Set(run.history.map((h) => h.stepId)).size;
+
+    return {
+      jobId: job.id,
+      jobName: job.name,
+      ...(job.description && { description: job.description }),
+      stepCount: job.steps.length,
+      latestRun: {
+        runId: run.runId,
+        status: run.status,
+        currentStepId: run.currentStepId,
+        ...(currentStep && { currentStepName: currentStep.name || currentStep.id, currentStepType: currentStep.type, currentStepIndex: stepIndex + 1 }),
+        stepCount: run.definition.steps.length,
+        completedSteps,
+        ...(latestChatId && { latestChatId }),
+        ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
+        ...(run.error && { error: run.error }),
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt,
+        ...(run.endedAt && { endedAt: run.endedAt }),
+      },
+    };
+  });
+
+  items.sort((a, b) => (sortKeys.get(b.jobId) ?? "").localeCompare(sortKeys.get(a.jobId) ?? ""));
+  return items;
 }
 
 export function getRun(runId: string): JobRun | null {

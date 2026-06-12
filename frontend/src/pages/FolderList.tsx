@@ -7,7 +7,7 @@ import SidebarHeader from "../components/SidebarHeader";
 import FolderListItem from "../components/FolderListItem";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
-import { getFolderMaxAgeDays, saveFolderMaxAgeDays, getDefaultPermissions } from "../utils/localStorage";
+import { getFolderMaxAgeDays, saveFolderMaxAgeDays, getDefaultPermissions, type SidebarViewMode } from "../utils/localStorage";
 
 interface FolderListProps {
   activeChatId?: string;
@@ -16,7 +16,7 @@ interface FolderListProps {
   onToggleSidebar?: () => void;
   claudeLoggedIn?: boolean;
   onShowClaudeModal?: () => void;
-  onViewModeChange: () => void;
+  onViewModeChange: (mode: SidebarViewMode) => void;
 }
 
 const AGE_OPTIONS = [

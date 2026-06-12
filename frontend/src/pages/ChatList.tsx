@@ -11,7 +11,7 @@ import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { DEFAULT_CHAT_FILTERS, hasActiveFilters, type ChatFilters } from "../types/chatFilters";
-import { initializeSuggestedDirectories, getShowTriggeredChats, saveShowTriggeredChats } from "../utils/localStorage";
+import { initializeSuggestedDirectories, getShowTriggeredChats, saveShowTriggeredChats, type SidebarViewMode } from "../utils/localStorage";
 
 interface ChatListProps {
   activeChatId?: string;
@@ -20,7 +20,7 @@ interface ChatListProps {
   onToggleSidebar?: () => void;
   claudeLoggedIn?: boolean;
   onShowClaudeModal?: () => void;
-  onViewModeChange?: () => void;
+  onViewModeChange?: (mode: SidebarViewMode) => void;
 }
 
 export default function ChatList({

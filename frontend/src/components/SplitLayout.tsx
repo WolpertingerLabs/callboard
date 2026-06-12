@@ -3,6 +3,7 @@ import { useRef, useState, useCallback } from "react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ChatList from "../pages/ChatList";
 import FolderList from "../pages/FolderList";
+import JobList from "../pages/JobList";
 import Chat from "../pages/Chat";
 import Settings from "../pages/Settings";
 import AgentList from "../pages/agents/AgentList";
@@ -23,12 +24,9 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => getSidebarCollapsed());
   const [viewMode, setViewMode] = useState<SidebarViewMode>(() => getSidebarViewMode());
 
-  const toggleViewMode = useCallback(() => {
-    setViewMode((prev) => {
-      const next = prev === "folders" ? "chats" : "folders";
-      saveSidebarViewMode(next);
-      return next;
-    });
+  const changeViewMode = useCallback((mode: SidebarViewMode) => {
+    saveSidebarViewMode(mode);
+    setViewMode(mode);
   }, []);
 
   const toggleSidebar = useCallback(() => {
@@ -87,7 +85,19 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
           }}
           claudeLoggedIn={claudeLoggedIn}
           onShowClaudeModal={onShowClaudeModal}
-          onViewModeChange={toggleViewMode}
+          onViewModeChange={changeViewMode}
+        />
+      );
+    }
+    if (viewMode === "jobs") {
+      return (
+        <JobList
+          onRefresh={(fn) => {
+            chatListRefreshRef.current = fn;
+          }}
+          claudeLoggedIn={claudeLoggedIn}
+          onShowClaudeModal={onShowClaudeModal}
+          onViewModeChange={changeViewMode}
         />
       );
     }
@@ -98,7 +108,7 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
         }}
         claudeLoggedIn={claudeLoggedIn}
         onShowClaudeModal={onShowClaudeModal}
-        onViewModeChange={toggleViewMode}
+        onViewModeChange={changeViewMode}
       />
     );
   }
@@ -136,7 +146,19 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
             onToggleSidebar={toggleSidebar}
             claudeLoggedIn={claudeLoggedIn}
             onShowClaudeModal={onShowClaudeModal}
-            onViewModeChange={toggleViewMode}
+            onViewModeChange={changeViewMode}
+          />
+        ) : viewMode === "jobs" ? (
+          <JobList
+            activeChatId={activeChatId ?? undefined}
+            onRefresh={(fn) => {
+              chatListRefreshRef.current = fn;
+            }}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={toggleSidebar}
+            claudeLoggedIn={claudeLoggedIn}
+            onShowClaudeModal={onShowClaudeModal}
+            onViewModeChange={changeViewMode}
           />
         ) : (
           <ChatList
@@ -148,7 +170,7 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
             onToggleSidebar={toggleSidebar}
             claudeLoggedIn={claudeLoggedIn}
             onShowClaudeModal={onShowClaudeModal}
-            onViewModeChange={toggleViewMode}
+            onViewModeChange={changeViewMode}
           />
         )}
       </div>

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { JobRunStatus } from "shared";
-import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, JobValidationError } from "../services/job-store.js";
+import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, listJobsOverview, JobValidationError } from "../services/job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "../services/job-runner.js";
 
 export const jobsRouter = Router();
@@ -17,6 +17,15 @@ function sendError(res: Response, err: any): void {
     res.status(500).json({ error: err.message || "Internal error" });
   }
 }
+
+// ── Overview (registered before /:id so "overview" isn't matched as a job id) ──
+
+// Per-job summaries with each job's latest run, for the sidebar jobs view
+jobsRouter.get("/overview", (_req: Request, res: Response): void => {
+  // #swagger.tags = ['Jobs']
+  // #swagger.summary = 'List jobs with their latest run summary'
+  res.json({ jobs: listJobsOverview() });
+});
 
 // ── Runs (registered before /:id so "runs" isn't matched as a job id) ──
 

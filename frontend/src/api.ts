@@ -53,6 +53,8 @@ import type {
   JobRunListItem,
   JobRunStatus,
   JobRunHistoryEntry,
+  JobOverviewItem,
+  JobOverviewLatestRun,
 } from "shared/types/index.js";
 
 export type {
@@ -110,6 +112,8 @@ export type {
   JobRunListItem,
   JobRunStatus,
   JobRunHistoryEntry,
+  JobOverviewItem,
+  JobOverviewLatestRun,
 };
 
 const BASE = "/api";
@@ -1615,6 +1619,13 @@ export async function spawnJob(id: string, inputs: Record<string, string>): Prom
   await assertOk(res, "Failed to spawn job");
   const data = await res.json();
   return data.run;
+}
+
+export async function getJobsOverview(): Promise<JobOverviewItem[]> {
+  const res = await fetch(`${BASE}/jobs/overview`, { credentials: "include" });
+  await assertOk(res, "Failed to get jobs overview");
+  const data = await res.json();
+  return data.jobs;
 }
 
 export async function listJobRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number }): Promise<JobRunListItem[]> {

@@ -243,3 +243,41 @@ export interface JobRunListItem {
   updatedAt: string;
   endedAt?: string;
 }
+
+/** Latest run summary embedded in a JobOverviewItem. */
+export interface JobOverviewLatestRun {
+  runId: string;
+  status: JobRunStatus;
+  currentStepId: string | null;
+  /** Display name of the current step (falls back to its id). */
+  currentStepName?: string;
+  currentStepType?: JobStepType;
+  /** 1-based position of the current step within the run's frozen definition. */
+  currentStepIndex?: number;
+  /** Step count of the run's frozen definition. */
+  stepCount: number;
+  /** Steps with at least one completed history entry (distinct step ids). */
+  completedSteps: number;
+  /** Chat backing the active step session, falling back to the most recent step chat. */
+  latestChatId?: string;
+  nextWakeAt?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  endedAt?: string;
+}
+
+/** Per-job summary row for the sidebar jobs view: definition + latest run. */
+export interface JobOverviewItem {
+  jobId: string;
+  jobName: string;
+  description?: string;
+  /** Step count of the current (latest-version) definition. */
+  stepCount: number;
+  /** Most recently spawned run of this job, if any. */
+  latestRun?: JobOverviewLatestRun;
+}
+
+export interface JobsOverviewResponse {
+  jobs: JobOverviewItem[];
+}

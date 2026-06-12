@@ -1,16 +1,23 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Bot, PanelLeftClose, List, FolderOpen, AlertTriangle, Plus } from "lucide-react";
+import { Settings, Bot, PanelLeftClose, List, FolderOpen, Workflow, AlertTriangle, Plus } from "lucide-react";
 import { fetchInstanceName } from "../api";
+import type { SidebarViewMode } from "../utils/localStorage";
 
 interface SidebarHeaderProps {
-  viewMode: "chats" | "folders";
+  viewMode: SidebarViewMode;
   onToggleNew: () => void;
-  onViewModeChange?: () => void;
+  onViewModeChange?: (mode: SidebarViewMode) => void;
   claudeLoggedIn?: boolean;
   onShowClaudeModal?: () => void;
   onToggleSidebar?: () => void;
 }
+
+const VIEW_MODES: { mode: SidebarViewMode; label: string; Icon: typeof List }[] = [
+  { mode: "folders", label: "Folders", Icon: FolderOpen },
+  { mode: "chats", label: "Chats", Icon: List },
+  { mode: "jobs", label: "Jobs", Icon: Workflow },
+];
 
 export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange, claudeLoggedIn, onShowClaudeModal, onToggleSidebar }: SidebarHeaderProps) {
   const [instanceName, setInstanceName] = useState("");
@@ -61,46 +68,35 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
         </button>
         {onViewModeChange && (
           <div style={{ display: "flex" }}>
-            <button
-              onClick={viewMode === "folders" ? undefined : onViewModeChange}
-              style={{
-                background: viewMode === "folders" ? "var(--accent)" : "var(--bg-secondary)",
-                color: viewMode === "folders" ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                padding: "6px",
-                borderTopLeftRadius: 6,
-                borderBottomLeftRadius: 6,
-                borderTopRightRadius: 0,
-                borderBottomRightRadius: 0,
-                border: viewMode === "folders" ? "none" : "1px solid var(--chatlist-item-border)",
-                borderRight: "none",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-              title={viewMode === "folders" ? "Folders view (active)" : "Switch to folders view"}
-            >
-              <FolderOpen size={16} />
-            </button>
-            <button
-              onClick={viewMode === "chats" ? undefined : onViewModeChange}
-              style={{
-                background: viewMode === "chats" ? "var(--accent)" : "var(--bg-secondary)",
-                color: viewMode === "chats" ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                padding: "6px",
-                borderTopLeftRadius: 0,
-                borderBottomLeftRadius: 0,
-                borderTopRightRadius: 6,
-                borderBottomRightRadius: 6,
-                border: viewMode === "chats" ? "none" : "1px solid var(--chatlist-item-border)",
-                borderLeft: "none",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-              title={viewMode === "chats" ? "Chats view (active)" : "Switch to chats view"}
-            >
-              <List size={16} />
-            </button>
+            {VIEW_MODES.map(({ mode, label, Icon }, i) => {
+              const isActiveMode = viewMode === mode;
+              const isFirst = i === 0;
+              const isLast = i === VIEW_MODES.length - 1;
+              return (
+                <button
+                  key={mode}
+                  onClick={isActiveMode ? undefined : () => onViewModeChange(mode)}
+                  style={{
+                    background: isActiveMode ? "var(--accent)" : "var(--bg-secondary)",
+                    color: isActiveMode ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
+                    padding: "6px",
+                    borderTopLeftRadius: isFirst ? 6 : 0,
+                    borderBottomLeftRadius: isFirst ? 6 : 0,
+                    borderTopRightRadius: isLast ? 6 : 0,
+                    borderBottomRightRadius: isLast ? 6 : 0,
+                    border: isActiveMode ? "none" : "1px solid var(--chatlist-item-border)",
+                    ...(isFirst && { borderRight: "none" }),
+                    ...(isLast && { borderLeft: "none" }),
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  title={isActiveMode ? `${label} view (active)` : `Switch to ${label.toLowerCase()} view`}
+                >
+                  <Icon size={16} />
+                </button>
+              );
+            })}
           </div>
         )}
         <div style={{ display: "flex" }}>
