@@ -66,12 +66,31 @@ function resolveQuickCompletionProvider(explicit?: AgentProviderKind): AgentProv
 }
 
 /**
- * Build the `openRouter` config sub-object the OR adapter's optionsAdapter
- * requires, sourced from global agent settings. Throws when no API key is
- * configured — callers should only reach this when {@link isOpenRouterConfigured}
- * is true, but the explicit check keeps the failure mode legible.
+ * QuickModel → OpenRouter model translation. OR's adapter only reads the
+ * model inside the `openRouter` extras sub-object (the top-level `model`
+ * option is a Claude-SDK field it ignores), so without this mapping every
+ * quick completion silently ran on the global `openRouterModel` default —
+ * typically an opus-class model — instead of the cheap/fast tier the caller
+ * asked for. The `~` names are OpenRouter's own dynamic aliases, resolved
+ * server-side to the current model of each tier.
  */
-function buildOpenRouterExtras(effort: "low" | "medium" | "high"): OpenRouterOptionsExtras {
+const QUICK_MODEL_TO_OPENROUTER: Record<QuickModel, string> = {
+  haiku: "~anthropic/claude-haiku-latest",
+  sonnet: "~anthropic/claude-sonnet-latest",
+  opus: "~anthropic/claude-opus-latest",
+};
+
+/**
+ * Build the `openRouter` config sub-object the OR adapter's optionsAdapter
+ * requires, sourced from global agent settings. The model comes from the
+ * caller's {@link QuickModel} (via {@link QUICK_MODEL_TO_OPENROUTER}), NOT
+ * the global `openRouterModel` chat default — quick completions are
+ * ephemeral utility calls and should run on the tier the caller picked.
+ * Throws when no API key is configured — callers should only reach this when
+ * {@link isOpenRouterConfigured} is true, but the explicit check keeps the
+ * failure mode legible.
+ */
+function buildOpenRouterExtras(model: QuickModel, effort: "low" | "medium" | "high"): OpenRouterOptionsExtras {
   const s = getAgentSettings();
   const apiKey = s.openRouterApiKey?.trim();
   if (!apiKey) {
@@ -80,7 +99,7 @@ function buildOpenRouterExtras(effort: "low" | "medium" | "high"): OpenRouterOpt
   return {
     apiKey,
     ...(s.openRouterBaseUrl && { baseUrl: s.openRouterBaseUrl }),
-    ...(s.openRouterModel && { model: s.openRouterModel }),
+    model: QUICK_MODEL_TO_OPENROUTER[model],
     ...(s.openRouterLogsRoot && { logsRoot: s.openRouterLogsRoot }),
     ...(typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd) && { maxBudgetUsd: s.openRouterMaxBudgetUsd }),
     // quickCompletion's effort union ("low"|"medium"|"high") is a subset of the
@@ -210,7 +229,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
         allowDangerouslySkipPermissions: true,
         // OR-specific config the OpenRouter adapter's optionsAdapter requires.
         // Claude-code ignores this key, so it's safe to include only for OR.
-        ...(isOpenRouter && { openRouter: buildOpenRouterExtras(effort) }),
+        ...(isOpenRouter && { openRouter: buildOpenRouterExtras(model, effort) }),
         env: {
           ...process.env,
           // Prevent "cannot be launched inside another Claude Code session" errors
