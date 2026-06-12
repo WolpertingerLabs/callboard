@@ -138,6 +138,7 @@ export function scheduleJob(alias: string, job: CronJob): boolean {
         ...(job.action?.provider && { provider: job.action.provider }),
         ...(job.action?.model && { model: job.action.model }),
         ...(job.action?.effort && { effort: job.action.effort }),
+        ...(job.action?.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
       });
 
       // Track running session for skipIfRunning

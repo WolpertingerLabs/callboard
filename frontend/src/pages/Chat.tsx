@@ -125,6 +125,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // OpenRouter model slug for NEW chats, set by NewChatPanel. Like the
   // provider/effort, only honored on creation and persisted into chat metadata.
   const newChatModel = (location.state as any)?.model as string | undefined;
+  // Explicit-completion requirement for NEW chats, set by NewChatPanel. Only
+  // honored on creation — persisted into chat metadata, so follow-up messages
+  // inherit it server-side without re-threading.
+  const newChatRequireCompletion = (location.state as any)?.requireExplicitCompletion as boolean | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
@@ -1249,6 +1253,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatModel && newChatProvider === "openrouter") {
             requestBody.model = newChatModel;
           }
+          if (newChatRequireCompletion === true) {
+            requestBody.requireExplicitCompletion = true;
+          }
 
           res = await fetch("/api/chats/new/message", {
             method: "POST",
@@ -1380,6 +1387,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatProvider,
       newChatEffort,
       newChatModel,
+      newChatRequireCompletion,
       pendingModel,
       chatProvider,
       readSSE,

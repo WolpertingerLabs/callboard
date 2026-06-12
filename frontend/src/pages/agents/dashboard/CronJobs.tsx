@@ -197,6 +197,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [formQHStart, setFormQHStart] = useState("22:00");
   const [formQHEnd, setFormQHEnd] = useState("07:00");
   const [formSkipIfRunning, setFormSkipIfRunning] = useState(false);
+  const [formRequireCompletion, setFormRequireCompletion] = useState(false);
   const [formSaving, setFormSaving] = useState(false);
   // Provider config — defaults to "claude-code" so existing behavior is
   // preserved for crons created without picking. Empty model = use the
@@ -239,6 +240,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [editQHStart, setEditQHStart] = useState("22:00");
   const [editQHEnd, setEditQHEnd] = useState("07:00");
   const [editSkipIfRunning, setEditSkipIfRunning] = useState(false);
+  const [editRequireCompletion, setEditRequireCompletion] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editProvider, setEditProvider] = useState<AgentProviderKind>("claude-code");
   const [editModel, setEditModel] = useState<string>("");
@@ -313,6 +315,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           ...(formProvider === "openrouter" && { provider: formProvider }),
           ...(formProvider === "openrouter" && formModel.trim() && { model: formModel.trim() }),
           ...(formProvider === "openrouter" && formEffort && { effort: formEffort }),
+          ...(formRequireCompletion && { requireExplicitCompletion: true }),
         },
         ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
         ...(formSkipIfRunning && { skipIfRunning: true }),
@@ -328,6 +331,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormQHStart("22:00");
       setFormQHEnd("07:00");
       setFormSkipIfRunning(false);
+      setFormRequireCompletion(false);
       setFormProvider("claude-code");
       setFormModel("");
       setFormEffort(undefined);
@@ -349,6 +353,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     setEditQHStart(job.quietHours?.start || "22:00");
     setEditQHEnd(job.quietHours?.end || "07:00");
     setEditSkipIfRunning(job.skipIfRunning || false);
+    setEditRequireCompletion(job.action?.requireExplicitCompletion || false);
     setEditProvider(job.action?.provider ?? "claude-code");
     setEditModel(job.action?.model ?? "");
     setEditEffort(job.action?.effort);
@@ -375,6 +380,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           ...(editProvider === "openrouter" && { provider: editProvider }),
           ...(editProvider === "openrouter" && editModel.trim() && { model: editModel.trim() }),
           ...(editProvider === "openrouter" && editEffort && { effort: editEffort }),
+          ...(editRequireCompletion && { requireExplicitCompletion: true }),
         },
         quietHours: editQHEnabled ? { enabled: true, start: editQHStart, end: editQHEnd } : { enabled: false, start: editQHStart, end: editQHEnd },
         skipIfRunning: editSkipIfRunning,
@@ -489,6 +495,18 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               <input type="checkbox" checked={editSkipIfRunning} onChange={(e) => setEditSkipIfRunning(e.target.checked)} style={{ width: 16, height: 16 }} />
               <span style={{ fontSize: 13, fontWeight: 500 }}>Skip if running</span>
               <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— skip execution if previous run is still active</span>
+            </label>
+          </div>
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={editRequireCompletion}
+                onChange={(e) => setEditRequireCompletion(e.target.checked)}
+                style={{ width: 16, height: 16 }}
+              />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Require explicit completion</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— session must call objective_complete; re-prompted if it stops early</span>
             </label>
           </div>
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -944,6 +962,18 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               <input type="checkbox" checked={formSkipIfRunning} onChange={(e) => setFormSkipIfRunning(e.target.checked)} style={{ width: 16, height: 16 }} />
               <span style={{ fontSize: 13, fontWeight: 500 }}>Skip if running</span>
               <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— skip execution if previous run is still active</span>
+            </label>
+          </div>
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={formRequireCompletion}
+                onChange={(e) => setFormRequireCompletion(e.target.checked)}
+                style={{ width: 16, height: 16 }}
+              />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Require explicit completion</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— session must call objective_complete; re-prompted if it stops early</span>
             </label>
           </div>
           <button

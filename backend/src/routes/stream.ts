@@ -47,6 +47,7 @@ streamRouter.post("/new/message", async (req, res) => {
             systemPrompt: { type: "string", description: "Custom system prompt appended to Claude Code's preset system prompt" },
             agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
             model: { type: "string", description: "OpenRouter model slug (e.g. 'anthropic/claude-opus-4.7'). Only honored when provider is 'openrouter'; ignored otherwise." },
+            requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
             branchConfig: {
               type: "object",
               properties: {
@@ -65,7 +66,21 @@ streamRouter.post("/new/message", async (req, res) => {
   /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
   /* #swagger.responses[409] = { description: "Uncommitted changes block branch switch. Set forceBranchChange to override." } */
-  const { folder, prompt, defaultPermissions, imageIds, activePlugins, branchConfig, maxTurns, systemPrompt, agentAlias, provider, effort, model } = req.body;
+  const {
+    folder,
+    prompt,
+    defaultPermissions,
+    imageIds,
+    activePlugins,
+    branchConfig,
+    maxTurns,
+    systemPrompt,
+    agentAlias,
+    provider,
+    effort,
+    model,
+    requireExplicitCompletion,
+  } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
   );
@@ -121,24 +136,17 @@ streamRouter.post("/new/message", async (req, res) => {
     // resolveProviderKind's warn-and-fallback path. Anything not in the
     // allowlist is silently dropped — same outcome as omitting the field.
     const safeProvider: AgentProviderKind | undefined =
-      typeof provider === "string" && VALID_PROVIDERS.has(provider as AgentProviderKind)
-        ? (provider as AgentProviderKind)
-        : undefined;
+      typeof provider === "string" && VALID_PROVIDERS.has(provider as AgentProviderKind) ? (provider as AgentProviderKind) : undefined;
 
     // Effort forwarded only when paired with the openrouter provider — on a
     // claude-code chat it would be persisted to metadata for nothing and
     // confuse future debugging.
     const safeEffort: EffortLevel | undefined =
-      safeProvider === "openrouter" && typeof effort === "string" && VALID_EFFORTS.has(effort)
-        ? (effort as EffortLevel)
-        : undefined;
+      safeProvider === "openrouter" && typeof effort === "string" && VALID_EFFORTS.has(effort) ? (effort as EffortLevel) : undefined;
 
     // OpenRouter model slug — only honored when paired with the openrouter
     // provider. On claude-code it would be persisted to metadata for nothing.
-    const safeModel: string | undefined =
-      safeProvider === "openrouter" && typeof model === "string" && model.trim().length > 0
-        ? model.trim()
-        : undefined;
+    const safeModel: string | undefined = safeProvider === "openrouter" && typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined;
 
     const emitter = await sendMessage({
       prompt,
@@ -152,6 +160,9 @@ streamRouter.post("/new/message", async (req, res) => {
       ...(safeProvider && { provider: safeProvider }),
       ...(safeEffort && { effort: safeEffort }),
       ...(safeModel && { model: safeModel }),
+      // Boolean-validated at the route boundary; anything else is dropped
+      // (same outcome as omitting — the default behavior).
+      ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),
     });
 
     writeSSEHeaders(res);
@@ -175,6 +186,7 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(event.reason && { reason: event.reason }),
           ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
           ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
+          ...(typeof event.objectiveComplete === "boolean" && { objectiveComplete: event.objectiveComplete }),
         });
         emitter.removeListener("event", onEvent);
         res.end();
@@ -233,7 +245,8 @@ streamRouter.post("/:id/message", async (req, res) => {
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
             model: { type: "string", description: "OpenRouter model slug to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Empty string clears the per-chat override and reverts to the global default." },
-            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "OpenRouter reasoning-effort level to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." }
+            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "OpenRouter reasoning-effort level to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
+            requireExplicitCompletion: { type: "boolean", description: "Override the chat's explicit-completion requirement for this message only. Omit to inherit the chat's persisted setting." }
           }
         }
       }
@@ -241,7 +254,7 @@ streamRouter.post("/:id/message", async (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "SSE stream with message_update, permission_request, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
-  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort } = req.body;
+  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
@@ -306,6 +319,9 @@ streamRouter.post("/:id/message", async (req, res) => {
       imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
       activePlugins,
       maxTurns,
+      // Per-message override; omitted (undefined) inherits the chat's
+      // persisted requireExplicitCompletion setting.
+      ...(typeof requireExplicitCompletion === "boolean" && { requireExplicitCompletion }),
     });
 
     writeSSEHeaders(res);

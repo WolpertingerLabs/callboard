@@ -12,7 +12,8 @@ export interface StreamEvent {
     | "chat_created"
     | "compacting"
     | "cleared"
-    | "budget";
+    | "budget"
+    | "nudge";
   content: string;
   toolName?: string;
   /**
@@ -48,4 +49,12 @@ export interface StreamEvent {
    * cap the user actually configured. Undefined for Claude Code chats.
    */
   maxBudgetUsd?: number;
+  /**
+   * Whether the session's explicit-completion requirement was satisfied
+   * (the objective_complete / complete_job_step tool was called). Attached
+   * to "done" events only when the session was started with
+   * requireExplicitCompletion. A "nudge" event is emitted each time the
+   * stream ends without the call and the session is re-prompted.
+   */
+  objectiveComplete?: boolean;
 }

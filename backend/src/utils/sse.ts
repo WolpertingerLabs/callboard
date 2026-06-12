@@ -64,6 +64,7 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
         ...(event.reason && { reason: event.reason }),
         ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
         ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
+        ...(typeof event.objectiveComplete === "boolean" && { objectiveComplete: event.objectiveComplete }),
       });
       emitter.removeListener("event", onEvent);
       res.end();

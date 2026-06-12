@@ -68,6 +68,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsFetched, setAgentsFetched] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; path: string }>({ isOpen: false, path: "" });
+  // Explicit-completion requirement for the chat being created. Deliberately
+  // NOT persisted to localStorage — it's a per-chat decision (the nudge loop
+  // is only wanted for specific tasks), so it resets to off each time.
+  const [requireCompletion, setRequireCompletion] = useState(false);
   // Provider selector — defaults to whatever the user last picked. OpenRouter
   // can only be selected once OPENROUTER_API_KEY is configured in Settings → API.
   const [provider, setProvider] = useState<AgentProviderKind>(getDefaultProvider);
@@ -148,6 +152,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         provider: effectiveProvider,
         ...(effectiveProvider === "openrouter" && effort && { effort }),
         ...(effectiveProvider === "openrouter" && trimmedModel && { model: trimmedModel }),
+        ...(requireCompletion && { requireExplicitCompletion: true }),
       },
     });
   };
@@ -189,6 +194,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         agentAlias: agent.alias,
         provider: effectiveProvider,
         ...(effectiveProvider === "openrouter" && trimmedModel && { model: trimmedModel }),
+        ...(requireCompletion && { requireExplicitCompletion: true }),
       },
     });
   };
@@ -331,6 +337,15 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                 <span>Permissions: {getPermissionsSummary(defaultPermissions)}</span>
               </button>
               {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />}
+            </div>
+
+            {/* Require explicit completion — per-chat, resets to off */}
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}>
+                <input type="checkbox" checked={requireCompletion} onChange={(e) => setRequireCompletion(e.target.checked)} style={{ width: 16, height: 16 }} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>Require explicit completion</span>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— re-prompt until objective_complete is called</span>
+              </label>
             </div>
 
             {/* Directory Section — collapsible, default open */}
@@ -505,6 +520,15 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={openApiSettings}
             />
+
+            {/* Require explicit completion — forwarded by handleAgentCreate */}
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}>
+                <input type="checkbox" checked={requireCompletion} onChange={(e) => setRequireCompletion(e.target.checked)} style={{ width: 16, height: 16 }} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>Require explicit completion</span>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— re-prompt until objective_complete is called</span>
+              </label>
+            </div>
 
             {agentsLoading ? (
               <div style={{ padding: "20px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>Loading agents...</div>
