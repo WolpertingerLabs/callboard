@@ -164,7 +164,10 @@ describe("quickCompletion — provider auto-resolution", () => {
       proxyMode: "local",
       openRouterApiKey: "sk-or-test",
       openRouterBaseUrl: "https://example.test/api/v1",
-      openRouterModel: "~anthropic/claude-sonnet-latest",
+      // Global chat default — must NOT leak into quick completions: the
+      // caller's QuickModel ("haiku") wins so titles/branches stay on the
+      // cheap tier instead of whatever (typically opus-class) model chats use.
+      openRouterModel: "~anthropic/claude-opus-latest",
       openRouterMaxBudgetUsd: 2.5,
     });
 
@@ -191,11 +194,35 @@ describe("quickCompletion — provider auto-resolution", () => {
     expect(opts.openRouter).toMatchObject({
       apiKey: "sk-or-test",
       baseUrl: "https://example.test/api/v1",
-      model: "~anthropic/claude-sonnet-latest",
+      model: "~anthropic/claude-haiku-latest",
       maxBudgetUsd: 2.5,
       effort: "medium",
       appTitle: "callboard",
     });
+  });
+
+  it("maps each QuickModel tier to its OpenRouter alias", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+    });
+
+    for (const [quick, orModel] of [
+      ["haiku", "~anthropic/claude-haiku-latest"],
+      ["sonnet", "~anthropic/claude-sonnet-latest"],
+      ["opus", "~anthropic/claude-opus-latest"],
+    ] as const) {
+      const mock = new MockAgentProvider();
+      setAgentProviderForTesting(mock, "openrouter");
+
+      const resultPromise = quickCompletion({ prompt: "x", model: quick });
+      await fireReturnResult(mock, "x");
+      await resultPromise;
+
+      const opts = mock.queryRecords[0].request.options as { openRouter?: { model?: string } };
+      expect(opts.openRouter?.model).toBe(orModel);
+    }
   });
 
   it("stays on claude-code (no openRouter config) when OR is not configured", async () => {
