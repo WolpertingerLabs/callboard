@@ -80,4 +80,7 @@ export type {
   JobRunActiveStep,
   JobRun,
   JobRunListItem,
+  JobOverviewLatestRun,
+  JobOverviewItem,
+  JobsOverviewResponse,
 } from "./jobs.js";

@@ -25,7 +25,7 @@ interface LocalStorageData {
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
-  sidebarViewMode?: "folders" | "chats";
+  sidebarViewMode?: "folders" | "chats" | "jobs";
   folderMaxAgeDays?: number;
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
@@ -294,7 +294,7 @@ export function saveSidebarCollapsed(value: boolean): void {
   setStorageData(data);
 }
 
-export type SidebarViewMode = "folders" | "chats";
+export type SidebarViewMode = "folders" | "chats" | "jobs";
 
 export function getSidebarViewMode(): SidebarViewMode {
   const data = getStorageData();
