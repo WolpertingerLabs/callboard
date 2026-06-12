@@ -46,7 +46,7 @@ streamRouter.post("/new/message", async (req, res) => {
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             systemPrompt: { type: "string", description: "Custom system prompt appended to Claude Code's preset system prompt" },
             agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
-            model: { type: "string", description: "OpenRouter model slug (e.g. 'anthropic/claude-opus-4.7'). Only honored when provider is 'openrouter'; ignored otherwise." },
+            model: { type: "string", description: "Model for the chat's provider. OpenRouter: a model slug (e.g. 'anthropic/claude-opus-4.7') or alias. Claude Code: an Anthropic model alias ('opus', 'sonnet', 'haiku', 'opusplan') or full model ID (e.g. 'claude-sonnet-4-6'). Omit to use the provider's global default." },
             requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
             branchConfig: {
               type: "object",
@@ -144,9 +144,11 @@ streamRouter.post("/new/message", async (req, res) => {
     const safeEffort: EffortLevel | undefined =
       safeProvider === "openrouter" && typeof effort === "string" && VALID_EFFORTS.has(effort) ? (effort as EffortLevel) : undefined;
 
-    // OpenRouter model slug — only honored when paired with the openrouter
-    // provider. On claude-code it would be persisted to metadata for nothing.
-    const safeModel: string | undefined = safeProvider === "openrouter" && typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined;
+    // Per-chat model override — honored for both providers. For openrouter it's
+    // an OR slug/alias; for claude-code an Anthropic model alias or full ID.
+    // Free-form text by design: the provider validates server-side, matching
+    // the global Settings → API field.
+    const safeModel: string | undefined = typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined;
 
     const emitter = await sendMessage({
       prompt,
@@ -244,7 +246,7 @@ streamRouter.post("/:id/message", async (req, res) => {
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
-            model: { type: "string", description: "OpenRouter model slug to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Empty string clears the per-chat override and reverts to the global default." },
+            model: { type: "string", description: "Model to persist for this chat. OpenRouter chats: a model slug or alias. Claude Code chats: an Anthropic model alias ('opus', 'sonnet', 'haiku', 'opusplan') or full model ID. Empty string clears the per-chat override and reverts to the global default." },
             effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "OpenRouter reasoning-effort level to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
             requireExplicitCompletion: { type: "boolean", description: "Override the chat's explicit-completion requirement for this message only. Omit to inherit the chat's persisted setting." }
           }
@@ -282,12 +284,12 @@ streamRouter.post("/:id/message", async (req, res) => {
       chatFileService.updateChatMetadata(req.params.id, { lastBranch: currentBranch });
     }
 
-    // Persist a per-chat OpenRouter model override before sendMessage re-reads
-    // initialMetadata from disk. Only honored when this chat is OR; silently
-    // dropped for claude-code (defense in depth — the UI hides the switcher
-    // anyway). An empty string clears the override so the chat falls back to
-    // agentSettings.openRouterModel (JSON.stringify drops undefined keys).
-    if (typeof model === "string" && meta.provider === "openrouter") {
+    // Persist a per-chat model override before sendMessage re-reads
+    // initialMetadata from disk. Honored for both providers — OR chats store
+    // a slug/alias, claude-code chats an Anthropic model alias or full ID.
+    // An empty string clears the override so the chat falls back to the
+    // provider's global default (JSON.stringify drops undefined keys).
+    if (typeof model === "string") {
       const trimmed = model.trim();
       chatFileService.updateChatMetadata(req.params.id, { model: trimmed.length > 0 ? trimmed : undefined });
     }

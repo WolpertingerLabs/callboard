@@ -18,6 +18,8 @@ import {
   saveDefaultOpenRouterEffort,
   getDefaultOpenRouterModel,
   saveDefaultOpenRouterModel,
+  getDefaultClaudeModel,
+  saveDefaultClaudeModel,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -83,6 +85,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // OpenRouter model slug. Empty string = "use the global default from Settings → API".
   // Persisted across reloads via localStorage, like provider/effort.
   const [model, setModel] = useState<string>(getDefaultOpenRouterModel);
+  // Anthropic model for Claude Code chats (alias or full ID). Empty string =
+  // "use the global default from Settings → API". Stored separately from the
+  // OR model so toggling providers restores each one's prior selection.
+  const [claudeModel, setClaudeModel] = useState<string>(getDefaultClaudeModel);
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -133,25 +139,25 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultProvider(provider);
     saveDefaultOpenRouterEffort(effort);
     saveDefaultOpenRouterModel(model);
+    saveDefaultClaudeModel(claudeModel);
     // Runtime guard: only downgrade to claude-code when we KNOW OR is not
     // configured (openRouterConfigured === false). While still loading
     // (null), trust the user's choice — sendMessage rejects loudly if the
     // OR key is missing, so we get a clear error rather than a silent
     // downgrade.
     const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
-    const trimmedModel = model.trim();
+    // Each provider has its own model selection; forward the one matching
+    // the effective provider. `effort` stays OR-only.
+    const trimmedModel = (effectiveProvider === "openrouter" ? model : claudeModel).trim();
 
     setFolder("");
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(target)}`, {
-      // Only forward `effort`/`model` for OpenRouter chats — on Claude Code
-      // those fields would just ride along and get persisted to chat metadata
-      // for nothing.
       state: {
         defaultPermissions,
         provider: effectiveProvider,
         ...(effectiveProvider === "openrouter" && effort && { effort }),
-        ...(effectiveProvider === "openrouter" && trimmedModel && { model: trimmedModel }),
+        ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
       },
     });
@@ -166,6 +172,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultProvider(provider);
     saveDefaultOpenRouterEffort(effort);
     saveDefaultOpenRouterModel(model);
+    saveDefaultClaudeModel(claudeModel);
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -185,7 +192,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // panel's top radio. Without this, picking OR + Agent would silently
     // create a Claude chat — the inverse of what the toggle implies.
     const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
-    const trimmedModel = model.trim();
+    const trimmedModel = (effectiveProvider === "openrouter" ? model : claudeModel).trim();
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
       state: {
@@ -193,7 +200,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         systemPrompt,
         agentAlias: agent.alias,
         provider: effectiveProvider,
-        ...(effectiveProvider === "openrouter" && trimmedModel && { model: trimmedModel }),
+        ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
       },
     });
@@ -309,6 +316,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onEffortChange={setEffort}
               model={model}
               onModelChange={setModel}
+              claudeModel={claudeModel}
+              onClaudeModelChange={setClaudeModel}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={openApiSettings}
@@ -516,6 +525,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onEffortChange={setEffort}
               model={model}
               onModelChange={setModel}
+              claudeModel={claudeModel}
+              onClaudeModelChange={setClaudeModel}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={openApiSettings}

@@ -204,6 +204,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   // global default; undefined effort = use the model default.
   const [formProvider, setFormProvider] = useState<AgentProviderKind>("claude-code");
   const [formModel, setFormModel] = useState<string>("");
+  const [formClaudeModel, setFormClaudeModel] = useState<string>("");
   const [formEffort, setFormEffort] = useState<EffortLevel | undefined>(undefined);
 
   // System-info fetch — drives whether the OpenRouter option is enabled in
@@ -244,6 +245,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [editSaving, setEditSaving] = useState(false);
   const [editProvider, setEditProvider] = useState<AgentProviderKind>("claude-code");
   const [editModel, setEditModel] = useState<string>("");
+  const [editClaudeModel, setEditClaudeModel] = useState<string>("");
   const [editEffort, setEditEffort] = useState<EffortLevel | undefined>(undefined);
 
   const loadJobs = () => {
@@ -311,9 +313,12 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           // Only persist provider/model/effort when they diverge from
           // "agent default" — `provider: "claude-code"` with empty model and
           // undefined effort is the same as omitting the fields, and
-          // omitting keeps stored JSON tidy.
+          // omitting keeps stored JSON tidy. The model field holds whichever
+          // provider's selection applies: an OR slug/alias or an Anthropic
+          // alias/ID for claude-code.
           ...(formProvider === "openrouter" && { provider: formProvider }),
           ...(formProvider === "openrouter" && formModel.trim() && { model: formModel.trim() }),
+          ...(formProvider === "claude-code" && formClaudeModel.trim() && { model: formClaudeModel.trim() }),
           ...(formProvider === "openrouter" && formEffort && { effort: formEffort }),
           ...(formRequireCompletion && { requireExplicitCompletion: true }),
         },
@@ -334,6 +339,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormRequireCompletion(false);
       setFormProvider("claude-code");
       setFormModel("");
+      setFormClaudeModel("");
       setFormEffort(undefined);
     } catch {
       // ignore
@@ -354,8 +360,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     setEditQHEnd(job.quietHours?.end || "07:00");
     setEditSkipIfRunning(job.skipIfRunning || false);
     setEditRequireCompletion(job.action?.requireExplicitCompletion || false);
-    setEditProvider(job.action?.provider ?? "claude-code");
-    setEditModel(job.action?.model ?? "");
+    // The stored model belongs to whichever provider the action targets —
+    // hydrate the matching per-provider field so the picker shows it under
+    // the right toggle (and the other field starts clean).
+    const jobProvider = job.action?.provider ?? "claude-code";
+    setEditProvider(jobProvider);
+    setEditModel(jobProvider === "openrouter" ? (job.action?.model ?? "") : "");
+    setEditClaudeModel(jobProvider === "claude-code" ? (job.action?.model ?? "") : "");
     setEditEffort(job.action?.effort);
   };
 
@@ -379,6 +390,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           prompt: editPrompt.trim() || undefined,
           ...(editProvider === "openrouter" && { provider: editProvider }),
           ...(editProvider === "openrouter" && editModel.trim() && { model: editModel.trim() }),
+          ...(editProvider === "claude-code" && editClaudeModel.trim() && { model: editClaudeModel.trim() }),
           ...(editProvider === "openrouter" && editEffort && { effort: editEffort }),
           ...(editRequireCompletion && { requireExplicitCompletion: true }),
         },
@@ -464,6 +476,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onEffortChange={setEditEffort}
               model={editModel}
               onModelChange={setEditModel}
+              claudeModel={editClaudeModel}
+              onClaudeModelChange={setEditClaudeModel}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={() => {
@@ -631,8 +645,32 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               {sConf.label}
             </span>
             {/* Provider/model/effort badge — only rendered when the cron job
-                opts into a non-default provider. Claude Code crons (the
-                majority today) skip the badge to keep the row uncluttered. */}
+                opts into a non-default provider or a non-default model.
+                Default Claude Code crons (the majority today) skip the badge
+                to keep the row uncluttered. */}
+            {job.action?.provider !== "openrouter" && job.action?.model && (
+              <span
+                title={`Claude Code · ${job.action.model}`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  color: "var(--text)",
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  padding: "3px 8px",
+                  borderRadius: 6,
+                  maxWidth: 220,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <span style={{ opacity: 0.7, fontFamily: "monospace" }}>{job.action.model}</span>
+              </span>
+            )}
             {job.action?.provider === "openrouter" && (
               <span
                 title={`OpenRouter${job.action.model ? ` · ${job.action.model}` : ""}${job.action.effort ? ` · ${job.action.effort}` : ""}`}
@@ -931,6 +969,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onEffortChange={setFormEffort}
               model={formModel}
               onModelChange={setFormModel}
+              claudeModel={formClaudeModel}
+              onClaudeModelChange={setFormClaudeModel}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={() => {

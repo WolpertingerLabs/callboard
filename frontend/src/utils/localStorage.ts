@@ -37,6 +37,11 @@ interface LocalStorageData {
   /** User's last-selected OpenRouter model slug in the New Chat panel.
    * Empty/absent means "use the global default from Settings → API". */
   defaultOpenRouterModel?: string;
+  /** User's last-selected Anthropic model (alias or full ID) for Claude Code
+   * chats in the New Chat panel. Stored separately from the OR model so
+   * toggling providers restores each one's prior selection. Empty/absent
+   * means "use the global default from Settings → API". */
+  defaultClaudeModel?: string;
   /** Whether tool call inputs/results render JSON pretty-printed (true) or
    * as the raw string (false). Toggled inline from any tool view. */
   jsonPrettyPrint?: boolean;
@@ -147,6 +152,27 @@ export function saveDefaultOpenRouterModel(model: string): void {
     delete data.defaultOpenRouterModel;
   } else {
     data.defaultOpenRouterModel = trimmed;
+  }
+  setStorageData(data);
+}
+
+/**
+ * Last-selected Anthropic model for Claude Code chats. Returns `""` when
+ * nothing has been stored — the New Chat selector treats empty as "use the
+ * global default configured in Settings → API".
+ */
+export function getDefaultClaudeModel(): string {
+  const data = getStorageData();
+  return typeof data.defaultClaudeModel === "string" ? data.defaultClaudeModel : "";
+}
+
+export function saveDefaultClaudeModel(model: string): void {
+  const data = getStorageData();
+  const trimmed = model.trim();
+  if (trimmed.length === 0) {
+    delete data.defaultClaudeModel;
+  } else {
+    data.defaultClaudeModel = trimmed;
   }
   setStorageData(data);
 }

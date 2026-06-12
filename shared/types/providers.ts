@@ -38,7 +38,13 @@ export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "non
  */
 export interface ProviderRunConfig {
   provider?: UiAgentProviderKind;
-  /** OR slug, e.g. "anthropic/claude-opus-4.7". Empty string = use global default. */
+  /**
+   * Model for the chat's provider. For "openrouter": an OR slug (e.g.
+   * "anthropic/claude-opus-4.7") or a user-defined alias. For "claude-code":
+   * an Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or full
+   * model ID (e.g. "claude-sonnet-4-6"). Empty string = use the provider's
+   * global default (Settings → API).
+   */
   model?: string;
   /** OR-only. Ignored when provider is "claude-code". */
   effort?: EffortLevel;

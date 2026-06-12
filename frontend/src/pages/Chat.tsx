@@ -302,9 +302,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     [id, navigate, onChatListRefresh],
   );
 
-  // Current per-chat OpenRouter model (from metadata). Empty string = no
-  // override, chat falls back to the global default in Settings → API.
-  // Only meaningful when chatProvider === "openrouter".
+  // Current per-chat model (from metadata). Empty string = no override,
+  // chat falls back to the global default in Settings → API. An OR
+  // slug/alias for openrouter chats, an Anthropic model alias/ID for
+  // claude-code chats.
   const currentModel = useMemo((): string => {
     if (!id) return newChatModel ?? "";
     if (chat?.metadata) {
@@ -1250,7 +1251,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatEffort && newChatProvider === "openrouter") {
             requestBody.effort = newChatEffort;
           }
-          if (newChatModel && newChatProvider === "openrouter") {
+          // Model applies to both providers — an OR slug/alias or an
+          // Anthropic model alias/ID for claude-code.
+          if (newChatModel) {
             requestBody.model = newChatModel;
           }
           if (newChatRequireCompletion === true) {
@@ -1296,11 +1299,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             body.acknowledgeBranchDrift = true;
           }
           // Per-chat model override staged from the composer-side toggle.
-          // Only attach for OR chats — the backend silently drops it on
-          // claude-code anyway, but keep the boundary clean here too.
+          // Applies to both providers — an OR slug/alias or an Anthropic
+          // model alias/ID for claude-code chats.
           // `pendingModel === ""` is a deliberate clear (revert to global
           // default); only `null` means "no change."
-          if (pendingModel !== null && chatProvider === "openrouter") {
+          if (pendingModel !== null) {
             body.model = pendingModel;
           }
           // Per-chat reasoning effort. Same tri-state semantics as model:
@@ -2817,7 +2820,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         // that opens it — anchoring to a button inside the composer would
         // push the popover off the left edge on narrow viewports).
         <div style={{ position: "relative" }}>
-          {modelPopoverOpen && chatProvider === "openrouter" && (
+          {modelPopoverOpen && (
             <>
               {/* Click-away overlay */}
               <div onClick={() => setModelPopoverOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
@@ -2843,9 +2846,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   boxShadow: "var(--shadow-md)",
                 }}
               >
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>Model &amp; reasoning effort for this chat</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
+                  {chatProvider === "openrouter" ? "Model & reasoning effort for this chat" : "Model for this chat"}
+                </div>
+                {/* Both model props share the same pending-model cell — only
+                    the control matching the chat's pinned provider renders. */}
                 <ProviderConfigPicker
-                  provider="openrouter"
+                  provider={chatProvider}
                   onProviderChange={() => {}}
                   showProviderToggle={false}
                   mode="inline"
@@ -2853,6 +2860,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   onEffortChange={(v) => setPendingEffort(v === currentEffort ? null : v)}
                   model={pendingModel ?? currentModel}
                   onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                  claudeModel={pendingModel ?? currentModel}
+                  onClaudeModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                   openRouterConfigured={true}
                   openRouterMaxBudgetUsd={null}
                   onOpenApiSettings={() => navigate("/settings/api")}
@@ -2869,22 +2878,24 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             commandDescriptions={pluginCommandDescriptions}
             onSetValue={setPromptInputSetValue}
             menuItems={
-              chatProvider === "openrouter" && !streaming
+              !streaming
                 ? [
-                    // Opens the model/effort popover above the composer.
-                    // Hidden while streaming so the model can't change
-                    // mid-run; the header shows the active provider via
-                    // ProviderBadge.
+                    // Opens the model (+ effort for OR) popover above the
+                    // composer. Hidden while streaming so the model can't
+                    // change mid-run; the header shows the active provider
+                    // via ProviderBadge.
                     {
                       key: "model",
                       icon: <SlidersHorizontal size={16} />,
-                      label: "Model & reasoning effort",
+                      label: chatProvider === "openrouter" ? "Model & reasoning effort" : "Model",
                       onClick: () => setModelPopoverOpen(true),
                       active: pendingModel !== null || pendingEffort !== null,
                       title:
                         pendingModel !== null || pendingEffort !== null
-                          ? "Model/effort change pending — applies on next message"
-                          : "Change model / reasoning effort for this chat",
+                          ? "Model change pending — applies on next message"
+                          : chatProvider === "openrouter"
+                            ? "Change model / reasoning effort for this chat"
+                            : "Change the Anthropic model for this chat",
                     },
                   ]
                 : []
