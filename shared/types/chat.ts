@@ -46,7 +46,7 @@ export interface FolderSummary {
   /** Whether the most recent chat was triggered */
   isTriggered: boolean;
   /** How the most recent chat was triggered (for icon distinction) */
-  triggeredBy?: "cron" | "event" | "trigger" | "tool";
+  triggeredBy?: "cron" | "event" | "trigger" | "tool" | "job";
   /** Total number of chats in this folder */
   chatCount: number;
   /** Custom status label set by agent on most recent chat */
