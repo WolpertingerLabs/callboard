@@ -67,6 +67,7 @@ type MessageSender = (opts: {
   model?: string;
   effort?: EffortLevel;
   jobContext?: JobContext;
+  requireExplicitCompletion?: boolean;
 }) => Promise<EventEmitter>;
 
 interface JobRunnerDeps {
@@ -578,6 +579,9 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     ...(model && provider === "openrouter" && { model }),
     ...(sessionFields?.effort && provider === "openrouter" && { effort: sessionFields.effort }),
     jobContext: { runId, stepId, ...(opts.advisory && { advisory: true }) },
+    // Nudge the step session to keep going until it reports via
+    // complete_job_step (advisory sessions have no step result to report).
+    ...(!opts.advisory && sessionFields?.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
   });
 
   const chatId = await new Promise<string>((resolve, reject) => {

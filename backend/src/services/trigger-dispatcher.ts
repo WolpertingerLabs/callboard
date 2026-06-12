@@ -120,6 +120,7 @@ export function dispatchEvent(event: StoredEvent): void {
         ...(trigger.action.provider && { provider: trigger.action.provider }),
         ...(trigger.action.model && { model: trigger.action.model }),
         ...(trigger.action.effort && { effort: trigger.action.effort }),
+        ...(trigger.action.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
       }).catch((err) => {
         log.error(`Trigger dispatch failed for ${agent.alias}/${trigger.id}: ${err.message}`);
       });

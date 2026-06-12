@@ -49,6 +49,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
   const [formDebounceEnabled, setFormDebounceEnabled] = useState(false);
   const [formDebounceWindow, setFormDebounceWindow] = useState(5); // seconds
   const [formDebounceMaxWait, setFormDebounceMaxWait] = useState<number | "">(""); // seconds, empty = no ceiling
+  const [formRequireCompletion, setFormRequireCompletion] = useState(false);
   const [formSaving, setFormSaving] = useState(false);
 
   // Backtest state
@@ -129,7 +130,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
         description: formDescription.trim(),
         status: "active",
         filter: buildFilter(),
-        action: { type: "start_session", prompt: formPrompt.trim() || undefined },
+        action: { type: "start_session", prompt: formPrompt.trim() || undefined, ...(formRequireCompletion && { requireExplicitCompletion: true }) },
         triggerCount: 0,
         ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
         ...(formDebounceEnabled && {
@@ -163,6 +164,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     setFormDebounceEnabled(false);
     setFormDebounceWindow(5);
     setFormDebounceMaxWait("");
+    setFormRequireCompletion(false);
     setBacktestResults(null);
     setEditingTriggerId(null);
   };
@@ -190,7 +192,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
         name: formName.trim(),
         description: formDescription.trim(),
         filter: buildFilter(),
-        action: { type: "start_session", prompt: formPrompt.trim() || undefined },
+        action: { type: "start_session", prompt: formPrompt.trim() || undefined, ...(formRequireCompletion && { requireExplicitCompletion: true }) },
         quietHours: formQHEnabled ? { enabled: true, start: formQHStart, end: formQHEnd } : { enabled: false, start: formQHStart, end: formQHEnd },
         debounce: formDebounceEnabled
           ? { enabled: true, windowMs: formDebounceWindow * 1000, ...(formDebounceMaxWait !== "" && { maxWaitMs: formDebounceMaxWait * 1000 }) }
@@ -220,6 +222,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     setFormDebounceEnabled(trigger.debounce?.enabled || false);
     setFormDebounceWindow(trigger.debounce?.windowMs ? trigger.debounce.windowMs / 1000 : 5);
     setFormDebounceMaxWait(trigger.debounce?.maxWaitMs ? trigger.debounce.maxWaitMs / 1000 : "");
+    setFormRequireCompletion(trigger.action.requireExplicitCompletion || false);
     setBacktestResults(null);
     setShowForm(true);
 
@@ -502,6 +505,20 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
               rows={4}
               style={{ ...inputStyle, resize: "vertical", minHeight: 80, fontFamily: "var(--font-mono)", fontSize: 13 }}
             />
+          </div>
+
+          {/* Require explicit completion */}
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={formRequireCompletion}
+                onChange={(e) => setFormRequireCompletion(e.target.checked)}
+                style={{ width: 16, height: 16 }}
+              />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Require explicit completion</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— session must call objective_complete; re-prompted if it stops early</span>
+            </label>
           </div>
 
           {/* Quiet Hours */}

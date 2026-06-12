@@ -43,6 +43,13 @@ interface JobSessionFields {
   /** Run the session as a configured agent (identity prompt + workspace). */
   agentAlias?: string;
   maxTurns?: number;
+  /**
+   * Require the step session to call complete_job_step before its stream
+   * ends — sessions that end without reporting are re-prompted ("nudged")
+   * to continue, up to a cap, before the runner's normal missing-output
+   * retry/fail handling kicks in. Default: false.
+   */
+  requireExplicitCompletion?: boolean;
 }
 
 export interface AgentJobStep extends JobStepBase, JobSessionFields {
@@ -150,15 +157,7 @@ export interface JobDefinition {
   createdBy?: { kind: "chat" | "agent" | "ui" | "api"; ref?: string };
 }
 
-export type JobRunStatus =
-  | "running"
-  | "waiting_approval"
-  | "waiting_event"
-  | "sleeping"
-  | "paused"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
+export type JobRunStatus = "running" | "waiting_approval" | "waiting_event" | "sleeping" | "paused" | "succeeded" | "failed" | "cancelled";
 
 /** Structured result reported by a step session via complete_job_step. */
 export interface JobStepResult {

@@ -28,6 +28,13 @@ export interface CronAction {
    * is "openrouter". `undefined` skips the `reasoning` payload entirely.
    */
   effort?: EffortLevel;
+  /**
+   * Require the spawned session to explicitly call the objective_complete
+   * tool before it is considered done. If the session's message stream ends
+   * without the call, it is re-prompted to continue (up to a cap). Default:
+   * false — the session ends when the stream ends (current behavior).
+   */
+  requireExplicitCompletion?: boolean;
 }
 
 // ── Quiet Hours ──────────────────────────────────────

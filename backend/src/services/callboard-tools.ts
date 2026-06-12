@@ -42,6 +42,7 @@ type MessageSender = (opts: {
   defaultPermissions?: any;
   provider?: "claude-code" | "openrouter";
   model?: string;
+  requireExplicitCompletion?: boolean;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -554,6 +555,12 @@ export function buildCallboardToolsSpec(
             .describe(
               "If true, automatically re-invoke THIS chat with a notification when the spawned session completes (success, error, or stop), so you can read its results and continue without polling. Default: false.",
             ),
+          requireExplicitCompletion: z
+            .boolean()
+            .optional()
+            .describe(
+              "If true, the spawned session must explicitly call the objective_complete tool before it is considered done — if its message stream ends without the call, it is re-prompted to continue (up to a cap). Default: false.",
+            ),
           ...providerModelSchema,
         },
         async (args) => {
@@ -594,6 +601,7 @@ export function buildCallboardToolsSpec(
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
               provider: providerModel.provider,
               ...(providerModel.model && { model: providerModel.model }),
+              ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
             });
 
             // Listen for chat_created to get the chatId
@@ -828,6 +836,12 @@ export function buildCallboardToolsSpec(
             .boolean()
             .optional()
             .describe("If true, wait for the session to complete and return the response text. Default: false (returns immediately)"),
+          requireExplicitCompletion: z
+            .boolean()
+            .optional()
+            .describe(
+              "Override the chat's explicit-completion requirement for this message: true forces the session to call objective_complete before it counts as done (re-prompted if it ends without the call), false disables the requirement for this message. Omit to inherit the chat's persisted setting.",
+            ),
         },
         async (args) => {
           try {
@@ -865,6 +879,7 @@ export function buildCallboardToolsSpec(
               chatId: args.chatId,
               prompt: promptIterable,
               maxTurns: args.maxTurns ?? 200,
+              ...(typeof args.requireExplicitCompletion === "boolean" && { requireExplicitCompletion: args.requireExplicitCompletion }),
             });
 
             // 5. If not waiting, return immediately after session starts

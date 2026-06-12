@@ -139,6 +139,7 @@ function flushBatch(key: string): void {
     ...(trigger.action.provider && { provider: trigger.action.provider }),
     ...(trigger.action.model && { model: trigger.action.model }),
     ...(trigger.action.effort && { effort: trigger.action.effort }),
+    ...(trigger.action.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
   }).catch((err) => {
     log.error(`[${key}] Debounced trigger dispatch failed: ${err.message}`);
   });
@@ -158,9 +159,7 @@ function buildBatchedPrompt(trigger: Trigger, events: StoredEvent[]): string {
   // Interpolate the template with the first event for framing context
   const basePrompt = interpolatePrompt(trigger.action.prompt || "", events[0]);
 
-  const elapsed = events.length > 1
-    ? Math.round((Date.now() - new Date(events[0].receivedAt).getTime()) / 1000)
-    : 0;
+  const elapsed = events.length > 1 ? Math.round((Date.now() - new Date(events[0].receivedAt).getTime()) / 1000) : 0;
 
   const eventList = events
     .map((e, i) => {

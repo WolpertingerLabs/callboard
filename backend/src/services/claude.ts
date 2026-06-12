@@ -20,6 +20,8 @@ import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
+import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
+import { getRun as getJobRun } from "./job-store.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
 import {
@@ -669,7 +671,27 @@ interface SendMessageOptions {
    * `agentSettings.openRouterModel`. Ignored for non-openrouter providers.
    */
   model?: string;
+  /**
+   * When true, the session is not considered done until it explicitly calls
+   * a completion tool: objective_complete (injected for this run) for normal
+   * sessions, or complete_job_step for job-step sessions. If the message
+   * stream ends without that call, the session is resumed with a nudge
+   * prompt — up to `maxNudges` times — before giving up with done reason
+   * "objective_incomplete". Persisted into chat metadata for new chats so
+   * follow-up messages inherit it; pass an explicit boolean on an existing
+   * chat to override for that message only. Default: false (current
+   * behavior — the session ends when the stream ends).
+   */
+  requireExplicitCompletion?: boolean;
+  /**
+   * Max nudge re-prompts per message when requireExplicitCompletion is set
+   * (default: 3).
+   */
+  maxNudges?: number;
 }
+
+/** Default number of times a requiring session is nudged to continue before giving up. */
+const DEFAULT_MAX_NUDGES = 3;
 
 /**
  * Unified message sending function.
@@ -709,6 +731,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       opts.agentAlias = initialMetadata.agentAlias;
       log.debug(`Recovered agentAlias="${opts.agentAlias}" from chat metadata for chatId=${opts.chatId}`);
     }
+    // Recover the explicit-completion requirement from chat metadata so
+    // follow-up messages inherit it. An explicit boolean from the caller
+    // overrides for this message only (metadata stays as-is).
+    if (opts.requireExplicitCompletion === undefined && initialMetadata.requireExplicitCompletion === true) {
+      opts.requireExplicitCompletion = true;
+    }
     stopSession(opts.chatId);
   } else if (opts.folder) {
     // New chat flow — store the actual working directory (may be a worktree).
@@ -739,6 +767,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // openrouter chats — the OR config block below prefers it over the global
       // agentSettings.openRouterModel. Ignored for non-openrouter providers.
       ...(opts.model && opts.provider === "openrouter" && { model: opts.model }),
+      // Pin the explicit-completion requirement so follow-up messages to
+      // this chat keep nudging for objective_complete without every caller
+      // having to re-thread the flag.
+      ...(opts.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
     };
     // Record initial branch for drift detection on subsequent messages
     const gitInfo = getGitInfo(folder);
@@ -761,6 +793,25 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // throw and 500 the user's chat permanently.
   const providerKind = resolveProviderKind(initialMetadata.provider);
   const agentProvider = getAgentProvider(providerKind);
+
+  // ── Explicit completion ("Ralph loop") setup ──
+  // Job steps already report through complete_job_step and the runner's
+  // pendingResult — for them the nudge loop watches that instead of the
+  // objective store, and the objective-tools server is not injected.
+  const requireCompletion = opts.requireExplicitCompletion === true;
+  const isJobStepSession = !!opts.jobContext && !opts.jobContext.advisory;
+  const completionToolName = isJobStepSession ? "complete_job_step" : "objective_complete";
+  const maxNudges = Math.max(0, opts.maxNudges ?? DEFAULT_MAX_NUDGES);
+  if (requireCompletion && opts.chatId && !isJobStepSession) {
+    // A new requiring run needs a fresh objective_complete call — drop any
+    // completion left over from a previous message and clear the UI badge.
+    clearObjectiveCompletion(opts.chatId);
+    if (initialMetadata.objectiveComplete) {
+      delete initialMetadata.objectiveComplete;
+      chatFileService.updateChatMetadata(opts.chatId, { objectiveComplete: null });
+      sessionRegistry.notifyMetadata(opts.chatId, { objectiveComplete: null });
+    }
+  }
 
   const emitter = new EventEmitter();
   const abortController = new AbortController();
@@ -846,6 +897,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
   }
 
+  // ── Objective tools: injected only when explicit completion is required ──
+  // Job steps are excluded — they report through complete_job_step above.
+  if (requireCompletion && !isJobStepSession) {
+    try {
+      const spec = buildObjectiveToolsSpec(() => trackingId);
+      const server = agentProvider.buildToolServer(spec);
+      if (server) {
+        mcpServers["objective-tools"] = server;
+        allowedTools.push("mcp__objective-tools__*");
+        log.info("Injected objective-tools MCP server (explicit completion required)");
+      }
+    } catch (err: any) {
+      log.error(`Failed to build objective-tools server: ${err.message}`);
+    }
+  }
+
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
   const agentSettings = getAgentSettings();
   const activeMcpConfigDir = getActiveMcpConfigDir();
@@ -927,6 +994,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   const claudeExecutable = getClaudeCodeExecutablePath();
 
+  // When explicit completion is required, tell the agent up front via the
+  // system prompt — the nudge loop below is the enforcement, this is the
+  // instruction. Rides alongside any caller-provided systemPrompt append.
+  const completionInstruction = requireCompletion
+    ? `This session requires explicit completion. When the objective is fully achieved, you MUST call the ${completionToolName} tool` +
+      (isJobStepSession ? "" : " (optionally with a summary message and structured result data)") +
+      " as the last thing you do. If your turn ends without that call, you will be re-prompted to continue working."
+    : "";
+  const systemPromptAppend = [opts.systemPrompt, completionInstruction].filter(Boolean).join("\n\n");
+
   const queryOpts: any = {
     prompt: effectivePrompt,
     options: {
@@ -939,7 +1016,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(plugins.length > 0 ? { plugins } : {}),
       ...(hasMcpServers ? { mcpServers, allowedTools } : {}),
       ...(hookOpts ? { hooks: hookOpts } : {}),
-      ...(opts.systemPrompt ? { systemPrompt: { type: "preset", preset: "claude_code", append: opts.systemPrompt } } : {}),
+      ...(systemPromptAppend ? { systemPrompt: { type: "preset", preset: "claude_code", append: systemPromptAppend } } : {}),
       env: {
         ...process.env,
         // Propagate resolved MCP server env vars to the CLI subprocess so that plugins
@@ -1070,156 +1147,222 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
             : OR_LIBRARY_DEFAULT_MAX_BUDGET_USD
           : undefined;
 
-      const conversation = agentProvider.query(queryOpts);
+      // Whether the chat record exists yet — for new chats it's created on
+      // the first session_started; nudge re-queries then take the
+      // "existing chat" path and append their session ids.
+      let chatRecordCreated = !isNewChat;
+      // Completion predicate the nudge loop checks when the stream ends:
+      // job steps satisfy it by recording a pendingResult via
+      // complete_job_step; everything else via objective_complete.
+      const isObjectiveSatisfied = (): boolean => {
+        if (isJobStepSession) {
+          const run = getJobRun(opts.jobContext!.runId);
+          return run?.activeStep?.stepId === opts.jobContext!.stepId && run.activeStep.pendingResult !== undefined;
+        }
+        return hasObjectiveCompletion(trackingId);
+      };
+      let nudgesUsed = 0;
 
-      for await (const event of conversation) {
-        if (abortController.signal.aborted) break;
+      // ── Query loop ──
+      // Runs exactly once for normal sessions. When requireExplicitCompletion
+      // is set and the stream ends without the completion tool having been
+      // called, the session is resumed with a nudge prompt — same emitter,
+      // same registry entry, so the UI sees one continuous run and
+      // session_stopped (which drives onComplete callbacks and the job
+      // runner's harvest) fires only after the loop truly ends.
 
-        switch (event.type) {
-          case "result": {
-            // Always the last yielded event: tells us why the conversation ended.
-            if (event.status === "max_turns") {
-              endReason = "max_turns";
-              log.warn(`Session ${trackingId} ended: max turns reached`);
-            } else if (event.status === "max_budget") {
-              endReason = "max_budget";
-              log.warn(`Session ${trackingId} ended: max budget reached`);
-            } else if (event.status === "error") {
-              errorDetail = event.reason || "The model provider returned an error response.";
-              log.error(`Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`);
-            }
-            if (typeof event.usage?.costUsd === "number") {
-              lastCostUsd = event.usage.costUsd;
-            }
-            // "success" → endReason stays undefined (normal completion)
-            break;
-          }
+      while (true) {
+        const conversation = agentProvider.query(queryOpts);
 
-          case "slash_commands":
-            setSlashCommandsForDirectory(folder, event.commands);
-            break;
+        for await (const event of conversation) {
+          if (abortController.signal.aborted) break;
 
-          case "session_started": {
-            // The adapter may re-emit this on subsequent messages; only act
-            // on first arrival.
-            if (sessionId) break;
-            sessionId = event.sessionId;
-            log.debug(`Session ID arrived: ${sessionId}`);
-
-            if (isNewChat) {
-              // New chat: create the chat record and migrate tracking from temp ID to real chat ID
-              const meta = { ...initialMetadata, session_ids: [sessionId] };
-              log.debug(`Creating chat record — sessionId=${sessionId}, folder=${folder}`);
-              const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
-                metadata: JSON.stringify(meta),
-              });
-
-              const oldTrackingId = trackingId;
-              trackingId = sessionId;
-              log.debug(`Migrated tracking ID: ${oldTrackingId} → ${trackingId}`);
-
-              sessionRegistry.migrate(oldTrackingId, trackingId);
-
-              const pending = pendingRequests.get(oldTrackingId);
-              if (pending) {
-                pendingRequests.delete(oldTrackingId);
-                pendingRequests.set(trackingId, pending);
+          switch (event.type) {
+            case "result": {
+              // Always the last yielded event: tells us why the conversation ended.
+              if (event.status === "max_turns") {
+                endReason = "max_turns";
+                log.warn(`Session ${trackingId} ended: max turns reached`);
+              } else if (event.status === "max_budget") {
+                endReason = "max_budget";
+                log.warn(`Session ${trackingId} ended: max budget reached`);
+              } else if (event.status === "error") {
+                errorDetail = event.reason || "The model provider returned an error response.";
+                log.error(`Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`);
               }
+              if (typeof event.usage?.costUsd === "number") {
+                lastCostUsd = event.usage.costUsd;
+              }
+              // "success" → endReason stays undefined (normal completion)
+              break;
+            }
 
-              emitter.emit("event", {
-                type: "chat_created",
-                content: "",
-                chatId: sessionId,
-                chat: { ...chat, session_id: sessionId },
-              } as StreamEvent);
+            case "slash_commands":
+              setSlashCommandsForDirectory(folder, event.commands);
+              break;
 
-              // Log chat activity for agent sessions
-              if (initialMetadata.agentAlias) {
-                appendActivity(initialMetadata.agentAlias as string, {
-                  type: "chat",
-                  message: "Chat session started",
-                  metadata: { chatId: sessionId },
+            case "session_started": {
+              // The adapter may re-emit this on subsequent messages; only act
+              // on first arrival.
+              if (sessionId) break;
+              sessionId = event.sessionId;
+              log.debug(`Session ID arrived: ${sessionId}`);
+
+              if (!chatRecordCreated) {
+                // New chat: create the chat record and migrate tracking from temp ID to real chat ID
+                chatRecordCreated = true;
+                initialMetadata.session_ids = [sessionId];
+                const meta = { ...initialMetadata };
+                log.debug(`Creating chat record — sessionId=${sessionId}, folder=${folder}`);
+                const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
+                  metadata: JSON.stringify(meta),
+                });
+
+                const oldTrackingId = trackingId;
+                trackingId = sessionId;
+                log.debug(`Migrated tracking ID: ${oldTrackingId} → ${trackingId}`);
+
+                sessionRegistry.migrate(oldTrackingId, trackingId);
+
+                const pending = pendingRequests.get(oldTrackingId);
+                if (pending) {
+                  pendingRequests.delete(oldTrackingId);
+                  pendingRequests.set(trackingId, pending);
+                }
+
+                emitter.emit("event", {
+                  type: "chat_created",
+                  content: "",
+                  chatId: sessionId,
+                  chat: { ...chat, session_id: sessionId },
+                } as StreamEvent);
+
+                // Log chat activity for agent sessions
+                if (initialMetadata.agentAlias) {
+                  appendActivity(initialMetadata.agentAlias as string, {
+                    type: "chat",
+                    message: "Chat session started",
+                    metadata: { chatId: sessionId },
+                  });
+                }
+
+                // Generate a title for new manual (non-triggered) chats
+                if (!opts.triggered) {
+                  const promptText = typeof prompt === "string" ? prompt : null;
+                  if (promptText) {
+                    const chatId = trackingId;
+                    generateChatTitle(promptText)
+                      .then((title) => {
+                        if (title) {
+                          chatFileService.updateChatMetadata(chatId, { title });
+                          log.debug(`Generated title for chat ${chatId}: "${title}"`);
+                        }
+                      })
+                      .catch(() => {}); // Title generation is non-critical
+                  }
+                }
+              } else {
+                // Existing chat: append session_id to metadata
+                const ids: string[] = initialMetadata.session_ids || [];
+                if (!ids.includes(sessionId)) ids.push(sessionId);
+                initialMetadata.session_ids = ids;
+                chatFileService.upsertChat(trackingId, folder, sessionId, {
+                  metadata: JSON.stringify(initialMetadata),
                 });
               }
+              break;
+            }
 
-              // Generate a title for new manual (non-triggered) chats
-              if (!opts.triggered) {
-                const promptText = typeof prompt === "string" ? prompt : null;
-                if (promptText) {
-                  const chatId = trackingId;
-                  generateChatTitle(promptText)
-                    .then((title) => {
-                      if (title) {
-                        chatFileService.updateChatMetadata(chatId, { title });
-                        log.debug(`Generated title for chat ${chatId}: "${title}"`);
-                      }
-                    })
-                    .catch(() => {}); // Title generation is non-critical
+            case "compaction_boundary":
+              emitter.emit("event", { type: "compacting", content: event.content || "Conversation compacted" } as StreamEvent);
+              break;
+
+            case "text":
+              emitter.emit("event", { type: "text", content: event.content } as StreamEvent);
+              break;
+
+            case "thinking":
+              emitter.emit("event", { type: "thinking", content: event.content } as StreamEvent);
+              break;
+
+            case "tool_use":
+              emitter.emit("event", {
+                type: "tool_use",
+                content: JSON.stringify(event.input),
+                toolName: event.toolName,
+                ...(event.toolSource && { toolSource: event.toolSource }),
+              } as StreamEvent);
+              break;
+
+            case "tool_result":
+              emitter.emit("event", {
+                type: "tool_result",
+                content: event.content,
+                ...(event.toolSource && { toolSource: event.toolSource }),
+              } as StreamEvent);
+              break;
+
+            case "adapter_specific": {
+              // OR per-turn cost beacons → live `budget` StreamEvents. The
+              // harness reports the CUMULATIVE run cost at each turn boundary;
+              // forwarding it lets the UI move the spend indicator mid-run
+              // instead of waiting for `done`. Track it as lastCostUsd too so
+              // an abnormal end (e.g. abort before the result event) still has
+              // the freshest spend on hand.
+              if (event.adapter === "openrouter") {
+                const payload = event.payload as { kind?: string; costUsd?: number } | null;
+                if (payload?.kind === "turn_cost" && typeof payload.costUsd === "number") {
+                  lastCostUsd = payload.costUsd;
+                  emitter.emit("event", {
+                    type: "budget",
+                    content: "",
+                    costUsd: payload.costUsd,
+                    ...(typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
+                  } as StreamEvent);
                 }
               }
-            } else {
-              // Existing chat: append session_id to metadata
-              const ids: string[] = initialMetadata.session_ids || [];
-              if (!ids.includes(sessionId)) ids.push(sessionId);
-              initialMetadata.session_ids = ids;
-              chatFileService.upsertChat(trackingId, folder, sessionId, {
-                metadata: JSON.stringify(initialMetadata),
-              });
+              break;
             }
-            break;
-          }
-
-          case "compaction_boundary":
-            emitter.emit("event", { type: "compacting", content: event.content || "Conversation compacted" } as StreamEvent);
-            break;
-
-          case "text":
-            emitter.emit("event", { type: "text", content: event.content } as StreamEvent);
-            break;
-
-          case "thinking":
-            emitter.emit("event", { type: "thinking", content: event.content } as StreamEvent);
-            break;
-
-          case "tool_use":
-            emitter.emit("event", {
-              type: "tool_use",
-              content: JSON.stringify(event.input),
-              toolName: event.toolName,
-              ...(event.toolSource && { toolSource: event.toolSource }),
-            } as StreamEvent);
-            break;
-
-          case "tool_result":
-            emitter.emit("event", {
-              type: "tool_result",
-              content: event.content,
-              ...(event.toolSource && { toolSource: event.toolSource }),
-            } as StreamEvent);
-            break;
-
-          case "adapter_specific": {
-            // OR per-turn cost beacons → live `budget` StreamEvents. The
-            // harness reports the CUMULATIVE run cost at each turn boundary;
-            // forwarding it lets the UI move the spend indicator mid-run
-            // instead of waiting for `done`. Track it as lastCostUsd too so
-            // an abnormal end (e.g. abort before the result event) still has
-            // the freshest spend on hand.
-            if (event.adapter === "openrouter") {
-              const payload = event.payload as { kind?: string; costUsd?: number } | null;
-              if (payload?.kind === "turn_cost" && typeof payload.costUsd === "number") {
-                lastCostUsd = payload.costUsd;
-                emitter.emit("event", {
-                  type: "budget",
-                  content: "",
-                  costUsd: payload.costUsd,
-                  ...(typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
-                } as StreamEvent);
-              }
-            }
-            break;
           }
         }
+
+        // ── Nudge decision ──
+        // Only nudge when explicit completion is required and the run ended
+        // normally: user aborts, provider errors, /clear, and hard caps
+        // (max_turns / max_budget) all end the session as before.
+        if (!requireCompletion) break;
+        if (abortController.signal.aborted || errorDetail !== undefined || endReason) break;
+        if (typeof prompt === "string" && prompt.trim().toLowerCase() === "/clear") break;
+        if (isObjectiveSatisfied()) break;
+        if (nudgesUsed >= maxNudges) {
+          endReason = "objective_incomplete";
+          log.warn(`Session ${trackingId} ended without ${completionToolName} after ${nudgesUsed} nudge(s) — giving up`);
+          break;
+        }
+        nudgesUsed++;
+        log.info(`Session ${trackingId} stream ended without ${completionToolName} — nudging (${nudgesUsed}/${maxNudges})`);
+
+        const nudgeText =
+          `Your previous turn ended without calling the ${completionToolName} tool, but this session requires explicit completion. ` +
+          `If the objective is fully achieved, call ${completionToolName} now${isJobStepSession ? "" : " (optionally with a message and result data)"}. ` +
+          `Otherwise, continue working toward the objective.`;
+        emitter.emit("event", {
+          type: "nudge",
+          content: nudgeText,
+          reason: `nudge_${nudgesUsed}_of_${maxNudges}`,
+        } as StreamEvent);
+
+        // Resume the conversation we just watched end. `sessionId` was
+        // captured from this iteration's session_started; reset it so the
+        // resumed query's new session id is appended to the chat record.
+        queryOpts.options.resume = sessionId ?? resumeSessionId;
+        queryOpts.prompt = (async function* () {
+          yield {
+            type: "user" as const,
+            message: { role: "user" as const, content: nudgeText },
+          };
+        })();
+        sessionId = null;
       }
 
       chatFileService.updateChat(trackingId, {});
@@ -1249,6 +1392,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         ...(endReason && { reason: endReason }),
         ...(typeof lastCostUsd === "number" && { costUsd: lastCostUsd }),
         ...(typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
+        // Whether the explicit-completion requirement was satisfied — only
+        // attached when the requirement was on for this run.
+        ...(requireCompletion && { objectiveComplete: isObjectiveSatisfied() }),
       } as StreamEvent);
     } catch (err: any) {
       if (err.name === "AbortError") {

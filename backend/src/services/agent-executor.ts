@@ -32,6 +32,7 @@ type MessageSender = (opts: {
   provider?: "claude-code" | "openrouter";
   model?: string;
   effort?: EffortLevel;
+  requireExplicitCompletion?: boolean;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -61,6 +62,11 @@ export interface ExecuteAgentOptions {
   model?: string;
   /** OR-only reasoning effort. Ignored when provider is claude-code. */
   effort?: EffortLevel;
+  /**
+   * Require the session to call objective_complete before it counts as done
+   * — ends-without-calling gets nudged to continue. Default: false.
+   */
+  requireExplicitCompletion?: boolean;
 }
 
 export interface ExecuteAgentResult {
@@ -76,7 +82,7 @@ export interface ExecuteAgentResult {
  * Returns the chatId of the new session, or null if it failed.
  */
 export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAgentResult | null> {
-  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, model, effort } = opts;
+  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, model, effort, requireExplicitCompletion } = opts;
 
   try {
     const config = getAgent(agentAlias);
@@ -119,6 +125,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       ...(provider && { provider }),
       ...(model && { model }),
       ...(effort && { effort }),
+      ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),
     });
 
     // Wait for chat_created event to get chatId

@@ -173,6 +173,7 @@ agentCronJobsRouter.post("/:jobId/run", (req: Request, res: Response): void => {
     ...(job.action?.provider && { provider: job.action.provider }),
     ...(job.action?.model && { model: job.action.model }),
     ...(job.action?.effort && { effort: job.action.effort }),
+    ...(job.action?.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
   }).catch((err) => {
     log.error(`Manual cron run failed for job ${jobId}: ${err}`);
   });
