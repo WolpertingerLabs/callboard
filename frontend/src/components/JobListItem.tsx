@@ -1,11 +1,11 @@
 import { Workflow } from "lucide-react";
-import type { JobOverviewItem } from "../api";
+import type { JobRunListItem } from "../api";
 import { JOB_RUN_STATUS_META } from "./JobRunPanel";
 
 export const ACTIVE_JOB_RUN_STATUSES = ["running", "waiting_approval", "waiting_event", "sleeping"];
 
 interface Props {
-  job: JobOverviewItem;
+  run: JobRunListItem;
   isActive?: boolean;
   onClick: () => void;
   /** Current time in ms, passed from parent to avoid impure render calls */
@@ -23,10 +23,9 @@ function formatRelativeTime(isoDate: string, now: number): string {
   return `${days}d ago`;
 }
 
-export default function JobListItem({ job, isActive, onClick, now }: Props) {
-  const run = job.latestRun;
-  const statusMeta = run ? JOB_RUN_STATUS_META[run.status] : undefined;
-  const isRunActive = run ? ACTIVE_JOB_RUN_STATUSES.includes(run.status) : false;
+export default function JobListItem({ run, isActive, onClick, now }: Props) {
+  const statusMeta = JOB_RUN_STATUS_META[run.status];
+  const isRunActive = ACTIVE_JOB_RUN_STATUSES.includes(run.status);
 
   return (
     <div
@@ -43,9 +42,9 @@ export default function JobListItem({ job, isActive, onClick, now }: Props) {
       }}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
-        {/* Row 1: running dot + job name + status pill */}
+        {/* Row 1: running dot + run title (or job name) + status pill */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {run?.status === "running" && (
+          {run.status === "running" && (
             <span
               title="Running"
               style={{
@@ -69,7 +68,7 @@ export default function JobListItem({ job, isActive, onClick, now }: Props) {
               color: "var(--chatlist-item-title-text)",
             }}
           >
-            {job.jobName}
+            {run.title || run.jobName}
           </div>
           {statusMeta && (
             <span
@@ -88,33 +87,41 @@ export default function JobListItem({ job, isActive, onClick, now }: Props) {
           )}
         </div>
 
-        {/* Row 2: current stage of the latest run (or placeholder) */}
-        {run ? (
-          isRunActive || run.status === "paused" || run.status === "failed" ? (
-            <div
-              title={run.currentStepName}
-              style={{
-                fontSize: 12,
-                color: "var(--text-muted)",
-                marginTop: 2,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {run.currentStepIndex
-                ? `Step ${run.currentStepIndex}/${run.stepCount}: ${run.currentStepName}${run.currentStepType ? ` (${run.currentStepType})` : ""}`
-                : `${run.completedSteps}/${run.stepCount} steps completed`}
-            </div>
-          ) : null
-        ) : (
-          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-            No runs yet · {job.stepCount} {job.stepCount === 1 ? "step" : "steps"}
+        {/* Row 2: job name (when a custom title is shown above) + run id */}
+        <div
+          title={run.runId}
+          style={{
+            fontSize: 12,
+            color: "var(--chatlist-item-path-text)",
+            marginTop: 2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {run.title ? `${run.jobName} · ${run.runId}` : run.runId}
+        </div>
+
+        {/* Row 3: current stage of the run */}
+        {(isRunActive || run.status === "paused" || run.status === "failed") && run.currentStepIndex && (
+          <div
+            title={run.currentStepName}
+            style={{
+              fontSize: 12,
+              color: "var(--text-muted)",
+              marginTop: 2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Step {run.currentStepIndex}/{run.stepCount}: {run.currentStepName}
+            {run.currentStepType ? ` (${run.currentStepType})` : ""}
           </div>
         )}
 
         {/* Failed runs surface the error */}
-        {run?.error && (
+        {run.error && (
           <div
             title={run.error}
             style={{
@@ -130,20 +137,18 @@ export default function JobListItem({ job, isActive, onClick, now }: Props) {
           </div>
         )}
 
-        {/* Row 3: timestamps */}
-        {run && (
-          <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            <span title={`Run started: ${new Date(run.createdAt).toLocaleString()}`}>Started {formatRelativeTime(run.createdAt, now)}</span>
-            <span style={{ opacity: 0.5 }}>&middot;</span>
-            <span title={`Updated: ${new Date(run.updatedAt).toLocaleString()}`}>Updated {formatRelativeTime(run.updatedAt, now)}</span>
-            {run.nextWakeAt && isRunActive && (
-              <>
-                <span style={{ opacity: 0.5 }}>&middot;</span>
-                <span title={`Next wake: ${new Date(run.nextWakeAt).toLocaleString()}`}>Wakes {new Date(run.nextWakeAt).toLocaleTimeString()}</span>
-              </>
-            )}
-          </div>
-        )}
+        {/* Row 4: timestamps */}
+        <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span title={`Run started: ${new Date(run.createdAt).toLocaleString()}`}>Started {formatRelativeTime(run.createdAt, now)}</span>
+          <span style={{ opacity: 0.5 }}>&middot;</span>
+          <span title={`Updated: ${new Date(run.updatedAt).toLocaleString()}`}>Updated {formatRelativeTime(run.updatedAt, now)}</span>
+          {run.nextWakeAt && isRunActive && (
+            <>
+              <span style={{ opacity: 0.5 }}>&middot;</span>
+              <span title={`Next wake: ${new Date(run.nextWakeAt).toLocaleString()}`}>Wakes {new Date(run.nextWakeAt).toLocaleTimeString()}</span>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

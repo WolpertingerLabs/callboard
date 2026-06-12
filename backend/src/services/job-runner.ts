@@ -446,9 +446,11 @@ async function startAgentAttempt(runId: string, stepId: string, attempt: number)
     return;
   }
 
-  const instructions = step.outputs?.length
-    ? `\n\nWhen you are done, you MUST call the complete_job_step tool with an "outputs" object containing: ${step.outputs.join(", ")}.`
-    : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`;
+  const instructions =
+    (step.outputs?.length
+      ? `\n\nWhen you are done, you MUST call the complete_job_step tool with an "outputs" object containing: ${step.outputs.join(", ")}.`
+      : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`) +
+    (run.title ? "" : ` This run has no title yet — call the set_job_run_title tool early with a short title specific to this run.`);
 
   run.activeStep = { stepId, attempt, startedAt: new Date().toISOString() };
   run.status = "running";
