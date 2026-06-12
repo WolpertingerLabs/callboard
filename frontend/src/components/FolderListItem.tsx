@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { GitBranch, Plus, Zap, Clock, Bell } from "lucide-react";
+import { GitBranch, Plus, Zap, Clock, Bell, Workflow } from "lucide-react";
 import type { FolderSummary } from "../api";
 import ProviderBadge from "./ProviderBadge";
 
@@ -75,7 +75,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
           )}
           {folder.isTriggered && (
             <span
-              title={folder.triggeredBy === "cron" ? "Cron job" : "Triggered"}
+              title={folder.triggeredBy === "cron" ? "Cron job" : folder.triggeredBy === "job" ? "Job step" : "Triggered"}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -89,7 +89,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
                 flexShrink: 0,
               }}
             >
-              {folder.triggeredBy === "cron" ? <Clock size={10} /> : <Zap size={10} />}
+              {folder.triggeredBy === "cron" ? <Clock size={10} /> : folder.triggeredBy === "job" ? <Workflow size={10} /> : <Zap size={10} />}
             </span>
           )}
           {folder.hasSummon && (
