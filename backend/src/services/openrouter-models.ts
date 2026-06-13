@@ -59,6 +59,7 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
         name: m.name || m.id,
         promptPrice: m.pricing?.prompt ?? "0",
         completionPrice: m.pricing?.completion ?? "0",
+        supportedParameters: m.supported_parameters ?? [],
       }))
       .sort((a, b) => a.id.localeCompare(b.id));
 

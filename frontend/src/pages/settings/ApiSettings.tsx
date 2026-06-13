@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Plus, Trash2 } from "lucide-react";
-import { getAgentSettings, updateAgentSettings, getSystemInfo } from "../../api";
-import type { AgentSettings } from "shared/types/index.js";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog } from "../../api";
+import type { AgentSettings, OpenRouterModelInfo, OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
+import { OR_SERVER_TOOLS, OR_PLUGINS, OR_SAMPLING_PARAMS, validateServerTools, validateParamProfile } from "shared/types/index.js";
 import type { SystemInfo } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
+import ParamFieldForm from "../../components/ParamFieldForm";
 import { getDefaultProvider } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
 
@@ -125,6 +127,128 @@ function SecretField({ id, value, onChange, placeholder }: SecretFieldProps) {
   );
 }
 
+// ── OpenRouter param-profile editing helpers ────────────────────────────────
+
+const toggleRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 10,
+  padding: "8px 0",
+  borderBottom: "1px solid var(--border)",
+};
+
+const tagStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  color: "var(--text-muted)",
+  border: "1px solid var(--border)",
+  borderRadius: 4,
+  padding: "1px 5px",
+  marginLeft: 6,
+};
+
+/** Read the params bag for a plugin entry (the object minus its `id`). */
+function pluginParams(entry: { id: string } & Record<string, unknown>): Record<string, unknown> {
+  const { id: _id, ...rest } = entry;
+  return rest;
+}
+
+/**
+ * Editor for one {@link OpenRouterParamProfile}: sampling params (via
+ * ParamFieldForm) plus a per-plugin toggle that reveals the plugin's own
+ * ParamFieldForm. Stored plugin shape is `{ id, ...camelCaseParams }`;
+ * `nestUnder` params (file-parser's `pdf.engine`) are nested by ParamFieldForm.
+ */
+function ParamProfileEditor({
+  profile,
+  onChange,
+  unsupportedKeys,
+}: {
+  profile: OpenRouterParamProfile;
+  onChange: (next: OpenRouterParamProfile) => void;
+  unsupportedKeys?: Set<string>;
+}) {
+  const plugins = profile.plugins ?? [];
+  const pluginById = new Map(plugins.map((p) => [p.id, p]));
+
+  const setSamplingParams = (params: Record<string, unknown>) => {
+    onChange({ ...profile, params: Object.keys(params).length > 0 ? params : undefined });
+  };
+
+  const togglePlugin = (id: string, on: boolean) => {
+    const next = on ? [...plugins.filter((p) => p.id !== id), { id }] : plugins.filter((p) => p.id !== id);
+    onChange({ ...profile, plugins: next.length > 0 ? next : undefined });
+  };
+
+  const setPluginParams = (id: string, params: Record<string, unknown>) => {
+    const next = plugins.map((p) => (p.id === id ? { id, ...params } : p));
+    onChange({ ...profile, plugins: next });
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", margin: "6px 0 8px" }}>Sampling parameters</div>
+      <ParamFieldForm specs={OR_SAMPLING_PARAMS} value={profile.params ?? {}} onChange={setSamplingParams} unsupportedKeys={unsupportedKeys} />
+
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", margin: "12px 0 4px" }}>Plugins</div>
+      {OR_PLUGINS.map((plugin) => {
+        const entry = pluginById.get(plugin.id);
+        const enabled = entry !== undefined;
+        return (
+          <div key={plugin.id} style={toggleRowStyle}>
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => togglePlugin(plugin.id, e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0 }}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
+                {plugin.label}
+                {plugin.deprecated && <span style={tagStyle}>deprecated</span>}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{plugin.description}</div>
+              {plugin.modelHint && (
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                  Meaningful with <code style={{ fontSize: 11 }}>{plugin.modelHint}</code>.
+                </div>
+              )}
+              {enabled && plugin.params.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <ParamFieldForm specs={plugin.params} value={pluginParams(entry)} onChange={(p) => setPluginParams(plugin.id, p)} />
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** True when a profile carries no sampling params and no plugins. */
+function isEmptyProfile(p: OpenRouterParamProfile | undefined): boolean {
+  if (!p) return true;
+  const hasParams = p.params !== undefined && Object.keys(p.params).length > 0;
+  const hasPlugins = p.plugins !== undefined && p.plugins.length > 0;
+  return !hasParams && !hasPlugins;
+}
+
+/**
+ * Compute the set of sampling `supportedParamKey`s a given model does NOT
+ * advertise. An empty/unknown `supportedParameters` list (model not in the
+ * catalog) ⇒ no keys flagged (we don't gray out when we can't tell).
+ */
+function computeUnsupportedKeys(model: OpenRouterModelInfo | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!model || !Array.isArray(model.supportedParameters) || model.supportedParameters.length === 0) return out;
+  const supported = new Set(model.supportedParameters);
+  for (const spec of OR_SAMPLING_PARAMS) {
+    if (spec.supportedParamKey && !supported.has(spec.supportedParamKey)) out.add(spec.supportedParamKey);
+  }
+  return out;
+}
+
 export default function ApiSettings() {
   // Top-level integration toggle — picks which provider's settings are shown.
   // Seeded from the user's New Chat default so the page opens on the provider
@@ -158,6 +282,20 @@ export default function ApiSettings() {
   // Custom model aliases, edited as ordered rows; converted to the
   // Record<alias, modelId> shape on save. Blank rows are dropped on save.
   const [aliasRows, setAliasRows] = useState<{ alias: string; modelId: string }[]>([]);
+  // OpenRouter server tools. `undefined` = unowned (toggles show harness
+  // defaults); any user edit transitions to an explicit array we own — even
+  // `[]`, which means "all server tools disabled".
+  const [serverTools, setServerTools] = useState<OpenRouterServerToolConfig[] | undefined>(undefined);
+  // Global default sampling params + plugins.
+  const [modelParamsDefault, setModelParamsDefault] = useState<OpenRouterParamProfile>({});
+  // Per-model overrides, edited as ordered rows; converted to a
+  // Record<slug, profile> on save. Blank-slug rows are dropped.
+  const [modelParamRows, setModelParamRows] = useState<{ slug: string; profile: OpenRouterParamProfile }[]>([]);
+  // Catalog models (for supportedParameters lookups in per-model overrides).
+  const [orModels, setOrModels] = useState<OpenRouterModelInfo[]>([]);
+  // Collapse state for the bulky sections.
+  const [showDefaults, setShowDefaults] = useState(false);
+  const [expandedTool, setExpandedTool] = useState<string | null>(null);
 
   const loadAll = async () => {
     setLoading(true);
@@ -179,6 +317,13 @@ export default function ApiSettings() {
       setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
       setOpenRouterMaxBudgetUsd(typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "");
       setAliasRows(Object.entries(s.openRouterModelAliases ?? {}).map(([alias, modelId]) => ({ alias, modelId })));
+      setServerTools(s.openRouterServerTools);
+      setModelParamsDefault(s.openRouterModelParamsDefault ?? {});
+      setModelParamRows(Object.entries(s.openRouterModelParamProfiles ?? {}).map(([slug, profile]) => ({ slug, profile })));
+      // Catalog (for supportedParameters); best-effort — fields still work offline.
+      getOpenRouterCatalog()
+        .then(({ models }) => setOrModels(models))
+        .catch(() => {});
     } catch (err: any) {
       setError(err.message || "Failed to load settings");
     } finally {
@@ -193,6 +338,42 @@ export default function ApiSettings() {
   const handleSave = async () => {
     setSaving(true);
     setError("");
+
+    // ── Client-side validation of the OpenRouter tool/param settings ──
+    // Mirrors the backend's write-time rules so the user sees problems before
+    // the save round-trips. Any error aborts the save (like alias validation).
+    const orErrors: string[] = [];
+    let cleanedServerTools: OpenRouterServerToolConfig[] | undefined;
+    if (serverTools !== undefined) {
+      const { value, errors } = validateServerTools(serverTools);
+      orErrors.push(...errors);
+      cleanedServerTools = value; // may be [] (explicitly "all disabled")
+    }
+
+    const { value: cleanedDefault, errors: defaultErrors } = validateParamProfile(modelParamsDefault);
+    orErrors.push(...defaultErrors);
+
+    const cleanedProfiles: Record<string, OpenRouterParamProfile> = {};
+    const seenSlugs = new Set<string>();
+    for (const row of modelParamRows) {
+      const slug = row.slug.trim();
+      if (slug === "") continue; // blank rows dropped on save
+      if (seenSlugs.has(slug)) {
+        orErrors.push(`Duplicate per-model override for "${slug}"`);
+        continue;
+      }
+      seenSlugs.add(slug);
+      const { value, errors } = validateParamProfile(row.profile);
+      orErrors.push(...errors.map((e) => `${slug}: ${e}`));
+      if (!isEmptyProfile(value)) cleanedProfiles[slug] = value;
+    }
+
+    if (orErrors.length > 0) {
+      setError(orErrors.join("; "));
+      setSaving(false);
+      return;
+    }
+
     try {
       const updated = await updateAgentSettings({
         apiBaseUrl,
@@ -218,10 +399,26 @@ export default function ApiSettings() {
         openRouterModelAliases: Object.fromEntries(
           aliasRows.map((r) => [r.alias.trim(), r.modelId.trim()]).filter(([alias, modelId]) => alias !== "" && modelId !== ""),
         ),
+        // Server tools: send the explicit array (including `[]` = all disabled)
+        // once owned; `undefined` while unowned so the harness keeps its
+        // defaults. JSON.stringify drops `undefined`, so the route's
+        // partial-update guard correctly leaves the field untouched.
+        openRouterServerTools: cleanedServerTools,
+        // Param profiles: always send the cleaned value (even an empty `{}`
+        // profile / empty record) so the route can clear a previously-saved
+        // override. The backend coerces an empty validated profile/record to
+        // undefined on store; sending `undefined` here would instead leave the
+        // prior value intact (JSON.stringify drops it).
+        openRouterModelParamsDefault: cleanedDefault,
+        openRouterModelParamProfiles: cleanedProfiles,
       });
       setSettings(updated);
       // Re-sync alias rows so blank rows dropped on save disappear from the form.
       setAliasRows(Object.entries(updated.openRouterModelAliases ?? {}).map(([alias, modelId]) => ({ alias, modelId })));
+      // Re-sync the OR tool/param state from the saved value.
+      setServerTools(updated.openRouterServerTools);
+      setModelParamsDefault(updated.openRouterModelParamsDefault ?? {});
+      setModelParamRows(Object.entries(updated.openRouterModelParamProfiles ?? {}).map(([slug, profile]) => ({ slug, profile })));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       // Re-fetch system info so the Account / Models display reflects new overrides.
@@ -676,6 +873,179 @@ export default function ApiSettings() {
               />
               <div style={helpStyle}>Optional. Override where OR session state is written. Defaults to ~/.openrouter-agent-harness/logs.</div>
             </div>
+          </div>
+
+          {/* OpenRouter — Server Tools */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Cpu size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Server Tools</span>
+            </div>
+            <div style={subtitleStyle}>
+              OpenRouter-hosted tools the model can call. Until you change a toggle, new sessions use the harness defaults (date/time, web search, web
+              fetch). Changing any toggle takes ownership — your exact selection is then used verbatim, including disabling everything.
+            </div>
+            {serverTools !== undefined && serverTools.length === 0 && (
+              <div style={{ ...helpStyle, marginTop: 0, marginBottom: 8, color: "var(--text)" }}>All server tools disabled.</div>
+            )}
+            {OR_SERVER_TOOLS.map((tool) => {
+              const owned = serverTools !== undefined;
+              const entry = owned ? serverTools.find((t) => t.type === tool.type) : undefined;
+              const enabled = owned ? entry !== undefined : tool.defaultOn;
+              const hasParams = tool.params.length > 0;
+              const expanded = expandedTool === tool.type;
+
+              // Toggling takes ownership: seed the explicit array from the
+              // current effective set, then add/remove this tool.
+              const toggle = (on: boolean) => {
+                const base: OpenRouterServerToolConfig[] = owned
+                  ? serverTools
+                  : OR_SERVER_TOOLS.filter((t) => t.defaultOn).map((t) => ({ type: t.type }));
+                const next = on ? [...base.filter((t) => t.type !== tool.type), { type: tool.type }] : base.filter((t) => t.type !== tool.type);
+                setServerTools(next);
+              };
+
+              const setToolParams = (params: Record<string, unknown>) => {
+                const base = owned ? serverTools : OR_SERVER_TOOLS.filter((t) => t.defaultOn).map((t) => ({ type: t.type }));
+                const next = base.map((t) => (t.type === tool.type ? { type: tool.type, ...(Object.keys(params).length > 0 ? { params } : {}) } : t));
+                setServerTools(next);
+              };
+
+              return (
+                <div key={tool.type} style={toggleRowStyle}>
+                  <input type="checkbox" checked={enabled} onChange={(e) => toggle(e.target.checked)} style={{ marginTop: 2, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
+                        {tool.label}
+                        {tool.defaultOn && <span style={tagStyle}>default</span>}
+                      </div>
+                      {enabled && hasParams && (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedTool(expanded ? null : tool.type)}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "var(--text-muted)",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Configure
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{tool.description}</div>
+                    {enabled && hasParams && expanded && (
+                      <div style={{ marginTop: 8 }}>
+                        <ParamFieldForm specs={tool.params} value={entry?.params ?? {}} onChange={setToolParams} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* OpenRouter — Default Model Parameters */}
+          <div style={sectionStyle}>
+            <button
+              type="button"
+              onClick={() => setShowDefaults((v) => !v)}
+              style={{
+                ...headerStyle,
+                width: "100%",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                color: "var(--text)",
+              }}
+            >
+              {showDefaults ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Default Model Parameters</span>
+            </button>
+            <div style={subtitleStyle}>
+              Sampling knobs and plugins applied to every OpenRouter session. Leave a field blank to use the model/provider default — blanks are never sent.
+              Per-model overrides below take precedence.
+            </div>
+            {showDefaults && <ParamProfileEditor profile={modelParamsDefault} onChange={setModelParamsDefault} />}
+          </div>
+
+          {/* OpenRouter — Per-Model Overrides */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Cpu size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Per-Model Parameter Overrides</span>
+            </div>
+            <div style={subtitleStyle}>
+              Override the default parameters for specific models. Knobs a model doesn&rsquo;t advertise are grayed out. The Pareto router plugin is meaningful
+              with <code style={{ fontSize: 11 }}>openrouter/pareto-code</code>.
+            </div>
+            {modelParamRows.map((row, i) => {
+              const model = orModels.find((m) => m.id === row.slug.trim());
+              const unsupportedKeys = computeUnsupportedKeys(model);
+              return (
+                <div key={i} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <OpenRouterModelSelector
+                        value={row.slug}
+                        onChange={(v) => setModelParamRows((rows) => rows.map((r, j) => (j === i ? { ...r, slug: v } : r)))}
+                        placeholder="openai/gpt-4o"
+                        excludeAliases
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setModelParamRows((rows) => rows.filter((_, j) => j !== i))}
+                      title="Remove override"
+                      style={{
+                        background: "transparent",
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                        padding: 8,
+                        display: "flex",
+                        alignItems: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <ParamProfileEditor
+                    profile={row.profile}
+                    onChange={(profile) => setModelParamRows((rows) => rows.map((r, j) => (j === i ? { ...r, profile } : r)))}
+                    unsupportedKeys={unsupportedKeys}
+                  />
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => setModelParamRows((rows) => [...rows, { slug: "", profile: {} }])}
+              style={{
+                background: "transparent",
+                border: "1px dashed var(--border)",
+                borderRadius: 8,
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                padding: "8px 12px",
+                fontSize: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Plus size={14} /> Add model override
+            </button>
           </div>
         </>
       )}

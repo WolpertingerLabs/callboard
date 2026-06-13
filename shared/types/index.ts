@@ -57,6 +57,28 @@ export type { McpToolParameter, McpToolDefinition, McpToolServerInfo, McpToolsRe
 
 export type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "./openrouter.js";
 
+export type {
+  ParamFieldType,
+  ParamFieldSpec,
+  ServerToolSpec,
+  PluginSpec,
+  OpenRouterServerToolConfig,
+  OpenRouterParamProfile,
+} from "./openrouterCatalog.js";
+export {
+  OR_SERVER_TOOLS,
+  OR_PLUGINS,
+  OR_SAMPLING_PARAMS,
+  OR_SERVER_TOOL_BY_TYPE,
+  OR_PLUGIN_BY_ID,
+  OR_SAMPLING_PARAM_BY_KEY,
+  validateParams,
+  validateServerTools,
+  validateParamProfile,
+  serverToolToWire,
+  resolveModelParams,
+} from "./openrouterCatalog.js";
+
 export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./providers.js";
 
 export type { ContactChannel, UserContactInfo, NotifiableChannel } from "./userContact.js";
