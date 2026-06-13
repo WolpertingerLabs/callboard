@@ -116,9 +116,18 @@ describe("translateOptions — OR config passthrough", () => {
     expect(orOpts.cacheControl).toEqual({ type: "ephemeral" });
   });
 
-  it("always enables OpenRouter server tools (disableServerTools is false)", () => {
+  it("leaves serverTools unset so the harness injects its DEFAULT_SERVER_TOOLS", () => {
     const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
-    expect(orOpts.disableServerTools).toBe(false);
+    expect(orOpts.serverTools).toBeUndefined();
+  });
+
+  it("forwards configured serverTools (including an empty array to disable all)", () => {
+    const tools = [{ type: "openrouter:web_search", parameters: { max_results: 5 } }];
+    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test", serverTools: tools } }, "hi");
+    expect(orOpts.serverTools).toEqual(tools);
+
+    const { orOpts: empty } = translateOptions({ openRouter: { apiKey: "sk-or-test", serverTools: [] } }, "hi");
+    expect(empty.serverTools).toEqual([]);
   });
 
   it("forwards maxBudgetUsd onto orOpts.maxBudgetUsd when set", () => {

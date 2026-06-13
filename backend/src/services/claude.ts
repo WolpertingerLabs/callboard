@@ -14,6 +14,7 @@ import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
+import { serverToolToWire, resolveModelParams } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-service.js";
@@ -1086,6 +1087,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // applies to existing chats too.
     const requestedModel = (initialMetadata.model as string | undefined) || agentSettings.openRouterModel;
     const chatModel = resolveOpenRouterModel(requestedModel, agentSettings);
+    // Server tools: map the persisted list to the harness's verbatim wire shape.
+    // Left undefined when the setting is absent (harness injects its defaults);
+    // an explicit empty array is preserved (disable all server tools).
+    const serverTools = agentSettings.openRouterServerTools?.map(serverToolToWire);
+    // Generation params: merge the global default with the resolved model's
+    // per-model override profile, then flatten to the harness's modelParams bag.
+    const modelParams = resolveModelParams(
+      agentSettings.openRouterModelParamsDefault,
+      chatModel ? agentSettings.openRouterModelParamProfiles?.[chatModel] : undefined,
+    );
     queryOpts.options.openRouter = {
       apiKey,
       ...(agentSettings.openRouterBaseUrl && { baseUrl: agentSettings.openRouterBaseUrl }),
@@ -1096,6 +1107,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         Number.isFinite(agentSettings.openRouterMaxBudgetUsd) && {
           maxBudgetUsd: agentSettings.openRouterMaxBudgetUsd,
         }),
+      ...(serverTools && { serverTools }),
+      ...(modelParams && { modelParams }),
       appTitle: "callboard",
     };
     log.info(

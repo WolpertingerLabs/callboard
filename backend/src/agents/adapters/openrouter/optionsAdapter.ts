@@ -63,6 +63,26 @@ export interface OpenRouterOptionsExtras {
    * turn for the lifetime of the streaming-input run, not per-message.
    */
   maxBudgetUsd?: number;
+  /**
+   * OpenRouter server tools to inject, already in the harness's verbatim wire
+   * shape (`{ type }` or `{ type, parameters }`). claude.ts builds this from the
+   * persisted `openRouterServerTools` setting via `serverToolToWire`.
+   *   - `undefined` ⇒ omit the option so the harness injects its
+   *     `DEFAULT_SERVER_TOOLS` (datetime/web_search/web_fetch).
+   *   - `[]` ⇒ disable all server tools (the agent's `tools` array is sent
+   *     exactly as built).
+   * Typed structurally (rather than importing the harness's `ServerToolConfig`,
+   * which is not exported from the package root) so the shape stays decoupled
+   * from the harness's internal type names.
+   */
+  serverTools?: Array<{ type: string } & Record<string, unknown>>;
+  /**
+   * Flattened OpenRouter generation params (camelCase sampling fields plus an
+   * optional `plugins` array), as produced by `resolveModelParams`. Forwarded
+   * to the harness's own `modelParams` option, which rides
+   * `Partial<ResponsesRequest>`. Omit to send no extra params.
+   */
+  modelParams?: Record<string, unknown>;
 }
 
 /**
@@ -193,17 +213,29 @@ export function translateOptions(
   if (orConfig.baseUrl) orOpts.baseUrl = orConfig.baseUrl;
   if (orConfig.model) orOpts.model = orConfig.model;
   if (orConfig.effort) orOpts.effort = orConfig.effort;
+  // Forward configured OpenRouter generation params (sampling knobs + plugins).
+  // claude.ts resolves the global default merged with any per-model override via
+  // `resolveModelParams`; absence here leaves the harness on its own defaults.
+  // The shared catalog hands us a validated camelCase bag (`Record`); the harness
+  // types it as `Partial<ResponsesRequest>` (not re-exported from the package), so
+  // cast through the harness option's own type to stay in lockstep with it.
+  if (orConfig.modelParams) {
+    orOpts.modelParams = orConfig.modelParams as OpenRouterAgentRunOptions["modelParams"];
+  }
   // Always-on auto prompt caching. OR honors this only for Anthropic Claude
   // models (the directive turns into a cache breakpoint on the last cacheable
   // block); other providers silently ignore it, so it's safe to set
   // unconditionally. TTL is omitted so OR's own default (~5min) applies.
   orOpts.cacheControl = { type: "ephemeral" };
-  // Always include OpenRouter's built-in `openrouter:datetime`/`web_search`/
-  // `web_fetch` server tools. These previously defeated OR's cache_control
-  // auto-caching on Anthropic models when combined with user-defined tools, so
-  // they used to be suppressed behind an opt-in toggle. OpenRouter has since
-  // fixed that interaction, so server tools are now unconditionally enabled.
-  orOpts.disableServerTools = false;
+  // OpenRouter's built-in server tools (`openrouter:datetime`/`web_search`/
+  // `web_fetch` and friends). Pass through whatever claude.ts resolved from the
+  // user's `openRouterServerTools` setting, already in wire shape (see step 4 of
+  // the tools-config feature). Leaving it unset is meaningful:
+  //   - `undefined` ⇒ omit the option so the harness injects its
+  //     `DEFAULT_SERVER_TOOLS` (datetime/web_search/web_fetch).
+  //   - `[]` ⇒ disable all server tools (the request `tools` array is sent
+  //     exactly as the agent built it).
+  if (orConfig.serverTools) orOpts.serverTools = orConfig.serverTools;
   // Forward the user's configured spend cap. `Number.isFinite` excludes
   // NaN/Infinity that could sneak in from a malformed setting; the absence
   // of this field is the signal for OR to use its own DEFAULT_MAX_BUDGET_USD.

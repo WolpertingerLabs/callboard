@@ -13,6 +13,13 @@ export interface OpenRouterModelInfo {
   promptPrice: string;
   /** Completion (output) price in USD per token, as a string. */
   completionPrice: string;
+  /**
+   * OpenRouter's `supported_parameters` for this model (snake_case, e.g.
+   * "top_k", "min_p", "tools"). Used by the per-model parameter editor to gray
+   * out sampling knobs the model doesn't advertise. May be empty for models
+   * whose catalog entry omitted the field.
+   */
+  supportedParameters: string[];
 }
 
 /**

@@ -1,3 +1,5 @@
+import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "./openrouterCatalog.js";
+
 export interface AgentSettings {
   /** @deprecated Use localMcpConfigDir / remoteMcpConfigDir instead. Kept as fallback. */
   mcpConfigDir?: string;
@@ -93,6 +95,31 @@ export interface AgentSettings {
    * hop and cycle-free).
    */
   openRouterModelAliases?: Record<string, string>;
+
+  /**
+   * OpenRouter server tools (executed on OR's servers) to enable, with their
+   * params. `undefined` ⇒ inherit the harness's three defaults
+   * (datetime/web_search/web_fetch); an explicit empty array ⇒ all server
+   * tools disabled. Each entry is validated against the `OR_SERVER_TOOLS`
+   * catalog. See {@link OpenRouterServerToolConfig}.
+   */
+  openRouterServerTools?: OpenRouterServerToolConfig[];
+
+  /**
+   * Global default OpenRouter generation parameters + plugins, applied to
+   * every OR chat. Merged with any matching per-model profile (per-model
+   * wins). camelCase keys validated against `OR_SAMPLING_PARAMS`/`OR_PLUGINS`.
+   */
+  openRouterModelParamsDefault?: OpenRouterParamProfile;
+
+  /**
+   * Per-model OpenRouter parameter overrides, keyed by the RESOLVED model slug
+   * (after alias expansion), e.g. "openrouter/pareto-code". Lets model-specific
+   * plugin params (pareto-router's minCodingScore, fusion's analysisModels)
+   * attach only to the model they affect. Merged over
+   * {@link openRouterModelParamsDefault} at run time.
+   */
+  openRouterModelParamProfiles?: Record<string, OpenRouterParamProfile>;
 
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the start_chat_session onComplete feature, which automatically

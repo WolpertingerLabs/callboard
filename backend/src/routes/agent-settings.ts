@@ -9,6 +9,11 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
+import type {
+  OpenRouterServerToolConfig,
+  OpenRouterParamProfile,
+} from "shared/types/index.js";
+import { validateServerTools, validateParamProfile } from "shared/types/index.js";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode } from "../services/proxy-singleton.js";
@@ -56,6 +61,9 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterLogsRoot,
     openRouterMaxBudgetUsd,
     openRouterModelAliases,
+    openRouterServerTools,
+    openRouterModelParamsDefault,
+    openRouterModelParamProfiles,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -134,6 +142,59 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     normalizedAliases = result.aliases;
   }
 
+  // Validate the OpenRouter server-tools list. An explicit empty array is
+  // meaningful ("disable all server tools") and must be preserved — only an
+  // absent field leaves the setting untouched, so this stays in the
+  // conditional spread below rather than coercing [] to undefined.
+  let normalizedServerTools: OpenRouterServerToolConfig[] | undefined;
+  if (openRouterServerTools !== undefined) {
+    if (!Array.isArray(openRouterServerTools)) {
+      res.status(400).json({ error: "openRouterServerTools must be an array of server-tool configs" });
+      return;
+    }
+    const { value, errors } = validateServerTools(openRouterServerTools);
+    if (errors.length > 0) {
+      res.status(400).json({ error: errors.join("; ") });
+      return;
+    }
+    normalizedServerTools = value;
+  }
+
+  // Validate the global model-param default profile. An empty validated
+  // profile ({}) clears the override (persisted as undefined).
+  let normalizedParamsDefault: OpenRouterParamProfile | undefined;
+  if (openRouterModelParamsDefault !== undefined) {
+    const { value, errors } = validateParamProfile(openRouterModelParamsDefault);
+    if (errors.length > 0) {
+      res.status(400).json({ error: errors.join("; ") });
+      return;
+    }
+    normalizedParamsDefault = Object.keys(value).length > 0 ? value : undefined;
+  }
+
+  // Validate each per-model param profile, prefixing errors with the slug.
+  // Slugs whose validated profile is empty are dropped; an all-empty record
+  // clears the setting (persisted as undefined).
+  let normalizedParamProfiles: Record<string, OpenRouterParamProfile> | undefined;
+  if (openRouterModelParamProfiles !== undefined) {
+    if (typeof openRouterModelParamProfiles !== "object" || openRouterModelParamProfiles === null || Array.isArray(openRouterModelParamProfiles)) {
+      res.status(400).json({ error: "openRouterModelParamProfiles must be an object mapping model slugs to param profiles" });
+      return;
+    }
+    const cleaned: Record<string, OpenRouterParamProfile> = {};
+    const errors: string[] = [];
+    for (const [slug, profile] of Object.entries(openRouterModelParamProfiles as Record<string, OpenRouterParamProfile>)) {
+      const { value, errors: pErrors } = validateParamProfile(profile);
+      errors.push(...pErrors.map((e) => `${slug}: ${e}`));
+      if (Object.keys(value).length > 0) cleaned[slug] = value;
+    }
+    if (errors.length > 0) {
+      res.status(400).json({ error: errors.join("; ") });
+      return;
+    }
+    normalizedParamProfiles = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+  }
+
   try {
     const updated = updateAgentSettings({
       mcpConfigDir: mcpConfigDir ?? undefined,
@@ -156,6 +217,9 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
       ...(openRouterMaxBudgetUsd !== undefined && { openRouterMaxBudgetUsd: normalizeNumber(openRouterMaxBudgetUsd) }),
       ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
+      ...(openRouterServerTools !== undefined && { openRouterServerTools: normalizedServerTools }),
+      ...(openRouterModelParamsDefault !== undefined && { openRouterModelParamsDefault: normalizedParamsDefault }),
+      ...(openRouterModelParamProfiles !== undefined && { openRouterModelParamProfiles: normalizedParamProfiles }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });
