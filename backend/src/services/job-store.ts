@@ -281,6 +281,105 @@ export class JobValidationError extends Error {
 const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify"]);
 const GATE_OPS = new Set(["eq", "neq", "contains", "exists", "not_exists", "gt", "lt"]);
 
+/**
+ * Control-flow successors of a step — the step ids it can transition to,
+ * mirroring the runner's routing (resolveNext / gate onPass-onFail /
+ * onReject / onTimeout). `followingStepId` is the next step in the array
+ * (what a bare `next` defaults to). Sentinel targets ("end"/"fail", and the
+ * implicit "end" after the last step) are terminal and dropped.
+ */
+function stepFlowTargets(step: JobStep, followingStepId: string | undefined): string[] {
+  const defaultNext = step.next ?? followingStepId; // undefined ⇒ implicit "end"
+  const targets: (string | undefined)[] = [];
+  switch (step.type) {
+    case "gate":
+      targets.push(step.onPass ?? defaultNext, step.onFail);
+      break;
+    case "approval":
+      targets.push(defaultNext, step.onReject, step.onTimeout);
+      break;
+    case "poll":
+    case "wait_event":
+      targets.push(defaultNext, step.onTimeout);
+      break;
+    default: // agent, notify — single success edge
+      targets.push(defaultNext);
+  }
+  return targets.filter((t): t is string => typeof t === "string" && t !== JOB_TARGET_END && t !== JOB_TARGET_FAIL);
+}
+
+/**
+ * Strict-dominator sets over the step graph, keyed by step id, plus the set
+ * of steps reachable from the entry (steps[0]).
+ *
+ * For a reachable step S, `dom.get(S)` contains S itself plus every step that
+ * lies on *every* control-flow path from the entry to S. So when X ∈ dom(S)
+ * and X !== S, step X is guaranteed to have executed before S on every path —
+ * exactly the condition under which a {{steps.X.outputs.*}} reference in S
+ * always resolves at runtime. This follows the step edges (next, gate
+ * onPass/onFail, onReject, onTimeout), so a backward loop jump correctly makes
+ * a forward-in-array reference valid.
+ */
+function computeStepDominators(steps: JobStep[]): { dom: Map<string, Set<string>>; reachable: Set<string> } {
+  const idSet = new Set(steps.map((s) => s?.id).filter((id): id is string => typeof id === "string"));
+  const entry = typeof steps[0]?.id === "string" ? steps[0].id : undefined;
+
+  const succ = new Map<string, string[]>();
+  steps.forEach((step, i) => {
+    if (!step || typeof step.id !== "string") return;
+    const following = steps[i + 1]?.id;
+    succ.set(
+      step.id,
+      stepFlowTargets(step, typeof following === "string" ? following : undefined).filter((t) => idSet.has(t)),
+    );
+  });
+
+  const reachable = new Set<string>();
+  if (entry) {
+    const stack = [entry];
+    while (stack.length) {
+      const n = stack.pop() as string;
+      if (reachable.has(n)) continue;
+      reachable.add(n);
+      for (const m of succ.get(n) ?? []) stack.push(m);
+    }
+  }
+
+  const preds = new Map<string, string[]>();
+  for (const n of reachable) preds.set(n, []);
+  for (const n of reachable) {
+    for (const m of succ.get(n) ?? []) {
+      if (reachable.has(m)) preds.get(m)!.push(n);
+    }
+  }
+
+  // Iterative dominators: start every non-entry node at the full set and
+  // shrink to the intersection of its predecessors' dominators (plus itself).
+  const dom = new Map<string, Set<string>>();
+  for (const n of reachable) dom.set(n, n === entry ? new Set([entry]) : new Set(reachable));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const n of reachable) {
+      if (n === entry) continue;
+      let inter: Set<string> | null = null;
+      for (const p of preds.get(n) ?? []) {
+        const dp = dom.get(p)!;
+        if (inter === null) inter = new Set(dp);
+        else for (const x of [...inter]) if (!dp.has(x)) inter.delete(x);
+      }
+      const updated = inter ?? new Set<string>();
+      updated.add(n);
+      const cur = dom.get(n)!;
+      if (updated.size !== cur.size || [...updated].some((x) => !cur.has(x))) {
+        dom.set(n, updated);
+        changed = true;
+      }
+    }
+  }
+  return { dom, reachable };
+}
+
 /** Validate a definition (sans version/timestamps). Returns human-readable errors. */
 export function validateJobDefinition(input: JobDefinitionInput & { id: string }): string[] {
   const errors: string[] = [];
@@ -328,6 +427,11 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
     if (!stepIds.has(target)) errors.push(`step "${stepId}": ${field} targets unknown step "${target}"`);
   };
 
+  // Reachability of {{steps.X.outputs.*}} refs: X must run before the
+  // referencing step on every control-flow path, else it resolves to nothing
+  // at runtime and fails the step mid-run (see job-template.ts#interpolate).
+  const { dom, reachable } = computeStepDominators(input.steps);
+
   const checkTemplate = (stepId: string, field: string, template: string): void => {
     for (const ref of extractTemplateRefs(template)) {
       const parts = ref.split(".");
@@ -338,6 +442,12 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
           errors.push(`step "${stepId}": ${field} reference "{{${ref}}}" must be steps.<id>.outputs.<key>`);
         } else if (!stepIds.has(parts[1])) {
           errors.push(`step "${stepId}": ${field} references unknown step "{{${ref}}}"`);
+        } else if (reachable.has(stepId) && (parts[1] === stepId || !dom.get(stepId)?.has(parts[1]))) {
+          errors.push(
+            `step "${stepId}": ${field} references "{{${ref}}}" but step "${parts[1]}" is not guaranteed to run before "${stepId}" — ` +
+              `it does not execute on every control-flow path that reaches this step, so the run would fail at this step ` +
+              `(Unresolved template reference(s): {{${ref}}})`,
+          );
         }
       } else if (parts[0] !== "run") {
         errors.push(`step "${stepId}": ${field} has unknown reference "{{${ref}}}" (use inputs.*, steps.<id>.outputs.*, or run.*)`);

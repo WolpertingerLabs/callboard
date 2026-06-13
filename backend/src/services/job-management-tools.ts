@@ -145,8 +145,17 @@ export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition
     ),
 
     defineTool(
+      "describe_job_schema",
+      "Return the full job definition schema (every step type and its fields) as authoritative reference for create_job/update_job. Call this first when authoring or editing a job — the schema embedded in those tool descriptions can be truncated by the transport, but this returns it complete.",
+      {},
+      async () => {
+        return { content: [{ type: "text" as const, text: JOB_SCHEMA_DOC }] };
+      },
+    ),
+
+    defineTool(
       "create_job",
-      `Create a job: a reusable, deterministic multi-step workflow. The user describes a workflow; you author the definition. Control flow (sequencing, approval waits, polling, event waits, gates/loops) is executed deterministically by the backend job runner — agent sessions are spawned per step to do the actual work. The definition is validated; on errors, fix and retry. ${JOB_SCHEMA_DOC}`,
+      `Create a job: a reusable, deterministic multi-step workflow. The user describes a workflow; you author the definition. Control flow (sequencing, approval waits, polling, event waits, gates/loops) is executed deterministically by the backend job runner — agent sessions are spawned per step to do the actual work. The definition is validated; on errors, fix and retry. (If the schema below looks cut off, call describe_job_schema for the complete spec.) ${JOB_SCHEMA_DOC}`,
       {
         definition_json: z.string().describe("The full job definition as a JSON string (see schema in the tool description)"),
       },
@@ -180,7 +189,7 @@ export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition
 
     defineTool(
       "update_job",
-      `Replace a job definition (full replacement, version bumped). In-flight runs keep the frozen definition they were spawned with. ${JOB_SCHEMA_DOC}`,
+      `Replace a job definition (full replacement, version bumped). In-flight runs keep the frozen definition they were spawned with. (If the schema below looks cut off, call describe_job_schema for the complete spec.) ${JOB_SCHEMA_DOC}`,
       {
         jobId: z.string().describe("The job id to update"),
         definition_json: z.string().describe("The full replacement definition as a JSON string"),
