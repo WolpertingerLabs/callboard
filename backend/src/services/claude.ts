@@ -1133,6 +1133,46 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     queryOpts.options.hookAskOverride = hookAskOverride;
   }
 
+  // For Codex chats, surface the per-provider settings the Codex adapter's
+  // optionsAdapter looks for (the `codex` extras sub-object). Mirrors the
+  // OpenRouter block above. Auth defaults to subscription (ChatGPT login via
+  // $CODEX_HOME/auth.json — no key passed); api-key mode forwards the key/base
+  // url. CODEX_HOME itself rides in via the subprocess env that
+  // getApiEnvOverrides() already injected above, so it isn't repeated here.
+  if (providerKind === "codex") {
+    const authMode = agentSettings.codexAuthMode ?? "subscription";
+    // api-key mode needs a key; subscription mode draws on the stored login.
+    if (authMode === "api-key" && !agentSettings.codexApiKey?.trim()) {
+      const message = "Codex chat selected in api-key mode but OPENAI_API_KEY is not configured in Settings → API.";
+      log.error(message);
+      throw new Error(message);
+    }
+    // Per-chat model override (persisted to metadata) takes precedence over the
+    // global codexModel default. Covers new chats (just written above) and
+    // resumed chats (loaded from disk).
+    const requestedModel =
+      (typeof initialMetadata.model === "string" && initialMetadata.model.trim()) || agentSettings.codexModel?.trim();
+    // Permissions collapse onto Codex's sandbox + approval policy at thread
+    // start (Codex has no per-call canUseTool hook). Surface them so the
+    // optionsAdapter can derive the sandbox tier when no explicit one is set.
+    const permissions = getDefaultPermissions() ?? undefined;
+    queryOpts.options.codex = {
+      authMode,
+      ...(authMode === "api-key" && agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
+      ...(authMode === "api-key" && agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
+      ...(requestedModel && { model: requestedModel }),
+      ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
+      ...(permissions && { permissions }),
+    };
+    log.info(
+      `Codex chat config — trackingId=${trackingId}, authMode=${authMode}, ` +
+        `model=${requestedModel ?? "(default)"}, ` +
+        `sandbox=${agentSettings.codexSandboxMode ?? "(permission-derived)"}, ` +
+        `codexHome=${agentSettings.codexHome?.trim() || "~/.codex"}` +
+        `${authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
+    );
+  }
+
   log.debug(
     `SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, ` +
       `model=${queryOpts.options.model || "(default)"}, resume=${resumeSessionId || "none"}`,
