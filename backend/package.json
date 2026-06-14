@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.32",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.139.0",
     "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.19",
     "adm-zip": "^0.5.16",

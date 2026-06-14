@@ -31,6 +31,7 @@ import type { Codex, Input, ThreadOptions } from "@openai/codex-sdk";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { translateCodexEvents } from "./messageAdapter.js";
+import type { CodexToolServerHandle } from "./toolAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("codex-adapter");
@@ -56,6 +57,14 @@ export interface CodexQueryParams {
    * when the run has no system prompt.
    */
   instructionsFilePath?: string;
+  /**
+   * Live tool-server handles backing this run's `config.mcp_servers` entries
+   * (built by `CodexAdapter.buildToolServer`, collected by the optionsAdapter).
+   * Each owns a listening socket + temp dir; this query closes them once the run
+   * ends by any path, the same way it reaps the instructions file. Empty/omitted
+   * when the run carries no callboard tools.
+   */
+  toolServerHandles?: CodexToolServerHandle[];
   /** Hardcoded model list surfaced via {@link supportedModels} (no SDK API for this). */
   models: Array<{ value: string; displayName: string; description: string }>;
 }
@@ -64,6 +73,7 @@ export class CodexAgentQuery implements AgentQuery {
   private readonly abortController = new AbortController();
   private aborted = false;
   private instructionsCleaned = false;
+  private toolServersClosed = false;
 
   constructor(private readonly params: CodexQueryParams) {
     const external = params.externalSignal;
@@ -120,6 +130,7 @@ export class CodexAgentQuery implements AgentQuery {
       log.debug("iterate() finished");
     } finally {
       this.cleanupInstructionsFile();
+      await this.closeToolServers();
     }
   }
 
@@ -143,6 +154,21 @@ export class CodexAgentQuery implements AgentQuery {
     }
   }
 
+  /**
+   * Close every tool-server handle (stop its listening socket, remove its temp
+   * dir). Idempotent and best-effort: closes run concurrently and a failure is
+   * swallowed inside the handle, so a leaked socket never surfaces as a run
+   * failure. Mirrors {@link cleanupInstructionsFile}'s once-only guard so the
+   * double call from iterate()'s finally + close() is a no-op.
+   */
+  private async closeToolServers(): Promise<void> {
+    const handles = this.params.toolServerHandles;
+    if (!handles || handles.length === 0 || this.toolServersClosed) return;
+    this.toolServersClosed = true;
+    await Promise.all(handles.map((h) => h.close()));
+    log.debug(`closed ${handles.length} tool server(s)`);
+  }
+
   async accountInfo(): Promise<Record<string, unknown> | null> {
     // The Codex SDK exposes no account/auth introspection surface. Auth lives
     // in $CODEX_HOME/auth.json and is owned by the CLI; callboard reads it
@@ -159,9 +185,10 @@ export class CodexAgentQuery implements AgentQuery {
     this.aborted = true;
     this.abortController.abort();
     // close() may fire before iterate() ever runs (caller aborts immediately) —
-    // its finally would then never reap the temp file, so clean up here too. The
-    // guard makes the double-call from iterate()'s finally a no-op.
+    // its finally would then never reap the temp file / sockets, so clean up here
+    // too. The guards make the double-call from iterate()'s finally a no-op.
     this.cleanupInstructionsFile();
+    await this.closeToolServers();
   }
 }
 

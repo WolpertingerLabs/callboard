@@ -15,11 +15,11 @@
  *  - **event translation** into the {@link AgentEvent} union (messageAdapter),
  *  - **close()** that kills the `codex exec` subprocess by aborting the signal
  *    handed to `runStreamed` (no native `abort()` — GitHub issue #5494).
+ *  - **buildToolServer()** the MCP-stdio tool bridge (Step 6): Codex is an MCP
+ *    *client*, so callboard hosts each tool bundle in-process on a socket and
+ *    hands Codex a spawn command for the relay shim (see {@link buildCodexToolServer}).
  *
- * Still stubbed: {@link buildToolServer} (the MCP-stdio tool bridge is the
- * highest-risk slice and gets its own step — Step 6).
- *
- * @see plans/codex-adapter-job.md (Step 4 adapter-core)
+ * @see plans/codex-adapter-job.md (Step 4 adapter-core, Step 6 tool-bridge)
  * @see plans/codex-spike-findings.md
  */
 import { Codex } from "@openai/codex-sdk";
@@ -27,6 +27,7 @@ import type { AgentProvider, AgentQuery, AgentQueryRequest } from "../../ports/A
 import type { ToolServerSpec } from "../../ports/tools.js";
 import { CodexAgentQuery } from "./CodexAgentQuery.js";
 import { translateCodexOptions } from "./optionsAdapter.js";
+import { buildCodexToolServer } from "./toolAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("codex-adapter");
@@ -54,9 +55,13 @@ export class CodexAdapter implements AgentProvider {
     // lives in the optionsAdapter. The temp instructions file (when written)
     // must outlive this synchronous call — CodexAgentQuery deletes it after the
     // run.
-    const { codexOpts, threadOptions, resumeId, instructionsFilePath } = translateCodexOptions(options);
+    const { codexOpts, threadOptions, resumeId, instructionsFilePath, toolServerHandles } =
+      translateCodexOptions(options);
 
-    log.debug(`query() — resume=${resumeId ?? "none"}, instructionsFile=${instructionsFilePath ?? "(none)"}`);
+    log.debug(
+      `query() — resume=${resumeId ?? "none"}, instructionsFile=${instructionsFilePath ?? "(none)"}, ` +
+        `toolServers=${toolServerHandles.length}`,
+    );
 
     return new CodexAgentQuery({
       codex: new Codex(codexOpts),
@@ -65,15 +70,20 @@ export class CodexAdapter implements AgentProvider {
       prompt: req.prompt,
       ...(externalSignal && { externalSignal }),
       ...(instructionsFilePath && { instructionsFilePath }),
+      toolServerHandles,
       models: CODEX_MODELS,
     });
   }
 
-  buildToolServer(_spec: ToolServerSpec): unknown {
-    // The MCP-stdio tool bridge (Codex connects OUT to MCP servers rather than
-    // hosting tools in-process) is the highest-risk piece and lands in its own
-    // slice — Step 6 (tool-bridge). Until then, a Codex chat runs with the
-    // CLI's built-in tools only.
-    throw new Error("CodexAdapter.buildToolServer is not yet implemented (WIP) — see plans/codex-adapter-job.md (Step 6 tool-bridge)");
+  /**
+   * Stand up an in-process MCP server for `spec` and return its handle. Codex is
+   * an MCP *client* — it can't take an in-process tool bundle the way Claude/OR
+   * do, so the bundle is served over a socket and reached via the relay shim.
+   * claude.ts stores the returned handle in `options.mcpServers[spec.name]`; the
+   * optionsAdapter turns it into a `config.mcp_servers` entry and the query
+   * closes it when the turn ends.
+   */
+  buildToolServer(spec: ToolServerSpec): unknown {
+    return buildCodexToolServer(spec);
   }
 }

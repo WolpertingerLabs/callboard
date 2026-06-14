@@ -39,6 +39,11 @@ import {
   hasAnyAsk,
   mapPermissionsToCodex,
 } from "./permissionAdapter.js";
+import {
+  isCodexToolServerHandle,
+  type CodexMcpServerConfig,
+  type CodexToolServerHandle,
+} from "./toolAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("codex-adapter");
@@ -91,6 +96,15 @@ interface ClaudeShapedOptions {
    * {@link buildCodexEnv}.
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Tool servers built by `CodexAdapter.buildToolServer` (one per callboard tool
+   * bundle), keyed by server name. claude.ts populates this the same way it does
+   * for the other providers — with each provider's opaque server object. For
+   * Codex those objects are {@link CodexToolServerHandle}s; {@link collectCodexMcpServers}
+   * turns them into `config.mcp_servers` entries and threads the handles out for
+   * lifecycle cleanup. Foreign-shaped entries are ignored defensively.
+   */
+  mcpServers?: Record<string, unknown>;
   codex?: CodexOptionsExtras;
 }
 
@@ -114,6 +128,38 @@ export interface CodexTranslatedOptions {
   authMode: "subscription" | "api-key";
   /** Resolved model (for logging); undefined ⇒ CLI default. */
   model?: string;
+  /**
+   * Live tool-server handles backing the `config.mcp_servers` entries. The
+   * adapter hands these to {@link CodexAgentQuery}, which closes them (stops the
+   * listening sockets, removes temp dirs) once the turn ends. Empty when the run
+   * has no callboard tools.
+   */
+  toolServerHandles: CodexToolServerHandle[];
+}
+
+/**
+ * Split the loosely-typed `options.mcpServers` record into the Codex
+ * `mcp_servers` config map and the live handles to clean up. Only
+ * {@link CodexToolServerHandle}s contribute — any other shape (a stray
+ * Claude/OR server object) is logged and skipped rather than mis-serialized into
+ * the Codex config.
+ */
+export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServers"]): {
+  config?: Record<string, CodexMcpServerConfig>;
+  handles: CodexToolServerHandle[];
+} {
+  if (!mcpServers) return { handles: [] };
+  const config: Record<string, CodexMcpServerConfig> = {};
+  const handles: CodexToolServerHandle[] = [];
+  for (const [name, value] of Object.entries(mcpServers)) {
+    if (isCodexToolServerHandle(value)) {
+      config[name] = value.toMcpServerConfig();
+      handles.push(value);
+    } else {
+      log.warn(`translateCodexOptions — ignoring non-Codex mcp server entry "${name}"`);
+    }
+  }
+  return { ...(Object.keys(config).length > 0 ? { config } : {}), handles };
 }
 
 /**
@@ -239,6 +285,15 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
     codexOpts.config = { ...codexOpts.config, model_instructions_file: instructionsFilePath };
   }
 
+  // ── callboard tools → Codex mcp_servers (the tool bridge) ────────
+  // Codex connects OUT to MCP servers; each callboard tool bundle is hosted
+  // in-process (buildCodexToolServer) and exposed to Codex as an `mcp_servers`
+  // entry pointing at the relay shim. The live handles ride out for cleanup.
+  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers);
+  if (mcpServersConfig) {
+    codexOpts.config = { ...codexOpts.config, mcp_servers: mcpServersConfig };
+  }
+
   // ── thread options (cwd, model, sandbox/approval) ────────────────
   // `skipGitRepoCheck` is always on so Codex runs in non-repo dirs like the
   // other providers (spike §2.1: it's a ThreadOption, not a CodexOption).
@@ -256,8 +311,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
       `cwd=${cwd ?? "(default)"}, model=${model ?? "(default)"}, ` +
       `sandbox=${sandboxMode ?? "(default)"}, approval=${approvalPolicy ?? "(default)"}, ` +
       `instructions=${instructionsFilePath ? `${instructions?.length}chars` : "(none)"}, ` +
+      `mcpServers=${mcpServersConfig ? Object.keys(mcpServersConfig).join(",") : "(none)"}, ` +
       `env=${env ? "forwarded" : "(inherit process.env)"}`,
   );
 
-  return { codexOpts, threadOptions, resumeId, instructionsFilePath, authMode, model };
+  return { codexOpts, threadOptions, resumeId, instructionsFilePath, authMode, model, toolServerHandles };
 }

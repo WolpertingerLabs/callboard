@@ -16,11 +16,25 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DefaultPermissions } from "shared/types/index.js";
 import {
   buildCodexEnv,
+  collectCodexMcpServers,
   resolveCodexInstructions,
   resolveSandboxAndApproval,
   translateCodexOptions,
   writeInstructionsFile,
 } from "./optionsAdapter.js";
+import type { CodexToolServerHandle } from "./toolAdapter.js";
+
+/** A stub tool-server handle — duck-types {@link isCodexToolServerHandle} so the
+ *  options layer can be tested without standing up a real socket. */
+function fakeHandle(name: string, socketPath: string): CodexToolServerHandle {
+  return {
+    name,
+    version: "1.0.0",
+    socketPath,
+    toMcpServerConfig: () => ({ command: "node", args: ["/shim.js", socketPath] }),
+    close: async () => {},
+  };
+}
 
 /** Temp dirs created via translate/write so afterEach can remove them. */
 const tempDirs: string[] = [];
@@ -242,5 +256,68 @@ describe("translateCodexOptions — sandbox/approval threaded into ThreadOptions
     const { threadOptions } = translateCodexOptions({});
     expect(threadOptions.sandboxMode).toBeUndefined();
     expect(threadOptions.approvalPolicy).toBeUndefined();
+  });
+});
+
+describe("collectCodexMcpServers — tool handles → mcp_servers config", () => {
+  it("no mcpServers → empty config, no handles", () => {
+    expect(collectCodexMcpServers(undefined)).toEqual({ handles: [] });
+  });
+
+  it("maps each handle to a config entry and threads handles out", () => {
+    const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
+    const b = fakeHandle("job-tools", "/tmp/b/s.sock");
+    const { config, handles } = collectCodexMcpServers({ "callboard-tools": a, "job-tools": b });
+    expect(config).toEqual({
+      "callboard-tools": { command: "node", args: ["/shim.js", "/tmp/a/s.sock"] },
+      "job-tools": { command: "node", args: ["/shim.js", "/tmp/b/s.sock"] },
+    });
+    expect(handles).toEqual([a, b]);
+  });
+
+  it("ignores foreign-shaped entries (e.g. a Claude/OR server object)", () => {
+    const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
+    const { config, handles } = collectCodexMcpServers({
+      "callboard-tools": a,
+      "claude-thing": { name: "x", tools: [] },
+    });
+    expect(Object.keys(config ?? {})).toEqual(["callboard-tools"]);
+    expect(handles).toEqual([a]);
+  });
+
+  it("all-foreign → no config key, no handles", () => {
+    const { config, handles } = collectCodexMcpServers({ x: { tools: [] } });
+    expect(config).toBeUndefined();
+    expect(handles).toEqual([]);
+  });
+});
+
+describe("translateCodexOptions — mcp_servers threaded into codexOpts.config", () => {
+  it("tool handles land in config.mcp_servers and ride out as toolServerHandles", () => {
+    const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
+    const { codexOpts, toolServerHandles } = translateCodexOptions({
+      mcpServers: { "callboard-tools": a },
+    });
+    expect(codexOpts.config?.mcp_servers).toEqual({
+      "callboard-tools": { command: "node", args: ["/shim.js", "/tmp/a/s.sock"] },
+    });
+    expect(toolServerHandles).toEqual([a]);
+  });
+
+  it("coexists with a system-prompt model_instructions_file in the same config", () => {
+    const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
+    const result = translateCodexOptions({
+      systemPrompt: "be terse",
+      mcpServers: { "callboard-tools": a },
+    });
+    trackTempFromFile(result.instructionsFilePath);
+    expect(result.codexOpts.config?.model_instructions_file).toBe(result.instructionsFilePath);
+    expect(result.codexOpts.config?.mcp_servers).toBeDefined();
+  });
+
+  it("no mcpServers → no mcp_servers key, empty handles", () => {
+    const { codexOpts, toolServerHandles } = translateCodexOptions({});
+    expect(codexOpts.config?.mcp_servers).toBeUndefined();
+    expect(toolServerHandles).toEqual([]);
   });
 });
