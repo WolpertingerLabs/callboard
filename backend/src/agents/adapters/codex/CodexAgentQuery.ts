@@ -25,6 +25,8 @@
  * @see plans/codex-adapter-job.md (Step 4 adapter-core)
  * @see plans/codex-spike-findings.md
  */
+import { dirname } from "node:path";
+import { rmSync } from "node:fs";
 import type { Codex, Input, ThreadOptions } from "@openai/codex-sdk";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
@@ -46,6 +48,14 @@ export interface CodexQueryParams {
   prompt: string | AsyncIterable<unknown>;
   /** callboard's run-level abort signal, forwarded into the internal controller. */
   externalSignal?: AbortSignal;
+  /**
+   * Absolute path of the temp `model_instructions_file` the optionsAdapter wrote
+   * for this run's system prompt. The Codex CLI reads it when the subprocess
+   * spawns, so it must outlive the synchronous `query()` — this query deletes it
+   * (and its enclosing temp dir) once the run finishes or is aborted. Omitted
+   * when the run has no system prompt.
+   */
+  instructionsFilePath?: string;
   /** Hardcoded model list surfaced via {@link supportedModels} (no SDK API for this). */
   models: Array<{ value: string; displayName: string; description: string }>;
 }
@@ -53,6 +63,7 @@ export interface CodexQueryParams {
 export class CodexAgentQuery implements AgentQuery {
   private readonly abortController = new AbortController();
   private aborted = false;
+  private instructionsCleaned = false;
 
   constructor(private readonly params: CodexQueryParams) {
     const external = params.externalSignal;
@@ -73,35 +84,63 @@ export class CodexAgentQuery implements AgentQuery {
     const { codex, resumeId, threadOptions } = this.params;
     log.debug(`iterate() start — resumeId=${resumeId ?? "(new thread)"}, cwd=${threadOptions.workingDirectory ?? "(default)"}`);
 
-    // Resolve the prompt to a Codex Input. A streaming prompt is drained here
-    // (it can be async), so the heavy lifting stays off the synchronous query()
-    // path.
-    let input: Input;
+    // The temp model_instructions_file must survive until the CLI subprocess has
+    // spawned and read it; the safest moment to remove it is once the run ends,
+    // by any path (normal completion, early abort, or a thrown error) — so the
+    // whole body runs under a finally that cleans it up.
     try {
-      input = await resolveCodexInput(this.params.prompt);
+      // Resolve the prompt to a Codex Input. A streaming prompt is drained here
+      // (it can be async), so the heavy lifting stays off the synchronous
+      // query() path.
+      let input: Input;
+      try {
+        input = await resolveCodexInput(this.params.prompt);
+      } catch (err) {
+        log.error(`prompt resolution failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+      }
+
+      // close() may have fired during prompt resolution — don't spawn a turn
+      // we'd immediately have to kill.
+      if (this.aborted || this.abortController.signal.aborted) {
+        log.debug("iterate() aborted before turn start");
+        return;
+      }
+
+      const thread = resumeId ? codex.resumeThread(resumeId, threadOptions) : codex.startThread(threadOptions);
+      log.debug(`iterate() runStreamed — resumeId=${resumeId ?? "(new)"}`);
+      const { events } = await thread.runStreamed(input, { signal: this.abortController.signal });
+
+      if (this.aborted || this.abortController.signal.aborted) {
+        log.debug("iterate() aborted after runStreamed");
+        return;
+      }
+
+      yield* translateCodexEvents(events);
+      log.debug("iterate() finished");
+    } finally {
+      this.cleanupInstructionsFile();
+    }
+  }
+
+  /**
+   * Remove the temp `model_instructions_file` (and its enclosing `mkdtemp`
+   * directory) once the run no longer needs it. Idempotent and best-effort: a
+   * second call is a no-op, and a removal error is logged, not thrown — a leaked
+   * temp file must never surface as a run failure.
+   */
+  private cleanupInstructionsFile(): void {
+    const path = this.params.instructionsFilePath;
+    if (!path || this.instructionsCleaned) return;
+    this.instructionsCleaned = true;
+    try {
+      // The optionsAdapter writes the file inside a dedicated mkdtemp dir, so
+      // removing the dir takes the file with it and leaves nothing behind.
+      rmSync(dirname(path), { recursive: true, force: true });
+      log.debug(`cleaned up instructions temp dir for ${path}`);
     } catch (err) {
-      log.error(`prompt resolution failed: ${err instanceof Error ? err.message : String(err)}`);
-      throw err;
+      log.warn(`failed to clean up instructions temp file ${path}: ${err instanceof Error ? err.message : String(err)}`);
     }
-
-    // close() may have fired during prompt resolution — don't spawn a turn we'd
-    // immediately have to kill.
-    if (this.aborted || this.abortController.signal.aborted) {
-      log.debug("iterate() aborted before turn start");
-      return;
-    }
-
-    const thread = resumeId ? codex.resumeThread(resumeId, threadOptions) : codex.startThread(threadOptions);
-    log.debug(`iterate() runStreamed — resumeId=${resumeId ?? "(new)"}`);
-    const { events } = await thread.runStreamed(input, { signal: this.abortController.signal });
-
-    if (this.aborted || this.abortController.signal.aborted) {
-      log.debug("iterate() aborted after runStreamed");
-      return;
-    }
-
-    yield* translateCodexEvents(events);
-    log.debug("iterate() finished");
   }
 
   async accountInfo(): Promise<Record<string, unknown> | null> {
@@ -119,6 +158,10 @@ export class CodexAgentQuery implements AgentQuery {
     log.debug(`close() — aborting (issue #5494: no native abort, kill subprocess via signal)`);
     this.aborted = true;
     this.abortController.abort();
+    // close() may fire before iterate() ever runs (caller aborts immediately) —
+    // its finally would then never reap the temp file, so clean up here too. The
+    // guard makes the double-call from iterate()'s finally a no-op.
+    this.cleanupInstructionsFile();
   }
 }
 

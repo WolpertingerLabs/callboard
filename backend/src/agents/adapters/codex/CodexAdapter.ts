@@ -22,32 +22,14 @@
  * @see plans/codex-adapter-job.md (Step 4 adapter-core)
  * @see plans/codex-spike-findings.md
  */
-import { Codex, type CodexOptions, type SandboxMode, type ThreadOptions } from "@openai/codex-sdk";
+import { Codex } from "@openai/codex-sdk";
 import type { AgentProvider, AgentQuery, AgentQueryRequest } from "../../ports/AgentProvider.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
 import { CodexAgentQuery } from "./CodexAgentQuery.js";
+import { translateCodexOptions } from "./optionsAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("codex-adapter");
-
-/**
- * Sub-object on the options Record carrying Codex-specific configuration. Set
- * by claude.ts when routing a call to the Codex adapter (the wiring that
- * populates it lands in a later slice — read defensively here). Mirrors the
- * `openRouter` extras pattern.
- */
-export interface CodexOptionsExtras {
-  /** Subscription (ChatGPT login) vs raw API key. Default subscription — no key passed. */
-  authMode?: "subscription" | "api-key";
-  /** OPENAI/Codex API key — only consumed in api-key mode (→ CodexOptions.apiKey → CODEX_API_KEY). */
-  apiKey?: string;
-  /** Base URL override — api-key mode only (→ CodexOptions.baseUrl). */
-  baseUrl?: string;
-  /** Default model, e.g. "gpt-5.5". */
-  model?: string;
-  /** Codex sandbox mode (permission translation is fleshed out in Step 5). */
-  sandboxMode?: SandboxMode;
-}
 
 /**
  * Hardcoded model list surfaced via {@link AgentQuery.supportedModels}. The
@@ -65,38 +47,16 @@ export class CodexAdapter implements AgentProvider {
 
   query(req: AgentQueryRequest): AgentQuery {
     const options = req.options;
-    const extras = (options.codex ?? {}) as CodexOptionsExtras;
-
-    const cwd = typeof options.cwd === "string" ? options.cwd : undefined;
-    const resumeId = typeof options.resume === "string" && options.resume.length > 0 ? options.resume : null;
     const externalSignal = (options.abortController as AbortController | undefined)?.signal;
-    const model = extras.model ?? (typeof options.model === "string" ? options.model : undefined);
 
-    // Subscription mode: construct with no apiKey so the SDK picks up
-    // $CODEX_HOME/auth.json (auth_mode "chatgpt"). API-key mode: pass the key
-    // (SDK → CODEX_API_KEY) and optional base url. Never pass `env` — it would
-    // REPLACE process.env entirely (spike §2.3); CODEX_HOME is set on the
-    // process env by getApiEnvOverrides, not here.
-    const codexOpts: CodexOptions = {};
-    if (extras.authMode === "api-key") {
-      if (extras.apiKey) codexOpts.apiKey = extras.apiKey;
-      if (extras.baseUrl) codexOpts.baseUrl = extras.baseUrl;
-    }
+    // All option/permission translation (auth-mode Codex construction,
+    // cwd/model/sandbox/approval, systemPrompt → temp model_instructions_file)
+    // lives in the optionsAdapter. The temp instructions file (when written)
+    // must outlive this synchronous call — CodexAgentQuery deletes it after the
+    // run.
+    const { codexOpts, threadOptions, resumeId, instructionsFilePath } = translateCodexOptions(options);
 
-    // `skipGitRepoCheck` is a ThreadOption (not a CodexOption — spike §2.1).
-    // Always set so Codex runs in non-repo working dirs the way the other
-    // providers do.
-    const threadOptions: ThreadOptions = {
-      skipGitRepoCheck: true,
-      ...(cwd && { workingDirectory: cwd }),
-      ...(model && { model }),
-      ...(extras.sandboxMode && { sandboxMode: extras.sandboxMode }),
-    };
-
-    log.debug(
-      `query() — authMode=${extras.authMode ?? "subscription"}, resume=${resumeId ?? "none"}, ` +
-        `cwd=${cwd ?? "(default)"}, model=${model ?? "(default)"}, sandbox=${extras.sandboxMode ?? "(default)"}`,
-    );
+    log.debug(`query() — resume=${resumeId ?? "none"}, instructionsFile=${instructionsFilePath ?? "(none)"}`);
 
     return new CodexAgentQuery({
       codex: new Codex(codexOpts),
@@ -104,6 +64,7 @@ export class CodexAdapter implements AgentProvider {
       threadOptions,
       prompt: req.prompt,
       ...(externalSignal && { externalSignal }),
+      ...(instructionsFilePath && { instructionsFilePath }),
       models: CODEX_MODELS,
     });
   }
