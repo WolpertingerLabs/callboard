@@ -1,6 +1,7 @@
 import type { AgentProviderKind, EffortLevel } from "../utils/localStorage";
 import OpenRouterModelSelector from "./OpenRouterModelSelector";
 import ClaudeModelSelector from "./ClaudeModelSelector";
+import CodexModelSelector from "./CodexModelSelector";
 
 export type ProviderConfigPickerMode = "panel" | "inline";
 
@@ -19,6 +20,16 @@ interface ProviderConfigPickerProps {
   // one's prior selection. Free-form text; the CLI validates server-side.
   claudeModel: string;
   onClaudeModelChange: (model: string) => void;
+  // Codex model (e.g. "gpt-5.5"). Empty string = "use global default from
+  // Settings → API". Kept separate from `model`/`claudeModel` so toggling
+  // providers restores each one's prior selection. Optional — callers that
+  // don't surface a Codex per-chat model omit it (the selector then hides).
+  codexModel?: string;
+  onCodexModelChange?: (model: string) => void;
+  // `null`/undefined while /system-info is in flight (or when the caller
+  // doesn't gate Codex) — Codex is treated as available until an explicit
+  // false disables the button (mirrors `openRouterConfigured`).
+  codexConfigured?: boolean | null;
   // `null` while /system-info is in flight — OR is treated as available until
   // we know otherwise (the disabled gate only kicks in on an explicit false).
   openRouterConfigured: boolean | null;
@@ -61,6 +72,9 @@ export default function ProviderConfigPicker({
   onModelChange,
   claudeModel,
   onClaudeModelChange,
+  codexModel,
+  onCodexModelChange,
+  codexConfigured,
   openRouterConfigured,
   openRouterMaxBudgetUsd,
   onOpenApiSettings,
@@ -70,6 +84,8 @@ export default function ProviderConfigPicker({
   const inline = mode === "inline";
   const showOrKnobs = provider === "openrouter" && openRouterConfigured !== false;
   const showClaudeKnobs = provider === "claude-code";
+  // Codex per-chat model only renders when the caller wired a change handler.
+  const showCodexKnobs = provider === "codex" && onCodexModelChange !== undefined;
 
   // `inline` mode lays the OR controls side-by-side; `panel` mode stacks
   // them. Hoisted so both render paths share the same controls below.
@@ -180,6 +196,37 @@ export default function ProviderConfigPicker({
     </div>
   ) : null;
 
+  // Per-chat Codex model — Codex only. Empty value falls back to the global
+  // default configured in Settings → API. Sandbox mode is a global Codex
+  // setting (Settings → API), not a per-chat knob.
+  const codexControls = showCodexKnobs ? (
+    <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
+      <label
+        htmlFor={inline ? "inlineCodexModel" : "newChatCodexModel"}
+        style={{
+          display: "block",
+          fontSize: inline ? 11 : 13,
+          fontWeight: 600,
+          color: "var(--text-muted)",
+          marginBottom: inline ? 4 : 6,
+        }}
+      >
+        Model
+      </label>
+      <CodexModelSelector
+        id={inline ? "inlineCodexModel" : "newChatCodexModel"}
+        value={codexModel ?? ""}
+        onChange={onCodexModelChange ?? (() => {})}
+        placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+      />
+      {!inline && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          Optional — a gpt-5.x or o-series model. Leave empty to use the global default from Settings → API.
+        </div>
+      )}
+    </div>
+  ) : null;
+
   return (
     <>
       {showProviderToggle && (
@@ -227,7 +274,44 @@ export default function ProviderConfigPicker({
             >
               OpenRouter
             </button>
+            <button
+              type="button"
+              onClick={() => codexConfigured !== false && onProviderChange("codex")}
+              disabled={codexConfigured === false}
+              title={codexConfigured === false ? "Configure Codex in Settings → API to enable this provider" : "Use OpenAI Codex for this chat"}
+              style={{
+                flex: 1,
+                padding: inline ? "6px 10px" : "8px 12px",
+                fontSize: inline ? 12 : 13,
+                fontWeight: 500,
+                borderRadius: 6,
+                border: provider === "codex" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: provider === "codex" ? "var(--accent)" : "var(--surface)",
+                color: codexConfigured === false ? "var(--text-muted)" : provider === "codex" ? "var(--text-on-accent)" : "var(--text)",
+                cursor: codexConfigured === false ? "not-allowed" : "pointer",
+                opacity: codexConfigured === false ? 0.6 : 1,
+                transition: "all 0.15s",
+              }}
+            >
+              Codex
+            </button>
           </div>
+          {codexConfigured === false && provider === "codex" && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+              Configure{" "}
+              <a
+                href="/settings/api"
+                style={{ color: "var(--accent)", textDecoration: "underline" }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onOpenApiSettings();
+                }}
+              >
+                Codex
+              </a>{" "}
+              to enable.
+            </div>
+          )}
           {openRouterConfigured === false && (
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
               Configure your{" "}
@@ -265,6 +349,7 @@ export default function ProviderConfigPicker({
 
       {orControls}
       {claudeControls}
+      {codexControls}
     </>
   );
 }

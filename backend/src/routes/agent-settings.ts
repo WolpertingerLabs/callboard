@@ -64,6 +64,12 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterServerTools,
     openRouterModelParamsDefault,
     openRouterModelParamProfiles,
+    codexAuthMode,
+    codexApiKey,
+    codexBaseUrl,
+    codexModel,
+    codexHome,
+    codexSandboxMode,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -195,6 +201,13 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     normalizedParamProfiles = Object.keys(cleaned).length > 0 ? cleaned : undefined;
   }
 
+  // Codex enum fields — validate against the allowed values; an unrecognized
+  // value clears the override (falls back to the default at consume time).
+  const normalizeCodexAuthMode = (v: unknown): "subscription" | "api-key" | undefined =>
+    v === "subscription" || v === "api-key" ? v : undefined;
+  const normalizeCodexSandboxMode = (v: unknown): "read-only" | "workspace-write" | "danger-full-access" | undefined =>
+    v === "read-only" || v === "workspace-write" || v === "danger-full-access" ? v : undefined;
+
   try {
     const updated = updateAgentSettings({
       mcpConfigDir: mcpConfigDir ?? undefined,
@@ -220,6 +233,12 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterServerTools !== undefined && { openRouterServerTools: normalizedServerTools }),
       ...(openRouterModelParamsDefault !== undefined && { openRouterModelParamsDefault: normalizedParamsDefault }),
       ...(openRouterModelParamProfiles !== undefined && { openRouterModelParamProfiles: normalizedParamProfiles }),
+      ...(codexAuthMode !== undefined && { codexAuthMode: normalizeCodexAuthMode(codexAuthMode) }),
+      ...(codexApiKey !== undefined && { codexApiKey: normalize(codexApiKey) }),
+      ...(codexBaseUrl !== undefined && { codexBaseUrl: normalize(codexBaseUrl) }),
+      ...(codexModel !== undefined && { codexModel: normalize(codexModel) }),
+      ...(codexHome !== undefined && { codexHome: normalize(codexHome) }),
+      ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });

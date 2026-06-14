@@ -78,6 +78,7 @@ import { startTunnelIfEnabled, stopTunnel } from "./services/tunnel-manager.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
+import { isCodexConfigured } from "./agents/adapters/codex/codexAuth.js";
 
 const log = createLogger("server");
 
@@ -418,6 +419,16 @@ app.get(
       // Settings unreadable — treat as unconfigured and use the library default.
     }
 
+    // Whether the Codex provider has usable credentials (api key set, or a
+    // parseable $CODEX_HOME/auth.json from `codex login`). Lets the UI enable
+    // the Codex toggle without exposing the credentials themselves.
+    let codexConfigured = false;
+    try {
+      codexConfigured = isCodexConfigured();
+    } catch {
+      // Treat any failure as unconfigured.
+    }
+
     res.json({
       version,
       latestVersion,
@@ -432,6 +443,7 @@ app.get(
       models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
       openRouterConfigured,
       openRouterMaxBudgetUsd,
+      codexConfigured,
     });
   },
 );

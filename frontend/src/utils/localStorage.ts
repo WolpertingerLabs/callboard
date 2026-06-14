@@ -42,6 +42,11 @@ interface LocalStorageData {
    * toggling providers restores each one's prior selection. Empty/absent
    * means "use the global default from Settings → API". */
   defaultClaudeModel?: string;
+  /** User's last-selected Codex model (e.g. "gpt-5.5") for Codex chats in the
+   * New Chat panel. Stored separately from the OR/Claude models so toggling
+   * providers restores each one's prior selection. Empty/absent means "use the
+   * global default from Settings → API". */
+  defaultCodexModel?: string;
   /** Whether tool call inputs/results render JSON pretty-printed (true) or
    * as the raw string (false). Toggled inline from any tool view. */
   jsonPrettyPrint?: boolean;
@@ -173,6 +178,27 @@ export function saveDefaultClaudeModel(model: string): void {
     delete data.defaultClaudeModel;
   } else {
     data.defaultClaudeModel = trimmed;
+  }
+  setStorageData(data);
+}
+
+/**
+ * Last-selected Codex model for Codex chats. Returns `""` when nothing has
+ * been stored — the New Chat selector treats empty as "use the global default
+ * configured in Settings → API".
+ */
+export function getDefaultCodexModel(): string {
+  const data = getStorageData();
+  return typeof data.defaultCodexModel === "string" ? data.defaultCodexModel : "";
+}
+
+export function saveDefaultCodexModel(model: string): void {
+  const data = getStorageData();
+  const trimmed = model.trim();
+  if (trimmed.length === 0) {
+    delete data.defaultCodexModel;
+  } else {
+    data.defaultCodexModel = trimmed;
   }
   setStorageData(data);
 }

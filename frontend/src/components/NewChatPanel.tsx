@@ -20,6 +20,8 @@ import {
   saveDefaultOpenRouterModel,
   getDefaultClaudeModel,
   saveDefaultClaudeModel,
+  getDefaultCodexModel,
+  saveDefaultCodexModel,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -89,6 +91,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // "use the global default from Settings → API". Stored separately from the
   // OR model so toggling providers restores each one's prior selection.
   const [claudeModel, setClaudeModel] = useState<string>(getDefaultClaudeModel);
+  // Codex model (gpt-5.x / o-series). Empty string = "use the global default
+  // from Settings → API". Stored separately from the OR/Claude models so
+  // toggling providers restores each one's prior selection.
+  const [codexModel, setCodexModel] = useState<string>(getDefaultCodexModel);
+  // `null` until /system-info returns — Codex treated as available until an
+  // explicit false (same tri-state as openRouterConfigured below).
+  const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -118,6 +127,17 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     navigate("/settings/api");
   };
 
+  // Downgrade to claude-code only when we KNOW the chosen alt-provider is
+  // unconfigured (explicit false; `null` = still loading, trust the choice).
+  const downgradeProvider = (p: AgentProviderKind): AgentProviderKind => {
+    if (p === "openrouter" && openRouterConfigured === false) return "claude-code";
+    if (p === "codex" && codexConfigured === false) return "claude-code";
+    return p;
+  };
+
+  // Each provider carries its own model selection; forward the matching one.
+  const modelForProvider = (p: AgentProviderKind): string => (p === "openrouter" ? model : p === "codex" ? codexModel : claudeModel);
+
   const confirmRemoveRecentDir = () => {
     removeRecentDirectory(confirmModal.path);
     updateRecentDirs();
@@ -140,15 +160,15 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultOpenRouterEffort(effort);
     saveDefaultOpenRouterModel(model);
     saveDefaultClaudeModel(claudeModel);
-    // Runtime guard: only downgrade to claude-code when we KNOW OR is not
-    // configured (openRouterConfigured === false). While still loading
-    // (null), trust the user's choice — sendMessage rejects loudly if the
-    // OR key is missing, so we get a clear error rather than a silent
-    // downgrade.
-    const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
+    saveDefaultCodexModel(codexModel);
+    // Runtime guard: only downgrade to claude-code when we KNOW the chosen
+    // provider is not configured. While still loading (null), trust the user's
+    // choice — sendMessage rejects loudly if creds are missing, so we get a
+    // clear error rather than a silent downgrade.
+    const effectiveProvider: AgentProviderKind = downgradeProvider(provider);
     // Each provider has its own model selection; forward the one matching
     // the effective provider. `effort` stays OR-only.
-    const trimmedModel = (effectiveProvider === "openrouter" ? model : claudeModel).trim();
+    const trimmedModel = modelForProvider(effectiveProvider).trim();
 
     setFolder("");
     onClose();
@@ -173,6 +193,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultOpenRouterEffort(effort);
     saveDefaultOpenRouterModel(model);
     saveDefaultClaudeModel(claudeModel);
+    saveDefaultCodexModel(codexModel);
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -191,8 +212,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // Agent chats honor the same provider choice the user made on the
     // panel's top radio. Without this, picking OR + Agent would silently
     // create a Claude chat — the inverse of what the toggle implies.
-    const effectiveProvider: AgentProviderKind = provider === "openrouter" && openRouterConfigured === false ? "claude-code" : provider;
-    const trimmedModel = (effectiveProvider === "openrouter" ? model : claudeModel).trim();
+    const effectiveProvider: AgentProviderKind = downgradeProvider(provider);
+    const trimmedModel = modelForProvider(effectiveProvider).trim();
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
       state: {
@@ -226,12 +247,20 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         if (!ok && provider === "openrouter") {
           setProvider("claude-code");
         }
+        const codexOk = Boolean(info.codexConfigured);
+        setCodexConfigured(codexOk);
+        if (!codexOk && provider === "codex") {
+          setProvider("claude-code");
+        }
       })
       .catch(() => {
         // /system-info unreachable — assume unavailable and surface the
         // toggle as disabled rather than silently allowing a request that
         // will 500 on submit.
-        if (!cancelled) setOpenRouterConfigured(false);
+        if (!cancelled) {
+          setOpenRouterConfigured(false);
+          setCodexConfigured(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -318,6 +347,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onModelChange={setModel}
               claudeModel={claudeModel}
               onClaudeModelChange={setClaudeModel}
+              codexModel={codexModel}
+              onCodexModelChange={setCodexModel}
+              codexConfigured={codexConfigured}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={openApiSettings}
@@ -527,6 +559,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onModelChange={setModel}
               claudeModel={claudeModel}
               onClaudeModelChange={setClaudeModel}
+              codexModel={codexModel}
+              onCodexModelChange={setCodexModel}
+              codexConfigured={codexConfigured}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               onOpenApiSettings={openApiSettings}

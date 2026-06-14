@@ -117,7 +117,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const agentAlias = (location.state as any)?.agentAlias as string | undefined;
   // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
   // by chat metadata server-side; this value is only honored on creation.
-  const newChatProvider = (location.state as any)?.provider as "claude-code" | "openrouter" | undefined;
+  const newChatProvider = (location.state as any)?.provider as "claude-code" | "openrouter" | "codex" | undefined;
   // OpenRouter reasoning-effort for NEW chats, set by NewChatPanel. Like the
   // provider, only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
@@ -267,12 +267,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, chat?.metadata]);
 
-  const chatProvider = useMemo((): "claude-code" | "openrouter" => {
+  const chatProvider = useMemo((): "claude-code" | "openrouter" | "codex" => {
     if (!id) return newChatProvider ?? "claude-code";
     if (chat?.metadata) {
       try {
         const meta = JSON.parse(chat.metadata);
         if (meta.provider === "openrouter") return "openrouter";
+        if (meta.provider === "codex") return "codex";
       } catch {
         // ignore — fall through
       }
@@ -2637,10 +2638,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     );
                   }
                   // Forkable: persisted conversational text messages on the
-                  // main timeline. Subagent messages and OpenRouter chats
-                  // (response-chained state can't be truncated) are excluded.
+                  // main timeline. Subagent messages, OpenRouter chats
+                  // (response-chained state can't be truncated), and Codex
+                  // chats (on-disk rollout sessions aren't fork-wired) are excluded.
                   const msgTimestamp = item.message.timestamp;
-                  const canFork = chatProvider !== "openrouter" && item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
+                  const canFork =
+                    chatProvider === "claude-code" && item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
                       <MessageBubble message={item.message} teamColorMap={teamColorMap} onFork={canFork ? () => handleFork(msgTimestamp!) : undefined} />
@@ -2849,8 +2852,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
                   {chatProvider === "openrouter" ? "Model & reasoning effort for this chat" : "Model for this chat"}
                 </div>
-                {/* Both model props share the same pending-model cell — only
-                    the control matching the chat's pinned provider renders. */}
+                {/* All three model props share the same pending-model cell —
+                    only the control matching the chat's pinned provider renders. */}
                 <ProviderConfigPicker
                   provider={chatProvider}
                   onProviderChange={() => {}}
@@ -2862,6 +2865,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                   claudeModel={pendingModel ?? currentModel}
                   onClaudeModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                  codexModel={pendingModel ?? currentModel}
+                  onCodexModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                  codexConfigured={true}
                   openRouterConfigured={true}
                   openRouterMaxBudgetUsd={null}
                   onOpenApiSettings={() => navigate("/settings/api")}
@@ -2895,7 +2901,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                           ? "Model change pending — applies on next message"
                           : chatProvider === "openrouter"
                             ? "Change model / reasoning effort for this chat"
-                            : "Change the Anthropic model for this chat",
+                            : chatProvider === "codex"
+                              ? "Change the Codex model for this chat"
+                              : "Change the Anthropic model for this chat",
                     },
                   ]
                 : []
