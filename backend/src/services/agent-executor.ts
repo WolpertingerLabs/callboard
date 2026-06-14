@@ -12,7 +12,7 @@ import { compileSystemPrompt } from "./claude-compiler.js";
 import { appendActivity } from "./agent-activity.js";
 import { createLogger } from "../utils/logger.js";
 
-import type { ActivityEntry, EffortLevel } from "shared";
+import type { ActivityEntry, EffortLevel, UiAgentProviderKind } from "shared";
 
 const log = createLogger("agent-executor");
 
@@ -29,7 +29,7 @@ type MessageSender = (opts: {
   defaultPermissions?: any;
   triggered?: boolean;
   triggeredBy?: "cron" | "event" | "trigger" | "tool";
-  provider?: "claude-code" | "openrouter";
+  provider?: UiAgentProviderKind;
   model?: string;
   effort?: EffortLevel;
   requireExplicitCompletion?: boolean;
@@ -58,7 +58,7 @@ export interface ExecuteAgentOptions {
   triggeredBy: "cron" | "event" | "trigger" | "tool";
   metadata?: Record<string, unknown>;
   maxTurns?: number;
-  provider?: "claude-code" | "openrouter";
+  provider?: UiAgentProviderKind;
   model?: string;
   /** OR-only reasoning effort. Ignored when provider is claude-code. */
   effort?: EffortLevel;

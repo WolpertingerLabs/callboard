@@ -70,8 +70,8 @@ export default tseslint.config(
     },
   },
   {
-    // Node.js files (bin/callboard.js, scripts/*.cjs)
-    files: ["*.js", "bin/*.js", "scripts/*.cjs"],
+    // Node.js files (bin/callboard.js, scripts/*.cjs, scripts/*.mjs)
+    files: ["*.js", "bin/*.js", "scripts/*.cjs", "scripts/*.mjs"],
     languageOptions: {
       globals: {
         console: "readonly",

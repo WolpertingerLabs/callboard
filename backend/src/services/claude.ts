@@ -45,7 +45,7 @@ const log = createLogger("claude");
 export type { StreamEvent };
 
 /** Provider kinds that sendMessage knows how to route through. */
-const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
+const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex"]);
 
 /**
  * Narrow a free-form metadata.provider value to a usable AgentProviderKind,

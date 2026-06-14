@@ -19,7 +19,7 @@
  */
 import type { EventEmitter } from "events";
 import { homedir } from "os";
-import type { AgentJobStep, ApprovalJobStep, EffortLevel, JobRun, JobRunHistoryEntry, JobStep, NotifyJobStep, PollJobStep } from "shared";
+import type { AgentJobStep, ApprovalJobStep, EffortLevel, JobRun, JobRunHistoryEntry, JobStep, NotifyJobStep, PollJobStep, UiAgentProviderKind } from "shared";
 import { sessionRegistry, type SessionEvent } from "./session-registry.js";
 import {
   getJob,
@@ -63,7 +63,7 @@ type MessageSender = (opts: {
   defaultPermissions?: any;
   triggered?: boolean;
   triggeredBy?: "cron" | "event" | "trigger" | "tool" | "job";
-  provider?: "claude-code" | "openrouter";
+  provider?: UiAgentProviderKind;
   model?: string;
   effort?: EffortLevel;
   jobContext?: JobContext;

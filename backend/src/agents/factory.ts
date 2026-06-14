@@ -21,6 +21,8 @@ import { ClaudeCodeAdapter } from "./adapters/claude-code/ClaudeCodeAdapter.js";
 import { ClaudeCodeSessionProvider } from "./adapters/claude-code/ClaudeCodeSessionProvider.js";
 import { OpenRouterAdapter } from "./adapters/openrouter/OpenRouterAdapter.js";
 import { OpenRouterSessionProvider } from "./adapters/openrouter/OpenRouterSessionProvider.js";
+import { CodexAdapter } from "./adapters/codex/CodexAdapter.js";
+import { CodexSessionProvider } from "./adapters/codex/CodexSessionProvider.js";
 
 // ── Agent Provider (execution) ──────────────────────────────────────
 
@@ -49,7 +51,7 @@ function constructProvider(kind: AgentProviderKind): AgentProvider {
     case "openrouter":
       return new OpenRouterAdapter();
     case "codex":
-      throw new Error("Codex adapter is not yet implemented — see plans/codex-adapter.md");
+      return new CodexAdapter();
     case "mock":
       throw new Error(
         "Mock adapter must be injected via setAgentProviderForTesting(); no implicit construction",
@@ -107,7 +109,11 @@ let _sessionProviders: SessionProvider[] | null = null;
  */
 export function getSessionProviders(): readonly SessionProvider[] {
   if (!_sessionProviders) {
-    _sessionProviders = [new ClaudeCodeSessionProvider(), new OpenRouterSessionProvider()];
+    _sessionProviders = [
+      new ClaudeCodeSessionProvider(),
+      new OpenRouterSessionProvider(),
+      new CodexSessionProvider(),
+    ];
   }
   return _sessionProviders;
 }

@@ -90,7 +90,7 @@ export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   setStorageData(data);
 }
 
-const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
+const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex"]);
 
 export function getDefaultProvider(): AgentProviderKind {
   const data = getStorageData();

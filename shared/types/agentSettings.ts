@@ -121,6 +121,39 @@ export interface AgentSettings {
    */
   openRouterModelParamProfiles?: Record<string, OpenRouterParamProfile>;
 
+  // ── Codex (alternative provider, subscription-auth) ───────────────
+  // Populated when the user enables the OpenAI Codex provider in
+  // Settings → API. Codex wraps the `codex` Rust CLI via @openai/codex-sdk
+  // and authenticates either against a ChatGPT subscription (the primary
+  // path on a personal machine — credentials live in $CODEX_HOME/auth.json,
+  // written by `codex login --device-auth`) or a raw OpenAI API key.
+
+  /**
+   * Codex auth mode. "subscription" (default) uses ChatGPT-login credentials
+   * stored in $CODEX_HOME/auth.json — no key needed. "api-key" uses
+   * codexApiKey / codexBaseUrl instead.
+   */
+  codexAuthMode?: "subscription" | "api-key";
+
+  /** OPENAI_API_KEY — only used when codexAuthMode === "api-key". */
+  codexApiKey?: string;
+
+  /** OPENAI_BASE_URL — override the OpenAI API endpoint, api-key mode only. */
+  codexBaseUrl?: string;
+
+  /** Default Codex model for new chats, e.g. "gpt-5.5". */
+  codexModel?: string;
+
+  /**
+   * CODEX_HOME — directory where the Codex CLI stores auth.json and the
+   * sessions/ rollout tree. Defaults to ~/.codex when unset. Always injected
+   * into the SDK subprocess env so callboard controls the auth/session location.
+   */
+  codexHome?: string;
+
+  /** Codex sandbox mode, mapped onto the CLI's `--sandbox` flag. */
+  codexSandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the start_chat_session onComplete feature, which automatically
   // re-invokes a parent chat when a spawned child session finishes.
