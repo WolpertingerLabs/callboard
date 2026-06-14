@@ -11,9 +11,9 @@
 /**
  * Provider kinds the UI is allowed to surface. The full backend
  * `AgentProviderKind` union (in `backend/src/agents/ports/AgentProvider.ts`)
- * also includes adapters not exposed to end users (`codex`, `mock`).
+ * also includes adapters not exposed to end users (`mock`).
  */
-export type UiAgentProviderKind = "claude-code" | "openrouter";
+export type UiAgentProviderKind = "claude-code" | "openrouter" | "codex";
 
 /**
  * OpenRouter reasoning-effort levels. Maps onto the OR `reasoning.effort`

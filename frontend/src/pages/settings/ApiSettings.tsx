@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog } from "../../api";
 import type { AgentSettings, OpenRouterModelInfo, OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { OR_SERVER_TOOLS, OR_PLUGINS, OR_SAMPLING_PARAMS, validateServerTools, validateParamProfile } from "shared/types/index.js";
 import type { SystemInfo } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
+import CodexModelSelector from "../../components/CodexModelSelector";
 import ParamFieldForm from "../../components/ParamFieldForm";
 import { getDefaultProvider } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
@@ -293,6 +294,13 @@ export default function ApiSettings() {
   const [modelParamRows, setModelParamRows] = useState<{ slug: string; profile: OpenRouterParamProfile }[]>([]);
   // Catalog models (for supportedParameters lookups in per-model overrides).
   const [orModels, setOrModels] = useState<OpenRouterModelInfo[]>([]);
+  // Codex (alternative provider, subscription-auth) overrides.
+  const [codexAuthMode, setCodexAuthMode] = useState<"subscription" | "api-key">("subscription");
+  const [codexApiKey, setCodexApiKey] = useState("");
+  const [codexBaseUrl, setCodexBaseUrl] = useState("");
+  const [codexModel, setCodexModel] = useState("");
+  const [codexHome, setCodexHome] = useState("");
+  const [codexSandboxMode, setCodexSandboxMode] = useState<"read-only" | "workspace-write" | "danger-full-access">("workspace-write");
   // Collapse state for the bulky sections.
   const [showDefaults, setShowDefaults] = useState(false);
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
@@ -320,6 +328,12 @@ export default function ApiSettings() {
       setServerTools(s.openRouterServerTools);
       setModelParamsDefault(s.openRouterModelParamsDefault ?? {});
       setModelParamRows(Object.entries(s.openRouterModelParamProfiles ?? {}).map(([slug, profile]) => ({ slug, profile })));
+      setCodexAuthMode(s.codexAuthMode ?? "subscription");
+      setCodexApiKey(s.codexApiKey ?? "");
+      setCodexBaseUrl(s.codexBaseUrl ?? "");
+      setCodexModel(s.codexModel ?? "");
+      setCodexHome(s.codexHome ?? "");
+      setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
@@ -411,6 +425,15 @@ export default function ApiSettings() {
         // prior value intact (JSON.stringify drops it).
         openRouterModelParamsDefault: cleanedDefault,
         openRouterModelParamProfiles: cleanedProfiles,
+        // Codex provider settings. Auth mode + sandbox mode are enums with a
+        // defined default, so they're always sent; the key/url/model/home are
+        // free-text overrides that fall back to the ambient env when empty.
+        codexAuthMode,
+        codexApiKey,
+        codexBaseUrl,
+        codexModel,
+        codexHome,
+        codexSandboxMode,
       });
       setSettings(updated);
       // Re-sync alias rows so blank rows dropped on save disappear from the form.
@@ -473,7 +496,8 @@ export default function ApiSettings() {
         {[
           { kind: "claude-code" as AgentProviderKind, label: "Claude Code", icon: <Bot size={14} /> },
           { kind: "openrouter" as AgentProviderKind, label: "OpenRouter", icon: <Network size={14} /> },
-        ].map(({ kind, label, icon }, idx) => (
+          { kind: "codex" as AgentProviderKind, label: "Codex", icon: <Terminal size={14} /> },
+        ].map(({ kind, label, icon }, idx, arr) => (
           <button
             key={kind}
             onClick={() => setActiveProvider(kind)}
@@ -488,7 +512,7 @@ export default function ApiSettings() {
               fontWeight: 500,
               cursor: "pointer",
               border: "none",
-              borderRight: idx < 1 ? "1px solid var(--border)" : "none",
+              borderRight: idx < arr.length - 1 ? "1px solid var(--border)" : "none",
               background: activeProvider === kind ? "var(--accent)" : "var(--surface)",
               color: activeProvider === kind ? "var(--text-on-accent)" : "var(--text)",
               transition: "background 0.15s, color 0.15s",
@@ -1050,6 +1074,176 @@ export default function ApiSettings() {
         </>
       )}
 
+      {activeProvider === "codex" && (
+        <>
+          {/* Codex — auth mode */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Terminal size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenAI Codex</span>
+            </div>
+            <div style={subtitleStyle}>
+              Run chats on OpenAI Codex (gpt-5.x). Authenticate with your ChatGPT subscription (recommended on a personal machine — personal use only) or a raw
+              OpenAI API key.
+            </div>
+
+            {/* Auth-mode toggle */}
+            <div style={fieldWrap}>
+              <label style={labelStyle}>Authentication mode</label>
+              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                {(
+                  [
+                    { mode: "subscription" as const, label: "Subscription (ChatGPT login)" },
+                    { mode: "api-key" as const, label: "API key" },
+                  ]
+                ).map(({ mode, label }) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setCodexAuthMode(mode)}
+                    style={{
+                      flex: 1,
+                      padding: "8px 12px",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      borderRadius: 6,
+                      border: codexAuthMode === mode ? "1px solid var(--accent)" : "1px solid var(--border)",
+                      background: codexAuthMode === mode ? "var(--accent)" : "var(--surface)",
+                      color: codexAuthMode === mode ? "var(--text-on-accent)" : "var(--text)",
+                      cursor: "pointer",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {codexAuthMode === "subscription" ? (
+              <>
+                {/* Login status from /system-info (no key field in this mode). */}
+                <div style={{ marginBottom: 14 }}>
+                  <div style={rowStyle}>
+                    <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>ChatGPT login status</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: systemInfo?.codexConfigured ? "var(--text)" : "var(--text-muted)" }}>
+                      {systemInfo?.codexConfigured ? "Logged in (auth.json found)" : "Not logged in"}
+                    </span>
+                  </div>
+                </div>
+                {!systemInfo?.codexConfigured && (
+                  <div style={{ ...helpStyle, marginTop: 0, marginBottom: 14 }}>
+                    Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account. Credentials are stored in{" "}
+                    <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and refreshed automatically. After logging in, click refresh below.
+                  </div>
+                )}
+                <button
+                  onClick={handleRefresh}
+                  title="Re-check login status"
+                  style={{
+                    background: "var(--surface)",
+                    color: "var(--text-muted)",
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 12,
+                  }}
+                >
+                  <RefreshCw size={14} /> Re-check status
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={fieldWrap}>
+                  <label htmlFor="codexApiKey" style={labelStyle}>
+                    API Key<span style={envLabelStyle}>OPENAI_API_KEY</span>
+                  </label>
+                  <SecretField id="codexApiKey" value={codexApiKey} onChange={setCodexApiKey} placeholder="sk-..." />
+                  <div style={helpStyle}>Billed to your OpenAI API account rather than your ChatGPT subscription.</div>
+                </div>
+                <div style={fieldWrap}>
+                  <label htmlFor="codexBaseUrl" style={labelStyle}>
+                    Base URL<span style={envLabelStyle}>OPENAI_BASE_URL</span>
+                  </label>
+                  <input
+                    id="codexBaseUrl"
+                    type="text"
+                    value={codexBaseUrl}
+                    onChange={(e) => setCodexBaseUrl(e.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                    autoComplete="off"
+                    spellCheck={false}
+                    style={inputStyle}
+                  />
+                  <div style={helpStyle}>Optional. Override the OpenAI API endpoint (proxies / gateways).</div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Codex — model + sandbox */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Cpu size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Model &amp; Sandbox</span>
+            </div>
+            <div style={subtitleStyle}>Default model for new Codex chats and the sandbox the Codex agent runs commands under.</div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="codexModel" style={labelStyle}>
+                Default Model
+              </label>
+              <CodexModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} placeholder="gpt-5.5" />
+              <div style={helpStyle}>Start typing to filter gpt-5.x / o-series models. Free text accepted — the CLI validates the model.</div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="codexSandboxMode" style={labelStyle}>
+                Sandbox Mode
+              </label>
+              <select
+                id="codexSandboxMode"
+                value={codexSandboxMode}
+                onChange={(e) => setCodexSandboxMode(e.target.value as typeof codexSandboxMode)}
+                style={{ ...inputStyle, fontFamily: "inherit", cursor: "pointer" }}
+              >
+                <option value="read-only">read-only — no writes or command execution</option>
+                <option value="workspace-write">workspace-write — edit files in the working dir</option>
+                <option value="danger-full-access">danger-full-access — unrestricted (use with care)</option>
+              </select>
+              <div style={helpStyle}>
+                Per-chat permission toggles further constrain this when a session starts. <code style={{ fontSize: 11 }}>danger-full-access</code> lets the agent
+                run any command without approval.
+              </div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="codexHome" style={labelStyle}>
+                Codex Home<span style={envLabelStyle}>CODEX_HOME</span>
+              </label>
+              <input
+                id="codexHome"
+                type="text"
+                value={codexHome}
+                onChange={(e) => setCodexHome(e.target.value)}
+                placeholder="~/.codex"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>
+                Optional. Directory where Codex stores <code style={{ fontSize: 11 }}>auth.json</code> and the sessions tree. Defaults to{" "}
+                <code style={{ fontSize: 11 }}>~/.codex</code>.
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       {error && <div style={{ fontSize: 13, color: "var(--error)", marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
@@ -1077,10 +1271,16 @@ export default function ApiSettings() {
           to pick up the new settings. Leave a field empty to fall back to the ambient environment (
           {settings?.apiKey || settings?.authToken ? "your saved value" : "your subscription login"}).
         </div>
-      ) : (
+      ) : activeProvider === "openrouter" ? (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
           Overrides are applied as environment variables when Callboard spawns an OpenRouter session. They take effect for new sessions; resume an existing chat
           to pick up the new settings. Leave a field empty to fall back to the ambient environment.
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
+          Codex settings are applied when Callboard spawns the Codex CLI. They take effect for new sessions; resume an existing chat to pick up the new settings.
+          In subscription mode, auth is read from <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> (run <code style={{ fontSize: 11 }}>codex login</code>{" "}
+          once); in API-key mode, leave a field empty to fall back to the ambient environment.
         </div>
       )}
     </>

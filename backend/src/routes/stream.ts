@@ -20,7 +20,7 @@ const log = createLogger("stream");
 // Defense-in-depth allowlists shared by /new/message (initial creation) and
 // /:id/message (mid-chat updates). Anything not in these sets is silently
 // dropped at the route boundary so we never persist garbage to chat metadata.
-const VALID_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter"]);
+const VALID_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex"]);
 const VALID_EFFORTS: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
 
 export const streamRouter = Router();

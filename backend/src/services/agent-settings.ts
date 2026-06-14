@@ -7,6 +7,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync, copyFileSync, rmSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 import { execSync } from "child_process";
 import { loadRemoteConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
@@ -93,6 +94,18 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
   if (s.defaultSonnetModel) env.ANTHROPIC_DEFAULT_SONNET_MODEL = s.defaultSonnetModel;
   if (s.defaultHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.defaultHaikuModel;
   if (s.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.subagentModel;
+
+  // ── Codex provider env ──────────────────────────────────────────
+  // CODEX_HOME is injected ALWAYS so callboard controls where the Codex CLI
+  // reads auth.json + sessions/ from (defaults to ~/.codex when unset). In
+  // api-key mode we also pass the OpenAI key/base URL through to the SDK
+  // subprocess; subscription mode leaves auth to the stored ChatGPT login.
+  env.CODEX_HOME = s.codexHome?.trim() || join(homedir(), ".codex");
+  if (s.codexAuthMode === "api-key") {
+    if (s.codexApiKey) env.OPENAI_API_KEY = s.codexApiKey;
+    if (s.codexBaseUrl) env.OPENAI_BASE_URL = s.codexBaseUrl;
+  }
+
   return env;
 }
 
