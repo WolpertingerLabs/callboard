@@ -181,7 +181,10 @@ describe("parseCodexRollout", () => {
   });
 
   it("rehydrates Codex local_image markup into message imageIds and strips the raw tag", () => {
-    const imageDir = mkdtempSync(join(tmpdir(), "callboard-codex-image-parser-"));
+    // Must live under /tmp/callboard-codex-image-* to satisfy the parser's
+    // path allowlist — tmpdir() resolves to /var/folders on macOS and would
+    // be rejected.
+    const imageDir = mkdtempSync("/tmp/callboard-codex-image-parser-");
     const imagePath = join(imageDir, "image.png");
     writeFileSync(imagePath, Buffer.from("fake-png-bytes"));
     const lines = [
