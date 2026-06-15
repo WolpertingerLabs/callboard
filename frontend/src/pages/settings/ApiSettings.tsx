@@ -1113,19 +1113,26 @@ export default function ApiSettings() {
 
             {codexAuthMode === "subscription" ? (
               <>
-                {/* Login status from /system-info (no key field in this mode). */}
+                {/* Auth status from /system-info (no key field in this mode). */}
                 <div style={{ marginBottom: 14 }}>
                   <div style={rowStyle}>
-                    <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>ChatGPT login status</span>
+                    <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Codex auth status</span>
                     <span style={{ fontFamily: "monospace", fontSize: 12, color: systemInfo?.codexConfigured ? "var(--text)" : "var(--text-muted)" }}>
-                      {systemInfo?.codexConfigured ? "Logged in (auth.json found)" : "Not logged in"}
+                      {systemInfo?.codexAuthSource === "auth.json"
+                        ? "Logged in (auth.json found)"
+                        : systemInfo?.codexAuthSource === "config.toml"
+                          ? "Configured via config.toml"
+                          : systemInfo?.codexConfigured
+                            ? "Configured"
+                            : "Not configured"}
                     </span>
                   </div>
                 </div>
                 {!systemInfo?.codexConfigured && (
                   <div style={{ ...helpStyle, marginTop: 0, marginBottom: 14 }}>
-                    Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account. Credentials are stored
-                    in <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and refreshed automatically. After logging in, click refresh below.
+                    Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account (credentials stored in{" "}
+                    <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code>), or declare a <code style={{ fontSize: 11 }}>model_provider</code> in{" "}
+                    <code style={{ fontSize: 11 }}>$CODEX_HOME/config.toml</code>. After configuring, click refresh below.
                   </div>
                 )}
                 <button

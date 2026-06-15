@@ -1310,11 +1310,17 @@ export interface SystemInfo {
    */
   openRouterMaxBudgetUsd?: number;
   /**
-   * True when the Codex provider has usable credentials — either an
-   * `OPENAI_API_KEY` configured in Settings → API (api-key mode), or a
-   * parseable `$CODEX_HOME/auth.json` from `codex login` (subscription mode).
+   * True when the Codex provider has usable credentials — an `OPENAI_API_KEY`
+   * in Settings → API (api-key mode), a parseable `$CODEX_HOME/auth.json` from
+   * `codex login` (subscription mode), or a `$CODEX_HOME/config.toml`
+   * declaring a `model_provider` (manual setup).
    */
   codexConfigured?: boolean;
+  /**
+   * Which credential source backed `codexConfigured`. Lets the UI label the
+   * status accurately ("auth.json", "config.toml", api key, or unconfigured).
+   */
+  codexAuthSource?: "api-key" | "auth.json" | "config.toml" | null;
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {

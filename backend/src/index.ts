@@ -80,7 +80,7 @@ import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
-import { isCodexConfigured } from "./agents/adapters/codex/codexAuth.js";
+import { getCodexAuthSource, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 
 const log = createLogger("server");
 
@@ -422,12 +422,16 @@ app.get(
       // Settings unreadable — treat as unconfigured and use the library default.
     }
 
-    // Whether the Codex provider has usable credentials (api key set, or a
-    // parseable $CODEX_HOME/auth.json from `codex login`). Lets the UI enable
-    // the Codex toggle without exposing the credentials themselves.
+    // Whether the Codex provider has usable credentials (api key set, a
+    // parseable $CODEX_HOME/auth.json from `codex login`, or a config.toml
+    // declaring a model_provider). Lets the UI enable the Codex toggle without
+    // exposing the credentials themselves. `codexAuthSource` surfaces which
+    // path matched so the settings page can label it accurately.
     let codexConfigured = false;
+    let codexAuthSource: CodexAuthSource = null;
     try {
-      codexConfigured = isCodexConfigured();
+      codexAuthSource = getCodexAuthSource();
+      codexConfigured = codexAuthSource !== null;
     } catch {
       // Treat any failure as unconfigured.
     }
@@ -447,6 +451,7 @@ app.get(
       openRouterConfigured,
       openRouterMaxBudgetUsd,
       codexConfigured,
+      codexAuthSource,
     });
   },
 );
