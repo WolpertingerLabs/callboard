@@ -39,10 +39,12 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { extname, join, resolve } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import { getAgentSettings } from "../../../services/agent-settings.js";
+import { storeBase64Image } from "../../../services/image-storage.js";
 import { createLogger } from "../../../utils/logger.js";
+import { DATA_DIR } from "../../../utils/paths.js";
 
 const log = createLogger("codex-session-parser");
 
@@ -351,8 +353,8 @@ function translateMessage(
   ts: string | undefined,
 ): ParsedMessage | null {
   const role = typeof payload.role === "string" ? payload.role : undefined;
-  const content = extractText(payload.content);
-  if (!content) return null;
+  const { text: content, imageIds } = extractTextAndImages(payload.content);
+  if (!content && imageIds.length === 0) return null;
 
   // Drop the CLI's synthetic lead messages (permissions instructions /
   // environment context / injected user instructions) — they aren't part of
@@ -364,7 +366,140 @@ function translateMessage(
   const mappedRole: ParsedMessage["role"] =
     role === "assistant" ? "assistant" : role === "user" ? "user" : "system";
 
-  return { role: mappedRole, type: "text", content, ...(ts && { timestamp: ts }) };
+  return { role: mappedRole, type: "text", content, ...(imageIds.length > 0 && { imageIds }), ...(ts && { timestamp: ts }) };
+}
+
+/**
+ * Extract user-visible text plus rehydratable image IDs from Codex rollout
+ * content. The Codex CLI serializes local image inputs in at least two shapes:
+ *
+ *   - structured blocks: `{ type: "local_image", path }`
+ *   - XML-ish text in string content:
+ *     `<image name=[Image #1] path="/path/to/image.png">[image]</image>`
+ *
+ * Callboard stores uploaded images under DATA_DIR/images and, for older runs,
+ * may also see temporary `/tmp/callboard-codex-image-*` paths. Convert readable
+ * image paths back into Callboard image IDs so the existing frontend thumbnail
+ * renderer can show the actual image instead of raw markup.
+ */
+function extractTextAndImages(content: unknown): { text: string; imageIds: string[] } {
+  const imageIds: string[] = [];
+  const addPath = (path: string): void => {
+    const id = storeImagePathIfAllowed(path);
+    if (id && !imageIds.includes(id)) imageIds.push(id);
+  };
+
+  if (content === null || content === undefined) return { text: "", imageIds };
+
+  if (typeof content === "string") {
+    const text = stripCodexImageTags(content, addPath);
+    return { text, imageIds };
+  }
+
+  if (Array.isArray(content)) {
+    const textParts: string[] = [];
+    for (const block of content) {
+      if (typeof block === "string") {
+        const text = stripCodexImageTags(block, addPath);
+        if (text) textParts.push(text);
+        continue;
+      }
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (typeof b.text === "string") {
+        const text = stripCodexImageTags(b.text, addPath);
+        if (text) textParts.push(text);
+        continue;
+      }
+      if ((b.type === "input_image" || b.type === "image" || b.type === "local_image") && typeof b.path === "string") {
+        addPath(b.path);
+        continue;
+      }
+      if ((b.type === "input_image" || b.type === "image") && typeof b.image_url === "string") {
+        const id = storeDataUriImage(b.image_url);
+        if (id && !imageIds.includes(id)) imageIds.push(id);
+        continue;
+      }
+      if (b.type === "input_image" || b.type === "image" || b.type === "local_image") {
+        textParts.push("[image]");
+      }
+    }
+    return { text: textParts.filter((s) => s.length > 0).join("\n"), imageIds };
+  }
+
+  if (typeof content === "object") {
+    const obj = content as Record<string, unknown>;
+    if (typeof obj.text === "string") {
+      return { text: stripCodexImageTags(obj.text, addPath), imageIds };
+    }
+  }
+
+  return { text: extractText(content), imageIds };
+}
+
+const CODEX_IMAGE_TAG_RE = /<image\b[^>]*\bpath=(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>\s*\[image\]\s*<\/image>/gi;
+
+function stripCodexImageTags(raw: string, onPath: (path: string) => void): string {
+  return raw
+    .replace(CODEX_IMAGE_TAG_RE, (_match, doubleQuoted: string | undefined, singleQuoted: string | undefined, bare: string | undefined) => {
+      const path = decodeXmlEntities(doubleQuoted ?? singleQuoted ?? bare ?? "");
+      if (path) onPath(path);
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function storeImagePathIfAllowed(imagePath: string): string | null {
+  if (!isAllowedImagePath(imagePath) || !existsSync(imagePath)) return null;
+  const mimeType = mimeTypeForImagePath(imagePath);
+  if (!mimeType) return null;
+  try {
+    const buffer = readFileSync(imagePath);
+    return storeBase64Image(buffer.toString("base64"), mimeType);
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedImagePath(imagePath: string): boolean {
+  const resolved = resolve(imagePath);
+  const imagesDir = resolve(join(DATA_DIR, "images"));
+  return resolved.startsWith(`${imagesDir}/`) || resolved.startsWith("/tmp/callboard-codex-image-");
+}
+
+function mimeTypeForImagePath(imagePath: string): string | null {
+  switch (extname(imagePath).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    default:
+      return null;
+  }
+}
+
+function storeDataUriImage(imageUrl: string): string | null {
+  const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  const [, mimeType, base64Data] = match;
+  if (!mimeType || !base64Data) return null;
+  return storeBase64Image(base64Data, mimeType);
 }
 
 /**
@@ -382,7 +517,7 @@ export function extractText(content: unknown): string {
         if (!block || typeof block !== "object") return "";
         const b = block as Record<string, unknown>;
         if (typeof b.text === "string") return b.text;
-        if (b.type === "input_image" || b.type === "image") return "[image]";
+        if (b.type === "input_image" || b.type === "image" || b.type === "local_image") return "[image]";
         return "";
       })
       .filter((s) => s.length > 0)
@@ -410,7 +545,7 @@ export function readFirstUserPrompt(filePath: string): string | null {
     if (line.type !== "response_item") continue;
     const p = line.payload;
     if (!p || p.type !== "message" || p.role !== "user") continue;
-    const content = extractText(p.content);
+    const { text: content } = extractTextAndImages(p.content);
     if (!content) continue;
     const head = content.trimStart().toLowerCase();
     if (SYNTHETIC_MESSAGE_PREFIXES.some((pre) => head.startsWith(pre))) continue;

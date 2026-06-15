@@ -14,6 +14,7 @@ import {
   readCodexSessionMeta,
   readFirstUserPrompt,
 } from "./sessionParser.js";
+import { ImageStorageService } from "../../../services/image-storage.js";
 
 const THREAD_ID = "019ec7f2-cd5d-7823-b2d1-6683c42bfe32";
 
@@ -177,6 +178,35 @@ describe("parseCodexRollout", () => {
     const p = join(dir, `rollout-2026-06-14T19-00-00-${THREAD_ID}.jsonl`);
     writeFileSync(p, '{"type":"response_item","payload":{"type":"message","role":"user","content":"hi"}}\n{not json', "utf-8");
     expect(parseCodexRollout(p)).toEqual([{ role: "user", type: "text", content: "hi" }]);
+  });
+
+  it("rehydrates Codex local_image markup into message imageIds and strips the raw tag", () => {
+    const imageDir = mkdtempSync(join(tmpdir(), "callboard-codex-image-parser-"));
+    const imagePath = join(imageDir, "image.png");
+    writeFileSync(imagePath, Buffer.from("fake-png-bytes"));
+    const lines = [
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: `<image name=[Image #1] path="${imagePath}">[image]</image> who is this?`,
+        },
+      },
+    ];
+    const p = join(dir, `rollout-2026-06-14T22-00-00-${THREAD_ID}.jsonl`);
+    let storedImageIds: string[] = [];
+    try {
+      writeFileSync(p, lines.map((l) => JSON.stringify(l)).join("\n"), "utf-8");
+      const messages = parseCodexRollout(p);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe("who is this?");
+      expect(messages[0].imageIds).toHaveLength(1);
+      storedImageIds = messages[0].imageIds ?? [];
+    } finally {
+      for (const id of storedImageIds) ImageStorageService.deleteImage(id);
+      rmSync(imageDir, { recursive: true, force: true });
+    }
   });
 });
 

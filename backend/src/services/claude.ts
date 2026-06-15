@@ -422,7 +422,13 @@ export function stopSession(chatId: string): boolean {
  * Build the SDK prompt from text and optional images.
  * Returns either a plain string or an AsyncIterable<SDKUserMessage> for multimodal content.
  */
-function buildFormattedPrompt(prompt: string | any, imageMetadata?: { buffer: Buffer; mimeType: string }[]): string | AsyncIterable<any> {
+type PromptImageMetadata = { buffer: Buffer; mimeType: string; storagePath?: string };
+
+function buildFormattedPrompt(
+  prompt: string | any,
+  imageMetadata?: PromptImageMetadata[],
+  providerKind: AgentProviderKind = "claude-code",
+): string | AsyncIterable<any> {
   if (!imageMetadata || imageMetadata.length === 0) {
     return prompt;
   }
@@ -434,12 +440,23 @@ function buildFormattedPrompt(prompt: string | any, imageMetadata?: { buffer: Bu
     content.push({ type: "text", text: prompt.trim() });
   }
 
-  for (const { buffer, mimeType } of imageMetadata) {
+  for (const { buffer, mimeType, storagePath } of imageMetadata) {
     const base64 = buffer.toString("base64");
-    content.push({
-      type: "image",
-      source: { type: "base64", media_type: mimeType, data: base64 },
-    });
+    if (providerKind === "codex" && storagePath) {
+      // Codex consumes images as `local_image` paths. Keep the durable
+      // callboard image-store path in the intermediate block so the Codex
+      // adapter can pass it through and future log parsing can rehydrate the
+      // same image from a stable path.
+      content.push({
+        type: "image",
+        source: { type: "path", media_type: mimeType, path: storagePath },
+      });
+    } else {
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: mimeType, data: base64 },
+      });
+    }
   }
 
   // SDK expects AsyncIterable<SDKUserMessage> for multimodal content
@@ -624,7 +641,7 @@ export function buildOnAskUserQuestion(emitter: EventEmitter, getTrackingId: () 
 
 interface SendMessageOptions {
   prompt: string | any;
-  imageMetadata?: { buffer: Buffer; mimeType: string }[];
+  imageMetadata?: PromptImageMetadata[];
   activePlugins?: string[];
   /** For existing chats: the chat ID to continue */
   chatId?: string;
@@ -831,7 +848,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   let trackingId = opts.chatId || `new-${Date.now()}`;
   sessionRegistry.register(trackingId, { type: "web", abortController, emitter });
 
-  const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata);
+  const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 
   const getDefaultPermissions = (): DefaultPermissions | null => {
     if (isNewChat) {

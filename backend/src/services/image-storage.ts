@@ -154,11 +154,11 @@ export class ImageStorageService {
 
   /**
    * Load image buffers for a list of image IDs.
-   * Returns an array of { buffer, mimeType } for successfully loaded images.
+   * Returns an array of { buffer, mimeType, storagePath } for successfully loaded images.
    * Logs errors for individual failures without throwing.
    */
-  static loadImageBuffers(imageIds: string[]): { buffer: Buffer; mimeType: string }[] {
-    const results: { buffer: Buffer; mimeType: string }[] = [];
+  static loadImageBuffers(imageIds: string[]): { buffer: Buffer; mimeType: string; storagePath: string }[] {
+    const results: { buffer: Buffer; mimeType: string; storagePath: string }[] = [];
     for (const imageId of imageIds) {
       try {
         const result = ImageStorageService.getImage(imageId);
@@ -166,6 +166,7 @@ export class ImageStorageService {
           results.push({
             buffer: result.buffer,
             mimeType: result.image.mimeType,
+            storagePath: result.image.storagePath || join(IMAGES_DIR, result.image.storedAs || result.image.filename),
           });
         }
       } catch (error) {

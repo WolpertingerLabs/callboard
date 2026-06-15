@@ -25,9 +25,10 @@
  * @see plans/codex-adapter-job.md (Step 4 adapter-core)
  * @see plans/codex-spike-findings.md
  */
-import { dirname } from "node:path";
-import { rmSync } from "node:fs";
-import type { Codex, Input, ThreadOptions } from "@openai/codex-sdk";
+import { dirname, join } from "node:path";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import type { Codex, Input, ThreadOptions, UserInput } from "@openai/codex-sdk";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { translateCodexEvents } from "./messageAdapter.js";
@@ -74,6 +75,8 @@ export class CodexAgentQuery implements AgentQuery {
   private aborted = false;
   private instructionsCleaned = false;
   private toolServersClosed = false;
+  private promptImagesCleaned = false;
+  private readonly promptImageTempDirs: string[] = [];
 
   constructor(private readonly params: CodexQueryParams) {
     const external = params.externalSignal;
@@ -104,7 +107,7 @@ export class CodexAgentQuery implements AgentQuery {
       // query() path.
       let input: Input;
       try {
-        input = await resolveCodexInput(this.params.prompt);
+        input = await resolveCodexInput(this.params.prompt, { tempDirs: this.promptImageTempDirs });
       } catch (err) {
         log.error(`prompt resolution failed: ${err instanceof Error ? err.message : String(err)}`);
         throw err;
@@ -129,8 +132,26 @@ export class CodexAgentQuery implements AgentQuery {
       yield* translateCodexEvents(events);
       log.debug("iterate() finished");
     } finally {
+      this.cleanupPromptImages();
       this.cleanupInstructionsFile();
       await this.closeToolServers();
+    }
+  }
+
+  /**
+   * Remove temp files created while translating inline base64 image blocks into
+   * Codex `local_image` inputs. The Codex CLI reads those paths when
+   * `runStreamed()` starts, so they must live until the run finishes/aborts.
+   */
+  private cleanupPromptImages(): void {
+    if (this.promptImagesCleaned) return;
+    this.promptImagesCleaned = true;
+    for (const dir of this.promptImageTempDirs.splice(0)) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        log.warn(`failed to clean up prompt image temp dir ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
@@ -188,6 +209,7 @@ export class CodexAgentQuery implements AgentQuery {
     // its finally would then never reap the temp file / sockets, so clean up here
     // too. The guards make the double-call from iterate()'s finally a no-op.
     this.cleanupInstructionsFile();
+    this.cleanupPromptImages();
     await this.closeToolServers();
   }
 }
@@ -195,32 +217,91 @@ export class CodexAgentQuery implements AgentQuery {
 /**
  * Drain an adapter prompt to a Codex {@link Input}. A plain string passes
  * through; a streaming prompt (the Claude SDK's `AsyncIterable<SDKUserMessage>`,
- * which claude.ts uses when MCP servers are present) is collected to its text
- * content. Image blocks are dropped with a warning — Codex takes images via
- * `local_image` file paths, not inline base64, so wiring multimodal input is a
- * later concern; text is the load-bearing path for adapter-core.
+ * which claude.ts uses for multimodal input and when MCP servers are present)
+ * is collected into Codex's input shape. Text blocks become `text` inputs;
+ * inline base64 image blocks are materialized to temp files and passed as
+ * `local_image` inputs because the Codex SDK accepts images by local path.
  */
-export async function resolveCodexInput(prompt: string | AsyncIterable<unknown>): Promise<Input> {
+export async function resolveCodexInput(
+  prompt: string | AsyncIterable<unknown>,
+  opts: { tempDirs?: string[] } = {},
+): Promise<Input> {
   if (typeof prompt === "string") return prompt;
 
   const parts: string[] = [];
-  let droppedImages = 0;
+  const items: UserInput[] = [];
+  let hasImages = false;
+  let droppedNonTextBlocks = 0;
+
+  const pushText = (text: string): void => {
+    if (!text) return;
+    parts.push(text);
+    items.push({ type: "text", text });
+  };
+
   for await (const message of prompt) {
     const content = (message as { message?: { content?: unknown } }).message?.content;
     if (typeof content === "string") {
-      parts.push(content);
+      pushText(content);
     } else if (Array.isArray(content)) {
       for (const block of content) {
         if (block && typeof block === "object" && (block as { type?: unknown }).type === "text") {
-          parts.push(String((block as { text?: unknown }).text ?? ""));
+          pushText(String((block as { text?: unknown }).text ?? ""));
+        } else if (block && typeof block === "object" && (block as { type?: unknown }).type === "image") {
+          const imageInput = materializeCodexImage(block, opts.tempDirs);
+          if (imageInput) {
+            hasImages = true;
+            items.push(imageInput);
+          } else {
+            droppedNonTextBlocks++;
+          }
         } else {
-          droppedImages++;
+          droppedNonTextBlocks++;
         }
       }
     }
   }
-  if (droppedImages > 0) {
-    log.warn(`resolveCodexInput dropped ${droppedImages} non-text block(s) — Codex takes images via local_image paths, not inline`);
+  if (droppedNonTextBlocks > 0) {
+    log.warn(`resolveCodexInput dropped ${droppedNonTextBlocks} unsupported non-text block(s)`);
   }
-  return parts.join("\n");
+  return hasImages ? items : parts.join("\n");
+}
+
+function materializeCodexImage(block: unknown, tempDirs?: string[]): UserInput | null {
+  const source = (block as { source?: unknown }).source;
+  if (!source || typeof source !== "object") return null;
+
+  const typed = source as { type?: unknown; media_type?: unknown; data?: unknown; path?: unknown };
+  if (typed.type === "path" && typeof typed.path === "string" && existsSync(typed.path)) {
+    return { type: "local_image", path: typed.path };
+  }
+
+  if (typed.type !== "base64" || typeof typed.data !== "string") {
+    // Codex SDK supports local image paths. Remote URL images would need a
+    // fetch/cache step; callboard's upload path provides base64 blocks.
+    return null;
+  }
+
+  const mimeType = typeof typed.media_type === "string" ? typed.media_type : "application/octet-stream";
+  const dir = mkdtempSync(join(tmpdir(), "callboard-codex-image-"));
+  const filePath = join(dir, `image${extensionForMimeType(mimeType)}`);
+  writeFileSync(filePath, Buffer.from(typed.data, "base64"));
+  tempDirs?.push(dir);
+  return { type: "local_image", path: filePath };
+}
+
+function extensionForMimeType(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case "image/png":
+      return ".png";
+    case "image/jpeg":
+    case "image/jpg":
+      return ".jpg";
+    case "image/gif":
+      return ".gif";
+    case "image/webp":
+      return ".webp";
+    default:
+      return ".bin";
+  }
 }
