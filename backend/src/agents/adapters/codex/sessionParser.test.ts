@@ -130,6 +130,48 @@ describe("parseCodexRollout", () => {
     ]);
   });
 
+  it("stamps model from turn_context and attaches per-generation usage from token_count", () => {
+    // A turn with one tool-loop generation then a final answer, each closed by a
+    // token_count (the real rollout ordering: usage fires AFTER the generation).
+    const lines = [
+      { type: "turn_context", payload: { turn_id: "t1", model: "gpt-5.5" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: "do it" } },
+      { type: "response_item", payload: { type: "function_call", call_id: "c1", name: "Bash", arguments: "{}" } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "c1", output: "ok" } },
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 50, reasoning_output_tokens: 10 } },
+        },
+      },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: "done" } },
+      {
+        type: "event_msg",
+        payload: { type: "token_count", info: { last_token_usage: { input_tokens: 1100, cached_input_tokens: 1050, output_tokens: 5 } } },
+      },
+    ];
+    const p = join(dir, `rollout-2026-06-14T21-00-00-${THREAD_ID}.jsonl`);
+    writeFileSync(p, lines.map((l) => JSON.stringify(l)).join("\n"), "utf-8");
+    const msgs = parseCodexRollout(p);
+
+    // Every assistant message carries the turn's model; user messages do not.
+    expect(msgs.find((m) => m.role === "user")?.model).toBeUndefined();
+    expect(msgs.filter((m) => m.role === "assistant").every((m) => m.model === "gpt-5.5")).toBe(true);
+
+    // Canonical entry of generation 1 = the tool_use (last assistant before the
+    // first token_count). input_tokens has the cached subset subtracted out.
+    const toolUse = msgs.find((m) => m.type === "tool_use")!;
+    expect(toolUse.usage).toEqual({ input_tokens: 800, output_tokens: 50, cache_read_input_tokens: 200, reasoning_tokens: 10 });
+    expect(toolUse.generationKey).toBe("t1/0");
+    expect(toolUse.requestId).toBe("t1");
+
+    // Generation 2 = the final assistant text.
+    const finalText = msgs.find((m) => m.role === "assistant" && m.type === "text")!;
+    expect(finalText.usage).toEqual({ input_tokens: 50, output_tokens: 5, cache_read_input_tokens: 1050 });
+    expect(finalText.generationKey).toBe("t1/1");
+  });
+
   it("returns [] for a missing file and skips torn lines", () => {
     expect(parseCodexRollout(join(dir, "missing.jsonl"))).toEqual([]);
     const p = join(dir, `rollout-2026-06-14T19-00-00-${THREAD_ID}.jsonl`);

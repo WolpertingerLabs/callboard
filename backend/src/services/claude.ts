@@ -656,12 +656,12 @@ interface SendMessageOptions {
    */
   provider?: AgentProviderKind;
   /**
-   * OpenRouter reasoning-effort level. Only honored for new chats with
-   * `provider: "openrouter"` — written into chat metadata so existing-chat
-   * follow-ups reuse the same setting without the caller having to thread
-   * it through. Omitted from the OR API call entirely when undefined
-   * (preserves each model's default behavior). Ignored when paired with
-   * any non-openrouter provider.
+   * Reasoning-effort level. Honored for new chats on the reasoning-capable
+   * providers — `provider: "openrouter"` (→ OR `reasoning.effort`) and
+   * `provider: "codex"` (→ Codex `modelReasoningEffort`) — written into chat
+   * metadata so existing-chat follow-ups reuse the same setting without the
+   * caller threading it through. Omitted entirely when undefined (preserves each
+   * model's default). Ignored when paired with `claude-code`.
    */
   effort?: EffortLevel;
   /**
@@ -765,12 +765,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // unknown strings would log a warn on every message in the chat,
       // and "claude-code" is the default so writing it is redundant.
       ...(opts.provider && ROUTABLE_PROVIDER_KINDS.has(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
-      // Pin reasoning-effort alongside the provider. Only meaningful for
-      // openrouter chats — the OR config block below pulls it out of
-      // metadata. The stream.ts boundary already drops `effort` when the
-      // paired provider isn't openrouter, so this second guard is
-      // defense-in-depth.
-      ...(opts.effort && opts.provider === "openrouter" && { effort: opts.effort }),
+      // Pin reasoning-effort alongside the provider. Meaningful for the two
+      // reasoning-capable providers — openrouter (→ OR `reasoning.effort`) and
+      // codex (→ Codex `modelReasoningEffort`); their config blocks below pull it
+      // out of metadata. The stream.ts boundary already drops `effort` when the
+      // paired provider can't use it, so this second guard is defense-in-depth.
+      ...(opts.effort &&
+        (opts.provider === "openrouter" || opts.provider === "codex") && { effort: opts.effort }),
       // Pin the per-chat model alongside provider/effort. Meaningful for both
       // user-facing providers: openrouter chats prefer it over the global
       // agentSettings.openRouterModel (OR config block below); claude-code
@@ -1152,6 +1153,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // resumed chats (loaded from disk).
     const requestedModel =
       (typeof initialMetadata.model === "string" && initialMetadata.model.trim()) || agentSettings.codexModel?.trim();
+    // Per-chat reasoning effort (the OR-style control), persisted to metadata the
+    // same way OR's is — maps onto Codex's modelReasoningEffort in the
+    // optionsAdapter.
+    const chatEffort = initialMetadata.effort as EffortLevel | undefined;
     // Permissions collapse onto Codex's sandbox + approval policy at thread
     // start (Codex has no per-call canUseTool hook). Surface them so the
     // optionsAdapter can derive the sandbox tier when no explicit one is set.
@@ -1162,11 +1167,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(authMode === "api-key" && agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
+      ...(chatEffort && { reasoningEffort: chatEffort }),
       ...(permissions && { permissions }),
     };
     log.info(
       `Codex chat config — trackingId=${trackingId}, authMode=${authMode}, ` +
-        `model=${requestedModel ?? "(default)"}, ` +
+        `model=${requestedModel ?? "(default)"}, effort=${chatEffort ?? "(default)"}, ` +
         `sandbox=${agentSettings.codexSandboxMode ?? "(permission-derived)"}, ` +
         `codexHome=${agentSettings.codexHome?.trim() || "~/.codex"}` +
         `${authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,

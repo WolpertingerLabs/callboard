@@ -138,11 +138,13 @@ streamRouter.post("/new/message", async (req, res) => {
     const safeProvider: AgentProviderKind | undefined =
       typeof provider === "string" && VALID_PROVIDERS.has(provider as AgentProviderKind) ? (provider as AgentProviderKind) : undefined;
 
-    // Effort forwarded only when paired with the openrouter provider — on a
+    // Effort forwarded only when paired with a reasoning-capable provider
+    // (openrouter → OR reasoning.effort, codex → modelReasoningEffort). On a
     // claude-code chat it would be persisted to metadata for nothing and
     // confuse future debugging.
+    const effortCapableProvider = safeProvider === "openrouter" || safeProvider === "codex";
     const safeEffort: EffortLevel | undefined =
-      safeProvider === "openrouter" && typeof effort === "string" && VALID_EFFORTS.has(effort) ? (effort as EffortLevel) : undefined;
+      effortCapableProvider && typeof effort === "string" && VALID_EFFORTS.has(effort) ? (effort as EffortLevel) : undefined;
 
     // Per-chat model override — honored for both providers. For openrouter it's
     // an OR slug/alias; for claude-code an Anthropic model alias or full ID.
@@ -297,7 +299,7 @@ streamRouter.post("/:id/message", async (req, res) => {
     // Same treatment for per-chat reasoning effort. Empty string clears the
     // override (so the chat falls back to the model default); any other
     // non-allowlisted value is silently dropped.
-    if (typeof effort === "string" && meta.provider === "openrouter") {
+    if (typeof effort === "string" && (meta.provider === "openrouter" || meta.provider === "codex")) {
       const trimmed = effort.trim();
       if (trimmed.length === 0) {
         chatFileService.updateChatMetadata(req.params.id, { effort: undefined });

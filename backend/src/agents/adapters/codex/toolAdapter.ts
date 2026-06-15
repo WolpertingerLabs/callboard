@@ -44,18 +44,32 @@ import { createLogger } from "../../../utils/logger.js";
 const log = createLogger("codex-adapter");
 
 /**
- * A single Codex `mcp_servers.<name>` config entry. Codex spawns `command` with
- * `args` and speaks MCP over its stdio; the SDK flattens this into
- * `--config mcp_servers.<name>.command=...` overrides for the Codex CLI.
+ * A single Codex `mcp_servers.<name>` config entry. Codex speaks MCP either over
+ * a spawned subprocess's stdio (`command` + `args` [+ `env`]) or to a streamable
+ * HTTP server (`url` [+ `bearer_token_env_var`]); the SDK flattens whichever set
+ * is present into `--config mcp_servers.<name>.*` overrides for the Codex CLI.
+ * callboard's own tool bundles always use the stdio form (the relay shim); the
+ * HTTP form is only emitted when bridging a user-configured external HTTP/SSE MCP
+ * server (see {@link collectCodexMcpServers}).
  */
 // A `type` (not `interface`) so it carries an implicit index signature and stays
 // assignable to the Codex SDK's `CodexConfigObject` when nested under
-// `config.mcp_servers`.
+// `config.mcp_servers`. Both transports' fields are optional on the one shape so
+// the union stays index-signature-assignable; exactly one set is populated.
 export type CodexMcpServerConfig = {
-  command: string;
-  args: string[];
+  command?: string;
+  args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  bearer_token_env_var?: string;
 };
+
+/**
+ * The stdio specialization callboard's own bundles always use: the relay shim is
+ * spawned, so `command` + `args` are guaranteed present (narrower than the
+ * general {@link CodexMcpServerConfig}, which also covers the HTTP transport).
+ */
+export type CodexStdioServerConfig = CodexMcpServerConfig & { command: string; args: string[] };
 
 /**
  * Opaque value returned by {@link buildCodexToolServer} and handed back from
@@ -68,7 +82,7 @@ export interface CodexToolServerHandle {
   /** Absolute path (POSIX) or pipe name (win32) the backend MCP server listens on. */
   readonly socketPath: string;
   /** The Codex `mcp_servers.<name>` entry pointing Codex at the shim → this socket. */
-  toMcpServerConfig(): CodexMcpServerConfig;
+  toMcpServerConfig(): CodexStdioServerConfig;
   /** Stop listening and remove the socket + its temp dir. Idempotent. */
   close(): Promise<void>;
 }
@@ -201,7 +215,7 @@ export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandl
  *
  * Exported for unit-test access.
  */
-export function shimSpawnConfig(socketPath: string): CodexMcpServerConfig {
+export function shimSpawnConfig(socketPath: string): CodexStdioServerConfig {
   const here = fileURLToPath(import.meta.url);
   const isTs = here.endsWith(".ts");
   const shimPath = join(dirname(here), `mcp-server-shim${isTs ? ".ts" : ".js"}`);

@@ -32,8 +32,8 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ApprovalMode, CodexOptions, SandboxMode, ThreadOptions } from "@openai/codex-sdk";
-import type { DefaultPermissions } from "shared/types/index.js";
+import type { ApprovalMode, CodexOptions, ModelReasoningEffort, SandboxMode, ThreadOptions } from "@openai/codex-sdk";
+import type { DefaultPermissions, EffortLevel } from "shared/types/index.js";
 import {
   defaultApprovalForSandbox,
   hasAnyAsk,
@@ -77,6 +77,16 @@ export interface CodexOptionsExtras {
    * the Codex CLI applies its own defaults.
    */
   permissions?: DefaultPermissions;
+  /**
+   * Per-chat reasoning effort, surfaced in the UI the same way OpenRouter's is
+   * (the shared `effort` chat-metadata field). Maps onto Codex's
+   * `modelReasoningEffort` ThreadOption (how hard gpt-5.x thinks). The shared
+   * {@link EffortLevel} has one extra level Codex lacks — `"none"` — which we
+   * read as "suppress reasoning summaries" (`model_reasoning_summary: "none"`)
+   * rather than a Codex effort tier. Omitted ⇒ Codex's own default effort with
+   * summaries on ("auto").
+   */
+  reasoningEffort?: EffortLevel;
 }
 
 /**
@@ -138,11 +148,66 @@ export interface CodexTranslatedOptions {
 }
 
 /**
+ * Translate one user-configured EXTERNAL MCP server entry (the Claude-SDK shape
+ * `claude.ts` assembles from `getEnabledMcpServers()`) into a Codex
+ * `mcp_servers` config entry, or `null` when the shape is unrecognized.
+ *
+ * Codex is itself an MCP client, so unlike callboard's own in-process tool
+ * bundles (which must be relayed through the shim to keep live backend state)
+ * these external servers are separate processes/endpoints Codex can connect to
+ * directly. Two transports map across:
+ *   - **stdio** (`{ command, args, env }`) → Codex stdio entry (same fields).
+ *   - **streamable HTTP / SSE** (`{ type, url, headers }`) → Codex `{ url }`.
+ *     Codex forwards only a bearer token (via env var), not arbitrary headers,
+ *     so custom `headers` are dropped with a warning rather than silently lost.
+ */
+export function externalToCodexMcpConfig(
+  name: string,
+  value: Record<string, unknown>,
+): CodexMcpServerConfig | null {
+  if (typeof value.command === "string") {
+    const cfg: CodexMcpServerConfig = {
+      command: value.command,
+      args: Array.isArray(value.args) ? value.args.map((a) => String(a)) : [],
+    };
+    const env = sanitizeEnvRecord(value.env);
+    if (env) cfg.env = env;
+    return cfg;
+  }
+  if (typeof value.url === "string") {
+    if (value.headers && typeof value.headers === "object" && Object.keys(value.headers).length > 0) {
+      log.warn(
+        `translateCodexOptions — external HTTP MCP server "${name}" declares custom headers Codex can't forward ` +
+          `(it supports only a bearer-token env var); bridging the URL without them`,
+      );
+    }
+    return { url: value.url };
+  }
+  return null;
+}
+
+/** Coerce a loosely-typed env bag to `Record<string,string>`, dropping non-string values. */
+function sanitizeEnvRecord(env: unknown): Record<string, string> | undefined {
+  if (!env || typeof env !== "object") return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
  * Split the loosely-typed `options.mcpServers` record into the Codex
- * `mcp_servers` config map and the live handles to clean up. Only
- * {@link CodexToolServerHandle}s contribute — any other shape (a stray
- * Claude/OR server object) is logged and skipped rather than mis-serialized into
- * the Codex config.
+ * `mcp_servers` config map and the live handles to clean up.
+ *
+ * Two kinds of entry contribute:
+ *   - {@link CodexToolServerHandle}s — callboard's own tool bundles, hosted
+ *     in-process and reached via the relay shim (their handles ride out for
+ *     lifecycle cleanup).
+ *   - external MCP server configs (user-configured stdio/HTTP servers) — Codex
+ *     connects to these directly ({@link externalToCodexMcpConfig}); no handle,
+ *     since callboard doesn't own their lifecycle.
+ * Anything that matches neither shape is logged and skipped.
  */
 export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServers"]): {
   config?: Record<string, CodexMcpServerConfig>;
@@ -155,9 +220,17 @@ export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServe
     if (isCodexToolServerHandle(value)) {
       config[name] = value.toMcpServerConfig();
       handles.push(value);
-    } else {
-      log.warn(`translateCodexOptions — ignoring non-Codex mcp server entry "${name}"`);
+      continue;
     }
+    if (value && typeof value === "object") {
+      const ext = externalToCodexMcpConfig(name, value as Record<string, unknown>);
+      if (ext) {
+        config[name] = ext;
+        log.debug(`translateCodexOptions — bridging external MCP server "${name}" (${ext.url ? "http" : "stdio"})`);
+        continue;
+      }
+    }
+    log.warn(`translateCodexOptions — ignoring unrecognized mcp server entry "${name}"`);
   }
   return { ...(Object.keys(config).length > 0 ? { config } : {}), handles };
 }
@@ -270,6 +343,24 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   const codexOpts: CodexOptions = {};
   const env = buildCodexEnv(opts.env);
   if (env) codexOpts.env = env;
+
+  // ── reasoning effort + summaries → thinking blocks ───────────────
+  // The Codex CLI's exec path defaults to emitting NO reasoning summary, so
+  // gpt-5.x reasoning never surfaces as `reasoning` items and callboard shows no
+  // thinking blocks (the model still reasons — `reasoning_output_tokens` > 0 —
+  // the summary text is just suppressed). Requesting "auto" (the same default
+  // the interactive TUI uses) makes Codex stream `reasoning` items the
+  // messageAdapter already translates to `thinking`. Verified empirically against
+  // codex 0.139.0: unset ⇒ 0 reasoning items, "auto" ⇒ reasoning text emitted.
+  //
+  // The per-chat `reasoningEffort` (the OR-style control) tunes this: an explicit
+  // "none" suppresses the summary entirely; any real level keeps summaries on and
+  // additionally sets the Codex effort tier (below). Default (unset) ⇒ summaries
+  // on at Codex's own effort.
+  const reasoningEffort = extras.reasoningEffort;
+  codexOpts.config = {
+    model_reasoning_summary: reasoningEffort === "none" ? "none" : "auto",
+  };
   if (authMode === "api-key") {
     if (extras.apiKey) codexOpts.apiKey = extras.apiKey;
     if (extras.baseUrl) codexOpts.baseUrl = extras.baseUrl;
@@ -298,18 +389,24 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // `skipGitRepoCheck` is always on so Codex runs in non-repo dirs like the
   // other providers (spike §2.1: it's a ThreadOption, not a CodexOption).
   const { sandboxMode, approvalPolicy } = resolveSandboxAndApproval(extras);
+  // `none` isn't a Codex effort tier (it only governs summary visibility above);
+  // every other EffortLevel maps 1:1 onto Codex's ModelReasoningEffort.
+  const modelReasoningEffort =
+    reasoningEffort && reasoningEffort !== "none" ? (reasoningEffort as ModelReasoningEffort) : undefined;
   const threadOptions: ThreadOptions = {
     skipGitRepoCheck: true,
     ...(cwd && { workingDirectory: cwd }),
     ...(model && { model }),
     ...(sandboxMode && { sandboxMode }),
     ...(approvalPolicy && { approvalPolicy }),
+    ...(modelReasoningEffort && { modelReasoningEffort }),
   };
 
   log.debug(
     `translateCodexOptions — authMode=${authMode}, resume=${resumeId ?? "none"}, ` +
       `cwd=${cwd ?? "(default)"}, model=${model ?? "(default)"}, ` +
       `sandbox=${sandboxMode ?? "(default)"}, approval=${approvalPolicy ?? "(default)"}, ` +
+      `reasoningEffort=${reasoningEffort ?? "(default)"}, ` +
       `instructions=${instructionsFilePath ? `${instructions?.length}chars` : "(none)"}, ` +
       `mcpServers=${mcpServersConfig ? Object.keys(mcpServersConfig).join(",") : "(none)"}, ` +
       `env=${env ? "forwarded" : "(inherit process.env)"}`,

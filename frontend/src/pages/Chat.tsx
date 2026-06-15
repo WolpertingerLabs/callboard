@@ -1249,7 +1249,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatProvider && newChatProvider !== "claude-code") {
             requestBody.provider = newChatProvider;
           }
-          if (newChatEffort && newChatProvider === "openrouter") {
+          if (newChatEffort && (newChatProvider === "openrouter" || newChatProvider === "codex")) {
             requestBody.effort = newChatEffort;
           }
           // Model applies to both providers — an OR slug/alias or an
@@ -1310,7 +1310,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // Per-chat reasoning effort. Same tri-state semantics as model:
           // `null` skips the field; `undefined` sends "" (clear override);
           // an EffortLevel sends the level.
-          if (pendingEffort !== null && chatProvider === "openrouter") {
+          if (pendingEffort !== null && (chatProvider === "openrouter" || chatProvider === "codex")) {
             body.effort = pendingEffort ?? "";
           }
 
@@ -2850,7 +2850,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 }}
               >
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
-                  {chatProvider === "openrouter" ? "Model & reasoning effort for this chat" : "Model for this chat"}
+                  {chatProvider === "claude-code" ? "Model for this chat" : "Model & reasoning effort for this chat"}
                 </div>
                 {/* All three model props share the same pending-model cell —
                     only the control matching the chat's pinned provider renders. */}
@@ -2893,7 +2893,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     {
                       key: "model",
                       icon: <SlidersHorizontal size={16} />,
-                      label: chatProvider === "openrouter" ? "Model & reasoning effort" : "Model",
+                      label: chatProvider === "claude-code" ? "Model" : "Model & reasoning effort",
                       onClick: () => setModelPopoverOpen(true),
                       active: pendingModel !== null || pendingEffort !== null,
                       title:
@@ -2902,7 +2902,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                           : chatProvider === "openrouter"
                             ? "Change model / reasoning effort for this chat"
                             : chatProvider === "codex"
-                              ? "Change the Codex model for this chat"
+                              ? "Change the Codex model / reasoning effort for this chat"
                               : "Change the Anthropic model for this chat",
                     },
                   ]

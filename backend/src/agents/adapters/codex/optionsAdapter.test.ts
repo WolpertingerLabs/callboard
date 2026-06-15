@@ -176,10 +176,17 @@ describe("translateCodexOptions — systemPrompt → temp model_instructions_fil
     expect(readFileSync(instructionsFilePath!, "utf-8")).toBe("appended bit");
   });
 
-  it("no systemPrompt → no file, no config", () => {
+  it("no systemPrompt → no file, no model_instructions_file (reasoning-summary config only)", () => {
     const { codexOpts, instructionsFilePath } = translateCodexOptions({});
     expect(instructionsFilePath).toBeNull();
-    expect(codexOpts.config).toBeUndefined();
+    // config is always present now (it carries the reasoning-summary request),
+    // but it must NOT reference a model_instructions_file when there's no prompt.
+    expect((codexOpts.config as { model_instructions_file?: string }).model_instructions_file).toBeUndefined();
+  });
+
+  it("always requests reasoning summaries so thinking blocks surface", () => {
+    const { codexOpts } = translateCodexOptions({});
+    expect((codexOpts.config as { model_reasoning_summary?: string }).model_reasoning_summary).toBe("auto");
   });
 
   it("writeInstructionsFile uses unique temp dirs per call", () => {
@@ -259,6 +266,26 @@ describe("translateCodexOptions — sandbox/approval threaded into ThreadOptions
   });
 });
 
+describe("translateCodexOptions — reasoning effort (OR-style control)", () => {
+  it("a real effort level → modelReasoningEffort + summaries on", () => {
+    const { threadOptions, codexOpts } = translateCodexOptions({ codex: { reasoningEffort: "high" } });
+    expect(threadOptions.modelReasoningEffort).toBe("high");
+    expect((codexOpts.config as { model_reasoning_summary?: string }).model_reasoning_summary).toBe("auto");
+  });
+
+  it('"none" → no effort tier, summaries suppressed', () => {
+    const { threadOptions, codexOpts } = translateCodexOptions({ codex: { reasoningEffort: "none" } });
+    expect(threadOptions.modelReasoningEffort).toBeUndefined();
+    expect((codexOpts.config as { model_reasoning_summary?: string }).model_reasoning_summary).toBe("none");
+  });
+
+  it("unset effort → no effort tier, summaries on (Codex default depth)", () => {
+    const { threadOptions, codexOpts } = translateCodexOptions({});
+    expect(threadOptions.modelReasoningEffort).toBeUndefined();
+    expect((codexOpts.config as { model_reasoning_summary?: string }).model_reasoning_summary).toBe("auto");
+  });
+});
+
 describe("collectCodexMcpServers — tool handles → mcp_servers config", () => {
   it("no mcpServers → empty config, no handles", () => {
     expect(collectCodexMcpServers(undefined)).toEqual({ handles: [] });
@@ -289,6 +316,39 @@ describe("collectCodexMcpServers — tool handles → mcp_servers config", () =>
     const { config, handles } = collectCodexMcpServers({ x: { tools: [] } });
     expect(config).toBeUndefined();
     expect(handles).toEqual([]);
+  });
+
+  it("bridges an external stdio MCP server config (command/args/env) — no handle", () => {
+    const { config, handles } = collectCodexMcpServers({
+      "my-plugin": { command: "node", args: ["server.js"], env: { TOKEN: "x", NOPE: undefined } },
+    });
+    expect(config).toEqual({
+      "my-plugin": { command: "node", args: ["server.js"], env: { TOKEN: "x" } },
+    });
+    // External servers are separate processes — callboard owns no lifecycle handle.
+    expect(handles).toEqual([]);
+  });
+
+  it("bridges an external HTTP/SSE MCP server config to a url entry (headers dropped)", () => {
+    const { config, handles } = collectCodexMcpServers({
+      remote: { type: "http", url: "https://mcp.example.com/sse", headers: { Authorization: "Bearer z" } },
+    });
+    expect(config).toEqual({ remote: { url: "https://mcp.example.com/sse" } });
+    expect(handles).toEqual([]);
+  });
+
+  it("mixes a tool handle and an external server in one config", () => {
+    const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
+    const { config, handles } = collectCodexMcpServers({
+      "callboard-tools": a,
+      "my-plugin": { command: "uvx", args: ["thing"] },
+    });
+    expect(config).toEqual({
+      "callboard-tools": { command: "node", args: ["/shim.js", "/tmp/a/s.sock"] },
+      "my-plugin": { command: "uvx", args: ["thing"] },
+    });
+    // Only the in-process bundle yields a lifecycle handle.
+    expect(handles).toEqual([a]);
   });
 });
 

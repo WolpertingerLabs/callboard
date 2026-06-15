@@ -25,8 +25,10 @@ export interface CronAction {
    */
   model?: string;
   /**
-   * OpenRouter reasoning-effort level. Only honored when {@link provider}
-   * is "openrouter". `undefined` skips the `reasoning` payload entirely.
+   * Reasoning-effort level. Honored by the reasoning-capable providers:
+   * "openrouter" (→ OR `reasoning.effort`) and "codex" (→ Codex
+   * `modelReasoningEffort`; the extra `"none"` level hides reasoning summaries
+   * there). Ignored for "claude-code". `undefined` uses the provider default.
    */
   effort?: EffortLevel;
   /**
