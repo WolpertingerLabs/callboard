@@ -47,6 +47,7 @@ import type {
   McpToolsResponse,
   OpenRouterModelInfo,
   OpenRouterModelAliasInfo,
+  CodexModelInfo,
   JobDefinition,
   JobStep,
   JobRun,
@@ -104,6 +105,7 @@ export type {
   McpToolsResponse,
   OpenRouterModelInfo,
   OpenRouterModelAliasInfo,
+  CodexModelInfo,
   JobDefinition,
   JobStep,
   JobRun,
@@ -1324,6 +1326,13 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 export async function getOpenRouterModels(): Promise<OpenRouterModelInfo[]> {
   const res = await fetch(`${BASE}/openrouter/models`, { credentials: "include" });
   await assertOk(res, "Failed to get OpenRouter models");
+  const data = await res.json();
+  return Array.isArray(data.models) ? data.models : [];
+}
+
+export async function getCodexModels(): Promise<CodexModelInfo[]> {
+  const res = await fetch(`${BASE}/codex/models`, { credentials: "include" });
+  await assertOk(res, "Failed to get Codex models");
   const data = await res.json();
   return Array.isArray(data.models) ? data.models : [];
 }

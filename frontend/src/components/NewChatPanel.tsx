@@ -91,7 +91,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // "use the global default from Settings → API". Stored separately from the
   // OR model so toggling providers restores each one's prior selection.
   const [claudeModel, setClaudeModel] = useState<string>(getDefaultClaudeModel);
-  // Codex model (gpt-5.x / o-series). Empty string = "use the global default
+  // Codex model. Empty string = "use the global default
   // from Settings → API". Stored separately from the OR/Claude models so
   // toggling providers restores each one's prior selection.
   const [codexModel, setCodexModel] = useState<string>(getDefaultCodexModel);

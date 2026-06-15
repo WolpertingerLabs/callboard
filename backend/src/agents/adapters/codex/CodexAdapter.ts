@@ -29,19 +29,9 @@ import { CodexAgentQuery } from "./CodexAgentQuery.js";
 import { translateCodexOptions } from "./optionsAdapter.js";
 import { buildCodexToolServer } from "./toolAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
+import { getVisibleCodexModelsAsync } from "../../../services/codex-models.js";
 
 const log = createLogger("codex-adapter");
-
-/**
- * Hardcoded model list surfaced via {@link AgentQuery.supportedModels}. The
- * Codex SDK has no models endpoint, and a richer (settings-driven) list is a
- * later concern — seed with the gpt-5.x family the spike confirmed
- * (`plans/codex-spike-findings.md`: default model gpt-5.5).
- */
-const CODEX_MODELS: Array<{ value: string; displayName: string; description: string }> = [
-  { value: "gpt-5.5", displayName: "GPT-5.5", description: "OpenAI Codex default (gpt-5.5)" },
-  { value: "gpt-5.1-codex", displayName: "GPT-5.1 Codex", description: "OpenAI Codex (gpt-5.1)" },
-];
 
 export class CodexAdapter implements AgentProvider {
   readonly kind = "codex" as const;
@@ -55,13 +45,9 @@ export class CodexAdapter implements AgentProvider {
     // lives in the optionsAdapter. The temp instructions file (when written)
     // must outlive this synchronous call — CodexAgentQuery deletes it after the
     // run.
-    const { codexOpts, threadOptions, resumeId, instructionsFilePath, toolServerHandles } =
-      translateCodexOptions(options);
+    const { codexOpts, threadOptions, resumeId, instructionsFilePath, toolServerHandles } = translateCodexOptions(options);
 
-    log.debug(
-      `query() — resume=${resumeId ?? "none"}, instructionsFile=${instructionsFilePath ?? "(none)"}, ` +
-        `toolServers=${toolServerHandles.length}`,
-    );
+    log.debug(`query() — resume=${resumeId ?? "none"}, instructionsFile=${instructionsFilePath ?? "(none)"}, ` + `toolServers=${toolServerHandles.length}`);
 
     return new CodexAgentQuery({
       codex: new Codex(codexOpts),
@@ -71,7 +57,12 @@ export class CodexAdapter implements AgentProvider {
       ...(externalSignal && { externalSignal }),
       ...(instructionsFilePath && { instructionsFilePath }),
       toolServerHandles,
-      models: CODEX_MODELS,
+      models: async () =>
+        (await getVisibleCodexModelsAsync()).map((m) => ({
+          value: m.id,
+          displayName: m.name,
+          description: m.description ?? m.id,
+        })),
     });
   }
 

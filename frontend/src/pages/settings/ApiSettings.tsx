@@ -197,12 +197,7 @@ function ParamProfileEditor({
         const enabled = entry !== undefined;
         return (
           <div key={plugin.id} style={toggleRowStyle}>
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => togglePlugin(plugin.id, e.target.checked)}
-              style={{ marginTop: 2, flexShrink: 0 }}
-            />
+            <input type="checkbox" checked={enabled} onChange={(e) => togglePlugin(plugin.id, e.target.checked)} style={{ marginTop: 2, flexShrink: 0 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
                 {plugin.label}
@@ -906,8 +901,8 @@ export default function ApiSettings() {
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Server Tools</span>
             </div>
             <div style={subtitleStyle}>
-              OpenRouter-hosted tools the model can call. Until you change a toggle, new sessions use the harness defaults (date/time, web search, web
-              fetch). Changing any toggle takes ownership — your exact selection is then used verbatim, including disabling everything.
+              OpenRouter-hosted tools the model can call. Until you change a toggle, new sessions use the harness defaults (date/time, web search, web fetch).
+              Changing any toggle takes ownership — your exact selection is then used verbatim, including disabling everything.
             </div>
             {serverTools !== undefined && serverTools.length === 0 && (
               <div style={{ ...helpStyle, marginTop: 0, marginBottom: 8, color: "var(--text)" }}>All server tools disabled.</div>
@@ -922,9 +917,7 @@ export default function ApiSettings() {
               // Toggling takes ownership: seed the explicit array from the
               // current effective set, then add/remove this tool.
               const toggle = (on: boolean) => {
-                const base: OpenRouterServerToolConfig[] = owned
-                  ? serverTools
-                  : OR_SERVER_TOOLS.filter((t) => t.defaultOn).map((t) => ({ type: t.type }));
+                const base: OpenRouterServerToolConfig[] = owned ? serverTools : OR_SERVER_TOOLS.filter((t) => t.defaultOn).map((t) => ({ type: t.type }));
                 const next = on ? [...base.filter((t) => t.type !== tool.type), { type: tool.type }] : base.filter((t) => t.type !== tool.type);
                 setServerTools(next);
               };
@@ -1083,20 +1076,18 @@ export default function ApiSettings() {
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenAI Codex</span>
             </div>
             <div style={subtitleStyle}>
-              Run chats on OpenAI Codex (gpt-5.x). Authenticate with your ChatGPT subscription (recommended on a personal machine — personal use only) or a raw
-              OpenAI API key.
+              Run chats on OpenAI Codex. Authenticate with your ChatGPT subscription (recommended on a personal machine — personal use only) or a raw OpenAI API
+              key.
             </div>
 
             {/* Auth-mode toggle */}
             <div style={fieldWrap}>
               <label style={labelStyle}>Authentication mode</label>
               <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                {(
-                  [
-                    { mode: "subscription" as const, label: "Subscription (ChatGPT login)" },
-                    { mode: "api-key" as const, label: "API key" },
-                  ]
-                ).map(({ mode, label }) => (
+                {[
+                  { mode: "subscription" as const, label: "Subscription (ChatGPT login)" },
+                  { mode: "api-key" as const, label: "API key" },
+                ].map(({ mode, label }) => (
                   <button
                     key={mode}
                     type="button"
@@ -1133,8 +1124,8 @@ export default function ApiSettings() {
                 </div>
                 {!systemInfo?.codexConfigured && (
                   <div style={{ ...helpStyle, marginTop: 0, marginBottom: 14 }}>
-                    Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account. Credentials are stored in{" "}
-                    <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and refreshed automatically. After logging in, click refresh below.
+                    Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account. Credentials are stored
+                    in <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and refreshed automatically. After logging in, click refresh below.
                   </div>
                 )}
                 <button
@@ -1198,7 +1189,7 @@ export default function ApiSettings() {
                 Default Model
               </label>
               <CodexModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} placeholder="gpt-5.5" />
-              <div style={helpStyle}>Start typing to filter gpt-5.x / o-series models. Free text accepted — the CLI validates the model.</div>
+              <div style={helpStyle}>Start typing to filter the live Codex model catalog. Free text accepted — the CLI validates the model.</div>
             </div>
 
             <div style={fieldWrap}>
@@ -1216,8 +1207,8 @@ export default function ApiSettings() {
                 <option value="danger-full-access">danger-full-access — unrestricted (use with care)</option>
               </select>
               <div style={helpStyle}>
-                Per-chat permission toggles further constrain this when a session starts. <code style={{ fontSize: 11 }}>danger-full-access</code> lets the agent
-                run any command without approval.
+                Per-chat permission toggles further constrain this when a session starts. <code style={{ fontSize: 11 }}>danger-full-access</code> lets the
+                agent run any command without approval.
               </div>
             </div>
 
@@ -1278,9 +1269,9 @@ export default function ApiSettings() {
         </div>
       ) : (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
-          Codex settings are applied when Callboard spawns the Codex CLI. They take effect for new sessions; resume an existing chat to pick up the new settings.
-          In subscription mode, auth is read from <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> (run <code style={{ fontSize: 11 }}>codex login</code>{" "}
-          once); in API-key mode, leave a field empty to fall back to the ambient environment.
+          Codex settings are applied when Callboard spawns the Codex CLI. They take effect for new sessions; resume an existing chat to pick up the new
+          settings. In subscription mode, auth is read from <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> (run{" "}
+          <code style={{ fontSize: 11 }}>codex login</code> once); in API-key mode, leave a field empty to fall back to the ambient environment.
         </div>
       )}
     </>

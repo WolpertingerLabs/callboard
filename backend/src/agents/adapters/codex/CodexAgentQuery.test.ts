@@ -56,7 +56,7 @@ describe("CodexAgentQuery — tool-server lifecycle", () => {
       threadOptions: {},
       prompt: "hi",
       toolServerHandles: [h1, h2],
-      models: MODELS,
+      models: async () => MODELS,
     });
 
     // Drain the (empty) event stream — iterate()'s finally runs the cleanup.
@@ -76,7 +76,7 @@ describe("CodexAgentQuery — tool-server lifecycle", () => {
       threadOptions: {},
       prompt: "hi",
       toolServerHandles: [h1],
-      models: MODELS,
+      models: async () => MODELS,
     });
 
     await query.close();
@@ -91,7 +91,7 @@ describe("CodexAgentQuery — tool-server lifecycle", () => {
       threadOptions: {},
       prompt: "hi",
       toolServerHandles: [h1],
-      models: MODELS,
+      models: async () => MODELS,
     });
 
     for await (const _ of query) {
@@ -107,7 +107,7 @@ describe("CodexAgentQuery — tool-server lifecycle", () => {
       resumeId: null,
       threadOptions: {},
       prompt: "hi",
-      models: MODELS,
+      models: async () => MODELS,
     });
     await expect(query.close()).resolves.toBeUndefined();
   });

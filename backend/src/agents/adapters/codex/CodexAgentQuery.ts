@@ -66,8 +66,8 @@ export interface CodexQueryParams {
    * when the run carries no callboard tools.
    */
   toolServerHandles?: CodexToolServerHandle[];
-  /** Hardcoded model list surfaced via {@link supportedModels} (no SDK API for this). */
-  models: Array<{ value: string; displayName: string; description: string }>;
+  /** Cached Codex model catalog surfaced via {@link supportedModels}. */
+  models: () => Promise<Array<{ value: string; displayName: string; description: string }>>;
 }
 
 export class CodexAgentQuery implements AgentQuery {
@@ -198,7 +198,7 @@ export class CodexAgentQuery implements AgentQuery {
   }
 
   async supportedModels(): Promise<Array<{ value: string; displayName: string; description: string }>> {
-    return this.params.models;
+    return this.params.models();
   }
 
   async close(): Promise<void> {
@@ -222,10 +222,7 @@ export class CodexAgentQuery implements AgentQuery {
  * inline base64 image blocks are materialized to temp files and passed as
  * `local_image` inputs because the Codex SDK accepts images by local path.
  */
-export async function resolveCodexInput(
-  prompt: string | AsyncIterable<unknown>,
-  opts: { tempDirs?: string[] } = {},
-): Promise<Input> {
+export async function resolveCodexInput(prompt: string | AsyncIterable<unknown>, opts: { tempDirs?: string[] } = {}): Promise<Input> {
   if (typeof prompt === "string") return prompt;
 
   const parts: string[] = [];

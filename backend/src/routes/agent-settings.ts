@@ -9,10 +9,7 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type {
-  OpenRouterServerToolConfig,
-  OpenRouterParamProfile,
-} from "shared/types/index.js";
+import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { validateServerTools, validateParamProfile } from "shared/types/index.js";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
@@ -21,6 +18,7 @@ import { testRemoteConnection } from "../services/proxy-singleton.js";
 import { getTunnelStatusFull } from "../services/tunnel-manager.js";
 import { initSync, completeSync, cancelSync, SyncClientError } from "../services/sync-manager.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
+import { refreshCodexModelsCache } from "../services/codex-models.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("agent-settings-routes");
@@ -137,6 +135,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultHaikuModel !== undefined ||
     subagentModel !== undefined;
 
+  const codexFieldsTouched = codexAuthMode !== undefined || codexApiKey !== undefined || codexBaseUrl !== undefined || codexHome !== undefined;
+
   // Validate the alias map up front so bad input 400s before anything is written.
   let normalizedAliases: Record<string, string> | undefined;
   if (openRouterModelAliases !== undefined) {
@@ -203,8 +203,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
 
   // Codex enum fields — validate against the allowed values; an unrecognized
   // value clears the override (falls back to the default at consume time).
-  const normalizeCodexAuthMode = (v: unknown): "subscription" | "api-key" | undefined =>
-    v === "subscription" || v === "api-key" ? v : undefined;
+  const normalizeCodexAuthMode = (v: unknown): "subscription" | "api-key" | undefined => (v === "subscription" || v === "api-key" ? v : undefined);
   const normalizeCodexSandboxMode = (v: unknown): "read-only" | "workspace-write" | "danger-full-access" | undefined =>
     v === "read-only" || v === "workspace-write" || v === "danger-full-access" ? v : undefined;
 
@@ -250,6 +249,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       // the updated account / models. Don't await — the client gets back
       // quickly and the next poll of /api/system-info will pick it up.
       refreshSdkInfoCache().catch((err) => log.warn(`SDK info refresh failed: ${err.message}`));
+    }
+    if (codexFieldsTouched) {
+      // Codex's live catalog is tied to the configured auth/home env. Refresh
+      // after settings writes so subsequent pickers/tool calls see the new view.
+      refreshCodexModelsCache().catch((err) => log.warn(`Codex model refresh failed: ${err.message}`));
     }
     res.json(updated);
   } catch (err: any) {

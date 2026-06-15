@@ -46,7 +46,7 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
-  provider?: "claude-code" | "openrouter";
+  provider?: "claude-code" | "openrouter" | "codex";
   model?: string;
 }) => Promise<import("events").EventEmitter>;
 

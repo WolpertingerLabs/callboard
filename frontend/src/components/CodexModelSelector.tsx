@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getCodexModels, type CodexModelInfo } from "../api";
 
 interface Props {
   id?: string;
@@ -15,20 +16,12 @@ interface CodexModelOption {
   description: string;
 }
 
-// OpenAI models the Codex CLI accepts. Hardcoded v1 (the plan defers a live
-// `list_codex_models` endpoint) — gpt-5.x agentic-coding models pinned first,
-// then the `o`-series reasoning models. Free text is always accepted, so this
-// list is only a suggestion surface and can lag the API without blocking use.
+// Fallback suggestions used only when the backend cannot read the live Codex
+// catalog. Free text is always accepted, so this list never blocks newer slugs.
 const STATIC_MODELS: CodexModelOption[] = [
   { value: "gpt-5.5", displayName: "GPT-5.5", description: "Latest GPT-5 agentic coding model" },
-  { value: "gpt-5.5-codex", displayName: "GPT-5.5 Codex", description: "Codex-tuned GPT-5.5" },
-  { value: "gpt-5.1", displayName: "GPT-5.1", description: "GPT-5.1 agentic coding model" },
-  { value: "gpt-5.1-codex", displayName: "GPT-5.1 Codex", description: "Codex-tuned GPT-5.1" },
-  { value: "gpt-5", displayName: "GPT-5", description: "GPT-5 base model" },
-  { value: "gpt-5-codex", displayName: "GPT-5 Codex", description: "Codex-tuned GPT-5" },
-  { value: "o4-mini", displayName: "o4-mini", description: "Compact o-series reasoning model" },
-  { value: "o3", displayName: "o3", description: "o-series reasoning model" },
-  { value: "o3-mini", displayName: "o3-mini", description: "Compact o3 reasoning model" },
+  { value: "gpt-5.4", displayName: "GPT-5.4", description: "GPT-5.4 agentic coding model" },
+  { value: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", description: "Faster, lower-cost GPT-5.4 coding model" },
 ];
 
 // Case-insensitive subsequence test: every char of `query` appears in `target`
@@ -65,15 +58,31 @@ const rowLabelStyle: React.CSSProperties = {
 };
 
 /**
- * OpenAI model picker for Codex chats. Free-text input with suggestions: the
- * static gpt-5.x + o-series list. Anything typed is accepted as-is — the CLI
- * validates the model server-side, so the field never blocks selection.
+ * OpenAI model picker for Codex chats. Free-text input with live suggestions
+ * from the backend's startup-warmed Codex catalog. Anything typed is accepted
+ * as-is — the CLI validates the model server-side, so the field never blocks.
  * Mirrors {@link ClaudeModelSelector}'s interaction model.
  */
 export default function CodexModelSelector({ id, value, onChange, placeholder }: Props) {
+  const [models, setModels] = useState<CodexModelOption[]>(STATIC_MODELS);
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCodexModels()
+      .then((live) => {
+        if (cancelled || live.length === 0) return;
+        setModels(live.map((m: CodexModelInfo) => ({ value: m.id, displayName: m.name, description: m.description ?? m.id })));
+      })
+      .catch(() => {
+        // Offline / unsupported Codex CLI — the field still works as free text.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Close the dropdown when clicking outside the component.
   useEffect(() => {
@@ -88,9 +97,9 @@ export default function CodexModelSelector({ id, value, onChange, placeholder }:
 
   const matches = useMemo(() => {
     const q = value.trim();
-    const filtered = q === "" ? STATIC_MODELS : STATIC_MODELS.filter((m) => isSubsequence(q, m.value) || isSubsequence(q, m.displayName));
+    const filtered = q === "" ? models : models.filter((m) => isSubsequence(q, m.value) || isSubsequence(q, m.displayName));
     return filtered.slice(0, MAX_RESULTS);
-  }, [value]);
+  }, [models, value]);
 
   const select = (model: CodexModelOption) => {
     onChange(model.value);

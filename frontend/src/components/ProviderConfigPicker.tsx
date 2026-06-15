@@ -133,7 +133,7 @@ export default function ProviderConfigPicker({
       {!inline && (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
           {provider === "codex"
-            ? "How hard the model reasons (gpt-5.x). “none” hides reasoning summaries."
+            ? "How hard the Codex model reasons. “none” hides reasoning summaries."
             : "Maps to each provider’s native thinking parameter. Non-reasoning models ignore this."}
         </div>
       )}
@@ -232,7 +232,7 @@ export default function ProviderConfigPicker({
             />
             {!inline && (
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                Optional — a gpt-5.x or o-series model. Leave empty to use the global default from Settings → API.
+                Optional — a Codex model slug. Leave empty to use the global default from Settings → API.
               </div>
             )}
           </div>

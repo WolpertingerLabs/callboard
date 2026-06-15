@@ -57,14 +57,9 @@ export type { McpToolParameter, McpToolDefinition, McpToolServerInfo, McpToolsRe
 
 export type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "./openrouter.js";
 
-export type {
-  ParamFieldType,
-  ParamFieldSpec,
-  ServerToolSpec,
-  PluginSpec,
-  OpenRouterServerToolConfig,
-  OpenRouterParamProfile,
-} from "./openrouterCatalog.js";
+export type { CodexModelInfo } from "./codex.js";
+
+export type { ParamFieldType, ParamFieldSpec, ServerToolSpec, PluginSpec, OpenRouterServerToolConfig, OpenRouterParamProfile } from "./openrouterCatalog.js";
 export {
   OR_SERVER_TOOLS,
   OR_PLUGINS,

@@ -17,6 +17,7 @@ import {
   searchOpenRouterModelAliases,
   formatOpenRouterPrice,
 } from "./openrouter-models.js";
+import { getVisibleCodexModelsAsync, searchCodexModels } from "./codex-models.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
 import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
@@ -41,7 +42,7 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
-  provider?: "claude-code" | "openrouter";
+  provider?: "claude-code" | "openrouter" | "codex";
   model?: string;
   requireExplicitCompletion?: boolean;
 }) => Promise<import("events").EventEmitter>;
@@ -702,6 +703,82 @@ export function buildCallboardToolsSpec(
           } catch (err: any) {
             log.error(`list_anthropic_models failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error listing models: ${err.message}` }] };
+          }
+        },
+      ),
+
+      // ── Codex Model Discovery ──────────────────────────────────────
+
+      defineTool(
+        "list_codex_models",
+        "List Codex models from the cached live Codex CLI model catalog. Use the returned slug as the `model` param when starting a codex session. The list is refreshed on app start.",
+        {
+          limit: z.number().optional().describe("Max models to return (default: all)."),
+        },
+        async (args) => {
+          try {
+            const models = await getVisibleCodexModelsAsync();
+            const limited = typeof args.limit === "number" ? models.slice(0, Math.max(1, args.limit)) : models;
+            const rows = limited.map((m) => ({
+              id: m.id,
+              name: m.name,
+              ...(m.description && { description: m.description }),
+              ...(m.defaultReasoningLevel && { defaultReasoningLevel: m.defaultReasoningLevel }),
+              ...(m.supportedReasoningLevels && { supportedReasoningLevels: m.supportedReasoningLevels }),
+              ...(m.serviceTiers && { serviceTiers: m.serviceTiers }),
+            }));
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    count: rows.length,
+                    total: models.length,
+                    models: rows,
+                  }),
+                },
+              ],
+            };
+          } catch (err: any) {
+            log.error(`list_codex_models failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error listing Codex models: ${err.message}` }] };
+          }
+        },
+      ),
+
+      defineTool(
+        "search_codex_models",
+        "Search cached Codex models by slug or display name using subsequence matching (characters in order, e.g. 'g55' matches 'gpt-5.5').",
+        {
+          query: z.string().describe("Search text matched as a subsequence against the model slug or display name."),
+          limit: z.number().optional().describe("Max results to return (default: 50)."),
+        },
+        async (args) => {
+          try {
+            const matched = await searchCodexModels(args.query, args.limit ?? 50);
+            const rows = matched.map((m) => ({
+              id: m.id,
+              name: m.name,
+              ...(m.description && { description: m.description }),
+              ...(m.defaultReasoningLevel && { defaultReasoningLevel: m.defaultReasoningLevel }),
+              ...(m.supportedReasoningLevels && { supportedReasoningLevels: m.supportedReasoningLevels }),
+              ...(m.serviceTiers && { serviceTiers: m.serviceTiers }),
+            }));
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    query: args.query,
+                    count: rows.length,
+                    models: rows,
+                  }),
+                },
+              ],
+            };
+          } catch (err: any) {
+            log.error(`search_codex_models failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error searching Codex models: ${err.message}` }] };
           }
         },
       ),

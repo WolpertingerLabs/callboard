@@ -54,6 +54,7 @@ import { filesRouter } from "./routes/files.js";
 import { canvasRouter } from "./routes/canvas.js";
 import { mcpToolsRouter } from "./routes/mcp-tools.js";
 import { openRouterRouter } from "./routes/openrouter.js";
+import { codexRouter } from "./routes/codex.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
@@ -77,6 +78,7 @@ import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
 import { startTunnelIfEnabled, stopTunnel } from "./services/tunnel-manager.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
+import { initCodexModelsCache } from "./services/codex-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
 import { isCodexConfigured } from "./agents/adapters/codex/codexAuth.js";
 
@@ -218,6 +220,7 @@ app.use("/api/files", filesRouter);
 app.use("/api/canvas", canvasRouter);
 app.use("/api/mcp-tools", mcpToolsRouter);
 app.use("/api/openrouter", openRouterRouter);
+app.use("/api/codex", codexRouter);
 app.use("/api/jobs", jobsRouter);
 
 // Instance name endpoints (requires auth)
@@ -569,6 +572,9 @@ app.listen(PORT, () => {
 
   // Warm the OpenRouter tool-calling model list (public endpoint) — non-blocking
   initOpenRouterModelsCache();
+
+  // Warm the Codex model catalog reported by the installed CLI — non-blocking
+  initCodexModelsCache();
 
   // Initialize automation systems (non-blocking, log errors but don't crash)
   try {

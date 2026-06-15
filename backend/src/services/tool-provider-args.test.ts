@@ -22,6 +22,14 @@ describe("resolveProviderModelArgs", () => {
     });
   });
 
+  it("accepts a model with provider=codex", () => {
+    expect(resolveProviderModelArgs({ provider: "codex", model: "gpt-5.5" })).toEqual({
+      ok: true,
+      provider: "codex",
+      model: "gpt-5.5",
+    });
+  });
+
   it("accepts a model with omitted provider (defaults to claude-code)", () => {
     expect(resolveProviderModelArgs({ model: "claude-sonnet-4-6" })).toEqual({
       ok: true,
