@@ -56,12 +56,13 @@ interface ProviderConfigPickerProps {
  *  - Chat.tsx composer — inline horizontal layout, provider toggle hidden
  *    (each chat is pinned to one provider at creation time).
  *
- * The OR-specific knobs (effort, model) only render when the active
- * provider is "openrouter" AND OR is configured (`openRouterConfigured !==
- * false`). Claude Code shows its own model knob (Anthropic alias or full
- * ID, no effort). Each provider's model value lives in a separate prop —
- * switching the toggle swaps the controls while preserving both values, so
- * toggling back restores the prior selection.
+ * Reasoning effort renders for the two reasoning-capable providers —
+ * OpenRouter (when configured) and Codex — and maps to each one's native
+ * knob (OR `reasoning.effort`, Codex `modelReasoningEffort`). Each provider
+ * also shows its own model control (OR slug, Anthropic alias/ID, or Codex
+ * model); Claude Code has no effort. Each provider's model value lives in a
+ * separate prop — switching the toggle swaps the controls while preserving
+ * both values, so toggling back restores the prior selection.
  */
 export default function ProviderConfigPicker({
   provider,
@@ -86,57 +87,63 @@ export default function ProviderConfigPicker({
   const showClaudeKnobs = provider === "claude-code";
   // Codex per-chat model only renders when the caller wired a change handler.
   const showCodexKnobs = provider === "codex" && onCodexModelChange !== undefined;
+  // Reasoning effort is shared by the two reasoning-capable providers
+  // (OpenRouter → OR `reasoning.effort`, Codex → `modelReasoningEffort`).
+  const showEffort = showOrKnobs || provider === "codex";
 
-  // `inline` mode lays the OR controls side-by-side; `panel` mode stacks
-  // them. Hoisted so both render paths share the same controls below.
+  // The reasoning-effort selector, shared by the OR and Codex control rows. Only
+  // one provider's row renders at a time, so the element id never collides.
+  const effortControl = showEffort ? (
+    <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "0 0 auto" : undefined, width: inline ? 90 : undefined }}>
+      <label
+        htmlFor={inline ? "inlineEffort" : "newChatEffort"}
+        style={{
+          display: "block",
+          fontSize: inline ? 11 : 13,
+          fontWeight: 600,
+          color: "var(--text-muted)",
+          marginBottom: inline ? 4 : 6,
+        }}
+      >
+        {inline ? "Effort" : "Reasoning effort"}
+      </label>
+      <select
+        id={inline ? "inlineEffort" : "newChatEffort"}
+        value={effort ?? ""}
+        onChange={(e) => onEffortChange(e.target.value === "" ? undefined : (e.target.value as EffortLevel))}
+        style={{
+          width: "100%",
+          padding: inline ? "6px 8px" : "8px 12px",
+          fontSize: inline ? 12 : 13,
+          borderRadius: 6,
+          border: "1px solid var(--border)",
+          background: "var(--surface)",
+          color: "var(--text)",
+          cursor: "pointer",
+        }}
+      >
+        <option value="">(default)</option>
+        <option value="none">none</option>
+        <option value="minimal">minimal</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+      </select>
+      {!inline && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          {provider === "codex"
+            ? "How hard the model reasons (gpt-5.x). “none” hides reasoning summaries."
+            : "Maps to each provider’s native thinking parameter. Non-reasoning models ignore this."}
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  // `inline` mode lays the controls side-by-side; `panel` mode stacks them.
   const orControls = showOrKnobs ? (
     <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
-      {/* Reasoning effort — OpenRouter only. OR maps the level to each
-          provider's native parameter (Anthropic thinking.budget_tokens,
-          OpenAI reasoning_effort, etc.); non-reasoning models silently
-          ignore it. */}
-      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "0 0 auto" : undefined, width: inline ? 90 : undefined }}>
-        <label
-          htmlFor={inline ? "inlineEffort" : "newChatEffort"}
-          style={{
-            display: "block",
-            fontSize: inline ? 11 : 13,
-            fontWeight: 600,
-            color: "var(--text-muted)",
-            marginBottom: inline ? 4 : 6,
-          }}
-        >
-          {inline ? "Effort" : "Reasoning effort"}
-        </label>
-        <select
-          id={inline ? "inlineEffort" : "newChatEffort"}
-          value={effort ?? ""}
-          onChange={(e) => onEffortChange(e.target.value === "" ? undefined : (e.target.value as EffortLevel))}
-          style={{
-            width: "100%",
-            padding: inline ? "6px 8px" : "8px 12px",
-            fontSize: inline ? 12 : 13,
-            borderRadius: 6,
-            border: "1px solid var(--border)",
-            background: "var(--surface)",
-            color: "var(--text)",
-            cursor: "pointer",
-          }}
-        >
-          <option value="">(default)</option>
-          <option value="none">none</option>
-          <option value="minimal">minimal</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-        </select>
-        {!inline && (
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-            Maps to each provider&apos;s native thinking parameter. Non-reasoning models ignore this.
-          </div>
-        )}
-      </div>
+      {effortControl}
 
       {/* Per-chat model override — OpenRouter only. Empty value falls back to
           the global default configured in Settings → API. */}
@@ -196,36 +203,42 @@ export default function ProviderConfigPicker({
     </div>
   ) : null;
 
-  // Per-chat Codex model — Codex only. Empty value falls back to the global
-  // default configured in Settings → API. Sandbox mode is a global Codex
-  // setting (Settings → API), not a per-chat knob.
-  const codexControls = showCodexKnobs ? (
-    <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
-      <label
-        htmlFor={inline ? "inlineCodexModel" : "newChatCodexModel"}
-        style={{
-          display: "block",
-          fontSize: inline ? 11 : 13,
-          fontWeight: 600,
-          color: "var(--text-muted)",
-          marginBottom: inline ? 4 : 6,
-        }}
-      >
-        Model
-      </label>
-      <CodexModelSelector
-        id={inline ? "inlineCodexModel" : "newChatCodexModel"}
-        value={codexModel ?? ""}
-        onChange={onCodexModelChange ?? (() => {})}
-        placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
-      />
-      {!inline && (
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-          Optional — a gpt-5.x or o-series model. Leave empty to use the global default from Settings → API.
-        </div>
-      )}
-    </div>
-  ) : null;
+  // Codex controls — reasoning effort (always) + per-chat model (when the caller
+  // wired a change handler). Empty model falls back to the global default in
+  // Settings → API; sandbox mode is a global Codex setting, not a per-chat knob.
+  const codexControls =
+    provider === "codex" ? (
+      <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
+        {effortControl}
+        {showCodexKnobs && (
+          <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
+            <label
+              htmlFor={inline ? "inlineCodexModel" : "newChatCodexModel"}
+              style={{
+                display: "block",
+                fontSize: inline ? 11 : 13,
+                fontWeight: 600,
+                color: "var(--text-muted)",
+                marginBottom: inline ? 4 : 6,
+              }}
+            >
+              Model
+            </label>
+            <CodexModelSelector
+              id={inline ? "inlineCodexModel" : "newChatCodexModel"}
+              value={codexModel ?? ""}
+              onChange={onCodexModelChange ?? (() => {})}
+              placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+            />
+            {!inline && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                Optional — a gpt-5.x or o-series model. Leave empty to use the global default from Settings → API.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    ) : null;
 
   return (
     <>

@@ -167,7 +167,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // clear error rather than a silent downgrade.
     const effectiveProvider: AgentProviderKind = downgradeProvider(provider);
     // Each provider has its own model selection; forward the one matching
-    // the effective provider. `effort` stays OR-only.
+    // the effective provider. `effort` applies to the reasoning-capable
+    // providers (openrouter, codex).
     const trimmedModel = modelForProvider(effectiveProvider).trim();
 
     setFolder("");
@@ -176,7 +177,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       state: {
         defaultPermissions,
         provider: effectiveProvider,
-        ...(effectiveProvider === "openrouter" && effort && { effort }),
+        ...((effectiveProvider === "openrouter" || effectiveProvider === "codex") && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
       },

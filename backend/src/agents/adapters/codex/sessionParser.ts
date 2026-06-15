@@ -118,6 +118,42 @@ interface SessionMeta {
   cliVersion?: string;
 }
 
+/** The token-usage shape Codex writes inside an `event_msg`/`token_count` line. */
+interface CodexTokenUsage {
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  reasoning_output_tokens?: number;
+  total_tokens?: number;
+}
+
+/**
+ * Map Codex's `last_token_usage` onto callboard's {@link ParsedMessage.usage}.
+ *
+ * Codex's `input_tokens` is the FULL prompt count *including* the cached
+ * subset (`cached_input_tokens`), whereas callboard's debug panel (mirroring
+ * Claude) treats `input_tokens` as the non-cached remainder and shows the cache
+ * read separately. So we subtract the cached portion off `input_tokens` to keep
+ * the In / Cache-R columns from double-counting, and surface the cached subset as
+ * `cache_read_input_tokens` and the reasoning trace as `reasoning_tokens`. Codex
+ * has no prompt-cache *write* metric (returns `undefined`), and subscription mode
+ * reports no USD cost (left to the caller).
+ */
+function mapCodexUsage(u: CodexTokenUsage | undefined): ParsedMessage["usage"] | undefined {
+  if (!u || typeof u !== "object") return undefined;
+  const input = typeof u.input_tokens === "number" ? u.input_tokens : 0;
+  const cached = typeof u.cached_input_tokens === "number" ? u.cached_input_tokens : 0;
+  const output = typeof u.output_tokens === "number" ? u.output_tokens : 0;
+  const reasoning = typeof u.reasoning_output_tokens === "number" ? u.reasoning_output_tokens : 0;
+  const usage: NonNullable<ParsedMessage["usage"]> = {
+    input_tokens: Math.max(0, input - cached),
+    output_tokens: output,
+  };
+  if (cached > 0) usage.cache_read_input_tokens = cached;
+  if (reasoning > 0) usage.reasoning_tokens = reasoning;
+  return usage;
+}
+
 /**
  * Read + parse a rollout file into `{ type, payload }` line records, dropping
  * blank/malformed lines. Returns `[]` for a missing/unreadable file.
@@ -188,10 +224,59 @@ export function parseCodexRollout(filePath: string): ParsedMessage[] {
   const meta = lines.find((l) => l.type === "session_meta");
   if (meta) checkCliVersion(typeof meta.payload?.cli_version === "string" ? meta.payload.cli_version : undefined);
 
+  // The rollout interleaves three line kinds we care about (verified against
+  // real captures):
+  //   - `turn_context` — opens a turn, carries the `model` + `turn_id`. One per
+  //     user prompt; the model holds across that turn's (possibly many) tool-loop
+  //     generations.
+  //   - `response_item` — the durable transcript (messages/tools/reasoning).
+  //   - `event_msg`/`token_count` — fires at the END of each generation with
+  //     `info.last_token_usage` for the generation that just completed.
+  // So we stamp `model` on every assistant message and attach each generation's
+  // usage to its canonical entry: the last assistant message emitted before the
+  // matching `token_count`. This is what populates the responses/debug table and
+  // the per-message model label (both were empty before — assistant messages
+  // carried neither model nor usage).
+  let currentModel: string | undefined;
+  let currentTurnId: string | undefined;
+  let genCounter = 0;
+  // Assistant messages emitted since the last token_count — the generation in
+  // flight. On a token_count the last of these is the canonical entry.
+  let pendingAssistant: ParsedMessage[] = [];
+
   for (const line of lines) {
+    if (line.type === "turn_context") {
+      const p = line.payload ?? {};
+      if (typeof p.model === "string") currentModel = p.model;
+      if (typeof p.turn_id === "string") currentTurnId = p.turn_id;
+      continue;
+    }
+
+    if (line.type === "event_msg" && line.payload?.type === "token_count") {
+      const info = line.payload.info as { last_token_usage?: CodexTokenUsage } | undefined;
+      const usage = mapCodexUsage(info?.last_token_usage);
+      const canonical = pendingAssistant[pendingAssistant.length - 1];
+      if (canonical && usage) {
+        canonical.usage = usage;
+        if (currentModel) canonical.model = currentModel;
+        // Distinct identity per generation so the debug table renders one row
+        // each instead of collapsing the turn's tool-loop into one.
+        canonical.generationKey = `${currentTurnId ?? "turn"}/${genCounter}`;
+        if (currentTurnId) canonical.requestId = currentTurnId;
+      }
+      genCounter++;
+      pendingAssistant = [];
+      continue;
+    }
+
     if (line.type !== "response_item") continue;
     const parsed = translateResponseItem(line.payload, line.timestamp);
-    if (parsed) messages.push(parsed);
+    if (!parsed) continue;
+    if (parsed.role === "assistant") {
+      if (currentModel) parsed.model = currentModel;
+      pendingAssistant.push(parsed);
+    }
+    messages.push(parsed);
   }
   return messages;
 }
