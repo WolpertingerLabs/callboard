@@ -21,8 +21,11 @@ export default function ProviderBadge({ provider, compact }: ProviderBadgeProps)
       ? "This chat runs on OpenAI Codex"
       : "This chat runs on Claude Code";
 
-  // OR and Codex both use the accent-filled style; Claude Code is the muted default.
-  const filled = isOpenRouter || isCodex;
+  const palette = isOpenRouter
+    ? { background: "var(--badge-provider-openrouter-bg)", color: "var(--badge-provider-text)" }
+    : isCodex
+      ? { background: "var(--badge-provider-codex-bg)", color: "var(--badge-provider-text)" }
+      : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" };
 
   return (
     <span
@@ -34,9 +37,7 @@ export default function ProviderBadge({ provider, compact }: ProviderBadgeProps)
         padding: compact ? "1px 5px" : "2px 6px",
         borderRadius: 4,
         flexShrink: 0,
-        ...(filled
-          ? { background: "var(--badge-worktree)", color: "var(--text-on-accent)" }
-          : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" }),
+        ...palette,
       }}
     >
       {label}

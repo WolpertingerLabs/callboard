@@ -66,6 +66,9 @@
   --badge-info-bg: rgba(88, 166, 255, 0.15);
   --badge-trigger: #a78bfa;
   --badge-worktree: #8b5cf6;
+  --badge-provider-openrouter-bg: var(--badge-worktree);
+  --badge-provider-codex-bg: #047857;
+  --badge-provider-text: var(--text-on-accent);
   --badge-env-text: #3fb950;
   --badge-env-bg: rgba(63, 185, 80, 0.12);
   --badge-env-border: #2d6a4f;
@@ -176,6 +179,9 @@
   --badge-info-bg: rgba(37, 99, 235, 0.1);
   --badge-trigger: #7c3aed;
   --badge-worktree: #7c3aed;
+  --badge-provider-openrouter-bg: var(--badge-worktree);
+  --badge-provider-codex-bg: #047857;
+  --badge-provider-text: var(--text-on-accent);
   --badge-env-text: #16a34a;
   --badge-env-bg: rgba(22, 163, 106, 0.1);
   --badge-env-border: #16a34a;
