@@ -120,5 +120,8 @@
   },
   "bundleDependencies": [
     "@wolpertingerlabs/drawlatch"
-  ]
+  ],
+  "overrides": {
+    "shell-quote": "1.8.4"
+  }
 }
