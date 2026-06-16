@@ -9,7 +9,6 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, rename
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
-import { loadRemoteConfig } from "@wolpertingerlabs/drawlatch/shared/config";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentConfig, AgentSettings, KeyAliasInfo } from "shared";
@@ -188,8 +187,10 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
  * Returns info about what key files exist in each alias directory so the
  * frontend can show which aliases are usable.
  *
- * In local mode, also includes caller aliases from remote.config.json
- * since local mode doesn't require crypto keys — the proxy runs in-process.
+ * Filesystem-only: callboard enrolls callers (auto-enroll for the managed local
+ * daemon, sync for remote) which writes a keypair under keys/callers/<alias>/.
+ * We never read drawlatch's remote.config.json — connection/caller config is
+ * the daemon's concern.
  */
 export function discoverKeyAliases(overrideProxyMode?: "local" | "remote"): KeyAliasInfo[] {
   const settings = loadSettings();
@@ -209,25 +210,7 @@ export function discoverKeyAliases(overrideProxyMode?: "local" | "remote"): KeyA
   const seen = new Set<string>();
   const results: KeyAliasInfo[] = [];
 
-  // In local mode, caller aliases from remote.config.json are the primary source.
-  // No crypto keys are needed — the proxy runs in-process.
-  if (effectiveMode === "local") {
-    try {
-      process.env.MCP_CONFIG_DIR = configDir;
-      const config = loadRemoteConfig();
-      for (const alias of Object.keys(config.callers)) {
-        if (!seen.has(alias)) {
-          seen.add(alias);
-          results.push({ alias, hasSigningPub: false, hasExchangePub: false });
-        }
-      }
-    } catch (err: any) {
-      log.debug(`Failed to load caller aliases from remote.config.json: ${err.message}`);
-    }
-  }
-
-  // Always scan keys/callers/ for key-based aliases (used in remote mode,
-  // also surfaced in local mode if present).
+  // Scan keys/callers/ for enrolled caller identities.
   const callerKeysDir = join(configDir, "keys", "callers");
   if (existsSync(callerKeysDir)) {
     try {

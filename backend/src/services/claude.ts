@@ -24,7 +24,7 @@ import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
 import { getRun as getJobRun } from "./job-store.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
-import { listConnectionsWithStatus, listRemoteConnections } from "./connection-manager.js";
+import { getProxy, ensureCallerEnrolled } from "./proxy-singleton.js";
 import {
   getAgentSettings,
   getActiveMcpConfigDir,
@@ -65,15 +65,25 @@ function resolveProviderKind(value: unknown): AgentProviderKind {
  * Build a system prompt section listing available MCP proxy connections.
  * Returns empty string if no connections are found.
  */
-async function buildProxyConnectionsPrompt(proxyKeyAlias: string, proxyMode: string): Promise<string> {
-  let connections: Array<{ alias: string; name: string; description?: string; docsUrl?: string; enabled?: boolean }> = [];
+async function buildProxyConnectionsPrompt(proxyKeyAlias: string): Promise<string> {
+  // Read the caller's available connections straight from the drawlatch daemon
+  // over the protocol (list_routes) — identical for local and remote.
+  const proxy = getProxy(proxyKeyAlias);
+  if (!proxy) return "";
 
-  if (proxyMode === "local") {
-    const all = listConnectionsWithStatus(proxyKeyAlias);
-    connections = all.filter((c) => c.enabled);
-  } else if (proxyMode === "remote") {
-    const { templates } = await listRemoteConnections(proxyKeyAlias);
-    connections = templates;
+  let connections: Array<{ alias: string; name: string; description?: string; docsUrl?: string }> = [];
+  try {
+    const result = (await proxy.callTool("list_routes")) as any[];
+    const routes = Array.isArray(result) ? result : [];
+    connections = routes.map((r) => ({
+      alias: r.alias ?? r.name ?? "",
+      name: r.name ?? r.alias ?? "",
+      ...(r.description && { description: r.description }),
+      ...(r.docsUrl && { docsUrl: r.docsUrl }),
+    }));
+  } catch (err: any) {
+    log.warn(`Failed to list connections for proxy prompt (alias=${proxyKeyAlias}): ${err.message}`);
+    return "";
   }
 
   if (connections.length === 0) return "";
@@ -950,6 +960,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const proxyAgent = opts.agentAlias ? getAgent(opts.agentAlias) : undefined;
     proxyKeyAlias = proxyAgent ? (resolveAgentKeyAlias(proxyAgent).mcpKeyAlias ?? "default") : "default";
 
+    // Make sure this caller is enrolled against the daemon (local: auto-enroll
+    // a fresh keypair on demand; remote: no-op — sync provisions keys).
+    try {
+      await ensureCallerEnrolled(proxyKeyAlias);
+    } catch (err: any) {
+      log.warn(`Caller enrollment for "${proxyKeyAlias}" failed: ${err.message}`);
+    }
+
     try {
       const spec = buildProxyToolsSpec(proxyKeyAlias);
       const server = agentProvider.buildToolServer(spec);
@@ -1206,7 +1224,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // Inject proxy connections listing into system prompt before starting the conversation
       if (agentSettings.proxyMode && activeMcpConfigDir) {
         try {
-          const connectionsPrompt = await buildProxyConnectionsPrompt(proxyKeyAlias, agentSettings.proxyMode);
+          const connectionsPrompt = await buildProxyConnectionsPrompt(proxyKeyAlias);
           if (connectionsPrompt) {
             const existingAppend = queryOpts.options.systemPrompt?.append || "";
             queryOpts.options.systemPrompt = {

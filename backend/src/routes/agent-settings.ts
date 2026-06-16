@@ -5,7 +5,8 @@
  *   PUT  /api/agent-settings                  — update settings
  *   GET  /api/agent-settings/key-aliases      — discover key aliases from MCP config dir
  *   POST /api/agent-settings/test-connection  — test remote proxy connection
- *   GET  /api/agent-settings/tunnel-status    — get cloudflared tunnel status
+ *   GET  /api/agent-settings/daemon-status    — drawlatch daemon URL/health/enrollment
+ *   POST /api/agent-settings/callers          — enroll a caller (local auto-enroll)
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -13,9 +14,9 @@ import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/
 import { validateServerTools, validateParamProfile } from "shared/types/index.js";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
-import { switchProxyMode } from "../services/proxy-singleton.js";
-import { testRemoteConnection } from "../services/proxy-singleton.js";
-import { getTunnelStatusFull } from "../services/tunnel-manager.js";
+import { switchProxyMode, testRemoteConnection, ensureCallerEnrolled, getConfiguredAliases } from "../services/proxy-singleton.js";
+import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
+import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { initSync, completeSync, cancelSync, SyncClientError } from "../services/sync-manager.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
 import { refreshCodexModelsCache } from "../services/codex-models.js";
@@ -291,14 +292,81 @@ agentSettingsRouter.post("/test-connection", async (req: Request, res: Response)
   }
 });
 
-/** GET /api/agent-settings/tunnel-status — get cloudflared tunnel status */
-agentSettingsRouter.get("/tunnel-status", async (_req: Request, res: Response): Promise<void> => {
+/**
+ * GET /api/agent-settings/daemon-status — drawlatch daemon connectivity.
+ *
+ * Reports the endpoint URL, whether it's reachable (/health), whether callboard
+ * supervises it (managed-local), and the dashboard URL to deep-link into.
+ * Connection/secret/listener management all live in that dashboard now.
+ */
+agentSettingsRouter.get("/daemon-status", async (_req: Request, res: Response): Promise<void> => {
   try {
-    const status = await getTunnelStatusFull();
-    res.json(status);
+    const settings = getAgentSettings();
+    const mode = settings.proxyMode === "remote" ? "remote" : "local";
+
+    if (mode === "remote") {
+      const url = settings.remoteServerUrl;
+      const health = url ? await fetchDaemonHealth(url, 3000) : null;
+      res.json({
+        mode,
+        url: url ?? null,
+        managed: false,
+        reachable: health !== null,
+        health,
+        dashboardUrl: url ?? null,
+        enrolledAliases: getConfiguredAliases(),
+      });
+      return;
+    }
+
+    const status = await getLocalDaemonStatus();
+    res.json({
+      mode,
+      url: status.url,
+      managed: status.managed,
+      reachable: status.health !== null,
+      health: status.health,
+      ...(status.pid ? { pid: status.pid } : {}),
+      dashboardUrl: status.url,
+      enrolledAliases: getConfiguredAliases(),
+    });
   } catch (err: any) {
-    log.error(`Error getting tunnel status: ${err.message}`);
-    res.status(500).json({ error: "Failed to get tunnel status" });
+    log.error(`Error getting daemon status: ${err.message}`);
+    res.status(500).json({ error: "Failed to get daemon status" });
+  }
+});
+
+/**
+ * POST /api/agent-settings/callers — provision a caller identity.
+ *
+ * Local mode: auto-enrolls the alias against the managed daemon (zero-friction,
+ * shared filesystem) so a fresh keypair is created. Remote mode: callers are
+ * provisioned via the invite-code Sync flow instead, so this is rejected.
+ */
+agentSettingsRouter.post("/callers", async (req: Request, res: Response): Promise<void> => {
+  const alias = (req.body?.alias as string | undefined)?.trim();
+  if (!alias || !CALLER_ALIAS_REGEX.test(alias)) {
+    res.status(400).json({ error: "Invalid alias. Use letters, numbers, hyphens, underscores." });
+    return;
+  }
+
+  const settings = getAgentSettings();
+  if (settings.proxyMode === "remote") {
+    res.status(400).json({ error: "In remote mode, add callers via Sync (invite code)." });
+    return;
+  }
+
+  try {
+    const ok = await ensureCallerEnrolled(alias);
+    if (!ok) {
+      res.status(502).json({ error: "Failed to enroll caller — is the local daemon running?" });
+      return;
+    }
+    const aliases = discoverKeyAliases();
+    res.json({ alias, aliases });
+  } catch (err: any) {
+    log.error(`Error enrolling caller "${alias}": ${err.message}`);
+    res.status(500).json({ error: err.message || "Failed to enroll caller" });
   }
 });
 
