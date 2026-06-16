@@ -116,7 +116,11 @@ export default function JobListItem({ run, isActive, onClick, now }: Props) {
             }}
           >
             Step {run.currentStepIndex}/{run.stepCount}: {run.currentStepName}
-            {run.currentStepType ? ` (${run.currentStepType})` : ""}
+            {run.currentStepType === "parallel" && run.activeParallel
+              ? ` (parallel ${run.activeParallel.mode}${run.activeParallel.winnerBranchId ? `, winner: ${run.activeParallel.winnerBranchId}` : run.activeParallel.mode === "all" ? `, ${run.activeParallel.completed}/${run.activeParallel.total} complete` : ""})`
+              : run.currentStepType
+                ? ` (${run.currentStepType})`
+                : ""}
           </div>
         )}
 

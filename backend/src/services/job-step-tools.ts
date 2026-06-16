@@ -45,11 +45,16 @@ export function buildJobStepToolsSpec(getJobContext: () => JobContext | undefine
           if (!ctx) {
             return { content: [{ type: "text" as const, text: JSON.stringify({ error: "No job context — this session is not a job step" }) }] };
           }
-          const ok = recordStepResult(ctx.runId, ctx.stepId, {
-            ...(args.outputs && { outputs: args.outputs }),
-            ...(args.verdict && { verdict: args.verdict }),
-            ...(args.summary && { summary: args.summary }),
-          });
+          const ok = recordStepResult(
+            ctx.runId,
+            ctx.stepId,
+            {
+              ...(args.outputs && { outputs: args.outputs }),
+              ...(args.verdict && { verdict: args.verdict }),
+              ...(args.summary && { summary: args.summary }),
+            },
+            ctx.branchId,
+          );
           if (!ok) {
             return {
               content: [
@@ -60,7 +65,9 @@ export function buildJobStepToolsSpec(getJobContext: () => JobContext | undefine
               ],
             };
           }
-          log.info(`Recorded step result for run ${ctx.runId} step ${ctx.stepId}${args.verdict ? ` (verdict: ${args.verdict})` : ""}`);
+          log.info(
+            `Recorded step result for run ${ctx.runId} step ${ctx.stepId}${ctx.branchId ? ` branch ${ctx.branchId}` : ""}${args.verdict ? ` (verdict: ${args.verdict})` : ""}`,
+          );
           return {
             content: [
               {
@@ -69,6 +76,7 @@ export function buildJobStepToolsSpec(getJobContext: () => JobContext | undefine
                   success: true,
                   runId: ctx.runId,
                   stepId: ctx.stepId,
+                  ...(ctx.branchId && { branchId: ctx.branchId }),
                   note: "Result recorded. Finish your turn — the job runner advances when this session ends.",
                 }),
               },

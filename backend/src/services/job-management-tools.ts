@@ -48,6 +48,7 @@ Step types:
 - "wait_event": sleep until a drawlatch event matches. Fields: filter { source?, eventType?, conditions?: [{ field, operator: equals|contains|matches|exists|not_exists, value }] }, timeoutMinutes, onTimeout.
 - "gate": deterministic branch. Fields: condition { all?: [...], any?: [...] } with conditions { ref: "steps.<id>.outputs.<key>", op: eq|neq|contains|exists|not_exists|gt|lt, value }, onFail (required: stepId or "fail"), onPass (default next), maxLoops (required when jumping backwards — bounds the loop).
 - "notify": message the user via their contact channels. Fields: message (required), channel ("discord"|"telegram"|"email").
+- "parallel": run agent branches concurrently. Fields: mode ("race" first successful branch wins and cancels losers, or "all" wait for all), branches (agent leaf steps with id,type:"agent",prompt,outputs/session fields; no next/retry/nested steps in v1), onFailure ("fail" default or step id). Aggregate outputs are nested by branch id; race also sets _winner and _winnerOutputs.
 Targets "end" (finish run successfully) and "fail" (fail the run) are valid anywhere a step id is accepted.`;
 
 function error(message: string) {
@@ -86,6 +87,18 @@ function condenseRun(run: JobRun) {
         chatId: run.activeStep.chatId,
         startedAt: run.activeStep.startedAt,
         ...(run.status === "waiting_approval" && run.activeStep.pendingResult?.summary && { approvalMessage: run.activeStep.pendingResult.summary }),
+        ...(run.activeStep.parallel && {
+          parallel: {
+            mode: run.activeStep.parallel.mode,
+            winnerBranchId: run.activeStep.parallel.winnerBranchId,
+            branches: Object.fromEntries(
+              Object.entries(run.activeStep.parallel.branches).map(([id, branch]) => [
+                id,
+                { status: branch.status, chatId: branch.chatId, startedAt: branch.startedAt, endedAt: branch.endedAt, detail: branch.detail },
+              ]),
+            ),
+          },
+        }),
       },
     }),
     ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
@@ -96,6 +109,7 @@ function condenseRun(run: JobRun) {
       attempt: h.attempt,
       result: h.result,
       endedAt: h.endedAt,
+      ...(h.branchId && { branchId: h.branchId }),
       ...(h.chatId && { chatId: h.chatId }),
       ...(h.detail && { detail: h.detail }),
       ...(condenseOutputs(h.outputs) && { outputs: condenseOutputs(h.outputs) }),

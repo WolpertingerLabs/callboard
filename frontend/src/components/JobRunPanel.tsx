@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckCircle2, XCircle, Circle, CircleDot, Loader2, Clock, MessageSquare, Ban, Pause, Play, RotateCcw } from "lucide-react";
+import { CheckCircle2, XCircle, Circle, CircleDot, Loader2, Clock, MessageSquare, Ban, Pause, Play, RotateCcw, Trophy } from "lucide-react";
 import { getJobRun, respondJobApproval, cancelJobRun, pauseJobRun, resumeJobRun, retryJobStep } from "../api";
 import type { JobRun, JobRunStatus, JobStep } from "../api";
 
@@ -76,6 +76,75 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
   const latestByStep = new Map<string, JobRun["history"][number]>();
   for (const entry of run.history) latestByStep.set(entry.stepId, entry);
 
+  const branchIcon = (status: string) => {
+    if (status === "running" || status === "starting") return <Loader2 size={13} style={{ color: "var(--accent)", animation: "spin 1.5s linear infinite" }} />;
+    if (status === "completed") return <CheckCircle2 size={13} style={{ color: "var(--success)" }} />;
+    if (status === "cancelled") return <Ban size={13} style={{ color: "var(--text-muted)" }} />;
+    return <XCircle size={13} style={{ color: "var(--danger)" }} />;
+  };
+
+  const parallelProgress = (stepId: string) => {
+    const active = run.activeStep?.stepId === stepId ? run.activeStep.parallel : undefined;
+    if (active) {
+      const branches = Object.values(active.branches);
+      const terminal = branches.filter((b) => ["completed", "failed", "cancelled"].includes(b.status)).length;
+      if (active.mode === "race" && active.winnerBranchId) return `race · winner: ${active.winnerBranchId}`;
+      return `${active.mode}${active.mode === "all" ? ` · ${terminal}/${branches.length} complete` : ""}`;
+    }
+    const parent = [...run.history].reverse().find((h) => h.stepId === stepId && h.stepType === "parallel");
+    if (parent?.outputs?._winner) return `race · winner: ${String(parent.outputs._winner)}`;
+    return parent ? parent.result : undefined;
+  };
+
+  const branchRows = (step: JobStep) => {
+    if (step.type !== "parallel") return null;
+    const active = run.activeStep?.stepId === step.id ? run.activeStep.parallel : undefined;
+    const rows = step.branches.map((branch) => {
+      const history = [...run.history].reverse().find((h) => h.stepId === step.id && h.branchId === branch.id);
+      const activeBranch = active?.branches[branch.id];
+      const status = activeBranch?.status ?? history?.result ?? "pending";
+      const chatId = activeBranch?.chatId ?? history?.chatId;
+      const isWinner =
+        active?.winnerBranchId === branch.id ||
+        [...run.history].reverse().some((h) => h.stepId === step.id && h.stepType === "parallel" && h.outputs?._winner === branch.id);
+      return { id: branch.id, status, chatId, isWinner, detail: activeBranch?.detail ?? history?.detail };
+    });
+    return (
+      <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+        {rows.map((row) => (
+          <div key={row.id} style={{ display: "flex", alignItems: "center", gap: 7, paddingLeft: 12, fontSize: 12, color: "var(--text-muted)" }}>
+            {branchIcon(row.status)}
+            <span style={{ fontFamily: "var(--font-mono)", color: "var(--text)" }}>{row.id}</span>
+            <span>{row.status}</span>
+            {row.isWinner && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--warning)" }}>
+                <Trophy size={12} /> winner
+              </span>
+            )}
+            {row.chatId && (
+              <button
+                onClick={() => navigate(`/chat/${row.chatId}`)}
+                title="Open branch chat"
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                  color: "var(--accent)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                }}
+              >
+                <MessageSquare size={12} />
+              </button>
+            )}
+            {row.detail && <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.detail}</span>}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const stepIcon = (step: JobStep) => {
     const latest = latestByStep.get(step.id);
     const isCurrent = run.currentStepId === step.id && !TERMINAL_STATUSES.includes(run.status);
@@ -124,7 +193,11 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
                 <Play size={13} /> Resume
               </button>
             )}
-            <button onClick={() => window.confirm("Cancel this job run? This cannot be undone.") && act(() => cancelJobRun(run.runId))} disabled={acting} style={{ ...actionButtonStyle, color: "var(--danger)", borderColor: "var(--danger)" }}>
+            <button
+              onClick={() => window.confirm("Cancel this job run? This cannot be undone.") && act(() => cancelJobRun(run.runId))}
+              disabled={acting}
+              style={{ ...actionButtonStyle, color: "var(--danger)", borderColor: "var(--danger)" }}
+            >
               <Ban size={13} /> Cancel
             </button>
           </>
@@ -137,13 +210,31 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
       </div>
 
       {error && (
-        <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--danger-bg)", border: "1px solid var(--danger-border)", color: "var(--danger)", marginBottom: 12 }}>
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: 6,
+            background: "var(--danger-bg)",
+            border: "1px solid var(--danger-border)",
+            color: "var(--danger)",
+            marginBottom: 12,
+          }}
+        >
           {error}
         </div>
       )}
 
       {run.error && (
-        <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--danger-bg)", border: "1px solid var(--danger-border)", color: "var(--danger)", marginBottom: 12 }}>
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: 6,
+            background: "var(--danger-bg)",
+            border: "1px solid var(--danger-border)",
+            color: "var(--danger)",
+            marginBottom: 12,
+          }}
+        >
           {run.error}
         </div>
       )}
@@ -191,7 +282,9 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
       {/* Inputs */}
       {Object.keys(run.inputs).length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4 }}>Inputs</div>
+          <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4 }}>
+            Inputs
+          </div>
           {Object.entries(run.inputs).map(([key, value]) => (
             <div key={key} style={{ display: "flex", gap: 8, marginBottom: 2 }}>
               <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)", flexShrink: 0 }}>{key}:</span>
@@ -208,7 +301,7 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
           const latest = latestByStep.get(step.id);
           const isCurrent = run.currentStepId === step.id && !["succeeded"].includes(run.status);
           const loopCount = run.loopCounts[step.id];
-          const stepEntries = run.history.filter((h) => h.stepId === step.id);
+          const stepEntries = run.history.filter((h) => h.stepId === step.id && (step.type !== "parallel" || !h.branchId));
           return (
             <div key={step.id} style={{ display: "flex", gap: 10 }}>
               {/* Icon + connector */}
@@ -219,7 +312,12 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
               <div style={{ paddingBottom: 14, minWidth: 0, flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ fontWeight: isCurrent ? 700 : 600 }}>{step.name || step.id}</span>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 4, padding: "0 5px" }}>{step.type}</span>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 4, padding: "0 5px" }}>
+                    {step.type}
+                  </span>
+                  {step.type === "parallel" && parallelProgress(step.id) && (
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{parallelProgress(step.id)}</span>
+                  )}
                   {isCurrent && run.activeStep && run.activeStep.attempt > 1 && (
                     <span style={{ fontSize: 11, color: "var(--text-muted)" }}>attempt {run.activeStep.attempt}</span>
                   )}
@@ -233,6 +331,7 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
                     {latest.detail}
                   </div>
                 )}
+                {branchRows(step)}
                 {stepEntries.length > 0 && (
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                     {stepEntries.map((entry, j) => (
@@ -242,7 +341,15 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
                           <button
                             onClick={() => navigate(`/chat/${entry.chatId}`)}
                             title="Open step chat"
-                            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", display: "inline-flex", alignItems: "center" }}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: 0,
+                              cursor: "pointer",
+                              color: "var(--accent)",
+                              display: "inline-flex",
+                              alignItems: "center",
+                            }}
                           >
                             <MessageSquare size={12} />
                           </button>
@@ -260,8 +367,8 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
 
       <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
         Started {new Date(run.createdAt).toLocaleString()}
-        {run.endedAt && <> · ended {new Date(run.endedAt).toLocaleString()}</>} · {run.sessionsSpawned} session{run.sessionsSpawned === 1 ? "" : "s"} spawned · job
-        version {run.definition.version}
+        {run.endedAt && <> · ended {new Date(run.endedAt).toLocaleString()}</>} · {run.sessionsSpawned} session{run.sessionsSpawned === 1 ? "" : "s"} spawned ·
+        job version {run.definition.version}
       </div>
     </div>
   );

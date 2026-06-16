@@ -99,3 +99,74 @@ describe("validateJobDefinition — template reference reachability", () => {
     expect(errors.some((e) => e.includes("unknown step"))).toBe(true);
   });
 });
+
+describe("validateJobDefinition — parallel steps", () => {
+  it("accepts basic race and all parallel definitions and later aggregate refs", () => {
+    const errors = validate(
+      [
+        {
+          id: "compare",
+          type: "parallel",
+          mode: "race",
+          branches: [
+            { id: "opus", type: "agent", prompt: "Solve {{inputs.task}}", outputs: ["answer"] },
+            { id: "sonnet", type: "agent", prompt: "Solve {{inputs.task}}", outputs: ["answer"] },
+          ],
+        },
+        {
+          id: "checks",
+          type: "parallel",
+          mode: "all",
+          branches: [
+            { id: "tests", type: "agent", prompt: "Check {{steps.compare.outputs._winner}}", outputs: ["result"] },
+            { id: "lint", type: "agent", prompt: "Check {{steps.compare.outputs._winnerOutputs.answer}}", outputs: ["result"] },
+          ],
+        },
+        { id: "summarize", type: "agent", prompt: "Tests: {{steps.checks.outputs.tests.result}}" },
+      ] as JobDefinitionInput["steps"],
+      { inputs: [{ key: "task" }] },
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it("rejects invalid v1 branch shapes", () => {
+    const errors = validate([
+      {
+        id: "p",
+        type: "parallel",
+        mode: "all",
+        branches: [
+          { id: "a", type: "agent", prompt: "A", next: "done" },
+          { id: "a", type: "agent", prompt: "A2" },
+          { id: "_winner", type: "agent", prompt: "reserved" },
+          { id: "done", type: "agent", prompt: "collision" },
+          { id: "poller", type: "poll", prompt: "no", intervalMinutes: 1, maxAttempts: 1 },
+          { id: "retry", type: "agent", prompt: "retry", retry: { attempts: 2 } },
+        ],
+      },
+      { id: "done", type: "agent", prompt: "Done" },
+    ] as JobDefinitionInput["steps"]);
+    expect(errors.some((e) => e.includes("branch-level next"))).toBe(true);
+    expect(errors.some((e) => e.includes('duplicate branch id "a"'))).toBe(true);
+    expect(errors.some((e) => e.includes("reserved"))).toBe(true);
+    expect(errors.some((e) => e.includes("collides with a top-level step id"))).toBe(true);
+    expect(errors.some((e) => e.includes('must be type "agent"'))).toBe(true);
+    expect(errors.some((e) => e.includes("branch-level retry"))).toBe(true);
+  });
+
+  it("rejects branch prompts that reference sibling or parent outputs", () => {
+    const errors = validate([
+      {
+        id: "p",
+        type: "parallel",
+        mode: "all",
+        branches: [
+          { id: "a", type: "agent", prompt: "A", outputs: ["x"] },
+          { id: "b", type: "agent", prompt: "Use {{steps.p.outputs.a.x}}" },
+        ],
+      },
+    ] as JobDefinitionInput["steps"]);
+    expect(refErrors(errors).length).toBe(1);
+    expect(refErrors(errors)[0]).toContain('step "p"');
+  });
+});
