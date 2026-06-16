@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plus, Trash2, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog } from "../../api";
 import type { AgentSettings, OpenRouterModelInfo, OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { OR_SERVER_TOOLS, OR_PLUGINS, OR_SAMPLING_PARAMS, validateServerTools, validateParamProfile } from "shared/types/index.js";
@@ -76,6 +76,80 @@ const rowStyle: React.CSSProperties = {
   borderBottom: "1px solid var(--border)",
   fontSize: 12,
 };
+
+type ReferenceLink = {
+  label: string;
+  href: string;
+  note?: string;
+};
+
+const providerReferenceLinks: Record<AgentProviderKind, ReferenceLink[]> = {
+  "claude-code": [
+    { label: "Claude usage", href: "https://claude.ai/settings/usage", note: "Subscription usage and usage credits" },
+    { label: "Console billing", href: "https://console.anthropic.com/settings/billing", note: "Anthropic API credits and billing" },
+    {
+      label: "Code limits",
+      href: "https://support.anthropic.com/en/articles/11145838-using-claude-code-with-your-pro-or-max-plan",
+      note: "Claude Code subscription limit reference",
+    },
+  ],
+  openrouter: [
+    { label: "Credits", href: "https://openrouter.ai/settings/credits", note: "OpenRouter credit balance" },
+    { label: "Activity", href: "https://openrouter.ai/activity", note: "OpenRouter usage activity" },
+    { label: "Keys", href: "https://openrouter.ai/keys", note: "API keys and key limits" },
+  ],
+  codex: [
+    { label: "Codex usage", href: "https://chatgpt.com/codex/settings/usage", note: "Codex plan limits and credits" },
+    { label: "API usage", href: "https://platform.openai.com/usage", note: "OpenAI API usage" },
+    { label: "API billing", href: "https://platform.openai.com/settings/organization/billing/overview", note: "OpenAI Platform billing" },
+    { label: "API limits", href: "https://platform.openai.com/settings/organization/limits", note: "OpenAI Platform limits" },
+  ],
+};
+
+function ReferenceLinksSection({ provider }: { provider: AgentProviderKind }) {
+  const links = providerReferenceLinks[provider];
+  return (
+    <div style={{ ...sectionStyle, padding: "10px 12px", marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+          <Globe size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Reference</span>
+          <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            Usage, billing, and limits
+          </span>
+        </div>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {links.map((link) => (
+          <a
+            key={link.href}
+            href={link.href}
+            target="_blank"
+            rel="noreferrer"
+            title={link.note ? `${link.note}: ${link.href}` : link.href}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "4px 7px",
+              borderRadius: 999,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 11,
+              lineHeight: 1,
+              textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {link.label}
+            <ExternalLink size={10} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function truncateSensitive(value: string | undefined, edgeChars = 4): string {
   if (!value) return "—";
@@ -521,6 +595,8 @@ export default function ApiSettings() {
 
       {activeProvider === "claude-code" && (
         <>
+          <ReferenceLinksSection provider="claude-code" />
+
           {/* API Endpoint */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
@@ -721,6 +797,8 @@ export default function ApiSettings() {
 
       {activeProvider === "openrouter" && (
         <>
+          <ReferenceLinksSection provider="openrouter" />
+
           {/* OpenRouter */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
@@ -1069,6 +1147,8 @@ export default function ApiSettings() {
 
       {activeProvider === "codex" && (
         <>
+          <ReferenceLinksSection provider="codex" />
+
           {/* Codex — auth mode */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
