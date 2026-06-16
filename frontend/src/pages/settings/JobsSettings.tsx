@@ -57,21 +57,25 @@ const NEW_JOB_TEMPLATE = `{
   "defaults": { "folder": "/absolute/path/to/repo" },
   "steps": [
     {
-      "id": "work",
-      "type": "agent",
-      "prompt": "Do the following task: {{inputs.task}}",
-      "outputs": ["result"]
+      "id": "parallel_checks",
+      "type": "parallel",
+      "mode": "all",
+      "branches": [
+        { "id": "work", "type": "agent", "prompt": "Do the following task: {{inputs.task}}", "outputs": ["result"] },
+        { "id": "review", "type": "agent", "prompt": "Review this task for risks: {{inputs.task}}", "outputs": ["notes"] }
+      ],
+      "onFailure": "fail"
     },
     {
       "id": "signoff",
       "type": "approval",
-      "message": "Result ready:\\n\\n{{steps.work.outputs.result}}",
+      "message": "Result ready:\\n\\n{{steps.parallel_checks.outputs.work.result}}",
       "notify": false
     },
     {
       "id": "done",
       "type": "notify",
-      "message": "The job finished: {{steps.work.outputs.result}}"
+      "message": "The job finished: {{steps.parallel_checks.outputs.work.result}}"
     }
   ]
 }`;
@@ -227,8 +231,8 @@ export default function JobsSettings() {
           )}
         </div>
         <div style={{ ...helpStyle, marginBottom: 16 }}>
-          Deterministic multi-step workflows: each step spawns an agent session, waits for your signoff, polls until a condition holds, waits for an
-          event, branches on a gate, or notifies you. You can also create and spawn jobs from any chat — ask the agent to use the{" "}
+          Deterministic multi-step workflows: each step spawns an agent session, waits for your signoff, polls until a condition holds, waits for an event,
+          branches on a gate, runs parallel agent branches, or notifies you. You can also create and spawn jobs from any chat — ask the agent to use the{" "}
           <code>create_job</code> and <code>spawn_job</code> tools.
         </div>
 
@@ -246,8 +250,9 @@ export default function JobsSettings() {
               />
               <div style={helpStyle}>
                 JSON definition — step types: <code>agent</code>, <code>approval</code>, <code>poll</code>, <code>wait_event</code>, <code>gate</code>,{" "}
-                <code>notify</code>. Prompts support <code>{"{{inputs.<key>}}"}</code> and <code>{"{{steps.<id>.outputs.<key>}}"}</code> templating. The
-                server validates on save and lists every problem.
+                <code>notify</code>, <code>parallel</code>. Parallel v1 supports only agent branches (<code>mode</code>: <code>race</code> or <code>all</code>).
+                Prompts support <code>{"{{inputs.<key>}}"}</code> and <code>{"{{steps.<id>.outputs.<key>}}"}</code> templating. The server validates on save and
+                lists every problem.
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -257,7 +262,15 @@ export default function JobsSettings() {
                   setError(null);
                 }}
                 disabled={saving}
-                style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text)", fontSize: 13, cursor: "pointer" }}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--text)",
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
               >
                 Cancel
               </button>
@@ -282,7 +295,9 @@ export default function JobsSettings() {
         ) : loading ? (
           <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Loading…</div>
         ) : jobs.length === 0 ? (
-          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>No jobs yet. Create one here, or describe a workflow to any chat and ask it to create a job.</div>
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
+            No jobs yet. Create one here, or describe a workflow to any chat and ask it to create a job.
+          </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {jobs.map((job) => (
@@ -312,7 +327,19 @@ export default function JobsSettings() {
                   <button
                     onClick={() => openSpawn(job)}
                     title="Spawn a run"
-                    style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "1px solid var(--border)", borderRadius: 6, color: "var(--accent)", cursor: "pointer", padding: "4px 10px", fontSize: 12, fontWeight: 600 }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      background: "none",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      color: "var(--accent)",
+                      cursor: "pointer",
+                      padding: "4px 10px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
                   >
                     <Play size={13} /> Spawn
                   </button>
@@ -364,7 +391,15 @@ export default function JobsSettings() {
                       <button
                         onClick={() => setSpawnForm(null)}
                         disabled={saving}
-                        style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text)", fontSize: 13, cursor: "pointer" }}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 6,
+                          border: "1px solid var(--border)",
+                          background: "transparent",
+                          color: "var(--text)",
+                          fontSize: 13,
+                          cursor: "pointer",
+                        }}
                       >
                         Cancel
                       </button>
@@ -400,7 +435,16 @@ export default function JobsSettings() {
           <button
             onClick={refreshRuns}
             title="Refresh runs"
-            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 12 }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              background: "none",
+              border: "none",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
           >
             <RefreshCw size={13} /> Refresh
           </button>
@@ -421,9 +465,23 @@ export default function JobsSettings() {
                     onClick={() => setExpandedRun(expanded ? null : run.runId)}
                     style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer" }}
                   >
-                    {expanded ? <ChevronDown size={14} style={{ color: "var(--text-muted)" }} /> : <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />}
+                    {expanded ? (
+                      <ChevronDown size={14} style={{ color: "var(--text-muted)" }} />
+                    ) : (
+                      <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />
+                    )}
                     <span style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>{run.jobName}</span>
-                    <span style={{ padding: "1px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600, color: meta.color, border: `1px solid ${meta.color}`, flexShrink: 0 }}>
+                    <span
+                      style={{
+                        padding: "1px 8px",
+                        borderRadius: 999,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: meta.color,
+                        border: `1px solid ${meta.color}`,
+                        flexShrink: 0,
+                      }}
+                    >
                       {meta.label}
                     </span>
                     {run.currentStepId && !["succeeded", "cancelled"].includes(run.status) && (

@@ -19,7 +19,19 @@
  */
 import type { EventEmitter } from "events";
 import { homedir } from "os";
-import type { AgentJobStep, ApprovalJobStep, EffortLevel, JobRun, JobRunHistoryEntry, JobStep, NotifyJobStep, PollJobStep, UiAgentProviderKind } from "shared";
+import type {
+  AgentJobStep,
+  ApprovalJobStep,
+  EffortLevel,
+  JobRun,
+  JobRunHistoryEntry,
+  JobStep,
+  NotifyJobStep,
+  ParallelAgentBranch,
+  ParallelJobStep,
+  PollJobStep,
+  UiAgentProviderKind,
+} from "shared";
 import { sessionRegistry, type SessionEvent } from "./session-registry.js";
 import {
   getJob,
@@ -50,6 +62,7 @@ const log = createLogger("job-runner");
 export interface JobContext {
   runId: string;
   stepId: string;
+  branchId?: string;
   /** Advisory sessions (approval notifiers) never advance the run. */
   advisory?: boolean;
 }
@@ -93,8 +106,8 @@ function deps(): JobRunnerDeps {
 const chatToStep = new Map<string, JobContext>();
 /** runId → pending wake timer (poll interval, retry backoff, timeouts). */
 const timers = new Map<string, NodeJS.Timeout>();
-/** Guards against double-advancing a run from concurrent events. */
-const advancing = new Set<string>();
+/** Per-run queues serialize concurrent branch/session completions without dropping events. */
+const runQueues = new Map<string, Promise<void>>();
 
 let _initialized = false;
 
@@ -110,7 +123,7 @@ export function initJobRunner(): void {
     if (!ctx) return;
     chatToStep.delete(event.chatId);
     if (ctx.advisory) return;
-    void handleStepSessionEnd(ctx.runId, ctx.stepId, event.chatId).catch((err) => {
+    void enqueueRun(ctx.runId, () => handleStepSessionEnd(ctx.runId, ctx.stepId, event.chatId, ctx.branchId)).catch((err) => {
       log.error(`Step session end handling failed for run ${ctx.runId}: ${err.message}`);
     });
   });
@@ -140,10 +153,23 @@ function resumeRunAfterRestart(run: JobRun): void {
       // The step session (a child process) did not survive the restart.
       // Harvest whatever it managed to report; the fallback path inside
       // handleStepSessionEnd reads the transcript for unstructured output.
-      const chatId = run.activeStep?.chatId;
-      if (chatId) {
+      const parallelBranches = run.activeStep?.parallel?.branches;
+      if (parallelBranches) {
+        let unrecoverable = false;
+        for (const branch of Object.values(parallelBranches)) {
+          if ((branch.status === "running" || branch.status === "starting") && !branch.chatId) unrecoverable = true;
+          if (branch.chatId && (branch.status === "running" || branch.status === "starting")) {
+            log.info(`Run ${run.runId}: harvesting parallel branch ${branch.branchId} session ${branch.chatId} that ended during downtime`);
+            void enqueueRun(run.runId, () => handleStepSessionEnd(run.runId, run.activeStep!.stepId, branch.chatId!, branch.branchId)).catch((err) => {
+              log.error(`Restart harvest failed for run ${run.runId}: ${err.message}`);
+            });
+          }
+        }
+        if (unrecoverable) failRun(run, `Parallel step "${run.activeStep?.stepId}" could not recover one or more branch sessions after restart`);
+      } else if (run.activeStep?.chatId) {
+        const chatId = run.activeStep.chatId;
         log.info(`Run ${run.runId}: harvesting step session ${chatId} that ended during downtime`);
-        void handleStepSessionEnd(run.runId, run.activeStep!.stepId, chatId).catch((err) => {
+        void enqueueRun(run.runId, () => handleStepSessionEnd(run.runId, run.activeStep!.stepId, chatId)).catch((err) => {
           log.error(`Restart harvest failed for run ${run.runId}: ${err.message}`);
         });
       } else if (run.currentStepId) {
@@ -236,10 +262,10 @@ export function cancelRun(runId: string): JobRun {
   const run = mustGetRun(runId);
   if (TERMINAL_JOB_RUN_STATUSES.has(run.status)) throw new Error(`Run ${runId} already ended (status: ${run.status})`);
 
-  const chatId = run.activeStep?.chatId;
-  if (chatId && deps().getActiveSession(chatId)) {
-    chatToStep.delete(chatId); // prevent the stop event from advancing the run
-    deps().stopSession(chatId);
+  const chatIds = activeChatIds(run);
+  for (const chatId of chatIds) chatToStep.delete(chatId); // prevent stop events from advancing the run
+  for (const chatId of chatIds) {
+    if (deps().getActiveSession(chatId)) deps().stopSession(chatId);
   }
   finishRun(run, "cancelled");
   return mustGetRun(runId);
@@ -349,6 +375,9 @@ function enterStep(run: JobRun, target: string, syncDepth: number): void {
       break;
     case "notify":
       void startNotifySession(run.runId, step.id);
+      break;
+    case "parallel":
+      void startParallelStep(run.runId, step.id);
       break;
     case "approval":
       enterApprovalStep(run, step);
@@ -533,9 +562,10 @@ function handleAttemptSpawnFailure(runId: string, stepId: string, attempt: numbe
 }
 
 interface SpawnStepOptions {
-  /** Session-config-bearing step (agent/poll/notify). Omitted for advisory notifiers. */
-  step?: AgentJobStep | PollJobStep | NotifyJobStep;
+  /** Session-config-bearing step (agent/poll/notify/parallel branch). Omitted for advisory notifiers. */
+  step?: AgentJobStep | PollJobStep | NotifyJobStep | ParallelAgentBranch;
   advisory?: boolean;
+  branchId?: string;
 }
 
 async function spawnStepSession(runId: string, stepId: string, prompt: string, opts: SpawnStepOptions): Promise<string> {
@@ -583,7 +613,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     provider,
     ...(model && { model }),
     ...(sessionFields?.effort && provider === "openrouter" && { effort: sessionFields.effort }),
-    jobContext: { runId, stepId, ...(opts.advisory && { advisory: true }) },
+    jobContext: { runId, stepId, ...(opts.branchId && { branchId: opts.branchId }), ...(opts.advisory && { advisory: true }) },
     // Nudge the step session to keep going until it reports via
     // complete_job_step (advisory sessions have no step result to report).
     ...(!opts.advisory && sessionFields?.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
@@ -602,23 +632,31 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     });
   });
 
-  chatToStep.set(chatId, { runId, stepId, ...(opts.advisory && { advisory: true }) });
+  chatToStep.set(chatId, { runId, stepId, ...(opts.branchId && { branchId: opts.branchId }), ...(opts.advisory && { advisory: true }) });
 
   // Persist the chatId (and session count) onto the run.
   const fresh = mustGetRun(runId);
   fresh.sessionsSpawned += 1;
-  if (!opts.advisory && fresh.activeStep?.stepId === stepId) {
-    fresh.activeStep.chatId = chatId;
+  if (!opts.advisory) {
+    if (fresh.activeStep?.stepId !== stepId) {
+      chatToStep.delete(chatId);
+      deps().stopSession(chatId);
+    } else if (opts.branchId && fresh.activeStep.parallel?.branches[opts.branchId]) {
+      fresh.activeStep.parallel.branches[opts.branchId].chatId = chatId;
+      fresh.activeStep.parallel.branches[opts.branchId].status = "running";
+    } else {
+      fresh.activeStep.chatId = chatId;
+    }
   }
   saveRun(fresh);
   notifyRunUpdated(fresh);
-  log.info(`Run ${runId}: step "${stepId}" session ${chatId} started${opts.advisory ? " (advisory)" : ""}`);
+  log.info(`Run ${runId}: step "${stepId}"${opts.branchId ? ` branch "${opts.branchId}"` : ""} session ${chatId} started${opts.advisory ? " (advisory)" : ""}`);
 
   // Race guard: if the session ended before we registered it, harvest now.
   if (!deps().getActiveSession(chatId) && chatToStep.has(chatId)) {
     chatToStep.delete(chatId);
     if (!opts.advisory) {
-      void handleStepSessionEnd(runId, stepId, chatId).catch((err) => {
+      void enqueueRun(runId, () => handleStepSessionEnd(runId, stepId, chatId, opts.branchId)).catch((err) => {
         log.error(`Immediate harvest failed for run ${runId}: ${err.message}`);
       });
     }
@@ -627,88 +665,146 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   return chatId;
 }
 
-// ── Step completion handling ────────────────────────────────────────
+async function startParallelStep(runId: string, stepId: string): Promise<void> {
+  const run = mustGetRun(runId);
+  const step = findStep(run, stepId) as ParallelJobStep;
+  const maxSessions = run.definition.limits?.maxTotalSessions ?? DEFAULT_MAX_TOTAL_SESSIONS;
+  if (run.sessionsSpawned + step.branches.length > maxSessions) {
+    failRun(run, `Parallel step "${stepId}" would exceed maxTotalSessions (${maxSessions})`);
+    return;
+  }
 
-async function handleStepSessionEnd(runId: string, stepId: string, chatId: string): Promise<void> {
-  if (advancing.has(runId)) return;
-  advancing.add(runId);
-  try {
-    const run = getRun(runId);
-    if (!run || TERMINAL_JOB_RUN_STATUSES.has(run.status) || run.status === "paused") return;
-    if (run.activeStep?.stepId !== stepId || run.activeStep.chatId !== chatId) return;
+  const startedAt = new Date().toISOString();
+  run.activeStep = {
+    stepId,
+    attempt: 1,
+    startedAt,
+    parallel: {
+      mode: step.mode,
+      branches: Object.fromEntries(step.branches.map((branch) => [branch.id, { branchId: branch.id, status: "starting" as const, attempt: 1, startedAt }])),
+    },
+  };
+  run.status = "running";
+  delete run.nextWakeAt;
+  saveRun(run);
+  notifyRunUpdated(run);
 
-    const step = findStep(run, stepId);
-    if (!step) {
-      failRun(run, `Active step "${stepId}" no longer exists in definition`);
-      return;
-    }
-
-    const result = run.activeStep.pendingResult;
-    const startedAt = run.activeStep.startedAt;
-    const attempt = run.activeStep.attempt;
-
-    switch (step.type) {
-      case "agent": {
-        const outputs = result?.outputs;
-        const missing = (step.outputs ?? []).filter((key) => outputs?.[key] === undefined);
-        if (missing.length > 0 || (step.outputs?.length && !outputs)) {
-          const reason = `did not report required output(s): ${missing.join(", ") || step.outputs!.join(", ")}`;
-          if (step.retry && attempt < step.retry.attempts) {
-            scheduleRetry(run, step, attempt, reason);
-          } else {
-            appendHistory(run, {
-              stepId,
-              stepType: "agent",
-              attempt,
-              startedAt,
-              endedAt: new Date().toISOString(),
-              chatId,
-              result: "error",
-              detail: reason,
-            });
-            failRun(run, `Agent step "${stepId}" ${reason}`);
-          }
-          return;
-        }
-        const finalOutputs = outputs ?? { _final: readFinalAssistantText(chatId) };
-        appendHistory(run, {
-          stepId,
-          stepType: "agent",
-          attempt,
-          startedAt,
-          endedAt: new Date().toISOString(),
-          chatId,
-          result: outputs ? "completed" : "completed_unstructured",
-          outputs: finalOutputs,
-          ...(result?.summary && { detail: result.summary }),
-        });
-        enterStep(run, resolveNext(run, step), 0);
+  await Promise.all(
+    step.branches.map(async (branch) => {
+      let prompt: string;
+      try {
+        prompt = interpolate(branch.prompt, buildRunContext(mustGetRun(runId)));
+      } catch (err: any) {
+        markParallelBranchSpawnFailure(runId, stepId, branch.id, `template failed: ${err.message}`);
         return;
       }
+      const instructions =
+        (branch.outputs?.length
+          ? `\n\nWhen you are done, you MUST call the complete_job_step tool with an "outputs" object containing: ${branch.outputs.join(", ")}.`
+          : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`) +
+        ` You are branch "${branch.id}" of parallel step "${stepId}".` +
+        (mustGetRun(runId).title ? "" : ` This run has no title yet — call the set_job_run_title tool early with a short title specific to this run.`);
+      try {
+        await spawnStepSession(runId, stepId, prompt + instructions, { step: branch, branchId: branch.id });
+      } catch (err: any) {
+        markParallelBranchSpawnFailure(runId, stepId, branch.id, `spawn failed: ${err.message}`);
+      }
+    }),
+  );
+  await enqueueRun(runId, () => resolveParallelIfReady(runId, stepId));
+}
 
-      case "poll": {
-        const verdict = result?.verdict;
-        if (verdict === "done") {
-          const missing = (step.outputs ?? []).filter((key) => result?.outputs?.[key] === undefined);
-          if (missing.length > 0) {
-            failRun(run, `Poll step "${stepId}" reported done but missing output(s): ${missing.join(", ")}`);
-            return;
-          }
+function markParallelBranchSpawnFailure(runId: string, stepId: string, branchId: string, detail: string): void {
+  const run = getRun(runId);
+  if (!run || run.activeStep?.stepId !== stepId) return;
+  const branch = run.activeStep.parallel?.branches[branchId];
+  if (!branch || isBranchTerminal(branch.status)) return;
+  branch.status = "failed";
+  branch.endedAt = new Date().toISOString();
+  branch.detail = detail;
+  appendHistory(run, {
+    stepId,
+    branchId,
+    stepType: "agent",
+    attempt: branch.attempt,
+    startedAt: branch.startedAt,
+    endedAt: branch.endedAt,
+    result: "error",
+    detail,
+  });
+  void enqueueRun(runId, () => resolveParallelIfReady(runId, stepId));
+}
+
+// ── Step completion handling ────────────────────────────────────────
+
+async function handleStepSessionEnd(runId: string, stepId: string, chatId: string, branchId?: string): Promise<void> {
+  const run = getRun(runId);
+  if (!run || TERMINAL_JOB_RUN_STATUSES.has(run.status) || run.status === "paused") return;
+
+  if (branchId) {
+    await handleParallelBranchSessionEnd(runId, stepId, branchId, chatId);
+    return;
+  }
+
+  if (run.activeStep?.stepId !== stepId || run.activeStep.chatId !== chatId) return;
+
+  const step = findStep(run, stepId);
+  if (!step) {
+    failRun(run, `Active step "${stepId}" no longer exists in definition`);
+    return;
+  }
+
+  const result = run.activeStep.pendingResult;
+  const startedAt = run.activeStep.startedAt;
+  const attempt = run.activeStep.attempt;
+
+  switch (step.type) {
+    case "agent": {
+      const outputs = result?.outputs;
+      const missing = (step.outputs ?? []).filter((key) => outputs?.[key] === undefined);
+      if (missing.length > 0 || (step.outputs?.length && !outputs)) {
+        const reason = `did not report required output(s): ${missing.join(", ") || step.outputs!.join(", ")}`;
+        if (step.retry && attempt < step.retry.attempts) {
+          scheduleRetry(run, step, attempt, reason);
+        } else {
           appendHistory(run, {
             stepId,
-            stepType: "poll",
+            stepType: "agent",
             attempt,
             startedAt,
             endedAt: new Date().toISOString(),
             chatId,
-            result: "done",
-            ...(result?.outputs && { outputs: result.outputs }),
-            ...(result?.summary && { detail: result.summary }),
+            result: "error",
+            detail: reason,
           });
-          enterStep(run, resolveNext(run, step), 0);
+          failRun(run, `Agent step "${stepId}" ${reason}`);
+        }
+        return;
+      }
+      const finalOutputs = outputs ?? { _final: readFinalAssistantText(chatId) };
+      appendHistory(run, {
+        stepId,
+        stepType: "agent",
+        attempt,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        chatId,
+        result: outputs ? "completed" : "completed_unstructured",
+        outputs: finalOutputs,
+        ...(result?.summary && { detail: result.summary }),
+      });
+      enterStep(run, resolveNext(run, step), 0);
+      return;
+    }
+
+    case "poll": {
+      const verdict = result?.verdict;
+      if (verdict === "done") {
+        const missing = (step.outputs ?? []).filter((key) => result?.outputs?.[key] === undefined);
+        if (missing.length > 0) {
+          failRun(run, `Poll step "${stepId}" reported done but missing output(s): ${missing.join(", ")}`);
           return;
         }
-        // "not_yet" — or the checker failed to report; both re-check until exhausted.
         appendHistory(run, {
           stepId,
           stepType: "poll",
@@ -716,45 +812,221 @@ async function handleStepSessionEnd(runId: string, stepId: string, chatId: strin
           startedAt,
           endedAt: new Date().toISOString(),
           chatId,
-          result: "not_yet",
-          ...(result?.summary && { detail: result.summary }),
-          ...(!verdict && { detail: "checker did not call complete_job_step — treating as not_yet" }),
-        });
-        if (attempt >= step.maxAttempts) {
-          routeTimeout(run, step, `Poll step "${stepId}" exhausted maxAttempts (${step.maxAttempts})`);
-          return;
-        }
-        run.status = "sleeping";
-        run.nextWakeAt = new Date(Date.now() + step.intervalMinutes * 60_000).toISOString();
-        run.activeStep = { stepId, attempt: attempt + 1, startedAt: new Date().toISOString() };
-        saveRun(run);
-        notifyRunUpdated(run);
-        armWakeTimer(run);
-        return;
-      }
-
-      case "notify": {
-        appendHistory(run, {
-          stepId,
-          stepType: "notify",
-          attempt,
-          startedAt,
-          endedAt: new Date().toISOString(),
-          chatId,
-          result: "notified",
+          result: "done",
+          ...(result?.outputs && { outputs: result.outputs }),
           ...(result?.summary && { detail: result.summary }),
         });
         enterStep(run, resolveNext(run, step), 0);
         return;
       }
-
-      default:
-        // approval/wait_event/gate don't own step sessions.
+      appendHistory(run, {
+        stepId,
+        stepType: "poll",
+        attempt,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        chatId,
+        result: "not_yet",
+        ...(result?.summary && { detail: result.summary }),
+        ...(!verdict && { detail: "checker did not call complete_job_step — treating as not_yet" }),
+      });
+      if (attempt >= step.maxAttempts) {
+        routeTimeout(run, step, `Poll step "${stepId}" exhausted maxAttempts (${step.maxAttempts})`);
         return;
+      }
+      run.status = "sleeping";
+      run.nextWakeAt = new Date(Date.now() + step.intervalMinutes * 60_000).toISOString();
+      run.activeStep = { stepId, attempt: attempt + 1, startedAt: new Date().toISOString() };
+      saveRun(run);
+      notifyRunUpdated(run);
+      armWakeTimer(run);
+      return;
     }
-  } finally {
-    advancing.delete(runId);
+
+    case "notify": {
+      appendHistory(run, {
+        stepId,
+        stepType: "notify",
+        attempt,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        chatId,
+        result: "notified",
+        ...(result?.summary && { detail: result.summary }),
+      });
+      enterStep(run, resolveNext(run, step), 0);
+      return;
+    }
+
+    default:
+      return;
   }
+}
+
+async function handleParallelBranchSessionEnd(runId: string, stepId: string, branchId: string, chatId: string): Promise<void> {
+  const run = getRun(runId);
+  if (!run || TERMINAL_JOB_RUN_STATUSES.has(run.status) || run.status === "paused") return;
+  if (run.activeStep?.stepId !== stepId) return;
+  const step = findStep(run, stepId) as ParallelJobStep | undefined;
+  if (!step || step.type !== "parallel") return;
+  const activeBranch = run.activeStep.parallel?.branches[branchId];
+  if (!activeBranch || activeBranch.chatId !== chatId || isBranchTerminal(activeBranch.status)) return;
+  const branchDef = step.branches.find((b) => b.id === branchId);
+  if (!branchDef) return;
+
+  const result = activeBranch.pendingResult;
+  const outputs = result?.outputs;
+  const missing = (branchDef.outputs ?? []).filter((key) => outputs?.[key] === undefined);
+  const endedAt = new Date().toISOString();
+  if (missing.length > 0 || (branchDef.outputs?.length && !outputs)) {
+    const reason = `did not report required output(s): ${missing.join(", ") || branchDef.outputs!.join(", ")}`;
+    activeBranch.status = "failed";
+    activeBranch.endedAt = endedAt;
+    activeBranch.detail = reason;
+    appendHistory(run, {
+      stepId,
+      branchId,
+      stepType: "agent",
+      attempt: activeBranch.attempt,
+      startedAt: activeBranch.startedAt,
+      endedAt,
+      chatId,
+      result: "error",
+      detail: reason,
+    });
+  } else {
+    const finalOutputs = outputs ?? { _final: readFinalAssistantText(chatId) };
+    activeBranch.status = "completed";
+    activeBranch.endedAt = endedAt;
+    activeBranch.outputs = finalOutputs;
+    activeBranch.detail = result?.summary;
+    appendHistory(run, {
+      stepId,
+      branchId,
+      stepType: "agent",
+      attempt: activeBranch.attempt,
+      startedAt: activeBranch.startedAt,
+      endedAt,
+      chatId,
+      result: outputs ? "completed" : "completed_unstructured",
+      outputs: finalOutputs,
+      ...(result?.summary && { detail: result.summary }),
+    });
+  }
+  await resolveParallelIfReady(runId, stepId);
+}
+
+async function resolveParallelIfReady(runId: string, stepId: string): Promise<void> {
+  const run = getRun(runId);
+  if (!run || TERMINAL_JOB_RUN_STATUSES.has(run.status) || run.status === "paused") return;
+  if (run.activeStep?.stepId !== stepId || !run.activeStep.parallel) return;
+  const step = findStep(run, stepId) as ParallelJobStep | undefined;
+  if (!step || step.type !== "parallel") return;
+  const branches = run.activeStep.parallel.branches;
+  const branchList = Object.values(branches);
+  const completed = branchList.filter((b) => b.status === "completed");
+  const failed = branchList.filter((b) => b.status === "failed");
+  const terminal = branchList.filter((b) => isBranchTerminal(b.status));
+
+  if (step.mode === "race") {
+    const winner = completed[0];
+    if (winner && !run.activeStep.parallel.winnerBranchId) {
+      run.activeStep.parallel.winnerBranchId = winner.branchId;
+      const now = new Date().toISOString();
+      for (const loser of branchList) {
+        if (loser.branchId === winner.branchId || isBranchTerminal(loser.status)) continue;
+        if (loser.chatId) chatToStep.delete(loser.chatId);
+      }
+      for (const loser of branchList) {
+        if (loser.branchId === winner.branchId || isBranchTerminal(loser.status)) continue;
+        if (loser.chatId && deps().getActiveSession(loser.chatId)) deps().stopSession(loser.chatId);
+        loser.status = "cancelled";
+        loser.endedAt = now;
+        loser.detail = `superseded by winning branch "${winner.branchId}"`;
+        appendHistory(run, {
+          stepId,
+          branchId: loser.branchId,
+          stepType: "agent",
+          attempt: loser.attempt,
+          startedAt: loser.startedAt,
+          endedAt: now,
+          ...(loser.chatId && { chatId: loser.chatId }),
+          result: "cancelled",
+          detail: loser.detail,
+        });
+      }
+      const outputs = { _winner: winner.branchId, _winnerOutputs: winner.outputs ?? {}, [winner.branchId]: winner.outputs ?? {} };
+      appendHistory(run, {
+        stepId,
+        stepType: "parallel",
+        attempt: run.activeStep.attempt,
+        startedAt: run.activeStep.startedAt,
+        endedAt: now,
+        result: "completed",
+        outputs,
+      });
+      enterStep(run, resolveNext(run, step), 0);
+      return;
+    }
+    if (terminal.length === branchList.length && completed.length === 0) {
+      const now = new Date().toISOString();
+      appendHistory(run, {
+        stepId,
+        stepType: "parallel",
+        attempt: run.activeStep.attempt,
+        startedAt: run.activeStep.startedAt,
+        endedAt: now,
+        result: "error",
+        outputs: Object.fromEntries(branchList.map((b) => [b.branchId, b.outputs ?? {}])),
+        detail: `all race branches failed: ${failed.map((b) => b.branchId).join(", ")}`,
+      });
+      routeParallelFailure(run, step, `Parallel race step "${stepId}" had no successful branch`);
+    }
+    return;
+  }
+
+  if (terminal.length !== branchList.length) return;
+  const now = new Date().toISOString();
+  const outputs = Object.fromEntries(branchList.map((b) => [b.branchId, b.outputs ?? {}]));
+  if (failed.length === 0) {
+    appendHistory(run, {
+      stepId,
+      stepType: "parallel",
+      attempt: run.activeStep.attempt,
+      startedAt: run.activeStep.startedAt,
+      endedAt: now,
+      result: "completed",
+      outputs,
+    });
+    enterStep(run, resolveNext(run, step), 0);
+  } else {
+    appendHistory(run, {
+      stepId,
+      stepType: "parallel",
+      attempt: run.activeStep.attempt,
+      startedAt: run.activeStep.startedAt,
+      endedAt: now,
+      result: "error",
+      outputs,
+      detail: `failed branch(es): ${failed.map((b) => b.branchId).join(", ")}`,
+    });
+    routeParallelFailure(run, step, `Parallel all step "${stepId}" failed branch(es): ${failed.map((b) => b.branchId).join(", ")}`);
+  }
+}
+
+function routeParallelFailure(run: JobRun, step: ParallelJobStep, message: string): void {
+  const target = step.onFailure ?? JOB_TARGET_FAIL;
+  if (target === JOB_TARGET_FAIL) {
+    failRun(run, message);
+  } else {
+    log.info(`Run ${run.runId}: ${message} → continuing at "${target}"`);
+    run.status = "running";
+    enterStep(run, target, 0);
+  }
+}
+
+function isBranchTerminal(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 function scheduleRetry(run: JobRun, step: AgentJobStep, failedAttempt: number, reason: string): void {
@@ -915,7 +1187,28 @@ function failRun(run: JobRun, error: string): void {
   log.warn(`Run ${run.runId}: failed — ${error}`);
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── Helpers
+
+function enqueueRun(runId: string, work: () => void | Promise<void>): Promise<void> {
+  const previous = runQueues.get(runId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(work)
+    .finally(() => {
+      if (runQueues.get(runId) === next) runQueues.delete(runId);
+    });
+  runQueues.set(runId, next);
+  return next;
+}
+
+function activeChatIds(run: JobRun): string[] {
+  const ids: string[] = [];
+  if (run.activeStep?.chatId) ids.push(run.activeStep.chatId);
+  for (const branch of Object.values(run.activeStep?.parallel?.branches ?? {})) {
+    if (branch.chatId) ids.push(branch.chatId);
+  }
+  return ids;
+}
 
 function mustGetRun(runId: string): JobRun {
   const run = getRun(runId);
@@ -930,8 +1223,7 @@ function appendHistory(run: JobRun, entry: JobRunHistoryEntry): void {
 
 /** Bump the metadata version so polling UIs refetch; tag the step chat when known. */
 function notifyRunUpdated(run: JobRun): void {
-  const chatId = run.activeStep?.chatId;
-  if (chatId) {
+  for (const chatId of activeChatIds(run)) {
     sessionRegistry.notifyMetadata(chatId, { jobRunId: run.runId, jobRunStatus: run.status });
   }
 }

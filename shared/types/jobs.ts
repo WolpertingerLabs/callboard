@@ -8,7 +8,7 @@ import type { UiAgentProviderKind, EffortLevel } from "./providers.js";
 // and the work inside steps is done by spawned agent sessions.
 // Spawning a job creates a JobRun — a persisted state machine.
 
-export type JobStepType = "agent" | "approval" | "poll" | "wait_event" | "gate" | "notify";
+export type JobStepType = "agent" | "approval" | "poll" | "wait_event" | "gate" | "notify" | "parallel";
 
 export interface JobInputDef {
   key: string;
@@ -133,7 +133,19 @@ export interface NotifyJobStep extends JobStepBase {
   channel?: "discord" | "telegram" | "email";
 }
 
-export type JobStep = AgentJobStep | ApprovalJobStep | PollJobStep | WaitEventJobStep | GateJobStep | NotifyJobStep;
+export interface ParallelAgentBranch extends Omit<AgentJobStep, "next" | "retry"> {
+  type: "agent";
+}
+
+export interface ParallelJobStep extends JobStepBase {
+  type: "parallel";
+  mode: "race" | "all";
+  branches: ParallelAgentBranch[];
+  /** Step id or "fail" (default) when the parallel step cannot succeed. */
+  onFailure?: string;
+}
+
+export type JobStep = AgentJobStep | ApprovalJobStep | PollJobStep | WaitEventJobStep | GateJobStep | NotifyJobStep | ParallelJobStep;
 
 export interface JobDefinition {
   /** Slug, unique across jobs (e.g. "bake-devin-pr"). */
@@ -178,6 +190,8 @@ export interface JobRunHistoryEntry {
   startedAt: string;
   endedAt: string;
   chatId?: string;
+  /** Branch id when this entry records one branch of a parallel step. */
+  branchId?: string;
   result:
     | "completed"
     | "completed_unstructured"
@@ -190,7 +204,20 @@ export interface JobRunHistoryEntry {
     | "not_yet"
     | "event_received"
     | "notified"
+    | "cancelled"
     | "error";
+  outputs?: Record<string, unknown>;
+  detail?: string;
+}
+
+export interface JobRunActiveBranch {
+  branchId: string;
+  status: "starting" | "running" | "completed" | "failed" | "cancelled";
+  attempt: number;
+  startedAt: string;
+  endedAt?: string;
+  chatId?: string;
+  pendingResult?: JobStepResult;
   outputs?: Record<string, unknown>;
   detail?: string;
 }
@@ -202,6 +229,11 @@ export interface JobRunActiveStep {
   startedAt: string;
   /** Written by the complete_job_step tool, harvested when the session ends. */
   pendingResult?: JobStepResult;
+  parallel?: {
+    mode: "race" | "all";
+    branches: Record<string, JobRunActiveBranch>;
+    winnerBranchId?: string;
+  };
 }
 
 export interface JobRun {
@@ -249,6 +281,7 @@ export interface JobRunListItem {
   sessionsSpawned: number;
   /** Chat backing the active step session, falling back to the most recent step chat. */
   latestChatId?: string;
+  activeParallel?: { mode: "race" | "all"; completed: number; total: number; winnerBranchId?: string };
   nextWakeAt?: string;
   error?: string;
   createdAt: string;

@@ -159,7 +159,10 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
       const stepIndex = run.currentStepId ? run.definition.steps.findIndex((s) => s.id === run.currentStepId) : -1;
       const currentStep = stepIndex >= 0 ? run.definition.steps[stepIndex] : undefined;
       // Active step session, else the most recent step that ran in a chat.
-      const latestChatId = run.activeStep?.chatId ?? [...run.history].reverse().find((h) => h.chatId)?.chatId;
+      const latestChatId =
+        run.activeStep?.chatId ??
+        Object.values(run.activeStep?.parallel?.branches ?? {}).find((b) => b.chatId)?.chatId ??
+        [...run.history].reverse().find((h) => h.chatId)?.chatId;
       items.push({
         runId: run.runId,
         jobId: run.jobId,
@@ -172,6 +175,14 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
         completedStepEntries: run.history.length,
         sessionsSpawned: run.sessionsSpawned,
         ...(latestChatId && { latestChatId }),
+        ...(run.activeStep?.parallel && {
+          activeParallel: {
+            mode: run.activeStep.parallel.mode,
+            completed: Object.values(run.activeStep.parallel.branches).filter((b) => ["completed", "failed", "cancelled"].includes(b.status)).length,
+            total: Object.keys(run.activeStep.parallel.branches).length,
+            ...(run.activeStep.parallel.winnerBranchId && { winnerBranchId: run.activeStep.parallel.winnerBranchId }),
+          },
+        }),
         ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
         ...(run.error && { error: run.error }),
         createdAt: run.createdAt,
@@ -256,14 +267,23 @@ export function setRunTitle(runId: string, title: string): boolean {
   return true;
 }
 
-export function recordStepResult(runId: string, stepId: string, result: JobStepResult): boolean {
+export function recordStepResult(runId: string, stepId: string, result: JobStepResult, branchId?: string): boolean {
   const run = getRun(runId);
   if (!run) return false;
   if (!run.activeStep || run.activeStep.stepId !== stepId) {
     log.warn(`recordStepResult: run ${runId} active step is ${run.activeStep?.stepId ?? "none"}, not ${stepId} — ignoring`);
     return false;
   }
-  run.activeStep.pendingResult = result;
+  if (branchId) {
+    const branch = run.activeStep.parallel?.branches[branchId];
+    if (!branch) {
+      log.warn(`recordStepResult: run ${runId} step ${stepId} has no active branch ${branchId} — ignoring`);
+      return false;
+    }
+    branch.pendingResult = result;
+  } else {
+    run.activeStep.pendingResult = result;
+  }
   saveRun(run);
   return true;
 }
@@ -278,7 +298,7 @@ export class JobValidationError extends Error {
   }
 }
 
-const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify"]);
+const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify", "parallel"]);
 const GATE_OPS = new Set(["eq", "neq", "contains", "exists", "not_exists", "gt", "lt"]);
 
 /**
@@ -301,6 +321,9 @@ function stepFlowTargets(step: JobStep, followingStepId: string | undefined): st
     case "poll":
     case "wait_event":
       targets.push(defaultNext, step.onTimeout);
+      break;
+    case "parallel":
+      targets.push(defaultNext, step.onFailure);
       break;
     default: // agent, notify — single success edge
       targets.push(defaultNext);
@@ -467,7 +490,8 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
       case "agent":
         if (!step.prompt || typeof step.prompt !== "string") errors.push(`step "${step.id}": agent steps require a prompt`);
         else checkTemplate(step.id, "prompt", step.prompt);
-        if (step.model && step.provider !== "openrouter") errors.push(`step "${step.id}": model is only valid with provider "openrouter"`);
+        if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
+          errors.push(`step "${step.id}": model is only valid with provider "openrouter" or "claude-code"`);
         if (step.retry && (!Number.isInteger(step.retry.attempts) || step.retry.attempts < 1)) {
           errors.push(`step "${step.id}": retry.attempts must be a positive integer`);
         }
@@ -483,7 +507,8 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
         else checkTemplate(step.id, "prompt", step.prompt);
         if (!(step.intervalMinutes >= 1)) errors.push(`step "${step.id}": intervalMinutes must be >= 1`);
         if (!Number.isInteger(step.maxAttempts) || step.maxAttempts < 1) errors.push(`step "${step.id}": maxAttempts must be a positive integer`);
-        if (step.model && step.provider !== "openrouter") errors.push(`step "${step.id}": model is only valid with provider "openrouter"`);
+        if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
+          errors.push(`step "${step.id}": model is only valid with provider "openrouter" or "claude-code"`);
         checkTarget(step.id, "onTimeout", step.onTimeout, true);
         break;
       case "wait_event":
@@ -512,6 +537,43 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
             }
           }
         }
+        break;
+      }
+      case "parallel": {
+        if (step.mode !== "race" && step.mode !== "all") errors.push(`step "${step.id}": parallel mode must be "race" or "all"`);
+        checkTarget(step.id, "onFailure", step.onFailure, true);
+        if (!Array.isArray(step.branches) || step.branches.length === 0) {
+          errors.push(`step "${step.id}": parallel steps require a non-empty branches array`);
+          break;
+        }
+        const branchIds = new Set<string>();
+        const reserved = new Set(["_winner", "_winnerOutputs"]);
+        step.branches.forEach((branch: any, idx: number) => {
+          const path = `step "${step.id}" branch ${idx + 1}`;
+          if (!branch || typeof branch !== "object") {
+            errors.push(`${path}: branch must be an object`);
+            return;
+          }
+          if (!branch.id || typeof branch.id !== "string") {
+            errors.push(`${path}: branch needs a string id`);
+            return;
+          }
+          const label = `step "${step.id}" branch "${branch.id}"`;
+          if (branch.id.startsWith("_")) errors.push(`${label}: branch ids starting with "_" are reserved`);
+          if (reserved.has(branch.id)) errors.push(`${label}: branch id is reserved`);
+          if (branchIds.has(branch.id)) errors.push(`step "${step.id}": duplicate branch id "${branch.id}"`);
+          branchIds.add(branch.id);
+          if (stepIds.has(branch.id)) errors.push(`${label}: branch id collides with a top-level step id`);
+          if (branch.type !== "agent") errors.push(`${label}: v1 parallel branches must be type "agent"`);
+          if (branch.type === "parallel") errors.push(`${label}: nested parallel branches are not supported in v1`);
+          if (branch.next !== undefined) errors.push(`${label}: branch-level next is not supported in v1`);
+          if (branch.retry !== undefined) errors.push(`${label}: branch-level retry is not supported in v1`);
+          if (!branch.prompt || typeof branch.prompt !== "string") errors.push(`${label}: agent branches require a prompt`);
+          else checkTemplate(step.id, `${label} prompt`, branch.prompt);
+          if (branch.model && branch.provider && !["openrouter", "claude-code"].includes(branch.provider)) {
+            errors.push(`${label}: model is only valid with provider "openrouter" or "claude-code"`);
+          }
+        });
         break;
       }
       case "notify":
