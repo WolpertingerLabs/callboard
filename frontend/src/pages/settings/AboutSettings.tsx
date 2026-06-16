@@ -237,7 +237,6 @@ export default function AboutSettings() {
         <div>
           <InfoRow label="Proxy Mode" value={agentSettings?.proxyMode || "local"} />
           {agentSettings?.proxyMode === "remote" && <InfoRow label="Remote Server" value={agentSettings?.remoteServerUrl} />}
-          <InfoRow label="Tunnel" value={agentSettings?.tunnelEnabled ? "Enabled" : "Disabled"} />
         </div>
       </div>
 
