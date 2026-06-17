@@ -20,7 +20,7 @@
 import { spawn, type ChildProcess } from "child_process";
 import { existsSync, readFileSync, openSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
-import { createRequire } from "module";
+import { fileURLToPath } from "url";
 import { getActiveMcpConfigDir, getAgentSettings } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -38,12 +38,16 @@ let cachedPaths: { pkgRoot: string; serverEntry: string; binEntry: string } | nu
 /**
  * Resolve the drawlatch package's server entry, CLI bin, and package root from
  * a known export. Throws if the package can't be resolved (not installed).
+ *
+ * Uses the ESM resolver (`import.meta.resolve`) instead of `createRequire().resolve()`
+ * because drawlatch's `exports` field only declares the `"import"` condition — a CJS
+ * resolver matches `"require"` and would (misleadingly) report the subpath as
+ * "not defined by exports".
  */
 function resolveDrawlatchPaths(): { pkgRoot: string; serverEntry: string; binEntry: string } {
   if (cachedPaths) return cachedPaths;
-  const require = createRequire(import.meta.url);
   // dist/remote/server.js → dist/remote → dist → <pkgRoot>
-  const serverEntry = require.resolve("@wolpertingerlabs/drawlatch/remote/server");
+  const serverEntry = fileURLToPath(import.meta.resolve("@wolpertingerlabs/drawlatch/remote/server"));
   const pkgRoot = dirname(dirname(dirname(serverEntry)));
   const binEntry = join(pkgRoot, "bin", "drawlatch.js");
   cachedPaths = { pkgRoot, serverEntry, binEntry };
