@@ -17,7 +17,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
 import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
-import { getLocalDaemonUrl, startLocalDaemon, stopLocalDaemon, autoEnrollCaller } from "./local-daemon.js";
+import { getLocalDaemonUrl, startLocalDaemon, stopLocalDaemon } from "./local-daemon.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy-manager");
@@ -112,22 +112,26 @@ export function getProxyClient(alias: string): ProxyClient | null {
 }
 
 /**
- * Ensure a caller is enrolled and usable for the current mode.
+ * Ensure a caller is usable for the current mode.
  *
- * Local: auto-enroll the caller against the managed daemon (zero-friction,
- * shared filesystem). Remote: enrollment is done via the invite-code sync flow,
- * so this is a no-op — the keys either exist or they don't.
+ * Local: the managed daemon auto-shares the default caller at boot by writing
+ * the unpacked key files into our keys dir over the shared filesystem, so we
+ * just make sure the daemon is running and let those keys appear. (On-demand
+ * minting of arbitrary aliases is gone — that was the retired enroll-token
+ * path; additional callers are issued from drawlatch and imported as bundles.)
+ * Remote: callers arrive via bundle import, so this is a pure check — the keys
+ * either exist or they don't.
  *
  * Returns true if a ProxyClient can be obtained afterwards.
  */
 export async function ensureCallerEnrolled(alias: string): Promise<boolean> {
   const settings = getAgentSettings();
   if (settings.proxyMode !== "remote") {
-    const ok = await autoEnrollCaller(alias);
-    if (ok) {
-      // Keys may have just appeared on disk — drop any stale failure marker.
-      failedAliases.delete(alias);
-    }
+    // Idempotent: returns immediately if the daemon is already healthy. Its
+    // boot-time write-to-path may have just dropped the default caller's keys
+    // onto disk, so clear any stale failure marker for this alias.
+    await startLocalDaemon();
+    failedAliases.delete(alias);
   }
   return getProxy(alias) !== null;
 }

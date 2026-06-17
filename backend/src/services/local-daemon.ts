@@ -11,14 +11,17 @@
  *   - Resolve the installed drawlatch package's server + CLI entry points.
  *   - Ensure the config dir is initialised (`drawlatch init`) before first boot.
  *   - Start / stop / restart / health-check the daemon child process.
- *   - Auto-enroll co-located callers via drawlatch's loopback `/sync/auto-enroll`
- *     (zero invite-code friction — proves co-location with the on-disk token).
+ *   - Auto-share the default co-located caller: we point the daemon at our keys
+ *     dir (DRAWLATCH_LOCAL_CALLER_KEYS_DIR) and it mints + write-to-paths the
+ *     unpacked key files straight onto the shared filesystem at boot (the
+ *     same-host write IS the trust proof). This replaces the retired
+ *     enroll-token / `/sync/auto-enroll` handshake.
  *
  * Connection/secret/listener/tunnel management all live inside the daemon and
  * its own password-gated dashboard now — callboard does none of it.
  */
 import { spawn, type ChildProcess } from "child_process";
-import { existsSync, readFileSync, openSync, mkdirSync } from "fs";
+import { existsSync, openSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { createRequire } from "module";
 import { getActiveMcpConfigDir, getAgentSettings } from "./agent-settings.js";
@@ -30,6 +33,10 @@ const log = createLogger("local-daemon");
 // second instance (or a manually-run `drawlatch start`) doesn't collide.
 const DAEMON_HOST = process.env.DRAWLATCH_LOCAL_HOST || "127.0.0.1";
 const DAEMON_PORT = parseInt(process.env.DRAWLATCH_LOCAL_PORT || "9999", 10);
+
+// The default co-located caller the daemon auto-shares at boot. Kept as
+// "default" (overridable) so existing agent bindings keep resolving.
+export const LOCAL_CALLER_ALIAS = process.env.DRAWLATCH_LOCAL_CALLER_ALIAS || "default";
 
 // ── Package resolution ──────────────────────────────────────────────
 
@@ -61,8 +68,6 @@ export function getLocalDaemonUrl(): string {
 
 let child: ChildProcess | null = null;
 let startingPromise: Promise<boolean> | null = null;
-/** Aliases already auto-enrolled this process lifetime (cheap idempotency). */
-const enrolledAliases = new Set<string>();
 
 export interface DaemonHealth {
   status: string;
@@ -174,6 +179,11 @@ export async function startLocalDaemon(): Promise<boolean> {
         MCP_CONFIG_DIR: configDir,
         DRAWLATCH_HOST: DAEMON_HOST,
         DRAWLATCH_PORT: String(DAEMON_PORT),
+        // Co-located auto-share: at boot the daemon mints the default caller and
+        // write-to-paths the unpacked key files straight into our keys dir over
+        // the shared filesystem (idempotent — skipped once the caller exists).
+        DRAWLATCH_LOCAL_CALLER_KEYS_DIR: join(configDir, "keys"),
+        DRAWLATCH_LOCAL_CALLER_ALIAS: LOCAL_CALLER_ALIAS,
         ...(settings.tunnelEnabled ? { DRAWLATCH_TUNNEL: "1" } : {}),
       },
     });
@@ -181,7 +191,6 @@ export async function startLocalDaemon(): Promise<boolean> {
     child.on("exit", (code, signal) => {
       log.warn(`Local drawlatch daemon exited (code=${code}, signal=${signal})`);
       child = null;
-      enrolledAliases.clear();
     });
     child.on("error", (err) => {
       log.error(`Local drawlatch daemon process error: ${err.message}`);
@@ -207,7 +216,6 @@ export async function stopLocalDaemon(): Promise<void> {
   const proc = child;
   if (!proc) return;
   child = null;
-  enrolledAliases.clear();
   await new Promise<void>((resolve) => {
     const onExit = () => resolve();
     proc.once("exit", onExit);
@@ -253,56 +261,4 @@ export async function getLocalDaemonStatus(): Promise<LocalDaemonStatus> {
     url,
     health: await fetchDaemonHealth(url, 1500),
   };
-}
-
-// ── Caller auto-enrollment (loopback, zero-friction) ────────────────
-
-/**
- * Auto-enroll a co-located caller against the local daemon.
- *
- * Reads the one-time enroll token drawlatch wrote into the config dir at
- * startup (proof of shared-filesystem co-location) and POSTs it to the
- * loopback-only `/sync/auto-enroll` endpoint. Idempotent: the daemon returns
- * existing caller metadata if the alias already exists, and rotates the token
- * after each success (we re-read it from disk every time).
- */
-export async function autoEnrollCaller(alias: string): Promise<boolean> {
-  if (enrolledAliases.has(alias)) return true;
-
-  const configDir = getActiveMcpConfigDir();
-  if (!configDir) return false;
-
-  const tokenPath = join(configDir, "enroll.token");
-  if (!existsSync(tokenPath)) {
-    log.warn(`No enroll token at ${tokenPath} — is the local daemon running?`);
-    return false;
-  }
-
-  let token: string;
-  try {
-    token = readFileSync(tokenPath, "utf-8").trim();
-  } catch (err: any) {
-    log.warn(`Failed to read enroll token: ${err.message}`);
-    return false;
-  }
-
-  try {
-    const res = await fetch(`${getLocalDaemonUrl()}/sync/auto-enroll`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, alias }),
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      log.warn(`Auto-enroll for "${alias}" failed: HTTP ${res.status} ${body}`);
-      return false;
-    }
-    enrolledAliases.add(alias);
-    log.info(`Auto-enrolled caller "${alias}" against local daemon`);
-    return true;
-  } catch (err: any) {
-    log.warn(`Auto-enroll request for "${alias}" failed: ${err.message}`);
-    return false;
-  }
 }
