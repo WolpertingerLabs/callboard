@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, RefreshCw, X, ArrowRight, Plus } from "lucide-react";
+import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, RefreshCw, X, ArrowRight, Plus, ExternalLink, Server } from "lucide-react";
 import FolderBrowser from "../../components/FolderBrowser";
 import {
   getAgentSettings,
@@ -10,8 +10,20 @@ import {
   startSync,
   completeSync,
   cancelSync,
+  getDaemonStatus,
 } from "../../api";
-import type { AgentSettings, KeyAliasInfo, ConnectionTestResult } from "../../api";
+import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, DaemonStatus } from "../../api";
+
+function formatUptime(seconds?: number): string | null {
+  if (seconds === undefined || seconds === null) return null;
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
 
 export default function ProxySettings() {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
@@ -44,6 +56,22 @@ export default function ProxySettings() {
   const [showNewAliasInput, setShowNewAliasInput] = useState(false);
   const [newAliasName, setNewAliasName] = useState("");
   const [newAliasError, setNewAliasError] = useState<string | null>(null);
+
+  // Daemon status (merged in from the former Connections tab)
+  const [daemonStatus, setDaemonStatus] = useState<DaemonStatus | null>(null);
+  const [daemonError, setDaemonError] = useState<string | null>(null);
+
+  // Load daemon status on mount (independent of settings; both fire in parallel)
+  useEffect(() => {
+    getDaemonStatus()
+      .then((s) => {
+        setDaemonStatus(s);
+        setDaemonError(null);
+      })
+      .catch((err: Error) => setDaemonError(err.message));
+  }, []);
+
+  const daemonHealthy = daemonStatus?.health?.status === "ok";
 
   // Load settings on mount
   useEffect(() => {
@@ -162,6 +190,211 @@ export default function ProxySettings() {
   return (
     <>
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        {/* Daemon status (merged from former Connections tab) */}
+        <div
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            padding: 20,
+            background: "var(--surface)",
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <Server size={16} style={{ color: "var(--accent)" }} />
+            <span style={{ fontSize: 14, fontWeight: 600 }}>drawlatch daemon</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+            callboard delegates all proxy, connection, secret, listener and webhook-tunnel management to the drawlatch daemon. This panel only shows
+            connectivity — open the dashboard below to manage everything else.
+          </div>
+
+          {daemonError && (
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                fontSize: 12,
+                lineHeight: 1.5,
+                border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                background: "var(--danger-bg)",
+                color: "var(--danger)",
+                marginBottom: 16,
+              }}
+            >
+              {daemonError}
+            </div>
+          )}
+
+          {daemonStatus && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {/* Mode */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {daemonStatus.mode === "local" ? (
+                  <Monitor size={15} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                ) : (
+                  <Globe size={15} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                )}
+                <div style={{ fontSize: 13 }}>
+                  <span style={{ color: "var(--text-muted)" }}>Mode: </span>
+                  <span style={{ fontWeight: 600, color: "var(--text)" }}>
+                    {daemonStatus.mode === "local" ? (daemonStatus.managed ? "Managed local" : "Local") : "Remote"}
+                  </span>
+                  {daemonStatus.managed && daemonStatus.pid !== undefined && (
+                    <span style={{ color: "var(--text-muted)", marginLeft: 6, fontFamily: "monospace", fontSize: 11 }}>(pid {daemonStatus.pid})</span>
+                  )}
+                </div>
+              </div>
+
+              {/* URL */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Globe size={15} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                <div style={{ fontSize: 13, minWidth: 0 }}>
+                  <span style={{ color: "var(--text-muted)" }}>URL: </span>
+                  {daemonStatus.url ? (
+                    <code style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{daemonStatus.url}</code>
+                  ) : (
+                    <span style={{ color: "var(--text-muted)" }}>not configured</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Reachability / health */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 10,
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: `1px solid ${
+                    daemonHealthy ? "color-mix(in srgb, var(--success) 30%, transparent)" : "color-mix(in srgb, var(--danger) 30%, transparent)"
+                  }`,
+                  background: daemonHealthy ? "var(--success-bg)" : "var(--danger-bg)",
+                  color: daemonHealthy ? "var(--success)" : "var(--danger)",
+                }}
+              >
+                {daemonHealthy ? (
+                  <Wifi size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                ) : (
+                  <WifiOff size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                )}
+                <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 600 }}>
+                    {daemonHealthy ? "Reachable" : daemonStatus.reachable ? "Unhealthy" : "Unreachable"}
+                  </div>
+                  {daemonStatus.health && (
+                    <div style={{ opacity: 0.85, marginTop: 2 }}>
+                      {daemonStatus.health.activeSessions !== undefined && <span>{daemonStatus.health.activeSessions} active session(s)</span>}
+                      {formatUptime(daemonStatus.health.uptime) && (
+                        <span>
+                          {daemonStatus.health.activeSessions !== undefined ? " · " : ""}up {formatUptime(daemonStatus.health.uptime)}
+                        </span>
+                      )}
+                      {daemonStatus.health.tunnelUrl && (
+                        <div style={{ marginTop: 2 }}>
+                          tunnel: <code style={{ fontFamily: "monospace", fontSize: 11 }}>{daemonStatus.health.tunnelUrl}</code>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Enrolled aliases */}
+              <div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--text-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    marginBottom: 8,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <KeyRound size={13} /> Enrolled callers ({daemonStatus.enrolledAliases.length})
+                </div>
+                {daemonStatus.enrolledAliases.length > 0 ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {daemonStatus.enrolledAliases.map((alias) => (
+                      <span
+                        key={alias}
+                        style={{
+                          fontSize: 12,
+                          fontFamily: "monospace",
+                          padding: "4px 10px",
+                          borderRadius: 6,
+                          background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                          color: "var(--accent)",
+                          border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
+                        }}
+                      >
+                        {alias}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No callers enrolled yet.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Manage connections in drawlatch (deep link) */}
+        <div
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            padding: 20,
+            background: "var(--surface)",
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <ExternalLink size={16} style={{ color: "var(--accent)" }} />
+            <span style={{ fontSize: 14, fontWeight: 600 }}>Manage connections in drawlatch</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+            Connections, secrets, listeners, and the webhook tunnel are all managed in drawlatch&apos;s own password-gated dashboard. Open it to configure
+            external services for your agents.
+          </div>
+
+          {daemonStatus?.dashboardUrl ? (
+            <a
+              href={daemonStatus.dashboardUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                background: "var(--accent)",
+                color: "var(--text-on-accent)",
+                padding: "10px 20px",
+                borderRadius: 8,
+                fontSize: 14,
+                fontWeight: 500,
+                textDecoration: "none",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-hover)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
+            >
+              <ExternalLink size={14} />
+              Open drawlatch dashboard
+            </a>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              No dashboard URL available. Configure the drawlatch endpoint below first.
+            </div>
+          )}
+        </div>
+
         {/* MCP Config Directory section */}
         <div
           style={{
