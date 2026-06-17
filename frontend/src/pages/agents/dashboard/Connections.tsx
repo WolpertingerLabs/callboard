@@ -2,11 +2,12 @@ import { useState, useEffect } from "react";
 // useOutletContext removed — agent is now passed as a prop
 import { Wifi, WifiOff, ExternalLink, Info, Loader2, AlertTriangle } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { getProxyRoutes } from "../../../api";
+import { getProxyRoutes, getDaemonStatus } from "../../../api";
 import type { ProxyRoute, AgentConfig } from "../../../api";
 
 // Connections are managed by drawlatch, not by callboard.
-// This page fetches live route data from the proxy via GET /api/proxy/routes.
+// This page fetches live route data from the proxy via GET /api/proxy/routes
+// (read-only) and deep-links to the drawlatch dashboard for management.
 
 export default function Connections({ agent }: { agent: AgentConfig }) {
   const isMobile = useIsMobile();
@@ -14,8 +15,15 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
   const [configured, setConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [dashboardUrl, setDashboardUrl] = useState<string | null>(null);
 
   const hasKeys = !!agent.mcpKeyAlias;
+
+  useEffect(() => {
+    getDaemonStatus()
+      .then((s) => setDashboardUrl(s.dashboardUrl))
+      .catch(() => setDashboardUrl(null));
+  }, []);
 
   useEffect(() => {
     if (!hasKeys) return;
@@ -78,10 +86,21 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
       >
         <Info size={18} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 2 }} />
         <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--text-muted)" }}>
-          Connections are configured in{" "}
-          <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>drawlatch</code>&apos;s{" "}
-          <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>remote.config.json</code>. The proxy
-          manages authentication, secrets, and event ingestion. Agents access these services via MCP tools during sessions.
+          Connections, secrets, and listeners are managed in drawlatch&apos;s own dashboard — this is a read-only view of the routes available to this agent.
+          Agents access these services via MCP tools during sessions.
+          {dashboardUrl && (
+            <>
+              {" "}
+              <a
+                href={dashboardUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "var(--accent)", display: "inline-flex", alignItems: "center", gap: 3, whiteSpace: "nowrap" }}
+              >
+                Open drawlatch dashboard <ExternalLink size={12} />
+              </a>
+            </>
+          )}
         </div>
       </div>
 

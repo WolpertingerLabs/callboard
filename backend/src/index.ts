@@ -46,7 +46,6 @@ import { appPluginsRouter } from "./routes/app-plugins.js";
 import { agentsRouter } from "./routes/agents.js";
 import { agentSettingsRouter } from "./routes/agent-settings.js";
 import { proxyRouter } from "./routes/proxy.js";
-import { connectionsRouter } from "./routes/connections.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { themesRouter } from "./routes/themes.js";
 import { customSkillsRouter } from "./routes/custom-skills.js";
@@ -64,18 +63,14 @@ import { initJobRunner, shutdownJobRunner } from "./services/job-runner.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
-import { LocalProxy } from "./services/local-proxy.js";
 import {
   getAgentSettings,
-  getActiveMcpConfigDir,
-  ensureLocalProxyConfigDir,
   ensureRemoteProxyConfigDir,
   migrateDrawlatchDirs,
   migrateKeyDirectories,
 } from "./services/agent-settings.js";
-import { setLocalProxyInstance, getLocalProxyInstance } from "./services/proxy-singleton.js";
-import { loadMcpEnvIntoProcess } from "./services/connection-manager.js";
-import { startTunnelIfEnabled, stopTunnel } from "./services/tunnel-manager.js";
+import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
+import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
@@ -95,10 +90,6 @@ const PORT = (!isProduction && process.env.DEV_PORT_SERVER) || process.env.PORT 
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
-
-// Raw buffer for webhook endpoints (needed for signature verification).
-// Must be registered BEFORE express.json() so webhook bodies stay as Buffers.
-app.use("/webhooks", express.raw({ type: "application/json", limit: "1mb" }));
 
 app.use(express.json({ limit: "50mb" }));
 
@@ -124,18 +115,6 @@ const apiLimiter = rateLimit({
     return req.path.endsWith("/stream") || req.path.endsWith("/poll");
   },
 });
-
-// Webhook limiter — moderate (external services need reliable delivery)
-const webhookLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 60, // 60 requests per minute per IP
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many requests" },
-});
-
-// Apply webhook limiter before the raw body parser
-app.use("/webhooks", webhookLimiter);
 
 // Apply public rate limiter to unauthenticated auth endpoints
 app.use("/api/auth/login", publicLimiter);
@@ -212,7 +191,6 @@ app.use("/api/app-plugins", appPluginsRouter);
 app.use("/api/agents", agentsRouter);
 app.use("/api/agent-settings", agentSettingsRouter);
 app.use("/api/proxy", proxyRouter);
-app.use("/api/connections", connectionsRouter);
 app.use("/api/sessions", sessionsRouter);
 app.use("/api/themes", themesRouter);
 app.use("/api/custom-skills", customSkillsRouter);
@@ -483,45 +461,9 @@ app.post(
   changePasswordHandler,
 );
 
-// Webhook routes for local proxy mode (ingestor event ingestion).
-// HEAD handler: some webhook providers (e.g., Trello) send a HEAD request to
-// verify the callback URL during registration. Return 200 so verification passes.
-app.head("/webhooks/:path", (_req, res) => {
-  res.sendStatus(200);
-});
-
-app.post("/webhooks/:path", (req, res) => {
-  const localProxy = getLocalProxyInstance();
-  if (!localProxy) {
-    res.status(404).json({ error: "Local proxy not active" });
-    return;
-  }
-
-  const ingestors = localProxy.ingestorManager.getWebhookIngestors(req.params.path);
-  if (ingestors.length === 0) {
-    res.status(404).json({ error: "No webhook ingestor for this path" });
-    return;
-  }
-
-  // Ensure we have a raw Buffer for signature verification.
-  // The /webhooks express.raw() middleware should provide a Buffer, but
-  // fall back safely if something else parsed the body first.
-  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === "string" ? req.body : JSON.stringify(req.body));
-
-  // Fan out to all matching ingestors (multiple callers may share a webhook path)
-  let anyAccepted = false;
-  for (const ingestor of ingestors) {
-    const result = ingestor.handleWebhook(req.headers, rawBody);
-    if (result.accepted) anyAccepted = true;
-  }
-
-  // Return 200 if any ingestor accepted (providers like GitHub retry on non-2xx)
-  if (anyAccepted) {
-    res.status(200).json({ received: true });
-  } else {
-    res.status(403).json({ error: "Webhook rejected by all ingestors" });
-  }
-});
+// Webhooks are received and verified by the drawlatch daemon (which owns the
+// ingestors and its own cloudflared tunnel) — callboard no longer terminates
+// webhook traffic. It polls the daemon for buffered events via the event watcher.
 
 // Restart endpoint — delegates to `callboard restart` CLI which handles
 // the full stop → start lifecycle including PID file management.
@@ -600,61 +542,39 @@ app.listen(PORT, () => {
     log.error(`CLI watcher init failed: ${err.message}`);
   }
 
-  // Start proxy based on configured mode, then initialize event watchers.
-  // In local mode, event watchers must start AFTER LocalProxy is ready
-  // (they use getProxy() which requires the LocalProxy singleton to be set).
+  // Start the drawlatch daemon based on configured mode, then initialize event
+  // watchers. Local: spawn + supervise a managed daemon and auto-enroll the
+  // default caller before the watchers (which use getProxy()) come up. Remote:
+  // connect to the external daemon; keys come from the Sync flow.
   const settings = getAgentSettings();
-  if (settings.proxyMode === "local") {
-    // Async IIFE: tunnel must start before LocalProxy constructor so that
-    // callback URL env vars are available during drawlatch's resolveSecrets().
-    void (async () => {
-      // In local mode, getActiveMcpConfigDir() always returns a value (defaults to data/.drawlatch.local/)
-      const activeMcpConfigDir = getActiveMcpConfigDir()!;
-
-      // Ensure the config directory exists before starting
-      ensureLocalProxyConfigDir();
-
-      // Sync MCP_CONFIG_DIR and load secrets before creating LocalProxy
-      process.env.MCP_CONFIG_DIR = activeMcpConfigDir;
-      loadMcpEnvIntoProcess();
-
-      // Start cloudflared tunnel if enabled — sets callback URL env vars
-      // (e.g., TRELLO_CALLBACK_URL) that resolveSecrets() needs
-      try {
-        await startTunnelIfEnabled(PORT);
-      } catch (err: any) {
-        log.error(`Tunnel startup failed: ${err.message}`);
-      }
-
-      try {
-        const localProxy = new LocalProxy(activeMcpConfigDir, "default");
-        await localProxy.start();
-        setLocalProxyInstance(localProxy);
-        log.info("Local proxy started");
-
-        // Initialize event watchers now that LocalProxy is ready
-        try {
-          initEventWatchers();
-        } catch (err: any) {
-          log.error(`Event watcher init failed: ${err.message}`);
-        }
-      } catch (err: any) {
-        log.error(`Failed to start local proxy: ${err.message}`);
-      }
-    })();
-  } else {
-    if (settings.proxyMode === "remote") {
-      // Ensure the remote config directory and key scaffold exist
-      ensureRemoteProxyConfigDir();
-    }
-
-    // In remote mode, event watchers can start immediately (ProxyClient
-    // resolves keys synchronously and doesn't depend on LocalProxy)
+  if (settings.proxyMode === "remote") {
+    // Ensure the remote config directory and key scaffold exist
+    ensureRemoteProxyConfigDir();
     try {
       initEventWatchers();
     } catch (err: any) {
       log.error(`Event watcher init failed: ${err.message}`);
     }
+  } else {
+    void (async () => {
+      try {
+        const healthy = await startLocalDaemon();
+        if (healthy) {
+          await ensureCallerEnrolled("default");
+        } else {
+          log.warn("Local drawlatch daemon not healthy — proxy tools will be unavailable until it starts");
+        }
+      } catch (err: any) {
+        log.error(`Failed to start local drawlatch daemon: ${err.message}`);
+      }
+
+      // Initialize event watchers once the daemon is up (or attempted).
+      try {
+        initEventWatchers();
+      } catch (err: any) {
+        log.error(`Event watcher init failed: ${err.message}`);
+      }
+    })();
   }
 });
 
@@ -667,21 +587,11 @@ async function gracefulShutdown(signal: string) {
   shutdownEventWatchers();
   shutdownCliWatcher();
 
-  // Stop tunnel first (fast — just kills cloudflared child process)
+  // Stop the callboard-managed drawlatch daemon (no-op in remote mode).
   try {
-    await stopTunnel();
+    await stopLocalDaemon();
   } catch (err: any) {
-    log.error(`Failed to stop tunnel: ${err.message}`);
-  }
-
-  const localProxy = getLocalProxyInstance();
-  if (localProxy) {
-    try {
-      await localProxy.stop();
-      log.info("Local proxy stopped");
-    } catch (err: any) {
-      log.error(`Failed to stop local proxy: ${err.message}`);
-    }
+    log.error(`Failed to stop local drawlatch daemon: ${err.message}`);
   }
 
   process.exit(0);

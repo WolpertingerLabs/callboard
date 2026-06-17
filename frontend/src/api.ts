@@ -35,8 +35,6 @@ import type {
   QuietHours,
   AgentSettings,
   KeyAliasInfo,
-  CallerInfo,
-  ConnectionStatus,
   CustomTheme,
   ThemeListItem,
   CustomSkill,
@@ -93,8 +91,6 @@ export type {
   QuietHours,
   AgentSettings,
   KeyAliasInfo,
-  CallerInfo,
-  ConnectionStatus,
   CustomTheme,
   ThemeListItem,
   CustomSkill,
@@ -740,206 +736,7 @@ export async function backtestTriggerFilter(alias: string, filter: TriggerFilter
   return res.json();
 }
 
-// Proxy API functions
-
-export interface ProxyTestResult {
-  success: boolean;
-  connection: string;
-  supported?: boolean;
-  status?: number;
-  statusText?: string;
-  strategy?: string;
-  description?: string;
-  message?: string;
-  error?: string;
-}
-
-export async function testProxyApiConnection(connection: string, caller?: string): Promise<ProxyTestResult> {
-  const res = await fetch(`${BASE}/proxy/test-connection/${encodeURIComponent(connection)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ ...(caller && { caller }) }),
-  });
-  await assertOk(res, "Failed to test connection");
-  return res.json();
-}
-
-export async function testProxyIngestor(connection: string, caller?: string): Promise<ProxyTestResult> {
-  const res = await fetch(`${BASE}/proxy/test-ingestor/${encodeURIComponent(connection)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ ...(caller && { caller }) }),
-  });
-  await assertOk(res, "Failed to test ingestor");
-  return res.json();
-}
-
-// Listener control types
-
-export interface LifecycleResult {
-  success: boolean;
-  connection: string;
-  instanceId?: string;
-  state?: string;
-  error?: string;
-}
-
-export async function controlListener(
-  connection: string,
-  action: "start" | "stop" | "restart",
-  caller?: string,
-  instanceId?: string,
-): Promise<LifecycleResult | LifecycleResult[]> {
-  const res = await fetch(`${BASE}/proxy/control-listener/${encodeURIComponent(connection)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ action, ...(caller && { caller }), ...(instanceId && { instance_id: instanceId }) }),
-  });
-  await assertOk(res, "Failed to control listener");
-  return res.json();
-}
-
-// Listener config types
-
-export interface ListenerConfigOption {
-  value: string;
-  label: string;
-}
-
-export interface ListenerConfigField {
-  key: string;
-  label: string;
-  description?: string;
-  required?: boolean;
-  type: "text" | "number" | "boolean" | "select" | "multiselect" | "secret" | "text[]";
-  default?: string | number | boolean | string[];
-  options?: ListenerConfigOption[];
-  placeholder?: string;
-  min?: number;
-  max?: number;
-  pattern?: string;
-  dynamicOptions?: {
-    url: string;
-    method?: string;
-    body?: unknown;
-    responsePath?: string;
-    labelField: string;
-    valueField: string;
-  };
-  overrideKey?: string;
-  instanceKey?: boolean;
-  group?: string;
-}
-
-export interface ListenerConfigSchema {
-  connection: string;
-  name: string;
-  description?: string;
-  fields: ListenerConfigField[];
-  ingestorType?: string;
-  supportsMultiInstance: boolean;
-  instanceKeyField?: string;
-}
-
-export async function getListenerConfigs(alias?: string): Promise<{ configs: ListenerConfigSchema[] }> {
-  const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
-  const res = await fetch(`${BASE}/proxy/listener-configs${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get listener configs");
-  return res.json();
-}
-
-export async function resolveListenerOptions(
-  connection: string,
-  paramKey: string,
-  caller?: string,
-): Promise<{ success: boolean; options?: ListenerConfigOption[]; error?: string }> {
-  const res = await fetch(`${BASE}/proxy/resolve-listener-options`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ connection, paramKey, ...(caller && { caller }) }),
-  });
-  await assertOk(res, "Failed to resolve listener options");
-  return res.json();
-}
-
-// ── Listener Param Read/Write (Tier 4) ──
-
-export interface ListenerParams {
-  success: boolean;
-  connection: string;
-  instance_id?: string;
-  params: Record<string, unknown>;
-  defaults: Record<string, unknown>;
-  error?: string;
-}
-
-export async function getListenerParams(connection: string, caller?: string, instanceId?: string): Promise<ListenerParams> {
-  const params = new URLSearchParams();
-  if (caller) params.append("alias", caller);
-  if (instanceId) params.append("instance_id", instanceId);
-  const qs = params.toString() ? `?${params}` : "";
-  const res = await fetch(`${BASE}/proxy/listener-params/${encodeURIComponent(connection)}${qs}`, {
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to get listener params");
-  return res.json();
-}
-
-export async function setListenerParams(
-  connection: string,
-  params: Record<string, unknown>,
-  caller?: string,
-  instanceId?: string,
-  createInstance?: boolean,
-): Promise<{ success: boolean; connection: string; instance_id?: string; params: Record<string, unknown>; error?: string }> {
-  const res = await fetch(`${BASE}/proxy/listener-params/${encodeURIComponent(connection)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      params,
-      ...(caller && { caller }),
-      ...(instanceId && { instance_id: instanceId }),
-      ...(createInstance !== undefined && { create_instance: createInstance }),
-    }),
-  });
-  await assertOk(res, "Failed to set listener params");
-  return res.json();
-}
-
-export async function listListenerInstancesViaProxy(
-  connection: string,
-  caller?: string,
-): Promise<{ success: boolean; connection: string; instances: ListenerInstanceInfo[]; error?: string }> {
-  const params = new URLSearchParams();
-  if (caller) params.append("alias", caller);
-  const qs = params.toString() ? `?${params}` : "";
-  const res = await fetch(`${BASE}/proxy/listener-instances/${encodeURIComponent(connection)}${qs}`, {
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to list listener instances");
-  return res.json();
-}
-
-export async function deleteListenerInstanceViaProxy(
-  connection: string,
-  instanceId: string,
-  caller?: string,
-): Promise<{ success: boolean; connection: string; instance_id: string; error?: string }> {
-  const params = new URLSearchParams();
-  if (caller) params.append("alias", caller);
-  const qs = params.toString() ? `?${params}` : "";
-  const res = await fetch(`${BASE}/proxy/listener-instance/${encodeURIComponent(connection)}/${encodeURIComponent(instanceId)}${qs}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete listener instance");
-  return res.json();
-}
+// Proxy API functions (read-only)
 
 export interface ProxyRoute {
   index: number;
@@ -1059,17 +856,27 @@ export async function testProxyConnection(url: string, alias?: string): Promise<
   return res.json();
 }
 
-// Tunnel status
+// Drawlatch daemon status
 
-export interface TunnelStatus {
-  active: boolean;
-  url?: string;
-  cloudflaredAvailable?: boolean;
+export interface DaemonStatus {
+  mode: "local" | "remote";
+  url: string | null;
+  managed: boolean;
+  reachable: boolean;
+  health: {
+    status: string;
+    activeSessions?: number;
+    uptime?: number;
+    tunnelUrl?: string;
+  } | null;
+  pid?: number;
+  dashboardUrl: string | null;
+  enrolledAliases: string[];
 }
 
-export async function getTunnelStatus(): Promise<TunnelStatus> {
-  const res = await fetch(`${BASE}/agent-settings/tunnel-status`, { credentials: "include" });
-  await assertOk(res, "Failed to get tunnel status");
+export async function getDaemonStatus(): Promise<DaemonStatus> {
+  const res = await fetch(`${BASE}/agent-settings/daemon-status`, { credentials: "include" });
+  await assertOk(res, "Failed to get daemon status");
   return res.json();
 }
 
@@ -1119,130 +926,19 @@ export async function getAgentActivity(alias: string, type?: string, limit?: num
   return data.entries;
 }
 
-// Connection management API functions
+// Caller enrollment (local mode). Creates/enrolls a caller alias under the
+// drawlatch keys/callers/ directory. In remote mode the backend returns 400 —
+// callers arrive via the Sync flow instead.
 
-export interface ConnectionsListResponse {
-  templates: ConnectionStatus[];
-  callers: CallerInfo[];
-  localModeActive: boolean;
-  remoteModeActive?: boolean;
-  remoteConfigManagement?: boolean;
-}
-
-export async function getConnections(caller?: string): Promise<ConnectionsListResponse> {
-  const params = caller ? `?caller=${encodeURIComponent(caller)}` : "";
-  const res = await fetch(`${BASE}/connections${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get connections");
-  return res.json();
-}
-
-export async function setConnectionEnabled(alias: string, enabled: boolean, caller?: string): Promise<{ alias: string; enabled: boolean }> {
-  const res = await fetch(`${BASE}/connections/${encodeURIComponent(alias)}/enable`, {
+export async function createCallerAlias(alias: string): Promise<{ alias: string; aliases: KeyAliasInfo[] }> {
+  const res = await fetch(`${BASE}/agent-settings/callers`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ enabled, ...(caller && { caller }) }),
-  });
-  await assertOk(res, "Failed to toggle connection");
-  return res.json();
-}
-
-export async function setConnectionSecrets(alias: string, secrets: Record<string, string>, caller?: string): Promise<{ secretsSet: Record<string, boolean> }> {
-  const res = await fetch(`${BASE}/connections/${encodeURIComponent(alias)}/secrets`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ secrets, ...(caller && { caller }) }),
-  });
-  await assertOk(res, "Failed to set connection secrets");
-  return res.json();
-}
-
-// Caller alias management
-
-export async function getCallerAliases(): Promise<{ callers: CallerInfo[] }> {
-  const res = await fetch(`${BASE}/connections/callers`, { credentials: "include" });
-  await assertOk(res, "Failed to get caller aliases");
-  return res.json();
-}
-
-export async function createCallerAlias(alias: string, name?: string): Promise<{ caller: CallerInfo }> {
-  const res = await fetch(`${BASE}/connections/callers`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ alias, ...(name && { name }) }),
+    body: JSON.stringify({ alias }),
   });
   await assertOk(res, "Failed to create caller alias");
   return res.json();
-}
-
-export async function deleteCallerAlias(callerAlias: string): Promise<void> {
-  const res = await fetch(`${BASE}/connections/callers/${encodeURIComponent(callerAlias)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete caller alias");
-}
-
-// Listener instance management (local mode)
-
-export interface ListenerInstanceInfo {
-  instanceId: string;
-  disabled?: boolean;
-  params?: Record<string, unknown>;
-}
-
-export async function getListenerInstances(connectionAlias: string, caller?: string): Promise<{ instances: ListenerInstanceInfo[] }> {
-  const params = new URLSearchParams();
-  if (caller) params.append("caller", caller);
-  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances?${params}`, {
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to list listener instances");
-  return res.json();
-}
-
-export async function createListenerInstance(
-  connectionAlias: string,
-  instanceId: string,
-  instanceParams?: Record<string, unknown>,
-  caller?: string,
-): Promise<{ instance: ListenerInstanceInfo }> {
-  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ instanceId, params: instanceParams || {}, ...(caller && { caller }) }),
-  });
-  await assertOk(res, "Failed to create listener instance");
-  return res.json();
-}
-
-export async function updateListenerInstanceApi(
-  connectionAlias: string,
-  instanceId: string,
-  updates: { params?: Record<string, unknown>; disabled?: boolean },
-  caller?: string,
-): Promise<{ instance: ListenerInstanceInfo }> {
-  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances/${encodeURIComponent(instanceId)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ ...updates, ...(caller && { caller }) }),
-  });
-  await assertOk(res, "Failed to update listener instance");
-  return res.json();
-}
-
-export async function deleteListenerInstanceApi(connectionAlias: string, instanceId: string, caller?: string): Promise<void> {
-  const params = new URLSearchParams();
-  if (caller) params.append("caller", caller);
-  const res = await fetch(`${BASE}/connections/${encodeURIComponent(connectionAlias)}/listener-instances/${encodeURIComponent(instanceId)}?${params}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete listener instance");
 }
 
 // Password change API

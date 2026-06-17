@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, Radio, RefreshCw, X, ArrowRight, Plus } from "lucide-react";
+import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, RefreshCw, X, ArrowRight, Plus } from "lucide-react";
 import FolderBrowser from "../../components/FolderBrowser";
 import {
   getAgentSettings,
@@ -7,12 +7,11 @@ import {
   getKeyAliases,
   createCallerAlias,
   testProxyConnection,
-  getTunnelStatus,
   startSync,
   completeSync,
   cancelSync,
 } from "../../api";
-import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, TunnelStatus } from "../../api";
+import type { AgentSettings, KeyAliasInfo, ConnectionTestResult } from "../../api";
 
 export default function ProxySettings() {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
@@ -30,8 +29,6 @@ export default function ProxySettings() {
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [defaultLocalDir, setDefaultLocalDir] = useState("");
   const [defaultRemoteDir, setDefaultRemoteDir] = useState("");
-  const [tunnelEnabled, setTunnelEnabled] = useState(false);
-  const [tunnelStatus, setTunnelStatus] = useState<TunnelStatus | null>(null);
 
   // Sync state
   const [syncStep, setSyncStep] = useState<"input" | "confirm" | "success">("input");
@@ -60,22 +57,10 @@ export default function ProxySettings() {
         setRemoteServerUrl(s.remoteServerUrl || "");
         setDefaultLocalDir(s.defaultLocalMcpConfigDir || "");
         setDefaultRemoteDir(s.defaultRemoteMcpConfigDir || "");
-        setTunnelEnabled(s.tunnelEnabled || false);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
-
-  // Load tunnel status on mount and when proxy mode changes
-  useEffect(() => {
-    if (settings?.proxyMode === "local") {
-      getTunnelStatus()
-        .then(setTunnelStatus)
-        .catch(() => setTunnelStatus(null));
-    } else {
-      setTunnelStatus(null);
-    }
-  }, [settings?.proxyMode]);
 
   // Resolve the active config dir based on current proxy mode
   const displayedConfigDir = (() => {
@@ -104,23 +89,14 @@ export default function ProxySettings() {
         remoteMcpConfigDir: remoteMcpConfigDir || undefined,
         proxyMode: proxyMode || undefined,
         remoteServerUrl: remoteServerUrl || undefined,
-        tunnelEnabled,
       });
       setSettings(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      // Refresh key aliases and tunnel status after save
+      // Refresh key aliases after save
       getKeyAliases(updated.proxyMode)
         .then(setKeyAliases)
         .catch(() => setKeyAliases([]));
-      if (updated.proxyMode === "local") {
-        // Delay slightly to let tunnel start/stop
-        setTimeout(() => {
-          getTunnelStatus()
-            .then(setTunnelStatus)
-            .catch(() => setTunnelStatus(null));
-        }, 2000);
-      }
     } catch {
       // ignore
     } finally {
@@ -215,7 +191,7 @@ export default function ProxySettings() {
             >
               .drawlatch.local/
             </code>{" "}
-            directory containing your keys and identity. Key aliases are discovered from the{" "}
+            directory containing your keys and identity. Caller aliases are discovered from the{" "}
             <code
               style={{
                 fontFamily: "monospace",
@@ -224,9 +200,9 @@ export default function ProxySettings() {
                 borderRadius: 4,
               }}
             >
-              keys/local/
+              keys/callers/
             </code>{" "}
-            subdirectories.
+            subdirectories — enrollment is automatic in local mode (or via Sync in remote mode).
           </div>
 
           {/* Path input + browse */}
@@ -448,8 +424,8 @@ export default function ProxySettings() {
             <span style={{ fontSize: 14, fontWeight: 600 }}>Proxy Mode</span>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
-            How proxy tools connect to drawlatch. Local mode runs in-process with no separate server. Remote mode connects to an external server over an
-            encrypted channel.
+            How callboard connects to drawlatch. Local mode runs and supervises a managed daemon. Remote mode connects to an external server over an encrypted
+            channel.
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: proxyMode === "remote" ? 16 : 0 }}>
@@ -488,7 +464,7 @@ export default function ProxySettings() {
               <div>
                 <div style={{ fontWeight: 500, color: proxyMode === "local" ? "var(--text)" : "var(--text-muted)" }}>Local</div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                  Runs in-process, no separate server. Best for single-machine setups.
+                  callboard runs and supervises a local drawlatch daemon and talks to it over the encrypted protocol.
                 </div>
               </div>
             </div>
@@ -1016,135 +992,6 @@ export default function ProxySettings() {
                 >
                   Done
                 </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Webhook Tunnel section (local mode only) */}
-        {proxyMode === "local" && (
-          <div
-            style={{
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: 20,
-              background: "var(--surface)",
-              marginBottom: 16,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <Radio size={16} style={{ color: "var(--accent)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600 }}>Webhook Tunnel</span>
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
-              Starts a cloudflared tunnel to receive webhook events from external services (Trello, GitHub, Stripe, etc.). Callback URLs are auto-configured
-              when the tunnel starts. Requires{" "}
-              <a
-                href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: "var(--accent)" }}
-              >
-                cloudflared
-              </a>{" "}
-              to be installed.
-            </div>
-
-            {/* Toggle */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "10px 14px",
-                borderRadius: 8,
-                border: `1px solid ${tunnelEnabled ? "var(--accent)" : "var(--border)"}`,
-                background: tunnelEnabled ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "var(--bg)",
-                cursor: "pointer",
-                transition: "all 0.15s",
-                marginBottom: tunnelStatus ? 12 : 0,
-              }}
-              onClick={() => {
-                setTunnelEnabled(!tunnelEnabled);
-                setSaved(false);
-              }}
-            >
-              {/* Toggle switch */}
-              <div
-                style={{
-                  width: 36,
-                  height: 20,
-                  borderRadius: 10,
-                  background: tunnelEnabled ? "var(--accent)" : "var(--border)",
-                  position: "relative",
-                  transition: "background 0.2s",
-                  flexShrink: 0,
-                }}
-              >
-                <div
-                  style={{
-                    width: 16,
-                    height: 16,
-                    borderRadius: "50%",
-                    background: "var(--toggle-knob)",
-                    position: "absolute",
-                    top: 2,
-                    left: tunnelEnabled ? 18 : 2,
-                    transition: "left 0.2s",
-                  }}
-                />
-              </div>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 500, color: tunnelEnabled ? "var(--text)" : "var(--text-muted)" }}>
-                  {tunnelEnabled ? "Tunnel Enabled" : "Tunnel Disabled"}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                  {tunnelEnabled ? "Webhook events will be received via cloudflared tunnel" : "Only websocket-based events (Discord, Slack) will work"}
-                </div>
-              </div>
-            </div>
-
-            {/* Tunnel status */}
-            {tunnelStatus && (
-              <div
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  lineHeight: 1.5,
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 8,
-                  border: `1px solid ${
-                    tunnelStatus.active
-                      ? "color-mix(in srgb, var(--success) 30%, transparent)"
-                      : tunnelStatus.cloudflaredAvailable === false
-                        ? "color-mix(in srgb, var(--danger) 30%, transparent)"
-                        : "color-mix(in srgb, var(--border) 50%, transparent)"
-                  }`,
-                  background: tunnelStatus.active ? "var(--success-bg)" : tunnelStatus.cloudflaredAvailable === false ? "var(--danger-bg)" : "var(--bg)",
-                  color: tunnelStatus.active ? "var(--success)" : tunnelStatus.cloudflaredAvailable === false ? "var(--danger)" : "var(--text-muted)",
-                }}
-              >
-                {tunnelStatus.active ? (
-                  <Wifi size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                ) : (
-                  <WifiOff size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                )}
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>
-                    {tunnelStatus.active ? "Tunnel Active" : tunnelStatus.cloudflaredAvailable === false ? "cloudflared Not Found" : "Tunnel Inactive"}
-                  </div>
-                  <div style={{ opacity: 0.85 }}>
-                    {tunnelStatus.active && tunnelStatus.url ? (
-                      <code style={{ fontFamily: "monospace", fontSize: 11 }}>{tunnelStatus.url}</code>
-                    ) : tunnelStatus.cloudflaredAvailable === false ? (
-                      "Install cloudflared to enable webhook tunneling"
-                    ) : (
-                      "Save settings with tunnel enabled to start"
-                    )}
-                  </div>
-                </div>
               </div>
             )}
           </div>

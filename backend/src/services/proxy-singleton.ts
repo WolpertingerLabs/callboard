@@ -1,108 +1,89 @@
 /**
- * Proxy client manager.
+ * Proxy client factory + drawlatch endpoint resolution.
  *
- * Creates and caches ProxyClient instances per key alias. Each alias
- * corresponds to a subdirectory under {mcpConfigDir}/keys/callers/{alias}/
- * containing the Ed25519/X25519 keypair for that identity. The remote
- * server's public keys are always at {mcpConfigDir}/keys/server/.
+ * callboard reaches drawlatch through exactly one mechanism now: an encrypted
+ * {@link ProxyClient} over the protocol. Local and remote are the SAME code
+ * path — the only difference is the endpoint URL:
  *
- * In local mode, a shared LocalProxy instance is used instead of per-alias
- * ProxyClient instances. getProxy() returns the appropriate implementation
- * based on the configured proxyMode.
+ *   - "local"  → a callboard-managed drawlatch daemon (see local-daemon.ts),
+ *                reachable on the loopback URL it binds to.
+ *   - "remote" → an external drawlatch daemon at settings.remoteServerUrl.
  *
- * Reads mcpConfigDir from agent-settings.json (set via the Agent Settings UI).
- * Falls back to env vars EVENT_WATCHER_KEYS_DIR / EVENT_WATCHER_REMOTE_KEYS_DIR
- * for backwards compatibility.
- *
- * Configuration:
- *   EVENT_WATCHER_REMOTE_URL — remote proxy server URL (default: http://127.0.0.1:9999)
+ * Each caller alias maps to a keypair under {configDir}/keys/callers/{alias}/;
+ * the daemon's public keys live at {configDir}/keys/server/. getProxy() returns
+ * a ProxyClient for the alias, or null when its keys are missing.
  */
 import { join } from "path";
 import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
-import { LocalProxy } from "./local-proxy.js";
-import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, ensureLocalProxyConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
-import { startTunnelIfEnabled, stopTunnel } from "./tunnel-manager.js";
+import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
+import { getLocalDaemonUrl, startLocalDaemon, stopLocalDaemon, autoEnrollCaller } from "./local-daemon.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy-manager");
 
 const REMOTE_URL = process.env.EVENT_WATCHER_REMOTE_URL || "http://127.0.0.1:9999";
 
-// ── Shared interface both classes satisfy ────────────────────────────
+// ── Shared interface ────────────────────────────────────────────────
 
-/** Common interface for LocalProxy and ProxyClient */
+/** Minimal interface consumers depend on (satisfied by ProxyClient). */
 export interface ProxyLike {
   callTool(toolName: string, toolInput?: Record<string, unknown>): Promise<unknown>;
 }
 
-// ── Singleton LocalProxy instance (shared across all sessions) ──────
-
-let localProxyInstance: LocalProxy | null = null;
-
-export function getLocalProxyInstance(): LocalProxy | null {
-  return localProxyInstance;
-}
-
-export function setLocalProxyInstance(proxy: LocalProxy): void {
-  localProxyInstance = proxy;
-}
-
-// ── Per-alias client cache (remote mode) ────────────────────────────
+// ── Per-alias client cache ──────────────────────────────────────────
 
 const clientCache = new Map<string, ProxyClient>();
 const failedAliases = new Set<string>();
 
 /**
+ * The drawlatch endpoint URL for the current proxy mode: the callboard-managed
+ * local daemon, or the configured external server.
+ */
+export function resolveEndpointUrl(): string {
+  const settings = getAgentSettings();
+  if (settings.proxyMode === "remote") {
+    return settings.remoteServerUrl || REMOTE_URL;
+  }
+  return getLocalDaemonUrl();
+}
+
+/**
  * Resolve key paths for a given alias.
  * Returns null if mcpConfigDir is not set or key files don't exist.
  */
-function resolveKeyPaths(alias: string): { keysDir: string; remoteKeysDir: string } | null {
+function resolveKeyPaths(alias: string): { keysDir: string; serverKeysDir: string } | null {
   const configDir = getActiveMcpConfigDir();
   if (!configDir) return null;
 
   const keysDir = join(configDir, "keys", "callers", alias);
-  const remoteKeysDir = join(configDir, "keys", "server");
+  const serverKeysDir = join(configDir, "keys", "server");
 
-  // Verify both directories exist with required key files
   if (
     !existsSync(keysDir) ||
-    !existsSync(remoteKeysDir) ||
+    !existsSync(serverKeysDir) ||
     !existsSync(join(keysDir, "signing.key.pem")) ||
-    !existsSync(join(remoteKeysDir, "signing.pub.pem"))
+    !existsSync(join(serverKeysDir, "signing.pub.pem"))
   ) {
     return null;
   }
 
-  return { keysDir, remoteKeysDir };
+  return { keysDir, serverKeysDir };
 }
 
 // ── Public API ──────────────────────────────────────────────────────
 
 /**
- * Get the appropriate proxy for a given alias.
- * In local mode: returns a wrapper around the shared LocalProxy that
- *   routes calls through the specific caller alias's routes.
- * In remote mode: returns a cached ProxyClient for the alias.
+ * Get a ProxyClient for a given caller alias (local or remote — same path).
+ * Returns null if keys are missing or client creation fails.
  */
 export function getProxy(alias: string): ProxyLike | null {
-  const settings = getAgentSettings();
-
-  if (settings.proxyMode === "local") {
-    if (!localProxyInstance) return null;
-    // Return a wrapper that passes the caller alias to callTool
-    return {
-      callTool: (toolName: string, toolInput?: Record<string, unknown>) => localProxyInstance!.callTool(toolName, toolInput, alias),
-    };
-  } else {
-    return getProxyClient(alias); // existing behavior
-  }
+  return getProxyClient(alias);
 }
 
 /**
- * Get a ProxyClient for a specific key alias (remote mode).
- * Creates and caches the client on first call. Returns null if keys
- * are missing or client creation fails.
+ * Get a ProxyClient for a specific caller alias. Creates and caches the client
+ * on first call. Returns null if keys are missing or client creation fails.
  */
 export function getProxyClient(alias: string): ProxyClient | null {
   if (failedAliases.has(alias)) return null;
@@ -116,13 +97,12 @@ export function getProxyClient(alias: string): ProxyClient | null {
     return null;
   }
 
-  const settings = getAgentSettings();
-  const remoteUrl = settings.remoteServerUrl || REMOTE_URL;
+  const remoteUrl = resolveEndpointUrl();
 
   try {
-    const client = new ProxyClient(remoteUrl, paths.keysDir, paths.remoteKeysDir);
+    const client = new ProxyClient(remoteUrl, paths.keysDir, paths.serverKeysDir);
     clientCache.set(alias, client);
-    log.info(`Proxy client created for alias "${alias}" — remote=${remoteUrl}`);
+    log.info(`Proxy client created for alias "${alias}" — endpoint=${remoteUrl}`);
     return client;
   } catch (err: any) {
     log.error(`Failed to create proxy client for alias "${alias}": ${err.message}`);
@@ -132,41 +112,58 @@ export function getProxyClient(alias: string): ProxyClient | null {
 }
 
 /**
- * Check whether the proxy is configured (mcpConfigDir set with appropriate mode config).
+ * Ensure a caller is enrolled and usable for the current mode.
+ *
+ * Local: auto-enroll the caller against the managed daemon (zero-friction,
+ * shared filesystem). Remote: enrollment is done via the invite-code sync flow,
+ * so this is a no-op — the keys either exist or they don't.
+ *
+ * Returns true if a ProxyClient can be obtained afterwards.
+ */
+export async function ensureCallerEnrolled(alias: string): Promise<boolean> {
+  const settings = getAgentSettings();
+  if (settings.proxyMode !== "remote") {
+    const ok = await autoEnrollCaller(alias);
+    if (ok) {
+      // Keys may have just appeared on disk — drop any stale failure marker.
+      failedAliases.delete(alias);
+    }
+  }
+  return getProxy(alias) !== null;
+}
+
+/**
+ * Check whether the proxy is configured (mcpConfigDir set with usable keys
+ * for at least one caller, or local mode which auto-enrolls on demand).
  */
 export function isProxyConfigured(): boolean {
   const settings = getAgentSettings();
   const configDir = getActiveMcpConfigDir();
   if (!configDir) return false;
 
-  // In local mode, proxy is configured if config dir is set and mode is "local"
-  if (settings.proxyMode === "local") return true;
+  // Local mode auto-enrolls callers on demand, so it's always "configured"
+  // once a config dir exists.
+  if (settings.proxyMode !== "remote") return true;
 
-  // In remote mode, check for usable key aliases
+  // Remote mode needs at least one caller with usable keys.
   const aliases = discoverKeyAliases();
   return aliases.some((a) => a.hasSigningPub && a.hasExchangePub);
 }
 
-/**
- * Get all configured aliases that have valid key files.
- */
+/** Get all configured aliases that have valid key files. */
 export function getConfiguredAliases(): string[] {
   const aliases = discoverKeyAliases();
   return aliases.filter((a) => a.hasSigningPub && a.hasExchangePub).map((a) => a.alias);
 }
 
-/**
- * Remove a cached client, forcing a fresh ProxyClient on next getProxyClient() call.
- */
+/** Remove a cached client, forcing a fresh ProxyClient on next getProxy() call. */
 export function resetClient(alias: string): void {
   clientCache.delete(alias);
   failedAliases.delete(alias);
   log.info(`Reset proxy client cache for alias "${alias}"`);
 }
 
-/**
- * Clear all cached clients and failed aliases.
- */
+/** Clear all cached clients and failed aliases. */
 export function resetAllClients(): void {
   clientCache.clear();
   failedAliases.clear();
@@ -176,78 +173,22 @@ export function resetAllClients(): void {
 /**
  * Handle proxy mode switching at runtime.
  *
- * When switching to "local": creates and starts a LocalProxy instance.
- * When switching away from "local": stops and clears the LocalProxy.
- * Always resets cached remote ProxyClient instances.
+ * Local: start (and supervise) the managed daemon, auto-enroll the default
+ * caller. Remote: stop any managed daemon and ensure the remote config dir
+ * scaffold exists. Always resets cached clients so the new endpoint is used.
  */
 export async function switchProxyMode(newMode: string | undefined): Promise<void> {
   resetAllClients();
 
-  // Tear down existing tunnel and LocalProxy when any local-mode state changes
-  // (switching away from local, OR re-creating local with changed settings like tunnelEnabled)
-  if (localProxyInstance) {
-    try {
-      await stopTunnel();
-    } catch (err: any) {
-      log.warn(`Failed to stop tunnel during mode switch: ${err.message}`);
-    }
-    try {
-      await localProxyInstance.stop();
-      log.info("LocalProxy stopped (mode switch / settings change)");
-    } catch (err: any) {
-      log.warn(`Failed to stop LocalProxy during mode switch: ${err.message}`);
-    }
-    localProxyInstance = null;
-  }
-
-  // Create LocalProxy if switching to (or staying in) local mode
-  if (newMode === "local") {
-    ensureLocalProxyConfigDir();
-    const configDir = getActiveMcpConfigDir();
-    if (configDir) {
-      // Sync MCP_CONFIG_DIR so drawlatch's loadRemoteConfig reads the right dir
-      process.env.MCP_CONFIG_DIR = configDir;
-
-      // Load .env secrets into process.env
-      const { loadMcpEnvIntoProcess } = await import("./connection-manager.js");
-      loadMcpEnvIntoProcess();
-
-      // Start tunnel if enabled — must happen before LocalProxy constructor
-      // so callback URL env vars are available during resolveSecrets()
-      const PORT = process.env.PORT || 8000;
-      try {
-        await startTunnelIfEnabled(PORT);
-      } catch (err: any) {
-        log.error(`Tunnel startup failed during mode switch: ${err.message}`);
-      }
-
-      try {
-        const proxy = new LocalProxy(configDir, "default");
-        await proxy.start();
-        localProxyInstance = proxy;
-        log.info(`LocalProxy created and started (configDir=${configDir})`);
-      } catch (err: any) {
-        log.error(`Failed to create LocalProxy during mode switch: ${err.message}`);
-      }
-    } else {
-      log.warn("Cannot create LocalProxy: no MCP config directory configured");
-    }
-  } else if (newMode === "remote") {
+  if (newMode === "remote") {
+    await stopLocalDaemon();
     ensureRemoteProxyConfigDir();
+  } else {
+    const healthy = await startLocalDaemon();
+    if (healthy) {
+      await ensureCallerEnrolled("default");
+    }
   }
-}
-
-// ── Backwards-compatible shims ──────────────────────────────────────
-// These are kept temporarily so any code not yet migrated doesn't break.
-// They try the first configured alias.
-
-/**
- * @deprecated Use getProxyClient(alias) instead
- */
-export function getSharedProxyClient(): ProxyClient | null {
-  const aliases = getConfiguredAliases();
-  if (aliases.length === 0) return null;
-  return getProxyClient(aliases[0]);
 }
 
 // ── Connection testing ──────────────────────────────────────────────
@@ -262,7 +203,7 @@ export interface ConnectionTestResult {
 }
 
 /**
- * Test connectivity to a remote proxy server.
+ * Test connectivity to a drawlatch server.
  *
  * 1. Health check — is the server reachable?
  * 2. Full handshake — are keys valid and authorized?
@@ -299,13 +240,13 @@ export async function testRemoteConnection(url: string, alias: string): Promise<
   if (!paths) {
     return {
       status: "handshake_failed",
-      message: `No valid keys found for alias "${alias}". Check that keys exist in the MCP config directory.`,
+      message: `No valid keys found for alias "${alias}". Enroll first via Sync (remote) or the managed daemon (local).`,
     };
   }
 
   let client: ProxyClient;
   try {
-    client = new ProxyClient(url, paths.keysDir, paths.remoteKeysDir);
+    client = new ProxyClient(url, paths.keysDir, paths.serverKeysDir);
   } catch (err: any) {
     return {
       status: "handshake_failed",
@@ -331,7 +272,6 @@ export async function testRemoteConnection(url: string, alias: string): Promise<
       routeCount: routes?.length ?? 0,
     };
   } catch (err: any) {
-    // Handshake succeeded but request failed — still partially connected
     return {
       status: "connected",
       message: `Handshake succeeded but route listing failed: ${err.message}`,

@@ -1,1465 +1,261 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import {
-  Wifi,
-  WifiOff,
-  ExternalLink,
-  Search,
-  Loader2,
-  Settings,
-  Radio,
-  Globe,
-  Check,
-  AlertTriangle,
-  Plus,
-  Trash2,
-  Users,
-  ChevronDown,
-  Cloud,
-  Play,
-  Square,
-  RotateCw,
-} from "lucide-react";
-import { useIsMobile } from "../../hooks/useIsMobile";
-import {
-  getConnections,
-  setConnectionEnabled,
-  createCallerAlias,
-  deleteCallerAlias,
-  testProxyApiConnection,
-  testProxyIngestor,
-  getProxyIngestors,
-  controlListener,
-  restartServer,
-} from "../../api";
-import type { ConnectionStatus, CallerInfo, ProxyTestResult, IngestorStatus } from "../../api";
-import ConfigureConnectionModal from "../../components/ConfigureConnectionModal";
-import ListenerConfigPanel from "../../components/ListenerConfigPanel";
-import ConnectionEventsView from "./ConnectionEventsView";
-
-const CATEGORY_LABELS: Record<string, string> = {
-  ai: "AI",
-  "developer-tools": "Developer Tools",
-  gaming: "Gaming",
-  messaging: "Messaging",
-  productivity: "Productivity",
-  "social-media": "Social Media",
-};
-const CATEGORY_ORDER = Object.keys(CATEGORY_LABELS);
+import { useState, useEffect } from "react";
+import { ExternalLink, Wifi, WifiOff, Server, Monitor, Globe, KeyRound, Loader2, ArrowRight } from "lucide-react";
+import { getDaemonStatus } from "../../api";
+import type { DaemonStatus } from "../../api";
 
 interface ConnectionsSettingsProps {
-  onSwitchTab: (tab: string) => void;
+  onSwitchTab?: (tab: string) => void;
+}
+
+function formatUptime(seconds?: number): string | null {
+  if (seconds === undefined || seconds === null) return null;
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
 }
 
 export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettingsProps) {
-  const isMobile = useIsMobile();
-  const [connections, setConnections] = useState<ConnectionStatus[]>([]);
-  const [callers, setCallers] = useState<CallerInfo[]>([]);
-  const [selectedCaller, setSelectedCaller] = useState("default");
-  const [localModeActive, setLocalModeActive] = useState(true);
-  const [remoteModeActive, setRemoteModeActive] = useState(false);
-  const [remoteConfigManagement, setRemoteConfigManagement] = useState(false);
+  const [status, setStatus] = useState<DaemonStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [stabilityFilter, setStabilityFilter] = useState<"stable" | "beta" | "dev">("stable");
-  const [configuring, setConfiguring] = useState<ConnectionStatus | null>(null);
-  const [togglingAlias, setTogglingAlias] = useState<string | null>(null);
-  const [showCallerMenu, setShowCallerMenu] = useState(false);
-  const [showNewCallerInput, setShowNewCallerInput] = useState(false);
-  const [newCallerAlias, setNewCallerAlias] = useState("");
-  const [newCallerError, setNewCallerError] = useState<string | null>(null);
-  const [ingestorStatuses, setIngestorStatuses] = useState<Record<string, IngestorStatus[]>>({});
-  const [listenerConfig, setListenerConfig] = useState<{ alias: string; name: string } | null>(null);
-  const [showEventsView, setShowEventsView] = useState(false);
-  const [needsRestart, setNeedsRestart] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-
-  const selectedCallerRef = useRef(selectedCaller);
-  selectedCallerRef.current = selectedCaller;
-
-  const fetchIngestorStatuses = useCallback(async (caller?: string) => {
-    try {
-      const data = await getProxyIngestors(caller || selectedCallerRef.current);
-      if (data.ingestors) {
-        const statusMap: Record<string, IngestorStatus[]> = {};
-        for (const status of data.ingestors) {
-          if (!statusMap[status.connection]) statusMap[status.connection] = [];
-          statusMap[status.connection].push(status);
-        }
-        setIngestorStatuses(statusMap);
-      }
-    } catch {
-      // silently fail — ingestor status is supplementary
-    }
-  }, []);
-
-  const fetchConnections = useCallback(async (caller?: string) => {
-    try {
-      const data = await getConnections(caller || selectedCallerRef.current);
-      setConnections(data.templates);
-      setCallers(data.callers || []);
-      setLocalModeActive(data.localModeActive);
-      setRemoteModeActive(data.remoteModeActive ?? false);
-      setRemoteConfigManagement(data.remoteConfigManagement ?? false);
-      // When switching to remote mode for the first time, pick the first available caller
-      if (!data.localModeActive && data.remoteModeActive && data.callers?.length > 0 && !caller) {
-        setSelectedCaller(data.callers[0].alias);
-      }
-    } catch {
-      setConnections([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    fetchConnections();
-    fetchIngestorStatuses();
-  }, [fetchConnections, fetchIngestorStatuses]);
+    getDaemonStatus()
+      .then(setStatus)
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
 
-  const handleCallerChange = (caller: string) => {
-    setSelectedCaller(caller);
-    setShowCallerMenu(false);
-    setLoading(true);
-    fetchConnections(caller);
-    fetchIngestorStatuses(caller);
-  };
+  const healthy = status?.health?.status === "ok";
 
-  const handleCreateCaller = async () => {
-    if (!newCallerAlias.trim()) return;
+  const cardStyle = {
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius)",
+    padding: 20,
+    background: "var(--surface)",
+    marginBottom: 16,
+  } as const;
 
-    setNewCallerError(null);
-    try {
-      const { caller } = await createCallerAlias(newCallerAlias.trim());
-      setCallers((prev) => [...prev, caller]);
-      setSelectedCaller(caller.alias);
-      setShowNewCallerInput(false);
-      setNewCallerAlias("");
-      setShowCallerMenu(false);
-      fetchConnections(caller.alias);
-    } catch (err: any) {
-      setNewCallerError(err.message || "Failed to create caller");
-    }
-  };
-
-  const handleDeleteCaller = async (alias: string) => {
-    if (alias === "default") return;
-    try {
-      await deleteCallerAlias(alias);
-      setCallers((prev) => prev.filter((c) => c.alias !== alias));
-      if (selectedCaller === alias) {
-        setSelectedCaller("default");
-        fetchConnections("default");
-      }
-    } catch {
-      // silently fail
-    }
-  };
-
-  const handleToggle = async (alias: string, enabled: boolean) => {
-    // Optimistic update
-    setTogglingAlias(alias);
-    setConnections((prev) => prev.map((c) => (c.alias === alias ? { ...c, enabled } : c)));
-    try {
-      await setConnectionEnabled(alias, enabled, selectedCaller);
-      setNeedsRestart(true);
-    } catch {
-      // Revert on failure
-      setConnections((prev) => prev.map((c) => (c.alias === alias ? { ...c, enabled: !enabled } : c)));
-    } finally {
-      setTogglingAlias(null);
-    }
-  };
-
-  const handleSecretsUpdated = (alias: string, secretsSet: Record<string, boolean>) => {
-    setConnections((prev) =>
-      prev.map((c) => {
-        if (c.alias !== alias) return c;
-        const requiredSecretsSet = { ...c.requiredSecretsSet };
-        const optionalSecretsSet = { ...c.optionalSecretsSet };
-        for (const [key, value] of Object.entries(secretsSet)) {
-          if (key in requiredSecretsSet) requiredSecretsSet[key] = value;
-          if (key in optionalSecretsSet) optionalSecretsSet[key] = value;
-        }
-        return { ...c, requiredSecretsSet, optionalSecretsSet };
-      }),
-    );
-    setNeedsRestart(true);
-  };
-
-  const handleRestart = async () => {
-    setRestarting(true);
-    try {
-      await restartServer();
-      // Give the server time to shut down and restart before reloading
-      setTimeout(() => {
-        window.location.reload();
-      }, 3000);
-    } catch {
-      setRestarting(false);
-    }
-  };
-
-  const stabilitySet = new Set<string>(stabilityFilter === "stable" ? ["stable"] : stabilityFilter === "beta" ? ["stable", "beta"] : ["stable", "beta", "dev"]);
-
-  const filtered = connections.filter(
-    (c) =>
-      (stabilitySet.has(c.stability ?? "dev") || c.enabled) &&
-      (!searchQuery ||
-        c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.alias.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.description?.toLowerCase().includes(searchQuery.toLowerCase())),
-  );
-
-  // Sort: enabled first, then alphabetically
-  const sorted = [...filtered].sort((a, b) => {
-    if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  // Group sorted connections by category in display order
-  const grouped: { key: string; label: string; connections: typeof sorted }[] = [];
-  const byCategory = new Map<string, typeof sorted>();
-  for (const conn of sorted) {
-    const cat = conn.category ?? "other";
-    if (!byCategory.has(cat)) byCategory.set(cat, []);
-    byCategory.get(cat)!.push(conn);
-  }
-  for (const cat of CATEGORY_ORDER) {
-    const conns = byCategory.get(cat);
-    if (conns?.length) {
-      grouped.push({ key: cat, label: CATEGORY_LABELS[cat], connections: conns });
-    }
-  }
-  // Append any uncategorized connections
-  const uncategorized = byCategory.get("other");
-  if (uncategorized?.length) {
-    grouped.push({ key: "other", label: "Other", connections: uncategorized });
-  }
-
-  // Whether caller management (create/delete) is available (local mode only)
-  const canManageCallers = localModeActive && !remoteModeActive;
-
-  // ── Not configured state ──
-  if (!loading && !localModeActive && !remoteModeActive) {
+  if (loading) {
     return (
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <div
-          style={{
-            textAlign: "center",
-            padding: "48px 20px",
-            color: "var(--text-muted)",
-            fontSize: 14,
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-          }}
-        >
-          <WifiOff size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
-          <p style={{ fontWeight: 600, marginBottom: 4 }}>Proxy not configured</p>
-          <p style={{ fontSize: 12, marginBottom: 16 }}>Set proxy mode in Proxy settings to manage connections.</p>
-          <button
-            onClick={() => onSwitchTab("proxy")}
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)", fontSize: 14 }}>
+          <Loader2 size={24} style={{ animation: "spin 1s linear infinite", marginBottom: 12 }} />
+          <p>Loading daemon status...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 720, margin: "0 auto" }}>
+      {/* Daemon status card */}
+      <div style={cardStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <Server size={16} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600 }}>drawlatch daemon</span>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+          callboard delegates all proxy, connection, secret, listener and webhook-tunnel management to the drawlatch daemon. This panel only shows
+          connectivity — open the dashboard below to manage everything else.
+        </div>
+
+        {error && (
+          <div
+            style={{
+              padding: "10px 14px",
+              borderRadius: 8,
+              fontSize: 12,
+              lineHeight: 1.5,
+              border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+              background: "var(--danger-bg)",
+              color: "var(--danger)",
+              marginBottom: 16,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        {status && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* Mode */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {status.mode === "local" ? (
+                <Monitor size={15} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+              ) : (
+                <Globe size={15} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+              )}
+              <div style={{ fontSize: 13 }}>
+                <span style={{ color: "var(--text-muted)" }}>Mode: </span>
+                <span style={{ fontWeight: 600, color: "var(--text)" }}>
+                  {status.mode === "local" ? (status.managed ? "Managed local" : "Local") : "Remote"}
+                </span>
+                {status.managed && status.pid !== undefined && (
+                  <span style={{ color: "var(--text-muted)", marginLeft: 6, fontFamily: "monospace", fontSize: 11 }}>(pid {status.pid})</span>
+                )}
+              </div>
+            </div>
+
+            {/* URL */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Globe size={15} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+              <div style={{ fontSize: 13, minWidth: 0 }}>
+                <span style={{ color: "var(--text-muted)" }}>URL: </span>
+                {status.url ? (
+                  <code style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{status.url}</code>
+                ) : (
+                  <span style={{ color: "var(--text-muted)" }}>not configured</span>
+                )}
+              </div>
+            </div>
+
+            {/* Reachability / health */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: `1px solid ${
+                  healthy ? "color-mix(in srgb, var(--success) 30%, transparent)" : "color-mix(in srgb, var(--danger) 30%, transparent)"
+                }`,
+                background: healthy ? "var(--success-bg)" : "var(--danger-bg)",
+                color: healthy ? "var(--success)" : "var(--danger)",
+              }}
+            >
+              {healthy ? <Wifi size={15} style={{ flexShrink: 0, marginTop: 1 }} /> : <WifiOff size={15} style={{ flexShrink: 0, marginTop: 1 }} />}
+              <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                <div style={{ fontWeight: 600 }}>{healthy ? "Reachable" : status.reachable ? "Unhealthy" : "Unreachable"}</div>
+                {status.health && (
+                  <div style={{ opacity: 0.85, marginTop: 2 }}>
+                    {status.health.activeSessions !== undefined && <span>{status.health.activeSessions} active session(s)</span>}
+                    {formatUptime(status.health.uptime) && (
+                      <span>
+                        {status.health.activeSessions !== undefined ? " · " : ""}up {formatUptime(status.health.uptime)}
+                      </span>
+                    )}
+                    {status.health.tunnelUrl && (
+                      <div style={{ marginTop: 2 }}>
+                        tunnel: <code style={{ fontFamily: "monospace", fontSize: 11 }}>{status.health.tunnelUrl}</code>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Enrolled aliases */}
+            <div>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  marginBottom: 8,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <KeyRound size={13} /> Enrolled callers ({status.enrolledAliases.length})
+              </div>
+              {status.enrolledAliases.length > 0 ? (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {status.enrolledAliases.map((alias) => (
+                    <span
+                      key={alias}
+                      style={{
+                        fontSize: 12,
+                        fontFamily: "monospace",
+                        padding: "4px 10px",
+                        borderRadius: 6,
+                        background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                        color: "var(--accent)",
+                        border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
+                      }}
+                    >
+                      {alias}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No callers enrolled yet.</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Dashboard deep-link card */}
+      <div style={cardStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <ExternalLink size={16} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600 }}>Manage connections in drawlatch</span>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+          Connections, secrets, listeners, and the webhook tunnel are all managed in drawlatch&apos;s own password-gated dashboard. Open it to configure
+          external services for your agents.
+        </div>
+
+        {status?.dashboardUrl ? (
+          <a
+            href={status.dashboardUrl}
+            target="_blank"
+            rel="noopener noreferrer"
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: 6,
               background: "var(--accent)",
               color: "var(--text-on-accent)",
-              padding: "8px 16px",
+              padding: "10px 20px",
               borderRadius: 8,
-              fontSize: 13,
+              fontSize: 14,
               fontWeight: 500,
-              cursor: "pointer",
-              border: "none",
-            }}
-          >
-            <Settings size={14} />
-            Open Proxy Settings
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        {/* Caller selector + search row */}
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            marginBottom: 20,
-            flexWrap: isMobile ? "wrap" : "nowrap",
-          }}
-        >
-          {/* Caller selector dropdown */}
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            <button
-              onClick={() => setShowCallerMenu(!showCallerMenu)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "10px 12px",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "var(--surface)",
-                color: "var(--text)",
-                fontSize: 14,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-                minWidth: 140,
-              }}
-            >
-              <Users size={14} style={{ color: "var(--text-muted)" }} />
-              <span style={{ flex: 1, textAlign: "left" }}>{selectedCaller}</span>
-              <ChevronDown size={14} style={{ color: "var(--text-muted)" }} />
-            </button>
-
-            {/* Dropdown menu */}
-            {showCallerMenu && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: "calc(100% + 4px)",
-                  left: 0,
-                  minWidth: 220,
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  boxShadow: "var(--shadow-md)",
-                  zIndex: 100,
-                  overflow: "hidden",
-                }}
-              >
-                {/* Caller list */}
-                {callers.map((caller) => (
-                  <div
-                    key={caller.alias}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "8px 12px",
-                      cursor: "pointer",
-                      background: caller.alias === selectedCaller ? "var(--bg-secondary)" : "transparent",
-                      transition: "background 0.1s",
-                    }}
-                    onClick={() => handleCallerChange(caller.alias)}
-                    onMouseEnter={(e) => {
-                      if (caller.alias !== selectedCaller) {
-                        e.currentTarget.style.background = "var(--bg-secondary)";
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (caller.alias !== selectedCaller) {
-                        e.currentTarget.style.background = "transparent";
-                      }
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        flex: 1,
-                        minWidth: 0,
-                      }}
-                    >
-                      {caller.alias === selectedCaller && <Check size={12} style={{ color: "var(--accent)", flexShrink: 0 }} />}
-                      <div style={{ minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontSize: 13,
-                            fontWeight: caller.alias === selectedCaller ? 600 : 400,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {caller.alias}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 11,
-                            color: "var(--text-muted)",
-                          }}
-                        >
-                          {caller.connectionCount} connection
-                          {caller.connectionCount !== 1 ? "s" : ""}
-                        </div>
-                      </div>
-                    </div>
-                    {canManageCallers && caller.alias !== "default" && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteCaller(caller.alias);
-                        }}
-                        style={{
-                          background: "transparent",
-                          padding: 4,
-                          borderRadius: 4,
-                          color: "var(--text-muted)",
-                          cursor: "pointer",
-                          flexShrink: 0,
-                        }}
-                        title={`Delete "${caller.alias}"`}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-
-                {/* Divider + new caller input (local mode only) */}
-                {canManageCallers && (
-                  <>
-                    <div
-                      style={{
-                        height: 1,
-                        background: "var(--border)",
-                        margin: "4px 0",
-                      }}
-                    />
-
-                    {/* New caller input */}
-                    {showNewCallerInput ? (
-                      <div style={{ padding: "8px 12px" }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: 6,
-                            alignItems: "center",
-                          }}
-                        >
-                          <input
-                            type="text"
-                            placeholder="alias-name"
-                            value={newCallerAlias}
-                            onChange={(e) => {
-                              setNewCallerAlias(e.target.value);
-                              setNewCallerError(null);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") handleCreateCaller();
-                              if (e.key === "Escape") {
-                                setShowNewCallerInput(false);
-                                setNewCallerAlias("");
-                                setNewCallerError(null);
-                              }
-                            }}
-                            autoFocus
-                            style={{
-                              flex: 1,
-                              padding: "6px 8px",
-                              borderRadius: 6,
-                              border: `1px solid ${newCallerError ? "var(--error)" : "var(--border)"}`,
-                              background: "var(--bg)",
-                              color: "var(--text)",
-                              fontSize: 12,
-                              fontFamily: "monospace",
-                              outline: "none",
-                              minWidth: 0,
-                            }}
-                          />
-                          <button
-                            onClick={handleCreateCaller}
-                            style={{
-                              background: "var(--accent)",
-                              color: "var(--text-on-accent)",
-                              padding: "5px 10px",
-                              borderRadius: 6,
-                              fontSize: 12,
-                              fontWeight: 500,
-                              cursor: "pointer",
-                              flexShrink: 0,
-                            }}
-                          >
-                            Add
-                          </button>
-                        </div>
-                        {newCallerError && (
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: "var(--error)",
-                              marginTop: 4,
-                            }}
-                          >
-                            {newCallerError}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowNewCallerInput(true);
-                        }}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                          width: "100%",
-                          padding: "8px 12px",
-                          background: "transparent",
-                          color: "var(--accent)",
-                          fontSize: 13,
-                          cursor: "pointer",
-                          textAlign: "left",
-                        }}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                      >
-                        <Plus size={14} />
-                        New caller alias
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Click-outside handler */}
-            {showCallerMenu && (
-              <div
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  zIndex: 99,
-                }}
-                onClick={() => {
-                  setShowCallerMenu(false);
-                  setShowNewCallerInput(false);
-                  setNewCallerAlias("");
-                  setNewCallerError(null);
-                }}
-              />
-            )}
-          </div>
-
-          {/* Search bar */}
-          <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-            <Search
-              size={16}
-              style={{
-                position: "absolute",
-                left: 12,
-                top: "50%",
-                transform: "translateY(-50%)",
-                color: "var(--text-muted)",
-              }}
-            />
-            <input
-              type="text"
-              placeholder="Search connections..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "10px 12px 10px 36px",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "var(--surface)",
-                color: "var(--text)",
-                fontSize: 14,
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
-
-          {/* Stability filter grouped buttons */}
-          <div
-            style={{
-              display: "flex",
-              flexShrink: 0,
-              borderRadius: 6,
-              overflow: "hidden",
-              border: "1px solid var(--border)",
-            }}
-          >
-            {(
-              [
-                { key: "stable", label: "Stable" },
-                { key: "beta", label: "+ Beta" },
-                { key: "dev", label: "All" },
-              ] as const
-            ).map(({ key, label }, i, arr) => (
-              <button
-                key={key}
-                onClick={() => setStabilityFilter(key)}
-                style={{
-                  padding: "6px 10px",
-                  fontSize: 12,
-                  fontWeight: 500,
-                  background: stabilityFilter === key ? "var(--accent)" : "var(--surface)",
-                  color: stabilityFilter === key ? "var(--text-on-accent)" : "var(--text-muted)",
-                  border: "none",
-                  borderRight: i < arr.length - 1 ? "1px solid var(--border)" : "none",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Events debug button */}
-          <button
-            onClick={() => setShowEventsView(true)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: showEventsView ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--surface)",
-              color: showEventsView ? "var(--accent)" : "var(--text-muted)",
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-            }}
-            onMouseEnter={(e) => {
-              if (!showEventsView) e.currentTarget.style.background = "var(--bg-secondary)";
-            }}
-            onMouseLeave={(e) => {
-              if (!showEventsView) e.currentTarget.style.background = "var(--surface)";
-            }}
-            title="View connection events for debugging"
-          >
-            <Radio size={14} />
-            {!isMobile && "Events"}
-          </button>
-        </div>
-
-        {/* Restart needed banner */}
-        {needsRestart && (
-          <div
-            style={{
-              background: "color-mix(in srgb, var(--warning) 8%, transparent)",
-              border: "1px solid color-mix(in srgb, var(--warning) 25%, transparent)",
-              borderRadius: "var(--radius)",
-              padding: "14px 18px",
-              marginBottom: 16,
-              display: "flex",
-              gap: 12,
-              alignItems: "center",
-              justifyContent: "space-between",
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flex: 1, minWidth: 0 }}>
-              <AlertTriangle size={18} style={{ color: "var(--warning)", flexShrink: 0 }} />
-              <span style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)" }}>
-                Settings have changed. Restart Callboard for changes to take full effect.
-              </span>
-            </div>
-            <button
-              onClick={handleRestart}
-              disabled={restarting}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "7px 14px",
-                borderRadius: 6,
-                border: "1px solid var(--warning)",
-                background: "color-mix(in srgb, var(--warning) 12%, transparent)",
-                color: "var(--warning)",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: restarting ? "not-allowed" : "pointer",
-                opacity: restarting ? 0.7 : 1,
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-              }}
-            >
-              <RotateCw size={14} style={restarting ? { animation: "spin 1s linear infinite" } : undefined} />
-              {restarting ? "Restarting..." : "Restart Callboard"}
-            </button>
-          </div>
-        )}
-
-        {/* Upgrade hint when connected to old drawlatch server */}
-        {remoteModeActive && !remoteConfigManagement && !loading && (
-          <div
-            style={{
-              padding: "10px 14px",
-              marginBottom: 16,
-              borderRadius: 8,
-              background: "color-mix(in srgb, var(--warning) 10%, transparent)",
-              border: "1px solid color-mix(in srgb, var(--warning) 25%, transparent)",
-              color: "var(--warning)",
-              fontSize: 12,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-            <span>
-              Remote server does not support connection management. Upgrade the drawlatch server to toggle connections and configure secrets remotely.
-            </span>
-          </div>
-        )}
-
-        {/* Events view or connections grid */}
-        {showEventsView ? (
-          <ConnectionEventsView selectedCaller={selectedCaller} onBack={() => setShowEventsView(false)} />
-        ) : (
-          <>
-            {/* Loading state */}
-            {loading && (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "48px 20px",
-                  color: "var(--text-muted)",
-                  fontSize: 14,
-                }}
-              >
-                <Loader2
-                  size={24}
-                  style={{
-                    animation: "spin 1s linear infinite",
-                    marginBottom: 12,
-                  }}
-                />
-                <p>Loading connections...</p>
-              </div>
-            )}
-
-            {/* Connection cards grid */}
-            {!loading && sorted.length === 0 && (searchQuery || stabilityFilter !== "dev") && (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "48px 20px",
-                  color: "var(--text-muted)",
-                  fontSize: 14,
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)",
-                }}
-              >
-                {searchQuery ? `No connections match "${searchQuery}"` : "No connections at this stability level"}
-                {stabilityFilter !== "dev" && (
-                  <p style={{ fontSize: 12, marginTop: 8 }}>
-                    Try selecting{" "}
-                    <button
-                      onClick={() => setStabilityFilter("dev")}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "var(--accent)",
-                        cursor: "pointer",
-                        padding: 0,
-                        fontSize: 12,
-                        textDecoration: "underline",
-                      }}
-                    >
-                      All
-                    </button>{" "}
-                    to see more connections.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {!loading &&
-              sorted.length > 0 &&
-              grouped.map((group, groupIdx) => (
-                <div key={group.key} style={{ marginTop: groupIdx > 0 ? 16 : 0 }}>
-                  <h4
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: "var(--text-muted)",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.05em",
-                      padding: "4px 0",
-                      margin: 0,
-                      marginBottom: 8,
-                    }}
-                  >
-                    {group.label}
-                  </h4>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)",
-                      gap: 12,
-                    }}
-                  >
-                    {group.connections.map((conn) => (
-                      <ConnectionCard
-                        key={conn.alias}
-                        connection={conn}
-                        caller={selectedCaller}
-                        toggling={togglingAlias === conn.alias}
-                        ingestorStatuses={ingestorStatuses[conn.alias]}
-                        remoteConfigManagement={remoteConfigManagement}
-                        onToggle={(enabled) => handleToggle(conn.alias, enabled)}
-                        onConfigure={() => setConfiguring(conn)}
-                        onOpenListenerConfig={() => setListenerConfig({ alias: conn.alias, name: conn.name })}
-                        onStatusChange={() => fetchIngestorStatuses()}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-          </>
-        )}
-      </div>
-
-      {/* Configure modal */}
-      {configuring && (
-        <ConfigureConnectionModal
-          connection={configuring}
-          caller={selectedCaller}
-          onClose={() => setConfiguring(null)}
-          onSecretsUpdated={handleSecretsUpdated}
-        />
-      )}
-
-      {/* Listener config panel */}
-      {listenerConfig && (
-        <ListenerConfigPanel
-          connectionAlias={listenerConfig.alias}
-          connectionName={listenerConfig.name}
-          caller={selectedCaller}
-          ingestorStatus={ingestorStatuses[listenerConfig.alias]?.[0]}
-          ingestorStatuses={ingestorStatuses[listenerConfig.alias]}
-          localModeActive={localModeActive}
-          onClose={() => setListenerConfig(null)}
-          onStatusChange={() => fetchIngestorStatuses()}
-          onParamsSaved={() => setNeedsRestart(true)}
-        />
-      )}
-    </>
-  );
-}
-
-// ── Connection card component ──
-
-function ConnectionCard({
-  connection,
-  caller,
-  toggling,
-  ingestorStatuses,
-  remoteConfigManagement,
-  onToggle,
-  onConfigure,
-  onOpenListenerConfig,
-  onStatusChange,
-}: {
-  connection: ConnectionStatus;
-  caller: string;
-  toggling: boolean;
-  ingestorStatuses?: IngestorStatus[];
-  remoteConfigManagement: boolean;
-  onToggle: (enabled: boolean) => void;
-  onConfigure: () => void;
-  onOpenListenerConfig: () => void;
-  onStatusChange: () => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const [testResult, setTestResult] = useState<ProxyTestResult | null>(null);
-  const [testing, setTesting] = useState<"connection" | "ingestor" | null>(null);
-  const [controlAction, setControlAction] = useState<string | null>(null);
-  const conn = connection;
-  const isRemote = conn.source === "remote";
-  // Remote connections are fully manageable when the remote server supports config management
-  const canManage = !isRemote || remoteConfigManagement;
-
-  // Derive primary status from array (for backward compat)
-  const ingestorStatus = ingestorStatuses?.[0];
-  const instanceCount = ingestorStatuses?.length ?? 0;
-
-  const handleListenerControl = async (action: "start" | "stop" | "restart") => {
-    setControlAction(action);
-    try {
-      await controlListener(conn.alias, action, caller);
-      onStatusChange();
-    } catch {
-      // silently fail
-    } finally {
-      setControlAction(null);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setTesting("connection");
-    setTestResult(null);
-    try {
-      const result = await testProxyApiConnection(conn.alias, caller);
-      setTestResult(result);
-    } catch {
-      setTestResult({ success: false, connection: conn.alias, error: "Test request failed" });
-    } finally {
-      setTesting(null);
-    }
-  };
-
-  const handleTestIngestor = async () => {
-    setTesting("ingestor");
-    setTestResult(null);
-    try {
-      const result = await testProxyIngestor(conn.alias, caller);
-      setTestResult(result);
-    } catch {
-      setTestResult({ success: false, connection: conn.alias, error: "Test request failed" });
-    } finally {
-      setTesting(null);
-    }
-  };
-
-  // Compute secret status
-  const requiredTotal = conn.requiredSecrets.length;
-  const requiredSet = Object.values(conn.requiredSecretsSet).filter(Boolean).length;
-  const allRequiredSet = requiredTotal === 0 || requiredSet === requiredTotal;
-  const someRequiredSet = requiredSet > 0 && !allRequiredSet;
-
-  // Status color
-  let secretStatusColor = "var(--text-muted)";
-  let secretStatusBg = "var(--bg-secondary)";
-  let secretStatusText = "No secrets needed";
-
-  if (requiredTotal > 0) {
-    if (allRequiredSet) {
-      secretStatusColor = "var(--success)";
-      secretStatusBg = "color-mix(in srgb, var(--success) 12%, transparent)";
-      secretStatusText = "Ready";
-    } else if (someRequiredSet) {
-      secretStatusColor = "var(--warning)";
-      secretStatusBg = "color-mix(in srgb, var(--warning) 12%, transparent)";
-      secretStatusText = `${requiredSet}/${requiredTotal} secrets`;
-    } else {
-      secretStatusColor = "var(--text-muted)";
-      secretStatusBg = "var(--bg-secondary)";
-      secretStatusText = `${requiredTotal} secret${requiredTotal !== 1 ? "s" : ""} needed`;
-    }
-  }
-
-  return (
-    <div
-      style={{
-        background: "var(--surface)",
-        border: `1px solid ${hovered ? "color-mix(in srgb, var(--accent) 40%, var(--border))" : "var(--border)"}`,
-        borderRadius: "var(--radius)",
-        padding: "16px 18px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        transition: "border-color 0.15s",
-        opacity: conn.enabled || (isRemote && !canManage) ? 1 : 0.75,
-        overflow: "hidden",
-        minWidth: 0,
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {/* Top row: icon + name + toggle/badge */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flex: 1,
-            minWidth: 0,
-          }}
-        >
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 8,
-              background: conn.enabled || (isRemote && !canManage) ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-            }}
-          >
-            {isRemote && !canManage ? (
-              <Cloud size={18} style={{ color: "var(--accent)" }} />
-            ) : (
-              <Wifi
-                size={18}
-                style={{
-                  color: conn.enabled ? "var(--accent)" : "var(--text-muted)",
-                }}
-              />
-            )}
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <h3
-              style={{
-                fontSize: 14,
-                fontWeight: 600,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {conn.name}
-            </h3>
-            {conn.description && (
-              <p
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  marginTop: 1,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {conn.description}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* Toggle switch or read-only Remote badge */}
-        {!canManage ? (
-          <span
-            style={{
-              fontSize: 11,
-              padding: "3px 8px",
-              borderRadius: 6,
-              background: "color-mix(in srgb, var(--accent) 10%, transparent)",
-              color: "var(--accent)",
-              fontWeight: 500,
-              whiteSpace: "nowrap",
-              marginLeft: 10,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            <Cloud size={10} />
-            Remote
-          </span>
-        ) : (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (!toggling) onToggle(!conn.enabled);
-            }}
-            style={{
-              width: 40,
-              height: 22,
-              borderRadius: 11,
-              border: "none",
-              background: conn.enabled ? "var(--accent)" : "var(--bg-secondary)",
-              position: "relative",
-              cursor: toggling ? "wait" : "pointer",
-              transition: "background 0.2s",
-              flexShrink: 0,
-              marginLeft: 10,
-            }}
-            title={conn.enabled ? "Disable connection" : "Enable connection"}
-          >
-            <div
-              style={{
-                width: 16,
-                height: 16,
-                borderRadius: "50%",
-                background: "var(--toggle-knob)",
-                position: "absolute",
-                top: 3,
-                left: conn.enabled ? 21 : 3,
-                transition: "left 0.2s",
-                boxShadow: "var(--shadow-sm)",
-              }}
-            />
-          </button>
-        )}
-      </div>
-
-      {/* Badges row */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          flexWrap: "wrap",
-        }}
-      >
-        {/* Stability badge */}
-        {conn.stability && conn.stability !== "stable" && (
-          <span
-            style={{
-              fontSize: 11,
-              padding: "3px 7px",
-              borderRadius: 6,
-              background: conn.stability === "beta" ? "color-mix(in srgb, var(--warning) 12%, transparent)" : "var(--bg-secondary)",
-              color: conn.stability === "beta" ? "var(--warning)" : "var(--text-muted)",
-              fontWeight: 500,
-            }}
-          >
-            {conn.stability}
-          </span>
-        )}
-
-        {/* Endpoint count */}
-        <span
-          style={{
-            fontSize: 11,
-            padding: "3px 7px",
-            borderRadius: 6,
-            background: "var(--bg-secondary)",
-            color: "var(--text-muted)",
-            fontFamily: "monospace",
-          }}
-        >
-          <Globe size={10} style={{ marginRight: 3, verticalAlign: "middle" }} />
-          {conn.allowedEndpoints.length} endpoint
-          {conn.allowedEndpoints.length !== 1 ? "s" : ""}
-        </span>
-
-        {/* Ingestor type + live status badge */}
-        {conn.hasIngestor && conn.ingestorType && (
-          <span
-            style={{
-              fontSize: 11,
-              padding: "3px 7px",
-              borderRadius: 6,
-              background: "color-mix(in srgb, var(--accent) 10%, transparent)",
-              color: "var(--accent)",
-              border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            <Radio size={10} />
-            {conn.ingestorType}
-            {ingestorStatus && (
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background:
-                    ingestorStatus.state === "connected"
-                      ? "var(--success)"
-                      : ingestorStatus.state === "error"
-                        ? "var(--error)"
-                        : ingestorStatus.state === "starting" || ingestorStatus.state === "reconnecting"
-                          ? "var(--warning)"
-                          : "var(--text-muted)",
-                  boxShadow: ingestorStatus.state === "connected" ? "0 0 4px var(--success)" : "none",
-                }}
-                title={`Listener: ${ingestorStatus.state}`}
-              />
-            )}
-            {instanceCount > 1 && (
-              <span style={{ fontSize: 9, color: "var(--text-muted)" }}>
-                {ingestorStatuses!.filter((s) => s.state === "connected").length}/{instanceCount}
-              </span>
-            )}
-          </span>
-        )}
-
-        {/* Secret status badge */}
-        {canManage && requiredTotal > 0 && (
-          <span
-            style={{
-              fontSize: 11,
-              padding: "3px 7px",
-              borderRadius: 6,
-              background: secretStatusBg,
-              color: secretStatusColor,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 3,
-            }}
-          >
-            {allRequiredSet ? <Check size={10} /> : <AlertTriangle size={10} />}
-            {secretStatusText}
-          </span>
-        )}
-
-        {/* Docs link */}
-        {conn.docsUrl && (
-          <a
-            href={conn.docsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              fontSize: 11,
-              color: "var(--text-muted)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 3,
-              marginLeft: "auto",
               textDecoration: "none",
+              transition: "background 0.15s",
             }}
-            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-hover)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
           >
-            <ExternalLink size={10} />
-            Docs
+            <ExternalLink size={14} />
+            Open drawlatch dashboard
           </a>
-        )}
-      </div>
-
-      {/* Action buttons row (when enabled or remote) */}
-      {(conn.enabled || isRemote) && (
-        <div style={{ display: "flex", gap: 6 }}>
-          {/* Configure button (when secrets are manageable) */}
-          {canManage && (
-            <button
-              onClick={onConfigure}
-              style={{
-                flex: 1,
-                padding: "8px 0",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--text)",
-                fontSize: 13,
-                fontWeight: 500,
-                cursor: "pointer",
-                transition: "background 0.15s",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
-            >
-              Configure
-            </button>
-          )}
-
-          {/* Test Connection button */}
-          <button
-            onClick={handleTestConnection}
-            disabled={testing !== null}
-            style={{
-              flex: !canManage ? 1 : 0,
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-              color: "var(--text-muted)",
-              fontSize: 12,
-              fontWeight: 500,
-              cursor: testing ? "wait" : "pointer",
-              transition: "background 0.15s",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              whiteSpace: "nowrap",
-            }}
-            onMouseEnter={(e) => {
-              if (!testing) e.currentTarget.style.background = "var(--bg-secondary)";
-            }}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
-            title="Test API credentials"
-          >
-            {testing === "connection" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Wifi size={12} />}
-            Test
-          </button>
-
-          {/* Test Ingestor button (only if connection has ingestor) */}
-          {conn.hasIngestor && (
-            <button
-              onClick={handleTestIngestor}
-              disabled={testing !== null}
-              style={{
-                flex: !canManage ? 1 : 0,
-                padding: "8px 12px",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--text-muted)",
-                fontSize: 12,
-                fontWeight: 500,
-                cursor: testing ? "wait" : "pointer",
-                transition: "background 0.15s",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 4,
-                whiteSpace: "nowrap",
-              }}
-              onMouseEnter={(e) => {
-                if (!testing) e.currentTarget.style.background = "var(--bg-secondary)";
-              }}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
-              title="Test event listener configuration"
-            >
-              {testing === "ingestor" ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Radio size={12} />}
-              Test Listener
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Listener controls row (when connection has ingestor and is enabled/remote) */}
-      {conn.hasIngestor && (conn.enabled || isRemote) && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-          }}
-        >
-          {/* Quick start/stop/restart buttons */}
-          <button
-            onClick={() => handleListenerControl(ingestorStatus?.state === "connected" ? "stop" : "start")}
-            disabled={controlAction !== null}
-            style={{
-              padding: "5px 10px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-              color: ingestorStatus?.state === "connected" ? "var(--error)" : "var(--success)",
-              fontSize: 11,
-              fontWeight: 500,
-              cursor: controlAction ? "wait" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => {
-              if (!controlAction) e.currentTarget.style.background = "var(--bg-secondary)";
-            }}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
-            title={ingestorStatus?.state === "connected" ? "Stop listener" : "Start listener"}
-          >
-            {controlAction === "start" || controlAction === "stop" ? (
-              <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} />
-            ) : ingestorStatus?.state === "connected" ? (
-              <Square size={10} />
-            ) : (
-              <Play size={10} />
-            )}
-            {ingestorStatus?.state === "connected" ? "Stop" : "Start"}
-          </button>
-
-          <button
-            onClick={() => handleListenerControl("restart")}
-            disabled={controlAction !== null}
-            style={{
-              padding: "5px 10px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-              color: "var(--text-muted)",
-              fontSize: 11,
-              fontWeight: 500,
-              cursor: controlAction ? "wait" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => {
-              if (!controlAction) e.currentTarget.style.background = "var(--bg-secondary)";
-            }}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
-            title="Restart listener"
-          >
-            {controlAction === "restart" ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <RotateCw size={10} />}
-            Restart
-          </button>
-
-          {/* Spacer */}
-          <div style={{ flex: 1 }} />
-
-          {/* Listener config button */}
-          <button
-            onClick={onOpenListenerConfig}
-            style={{
-              padding: "5px 10px",
-              borderRadius: 6,
-              border: "1px solid color-mix(in srgb, var(--accent) 30%, var(--border))",
-              background: "color-mix(in srgb, var(--accent) 6%, var(--bg))",
-              color: "var(--accent)",
-              fontSize: 11,
-              fontWeight: 500,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 12%, var(--bg))")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 6%, var(--bg))")}
-            title="View listener configuration and controls"
-          >
-            <Radio size={10} />
-            Listener
-          </button>
-        </div>
-      )}
-
-      {/* Test result display */}
-      {testResult && (
-        <div
-          style={{
-            padding: "8px 10px",
-            borderRadius: 6,
-            fontSize: 12,
-            background: testResult.success ? "color-mix(in srgb, var(--success) 10%, transparent)" : "color-mix(in srgb, var(--error) 10%, transparent)",
-            color: testResult.success ? "var(--success)" : "var(--error)",
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 6,
-          }}
-        >
-          {testResult.success ? (
-            <Check size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-          ) : (
-            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-          )}
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 500 }}>
-              {testResult.success ? "Test passed" : "Test failed"}
-              {testResult.status ? ` (${testResult.status})` : ""}
-            </div>
-            {(testResult.error || testResult.message || testResult.description) && (
-              <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{testResult.error || testResult.message || testResult.description}</div>
-            )}
+        ) : (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            No dashboard URL available. Configure the drawlatch endpoint in the Proxy tab first.
           </div>
+        )}
+
+        {onSwitchTab && (
           <button
-            onClick={() => setTestResult(null)}
+            type="button"
+            onClick={() => onSwitchTab("proxy")}
             style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              marginTop: 14,
+              padding: 0,
               background: "transparent",
               border: "none",
-              color: "inherit",
+              color: "var(--accent)",
+              fontSize: 12,
               cursor: "pointer",
-              padding: 2,
-              marginLeft: "auto",
-              flexShrink: 0,
-              opacity: 0.6,
-              fontSize: 16,
-              lineHeight: 1,
             }}
-            title="Dismiss"
           >
-            &times;
+            Change the drawlatch endpoint <ArrowRight size={12} />
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
