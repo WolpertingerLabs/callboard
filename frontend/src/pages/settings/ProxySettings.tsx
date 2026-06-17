@@ -1,17 +1,36 @@
-import { useState, useEffect } from "react";
-import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, RefreshCw, X, ArrowRight, Plus } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, X, Upload, Lock } from "lucide-react";
 import FolderBrowser from "../../components/FolderBrowser";
-import {
-  getAgentSettings,
-  updateAgentSettings,
-  getKeyAliases,
-  createCallerAlias,
-  testProxyConnection,
-  startSync,
-  completeSync,
-  cancelSync,
-} from "../../api";
-import type { AgentSettings, KeyAliasInfo, ConnectionTestResult } from "../../api";
+import { getAgentSettings, updateAgentSettings, getKeyAliases, testProxyConnection, importCallerBundle } from "../../api";
+import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, ParsedCallerBundle } from "../../api";
+
+/**
+ * Parse a `{alias}.drawlatch-caller.json` document into the plaintext fields the
+ * import UI confirms. Throws on anything that isn't a v1 caller bundle. The
+ * private keys (possibly passphrase-wrapped) are forwarded verbatim in `raw` —
+ * never inspected here.
+ */
+function parseBundle(text: string): ParsedCallerBundle {
+  const raw = JSON.parse(text) as Record<string, unknown>;
+  if (!raw || typeof raw !== "object") throw new Error("Not a JSON object");
+  if (raw.version !== 1) throw new Error("Unsupported bundle version (expected 1)");
+  const callerAlias = raw.callerAlias;
+  const fingerprint = raw.fingerprint;
+  const endpointUrl = raw.endpointUrl;
+  const serverKeyFingerprint = raw.serverKeyFingerprint;
+  if (typeof callerAlias !== "string" || typeof fingerprint !== "string" || typeof endpointUrl !== "string" || typeof serverKeyFingerprint !== "string") {
+    throw new Error("Missing required fields (callerAlias, fingerprint, endpointUrl, serverKeyFingerprint)");
+  }
+  return {
+    version: 1,
+    callerAlias,
+    fingerprint,
+    endpointUrl,
+    serverKeyFingerprint,
+    encryption: raw.encryption ?? null,
+    raw,
+  };
+}
 
 export default function ProxySettings() {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
@@ -30,20 +49,14 @@ export default function ProxySettings() {
   const [defaultLocalDir, setDefaultLocalDir] = useState("");
   const [defaultRemoteDir, setDefaultRemoteDir] = useState("");
 
-  // Sync state
-  const [syncStep, setSyncStep] = useState<"input" | "confirm" | "success">("input");
-  const [syncInviteCode, setSyncInviteCode] = useState("");
-  const [syncEncryptionKey, setSyncEncryptionKey] = useState("");
-  const [syncCallerAlias, setSyncCallerAlias] = useState("");
-  const [syncConfirmCode, setSyncConfirmCode] = useState("");
-  const [syncResult, setSyncResult] = useState<{ callerAlias: string; fingerprint: string } | null>(null);
-  const [syncLoading, setSyncLoading] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-
-  // Create alias state (local mode only)
-  const [showNewAliasInput, setShowNewAliasInput] = useState(false);
-  const [newAliasName, setNewAliasName] = useState("");
-  const [newAliasError, setNewAliasError] = useState<string | null>(null);
+  // Import caller bundle state
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pasteText, setPasteText] = useState("");
+  const [importParsed, setImportParsed] = useState<ParsedCallerBundle | null>(null);
+  const [importPassphrase, setImportPassphrase] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResult, setImportResult] = useState<{ alias: string; fingerprint: string } | null>(null);
 
   // Load settings on mount
   useEffect(() => {
@@ -130,17 +143,56 @@ export default function ProxySettings() {
     }
   };
 
-  const handleCreateAlias = async () => {
-    if (!newAliasName) return;
+  // ── Import caller bundle ──────────────────────────────────────────
+
+  const loadBundleText = (text: string) => {
+    setImportError(null);
+    setImportResult(null);
+    setImportPassphrase("");
     try {
-      setNewAliasError(null);
-      await createCallerAlias(newAliasName);
-      const updated = await getKeyAliases();
-      setKeyAliases(updated);
-      setNewAliasName("");
-      setShowNewAliasInput(false);
+      setImportParsed(parseBundle(text));
     } catch (err: any) {
-      setNewAliasError(err?.message || "Failed to create alias");
+      setImportParsed(null);
+      setImportError(`Could not read bundle: ${err.message || "invalid JSON"}`);
+    }
+  };
+
+  const handleBundleFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      loadBundleText(await file.text());
+    } catch {
+      setImportError("Could not read the selected file");
+    }
+  };
+
+  const resetImport = () => {
+    setImportParsed(null);
+    setImportPassphrase("");
+    setImportError(null);
+    setImportResult(null);
+    setPasteText("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleConfirmImport = async () => {
+    if (!importParsed) return;
+    setImportLoading(true);
+    setImportError(null);
+    try {
+      const result = await importCallerBundle(importParsed.raw, importPassphrase || undefined);
+      setImportResult({ alias: result.alias, fingerprint: result.fingerprint });
+      setKeyAliases(result.aliases);
+      // The backend pinned the bundle's endpoint as the remote server URL.
+      setRemoteServerUrl(result.endpointUrl);
+      setImportParsed(null);
+      setImportPassphrase("");
+      setPasteText("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err: any) {
+      setImportError(err.message || "Failed to import bundle");
+    } finally {
+      setImportLoading(false);
     }
   };
 
@@ -158,6 +210,18 @@ export default function ProxySettings() {
     transition: "all 0.15s",
     fontSize: 13,
   });
+
+  const inputStyle = {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: "1px solid var(--border)",
+    background: "var(--bg)",
+    color: "var(--text)",
+    fontSize: 14,
+    fontFamily: "monospace",
+    boxSizing: "border-box" as const,
+  };
 
   return (
     <>
@@ -202,7 +266,7 @@ export default function ProxySettings() {
             >
               keys/callers/
             </code>{" "}
-            subdirectories — enrollment is automatic in local mode (or via Sync in remote mode).
+            subdirectories — in local mode the managed daemon auto-shares the default caller; in remote mode, import a caller bundle below.
           </div>
 
           {/* Path input + browse */}
@@ -228,16 +292,7 @@ export default function ProxySettings() {
                     ? `Default: ${defaultRemoteDir}`
                     : "e.g. /home/user/.drawlatch.local"
               }
-              style={{
-                flex: 1,
-                padding: "10px 12px",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--text)",
-                fontSize: 14,
-                fontFamily: "monospace",
-              }}
+              style={{ ...inputStyle, flex: 1 }}
             />
             <button
               onClick={() => setShowFolderBrowser(true)}
@@ -263,120 +318,20 @@ export default function ProxySettings() {
             </button>
           </div>
 
-          {/* Key Aliases section */}
+          {/* Key Aliases section (read-only — callers are auto-shared or imported) */}
           <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
             <div
               style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--text-muted)",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
                 marginBottom: 8,
               }}
             >
-              <div
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: "var(--text-muted)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
-                }}
-              >
-                Key Aliases ({keyAliases.length})
-              </div>
-              {proxyMode === "local" && !showNewAliasInput && (
-                <button
-                  type="button"
-                  onClick={() => setShowNewAliasInput(true)}
-                  style={{
-                    padding: "4px 10px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 500,
-                    background: "var(--bg)",
-                    color: "var(--text-muted)",
-                    border: "1px dashed var(--border)",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                  }}
-                >
-                  <Plus size={12} /> New Alias
-                </button>
-              )}
+              Key Aliases ({keyAliases.length})
             </div>
-
-            {/* Create alias inline (local mode only) */}
-            {proxyMode === "local" && showNewAliasInput && (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10 }}>
-                <input
-                  type="text"
-                  value={newAliasName}
-                  onChange={(e) => {
-                    setNewAliasName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""));
-                    setNewAliasError(null);
-                  }}
-                  placeholder="alias-name"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setShowNewAliasInput(false);
-                      setNewAliasName("");
-                      setNewAliasError(null);
-                    }
-                    if (e.key === "Enter" && newAliasName) handleCreateAlias();
-                  }}
-                  style={{
-                    padding: "5px 10px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontFamily: "monospace",
-                    background: "var(--bg)",
-                    color: "var(--text)",
-                    border: newAliasError ? "1px solid var(--danger)" : "1px solid var(--border)",
-                    width: 160,
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={handleCreateAlias}
-                  disabled={!newAliasName}
-                  style={{
-                    padding: "5px 10px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 500,
-                    background: newAliasName ? "var(--accent)" : "var(--bg)",
-                    color: newAliasName ? "var(--text-on-accent)" : "var(--text-muted)",
-                    border: "1px solid var(--border)",
-                    cursor: newAliasName ? "pointer" : "default",
-                  }}
-                >
-                  Create
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowNewAliasInput(false);
-                    setNewAliasName("");
-                    setNewAliasError(null);
-                  }}
-                  style={{
-                    padding: "5px 8px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    background: "transparent",
-                    color: "var(--text-muted)",
-                    border: "none",
-                    cursor: "pointer",
-                  }}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            )}
-            {newAliasError && <p style={{ fontSize: 12, color: "var(--danger)", marginBottom: 8 }}>{newAliasError}</p>}
 
             {keyAliases.length > 0 ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -403,7 +358,7 @@ export default function ProxySettings() {
             ) : displayedConfigDir ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                 No key aliases found.
-                {proxyMode === "remote" && " Use the Sync feature below to add aliases from a remote server."}
+                {proxyMode === "remote" && " Import a caller bundle below to add one."}
               </div>
             ) : null}
           </div>
@@ -524,17 +479,7 @@ export default function ProxySettings() {
                     setTestResult(null);
                   }}
                   placeholder="e.g. https://proxy.example.com:9999"
-                  style={{
-                    flex: 1,
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: "1px solid var(--border)",
-                    background: "var(--bg)",
-                    color: "var(--text)",
-                    fontSize: 14,
-                    fontFamily: "monospace",
-                    boxSizing: "border-box",
-                  }}
+                  style={{ ...inputStyle, flex: 1 }}
                 />
                 <button
                   onClick={handleTestConnection}
@@ -614,7 +559,7 @@ export default function ProxySettings() {
           )}
         </div>
 
-        {/* Sync with Remote Server (remote mode only) */}
+        {/* Import caller bundle (remote mode only) */}
         {proxyMode === "remote" && (
           <div
             style={{
@@ -626,302 +571,18 @@ export default function ProxySettings() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <RefreshCw size={16} style={{ color: "var(--accent)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600 }}>Sync with Remote Server</span>
+              <Upload size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>Import caller bundle</span>
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
-              Exchange keys with a drawlatch remote server. Run{" "}
-              <code
-                style={{
-                  fontFamily: "monospace",
-                  background: "var(--bg-secondary)",
-                  padding: "1px 5px",
-                  borderRadius: 4,
-                }}
-              >
-                drawlatch sync
-              </code>{" "}
-              on the server first to get an invite code and encryption key.
+              Issue a caller in drawlatch (Callers page → Issue credentials, or{" "}
+              <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>drawlatch issue-caller</code>) to
+              get a <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>.drawlatch-caller.json</code>{" "}
+              file, then import it here. callboard pins the endpoint and server key from the bundle — confirm both before the keys are written.
             </div>
 
-            {syncStep === "input" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Invite Code</div>
-                  <input
-                    type="text"
-                    value={syncInviteCode}
-                    onChange={(e) => {
-                      setSyncInviteCode(e.target.value);
-                      setSyncError(null);
-                    }}
-                    placeholder="WORD-1234"
-                    style={{
-                      width: "100%",
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg)",
-                      color: "var(--text)",
-                      fontSize: 14,
-                      fontFamily: "monospace",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Encryption Key</div>
-                  <input
-                    type="text"
-                    value={syncEncryptionKey}
-                    onChange={(e) => {
-                      setSyncEncryptionKey(e.target.value);
-                      setSyncError(null);
-                    }}
-                    placeholder="base64..."
-                    style={{
-                      width: "100%",
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg)",
-                      color: "var(--text)",
-                      fontSize: 14,
-                      fontFamily: "monospace",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Caller Alias</div>
-                  <input
-                    type="text"
-                    value={syncCallerAlias}
-                    onChange={(e) => {
-                      setSyncCallerAlias(e.target.value);
-                      setSyncError(null);
-                    }}
-                    placeholder="my-callboard"
-                    style={{
-                      width: "100%",
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg)",
-                      color: "var(--text)",
-                      fontSize: 14,
-                      fontFamily: "monospace",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                </div>
-
-                {syncError && (
-                  <div
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 8,
-                      fontSize: 12,
-                      lineHeight: 1.5,
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 8,
-                      border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
-                      background: "var(--danger-bg)",
-                      color: "var(--danger)",
-                    }}
-                  >
-                    <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                    <div style={{ opacity: 0.85 }}>{syncError}</div>
-                  </div>
-                )}
-
-                <button
-                  onClick={async () => {
-                    if (!syncInviteCode || !syncEncryptionKey || !syncCallerAlias) {
-                      setSyncError("All fields are required");
-                      return;
-                    }
-                    if (!remoteServerUrl) {
-                      setSyncError("Set a remote server URL above first");
-                      return;
-                    }
-                    setSyncLoading(true);
-                    setSyncError(null);
-                    try {
-                      const result = await startSync({
-                        remoteUrl: remoteServerUrl,
-                        inviteCode: syncInviteCode,
-                        encryptionKey: syncEncryptionKey,
-                        callerAlias: syncCallerAlias,
-                      });
-                      setSyncConfirmCode(result.confirmCode);
-                      setSyncStep("confirm");
-                    } catch (err: any) {
-                      setSyncError(err.message || "Failed to start sync");
-                    } finally {
-                      setSyncLoading(false);
-                    }
-                  }}
-                  disabled={syncLoading || !syncInviteCode || !syncEncryptionKey || !syncCallerAlias}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    background: "var(--accent)",
-                    color: "var(--text-on-accent)",
-                    padding: "10px 20px",
-                    borderRadius: 8,
-                    fontSize: 14,
-                    fontWeight: 500,
-                    cursor: syncLoading ? "not-allowed" : "pointer",
-                    transition: "background 0.15s",
-                    alignSelf: "flex-start",
-                    border: "none",
-                  }}
-                  onMouseEnter={(e) => !syncLoading && (e.currentTarget.style.background = "var(--accent-hover)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
-                >
-                  {syncLoading ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <ArrowRight size={14} />}
-                  {syncLoading ? "Starting..." : "Start Sync"}
-                </button>
-              </div>
-            )}
-
-            {syncStep === "confirm" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div
-                  style={{
-                    padding: "16px 20px",
-                    borderRadius: 8,
-                    border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
-                    background: "color-mix(in srgb, var(--accent) 8%, transparent)",
-                    textAlign: "center",
-                  }}
-                >
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Enter this code into the drawlatch server</div>
-                  <div
-                    style={{
-                      fontSize: 28,
-                      fontWeight: 700,
-                      fontFamily: "monospace",
-                      color: "var(--accent)",
-                      letterSpacing: "0.05em",
-                    }}
-                  >
-                    {syncConfirmCode}
-                  </div>
-                </div>
-
-                <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                  Enter the code above into the drawlatch server when it asks for a confirm code, then click <strong>Complete Sync</strong> below.
-                </div>
-
-                {syncError && (
-                  <div
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 8,
-                      fontSize: 12,
-                      lineHeight: 1.5,
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 8,
-                      border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
-                      background: "var(--danger-bg)",
-                      color: "var(--danger)",
-                    }}
-                  >
-                    <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                    <div style={{ opacity: 0.85 }}>{syncError}</div>
-                  </div>
-                )}
-
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    onClick={async () => {
-                      setSyncLoading(true);
-                      setSyncError(null);
-                      try {
-                        const result = await completeSync();
-                        setSyncResult(result);
-                        setSyncStep("success");
-                        // Refresh key aliases
-                        getKeyAliases()
-                          .then(setKeyAliases)
-                          .catch(() => setKeyAliases([]));
-                      } catch (err: any) {
-                        const msg = err.message || "Failed to complete sync";
-                        const errorMessages: Record<string, string> = {
-                          NO_ACTIVE_SESSION: "No sync session is active on the remote server. Run `drawlatch sync` first.",
-                          CODE_MISMATCH: "Code mismatch — verify the invite and confirm codes.",
-                          SESSION_EXPIRED: "Sync session expired. Start a new one on the remote server.",
-                          DECRYPTION_FAILED: "Decryption failed — check the encryption key.",
-                        };
-                        // Try to extract code from error message
-                        const codeMatch = msg.match(/:\s*(\w+)$/);
-                        const code = codeMatch?.[1];
-                        setSyncError(code && errorMessages[code] ? errorMessages[code] : msg);
-                      } finally {
-                        setSyncLoading(false);
-                      }
-                    }}
-                    disabled={syncLoading}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      background: "var(--accent)",
-                      color: "var(--text-on-accent)",
-                      padding: "10px 20px",
-                      borderRadius: 8,
-                      fontSize: 14,
-                      fontWeight: 500,
-                      cursor: syncLoading ? "not-allowed" : "pointer",
-                      transition: "background 0.15s",
-                      border: "none",
-                    }}
-                    onMouseEnter={(e) => !syncLoading && (e.currentTarget.style.background = "var(--accent-hover)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--accent)")}
-                  >
-                    {syncLoading ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={14} />}
-                    {syncLoading ? "Completing..." : "Complete Sync"}
-                  </button>
-
-                  <button
-                    onClick={async () => {
-                      await cancelSync().catch(() => {});
-                      setSyncStep("input");
-                      setSyncConfirmCode("");
-                      setSyncError(null);
-                    }}
-                    disabled={syncLoading}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "10px 14px",
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg)",
-                      color: "var(--text-muted)",
-                      fontSize: 14,
-                      cursor: syncLoading ? "not-allowed" : "pointer",
-                      transition: "background 0.15s",
-                    }}
-                    onMouseEnter={(e) => !syncLoading && (e.currentTarget.style.background = "var(--bg-secondary)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
-                  >
-                    <X size={14} />
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {syncStep === "success" && syncResult && (
+            {/* Success state */}
+            {importResult ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <div
                   style={{
@@ -939,9 +600,10 @@ export default function ProxySettings() {
                 >
                   <Check size={14} style={{ flexShrink: 0, marginTop: 2 }} />
                   <div>
-                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Sync Complete</div>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Bundle imported</div>
                     <div>
-                      Registered as <strong style={{ fontFamily: "monospace" }}>{syncResult.callerAlias}</strong>
+                      Caller <strong style={{ fontFamily: "monospace" }}>{importResult.alias}</strong> is ready. Bind it to an agent, then test the connection
+                      above.
                     </div>
                     <div style={{ marginTop: 2 }}>
                       Fingerprint:{" "}
@@ -954,25 +616,13 @@ export default function ProxySettings() {
                           borderRadius: 3,
                         }}
                       >
-                        {syncResult.fingerprint}
+                        {importResult.fingerprint}
                       </code>
-                    </div>
-                    <div style={{ marginTop: 6, opacity: 0.85 }}>
-                      The remote server&apos;s public keys have been saved. You can now test the connection above.
                     </div>
                   </div>
                 </div>
-
                 <button
-                  onClick={() => {
-                    setSyncStep("input");
-                    setSyncInviteCode("");
-                    setSyncEncryptionKey("");
-                    setSyncCallerAlias("");
-                    setSyncConfirmCode("");
-                    setSyncResult(null);
-                    setSyncError(null);
-                  }}
+                  onClick={resetImport}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -984,14 +634,211 @@ export default function ProxySettings() {
                     color: "var(--text)",
                     fontSize: 14,
                     cursor: "pointer",
-                    transition: "background 0.15s",
                     alignSelf: "flex-start",
+                  }}
+                >
+                  Import another
+                </button>
+              </div>
+            ) : importParsed ? (
+              /* Confirmation state — show pinned identity before writing */
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div
+                  style={{
+                    padding: "14px 16px",
+                    borderRadius: 8,
+                    border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
+                    background: "color-mix(in srgb, var(--accent) 6%, transparent)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  {[
+                    ["Caller alias", importParsed.callerAlias],
+                    ["Fingerprint", importParsed.fingerprint],
+                    ["Endpoint", importParsed.endpointUrl],
+                    ["Server key", importParsed.serverKeyFingerprint],
+                  ].map(([label, value]) => (
+                    <div key={label} style={{ display: "flex", gap: 8, fontSize: 12, alignItems: "baseline" }}>
+                      <span style={{ color: "var(--text-muted)", minWidth: 90, flexShrink: 0 }}>{label}</span>
+                      <code style={{ fontFamily: "monospace", color: "var(--text)", wordBreak: "break-all" }}>{value}</code>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                  Confirm the <strong>endpoint</strong> and <strong>server key fingerprint</strong> match the drawlatch server you trust before importing —
+                  this pins callboard to that exact server identity.
+                </div>
+
+                {/* Passphrase prompt for wrapped bundles */}
+                {importParsed.encryption != null && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                      <Lock size={12} /> Passphrase
+                    </div>
+                    <input
+                      type="password"
+                      value={importPassphrase}
+                      onChange={(e) => {
+                        setImportPassphrase(e.target.value);
+                        setImportError(null);
+                      }}
+                      placeholder="Passphrase that protects the private keys"
+                      autoFocus
+                      style={inputStyle}
+                    />
+                  </div>
+                )}
+
+                {importError && (
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                      background: "var(--danger-bg)",
+                      color: "var(--danger)",
+                    }}
+                  >
+                    <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div style={{ opacity: 0.85 }}>{importError}</div>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={handleConfirmImport}
+                    disabled={importLoading || (importParsed.encryption != null && !importPassphrase)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "var(--accent)",
+                      color: "var(--text-on-accent)",
+                      padding: "10px 20px",
+                      borderRadius: 8,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      cursor: importLoading ? "not-allowed" : "pointer",
+                      border: "none",
+                      opacity: importParsed.encryption != null && !importPassphrase ? 0.6 : 1,
+                    }}
+                  >
+                    {importLoading ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={14} />}
+                    {importLoading ? "Importing..." : "Confirm & import"}
+                  </button>
+                  <button
+                    onClick={resetImport}
+                    disabled={importLoading}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text-muted)",
+                      fontSize: 14,
+                      cursor: importLoading ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    <X size={14} />
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Input state — file picker or paste */
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  style={{ display: "none" }}
+                  onChange={(e) => handleBundleFile(e.target.files?.[0])}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    fontSize: 14,
+                    cursor: "pointer",
+                    alignSelf: "flex-start",
+                    transition: "background 0.15s",
                   }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
                 >
-                  Done
+                  <FolderOpen size={16} />
+                  Choose bundle file…
                 </button>
+
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>or paste the bundle JSON:</div>
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => {
+                    setPasteText(e.target.value);
+                    setImportError(null);
+                  }}
+                  placeholder='{ "version": 1, "callerAlias": "...", ... }'
+                  rows={4}
+                  style={{ ...inputStyle, resize: "vertical", fontSize: 12, lineHeight: 1.5 }}
+                />
+                <button
+                  onClick={() => loadBundleText(pasteText)}
+                  disabled={!pasteText.trim()}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: pasteText.trim() ? "var(--accent)" : "var(--bg)",
+                    color: pasteText.trim() ? "var(--text-on-accent)" : "var(--text-muted)",
+                    padding: "10px 20px",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    fontWeight: 500,
+                    cursor: pasteText.trim() ? "pointer" : "not-allowed",
+                    border: "none",
+                    alignSelf: "flex-start",
+                  }}
+                >
+                  Review bundle
+                </button>
+
+                {importError && (
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                      background: "var(--danger-bg)",
+                      color: "var(--danger)",
+                    }}
+                  >
+                    <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div style={{ opacity: 0.85 }}>{importError}</div>
+                  </div>
+                )}
               </div>
             )}
           </div>

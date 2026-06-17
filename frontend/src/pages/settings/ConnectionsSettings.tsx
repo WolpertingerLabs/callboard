@@ -173,9 +173,12 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                     <span
                       key={alias}
                       style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
                         fontSize: 12,
                         fontFamily: "monospace",
-                        padding: "4px 10px",
+                        padding: "4px 6px 4px 10px",
                         borderRadius: 6,
                         background: "color-mix(in srgb, var(--accent) 12%, transparent)",
                         color: "var(--accent)",
@@ -183,11 +186,30 @@ export default function ConnectionsSettings({ onSwitchTab }: ConnectionsSettings
                       }}
                     >
                       {alias}
+                      {/* Source badge: in local mode the daemon auto-shares callers
+                          over the shared filesystem; in remote mode they arrive via
+                          an imported caller bundle. */}
+                      <span
+                        style={{
+                          fontFamily: "var(--font-sans, sans-serif)",
+                          fontSize: 10,
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.03em",
+                          padding: "1px 6px",
+                          borderRadius: 4,
+                          background: "color-mix(in srgb, var(--accent) 18%, transparent)",
+                        }}
+                      >
+                        {status.mode === "local" ? "local-auto" : "bundle-issued"}
+                      </span>
                     </span>
                   ))}
                 </div>
               ) : (
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No callers enrolled yet.</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {status.mode === "local" ? "No callers shared yet — the daemon auto-shares one at boot." : "No callers imported yet."}
+                </div>
               )}
             </div>
           </div>

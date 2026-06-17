@@ -880,35 +880,42 @@ export async function getDaemonStatus(): Promise<DaemonStatus> {
   return res.json();
 }
 
-// Sync (key exchange) API functions
+// Caller credential bundle import (remote mode)
 
-export async function startSync(opts: { remoteUrl: string; inviteCode: string; encryptionKey: string; callerAlias: string }): Promise<{ confirmCode: string }> {
-  const res = await fetch(`${BASE}/agent-settings/sync/start`, {
+/**
+ * Parsed view of a `{alias}.drawlatch-caller.json` bundle — only the plaintext,
+ * user-facing fields the import UI needs to show for confirmation. The private
+ * keys (possibly passphrase-wrapped) are passed through to the backend verbatim
+ * inside `raw` and never inspected client-side.
+ */
+export interface ParsedCallerBundle {
+  version: number;
+  callerAlias: string;
+  fingerprint: string;
+  endpointUrl: string;
+  serverKeyFingerprint: string;
+  /** Non-null when the private keys are passphrase-wrapped. */
+  encryption: unknown;
+  /** The original parsed JSON, forwarded to the backend on confirm. */
+  raw: unknown;
+}
+
+export interface ImportBundleResult {
+  alias: string;
+  fingerprint: string;
+  serverKeyFingerprint: string;
+  endpointUrl: string;
+  aliases: KeyAliasInfo[];
+}
+
+export async function importCallerBundle(bundle: unknown, passphrase?: string): Promise<ImportBundleResult> {
+  const res = await fetch(`${BASE}/agent-settings/import-bundle`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify(opts),
+    body: JSON.stringify({ bundle, ...(passphrase ? { passphrase } : {}) }),
   });
-  await assertOk(res, "Failed to start sync");
-  return res.json();
-}
-
-export async function completeSync(): Promise<{ callerAlias: string; fingerprint: string }> {
-  const res = await fetch(`${BASE}/agent-settings/sync/complete`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to complete sync");
-  return res.json();
-}
-
-export async function cancelSync(): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}/agent-settings/sync/cancel`, {
-    method: "POST",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to cancel sync");
+  await assertOk(res, "Failed to import caller bundle");
   return res.json();
 }
 
@@ -924,21 +931,6 @@ export async function getAgentActivity(alias: string, type?: string, limit?: num
   await assertOk(res, "Failed to get agent activity");
   const data = await res.json();
   return data.entries;
-}
-
-// Caller enrollment (local mode). Creates/enrolls a caller alias under the
-// drawlatch keys/callers/ directory. In remote mode the backend returns 400 —
-// callers arrive via the Sync flow instead.
-
-export async function createCallerAlias(alias: string): Promise<{ alias: string; aliases: KeyAliasInfo[] }> {
-  const res = await fetch(`${BASE}/agent-settings/callers`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ alias }),
-  });
-  await assertOk(res, "Failed to create caller alias");
-  return res.json();
 }
 
 // Password change API
