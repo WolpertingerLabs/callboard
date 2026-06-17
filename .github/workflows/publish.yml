@@ -1,0 +1,69 @@
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Rehearse without publishing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write      # push the release tag
+  id-token: write      # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — dispatch from main only
+        if: github.ref_name != 'main'
+        run: |
+          echo "::error::publish must be dispatched from main (got ${{ github.ref_name }})"
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Version lock — fail if already published
+        run: |
+          PKG=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "$PKG@$VERSION" version 2>/dev/null || true)
+          if [ -n "$PUBLISHED" ]; then
+            echo "::error::$PKG@$VERSION is already published — bump the version first."
+            exit 1
+          fi
+          echo "OK: $PKG@$VERSION is new — proceeding."
+
+      # NODE_ENV=development so npm does not strip devDependencies (tsc, eslint,
+      # vitest, vite). --include=dev belt-and-braces for the same reason.
+      - name: Install
+        run: NODE_ENV=development npm ci --include=dev
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm publish --provenance --access public --dry-run
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: Tag release
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
