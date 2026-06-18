@@ -99,7 +99,12 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
         userTimezone: userTimezone || undefined,
         userLocation: userLocation || undefined,
         userContext: userContext || undefined,
-        mcpKeyAlias: selectedKeyAlias || undefined,
+        // Send "" (not undefined) when no caller is selected so deselecting
+        // persists. JSON.stringify drops undefined keys, which would make the
+        // backend treat a cleared selection as "field absent" and leave the
+        // old alias in place; an empty string is the explicit "clear" signal
+        // that routeKeyAliasForPersist honors.
+        mcpKeyAlias: selectedKeyAlias ?? "",
       });
       onAgentUpdate?.(updated);
       setSaved(true);

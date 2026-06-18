@@ -340,9 +340,11 @@ agentSettingsRouter.get("/daemon-status", async (_req: Request, res: Response): 
  *
  * drawlatch issues `{alias}.drawlatch-caller.json` bundles (the AWS IAM
  * access-key model — the keypair is a capability minted to access drawlatch).
- * The bundle pins one endpoint + one server key; callboard confirms those with
- * the user (in the UI, before this route is hit) then unpacks the key files
- * into the active config dir and records the endpoint as `remoteServerUrl`.
+ * The bundle pins one endpoint + one server key; callboard confirms the server
+ * key with the user (in the UI, before this route is hit) then unpacks the key
+ * files into the active config dir. The bundle's endpoint is intentionally NOT
+ * applied as `remoteServerUrl` for now — cloudflared endpoints are ephemeral, so
+ * the user sets the Server URL manually (see the disabled pin below).
  *
  * Body: { bundle: object, passphrase?: string }. The passphrase is required
  * only when the bundle's private keys are passphrase-wrapped (422 otherwise).
@@ -358,9 +360,14 @@ agentSettingsRouter.post("/import-bundle", async (req: Request, res: Response): 
     // Unpack + validate (decrypts wrapped private keys when a passphrase is given).
     const result = importBundle(bundle, typeof passphrase === "string" ? passphrase : undefined);
 
-    // Pin the bundle's endpoint as the remote server URL so the ProxyClient
-    // targets the server this caller identity is scoped to.
-    updateAgentSettings({ remoteServerUrl: result.endpointUrl });
+    // Endpoint-from-bundle pinning is DISABLED for now. cloudflared tunnel URLs
+    // for callboard<->drawlatch connections are ephemeral and not guaranteed to
+    // persist across machines/restarts, so we don't auto-pin the bundle's
+    // endpoint as `remoteServerUrl` — the user sets the Server URL manually in
+    // Proxy Settings. The bundle still carries `endpointUrl` (and server-key
+    // pinning still happens via the imported key files); we just ignore it here.
+    // Re-enable once endpoints are stable/long-lived:
+    // updateAgentSettings({ remoteServerUrl: result.endpointUrl });
 
     // Refresh the ProxyClient singleton so the new alias + endpoint are picked
     // up immediately (the next getProxy() re-scans discoverKeyAliases()).
