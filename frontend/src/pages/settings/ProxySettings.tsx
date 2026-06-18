@@ -217,8 +217,10 @@ export default function ProxySettings() {
       const result = await importCallerBundle(importParsed.raw, importPassphrase || undefined);
       setImportResult({ alias: result.alias, fingerprint: result.fingerprint });
       setKeyAliases(result.aliases);
-      // The backend pinned the bundle's endpoint as the remote server URL.
-      setRemoteServerUrl(result.endpointUrl);
+      // Endpoint-from-bundle pinning is disabled for now (see the import-bundle
+      // route) — cloudflared endpoints are ephemeral, so the user sets the
+      // Server URL manually above. Don't overwrite what they typed.
+      // setRemoteServerUrl(result.endpointUrl);
       setImportParsed(null);
       setImportPassphrase("");
       setPasteText("");
@@ -817,7 +819,8 @@ export default function ProxySettings() {
               Issue a caller in drawlatch (Callers page → Issue credentials, or{" "}
               <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>drawlatch issue-caller</code>) to
               get a <code style={{ fontFamily: "monospace", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>.drawlatch-caller.json</code>{" "}
-              file, then import it here. callboard pins the endpoint and server key from the bundle — confirm both before the keys are written.
+              file, then import it here. callboard pins the server key from the bundle — confirm it before the keys are written. Set the Server URL above
+              manually (the bundle&apos;s endpoint is ignored for now, since tunnel URLs are ephemeral).
             </div>
 
             {/* Success state */}
@@ -896,7 +899,9 @@ export default function ProxySettings() {
                   {[
                     ["Caller alias", importParsed.callerAlias],
                     ["Fingerprint", importParsed.fingerprint],
-                    ["Endpoint", importParsed.endpointUrl],
+                    // Endpoint row hidden for now — the bundle's endpoint is no longer
+                    // applied (ephemeral tunnels); the user sets the Server URL manually.
+                    // ["Endpoint", importParsed.endpointUrl],
                     ["Server key", importParsed.serverKeyFingerprint],
                   ].map(([label, value]) => (
                     <div key={label} style={{ display: "flex", gap: 8, fontSize: 12, alignItems: "baseline" }}>
@@ -907,8 +912,8 @@ export default function ProxySettings() {
                 </div>
 
                 <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                  Confirm the <strong>endpoint</strong> and <strong>server key fingerprint</strong> match the drawlatch server you trust before importing —
-                  this pins callboard to that exact server identity.
+                  Confirm the <strong>server key fingerprint</strong> matches the drawlatch server you trust before importing — this pins callboard to that
+                  exact server identity. Set the <strong>Server URL</strong> above yourself.
                 </div>
 
                 {/* Passphrase prompt for wrapped bundles */}

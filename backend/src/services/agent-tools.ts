@@ -701,7 +701,10 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
           userTimezone: z.string().optional().describe("User's timezone (e.g. 'America/New_York')"),
           userLocation: z.string().optional().describe("User's location"),
           userContext: z.string().optional().describe("Additional context about the user"),
-          mcpKeyAlias: z.string().optional().describe("MCP secure proxy key alias for this agent"),
+          mcpKeyAlias: z
+            .string()
+            .nullish()
+            .describe("MCP secure proxy key alias for this agent. Pass an empty string or null to clear/unbind the alias; omit to leave it unchanged."),
         },
         async (args) => {
           try {
@@ -730,9 +733,12 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               ...(args.userContext !== undefined && { userContext: args.userContext?.trim() || undefined }),
             };
 
-            // Route mcpKeyAlias to the correct per-mode field
+            // Route mcpKeyAlias to the correct per-mode field. An empty string
+            // or null clears the binding (normalized to "" — the "clear"
+            // sentinel routeKeyAliasForPersist honors); omitting the field
+            // (undefined) leaves the existing alias untouched.
             if (args.mcpKeyAlias !== undefined) {
-              updated = routeKeyAliasForPersist(updated, args.mcpKeyAlias);
+              updated = routeKeyAliasForPersist(updated, args.mcpKeyAlias ?? "");
             } else {
               delete updated.mcpKeyAlias;
             }
