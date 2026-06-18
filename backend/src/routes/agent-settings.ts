@@ -6,7 +6,7 @@
  *   GET  /api/agent-settings/key-aliases      — discover key aliases from MCP config dir
  *   POST /api/agent-settings/test-connection  — test remote proxy connection
  *   GET  /api/agent-settings/daemon-status    — drawlatch daemon URL/health/enrollment
- *   POST /api/agent-settings/callers          — enroll a caller (local auto-enroll)
+ *   POST /api/agent-settings/import-bundle     — import a drawlatch caller credential bundle
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -14,10 +14,9 @@ import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/
 import { validateServerTools, validateParamProfile } from "shared/types/index.js";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
-import { switchProxyMode, testRemoteConnection, ensureCallerEnrolled, getConfiguredAliases } from "../services/proxy-singleton.js";
+import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients } from "../services/proxy-singleton.js";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
-import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
-import { initSync, completeSync, cancelSync, SyncClientError } from "../services/sync-manager.js";
+import { importBundle, BundleImportError } from "../services/bundle-import.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
 import { refreshCodexModelsCache } from "../services/codex-models.js";
 import { createLogger } from "../utils/logger.js";
@@ -337,83 +336,51 @@ agentSettingsRouter.get("/daemon-status", async (_req: Request, res: Response): 
 });
 
 /**
- * POST /api/agent-settings/callers — provision a caller identity.
+ * POST /api/agent-settings/import-bundle — import a drawlatch caller credential bundle.
  *
- * Local mode: auto-enrolls the alias against the managed daemon (zero-friction,
- * shared filesystem) so a fresh keypair is created. Remote mode: callers are
- * provisioned via the invite-code Sync flow instead, so this is rejected.
+ * drawlatch issues `{alias}.drawlatch-caller.json` bundles (the AWS IAM
+ * access-key model — the keypair is a capability minted to access drawlatch).
+ * The bundle pins one endpoint + one server key; callboard confirms those with
+ * the user (in the UI, before this route is hit) then unpacks the key files
+ * into the active config dir and records the endpoint as `remoteServerUrl`.
+ *
+ * Body: { bundle: object, passphrase?: string }. The passphrase is required
+ * only when the bundle's private keys are passphrase-wrapped (422 otherwise).
  */
-agentSettingsRouter.post("/callers", async (req: Request, res: Response): Promise<void> => {
-  const alias = (req.body?.alias as string | undefined)?.trim();
-  if (!alias || !CALLER_ALIAS_REGEX.test(alias)) {
-    res.status(400).json({ error: "Invalid alias. Use letters, numbers, hyphens, underscores." });
-    return;
-  }
-
-  const settings = getAgentSettings();
-  if (settings.proxyMode === "remote") {
-    res.status(400).json({ error: "In remote mode, add callers via Sync (invite code)." });
+agentSettingsRouter.post("/import-bundle", async (req: Request, res: Response): Promise<void> => {
+  const { bundle, passphrase } = req.body ?? {};
+  if (bundle === undefined || bundle === null) {
+    res.status(400).json({ error: "bundle is required" });
     return;
   }
 
   try {
-    const ok = await ensureCallerEnrolled(alias);
-    if (!ok) {
-      res.status(502).json({ error: "Failed to enroll caller — is the local daemon running?" });
-      return;
-    }
+    // Unpack + validate (decrypts wrapped private keys when a passphrase is given).
+    const result = importBundle(bundle, typeof passphrase === "string" ? passphrase : undefined);
+
+    // Pin the bundle's endpoint as the remote server URL so the ProxyClient
+    // targets the server this caller identity is scoped to.
+    updateAgentSettings({ remoteServerUrl: result.endpointUrl });
+
+    // Refresh the ProxyClient singleton so the new alias + endpoint are picked
+    // up immediately (the next getProxy() re-scans discoverKeyAliases()).
+    resetAllClients();
+
     const aliases = discoverKeyAliases();
-    res.json({ alias, aliases });
+    res.json({
+      alias: result.alias,
+      fingerprint: result.fingerprint,
+      serverKeyFingerprint: result.serverKeyFingerprint,
+      endpointUrl: result.endpointUrl,
+      aliases,
+    });
   } catch (err: any) {
-    log.error(`Error enrolling caller "${alias}": ${err.message}`);
-    res.status(500).json({ error: err.message || "Failed to enroll caller" });
-  }
-});
-
-// ── Sync (key exchange) endpoints ────────────────────────────────────
-
-/** POST /api/agent-settings/sync/start — initiate key exchange with a remote drawlatch server */
-agentSettingsRouter.post("/sync/start", async (req: Request, res: Response): Promise<void> => {
-  const { remoteUrl, inviteCode, encryptionKey, callerAlias } = req.body;
-  if (!remoteUrl || !inviteCode || !encryptionKey || !callerAlias) {
-    res.status(400).json({ error: "remoteUrl, inviteCode, encryptionKey, and callerAlias are required" });
-    return;
-  }
-
-  try {
-    const result = await initSync({ remoteUrl, inviteCode, encryptionKey, callerAlias });
-    res.json(result);
-  } catch (err: any) {
-    log.error(`Error starting sync: ${err.message}`);
-    res.status(500).json({ error: err.message || "Failed to start sync" });
-  }
-});
-
-/** POST /api/agent-settings/sync/complete — complete the pending key exchange */
-agentSettingsRouter.post("/sync/complete", async (_req: Request, res: Response): Promise<void> => {
-  try {
-    const result = await completeSync();
-    res.json(result);
-  } catch (err: any) {
-    log.error(`Error completing sync: ${err.message}`);
-    if (err instanceof SyncClientError) {
-      const statusMap: Record<string, number> = {
-        NO_ACTIVE_SESSION: 404,
-        CODE_MISMATCH: 403,
-        SESSION_EXPIRED: 410,
-        ALREADY_COMPLETED: 409,
-        DECRYPTION_FAILED: 400,
-        INVALID_PAYLOAD: 400,
-      };
-      res.status(statusMap[err.code] || 502).json({ error: err.message, code: err.code });
+    if (err instanceof BundleImportError) {
+      // Validation / passphrase errors are user-facing — surface the message.
+      res.status(err.status).json({ error: err.message });
       return;
     }
-    res.status(500).json({ error: err.message || "Failed to complete sync" });
+    log.error(`Error importing caller bundle: ${err.message}`);
+    res.status(500).json({ error: "Failed to import caller bundle" });
   }
-});
-
-/** POST /api/agent-settings/sync/cancel — cancel a pending key exchange */
-agentSettingsRouter.post("/sync/cancel", (_req: Request, res: Response): void => {
-  cancelSync();
-  res.json({ ok: true });
 });
