@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
-import { Workflow, Plus, Pencil, Trash2, Play, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
-import { listJobs, createJob, updateJob, deleteJob, spawnJob, listJobRuns } from "../../api";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Workflow, Plus, Pencil, Trash2, Play, ChevronDown, ChevronRight, RefreshCw, Download, Upload } from "lucide-react";
+import { listJobs, createJob, updateJob, deleteJob, spawnJob, listJobRuns, getJobExportUrl, importJob } from "../../api";
 import type { JobDefinition, JobDefinitionPayload, JobRunListItem } from "../../api";
 import JobRunPanel, { JOB_RUN_STATUS_META } from "../../components/JobRunPanel";
+import ModalOverlay from "../../components/ModalOverlay";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -46,6 +47,16 @@ const errorBoxStyle: React.CSSProperties = {
   fontSize: 13,
   marginBottom: 12,
   whiteSpace: "pre-wrap",
+};
+
+const successBoxStyle: React.CSSProperties = {
+  padding: "8px 12px",
+  borderRadius: 6,
+  background: "var(--success-bg)",
+  border: "1px solid var(--success)",
+  color: "var(--success)",
+  fontSize: 13,
+  marginBottom: 12,
 };
 
 const NEW_JOB_TEMPLATE = `{
@@ -107,6 +118,19 @@ export default function JobsSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runsError, setRunsError] = useState<string | null>(null);
+
+  // Import state
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  // The parsed payload + conflicting id while awaiting a copy/overwrite choice.
+  const [conflict, setConflict] = useState<{ id: string; payload: unknown } | null>(null);
+  // Id of the just-imported job to scroll to and briefly highlight.
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const refreshJobs = useCallback(() => {
     return listJobs()
@@ -194,6 +218,79 @@ export default function JobsSettings() {
     }
   };
 
+  const handleExport = (id: string) => {
+    const a = document.createElement("a");
+    a.href = getJobExportUrl(id);
+    a.download = `${id}.job.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  // Run the import for an already-parsed payload, surfacing conflicts and errors.
+  const runImport = useCallback(
+    async (payload: unknown, mode?: "copy" | "overwrite") => {
+      setImporting(true);
+      setImportError(null);
+      try {
+        const result = await importJob(payload, mode);
+        if (result.conflict?.id) {
+          setConflict({ id: result.conflict.id, payload });
+          return;
+        }
+        const job = result.job!;
+        setConflict(null);
+        setImportOpen(false);
+        setImportText("");
+        await refreshJobs();
+        setHighlightId(job.id);
+        setImportSuccess(`Imported "${job.name}" (${job.id}).`);
+      } catch (err: any) {
+        setConflict(null);
+        setImportError(err.message);
+      } finally {
+        setImporting(false);
+      }
+    },
+    [refreshJobs],
+  );
+
+  // Parse raw JSON text, then import. Returns false on parse failure.
+  const importFromText = useCallback(
+    (text: string) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch (err: any) {
+        setImportError(`Invalid JSON: ${err.message}`);
+        return;
+      }
+      void runImport(parsed);
+    },
+    [runImport],
+  );
+
+  const handleFile = async (file: File) => {
+    setImportError(null);
+    setImportSuccess(null);
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      setImportError("Could not read the selected file.");
+      return;
+    }
+    importFromText(text);
+  };
+
+  // Scroll to and briefly highlight a freshly imported job.
+  useEffect(() => {
+    if (!highlightId) return;
+    cardRefs.current.get(highlightId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setHighlightId(null), 2500);
+    return () => clearTimeout(t);
+  }, [highlightId, jobs]);
+
   const spawnJobDef = spawnForm ? jobs.find((j) => j.id === spawnForm.jobId) : null;
 
   return (
@@ -206,28 +303,65 @@ export default function JobsSettings() {
             <span style={{ fontSize: 15, fontWeight: 600 }}>Jobs</span>
           </div>
           {!editor && (
-            <button
-              onClick={() => {
-                setError(null);
-                setEditor({ originalId: null, json: NEW_JOB_TEMPLATE });
-              }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 12px",
-                borderRadius: 6,
-                border: "none",
-                background: "var(--accent)",
-                color: "var(--text-on-accent)",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              <Plus size={14} />
-              New job
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {/* Hidden file input for import */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFile(file);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                onClick={() => {
+                  setImportOpen((v) => !v);
+                  setImportError(null);
+                  setImportSuccess(null);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--text)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <Upload size={14} />
+                Import job
+              </button>
+              <button
+                onClick={() => {
+                  setError(null);
+                  setEditor({ originalId: null, json: NEW_JOB_TEMPLATE });
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: "var(--accent)",
+                  color: "var(--text-on-accent)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <Plus size={14} />
+                New job
+              </button>
+            </div>
           )}
         </div>
         <div style={{ ...helpStyle, marginBottom: 16 }}>
@@ -237,6 +371,88 @@ export default function JobsSettings() {
         </div>
 
         {error && <div style={errorBoxStyle}>{error}</div>}
+        {importSuccess && !importOpen && <div style={successBoxStyle}>{importSuccess}</div>}
+
+        {/* ── Import panel: pick a file or paste JSON ─────────────── */}
+        {importOpen && !editor && (
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 6, border: "1px solid var(--accent)", background: "var(--surface)" }}>
+            <label style={labelStyle}>Import a job definition</label>
+            <div style={{ ...helpStyle, marginTop: 0, marginBottom: 10 }}>
+              Choose an exported <code>.job.json</code> file, or paste the exported JSON (envelope or bare definition) below.
+            </div>
+            {importError && <div style={errorBoxStyle}>{importError}</div>}
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importing}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--text)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: importing ? "default" : "pointer",
+                }}
+              >
+                <Upload size={14} />
+                Choose file…
+              </button>
+            </div>
+            <textarea
+              style={{ ...inputStyle, fontFamily: "var(--font-mono)", minHeight: 160, resize: "vertical", lineHeight: 1.5 }}
+              placeholder='Paste exported JSON here, e.g. {"callboardJobExport":1,...} or a bare {"name":...,"steps":[...]}'
+              value={importText}
+              spellCheck={false}
+              disabled={importing}
+              onChange={(e) => {
+                setImportText(e.target.value);
+                if (importError) setImportError(null);
+              }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 }}>
+              <button
+                onClick={() => {
+                  setImportOpen(false);
+                  setImportText("");
+                  setImportError(null);
+                }}
+                disabled={importing}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--text)",
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => importFromText(importText)}
+                disabled={importing || !importText.trim()}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: importing || !importText.trim() ? "var(--surface)" : "var(--accent)",
+                  color: importing || !importText.trim() ? "var(--text-muted)" : "var(--text-on-accent)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: importing || !importText.trim() ? "default" : "pointer",
+                }}
+              >
+                {importing ? "Importing…" : "Import from text"}
+              </button>
+            </div>
+          </div>
+        )}
 
         {editor ? (
           <div>
@@ -303,14 +519,19 @@ export default function JobsSettings() {
             {jobs.map((job) => (
               <div key={job.id}>
                 <div
+                  ref={(el) => {
+                    if (el) cardRefs.current.set(job.id, el);
+                    else cardRefs.current.delete(job.id);
+                  }}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 12,
                     padding: "10px 12px",
                     borderRadius: 6,
-                    border: "1px solid var(--border)",
+                    border: `1px solid ${highlightId === job.id ? "var(--accent)" : "var(--border)"}`,
                     background: "var(--surface)",
+                    transition: "border-color 0.3s",
                   }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -342,6 +563,13 @@ export default function JobsSettings() {
                     }}
                   >
                     <Play size={13} /> Spawn
+                  </button>
+                  <button
+                    onClick={() => handleExport(job.id)}
+                    title="Export job definition"
+                    style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4 }}
+                  >
+                    <Download size={15} />
                   </button>
                   <button
                     onClick={() => {
@@ -503,6 +731,80 @@ export default function JobsSettings() {
           </div>
         )}
       </div>
+
+      {/* ── Import conflict modal ───────────────────────────────── */}
+      {conflict && (
+        <ModalOverlay>
+          <div
+            style={{
+              background: "var(--bg)",
+              borderRadius: 8,
+              padding: 24,
+              width: "90%",
+              maxWidth: 440,
+              border: "1px solid var(--border)",
+            }}
+          >
+            <h2 style={{ margin: "0 0 16px 0", fontSize: 18 }}>Job already exists</h2>
+            <p style={{ margin: "0 0 24px 0", fontSize: 14, color: "var(--text)", lineHeight: 1.4 }}>
+              A job with id <code style={{ fontFamily: "var(--font-mono)" }}>{conflict.id}</code> already exists. Import as a copy with a new id, or
+              overwrite the existing definition?
+            </p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setConflict(null)}
+                disabled={importing}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 6,
+                  fontSize: 14,
+                  background: "var(--bg-secondary)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text)",
+                  cursor: importing ? "default" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => runImport(conflict.payload, "copy")}
+                disabled={importing}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 6,
+                  fontSize: 14,
+                  background: "transparent",
+                  border: "1px solid var(--accent)",
+                  color: "var(--accent)",
+                  fontWeight: 600,
+                  cursor: importing ? "default" : "pointer",
+                }}
+              >
+                Import as copy
+              </button>
+              <button
+                type="button"
+                onClick={() => runImport(conflict.payload, "overwrite")}
+                disabled={importing}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 6,
+                  fontSize: 14,
+                  background: "var(--danger)",
+                  border: "none",
+                  color: "var(--text-on-accent)",
+                  fontWeight: 600,
+                  cursor: importing ? "default" : "pointer",
+                }}
+              >
+                Overwrite existing
+              </button>
+            </div>
+          </div>
+        </ModalOverlay>
+      )}
     </div>
   );
 }

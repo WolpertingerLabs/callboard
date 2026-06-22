@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
-import type { JobDefinition, JobRun, JobRunListItem, JobRunStatus, JobStep, JobStepResult } from "shared";
+import type { JobDefinition, JobDefinitionPayload, JobExportEnvelope, JobRun, JobRunListItem, JobRunStatus, JobStep, JobStepResult } from "shared";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -81,14 +81,12 @@ export function getJob(id: string): JobDefinition | null {
   }
 }
 
-export interface JobDefinitionInput {
-  id?: string;
-  name: string;
-  description?: string;
-  inputs?: JobDefinition["inputs"];
-  defaults?: JobDefinition["defaults"];
-  limits?: JobDefinition["limits"];
-  steps: JobStep[];
+/**
+ * Create/update payload — the shared {@link JobDefinitionPayload} (the
+ * server-managed-fields-stripped definition shape) plus an optional
+ * `createdBy` provenance hint the routes/tools attach on creation.
+ */
+export interface JobDefinitionInput extends JobDefinitionPayload {
   createdBy?: JobDefinition["createdBy"];
 }
 
@@ -145,6 +143,111 @@ export function deleteJob(id: string): boolean {
   unlinkSync(filepath);
   log.info(`Deleted job "${id}"`);
   return true;
+}
+
+// ── Import / Export ─────────────────────────────────────────────────
+
+/** Thrown when an import targets an existing id and no resolution mode was given. */
+export class JobImportConflictError extends Error {
+  constructor(public readonly jobId: string) {
+    super(`A job with id "${jobId}" already exists — pass mode "copy" or "overwrite" to resolve`);
+    this.name = "JobImportConflictError";
+  }
+}
+
+/**
+ * Project an arbitrary definition-ish object down to the portable payload
+ * shape. This is an allow-list: server-managed fields (version, createdAt,
+ * updatedAt, createdBy) are simply not copied, so any present in the input
+ * are dropped.
+ */
+function toPayload(def: Record<string, unknown>): JobDefinitionPayload {
+  return {
+    ...(typeof def.id === "string" && { id: def.id }),
+    name: def.name as string,
+    ...(def.description !== undefined && { description: def.description as string }),
+    ...(def.inputs !== undefined && { inputs: def.inputs as JobDefinitionPayload["inputs"] }),
+    ...(def.defaults !== undefined && { defaults: def.defaults as JobDefinitionPayload["defaults"] }),
+    ...(def.limits !== undefined && { limits: def.limits as JobDefinitionPayload["limits"] }),
+    steps: def.steps as JobStep[],
+  };
+}
+
+/**
+ * Build an export envelope for a job. Returns null if the job does not exist.
+ * The embedded payload has all server-managed fields (version, timestamps,
+ * createdBy) stripped so it can be re-imported cleanly.
+ */
+export function exportJobEnvelope(id: string): JobExportEnvelope | null {
+  const job = getJob(id);
+  if (!job) return null;
+  return {
+    callboardJobExport: 1,
+    exportedAt: new Date().toISOString(),
+    job: toPayload(job as unknown as Record<string, unknown>),
+  };
+}
+
+/** Slugify `base`, then append -2, -3, … until the id does not collide with an existing job. */
+export function uniqueJobId(base: string): string {
+  const slug = slugifyJobId(base);
+  if (!getJob(slug)) return slug;
+  for (let n = 2; ; n++) {
+    const candidate = `${slug}-${n}`;
+    if (!getJob(candidate)) return candidate;
+  }
+}
+
+/**
+ * Import a job definition from either a {@link JobExportEnvelope} (`{ callboardJobExport, job }`)
+ * or a bare definition object. Server-managed fields present in the input are ignored.
+ *
+ * Resolution when the target id already exists:
+ *   - mode "overwrite" → updateJob (bumps version, keeps id)
+ *   - mode "copy"      → reassign a unique id, createJob (original untouched)
+ *   - no mode          → throws JobImportConflictError
+ *
+ * Validation errors propagate as JobValidationError.
+ */
+export function importJobDefinition(
+  raw: unknown,
+  opts?: { mode?: "copy" | "overwrite"; createdBy?: JobDefinition["createdBy"] },
+): JobDefinition {
+  if (!raw || typeof raw !== "object") throw new Error("Import payload must be a JSON object");
+  const obj = raw as Record<string, unknown>;
+
+  // Accept an envelope or a bare definition.
+  let defLike: Record<string, unknown>;
+  if ("callboardJobExport" in obj) {
+    if (obj.callboardJobExport !== 1) {
+      throw new Error(`Unsupported callboardJobExport version ${JSON.stringify(obj.callboardJobExport)} — expected 1`);
+    }
+    if (!obj.job || typeof obj.job !== "object") throw new Error("Export envelope is missing its `job` payload");
+    defLike = obj.job as Record<string, unknown>;
+  } else {
+    defLike = obj;
+  }
+
+  // Strip/ignore server-managed fields, then validate.
+  const payload = toPayload(defLike);
+  const id = payload.id?.trim() || slugifyJobId(typeof payload.name === "string" ? payload.name : "");
+  const errors = validateJobDefinition({ ...payload, id });
+  if (errors.length > 0) throw new JobValidationError(errors);
+
+  const createdBy = opts?.createdBy ?? { kind: "api" as const };
+  const existing = getJob(id);
+
+  if (!existing) {
+    return createJob({ ...payload, id, createdBy });
+  }
+  if (opts?.mode === "overwrite") {
+    return updateJob(id, { ...payload, id, createdBy });
+  }
+  if (opts?.mode === "copy") {
+    const newId = uniqueJobId(id);
+    return createJob({ ...payload, id: newId, createdBy });
+  }
+  throw new JobImportConflictError(id);
 }
 
 // ── Runs ────────────────────────────────────────────────────────────

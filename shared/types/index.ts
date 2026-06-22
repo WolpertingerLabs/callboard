@@ -93,6 +93,8 @@ export type {
   ParallelJobStep,
   JobStep,
   JobDefinition,
+  JobDefinitionPayload,
+  JobExportEnvelope,
   JobRunStatus,
   JobStepResult,
   JobRunHistoryEntry,
