@@ -173,6 +173,29 @@ export interface JobDefinition {
   createdBy?: { kind: "chat" | "agent" | "ui" | "api"; ref?: string };
 }
 
+/**
+ * The create/update payload for a job definition — a JobDefinition with the
+ * server-managed fields (version, createdAt, updatedAt, createdBy) stripped.
+ * This is the shape carried inside a JobExportEnvelope and accepted by import.
+ */
+export interface JobDefinitionPayload {
+  /** Omit to derive the slug from `name`. */
+  id?: string;
+  name: string;
+  description?: string;
+  inputs?: JobInputDef[];
+  defaults?: JobDefinition["defaults"];
+  limits?: JobDefinition["limits"];
+  steps: JobStep[];
+}
+
+/** Self-describing envelope for exporting/importing a single job definition. */
+export interface JobExportEnvelope {
+  callboardJobExport: 1;
+  exportedAt: string;
+  job: JobDefinitionPayload;
+}
+
 export type JobRunStatus = "running" | "waiting_approval" | "waiting_event" | "sleeping" | "paused" | "succeeded" | "failed" | "cancelled";
 
 /** Structured result reported by a step session via complete_job_step. */

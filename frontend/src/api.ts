@@ -1314,6 +1314,51 @@ export async function deleteJob(id: string): Promise<void> {
   await assertOk(res, "Failed to delete job");
 }
 
+// Job export/import API functions
+
+export function getJobExportUrl(id: string): string {
+  return `${BASE}/jobs/${encodeURIComponent(id)}/export`;
+}
+
+/**
+ * Import a job definition. `payload` may be either the full export envelope or a
+ * bare job definition object — the backend accepts both.
+ *
+ * Resolves to `{ job }` on success (201). On a 409 conflict (id already exists
+ * and no `mode` was given) it resolves to `{ conflict: { id } }` instead of
+ * throwing, so the UI can prompt the user and re-call with a `mode`. Any other
+ * non-OK response (validation/parse error) throws with the backend message.
+ */
+export async function importJob(
+  payload: unknown,
+  mode?: "copy" | "overwrite",
+): Promise<{ job?: JobDefinition; conflict?: { id: string } }> {
+  const body =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? { ...(payload as Record<string, unknown>), ...(mode ? { mode } : {}) }
+      : payload;
+  const res = await fetch(`${BASE}/jobs/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    const data = await res.json().catch(() => ({}));
+    return { conflict: { id: data.conflict?.id } };
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    const message =
+      Array.isArray(data.errors) && data.errors.length > 0
+        ? `${data.error || "Invalid job definition"}: ${data.errors.join("; ")}`
+        : data.error || "Failed to import job";
+    throw new Error(message);
+  }
+  const data = await res.json();
+  return { job: data.job };
+}
+
 export async function spawnJob(id: string, inputs: Record<string, string>): Promise<JobRun> {
   const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}/spawn`, {
     method: "POST",

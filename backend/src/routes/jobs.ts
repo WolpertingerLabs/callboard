@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { JobRunStatus } from "shared";
-import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, JobValidationError } from "../services/job-store.js";
+import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, exportJobEnvelope, importJobDefinition, JobValidationError, JobImportConflictError } from "../services/job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "../services/job-runner.js";
 
 export const jobsRouter = Router();
@@ -120,6 +120,21 @@ jobsRouter.get("/:id", (req: Request, res: Response): void => {
   res.json({ job });
 });
 
+// Export a job definition as a downloadable envelope. The two-segment
+// "/:id/export" is more specific than "GET /:id" so it is not shadowed.
+jobsRouter.get("/:id/export", (req: Request, res: Response): void => {
+  // #swagger.tags = ['Jobs']
+  // #swagger.summary = 'Export a job definition as a downloadable envelope'
+  const envelope = exportJobEnvelope(req.params.id);
+  if (!envelope) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Disposition", `attachment; filename="${req.params.id}.job.json"`);
+  res.send(JSON.stringify(envelope, null, 2));
+});
+
 jobsRouter.post("/", (req: Request, res: Response): void => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Create a job definition'
@@ -128,6 +143,27 @@ jobsRouter.post("/", (req: Request, res: Response): void => {
     res.status(201).json({ job });
   } catch (err: any) {
     sendError(res, err);
+  }
+});
+
+// Import a job definition from an export envelope or a bare definition.
+// Single-segment "/import" does not collide with "POST /" or "POST /:id/spawn".
+jobsRouter.post("/import", (req: Request, res: Response): void => {
+  // #swagger.tags = ['Jobs']
+  // #swagger.summary = 'Import a job definition (envelope or bare definition)'
+  try {
+    const { mode, ...rest } = req.body ?? {};
+    const job = importJobDefinition(rest, { mode, createdBy: { kind: "api" } });
+    res.status(201).json({ job });
+  } catch (err: any) {
+    if (err instanceof JobImportConflictError) {
+      res.status(409).json({ error: err.message, conflict: { id: err.jobId } });
+    } else if (err instanceof JobValidationError) {
+      res.status(400).json({ error: err.message, errors: err.errors });
+    } else {
+      // Unknown-version / malformed-payload problems are client errors.
+      res.status(400).json({ error: err.message || "Invalid import payload" });
+    }
   }
 });
 
