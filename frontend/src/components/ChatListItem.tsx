@@ -2,6 +2,7 @@ import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell, Workflow } from
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
 import ProviderBadge from "./ProviderBadge";
+import FolderPathPill from "./FolderPathPill";
 
 interface Props {
   chat: Chat;
@@ -58,7 +59,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     <div
       onClick={onClick}
       style={{
-        padding: "14px 20px",
+        padding: "10px 14px",
         borderBottom: "1px solid var(--chatlist-item-border)",
         display: "flex",
         alignItems: "center",
@@ -69,6 +70,44 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
       }}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            minWidth: 0,
+            flexWrap: "nowrap",
+            fontSize: 11,
+            color: "var(--chatlist-item-time-text)",
+          }}
+        >
+          {time}
+          {chat.git_branch && (
+            <span
+              title={chat.folder !== chat.displayFolder ? `Worktree: ${chat.git_branch}` : `Branch: ${chat.git_branch}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                padding: "0 5px",
+                borderRadius: 3,
+                background: "var(--chatlist-badge-agent-bg)",
+                color: "var(--chatlist-item-time-text)",
+                maxWidth: 140,
+                minWidth: 0,
+                flexShrink: 1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <GitBranch size={10} style={{ flexShrink: 0 }} />
+              {chat.git_branch}
+            </span>
+          )}
+          {displayPath && <FolderPathPill path={displayPath} />}
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {isBookmarked && <Bookmark size={14} style={{ color: "var(--chatlist-bookmark-icon)", flexShrink: 0 }} fill="var(--chatlist-bookmark-icon)" />}
           {agentAlias && (
@@ -171,7 +210,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           )}
           <div
             style={{
-              fontSize: 15,
+              fontSize: 14,
               fontWeight: hasUnread ? 600 : 500,
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -195,21 +234,6 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               {sessionStatus.type === "web" ? <Globe size={10} /> : <Monitor size={10} />}
             </div>
           )}
-        </div>
-        <div
-          title={displayPath}
-          style={{
-            fontSize: 12,
-            color: "var(--chatlist-item-path-text)",
-            marginTop: 2,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            direction: "rtl",
-            textAlign: "left",
-          }}
-        >
-          {displayPath}
         </div>
         {chatStatus && (
           <div
@@ -236,33 +260,8 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
             {chatStatus}
           </div>
         )}
-        <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
-          {time}
-          {chat.git_branch && (
-            <span
-              title={chat.folder !== chat.displayFolder ? `Worktree: ${chat.git_branch}` : `Branch: ${chat.git_branch}`}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 3,
-                fontSize: 10,
-                padding: "0 5px",
-                borderRadius: 3,
-                background: "var(--chatlist-badge-agent-bg)",
-                color: "var(--chatlist-item-time-text)",
-                maxWidth: 140,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              <GitBranch size={10} style={{ flexShrink: 0 }} />
-              {chat.git_branch}
-            </span>
-          )}
-        </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: 8, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 0, marginLeft: 6, flexShrink: 0 }}>
         {onToggleBookmark && (
           <button
             onClick={(e) => {
@@ -273,12 +272,12 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
             style={{
               background: "none",
               color: isBookmarked ? "var(--chatlist-bookmark-icon)" : "var(--chatlist-icon)",
-              padding: "4px",
+              padding: "2px",
               display: "flex",
               alignItems: "center",
             }}
           >
-            <Bookmark size={16} fill={isBookmarked ? "currentColor" : "none"} />
+            <Bookmark size={14} fill={isBookmarked ? "currentColor" : "none"} />
           </button>
         )}
         <button
@@ -289,11 +288,10 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           style={{
             background: "none",
             color: "var(--chatlist-icon-delete)",
-            fontSize: 18,
-            padding: "4px 8px",
+            padding: "2px 4px",
           }}
         >
-          <X size={16} />
+          <X size={14} />
         </button>
       </div>
     </div>
