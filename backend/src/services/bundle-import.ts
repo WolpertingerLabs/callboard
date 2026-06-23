@@ -26,7 +26,7 @@ import { join } from "path";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 import type { CallerBundleV1, BundleEncryption } from "@wolpertingerlabs/drawlatch/remote/admin-types";
-import { getActiveMcpConfigDir } from "./agent-settings.js";
+import { getRemoteMcpConfigDir } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("bundle-import");
@@ -179,10 +179,10 @@ export function importBundle(raw: unknown, passphrase?: string): ImportResult {
   const meta = inspectBundle(raw);
   const bundle = raw as CallerBundleV1;
 
-  const configDir = getActiveMcpConfigDir();
-  if (!configDir) {
-    throw new BundleImportError("No MCP config directory configured for the active proxy mode", 500);
-  }
+  // A caller bundle is a remote credential (it pins an external endpoint +
+  // server key), so it always imports into the remote-mode config dir — never
+  // the local daemon's dir — regardless of the mode callboard is running in.
+  const configDir = getRemoteMcpConfigDir();
 
   // Resolve the private PEMs — plaintext, or decrypt the two wrapped fields.
   let signingPriv: string;

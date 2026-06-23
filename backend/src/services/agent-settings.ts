@@ -9,9 +9,11 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, rename
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
+import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
-import type { AgentConfig, AgentSettings, KeyAliasInfo } from "shared";
+import { listAgents } from "./agent-file-service.js";
+import type { AgentConfig, AgentSettings, KeyAliasInfo, EnrolledCaller } from "shared";
 
 const log = createLogger("agent-settings");
 const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
@@ -151,22 +153,34 @@ export function getClaudeCodeExecutablePath(): string | undefined {
 }
 
 /**
- * Resolve the active MCP config directory based on the current proxy mode.
+ * Resolve the MCP config directory for an explicit proxy mode.
  *
- * Resolution:
- *   proxyMode === "local"  -> localMcpConfigDir ?? mcpConfigDir
- *   proxyMode === "remote" -> remoteMcpConfigDir ?? mcpConfigDir
- *   no proxyMode           -> mcpConfigDir
+ * The built-in defaults (~/.callboard/.drawlatch.{local,remote}) are the source
+ * of truth — the per-mode override fields are kept only as a migration fallback
+ * for installs that set a custom dir before the dir picker was removed; they are
+ * no longer user-settable from the UI.
  */
-export function getActiveMcpConfigDir(): string | undefined {
+export function getMcpConfigDirForMode(mode: "local" | "remote"): string {
   const settings = loadSettings();
-  if (settings.proxyMode === "local") {
-    return settings.localMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_LOCAL_DIR;
-  }
-  if (settings.proxyMode === "remote") {
+  if (mode === "remote") {
     return settings.remoteMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_REMOTE_DIR;
   }
-  return settings.mcpConfigDir;
+  return settings.localMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_LOCAL_DIR;
+}
+
+/**
+ * The remote-mode MCP config dir. Caller credential bundles always import here:
+ * a bundle pins an external endpoint + server key, so it is inherently a remote
+ * credential regardless of the mode callboard is currently running in.
+ */
+export function getRemoteMcpConfigDir(): string {
+  return getMcpConfigDirForMode("remote");
+}
+
+/** Resolve the active MCP config directory based on the current proxy mode. */
+export function getActiveMcpConfigDir(): string {
+  const { proxyMode } = loadSettings();
+  return getMcpConfigDirForMode(proxyMode === "remote" ? "remote" : "local");
 }
 
 /** Merge updates into current settings and persist. */
@@ -193,19 +207,9 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
  * the daemon's concern.
  */
 export function discoverKeyAliases(overrideProxyMode?: "local" | "remote"): KeyAliasInfo[] {
-  const settings = loadSettings();
-  const effectiveMode = overrideProxyMode ?? settings.proxyMode;
-
-  // Resolve config dir based on effective mode (may differ from saved settings)
-  let configDir: string | undefined;
-  if (effectiveMode === "local") {
-    configDir = settings.localMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_LOCAL_DIR;
-  } else if (effectiveMode === "remote") {
-    configDir = settings.remoteMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_REMOTE_DIR;
-  } else {
-    configDir = settings.mcpConfigDir;
-  }
-  if (!configDir) return [];
+  const { proxyMode } = loadSettings();
+  const effectiveMode = overrideProxyMode ?? (proxyMode === "remote" ? "remote" : "local");
+  const configDir = getMcpConfigDirForMode(effectiveMode);
 
   const seen = new Set<string>();
   const results: KeyAliasInfo[] = [];
@@ -444,17 +448,101 @@ function copyPublicKeys(src: string, dest: string): void {
  */
 export function resolveAgentKeyAlias(agent: AgentConfig): AgentConfig {
   const { proxyMode } = loadSettings();
-  const hasPerMode = agent.mcpKeyAliasLocal !== undefined || agent.mcpKeyAliasRemote !== undefined;
+  const resolved = resolveAgentKeyAliasForMode(agent, proxyMode === "remote" ? "remote" : "local");
+  return { ...agent, mcpKeyAlias: resolved };
+}
 
-  let resolved: string | undefined;
+/**
+ * Resolve an agent's caller alias for an EXPLICIT proxy mode (not the saved one).
+ *
+ *   - Per-mode field for that mode when either per-mode field is set.
+ *   - Otherwise the legacy single `mcpKeyAlias` (applies to both modes).
+ *
+ * Used to associate agents with enrolled callers in a given mode's key store.
+ */
+export function resolveAgentKeyAliasForMode(agent: AgentConfig, mode: "local" | "remote"): string | undefined {
+  const hasPerMode = agent.mcpKeyAliasLocal !== undefined || agent.mcpKeyAliasRemote !== undefined;
   if (hasPerMode) {
-    resolved = proxyMode === "remote" ? agent.mcpKeyAliasRemote : agent.mcpKeyAliasLocal;
-  } else {
-    // Legacy fallback — agent only has the old single field
-    resolved = agent.mcpKeyAlias;
+    return mode === "remote" ? agent.mcpKeyAliasRemote : agent.mcpKeyAliasLocal;
+  }
+  return agent.mcpKeyAlias;
+}
+
+/**
+ * Fingerprint of an enrolled caller, recomputed from its stored public keys.
+ * Uses drawlatch's exact fingerprint algorithm so it matches what was shown at
+ * import time. Returns null if the keys are missing or unparseable.
+ */
+export function getCallerFingerprint(alias: string, mode: "local" | "remote"): string | null {
+  const callerDir = join(getMcpConfigDirForMode(mode), "keys", "callers", alias);
+  try {
+    const signing = readFileSync(join(callerDir, "signing.pub.pem"), "utf-8");
+    const exchange = readFileSync(join(callerDir, "exchange.pub.pem"), "utf-8");
+    return fingerprint(deserializePublicKeys({ signing, exchange }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * List enrolled callers for a mode (default: the active mode), each enriched
+ * with its fingerprint and the agents bound to it. Drives the Proxy Settings
+ * management panel; `canDelete` is false whenever any agent references the
+ * caller so the UI can block deletion of in-use credentials.
+ */
+export function listEnrolledCallers(overrideMode?: "local" | "remote"): EnrolledCaller[] {
+  const { proxyMode } = loadSettings();
+  const mode = overrideMode ?? (proxyMode === "remote" ? "remote" : "local");
+
+  const aliases = discoverKeyAliases(mode).filter((a) => a.hasSigningPub && a.hasExchangePub);
+  const agents = listAgents();
+
+  return aliases.map(({ alias }) => {
+    const boundAgents = agents
+      .filter((a) => resolveAgentKeyAliasForMode(a, mode) === alias)
+      .map((a) => ({ alias: a.alias, name: a.name, ...(a.emoji ? { emoji: a.emoji } : {}) }));
+    return {
+      alias,
+      mode,
+      fingerprint: getCallerFingerprint(alias, mode),
+      agents: boundAgents,
+      canDelete: boundAgents.length === 0,
+    };
+  });
+}
+
+/** Outcome of an enrolled-caller deletion attempt. */
+export interface DeleteCallerResult {
+  /** "deleted" | "in_use" | "not_found" */
+  status: "deleted" | "in_use" | "not_found";
+  /** Agents blocking deletion (only when status === "in_use"). */
+  agents?: { alias: string; name: string }[];
+}
+
+/**
+ * Delete an enrolled caller's key material for a mode (default: active mode).
+ * Refuses when one or more agents are bound to it (deletion is gated on zero
+ * associated agents). Removes {configDir}/keys/callers/{alias}/ on success.
+ */
+export function deleteEnrolledCaller(alias: string, overrideMode?: "local" | "remote"): DeleteCallerResult {
+  const { proxyMode } = loadSettings();
+  const mode = overrideMode ?? (proxyMode === "remote" ? "remote" : "local");
+
+  const callerDir = join(getMcpConfigDirForMode(mode), "keys", "callers", alias);
+  if (!existsSync(callerDir)) {
+    return { status: "not_found" };
   }
 
-  return { ...agent, mcpKeyAlias: resolved };
+  const boundAgents = listAgents()
+    .filter((a) => resolveAgentKeyAliasForMode(a, mode) === alias)
+    .map((a) => ({ alias: a.alias, name: a.name }));
+  if (boundAgents.length > 0) {
+    return { status: "in_use", agents: boundAgents };
+  }
+
+  rmSync(callerDir, { recursive: true, force: true });
+  log.info(`Deleted enrolled caller "${alias}" (${mode} mode) at ${callerDir}`);
+  return { status: "deleted" };
 }
 
 /**

@@ -182,3 +182,32 @@ export interface KeyAliasInfo {
   /** Whether exchange.pub.pem exists in the alias directory */
   hasExchangePub: boolean;
 }
+
+/** An agent bound to an enrolled caller (the minimal identity the UI shows). */
+export interface EnrolledCallerAgent {
+  alias: string;
+  name: string;
+  emoji?: string;
+}
+
+/**
+ * An enrolled drawlatch caller credential stored on this callboard, enriched
+ * with the agents that use it and the fingerprint that identifies the keypair.
+ * Surfaced in the Proxy Settings "Enrolled callers" management panel.
+ */
+export interface EnrolledCaller {
+  /** Caller alias (directory name under keys/callers/). */
+  alias: string;
+  /** Proxy mode whose key store this caller lives in. */
+  mode: "local" | "remote";
+  /**
+   * Fingerprint of the caller keypair, recomputed from the stored public keys.
+   * Identifies which credential an alias holds (e.g. to tell stale callers from
+   * different callboards apart). Null if the public keys can't be read/parsed.
+   */
+  fingerprint: string | null;
+  /** Agents currently bound to this caller in this mode. */
+  agents: EnrolledCallerAgent[];
+  /** False when one or more agents reference it — deletion is blocked. */
+  canDelete: boolean;
+}

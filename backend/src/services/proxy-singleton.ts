@@ -16,7 +16,7 @@
 import { join } from "path";
 import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
-import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
+import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, getRemoteMcpConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
 import { getLocalDaemonUrl, startLocalDaemon, stopLocalDaemon } from "./local-daemon.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -49,13 +49,10 @@ export function resolveEndpointUrl(): string {
 }
 
 /**
- * Resolve key paths for a given alias.
- * Returns null if mcpConfigDir is not set or key files don't exist.
+ * Resolve key paths for a given alias within a config dir (defaults to the
+ * active-mode dir). Returns null if the key files don't exist.
  */
-function resolveKeyPaths(alias: string): { keysDir: string; serverKeysDir: string } | null {
-  const configDir = getActiveMcpConfigDir();
-  if (!configDir) return null;
-
+function resolveKeyPaths(alias: string, configDir: string = getActiveMcpConfigDir()): { keysDir: string; serverKeysDir: string } | null {
   const keysDir = join(configDir, "keys", "callers", alias);
   const serverKeysDir = join(configDir, "keys", "server");
 
@@ -240,11 +237,13 @@ export async function testRemoteConnection(url: string, alias: string): Promise<
   }
 
   // ── Step 2: Handshake ─────────────────────────────────────────────
-  const paths = resolveKeyPaths(alias);
+  // Testing a server URL is inherently a remote operation, so resolve the
+  // caller keys from the remote config dir regardless of the active mode.
+  const paths = resolveKeyPaths(alias, getRemoteMcpConfigDir());
   if (!paths) {
     return {
       status: "handshake_failed",
-      message: `No valid keys found for alias "${alias}". Enroll first via Sync (remote) or the managed daemon (local).`,
+      message: `No valid keys found for caller "${alias}". Import a caller bundle first.`,
     };
   }
 

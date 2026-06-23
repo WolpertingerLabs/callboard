@@ -35,6 +35,7 @@ import type {
   QuietHours,
   AgentSettings,
   KeyAliasInfo,
+  EnrolledCaller,
   CustomTheme,
   ThemeListItem,
   CustomSkill,
@@ -91,6 +92,7 @@ export type {
   QuietHours,
   AgentSettings,
   KeyAliasInfo,
+  EnrolledCaller,
   CustomTheme,
   ThemeListItem,
   CustomSkill,
@@ -878,6 +880,29 @@ export async function getDaemonStatus(): Promise<DaemonStatus> {
   const res = await fetch(`${BASE}/agent-settings/daemon-status`, { credentials: "include" });
   await assertOk(res, "Failed to get daemon status");
   return res.json();
+}
+
+// Enrolled caller management (Proxy Settings panel)
+
+export async function getEnrolledCallers(proxyMode?: "local" | "remote"): Promise<EnrolledCaller[]> {
+  const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
+  const res = await fetch(`${BASE}/agent-settings/callers${params}`, { credentials: "include" });
+  await assertOk(res, "Failed to list enrolled callers");
+  const data = await res.json();
+  return data.callers;
+}
+
+/**
+ * Delete an enrolled caller. Rejects with the server's message when the caller
+ * is still bound to agents (HTTP 409) — deletion requires zero associated agents.
+ */
+export async function deleteEnrolledCaller(alias: string, proxyMode?: "local" | "remote"): Promise<void> {
+  const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
+  const res = await fetch(`${BASE}/agent-settings/callers/${encodeURIComponent(alias)}${params}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete enrolled caller");
 }
 
 // Caller credential bundle import (remote mode)

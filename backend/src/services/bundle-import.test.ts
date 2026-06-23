@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 
-// getActiveMcpConfigDir is the only external dependency — point it at a temp dir.
+// getRemoteMcpConfigDir is the only external dependency — point it at a temp dir.
 let configDir = "";
 vi.mock("./agent-settings.js", () => ({
-  getActiveMcpConfigDir: () => configDir,
+  getRemoteMcpConfigDir: () => configDir,
 }));
 
 import { inspectBundle, importBundle, BundleImportError } from "./bundle-import.js";

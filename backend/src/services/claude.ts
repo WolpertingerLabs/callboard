@@ -954,12 +954,21 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
   const agentSettings = getAgentSettings();
   const activeMcpConfigDir = getActiveMcpConfigDir();
-  let proxyKeyAlias = "default";
-  if (agentSettings.proxyMode && activeMcpConfigDir) {
-    // Determine key alias: agent's alias if available, otherwise "default"
-    const proxyAgent = opts.agentAlias ? getAgent(opts.agentAlias) : undefined;
-    proxyKeyAlias = proxyAgent ? (resolveAgentKeyAlias(proxyAgent).mcpKeyAlias ?? "default") : "default";
+  // Resolve the caller alias that gives this session its drawlatch identity:
+  //   - Agent sessions use ONLY the agent's explicitly-assigned alias. There is
+  //     no implicit "default" fallback — an agent must be granted a caller
+  //     before it can reach drawlatch, so an unassigned agent can't borrow a
+  //     caller it was never given access to.
+  //   - Regular (human-operated) sessions fall back to the "default" caller.
+  let proxyKeyAlias: string | undefined;
+  if (opts.agentAlias) {
+    const proxyAgent = getAgent(opts.agentAlias);
+    proxyKeyAlias = proxyAgent ? resolveAgentKeyAlias(proxyAgent).mcpKeyAlias : undefined;
+  } else {
+    proxyKeyAlias = "default";
+  }
 
+  if (agentSettings.proxyMode && activeMcpConfigDir && proxyKeyAlias) {
     // Make sure this caller is enrolled against the daemon (local: auto-enroll
     // a fresh keypair on demand; remote: no-op — sync provisions keys).
     try {
@@ -979,6 +988,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     } catch (err: any) {
       log.error(`Failed to build proxy tools server: ${err.message}`);
     }
+  } else if (opts.agentAlias && !proxyKeyAlias) {
+    log.info(`Agent "${opts.agentAlias}" has no caller alias assigned — proxy tools not injected`);
   }
 
   // Resolve the agent's MCP key alias for proxy identity.
@@ -1221,8 +1232,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   (async () => {
     try {
-      // Inject proxy connections listing into system prompt before starting the conversation
-      if (agentSettings.proxyMode && activeMcpConfigDir) {
+      // Inject proxy connections listing into system prompt before starting the
+      // conversation. Skipped when no caller alias resolved (e.g. an agent with
+      // no caller assigned) — there's no identity to list connections for.
+      if (agentSettings.proxyMode && activeMcpConfigDir && proxyKeyAlias) {
         try {
           const connectionsPrompt = await buildProxyConnectionsPrompt(proxyKeyAlias);
           if (connectionsPrompt) {
