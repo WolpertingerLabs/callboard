@@ -108,7 +108,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           )}
           {displayPath && <FolderPathPill path={displayPath} />}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
           {isBookmarked && <Bookmark size={14} style={{ color: "var(--chatlist-bookmark-icon)", flexShrink: 0 }} fill="var(--chatlist-bookmark-icon)" />}
           {agentAlias && (
             <span

@@ -444,25 +444,49 @@ pre {
       width 0.2s ease,
       min-width 0.2s ease;
   }
+
+  /* While dragging the handle, the width tracks the cursor 1:1 — no animation lag. */
+  .split-sidebar.is-resizing {
+    transition: none;
+  }
+}
+
+/* Drag-to-resize handle: zero-footprint strip centered over the sidebar's right
+   border, invisible until hover/drag. */
+.split-resize-handle {
+  flex: 0 0 6px;
+  width: 6px;
+  margin: 0 -3px;
+  position: relative;
+  z-index: 5;
+  cursor: col-resize;
+  align-self: stretch;
+}
+
+.split-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.split-resize-handle:hover::after,
+.split-resize-handle.is-resizing::after {
+  opacity: 1;
 }
 
 @media (min-width: 769px) and (max-width: 1024px) {
-  .split-sidebar {
-    width: 25% !important;
-    min-width: 280px !important;
-  }
-
-  .split-main {
-    width: 75% !important;
-  }
-
+  /* Expanded width is driven by the inline px value (drag-resizable); only the
+     collapsed rail is pinned here. */
   .split-sidebar.split-sidebar-collapsed {
     width: 56px !important;
     min-width: 56px !important;
-  }
-
-  .split-sidebar.split-sidebar-collapsed + .split-main {
-    width: calc(100% - 56px) !important;
   }
 }
 

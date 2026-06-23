@@ -25,6 +25,8 @@ interface LocalStorageData {
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
+  /** Desktop sidebar width in pixels when expanded. Clamped to >= SIDEBAR_MIN_WIDTH on read. */
+  sidebarWidth?: number;
   sidebarViewMode?: "folders" | "chats" | "jobs";
   folderMaxAgeDays?: number;
   /** User's last-selected provider in the New Chat panel — persisted so the
@@ -317,6 +319,22 @@ export function getSidebarCollapsed(): boolean {
 export function saveSidebarCollapsed(value: boolean): void {
   const data = getStorageData();
   data.sidebarCollapsed = value;
+  setStorageData(data);
+}
+
+/** Minimum width (px) of the expanded desktop sidebar — enforced on drag and on read. */
+export const SIDEBAR_MIN_WIDTH = 350;
+const DEFAULT_SIDEBAR_WIDTH = 360;
+
+export function getSidebarWidth(): number {
+  const data = getStorageData();
+  const stored = typeof data.sidebarWidth === "number" && Number.isFinite(data.sidebarWidth) ? data.sidebarWidth : DEFAULT_SIDEBAR_WIDTH;
+  return Math.max(SIDEBAR_MIN_WIDTH, stored);
+}
+
+export function saveSidebarWidth(value: number): void {
+  const data = getStorageData();
+  data.sidebarWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.round(value));
   setStorageData(data);
 }
 
