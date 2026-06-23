@@ -12,9 +12,10 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { validateServerTools, validateParamProfile } from "shared/types/index.js";
-import { getAgentSettings, updateAgentSettings, discoverKeyAliases } from "../services/agent-settings.js";
+import { getAgentSettings, updateAgentSettings, discoverKeyAliases, listEnrolledCallers, deleteEnrolledCaller } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
-import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients } from "../services/proxy-singleton.js";
+import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
+import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
 import { importBundle, BundleImportError } from "../services/bundle-import.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
@@ -39,9 +40,6 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
 /** PUT /api/agent-settings — update agent settings */
 agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> => {
   const {
-    mcpConfigDir,
-    localMcpConfigDir,
-    remoteMcpConfigDir,
     proxyMode,
     remoteServerUrl,
     tunnelEnabled,
@@ -209,9 +207,6 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
 
   try {
     const updated = updateAgentSettings({
-      mcpConfigDir: mcpConfigDir ?? undefined,
-      localMcpConfigDir: localMcpConfigDir ?? undefined,
-      remoteMcpConfigDir: remoteMcpConfigDir ?? undefined,
       proxyMode: proxyMode ?? undefined,
       remoteServerUrl: remoteServerUrl ?? undefined,
       tunnelEnabled: tunnelEnabled ?? undefined,
@@ -282,8 +277,23 @@ agentSettingsRouter.post("/test-connection", async (req: Request, res: Response)
     return;
   }
 
+  // Pick the caller to authenticate the test handshake with: the explicitly
+  // requested alias, otherwise the first remote-enrolled caller. We never fall
+  // back to a hardcoded "default" — a connection test should exercise a real,
+  // imported credential (or tell the user there isn't one yet).
+  let testAlias = typeof alias === "string" && alias.trim() ? alias.trim() : undefined;
+  if (!testAlias) {
+    testAlias = discoverKeyAliases("remote")
+      .filter((a) => a.hasSigningPub && a.hasExchangePub)
+      .map((a) => a.alias)[0];
+  }
+  if (!testAlias) {
+    res.status(400).json({ error: "No enrolled caller to test with — import a caller bundle first." });
+    return;
+  }
+
   try {
-    const result = await testRemoteConnection(url, alias || "default");
+    const result = await testRemoteConnection(url, testAlias);
     res.json(result);
   } catch (err: any) {
     log.error(`Error testing connection: ${err.message}`);
@@ -332,6 +342,60 @@ agentSettingsRouter.get("/daemon-status", async (_req: Request, res: Response): 
   } catch (err: any) {
     log.error(`Error getting daemon status: ${err.message}`);
     res.status(500).json({ error: "Failed to get daemon status" });
+  }
+});
+
+/**
+ * GET /api/agent-settings/callers — enrolled callers for the proxy management panel.
+ *
+ * Each caller is enriched with its fingerprint (recomputed from the stored
+ * public keys) and the agents bound to it, so the UI can show what each alias
+ * is and block deletion of in-use credentials. Mode defaults to the active one;
+ * pass ?proxyMode=remote to inspect a specific key store.
+ */
+agentSettingsRouter.get("/callers", (req: Request, res: Response): void => {
+  try {
+    const proxyMode = req.query.proxyMode === "remote" || req.query.proxyMode === "local" ? req.query.proxyMode : undefined;
+    res.json({ callers: listEnrolledCallers(proxyMode) });
+  } catch (err: any) {
+    log.error(`Error listing enrolled callers: ${err.message}`);
+    res.status(500).json({ error: "Failed to list enrolled callers" });
+  }
+});
+
+/**
+ * DELETE /api/agent-settings/callers/:alias — remove an enrolled caller.
+ *
+ * Refuses (409) when one or more agents are bound to the caller — deletion is
+ * gated on zero associated agents. On success the caller's key dir is removed
+ * and its cached proxy client is dropped. Mode defaults to the active one.
+ */
+agentSettingsRouter.delete("/callers/:alias", (req: Request, res: Response): void => {
+  const { alias } = req.params;
+  if (!CALLER_ALIAS_REGEX.test(alias)) {
+    res.status(400).json({ error: "Invalid caller alias" });
+    return;
+  }
+  const proxyMode = req.query.proxyMode === "remote" || req.query.proxyMode === "local" ? req.query.proxyMode : undefined;
+
+  try {
+    const result = deleteEnrolledCaller(alias, proxyMode);
+    if (result.status === "not_found") {
+      res.status(404).json({ error: `No enrolled caller "${alias}"` });
+      return;
+    }
+    if (result.status === "in_use") {
+      res.status(409).json({
+        error: `Caller "${alias}" is in use by ${result.agents?.length ?? 0} agent(s). Reassign them before deleting.`,
+        agents: result.agents,
+      });
+      return;
+    }
+    resetClient(alias);
+    res.json({ status: "deleted", alias });
+  } catch (err: any) {
+    log.error(`Error deleting enrolled caller "${alias}": ${err.message}`);
+    res.status(500).json({ error: "Failed to delete enrolled caller" });
   }
 });
 

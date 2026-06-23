@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, X, ExternalLink, Server, Upload, Lock } from "lucide-react";
-import FolderBrowser from "../../components/FolderBrowser";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, X, ExternalLink, Server, Upload, Lock, Trash2 } from "lucide-react";
 import {
   getAgentSettings,
   updateAgentSettings,
@@ -8,8 +7,10 @@ import {
   testProxyConnection,
   getDaemonStatus,
   importCallerBundle,
+  getEnrolledCallers,
+  deleteEnrolledCaller,
 } from "../../api";
-import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, DaemonStatus, ParsedCallerBundle } from "../../api";
+import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, DaemonStatus, ParsedCallerBundle, EnrolledCaller } from "../../api";
 
 function formatUptime(seconds?: number): string | null {
   if (seconds === undefined || seconds === null) return null;
@@ -52,20 +53,14 @@ function parseBundle(text: string): ParsedCallerBundle {
 
 export default function ProxySettings() {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
-  const [mcpConfigDir, setMcpConfigDir] = useState("");
-  const [localMcpConfigDir, setLocalMcpConfigDir] = useState("");
-  const [remoteMcpConfigDir, setRemoteMcpConfigDir] = useState("");
   const [proxyMode, setProxyMode] = useState<"local" | "remote" | undefined>(undefined);
   const [remoteServerUrl, setRemoteServerUrl] = useState("");
   const [keyAliases, setKeyAliases] = useState<KeyAliasInfo[]>([]);
-  const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
-  const [defaultLocalDir, setDefaultLocalDir] = useState("");
-  const [defaultRemoteDir, setDefaultRemoteDir] = useState("");
 
   // Import caller bundle state
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -79,6 +74,11 @@ export default function ProxySettings() {
   // Daemon status (merged in from the former Connections tab)
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus | null>(null);
   const [daemonError, setDaemonError] = useState<string | null>(null);
+
+  // Enrolled callers management panel
+  const [enrolledCallers, setEnrolledCallers] = useState<EnrolledCaller[]>([]);
+  const [callersError, setCallersError] = useState<string | null>(null);
+  const [deletingAlias, setDeletingAlias] = useState<string | null>(null);
 
   // Load daemon status on mount (independent of settings; both fire in parallel)
   useEffect(() => {
@@ -97,43 +97,65 @@ export default function ProxySettings() {
     getAgentSettings()
       .then((s) => {
         setSettings(s);
-        setMcpConfigDir(s.mcpConfigDir || "");
-        setLocalMcpConfigDir(s.localMcpConfigDir || "");
-        setRemoteMcpConfigDir(s.remoteMcpConfigDir || "");
         setProxyMode(s.proxyMode || undefined);
         setRemoteServerUrl(s.remoteServerUrl || "");
-        setDefaultLocalDir(s.defaultLocalMcpConfigDir || "");
-        setDefaultRemoteDir(s.defaultRemoteMcpConfigDir || "");
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
-  // Resolve the active config dir based on current proxy mode
-  const displayedConfigDir = (() => {
-    if (proxyMode === "local") return localMcpConfigDir || mcpConfigDir;
-    if (proxyMode === "remote") return remoteMcpConfigDir || mcpConfigDir;
-    return mcpConfigDir;
-  })();
-
-  // Load key aliases when proxy mode or config dir changes.
-  // The backend resolves the effective config dir (including built-in defaults
-  // when no explicit dir is saved), so fetch unconditionally and let it return
-  // an empty list when there is nothing to show.
+  // Load key aliases when proxy mode changes. The backend resolves the config
+  // dir for the mode (always the built-in default now), so fetch unconditionally
+  // and let it return an empty list when there is nothing to show.
   useEffect(() => {
     if (!settings) return;
     getKeyAliases(proxyMode)
       .then(setKeyAliases)
       .catch(() => setKeyAliases([]));
-  }, [settings, proxyMode, localMcpConfigDir, mcpConfigDir, remoteMcpConfigDir]);
+  }, [settings, proxyMode]);
+
+  // Load enrolled callers (with fingerprints + bound agents) for the panel.
+  const loadCallers = useCallback(() => {
+    getEnrolledCallers(proxyMode)
+      .then((callers) => {
+        setEnrolledCallers(callers);
+        setCallersError(null);
+      })
+      .catch((err: Error) => setCallersError(err.message));
+  }, [proxyMode]);
+
+  useEffect(() => {
+    if (!settings) return;
+    loadCallers();
+  }, [settings, loadCallers]);
+
+  const handleDeleteCaller = async (alias: string) => {
+    if (!window.confirm(`Delete enrolled caller "${alias}"? This removes its keys from this callboard. This cannot be undone.`)) {
+      return;
+    }
+    setDeletingAlias(alias);
+    setCallersError(null);
+    try {
+      await deleteEnrolledCaller(alias, proxyMode);
+      loadCallers();
+      // Keep the alias picker + enrolled-count badge in sync.
+      getKeyAliases(proxyMode)
+        .then(setKeyAliases)
+        .catch(() => setKeyAliases([]));
+      getDaemonStatus()
+        .then(setDaemonStatus)
+        .catch(() => {});
+    } catch (err: any) {
+      setCallersError(err.message || "Failed to delete caller");
+    } finally {
+      setDeletingAlias(null);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
     try {
       const updated = await updateAgentSettings({
-        mcpConfigDir: mcpConfigDir || undefined,
-        localMcpConfigDir: localMcpConfigDir || undefined,
-        remoteMcpConfigDir: remoteMcpConfigDir || undefined,
         proxyMode: proxyMode || undefined,
         remoteServerUrl: remoteServerUrl || undefined,
       });
@@ -151,24 +173,16 @@ export default function ProxySettings() {
     }
   };
 
-  const handleFolderSelect = (path: string) => {
-    if (proxyMode === "local") {
-      setLocalMcpConfigDir(path);
-    } else if (proxyMode === "remote") {
-      setRemoteMcpConfigDir(path);
-    } else {
-      setMcpConfigDir(path);
-    }
-    setShowFolderBrowser(false);
-    setSaved(false);
-  };
-
   const handleTestConnection = async () => {
     if (!remoteServerUrl) return;
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await testProxyConnection(remoteServerUrl);
+      // Authenticate the test with a real imported caller (the first usable
+      // one); the backend falls back to the first enrolled caller if omitted
+      // and reports a clear error when none exist. No hardcoded "default".
+      const testAlias = keyAliases.find((ka) => ka.hasSigningPub && ka.hasExchangePub)?.alias;
+      const result = await testProxyConnection(remoteServerUrl, testAlias);
       setTestResult(result);
     } catch {
       setTestResult({ status: "unreachable", message: "Failed to reach backend" });
@@ -217,6 +231,7 @@ export default function ProxySettings() {
       const result = await importCallerBundle(importParsed.raw, importPassphrase || undefined);
       setImportResult({ alias: result.alias, fingerprint: result.fingerprint });
       setKeyAliases(result.aliases);
+      loadCallers();
       // Endpoint-from-bundle pinning is disabled for now (see the import-bundle
       // route) — cloudflared endpoints are ephemeral, so the user sets the
       // Server URL manually above. Don't overwrite what they typed.
@@ -373,7 +388,7 @@ export default function ProxySettings() {
                 </div>
               </div>
 
-              {/* Enrolled aliases */}
+              {/* Enrolled callers — fingerprint + bound agents + delete */}
               <div>
                 <div
                   style={{
@@ -388,25 +403,99 @@ export default function ProxySettings() {
                     gap: 6,
                   }}
                 >
-                  <KeyRound size={13} /> Enrolled callers ({daemonStatus.enrolledAliases.length})
+                  <KeyRound size={13} /> Enrolled callers ({enrolledCallers.length})
                 </div>
-                {daemonStatus.enrolledAliases.length > 0 ? (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {daemonStatus.enrolledAliases.map((alias) => (
-                      <span
-                        key={alias}
+
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
+                  Each caller is a drawlatch credential this callboard holds. The fingerprint identifies the keypair — use it to spot stale callers. A caller
+                  can only be deleted once no agents use it.
+                </div>
+
+                {callersError && (
+                  <div
+                    style={{
+                      marginBottom: 10,
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                      background: "var(--danger-bg)",
+                      color: "var(--danger)",
+                    }}
+                  >
+                    {callersError}
+                  </div>
+                )}
+
+                {enrolledCallers.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {enrolledCallers.map((c) => (
+                      <div
+                        key={c.alias}
                         style={{
-                          fontSize: 12,
-                          fontFamily: "monospace",
-                          padding: "4px 10px",
-                          borderRadius: 6,
-                          background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                          color: "var(--accent)",
-                          border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 12,
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "1px solid var(--border)",
+                          background: "var(--bg)",
                         }}
                       >
-                        {alias}
-                      </span>
+                        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                          <code style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>{c.alias}</code>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace", wordBreak: "break-all" }} title={c.fingerprint ?? undefined}>
+                            {c.fingerprint ? `fp: ${c.fingerprint}` : "fingerprint unavailable (keys unreadable)"}
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 }}>
+                            {c.agents.length > 0 ? (
+                              <>
+                                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Used by:</span>
+                                {c.agents.map((a) => (
+                                  <span
+                                    key={a.alias}
+                                    style={{
+                                      fontSize: 11,
+                                      padding: "2px 8px",
+                                      borderRadius: 6,
+                                      background: "var(--bg-secondary)",
+                                      border: "1px solid var(--border)",
+                                      color: "var(--text)",
+                                    }}
+                                  >
+                                    {a.emoji ? `${a.emoji} ` : ""}
+                                    {a.name}
+                                  </span>
+                                ))}
+                              </>
+                            ) : (
+                              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>No agents — safe to delete</span>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteCaller(c.alias)}
+                          disabled={!c.canDelete || deletingAlias === c.alias}
+                          title={c.canDelete ? "Delete caller" : `In use by ${c.agents.length} agent(s) — reassign them first`}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "6px 10px",
+                            borderRadius: 8,
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: c.canDelete ? "var(--danger)" : "var(--text-muted)",
+                            fontSize: 12,
+                            cursor: c.canDelete && deletingAlias !== c.alias ? "pointer" : "not-allowed",
+                            opacity: c.canDelete ? 1 : 0.5,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {deletingAlias === c.alias ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <Trash2 size={13} />}
+                          Delete
+                        </button>
+                      </div>
                     ))}
                   </div>
                 ) : (
@@ -465,144 +554,6 @@ export default function ProxySettings() {
               No dashboard URL available. Configure the drawlatch endpoint below first.
             </div>
           )}
-        </div>
-
-        {/* MCP Config Directory section */}
-        <div
-          style={{
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            padding: 20,
-            background: "var(--surface)",
-            marginBottom: 16,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <KeyRound size={16} style={{ color: "var(--accent)" }} />
-            <span style={{ fontSize: 14, fontWeight: 600 }}>
-              MCP Config Directory
-              {proxyMode && <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginLeft: 6 }}>({proxyMode} mode)</span>}
-            </span>
-          </div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
-            Path to the{" "}
-            <code
-              style={{
-                fontFamily: "monospace",
-                background: "var(--bg-secondary)",
-                padding: "1px 5px",
-                borderRadius: 4,
-              }}
-            >
-              .drawlatch.local/
-            </code>{" "}
-            directory containing your keys and identity. Caller aliases are discovered from the{" "}
-            <code
-              style={{
-                fontFamily: "monospace",
-                background: "var(--bg-secondary)",
-                padding: "1px 5px",
-                borderRadius: 4,
-              }}
-            >
-              keys/callers/
-            </code>{" "}
-            subdirectories — in local mode the managed daemon auto-shares the default caller; in remote mode, import a caller bundle below.
-          </div>
-
-          {/* Path input + browse */}
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
-            <input
-              type="text"
-              value={displayedConfigDir}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (proxyMode === "local") {
-                  setLocalMcpConfigDir(val);
-                } else if (proxyMode === "remote") {
-                  setRemoteMcpConfigDir(val);
-                } else {
-                  setMcpConfigDir(val);
-                }
-                setSaved(false);
-              }}
-              placeholder={
-                proxyMode === "local" && defaultLocalDir
-                  ? `Default: ${defaultLocalDir}`
-                  : proxyMode === "remote" && defaultRemoteDir
-                    ? `Default: ${defaultRemoteDir}`
-                    : "e.g. /home/user/.drawlatch.local"
-              }
-              style={{ ...inputStyle, flex: 1 }}
-            />
-            <button
-              onClick={() => setShowFolderBrowser(true)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "10px 14px",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--text)",
-                fontSize: 14,
-                cursor: "pointer",
-                flexShrink: 0,
-                transition: "background 0.15s",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg)")}
-            >
-              <FolderOpen size={16} />
-              Browse
-            </button>
-          </div>
-
-          {/* Key Aliases section (read-only — callers are auto-shared or imported) */}
-          <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
-            <div
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: "var(--text-muted)",
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-                marginBottom: 8,
-              }}
-            >
-              Key Aliases ({keyAliases.length})
-            </div>
-
-            {keyAliases.length > 0 ? (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {keyAliases.map((ka) => (
-                  <span
-                    key={ka.alias}
-                    style={{
-                      fontSize: 12,
-                      fontFamily: "monospace",
-                      padding: "4px 10px",
-                      borderRadius: 6,
-                      background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                      color: "var(--accent)",
-                      border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
-                    }}
-                  >
-                    {ka.alias}
-                    {proxyMode !== "local" && (!ka.hasSigningPub || !ka.hasExchangePub) && (
-                      <span style={{ color: "var(--warning)", marginLeft: 4 }}>(missing keys)</span>
-                    )}
-                  </span>
-                ))}
-              </div>
-            ) : displayedConfigDir ? (
-              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                No key aliases found.
-                {proxyMode === "remote" && " Import a caller bundle below to add one."}
-              </div>
-            ) : null}
-          </div>
         </div>
 
         {/* Proxy Mode section */}
@@ -863,6 +814,28 @@ export default function ProxySettings() {
                     </div>
                   </div>
                 </div>
+                {settings?.proxyMode !== "remote" && (
+                  <div
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 8,
+                      border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
+                      background: "var(--warning-bg)",
+                      color: "var(--warning)",
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                    }}
+                  >
+                    <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div>
+                      callboard is still in <strong>{settings?.proxyMode ?? "local"}</strong> mode, so agents won&apos;t use this caller yet. Select{" "}
+                      <strong>Remote</strong> under Proxy Mode and click <strong>Save</strong> to switch over.
+                    </div>
+                  </div>
+                )}
                 <button
                   onClick={resetImport}
                   style={{
@@ -1112,13 +1085,6 @@ export default function ProxySettings() {
           {saving ? "Saving..." : saved ? "Saved!" : "Save"}
         </button>
       </div>
-
-      <FolderBrowser
-        isOpen={showFolderBrowser}
-        onClose={() => setShowFolderBrowser(false)}
-        onSelect={handleFolderSelect}
-        initialPath={displayedConfigDir || "/"}
-      />
     </>
   );
 }

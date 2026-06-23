@@ -45,7 +45,7 @@ export type {
   QuietHours,
 } from "./agentFeatures.js";
 
-export type { AgentSettings, KeyAliasInfo } from "./agentSettings.js";
+export type { AgentSettings, KeyAliasInfo, EnrolledCaller, EnrolledCallerAgent } from "./agentSettings.js";
 
 export type { CallerInfo, ConnectionStatus } from "./connections.js";
 
