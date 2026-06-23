@@ -1,5 +1,5 @@
 import { useLocation } from "react-router-dom";
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ChatList from "../pages/ChatList";
 import FolderList from "../pages/FolderList";
@@ -9,7 +9,21 @@ import Settings from "../pages/Settings";
 import AgentList from "../pages/agents/AgentList";
 import CreateAgent from "../pages/agents/CreateAgent";
 import AgentDashboard from "../pages/agents/AgentDashboard";
-import { getSidebarCollapsed, saveSidebarCollapsed, getSidebarViewMode, saveSidebarViewMode, type SidebarViewMode } from "../utils/localStorage";
+import {
+  getSidebarCollapsed,
+  saveSidebarCollapsed,
+  getSidebarViewMode,
+  saveSidebarViewMode,
+  getSidebarWidth,
+  saveSidebarWidth,
+  SIDEBAR_MIN_WIDTH,
+  type SidebarViewMode,
+} from "../utils/localStorage";
+
+/** Largest the expanded sidebar may be dragged: 60% of the window, capped at 700px. */
+function maxSidebarWidth(): number {
+  return Math.min(window.innerWidth * 0.6, 700);
+}
 
 interface SplitLayoutProps {
   onLogout: () => void;
@@ -23,6 +37,53 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   const chatListRefreshRef = useRef<(() => void) | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => getSidebarCollapsed());
   const [viewMode, setViewMode] = useState<SidebarViewMode>(() => getSidebarViewMode());
+  const [sidebarWidth, setSidebarWidth] = useState(() => getSidebarWidth());
+  const [isResizing, setIsResizing] = useState(false);
+  const layoutRef = useRef<HTMLDivElement | null>(null);
+
+  // Drag-to-resize the expanded desktop sidebar. Listeners live on window so the
+  // drag keeps tracking even when the cursor moves over the main pane / iframe-free
+  // areas; cleaned up on mouseup. Width is clamped to [SIDEBAR_MIN_WIDTH, maxSidebarWidth()].
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const layout = layoutRef.current;
+    if (!layout) return;
+    const left = layout.getBoundingClientRect().left;
+    setIsResizing(true);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.max(SIDEBAR_MIN_WIDTH, Math.min(ev.clientX - left, maxSidebarWidth()));
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      setIsResizing(false);
+      setSidebarWidth((w) => {
+        saveSidebarWidth(w);
+        return w;
+      });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
+  // Keep the stored width within bounds if the window is resized smaller.
+  useEffect(() => {
+    const onResize = () => {
+      setSidebarWidth((w) => {
+        const clamped = Math.max(SIDEBAR_MIN_WIDTH, Math.min(w, maxSidebarWidth()));
+        if (clamped !== w) saveSidebarWidth(clamped);
+        return clamped;
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const changeViewMode = useCallback((mode: SidebarViewMode) => {
     saveSidebarViewMode(mode);
@@ -116,6 +177,7 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   // Desktop behavior - split view
   return (
     <div
+      ref={layoutRef}
       className="split-layout"
       style={{
         display: "flex",
@@ -125,10 +187,11 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
     >
       {/* Chat List Sidebar */}
       <div
-        className={`split-sidebar${sidebarCollapsed ? " split-sidebar-collapsed" : ""}`}
+        className={`split-sidebar${sidebarCollapsed ? " split-sidebar-collapsed" : ""}${isResizing ? " is-resizing" : ""}`}
         style={{
-          width: sidebarCollapsed ? "56px" : "25%",
-          minWidth: sidebarCollapsed ? "56px" : "300px",
+          width: sidebarCollapsed ? "56px" : sidebarWidth,
+          minWidth: sidebarCollapsed ? "56px" : SIDEBAR_MIN_WIDTH,
+          flexShrink: 0,
           borderRight: "1px solid var(--border)",
           display: "flex",
           flexDirection: "column",
@@ -175,11 +238,23 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
         )}
       </div>
 
+      {/* Resize handle — invisible until hover; only when the sidebar is expanded */}
+      {!sidebarCollapsed && (
+        <div
+          className={`split-resize-handle${isResizing ? " is-resizing" : ""}`}
+          onMouseDown={startResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+        />
+      )}
+
       {/* Main Content Area */}
       <div
         className="split-main"
         style={{
-          width: sidebarCollapsed ? "calc(100% - 56px)" : "75%",
+          flex: 1,
+          minWidth: 0,
           display: "flex",
           flexDirection: "column",
           background: "var(--bg)",
