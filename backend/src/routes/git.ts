@@ -8,18 +8,9 @@ import {
   validateFolderPath,
 } from "../utils/git.js";
 import { generateBranchName } from "../services/quick-completion.js";
-import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
+import { isRoutableProvider } from "../agents/ports/AgentProvider.js";
 
 export const gitRouter = Router();
-
-/** Providers a quick completion may be asked to run on. Mirrors the route-level
- *  guard in stream.ts — kept local so this utility route validates the free-form
- *  `provider` field instead of trusting it. */
-const VALID_QC_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set([
-  "claude-code",
-  "openrouter",
-  "codex",
-]);
 
 /**
  * List local branches for a git repository.
@@ -178,10 +169,7 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
   // Forward the chat's harness when the request carries one (validated), so the
   // branch name is generated on the same provider; otherwise quick-completion's
   // default fallback resolution applies.
-  const qcProvider =
-    typeof provider === "string" && VALID_QC_PROVIDERS.has(provider as AgentProviderKind)
-      ? (provider as AgentProviderKind)
-      : undefined;
+  const qcProvider = isRoutableProvider(provider) ? provider : undefined;
 
   try {
     const branchName = await generateBranchName(prompt, qcProvider);

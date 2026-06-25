@@ -1,5 +1,5 @@
 import { getAgentProvider } from "../agents/factory.js";
-import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
+import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter/optionsAdapter.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
@@ -44,9 +44,6 @@ const log = createLogger("claude");
 
 export type { StreamEvent };
 
-/** Provider kinds that sendMessage knows how to route through. */
-const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex"]);
-
 /**
  * Narrow a free-form metadata.provider value to a usable AgentProviderKind,
  * falling back to "claude-code" on anything unrecognized. Logs a warn for
@@ -54,9 +51,7 @@ const ROUTABLE_PROVIDER_KINDS: ReadonlySet<AgentProviderKind> = new Set(["claude
  */
 function resolveProviderKind(value: unknown): AgentProviderKind {
   if (typeof value !== "string" || value === "") return "claude-code";
-  if (ROUTABLE_PROVIDER_KINDS.has(value as AgentProviderKind)) {
-    return value as AgentProviderKind;
-  }
+  if (isRoutableProvider(value)) return value;
   log.warn(`Unknown chat metadata provider="${value}" — falling back to "claude-code"`);
   return "claude-code";
 }
@@ -791,7 +786,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // chat. Only write a value that resolveProviderKind would route —
       // unknown strings would log a warn on every message in the chat,
       // and "claude-code" is the default so writing it is redundant.
-      ...(opts.provider && ROUTABLE_PROVIDER_KINDS.has(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
+      ...(isRoutableProvider(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
       // Pin reasoning-effort alongside the provider. Meaningful for the two
       // reasoning-capable providers — openrouter (→ OR `reasoning.effort`) and
       // codex (→ Codex `modelReasoningEffort`); their config blocks below pull it

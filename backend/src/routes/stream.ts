@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
-import type { AgentProviderKind } from "../agents/ports/AgentProvider.js";
+import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { loadImageBuffers } from "../services/image-storage.js";
@@ -17,10 +17,11 @@ import { generateBranchName } from "../services/quick-completion.js";
 
 const log = createLogger("stream");
 
-// Defense-in-depth allowlists shared by /new/message (initial creation) and
-// /:id/message (mid-chat updates). Anything not in these sets is silently
-// dropped at the route boundary so we never persist garbage to chat metadata.
-const VALID_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex"]);
+// Defense-in-depth allowlist shared by /new/message (initial creation) and
+// /:id/message (mid-chat updates). Anything not allowed is silently dropped at
+// the route boundary so we never persist garbage to chat metadata. Provider
+// values are narrowed with the shared `isRoutableProvider` guard (see
+// AgentProvider.ts) rather than a local copy of the routable-kinds set.
 const VALID_EFFORTS: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
 
 export const streamRouter = Router();
@@ -104,10 +105,7 @@ streamRouter.post("/new/message", async (req, res) => {
       // the provider the chat will actually run on (quick-completion falls back
       // internally for codex / unconfigured providers). Validate the free-form
       // request value rather than trusting it blindly.
-      const branchProvider =
-        typeof provider === "string" && VALID_PROVIDERS.has(provider as AgentProviderKind)
-          ? (provider as AgentProviderKind)
-          : undefined;
+      const branchProvider = isRoutableProvider(provider) ? provider : undefined;
       try {
         const generated = await generateBranchName(prompt, branchProvider);
         if (generated) {
@@ -143,8 +141,7 @@ streamRouter.post("/new/message", async (req, res) => {
     // Validate provider at the route boundary rather than relying on
     // resolveProviderKind's warn-and-fallback path. Anything not in the
     // allowlist is silently dropped — same outcome as omitting the field.
-    const safeProvider: AgentProviderKind | undefined =
-      typeof provider === "string" && VALID_PROVIDERS.has(provider as AgentProviderKind) ? (provider as AgentProviderKind) : undefined;
+    const safeProvider: AgentProviderKind | undefined = isRoutableProvider(provider) ? provider : undefined;
 
     // Effort forwarded only when paired with a reasoning-capable provider
     // (openrouter → OR reasoning.effort, codex → modelReasoningEffort). On a
