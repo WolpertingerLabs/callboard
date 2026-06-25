@@ -83,6 +83,22 @@ export interface OpenRouterOptionsExtras {
    * `Partial<ResponsesRequest>`. Omit to send no extra params.
    */
   modelParams?: Record<string, unknown>;
+  /**
+   * Utility/quick-completion marker: expose ONLY the explicitly-supplied
+   * in-process MCP tools, with NO default client tools (read_file / write_file /
+   * bash / …) and NO server tools (web_search / web_fetch / datetime).
+   *
+   * Why this exists: {@link translateOptions} normally PREPENDS OR's full
+   * default client toolset whenever any in-process MCP bundle is present (so
+   * real chats keep file/exec primitives alongside callboard-tools). For a
+   * one-shot utility call — generating a chat title, a branch name, a theme —
+   * that is actively harmful: armed with file/bash tools and a prompt like
+   * "Help me add dark mode", the model treats the prompt as a coding task and
+   * starts editing files instead of returning a title, never calling
+   * `return_result` and never producing a final answer. Set by
+   * quick-completion.ts; see the `bareToolset` branch in {@link translateOptions}.
+   */
+  bareToolset?: boolean;
 }
 
 /**
@@ -200,6 +216,9 @@ export function translateOptions(
   const cwd = opts.cwd ?? process.cwd();
   const sessionId = opts.resume ?? randomUUID();
   const instructions = resolveInstructions(opts.systemPrompt);
+  // Utility/quick-completion runs expose only their supplied in-process tools —
+  // no default client toolset, no server tools. See OpenRouterOptionsExtras.bareToolset.
+  const bareToolset = orConfig.bareToolset === true;
 
   const orOpts: OpenRouterAgentRunOptions = {
     apiKey: orConfig.apiKey,
@@ -235,7 +254,14 @@ export function translateOptions(
   //     `DEFAULT_SERVER_TOOLS` (datetime/web_search/web_fetch).
   //   - `[]` ⇒ disable all server tools (the request `tools` array is sent
   //     exactly as the agent built it).
-  if (orConfig.serverTools) orOpts.serverTools = orConfig.serverTools;
+  if (bareToolset) {
+    // A utility completion never needs OR's server tools; disabling them keeps
+    // the model from wandering off (web_search/web_fetch) mid-answer. `[]`
+    // means "send the request `tools` array exactly as built" (see above).
+    orOpts.serverTools = [];
+  } else if (orConfig.serverTools) {
+    orOpts.serverTools = orConfig.serverTools;
+  }
   // Forward the user's configured spend cap. `Number.isFinite` excludes
   // NaN/Infinity that could sneak in from a malformed setting; the absence
   // of this field is the signal for OR to use its own DEFAULT_MAX_BUDGET_USD.
@@ -287,7 +313,17 @@ export function translateOptions(
   // array would replace OR's defaults — the agent would lose its file/exec
   // primitives and the run would be useless.
   const { tools: mcpTools, externalServers, droppedServerNames } = collectMcpTools(opts.mcpServers);
-  if (mcpTools.length > 0) {
+  if (bareToolset) {
+    // Utility/quick-completion path: expose ONLY the supplied in-process tools
+    // (e.g. `return_result`) — never OR's default client toolset. Injecting
+    // read_file/write_file/bash here would arm a one-shot utility model with
+    // file/exec tools, and it then treats the prompt as a coding task and edits
+    // files instead of answering (see OpenRouterOptionsExtras.bareToolset).
+    // Pinning a custom `tools` array (even an empty one) also flips the
+    // harness's `hasCustomTools`, so it won't fall back to its own default
+    // bundle for a no-tool, text-only completion either.
+    orOpts.tools = [...mcpTools];
+  } else if (mcpTools.length > 0) {
     // Build OR's built-in tools and forward the ask_user_question host handler,
     // then append callboard's MCP-bundled tools. Because callboard always
     // supplies a custom `tools` array, the library uses these tools verbatim

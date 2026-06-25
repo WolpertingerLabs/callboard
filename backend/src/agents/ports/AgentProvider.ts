@@ -51,6 +51,28 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  */
 export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "mock";
 
+/**
+ * The provider kinds `sendMessage` knows how to route a real chat through — the
+ * three user-selectable harnesses. Excludes `"mock"` (test-only, never a chat's
+ * persisted provider). This is the single source of truth: route handlers and
+ * the chat service narrow free-form `provider` values against it via
+ * {@link isRoutableProvider} instead of keeping their own copies.
+ */
+export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex"] as const;
+
+/** A provider kind that backs a real chat (i.e. not the test-only `"mock"`). */
+export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
+
+/**
+ * Type guard: narrows a free-form value (request body field, persisted metadata)
+ * to a {@link RoutableProviderKind}. Use this in place of ad-hoc
+ * `typeof x === "string" && SET.has(x as AgentProviderKind)` checks and the
+ * unsafe `as AgentProviderKind` casts they require.
+ */
+export function isRoutableProvider(value: unknown): value is RoutableProviderKind {
+  return typeof value === "string" && (ROUTABLE_PROVIDER_KINDS as readonly string[]).includes(value);
+}
+
 export interface AgentProvider {
   readonly kind: AgentProviderKind;
   /**

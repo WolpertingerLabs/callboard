@@ -389,6 +389,51 @@ describe("translateOptions — MCP server translation", () => {
   });
 });
 
+describe("translateOptions — bareToolset (quick-completion utility runs)", () => {
+  const inProcessServer = { tools: [{ type: "function", function: { name: "return_result" } }] };
+  const toolNames = (orOpts: { tools?: readonly unknown[] }) =>
+    (orOpts.tools ?? []).map((t) => (t as { function?: { name?: string } }).function?.name);
+
+  it("exposes ONLY the supplied in-process tools — no default client toolset", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: { apiKey: "sk-or-test", bareToolset: true }, mcpServers: { qc: inProcessServer } },
+      "hi",
+    );
+    // This is the capture fix: with bareToolset, the model sees just
+    // return_result, so it answers instead of going off to read/write/bash.
+    expect(toolNames(orOpts)).toEqual(["return_result"]);
+    expect(toolNames(orOpts)).not.toContain("read_file");
+    expect(toolNames(orOpts)).not.toContain("bash");
+    expect(toolNames(orOpts)).not.toContain("write_file");
+  });
+
+  it("disables OR server tools for a bare-toolset run", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: { apiKey: "sk-or-test", bareToolset: true }, mcpServers: { qc: inProcessServer } },
+      "hi",
+    );
+    expect(orOpts.serverTools).toEqual([]);
+  });
+
+  it("pins an explicit empty tools array (text-only) when bareToolset is set with no in-process tools", () => {
+    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test", bareToolset: true } }, "hi");
+    // An explicit [] flips the harness's hasCustomTools so it does NOT fall back
+    // to its full default bundle — a true zero-tool, text-only completion.
+    expect(orOpts.tools).toEqual([]);
+    expect(orOpts.serverTools).toEqual([]);
+  });
+
+  it("still injects the default client toolset when bareToolset is NOT set (real chats)", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: defaultExtras, mcpServers: { qc: inProcessServer } },
+      "hi",
+    );
+    expect(toolNames(orOpts)).toContain("return_result");
+    // The bundled tool sits alongside OR's default client tools — more than one.
+    expect((orOpts.tools ?? []).length).toBeGreaterThan(1);
+  });
+});
+
 describe("extractPluginDirs — plugin descriptor → loadPlugins dirs", () => {
   it("returns [] when no plugins are present", () => {
     expect(extractPluginDirs({})).toEqual([]);

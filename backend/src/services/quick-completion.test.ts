@@ -22,7 +22,7 @@ vi.mock("./agent-settings.js", () => ({
   getAgentSettings: vi.fn(() => ({ proxyMode: "local" })),
 }));
 
-import { quickCompletion } from "./quick-completion.js";
+import { quickCompletion, generateChatTitle, generateBranchName } from "./quick-completion.js";
 import { getAgentSettings, isOpenRouterConfigured } from "./agent-settings.js";
 
 const mockIsOpenRouterConfigured = vi.mocked(isOpenRouterConfigured);
@@ -47,7 +47,16 @@ async function waitForSpec(mock: MockAgentProvider, attempts = 50): Promise<void
   throw new Error("timed out waiting for buildToolServer to be called");
 }
 
-/** Invoke the captured qc.return_result handler with the given text. */
+/**
+ * Invoke the captured qc.return_result handler with the given text.
+ *
+ * Fidelity gap: this calls the tool handler DIRECTLY rather than dispatching a
+ * tool_use stream event through the harness, so it does not exercise the
+ * allowedTools / permission gate the real adapters apply before a tool runs.
+ * Driving a gated tool_use event would be a larger MockAgentProvider change; the
+ * gate itself is covered by the OR harness's own tool-filter tests, and these
+ * tests focus on quick-completion's capture/routing logic above that seam.
+ */
 async function fireReturnResult(mock: MockAgentProvider, text: string): Promise<void> {
   await waitForSpec(mock);
   const spec = mock.toolSpecs.find((s) => s.name === "qc");
@@ -140,6 +149,46 @@ describe("quickCompletion — through MockAgentProvider", () => {
     expect(result.durationMs).toBe(0);
   });
 
+  it("forwards a permissive system prompt that allows a plain-text answer", async () => {
+    // Pins the softened RETURN_RESULT_INSTRUCTION: the model is asked to use the
+    // tool but explicitly PERMITTED to answer as text. The old wording forbade
+    // plain text, which left us nothing to capture when an OR model declined the
+    // forced tool call.
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = quickCompletion({ prompt: "hi", model: "haiku" });
+    await fireReturnResult(mock, "ok");
+    await resultPromise;
+
+    const opts = mock.queryRecords[0].request.options as { systemPrompt?: string };
+    expect(opts.systemPrompt).toMatch(/write the answer directly/i);
+    expect(opts.systemPrompt).not.toMatch(/Do NOT write your answer as plain text/i);
+  });
+
+  it("resolves with the captured text even when a trailing error result follows return_result", async () => {
+    // Guards the documented OpenRouter quirk: after return_result fires, the OR
+    // harness takes one more empty model turn and emits a stream_complete with
+    // status "error". That arrives as an EVENT, not a throw — the completion
+    // must still resolve with the already-captured text.
+    const mock = new MockAgentProvider({
+      events: [
+        { type: "text", content: "partial" },
+        {
+          type: "result",
+          status: "error",
+          reason: "Invalid final response: empty or invalid output",
+        },
+      ],
+    });
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = quickCompletion({ prompt: "title", model: "haiku" });
+    await fireReturnResult(mock, "Captured Title");
+
+    await expect(resultPromise).resolves.toMatchObject({ text: "Captured Title" });
+  });
+
   it("falls back to the assistant's text when return_result is never called", async () => {
     // No tool call — model answers directly via text events. The completion
     // should still resolve using the accumulated text rather than dying.
@@ -189,6 +238,7 @@ describe("quickCompletion — provider auto-resolution", () => {
         maxBudgetUsd?: number;
         effort?: string;
         appTitle?: string;
+        bareToolset?: boolean;
       };
     };
     expect(opts.openRouter).toMatchObject({
@@ -198,6 +248,10 @@ describe("quickCompletion — provider auto-resolution", () => {
       maxBudgetUsd: 2.5,
       effort: "medium",
       appTitle: "callboard",
+      // The capture fix: quick completions must run with ONLY the return_result
+      // tool, never OR's default file/bash toolset (which would make the model
+      // edit files instead of answering). See OpenRouterOptionsExtras.bareToolset.
+      bareToolset: true,
     });
   });
 
@@ -237,5 +291,213 @@ describe("quickCompletion — provider auto-resolution", () => {
 
     const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
     expect(opts.openRouter).toBeUndefined();
+  });
+});
+
+describe("quickCompletion — harness routing (prefers the chat's provider)", () => {
+  it("runs a claude-code chat on claude-code even when OpenRouter is configured", async () => {
+    // OR is set up globally, but the chat's own harness is claude-code — the
+    // title must follow the chat, not the global guess. (Pre-fix, an OR key
+    // funneled EVERY chat's title through OpenRouter.)
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+    });
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock); // claude-code slot
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "claude-code" });
+    await fireReturnResult(mock, "CC Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("CC Title");
+    // No OR config means it resolved to (and ran on) the claude-code provider.
+    const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
+    expect(opts.openRouter).toBeUndefined();
+  });
+
+  it("runs an openrouter chat on openrouter", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+    });
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock, "openrouter");
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "openrouter" });
+    await fireReturnResult(mock, "OR Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("OR Title");
+    const opts = mock.queryRecords[0].request.options as { openRouter?: { bareToolset?: boolean } };
+    expect(opts.openRouter?.bareToolset).toBe(true);
+  });
+
+  it("falls back a codex chat to openrouter when OR is configured (codex can't do utility calls)", async () => {
+    // Codex has no cheap/fast tier for a throwaway utility call, so a codex
+    // chat borrows the best available utility provider — OR here.
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+    });
+
+    const mock = new MockAgentProvider();
+    // Inject under openrouter — the codex preference must fall back to here, NOT
+    // a codex slot (codex would never resolve for a quick completion).
+    setAgentProviderForTesting(mock, "openrouter");
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "codex" });
+    await fireReturnResult(mock, "Codex→OR Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("Codex→OR Title");
+    const opts = mock.queryRecords[0].request.options as { openRouter?: { apiKey?: string } };
+    expect(opts.openRouter?.apiKey).toBe("sk-or-test");
+  });
+
+  it("falls back a codex chat to claude-code when OR is not configured", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(false);
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock); // claude-code slot
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "codex" });
+    await fireReturnResult(mock, "Codex→CC Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("Codex→CC Title");
+    // Never dead-ends on codex: it resolved to claude-code (no OR config).
+    const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
+    expect(opts.openRouter).toBeUndefined();
+  });
+
+  it("falls back an openrouter chat to claude-code when OR is NOT configured", async () => {
+    // Covers the FALSE branch of canRunQuickCompletion("openrouter"): the chat
+    // prefers openrouter, but with no API key it can't run a utility call, so it
+    // falls back to the always-available claude-code rather than dead-ending.
+    mockIsOpenRouterConfigured.mockReturnValue(false);
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock); // claude-code slot
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "openrouter" });
+    await fireReturnResult(mock, "OR→CC Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("OR→CC Title");
+    const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
+    expect(opts.openRouter).toBeUndefined();
+  });
+});
+
+describe("generateChatTitle / generateBranchName — public wrappers", () => {
+  it("generateChatTitle trims whitespace from the captured title", async () => {
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = generateChatTitle("Add dark mode to my app");
+    await fireReturnResult(mock, "  Add Dark Mode  ");
+    expect(await resultPromise).toBe("Add Dark Mode");
+  });
+
+  it("generateChatTitle returns null on an empty (whitespace-only) result", async () => {
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = generateChatTitle("anything");
+    await fireReturnResult(mock, "   ");
+    expect(await resultPromise).toBeNull();
+  });
+
+  it("generateChatTitle returns null when the result exceeds 100 chars", async () => {
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = generateChatTitle("anything");
+    await fireReturnResult(mock, "x".repeat(101));
+    expect(await resultPromise).toBeNull();
+  });
+
+  it("generateBranchName accepts a well-formed <type>/<kebab> name unchanged", async () => {
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = generateBranchName("add a dark mode toggle");
+    await fireReturnResult(mock, "feat/add-dark-mode-toggle");
+    expect(await resultPromise).toBe("feat/add-dark-mode-toggle");
+  });
+
+  it("generateBranchName sanitizes invalid chars and collapses repeats", async () => {
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    // Passes the structural <type>/<desc> check, then sanitization strips chars
+    // outside [a-z0-9-/] (spaces, punctuation, uppercase) and collapses runs of
+    // "-"/"/" — proving the regex pipeline at the tail of generateBranchName.
+    const resultPromise = generateBranchName("fix the thing");
+    await fireReturnResult(mock, "fix/Login  Redirect!!--loop");
+    const branch = await resultPromise;
+
+    expect(branch).not.toBeNull();
+    expect(branch).toMatch(/^[a-z0-9/-]+$/); // only git-safe chars survive
+    expect(branch).not.toMatch(/--/); // consecutive hyphens collapsed
+    expect(branch!.startsWith("fix/")).toBe(true);
+  });
+
+  it("generateBranchName returns null when the structure is invalid (no <type>/ prefix)", async () => {
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = generateBranchName("whatever");
+    await fireReturnResult(mock, "just some free text");
+    expect(await resultPromise).toBeNull();
+  });
+
+  it("generateBranchName returns null when the sanitized name exceeds 60 chars", async () => {
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock);
+
+    const resultPromise = generateBranchName("long one");
+    await fireReturnResult(mock, "feat/" + "a".repeat(70));
+    expect(await resultPromise).toBeNull();
+  });
+
+  it("forwards the provider to quickCompletion when supplied (claude-code over the OR default)", async () => {
+    // OR is configured, so the global fallback would pick openrouter. Passing
+    // provider="claude-code" must override that — proven by the absence of OR
+    // config on the recorded query.
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({ proxyMode: "local", openRouterApiKey: "sk-or-test" });
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock, "claude-code");
+
+    const resultPromise = generateChatTitle("hello", "claude-code");
+    await fireReturnResult(mock, "Hello Title");
+    expect(await resultPromise).toBe("Hello Title");
+
+    const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
+    expect(opts.openRouter).toBeUndefined();
+  });
+
+  it("omits the provider when not supplied → uses the global fallback (openrouter when configured)", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({ proxyMode: "local", openRouterApiKey: "sk-or-test" });
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock, "openrouter");
+
+    const resultPromise = generateBranchName("add dark mode");
+    await fireReturnResult(mock, "feat/add-dark-mode");
+    expect(await resultPromise).toBe("feat/add-dark-mode");
+
+    // No provider passed → fell through to the OR default, so OR config is present.
+    const opts = mock.queryRecords[0].request.options as { openRouter?: { apiKey?: string } };
+    expect(opts.openRouter?.apiKey).toBe("sk-or-test");
   });
 });
