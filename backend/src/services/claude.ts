@@ -1384,7 +1384,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   const promptText = typeof prompt === "string" ? prompt : null;
                   if (promptText) {
                     const chatId = trackingId;
-                    generateChatTitle(promptText)
+                    // Generate the title on the chat's own harness (providerKind,
+                    // resolved at the top of sendMessage) so a claude-code chat
+                    // gets a claude-code title and an openrouter chat an
+                    // openrouter one. quick-completion falls back internally when
+                    // the provider can't do a utility call (codex).
+                    generateChatTitle(promptText, providerKind)
                       .then((title) => {
                         if (title) {
                           chatFileService.updateChatMetadata(chatId, { title });

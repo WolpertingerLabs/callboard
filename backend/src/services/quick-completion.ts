@@ -46,22 +46,62 @@ export interface QuickCompletionOptions {
   /** Effort level for reasoning. Default: "low". */
   effort?: "low" | "medium" | "high";
   /**
-   * Agent provider to run on. When omitted, resolves automatically:
-   * "openrouter" if an OpenRouter API key is configured, otherwise
-   * "claude-code". Pass an explicit value to override the auto-resolution
-   * (mainly for tests).
+   * The chat's own agent provider (its "harness"). Quick completions PREFER to
+   * run on the same provider as the chat they belong to — a claude-code chat
+   * gets a claude-code title, an openrouter chat an openrouter title — so the
+   * utility call honors the user's per-chat harness choice instead of a single
+   * global guess.
+   *
+   * When omitted, or when the preferred provider can't service a cheap utility
+   * call (codex) / isn't configured (openrouter with no API key), resolution
+   * falls back to the best AVAILABLE utility provider. See
+   * {@link resolveQuickCompletionProvider}. Tests pass this to pin a provider.
    */
   provider?: AgentProviderKind;
 }
 
 /**
- * Pick the provider for a quick completion. Mirrors the product decision that
- * quick completions follow whichever provider is configured globally rather
- * than a specific chat's provider: if OpenRouter is set up, use it; otherwise
- * fall back to the Claude Code SDK.
+ * Whether a provider can service a cheap, one-shot "haiku-tier" utility
+ * completion (chat title, branch name, theme).
+ *
+ * - `claude-code` — always available; needs no extra configuration and is the
+ *   universal fallback utility backend.
+ * - `openrouter` — only when an API key is configured.
+ * - `codex` — NO. Codex models are heavyweight reasoning agents with no
+ *   cheap/fast tier appropriate for a throwaway utility call, so a codex chat
+ *   always falls back to another provider for its title/branch generation.
+ * - anything else (`mock`) — not a real utility backend.
  */
-function resolveQuickCompletionProvider(explicit?: AgentProviderKind): AgentProviderKind {
-  if (explicit) return explicit;
+function canRunQuickCompletion(provider: AgentProviderKind): boolean {
+  switch (provider) {
+    case "claude-code":
+      return true;
+    case "openrouter":
+      return isOpenRouterConfigured();
+    case "codex":
+    case "mock":
+    default:
+      return false;
+  }
+}
+
+/**
+ * Pick the provider for a quick completion.
+ *
+ * 1. PREFER the chat's own harness when it can run a utility completion — this
+ *    is the structural fix: claude-code chat → claude-code, openrouter chat →
+ *    openrouter. (Before, every quick completion was funneled through a single
+ *    global guess that ignored the chat entirely.)
+ * 2. Otherwise fall back to the best AVAILABLE utility provider so we never
+ *    dead-end: OpenRouter if a key is configured (fast/cheap haiku tier), else
+ *    the Claude Code SDK (always available). This is the codex path — codex
+ *    can't do a cheap utility call, so its chats borrow whichever working
+ *    provider is configured.
+ */
+function resolveQuickCompletionProvider(preferred?: AgentProviderKind): AgentProviderKind {
+  if (preferred && canRunQuickCompletion(preferred)) return preferred;
+  // Fallback chain — OpenRouter first (cheap haiku tier) when configured,
+  // otherwise the always-available Claude Code SDK. Never returns codex.
   return isOpenRouterConfigured() ? "openrouter" : "claude-code";
 }
 
@@ -106,6 +146,11 @@ function buildOpenRouterExtras(model: QuickModel, effort: "low" | "medium" | "hi
     // OR EffortLevel union, so it forwards directly.
     effort,
     appTitle: "callboard",
+    // Expose ONLY the return_result tool — no default file/bash client tools,
+    // no server tools. Without this the OR adapter arms the utility model with
+    // the full coding toolset and it edits files instead of answering. This is
+    // the primary capture fix; see OpenRouterOptionsExtras.bareToolset.
+    bareToolset: true,
   };
 }
 
@@ -148,8 +193,16 @@ function buildReturnResultSpec(onResult: (text: string) => void): ToolServerSpec
 
 // ─── Core Function ───────────────────────────────────────────────────
 
-/** Suffix appended to every system prompt to ensure the model calls the tool. */
-const RETURN_RESULT_INSTRUCTION = "\n\nIMPORTANT: You MUST call the `return_result` tool with your answer. Do NOT write your answer as plain text.";
+/**
+ * Suffix appended to every system prompt. Asks for the structured channel
+ * (return_result) but explicitly PERMITS a plain-text answer as a fallback —
+ * some OpenRouter-routed models won't reliably honor a forced tool call, and
+ * forbidding plain text would leave us with nothing to capture. The event loop
+ * accepts whichever channel actually carries the answer.
+ */
+const RETURN_RESULT_INSTRUCTION =
+  "\n\nWhen you have your answer, return it by calling the `return_result` tool. " +
+  "If you are unable to call the tool, write the answer directly as your message — just the answer, nothing else.";
 
 /**
  * Run a single, ephemeral completion request via the Agent SDK.
@@ -181,7 +234,13 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   });
   const mcpServer = agentProvider.buildToolServer(qcSpec);
 
-  // Build the allowed tools list: always include return_result, plus any explicit CC tools
+  // Build the allowed tools list: the MCP-prefixed return_result plus any
+  // explicit CC tools. The `mcp__qc__return_result` spelling is required: the
+  // OpenRouter harness eagerly validates allowedTools and THROWS on a bare,
+  // non-MCP-prefixed name like "return_result" (it must contain "__"). On both
+  // providers this prefixed entry is enough — Claude Code matches the tool by
+  // this exact name, and under OR's bypassPermissions mode the gate auto-allows
+  // the tool regardless (the rule name need not match the bare OR tool name).
   const allowedTools = ["mcp__qc__return_result", ...tools];
 
   // Build the effective system prompt
@@ -239,7 +298,22 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
     });
 
     // Drive the agent loop to completion; capture usage + duration from the
-    // result event and accumulate text as the return_result fallback.
+    // result event and accumulate text as the return_result fallback. We drain
+    // fully rather than bailing as soon as the tool fires: the run self-
+    // terminates after the one-shot answer (bareToolset means the only tool is
+    // return_result), and draining keeps usage/duration from the terminal
+    // result event intact.
+    //
+    // BENIGN-ERROR NOTE (OpenRouter): after the model calls return_result, the
+    // OR harness takes one more (empty) model turn to produce a "final
+    // response", which it logs as `stream_complete status=error — Invalid final
+    // response: empty or invalid output`. That error arrives as an EVENT, not a
+    // throw — the loop completes normally and `capturedResult` is already set,
+    // so the title/branch is produced correctly despite the scary log line. We
+    // deliberately do NOT abort the run on capture to silence it: aborting mid-
+    // run leaves the harness's in-flight model call to reject in the background
+    // as an UNHANDLED rejection (it can crash the process), which is far worse
+    // than a handled log line.
     for await (const event of conversation) {
       if (event.type === "text") {
         assistantText += event.content;
@@ -290,8 +364,15 @@ function timeout(ms: number): Promise<undefined> {
  *
  * Uses Haiku for speed and cost-efficiency.
  * Returns null if generation fails (callers should fall back to a truncated message).
+ *
+ * @param provider The chat's own harness, so the title is generated on the same
+ *   provider as the chat (with fallback for codex / unconfigured providers).
+ *   Omit to use the global fallback resolution.
  */
-export async function generateChatTitle(firstMessage: string): Promise<string | null> {
+export async function generateChatTitle(
+  firstMessage: string,
+  provider?: AgentProviderKind,
+): Promise<string | null> {
   try {
     const truncated = firstMessage.length > 500 ? firstMessage.slice(0, 500) + "..." : firstMessage;
 
@@ -302,6 +383,7 @@ export async function generateChatTitle(firstMessage: string): Promise<string | 
         "Return ONLY the title text — no quotes, no punctuation at the end, no prefix like 'Title:'.",
       model: "haiku",
       effort: "low",
+      ...(provider && { provider }),
     });
 
     const title = result.text.trim();
@@ -320,8 +402,15 @@ export async function generateChatTitle(firstMessage: string): Promise<string | 
  *   e.g., "feat/add-dark-mode-toggle", "fix/login-redirect-loop"
  *
  * Uses Haiku for speed. Returns null on failure.
+ *
+ * @param provider The chat/request's own harness, so the branch name is
+ *   generated on the same provider (with fallback for codex / unconfigured
+ *   providers). Omit to use the global fallback resolution.
  */
-export async function generateBranchName(request: string): Promise<string | null> {
+export async function generateBranchName(
+  request: string,
+  provider?: AgentProviderKind,
+): Promise<string | null> {
   try {
     const truncated = request.length > 500 ? request.slice(0, 500) + "..." : request;
 
@@ -334,6 +423,7 @@ export async function generateBranchName(request: string): Promise<string | null
         "Return ONLY the branch name, nothing else.",
       model: "haiku",
       effort: "low",
+      ...(provider && { provider }),
     });
 
     let branch = result.text.trim();

@@ -189,6 +189,7 @@ describe("quickCompletion — provider auto-resolution", () => {
         maxBudgetUsd?: number;
         effort?: string;
         appTitle?: string;
+        bareToolset?: boolean;
       };
     };
     expect(opts.openRouter).toMatchObject({
@@ -198,6 +199,10 @@ describe("quickCompletion — provider auto-resolution", () => {
       maxBudgetUsd: 2.5,
       effort: "medium",
       appTitle: "callboard",
+      // The capture fix: quick completions must run with ONLY the return_result
+      // tool, never OR's default file/bash toolset (which would make the model
+      // edit files instead of answering). See OpenRouterOptionsExtras.bareToolset.
+      bareToolset: true,
     });
   });
 
@@ -235,6 +240,89 @@ describe("quickCompletion — provider auto-resolution", () => {
     await fireReturnResult(mock, "CC Title");
     await resultPromise;
 
+    const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
+    expect(opts.openRouter).toBeUndefined();
+  });
+});
+
+describe("quickCompletion — harness routing (prefers the chat's provider)", () => {
+  it("runs a claude-code chat on claude-code even when OpenRouter is configured", async () => {
+    // OR is set up globally, but the chat's own harness is claude-code — the
+    // title must follow the chat, not the global guess. (Pre-fix, an OR key
+    // funneled EVERY chat's title through OpenRouter.)
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+    });
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock); // claude-code slot
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "claude-code" });
+    await fireReturnResult(mock, "CC Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("CC Title");
+    // No OR config means it resolved to (and ran on) the claude-code provider.
+    const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
+    expect(opts.openRouter).toBeUndefined();
+  });
+
+  it("runs an openrouter chat on openrouter", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+    });
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock, "openrouter");
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "openrouter" });
+    await fireReturnResult(mock, "OR Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("OR Title");
+    const opts = mock.queryRecords[0].request.options as { openRouter?: { bareToolset?: boolean } };
+    expect(opts.openRouter?.bareToolset).toBe(true);
+  });
+
+  it("falls back a codex chat to openrouter when OR is configured (codex can't do utility calls)", async () => {
+    // Codex has no cheap/fast tier for a throwaway utility call, so a codex
+    // chat borrows the best available utility provider — OR here.
+    mockIsOpenRouterConfigured.mockReturnValue(true);
+    mockGetAgentSettings.mockReturnValue({
+      proxyMode: "local",
+      openRouterApiKey: "sk-or-test",
+    });
+
+    const mock = new MockAgentProvider();
+    // Inject under openrouter — the codex preference must fall back to here, NOT
+    // a codex slot (codex would never resolve for a quick completion).
+    setAgentProviderForTesting(mock, "openrouter");
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "codex" });
+    await fireReturnResult(mock, "Codex→OR Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("Codex→OR Title");
+    const opts = mock.queryRecords[0].request.options as { openRouter?: { apiKey?: string } };
+    expect(opts.openRouter?.apiKey).toBe("sk-or-test");
+  });
+
+  it("falls back a codex chat to claude-code when OR is not configured", async () => {
+    mockIsOpenRouterConfigured.mockReturnValue(false);
+
+    const mock = new MockAgentProvider();
+    setAgentProviderForTesting(mock); // claude-code slot
+
+    const resultPromise = quickCompletion({ prompt: "x", model: "haiku", provider: "codex" });
+    await fireReturnResult(mock, "Codex→CC Title");
+    const result = await resultPromise;
+
+    expect(result.text).toBe("Codex→CC Title");
+    // Never dead-ends on codex: it resolved to claude-code (no OR config).
     const opts = mock.queryRecords[0].request.options as { openRouter?: unknown };
     expect(opts.openRouter).toBeUndefined();
   });
