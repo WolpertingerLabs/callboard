@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # NODE_ENV=development so npm does not strip devDependencies (tsc, eslint,
+      # vitest, vite). --include=dev belt-and-braces for the same reason.
+      - name: Install
+        run: NODE_ENV=development npm ci --include=dev
+
+      - name: Build
+        run: npm run build
+
+      # `lint` only lints staged files (it's the pre-commit hook); in CI there
+      # are none, so we run lint:all to actually lint the codebase.
+      - name: Lint
+        run: npm run lint:all
+
+      # test:coverage runs the full vitest suite (so a failing test gates CI)
+      # AND produces the coverage report. Coverage has no thresholds configured,
+      # so low numbers never fail the build — coverage is reported, not enforced.
+      - name: Test + coverage
+        run: npm run test:coverage
+
+      # Surface the coverage totals in the run summary. Non-gating: it runs even
+      # if earlier steps failed and never fails the job itself.
+      - name: Coverage summary
+        if: always()
+        continue-on-error: true
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "coverage/coverage-summary.json";
+            if (!fs.existsSync(p)) { console.log("No coverage summary found."); process.exit(0); }
+            const t = JSON.parse(fs.readFileSync(p, "utf8")).total;
+            const row = (k) => `| ${k[0].toUpperCase()+k.slice(1)} | ${t[k].pct}% | ${t[k].covered}/${t[k].total} |`;
+            const md = [
+              "## Coverage (non-gating)",
+              "",
+              "| Metric | % | Covered/Total |",
+              "| --- | --- | --- |",
+              row("lines"),
+              row("statements"),
+              row("branches"),
+              row("functions"),
+              "",
+              "_Coverage is reported for visibility only and does not gate the build._",
+              "",
+            ].join("\n");
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
+          '
+
+      # Keep the full HTML/lcov report as a downloadable artifact. Non-gating.
+      - name: Upload coverage report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: ignore

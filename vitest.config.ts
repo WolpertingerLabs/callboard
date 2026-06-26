@@ -7,6 +7,37 @@ import { defineConfig } from "vitest/config";
 // frontend tsconfig's "jsx": "react-jsx".
 export default defineConfig({
   test: {
+    // Coverage is reported but NEVER gates the build — no `thresholds` are set
+    // intentionally. This is a first step toward good practice; the numbers are
+    // surfaced in CI but a low number must not fail the job.
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html", "lcov", "json-summary"],
+      reportsDirectory: "./coverage",
+      // Only measure first-party source in the three workspaces.
+      include: [
+        "shared/src/**/*.{ts,tsx}",
+        "backend/src/**/*.{ts,tsx}",
+        "frontend/src/**/*.{ts,tsx}",
+      ],
+      exclude: [
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/coverage/**",
+        // Tests and fixtures
+        "**/*.{test,spec}.{ts,tsx}",
+        "**/__tests__/**",
+        "**/__mocks__/**",
+        // Config / build tooling
+        "**/*.config.{ts,js,mjs,cjs}",
+        "scripts/**",
+        "backend/src/scaffold/**",
+        "backend/src/swagger.ts",
+        // Type-only declarations
+        "**/*.d.ts",
+        "**/types/**",
+      ],
+    },
     projects: [
       {
         extends: true,
