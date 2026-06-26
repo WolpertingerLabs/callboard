@@ -68,6 +68,7 @@ import {
   ensureRemoteProxyConfigDir,
   migrateDrawlatchDirs,
   migrateKeyDirectories,
+  detectClaudeCodeOpenRouterEnv,
 } from "./services/agent-settings.js";
 import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
@@ -75,7 +76,7 @@ import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
-import { getCodexAuthSource, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
+import { getCodexAuthSource, detectCodexOpenRouterEnv, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 
 const log = createLogger("server");
 
@@ -428,6 +429,19 @@ app.get(
       if (!codexAuthSource) codexAuthSource = "config.toml";
     }
 
+    // Detect whether the ambient environment already routes each harness through
+    // OpenRouter (ANTHROPIC_BASE_URL / OPENAI base / config.toml pointing at
+    // openrouter.ai). Settings → API defaults the routing toggle on from these
+    // when the user hasn't explicitly saved a choice.
+    let claudeCodeOpenRouterDetected = false;
+    let codexOpenRouterDetected = false;
+    try {
+      claudeCodeOpenRouterDetected = detectClaudeCodeOpenRouterEnv();
+      codexOpenRouterDetected = detectCodexOpenRouterEnv();
+    } catch {
+      // best effort — detection failures just leave the toggles defaulting off
+    }
+
     res.json({
       version,
       latestVersion,
@@ -444,6 +458,8 @@ app.get(
       openRouterMaxBudgetUsd,
       claudeCodeUseOpenRouter,
       codexUseOpenRouter,
+      claudeCodeOpenRouterDetected,
+      codexOpenRouterDetected,
       codexConfigured,
       codexAuthSource,
     });

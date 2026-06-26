@@ -13,6 +13,7 @@ import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import { listAgents } from "./agent-file-service.js";
+import { getLatestAnthropicRoleModels } from "./openrouter-models.js";
 import type { AgentConfig, AgentSettings, KeyAliasInfo, EnrolledCaller } from "shared";
 
 const log = createLogger("agent-settings");
@@ -66,6 +67,22 @@ export function isOpenRouterConfigured(settings?: AgentSettings): boolean {
   return Boolean(s.openRouterApiKey?.trim());
 }
 
+/** True when a URL string points at OpenRouter's host. */
+function isOpenRouterUrl(url: string | undefined): boolean {
+  return typeof url === "string" && /(^|\/\/|\.)openrouter\.ai(\/|$|:)/i.test(url);
+}
+
+/**
+ * Detect whether the ambient process environment already routes the native
+ * Claude Code harness through OpenRouter — i.e. ANTHROPIC_BASE_URL points at
+ * openrouter.ai (the docs' BYO-gateway setup). Surfaced via /api/system-info so
+ * Settings → API can default the "Route through OpenRouter" toggle on when the
+ * user hasn't explicitly chosen yet.
+ */
+export function detectClaudeCodeOpenRouterEnv(): boolean {
+  return isOpenRouterUrl(process.env.ANTHROPIC_BASE_URL);
+}
+
 /**
  * Resolve a user-defined OpenRouter model alias to its target slug.
  *
@@ -115,6 +132,17 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
     env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
     env.ANTHROPIC_AUTH_TOKEN = s.claudeCodeOpenRouterApiKey.trim();
     env.ANTHROPIC_API_KEY = "";
+    // Role-model defaults. Through OpenRouter, Claude Code's built-in bare model
+    // ids (e.g. "claude-opus-4-x") may not resolve — the gateway expects fully
+    // qualified `anthropic/*` slugs. So when a role field is blank, fall back to
+    // the newest matching anthropic slug from the live OpenRouter catalog (never
+    // goes stale). Subagent inherits the sonnet default. Each only fills when the
+    // user left it empty (the generic block above already set any explicit value).
+    const roleDefaults = getLatestAnthropicRoleModels();
+    if (!s.defaultOpusModel && roleDefaults.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = roleDefaults.opus;
+    if (!s.defaultSonnetModel && roleDefaults.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = roleDefaults.sonnet;
+    if (!s.defaultHaikuModel && roleDefaults.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = roleDefaults.haiku;
+    if (!s.subagentModel && roleDefaults.sonnet) env.CLAUDE_CODE_SUBAGENT_MODEL = roleDefaults.sonnet;
   }
 
   // ── Codex provider env ──────────────────────────────────────────

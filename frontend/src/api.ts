@@ -1019,6 +1019,10 @@ export interface SystemInfo {
   claudeCodeUseOpenRouter?: boolean;
   /** True when the native Codex harness is routed through OpenRouter (toggle on + key set). */
   codexUseOpenRouter?: boolean;
+  /** True when the ambient env already points Claude Code at OpenRouter (ANTHROPIC_BASE_URL). Defaults the toggle on. */
+  claudeCodeOpenRouterDetected?: boolean;
+  /** True when the ambient env already points Codex at OpenRouter (OPENAI base / config.toml). Defaults the toggle on. */
+  codexOpenRouterDetected?: boolean;
   /**
    * Effective per-session OpenRouter spend cap, in USD. The backend resolves
    * the user's override (if any) against the OR library's own default ($1.00)

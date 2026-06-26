@@ -95,6 +95,52 @@ export async function getOpenRouterModelsAsync(): Promise<OpenRouterModelInfo[]>
 }
 
 /**
+ * Synchronous snapshot of the currently-cached models (empty until the initial
+ * fetch resolves). Used by callers that can't await — e.g. the synchronous env
+ * builder in agent-settings — to read the catalog opportunistically.
+ */
+export function getOpenRouterModelsSnapshot(): OpenRouterModelInfo[] {
+  return cache?.models ?? [];
+}
+
+/** Numeric, segment-wise version compare ("4.10" > "4.8"). */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => parseInt(n, 10));
+  const pb = b.split(".").map((n) => parseInt(n, 10));
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da !== db) return da - db;
+  }
+  return 0;
+}
+
+/**
+ * Newest `anthropic/claude-<role>-<version>` slug per role from the cached
+ * catalog (e.g. `anthropic/claude-opus-4.8`). Variant suffixes (`-fast`,
+ * `-image`) and the legacy `claude-3-haiku` naming are intentionally excluded
+ * so the result is always a clean base model. Returns the role keys that have a
+ * match; absent when the catalog is empty/unwarmed. Drives the Claude-Code-via-
+ * OpenRouter role-model defaults (Settings → API and the env builder).
+ */
+export function getLatestAnthropicRoleModels(models?: OpenRouterModelInfo[]): { opus?: string; sonnet?: string; haiku?: string } {
+  const list = models ?? getOpenRouterModelsSnapshot();
+  const result: { opus?: string; sonnet?: string; haiku?: string } = {};
+  for (const role of ["opus", "sonnet", "haiku"] as const) {
+    const re = new RegExp(`^anthropic/claude-${role}-(\\d+(?:\\.\\d+)?)$`);
+    let bestVer: string | undefined;
+    for (const m of list) {
+      const match = re.exec(m.id);
+      if (match && (bestVer === undefined || compareVersions(match[1], bestVer) > 0)) {
+        bestVer = match[1];
+      }
+    }
+    if (bestVer !== undefined) result[role] = `anthropic/claude-${role}-${bestVer}`;
+  }
+  return result;
+}
+
+/**
  * Invalidate and re-fetch the models cache. Useful after the base URL changes.
  */
 export function refreshOpenRouterModelsCache(): Promise<OpenRouterModelsCache> {

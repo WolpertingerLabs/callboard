@@ -215,6 +215,8 @@ interface OpenRouterRoutingSectionProps {
   keyEnvLabel: string;
   /** Harness-specific caveats rendered under the key field when routing is on. */
   caveats: React.ReactNode;
+  /** True when the ambient env already routes this harness through OpenRouter. */
+  detected: boolean;
 }
 
 /**
@@ -223,7 +225,7 @@ interface OpenRouterRoutingSectionProps {
  * OpenRouter key; the manual endpoint/auth fields above are hidden and the model
  * pickers switch to OpenRouter's catalog.
  */
-function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKeyChange, endpoint, keyEnvLabel, caveats }: OpenRouterRoutingSectionProps) {
+function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKeyChange, endpoint, keyEnvLabel, caveats, detected }: OpenRouterRoutingSectionProps) {
   return (
     <div style={sectionStyle}>
       <div style={headerStyle}>
@@ -234,6 +236,11 @@ function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKey
         Run the native {harness} harness but send its requests to OpenRouter, authenticated with an OpenRouter API key. The endpoint is fixed and the model
         picker below switches to OpenRouter&apos;s catalog.
       </div>
+      {detected && (
+        <div style={{ ...helpStyle, marginTop: 0, marginBottom: 12, color: "var(--accent)" }}>
+          Detected OpenRouter in your environment — enabled by default. Add a key below to manage it through callboard, then Save.
+        </div>
+      )}
       <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: enabled ? 14 : 0 }}>
         <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} style={{ flexShrink: 0 }} />
         <span style={{ fontSize: 13, color: "var(--text)" }}>Use OpenRouter as the {harness} endpoint</span>
@@ -258,6 +265,34 @@ function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKey
       )}
     </div>
   );
+}
+
+/**
+ * Newest `anthropic/claude-<role>-<version>` slug in the OpenRouter catalog
+ * (e.g. `anthropic/claude-opus-4.8`), used as the placeholder/default for the
+ * Claude-Code-via-OpenRouter role pickers. Mirrors the backend resolver in
+ * openrouter-models.ts so the UI shows what the env builder will actually use.
+ * Returns undefined when the catalog is empty or has no match.
+ */
+function latestAnthropicRoleSlug(models: OpenRouterModelInfo[], role: "opus" | "sonnet" | "haiku"): string | undefined {
+  const re = new RegExp(`^anthropic/claude-${role}-(\\d+(?:\\.\\d+)?)$`);
+  let best: { ver: number[]; id: string } | undefined;
+  for (const m of models) {
+    const match = re.exec(m.id);
+    if (!match) continue;
+    const ver = match[1].split(".").map((n) => parseInt(n, 10));
+    const isNewer =
+      !best || (() => {
+        for (let i = 0; i < Math.max(ver.length, best.ver.length); i++) {
+          const a = ver[i] ?? 0;
+          const b = best.ver[i] ?? 0;
+          if (a !== b) return a > b;
+        }
+        return false;
+      })();
+    if (isNewer) best = { ver, id: m.id };
+  }
+  return best?.id;
 }
 
 // ── OpenRouter param-profile editing helpers ────────────────────────────────
@@ -452,7 +487,9 @@ export default function ApiSettings() {
       setDefaultSonnetModel(s.defaultSonnetModel ?? "");
       setDefaultHaikuModel(s.defaultHaikuModel ?? "");
       setSubagentModel(s.subagentModel ?? "");
-      setClaudeCodeUseOpenRouter(s.claudeCodeUseOpenRouter ?? false);
+      // Default the toggle on when the ambient env already routes through
+      // OpenRouter and the user hasn't explicitly saved a choice yet.
+      setClaudeCodeUseOpenRouter(s.claudeCodeUseOpenRouter ?? Boolean(sys?.claudeCodeOpenRouterDetected));
       setClaudeCodeOpenRouterApiKey(s.claudeCodeOpenRouterApiKey ?? "");
       setOpenRouterApiKey(s.openRouterApiKey ?? "");
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
@@ -469,7 +506,7 @@ export default function ApiSettings() {
       setCodexModel(s.codexModel ?? "");
       setCodexHome(s.codexHome ?? "");
       setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
-      setCodexUseOpenRouter(s.codexUseOpenRouter ?? false);
+      setCodexUseOpenRouter(s.codexUseOpenRouter ?? Boolean(sys?.codexOpenRouterDetected));
       setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
@@ -675,6 +712,7 @@ export default function ApiSettings() {
             onToggle={setClaudeCodeUseOpenRouter}
             apiKey={claudeCodeOpenRouterApiKey}
             onApiKeyChange={setClaudeCodeOpenRouterApiKey}
+            detected={Boolean(systemInfo?.claudeCodeOpenRouterDetected)}
             endpoint="https://openrouter.ai/api"
             keyEnvLabel="ANTHROPIC_AUTH_TOKEN"
             caveats={
@@ -788,7 +826,7 @@ export default function ApiSettings() {
             </div>
             <div style={subtitleStyle}>
               {claudeCodeUseOpenRouter
-                ? "Pick OpenRouter model slugs for the session model and the opus / sonnet / haiku aliases. anthropic/* models are listed first."
+                ? "Pick OpenRouter slugs for the session model and the opus / sonnet / haiku aliases (anthropic/* listed first). Blank role fields default to the newest matching anthropic/* model in the OpenRouter catalog."
                 : "Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to."}
             </div>
 
@@ -842,7 +880,7 @@ export default function ApiSettings() {
                   value={defaultOpusModel}
                   onChange={setDefaultOpusModel}
                   priorityPrefix="anthropic/"
-                  placeholder="anthropic/claude-opus-4.7"
+                  placeholder={latestAnthropicRoleSlug(orModels, "opus") ?? "anthropic/claude-opus-4.8"}
                 />
               ) : (
                 <input
@@ -868,7 +906,7 @@ export default function ApiSettings() {
                   value={defaultSonnetModel}
                   onChange={setDefaultSonnetModel}
                   priorityPrefix="anthropic/"
-                  placeholder="anthropic/claude-sonnet-4.6"
+                  placeholder={latestAnthropicRoleSlug(orModels, "sonnet") ?? "anthropic/claude-sonnet-4.6"}
                 />
               ) : (
                 <input
@@ -894,7 +932,7 @@ export default function ApiSettings() {
                   value={defaultHaikuModel}
                   onChange={setDefaultHaikuModel}
                   priorityPrefix="anthropic/"
-                  placeholder="anthropic/claude-haiku-4.5"
+                  placeholder={latestAnthropicRoleSlug(orModels, "haiku") ?? "anthropic/claude-haiku-4.5"}
                 />
               ) : (
                 <input
@@ -921,7 +959,7 @@ export default function ApiSettings() {
                   value={subagentModel}
                   onChange={setSubagentModel}
                   priorityPrefix="anthropic/"
-                  placeholder="anthropic/claude-haiku-4.5"
+                  placeholder={latestAnthropicRoleSlug(orModels, "sonnet") ?? "anthropic/claude-sonnet-4.6"}
                 />
               ) : (
                 <input
@@ -1300,6 +1338,7 @@ export default function ApiSettings() {
             onToggle={setCodexUseOpenRouter}
             apiKey={codexOpenRouterApiKey}
             onApiKeyChange={setCodexOpenRouterApiKey}
+            detected={Boolean(systemInfo?.codexOpenRouterDetected)}
             endpoint="https://openrouter.ai/api/v1"
             keyEnvLabel="OPENROUTER_API_KEY"
             caveats={
