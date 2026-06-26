@@ -36,6 +36,7 @@ ensureInstanceName();
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
+import { getClientKey } from "./utils/client-ip.js";
 import { chatsRouter } from "./routes/chats.js";
 import { streamRouter } from "./routes/stream.js";
 import { imagesRouter } from "./routes/images.js";
@@ -99,19 +100,28 @@ app.use(express.json({ limit: "50mb" }));
 // Strict limiter for public/unauthenticated endpoints
 const publicLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 20, // 20 requests per minute per IP
+  max: 20, // 20 requests per minute per client
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
+  // Key on the real client. Behind the cloudflared tunnel every request arrives from
+  // loopback, so without this all remote clients would share one bucket — letting a
+  // single caller lock everyone out of login. We resolve forwarding headers only for
+  // loopback traffic; see utils/client-ip.ts. Disable the XFF validation because we
+  // handle (and deliberately distrust non-loopback) forwarding headers ourselves.
+  keyGenerator: getClientKey,
+  validate: { xForwardedForHeader: false },
 });
 
 // General limiter for authenticated API endpoints
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 300, // 300 requests per minute per IP
+  max: 300, // 300 requests per minute per client
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
+  keyGenerator: getClientKey,
+  validate: { xForwardedForHeader: false },
   skip: (req) => {
     // Skip rate limiting for SSE/stream endpoints and high-frequency polling
     return req.path.endsWith("/stream") || req.path.endsWith("/poll");

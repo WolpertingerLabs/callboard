@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions, deleteAllSessionsExcept } from "./services/sessions.js";
 import { verifyPassword, hashPassword, generateSalt } from "./utils/password.js";
 import { updateEnvFile } from "./utils/env-writer.js";
+import { getClientKey } from "./utils/client-ip.js";
 
 // ── Password helpers ────────────────────────────────────────────────
 
@@ -34,7 +35,9 @@ const MAX_ATTEMPTS = 3;
 const WINDOW_MS = 60 * 1000; // 1 minute
 
 function getClientIp(req: Request): string {
-  return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
+  // Loopback-gated: trusts forwarding headers only for the local cloudflared tunnel,
+  // otherwise keys on the direct socket address (local/LAN). See utils/client-ip.ts.
+  return getClientKey(req);
 }
 
 function checkRateLimit(ip: string): boolean {
