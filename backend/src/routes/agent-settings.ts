@@ -51,6 +51,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultSonnetModel,
     defaultHaikuModel,
     subagentModel,
+    claudeCodeUseOpenRouter,
+    claudeCodeOpenRouterApiKey,
     openRouterApiKey,
     openRouterBaseUrl,
     openRouterModel,
@@ -66,6 +68,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexModel,
     codexHome,
     codexSandboxMode,
+    codexUseOpenRouter,
+    codexOpenRouterApiKey,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -90,6 +94,10 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     const n = normalizeNumber(v);
     return n === undefined ? undefined : Math.floor(n);
   };
+
+  // Boolean toggle — coerces truthy/falsey; `false` is preserved (clears the
+  // flag) so a deliberate "off" persists rather than leaving a stale `true`.
+  const normalizeBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
 
   // Sanitize the OpenRouter model alias map. Returns undefined when the map
   // ends up empty (clears the setting), or a string error for invalid input
@@ -131,9 +139,17 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultOpusModel !== undefined ||
     defaultSonnetModel !== undefined ||
     defaultHaikuModel !== undefined ||
-    subagentModel !== undefined;
+    subagentModel !== undefined ||
+    claudeCodeUseOpenRouter !== undefined ||
+    claudeCodeOpenRouterApiKey !== undefined;
 
-  const codexFieldsTouched = codexAuthMode !== undefined || codexApiKey !== undefined || codexBaseUrl !== undefined || codexHome !== undefined;
+  const codexFieldsTouched =
+    codexAuthMode !== undefined ||
+    codexApiKey !== undefined ||
+    codexBaseUrl !== undefined ||
+    codexHome !== undefined ||
+    codexUseOpenRouter !== undefined ||
+    codexOpenRouterApiKey !== undefined;
 
   // Validate the alias map up front so bad input 400s before anything is written.
   let normalizedAliases: Record<string, string> | undefined;
@@ -218,6 +234,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(defaultSonnetModel !== undefined && { defaultSonnetModel: normalize(defaultSonnetModel) }),
       ...(defaultHaikuModel !== undefined && { defaultHaikuModel: normalize(defaultHaikuModel) }),
       ...(subagentModel !== undefined && { subagentModel: normalize(subagentModel) }),
+      ...(claudeCodeUseOpenRouter !== undefined && { claudeCodeUseOpenRouter: normalizeBool(claudeCodeUseOpenRouter) }),
+      ...(claudeCodeOpenRouterApiKey !== undefined && { claudeCodeOpenRouterApiKey: normalize(claudeCodeOpenRouterApiKey) }),
       ...(openRouterApiKey !== undefined && { openRouterApiKey: normalize(openRouterApiKey) }),
       ...(openRouterBaseUrl !== undefined && { openRouterBaseUrl: normalize(openRouterBaseUrl) }),
       ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
@@ -233,6 +251,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(codexModel !== undefined && { codexModel: normalize(codexModel) }),
       ...(codexHome !== undefined && { codexHome: normalize(codexHome) }),
       ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
+      ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
+      ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });

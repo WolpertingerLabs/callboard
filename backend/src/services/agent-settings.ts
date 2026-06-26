@@ -18,6 +18,15 @@ import type { AgentConfig, AgentSettings, KeyAliasInfo, EnrolledCaller } from "s
 const log = createLogger("agent-settings");
 const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
 
+/**
+ * Hard-coded OpenRouter endpoints for the "route the native harness through
+ * OpenRouter" feature. Claude Code talks to OpenRouter's Anthropic-compatible
+ * gateway at `/api` (NO `/v1` suffix); Codex's custom config.toml model provider
+ * uses the OpenAI-compatible `/api/v1` base.
+ */
+export const OPENROUTER_ANTHROPIC_BASE_URL = "https://openrouter.ai/api";
+export const OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1";
+
 // ── Load / Save ─────────────────────────────────────────────────────
 
 function loadSettings(): AgentSettings {
@@ -96,13 +105,30 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
   if (s.defaultHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.defaultHaikuModel;
   if (s.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.subagentModel;
 
+  // ── Claude Code → OpenRouter endpoint routing ───────────────────
+  // Point the native Claude Code harness at OpenRouter's Anthropic-compatible
+  // gateway. Overrides the manual base-url/key/token fields above. The base URL
+  // is OpenRouter's `/api` (no `/v1`); the key rides as the Bearer auth token,
+  // and ANTHROPIC_API_KEY is forced empty so any inherited subscription key in
+  // process.env can't shadow the OpenRouter token.
+  if (s.claudeCodeUseOpenRouter && s.claudeCodeOpenRouterApiKey?.trim()) {
+    env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
+    env.ANTHROPIC_AUTH_TOKEN = s.claudeCodeOpenRouterApiKey.trim();
+    env.ANTHROPIC_API_KEY = "";
+  }
+
   // ── Codex provider env ──────────────────────────────────────────
   // CODEX_HOME is injected ALWAYS so callboard controls where the Codex CLI
   // reads auth.json + sessions/ from (defaults to ~/.codex when unset). In
   // api-key mode we also pass the OpenAI key/base URL through to the SDK
   // subprocess; subscription mode leaves auth to the stored ChatGPT login.
   env.CODEX_HOME = s.codexHome?.trim() || join(homedir(), ".codex");
-  if (s.codexAuthMode === "api-key") {
+  if (s.codexUseOpenRouter && s.codexOpenRouterApiKey?.trim()) {
+    // OpenRouter endpoint routing wins over codexAuthMode. The
+    // `[model_providers.openrouter]` block (injected via the Codex SDK config in
+    // the options adapter) reads the key from OPENROUTER_API_KEY via its env_key.
+    env.OPENROUTER_API_KEY = s.codexOpenRouterApiKey.trim();
+  } else if (s.codexAuthMode === "api-key") {
     if (s.codexApiKey) env.OPENAI_API_KEY = s.codexApiKey;
     if (s.codexBaseUrl) env.OPENAI_BASE_URL = s.codexBaseUrl;
   }

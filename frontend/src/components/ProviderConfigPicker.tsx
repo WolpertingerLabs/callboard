@@ -47,6 +47,12 @@ interface ProviderConfigPickerProps {
   // Use for the chat composer, where the provider is already pinned for the
   // lifetime of the chat and only model/effort are mutable. Defaults true.
   showProviderToggle?: boolean;
+  // True when the native Claude Code harness is routed through OpenRouter — the
+  // Claude model picker then lists OpenRouter slugs (anthropic/* first).
+  claudeCodeUseOpenRouter?: boolean;
+  // True when the native Codex harness is routed through OpenRouter — the Codex
+  // model picker then lists OpenRouter slugs (openai/* first).
+  codexUseOpenRouter?: boolean;
 }
 
 /**
@@ -81,6 +87,8 @@ export default function ProviderConfigPicker({
   onOpenApiSettings,
   mode = "panel",
   showProviderToggle = true,
+  claudeCodeUseOpenRouter = false,
+  codexUseOpenRouter = false,
 }: ProviderConfigPickerProps) {
   const inline = mode === "inline";
   const showOrKnobs = provider === "openrouter" && openRouterConfigured !== false;
@@ -189,15 +197,27 @@ export default function ProviderConfigPicker({
       >
         Model
       </label>
-      <ClaudeModelSelector
-        id={inline ? "inlineClaudeModel" : "newChatClaudeModel"}
-        value={claudeModel}
-        onChange={onClaudeModelChange}
-        placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
-      />
+      {claudeCodeUseOpenRouter ? (
+        <OpenRouterModelSelector
+          id={inline ? "inlineClaudeModel" : "newChatClaudeModel"}
+          value={claudeModel}
+          onChange={onClaudeModelChange}
+          priorityPrefix="anthropic/"
+          placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+        />
+      ) : (
+        <ClaudeModelSelector
+          id={inline ? "inlineClaudeModel" : "newChatClaudeModel"}
+          value={claudeModel}
+          onChange={onClaudeModelChange}
+          placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+        />
+      )}
       {!inline && (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-          Optional — alias (opus, sonnet, haiku, opusplan) or full model ID. Leave empty to use the global default from Settings → API.
+          {claudeCodeUseOpenRouter
+            ? "Optional — an OpenRouter slug (anthropic/* recommended). Leave empty to use the global default from Settings → API."
+            : "Optional — alias (opus, sonnet, haiku, opusplan) or full model ID. Leave empty to use the global default from Settings → API."}
         </div>
       )}
     </div>
@@ -224,15 +244,27 @@ export default function ProviderConfigPicker({
             >
               Model
             </label>
-            <CodexModelSelector
-              id={inline ? "inlineCodexModel" : "newChatCodexModel"}
-              value={codexModel ?? ""}
-              onChange={onCodexModelChange ?? (() => {})}
-              placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
-            />
+            {codexUseOpenRouter ? (
+              <OpenRouterModelSelector
+                id={inline ? "inlineCodexModel" : "newChatCodexModel"}
+                value={codexModel ?? ""}
+                onChange={onCodexModelChange ?? (() => {})}
+                priorityPrefix="openai/"
+                placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+              />
+            ) : (
+              <CodexModelSelector
+                id={inline ? "inlineCodexModel" : "newChatCodexModel"}
+                value={codexModel ?? ""}
+                onChange={onCodexModelChange ?? (() => {})}
+                placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+              />
+            )}
             {!inline && (
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                Optional — a Codex model slug. Leave empty to use the global default from Settings → API.
+                {codexUseOpenRouter
+                  ? "Optional — an OpenRouter slug (openai/* recommended). Leave empty to use the global default from Settings → API."
+                  : "Optional — a Codex model slug. Leave empty to use the global default from Settings → API."}
               </div>
             )}
           </div>

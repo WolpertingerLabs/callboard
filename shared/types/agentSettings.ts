@@ -58,6 +58,22 @@ export interface AgentSettings {
   /** Path to the Claude Code executable. Overrides the SDK's bundled binary. */
   pathToClaudeCodeExecutable?: string;
 
+  // ── Claude Code → OpenRouter endpoint routing ─────────────────────
+  // Run the NATIVE Claude Code harness but point it at OpenRouter's
+  // Anthropic-compatible gateway (https://openrouter.ai/api). Distinct from
+  // the standalone OpenRouter provider below, which runs its own harness.
+
+  /**
+   * When true, route the native Claude Code harness through OpenRouter. Hard-codes
+   * ANTHROPIC_BASE_URL to OpenRouter's gateway, sends claudeCodeOpenRouterApiKey as
+   * ANTHROPIC_AUTH_TOKEN, and forces ANTHROPIC_API_KEY empty. Overrides the manual
+   * apiBaseUrl/apiKey/authToken fields above. Model fields then hold OpenRouter slugs.
+   */
+  claudeCodeUseOpenRouter?: boolean;
+
+  /** Dedicated OpenRouter API key for Claude-Code-via-OpenRouter (→ ANTHROPIC_AUTH_TOKEN). */
+  claudeCodeOpenRouterApiKey?: string;
+
   // ── OpenRouter (alternative provider) ─────────────────────────────
   // Populated when the user enables the OpenRouter provider in
   // Settings → API. Empty values mean "OpenRouter unavailable" — the
@@ -153,6 +169,22 @@ export interface AgentSettings {
 
   /** Codex sandbox mode, mapped onto the CLI's `--sandbox` flag. */
   codexSandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+
+  // ── Codex → OpenRouter endpoint routing ───────────────────────────
+  // Run the NATIVE Codex harness against OpenRouter via a custom config.toml
+  // model provider (wire_api="responses"). Takes precedence over codexAuthMode.
+
+  /**
+   * When true, route the native Codex harness through OpenRouter. Injects a
+   * `[model_providers.openrouter]` block (base_url https://openrouter.ai/api/v1,
+   * wire_api "responses") into the Codex config and exposes codexOpenRouterApiKey
+   * as OPENROUTER_API_KEY. Overrides codexBaseUrl/codexApiKey. codexModel then
+   * holds an OpenRouter slug. Non-OpenAI models may not support the Responses wire API.
+   */
+  codexUseOpenRouter?: boolean;
+
+  /** Dedicated OpenRouter API key for Codex-via-OpenRouter (→ OPENROUTER_API_KEY). */
+  codexOpenRouterApiKey?: string;
 
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the start_chat_session onComplete feature, which automatically

@@ -110,6 +110,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // fetch is in flight or unreachable — the cap line is suppressed in that
   // state rather than showing a confusing default.
   const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState<number | null>(null);
+  // Whether each native harness is routed through OpenRouter — flips the model
+  // pickers to OpenRouter's catalog. Sourced from /system-info.
+  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
+  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
   const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
@@ -253,6 +257,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         if (!codexOk && provider === "codex") {
           setProvider("claude-code");
         }
+        setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
+        setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
       })
       .catch(() => {
         // /system-info unreachable — assume unavailable and surface the
@@ -353,6 +359,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               codexConfigured={codexConfigured}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
+              claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
+              codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={openApiSettings}
             />
 
@@ -565,6 +573,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               codexConfigured={codexConfigured}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
+              claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
+              codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={openApiSettings}
             />
 

@@ -202,6 +202,64 @@ function SecretField({ id, value, onChange, placeholder }: SecretFieldProps) {
   );
 }
 
+interface OpenRouterRoutingSectionProps {
+  /** Which native harness this routes — drives copy and the key env-var label. */
+  harness: "Claude Code" | "Codex";
+  enabled: boolean;
+  onToggle: (on: boolean) => void;
+  apiKey: string;
+  onApiKeyChange: (v: string) => void;
+  /** Hard-coded endpoint shown read-only when routing is on. */
+  endpoint: string;
+  /** Env var the key is exposed as (ANTHROPIC_AUTH_TOKEN / OPENROUTER_API_KEY). */
+  keyEnvLabel: string;
+  /** Harness-specific caveats rendered under the key field when routing is on. */
+  caveats: React.ReactNode;
+}
+
+/**
+ * "Route through OpenRouter" toggle for a native harness. When on, the harness's
+ * API endpoint is hard-coded to OpenRouter and authenticated with a dedicated
+ * OpenRouter key; the manual endpoint/auth fields above are hidden and the model
+ * pickers switch to OpenRouter's catalog.
+ */
+function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKeyChange, endpoint, keyEnvLabel, caveats }: OpenRouterRoutingSectionProps) {
+  return (
+    <div style={sectionStyle}>
+      <div style={headerStyle}>
+        <Network size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Route through OpenRouter</span>
+      </div>
+      <div style={subtitleStyle}>
+        Run the native {harness} harness but send its requests to OpenRouter, authenticated with an OpenRouter API key. The endpoint is fixed and the model
+        picker below switches to OpenRouter&apos;s catalog.
+      </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: enabled ? 14 : 0 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} style={{ flexShrink: 0 }} />
+        <span style={{ fontSize: 13, color: "var(--text)" }}>Use OpenRouter as the {harness} endpoint</span>
+      </label>
+      {enabled && (
+        <>
+          <div style={fieldWrap}>
+            <label style={labelStyle}>
+              Endpoint<span style={envLabelStyle}>fixed</span>
+            </label>
+            <input type="text" value={endpoint} readOnly disabled style={{ ...inputStyle, opacity: 0.7 }} />
+          </div>
+          <div style={fieldWrap}>
+            <label htmlFor={`${harness}-or-key`} style={labelStyle}>
+              OpenRouter API Key<span style={envLabelStyle}>{keyEnvLabel}</span>
+            </label>
+            <SecretField id={`${harness}-or-key`} value={apiKey} onChange={onApiKeyChange} placeholder="sk-or-..." />
+            <div style={helpStyle}>Create one at openrouter.ai/keys. Stored separately from the standalone OpenRouter provider key.</div>
+          </div>
+          <div style={{ ...helpStyle, lineHeight: 1.5 }}>{caveats}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── OpenRouter param-profile editing helpers ────────────────────────────────
 
 const toggleRowStyle: React.CSSProperties = {
@@ -341,6 +399,9 @@ export default function ApiSettings() {
   const [defaultSonnetModel, setDefaultSonnetModel] = useState("");
   const [defaultHaikuModel, setDefaultHaikuModel] = useState("");
   const [subagentModel, setSubagentModel] = useState("");
+  // Claude Code → OpenRouter endpoint routing
+  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
+  const [claudeCodeOpenRouterApiKey, setClaudeCodeOpenRouterApiKey] = useState("");
   // OpenRouter (alternative provider) overrides.
   const [openRouterApiKey, setOpenRouterApiKey] = useState("");
   const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState("");
@@ -370,6 +431,9 @@ export default function ApiSettings() {
   const [codexModel, setCodexModel] = useState("");
   const [codexHome, setCodexHome] = useState("");
   const [codexSandboxMode, setCodexSandboxMode] = useState<"read-only" | "workspace-write" | "danger-full-access">("workspace-write");
+  // Codex → OpenRouter endpoint routing
+  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  const [codexOpenRouterApiKey, setCodexOpenRouterApiKey] = useState("");
   // Collapse state for the bulky sections.
   const [showDefaults, setShowDefaults] = useState(false);
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
@@ -388,6 +452,8 @@ export default function ApiSettings() {
       setDefaultSonnetModel(s.defaultSonnetModel ?? "");
       setDefaultHaikuModel(s.defaultHaikuModel ?? "");
       setSubagentModel(s.subagentModel ?? "");
+      setClaudeCodeUseOpenRouter(s.claudeCodeUseOpenRouter ?? false);
+      setClaudeCodeOpenRouterApiKey(s.claudeCodeOpenRouterApiKey ?? "");
       setOpenRouterApiKey(s.openRouterApiKey ?? "");
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
       setOpenRouterModel(s.openRouterModel ?? "");
@@ -403,6 +469,8 @@ export default function ApiSettings() {
       setCodexModel(s.codexModel ?? "");
       setCodexHome(s.codexHome ?? "");
       setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
+      setCodexUseOpenRouter(s.codexUseOpenRouter ?? false);
+      setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
@@ -467,6 +535,8 @@ export default function ApiSettings() {
         defaultSonnetModel,
         defaultHaikuModel,
         subagentModel,
+        claudeCodeUseOpenRouter,
+        claudeCodeOpenRouterApiKey,
         openRouterApiKey,
         openRouterBaseUrl,
         openRouterModel,
@@ -503,6 +573,8 @@ export default function ApiSettings() {
         codexModel,
         codexHome,
         codexSandboxMode,
+        codexUseOpenRouter,
+        codexOpenRouterApiKey,
       });
       setSettings(updated);
       // Re-sync alias rows so blank rows dropped on save disappear from the form.
@@ -597,7 +669,25 @@ export default function ApiSettings() {
         <>
           <ReferenceLinksSection provider="claude-code" />
 
-          {/* API Endpoint */}
+          <OpenRouterRoutingSection
+            harness="Claude Code"
+            enabled={claudeCodeUseOpenRouter}
+            onToggle={setClaudeCodeUseOpenRouter}
+            apiKey={claudeCodeOpenRouterApiKey}
+            onApiKeyChange={setClaudeCodeOpenRouterApiKey}
+            endpoint="https://openrouter.ai/api"
+            keyEnvLabel="ANTHROPIC_AUTH_TOKEN"
+            caveats={
+              <>
+                Sets <code>ANTHROPIC_BASE_URL=https://openrouter.ai/api</code> and forces <code>ANTHROPIC_API_KEY</code> empty. Claude Code is optimized for
+                Anthropic models — pick <code>anthropic/*</code> slugs below for best results. If you previously logged in to Anthropic directly, run{" "}
+                <code>/logout</code> in a chat to clear any cached session conflict.
+              </>
+            }
+          />
+
+          {/* API Endpoint — manual overrides are unused while routing through OpenRouter. */}
+          {!claudeCodeUseOpenRouter && (
           <div style={sectionStyle}>
             <div style={headerStyle}>
               <Globe size={16} style={{ color: "var(--accent)" }} />
@@ -624,8 +714,10 @@ export default function ApiSettings() {
               <div style={helpStyle}>When set to a non-first-party host, MCP tool search is disabled by default.</div>
             </div>
           </div>
+          )}
 
-          {/* Authentication */}
+          {/* Authentication — managed by OpenRouter while routing is on. */}
+          {!claudeCodeUseOpenRouter && (
           <div style={sectionStyle}>
             <div style={headerStyle}>
               <Key size={16} style={{ color: "var(--accent)" }} />
@@ -668,6 +760,7 @@ export default function ApiSettings() {
               <div style={helpStyle}>Sent as the Authorization: Bearer header. Use for gateways that require a bearer token.</div>
             </div>
           </div>
+          )}
 
           {/* Models */}
           <div style={sectionStyle}>
@@ -693,10 +786,14 @@ export default function ApiSettings() {
                 <RefreshCw size={14} />
               </button>
             </div>
-            <div style={subtitleStyle}>Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to.</div>
+            <div style={subtitleStyle}>
+              {claudeCodeUseOpenRouter
+                ? "Pick OpenRouter model slugs for the session model and the opus / sonnet / haiku aliases. anthropic/* models are listed first."
+                : "Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to."}
+            </div>
 
-            {/* Currently available models */}
-            {models.length > 0 && (
+            {/* Currently available models (SDK catalog — hidden while routing through OpenRouter) */}
+            {!claudeCodeUseOpenRouter && models.length > 0 && (
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Currently available to your account:</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -714,65 +811,103 @@ export default function ApiSettings() {
               <label htmlFor="model" style={labelStyle}>
                 Default Model<span style={envLabelStyle}>ANTHROPIC_MODEL</span>
               </label>
-              <input
-                id="model"
-                type="text"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="e.g. opus, sonnet, claude-opus-4-7"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
-              <div style={helpStyle}>Alias (opus, sonnet, haiku, opusplan) or full model ID. Applies to new sessions.</div>
+              {claudeCodeUseOpenRouter ? (
+                <OpenRouterModelSelector id="model" value={model} onChange={setModel} priorityPrefix="anthropic/" placeholder="anthropic/claude-opus-4.7" />
+              ) : (
+                <input
+                  id="model"
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="e.g. opus, sonnet, claude-opus-4-7"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={inputStyle}
+                />
+              )}
+              <div style={helpStyle}>
+                {claudeCodeUseOpenRouter
+                  ? "OpenRouter model slug (or a configured alias). Applies to new sessions."
+                  : "Alias (opus, sonnet, haiku, opusplan) or full model ID. Applies to new sessions."}
+              </div>
             </div>
 
             <div style={fieldWrap}>
               <label htmlFor="opusModel" style={labelStyle}>
                 Opus Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_OPUS_MODEL</span>
               </label>
-              <input
-                id="opusModel"
-                type="text"
-                value={defaultOpusModel}
-                onChange={(e) => setDefaultOpusModel(e.target.value)}
-                placeholder="claude-opus-4-7"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
+              {claudeCodeUseOpenRouter ? (
+                <OpenRouterModelSelector
+                  id="opusModel"
+                  value={defaultOpusModel}
+                  onChange={setDefaultOpusModel}
+                  priorityPrefix="anthropic/"
+                  placeholder="anthropic/claude-opus-4.7"
+                />
+              ) : (
+                <input
+                  id="opusModel"
+                  type="text"
+                  value={defaultOpusModel}
+                  onChange={(e) => setDefaultOpusModel(e.target.value)}
+                  placeholder="claude-opus-4-7"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={inputStyle}
+                />
+              )}
             </div>
 
             <div style={fieldWrap}>
               <label htmlFor="sonnetModel" style={labelStyle}>
                 Sonnet Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_SONNET_MODEL</span>
               </label>
-              <input
-                id="sonnetModel"
-                type="text"
-                value={defaultSonnetModel}
-                onChange={(e) => setDefaultSonnetModel(e.target.value)}
-                placeholder="claude-sonnet-4-6"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
+              {claudeCodeUseOpenRouter ? (
+                <OpenRouterModelSelector
+                  id="sonnetModel"
+                  value={defaultSonnetModel}
+                  onChange={setDefaultSonnetModel}
+                  priorityPrefix="anthropic/"
+                  placeholder="anthropic/claude-sonnet-4.6"
+                />
+              ) : (
+                <input
+                  id="sonnetModel"
+                  type="text"
+                  value={defaultSonnetModel}
+                  onChange={(e) => setDefaultSonnetModel(e.target.value)}
+                  placeholder="claude-sonnet-4-6"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={inputStyle}
+                />
+              )}
             </div>
 
             <div style={fieldWrap}>
               <label htmlFor="haikuModel" style={labelStyle}>
                 Haiku Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_HAIKU_MODEL</span>
               </label>
-              <input
-                id="haikuModel"
-                type="text"
-                value={defaultHaikuModel}
-                onChange={(e) => setDefaultHaikuModel(e.target.value)}
-                placeholder="claude-haiku-4-5"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
+              {claudeCodeUseOpenRouter ? (
+                <OpenRouterModelSelector
+                  id="haikuModel"
+                  value={defaultHaikuModel}
+                  onChange={setDefaultHaikuModel}
+                  priorityPrefix="anthropic/"
+                  placeholder="anthropic/claude-haiku-4.5"
+                />
+              ) : (
+                <input
+                  id="haikuModel"
+                  type="text"
+                  value={defaultHaikuModel}
+                  onChange={(e) => setDefaultHaikuModel(e.target.value)}
+                  placeholder="claude-haiku-4-5"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={inputStyle}
+                />
+              )}
               <div style={helpStyle}>Also used for background tasks. Replaces the deprecated ANTHROPIC_SMALL_FAST_MODEL.</div>
             </div>
 
@@ -780,16 +915,26 @@ export default function ApiSettings() {
               <label htmlFor="subagentModel" style={labelStyle}>
                 Subagent Model<span style={envLabelStyle}>CLAUDE_CODE_SUBAGENT_MODEL</span>
               </label>
-              <input
-                id="subagentModel"
-                type="text"
-                value={subagentModel}
-                onChange={(e) => setSubagentModel(e.target.value)}
-                placeholder="e.g. haiku"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
+              {claudeCodeUseOpenRouter ? (
+                <OpenRouterModelSelector
+                  id="subagentModel"
+                  value={subagentModel}
+                  onChange={setSubagentModel}
+                  priorityPrefix="anthropic/"
+                  placeholder="anthropic/claude-haiku-4.5"
+                />
+              ) : (
+                <input
+                  id="subagentModel"
+                  type="text"
+                  value={subagentModel}
+                  onChange={(e) => setSubagentModel(e.target.value)}
+                  placeholder="e.g. haiku"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={inputStyle}
+                />
+              )}
             </div>
           </div>
         </>
@@ -1149,7 +1294,24 @@ export default function ApiSettings() {
         <>
           <ReferenceLinksSection provider="codex" />
 
-          {/* Codex — auth mode */}
+          <OpenRouterRoutingSection
+            harness="Codex"
+            enabled={codexUseOpenRouter}
+            onToggle={setCodexUseOpenRouter}
+            apiKey={codexOpenRouterApiKey}
+            onApiKeyChange={setCodexOpenRouterApiKey}
+            endpoint="https://openrouter.ai/api/v1"
+            keyEnvLabel="OPENROUTER_API_KEY"
+            caveats={
+              <>
+                Adds a <code>[model_providers.openrouter]</code> block to Codex&apos;s config with <code>wire_api=&quot;responses&quot;</code>. Only models that
+                support the Responses API work reliably — <code>openai/*</code> slugs are listed first below. Non-OpenAI models may fail at runtime.
+              </>
+            }
+          />
+
+          {/* Codex — auth mode (managed by OpenRouter while routing is on). */}
+          {!codexUseOpenRouter && (
           <div style={sectionStyle}>
             <div style={headerStyle}>
               <Terminal size={16} style={{ color: "var(--accent)" }} />
@@ -1262,6 +1424,7 @@ export default function ApiSettings() {
               </>
             )}
           </div>
+          )}
 
           {/* Codex — model + sandbox */}
           <div style={sectionStyle}>
@@ -1275,8 +1438,16 @@ export default function ApiSettings() {
               <label htmlFor="codexModel" style={labelStyle}>
                 Default Model
               </label>
-              <CodexModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} placeholder="gpt-5.5" />
-              <div style={helpStyle}>Start typing to filter the live Codex model catalog. Free text accepted — the CLI validates the model.</div>
+              {codexUseOpenRouter ? (
+                <OpenRouterModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} priorityPrefix="openai/" placeholder="openai/gpt-5.5-codex" />
+              ) : (
+                <CodexModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} placeholder="gpt-5.5" />
+              )}
+              <div style={helpStyle}>
+                {codexUseOpenRouter
+                  ? "OpenRouter model slug (openai/* recommended). Free text accepted — OpenRouter validates the model."
+                  : "Start typing to filter the live Codex model catalog. Free text accepted — the CLI validates the model."}
+              </div>
             </div>
 
             <div style={fieldWrap}>

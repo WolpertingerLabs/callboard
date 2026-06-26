@@ -214,12 +214,16 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
   const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
   const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState<number | null>(null);
+  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
+  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
   useEffect(() => {
     getSystemInfo()
       .then((info) => {
         setOpenRouterConfigured(info.openRouterConfigured ?? false);
         setCodexConfigured(info.codexConfigured ?? false);
         setOpenRouterMaxBudgetUsd(typeof info.openRouterMaxBudgetUsd === "number" ? info.openRouterMaxBudgetUsd : null);
+        setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
+        setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
       })
       .catch(() => {
         setOpenRouterConfigured(false);
@@ -492,6 +496,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               codexConfigured={codexConfigured}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
+              claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
+              codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={() => {
                 window.location.href = "/settings/api";
               }}
@@ -1012,6 +1018,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               codexConfigured={codexConfigured}
               openRouterConfigured={openRouterConfigured}
               openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
+              claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
+              codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={() => {
                 window.location.href = "/settings/api";
               }}
