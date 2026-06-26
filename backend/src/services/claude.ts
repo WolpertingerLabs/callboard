@@ -1183,8 +1183,19 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // getApiEnvOverrides() already injected above, so it isn't repeated here.
   if (providerKind === "codex") {
     const authMode = agentSettings.codexAuthMode ?? "subscription";
+    // OpenRouter endpoint routing takes precedence over codexAuthMode: the native
+    // Codex harness talks to OpenRouter via the injected config.toml provider
+    // block. Requires its dedicated OR key (→ OPENROUTER_API_KEY).
+    const useOpenRouter = Boolean(agentSettings.codexUseOpenRouter && agentSettings.codexOpenRouterApiKey?.trim());
+    if (agentSettings.codexUseOpenRouter && !agentSettings.codexOpenRouterApiKey?.trim()) {
+      const message =
+        "Codex chat selected with OpenRouter routing, but no OpenRouter API key is configured in Settings → API.";
+      log.error(message);
+      throw new Error(message);
+    }
     // api-key mode needs a key; subscription mode draws on the stored login.
-    if (authMode === "api-key" && !agentSettings.codexApiKey?.trim()) {
+    // Skipped entirely when OpenRouter routing is active.
+    if (!useOpenRouter && authMode === "api-key" && !agentSettings.codexApiKey?.trim()) {
       const message = "Codex chat selected in api-key mode but OPENAI_API_KEY is not configured in Settings → API.";
       log.error(message);
       throw new Error(message);
@@ -1204,19 +1215,25 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const permissions = getDefaultPermissions() ?? undefined;
     queryOpts.options.codex = {
       authMode,
-      ...(authMode === "api-key" && agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
-      ...(authMode === "api-key" && agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
+      ...(useOpenRouter && { useOpenRouter: true }),
+      ...(!useOpenRouter &&
+        authMode === "api-key" &&
+        agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
+      ...(!useOpenRouter &&
+        authMode === "api-key" &&
+        agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
       ...(chatEffort && { reasoningEffort: chatEffort }),
       ...(permissions && { permissions }),
     };
     log.info(
-      `Codex chat config — trackingId=${trackingId}, authMode=${authMode}, ` +
+      `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : authMode}, ` +
         `model=${requestedModel ?? "(default)"}, effort=${chatEffort ?? "(default)"}, ` +
         `sandbox=${agentSettings.codexSandboxMode ?? "(permission-derived)"}, ` +
         `codexHome=${agentSettings.codexHome?.trim() || "~/.codex"}` +
-        `${authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
+        `${useOpenRouter && agentSettings.codexOpenRouterApiKey ? `, orKeyTail=…${agentSettings.codexOpenRouterApiKey.trim().slice(-4)}` : ""}` +
+        `${!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
     );
   }
 

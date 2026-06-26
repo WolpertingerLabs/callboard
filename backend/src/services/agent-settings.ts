@@ -13,10 +13,20 @@ import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import { listAgents } from "./agent-file-service.js";
+import { getLatestAnthropicRoleModels } from "./openrouter-models.js";
 import type { AgentConfig, AgentSettings, KeyAliasInfo, EnrolledCaller } from "shared";
 
 const log = createLogger("agent-settings");
 const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
+
+/**
+ * Hard-coded OpenRouter endpoints for the "route the native harness through
+ * OpenRouter" feature. Claude Code talks to OpenRouter's Anthropic-compatible
+ * gateway at `/api` (NO `/v1` suffix); Codex's custom config.toml model provider
+ * uses the OpenAI-compatible `/api/v1` base.
+ */
+export const OPENROUTER_ANTHROPIC_BASE_URL = "https://openrouter.ai/api";
+export const OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1";
 
 // ── Load / Save ─────────────────────────────────────────────────────
 
@@ -55,6 +65,22 @@ export function getAgentSettings(): AgentSettings {
 export function isOpenRouterConfigured(settings?: AgentSettings): boolean {
   const s = settings ?? loadSettings();
   return Boolean(s.openRouterApiKey?.trim());
+}
+
+/** True when a URL string points at OpenRouter's host. */
+function isOpenRouterUrl(url: string | undefined): boolean {
+  return typeof url === "string" && /(^|\/\/|\.)openrouter\.ai(\/|$|:)/i.test(url);
+}
+
+/**
+ * Detect whether the ambient process environment already routes the native
+ * Claude Code harness through OpenRouter — i.e. ANTHROPIC_BASE_URL points at
+ * openrouter.ai (the docs' BYO-gateway setup). Surfaced via /api/system-info so
+ * Settings → API can default the "Route through OpenRouter" toggle on when the
+ * user hasn't explicitly chosen yet.
+ */
+export function detectClaudeCodeOpenRouterEnv(): boolean {
+  return isOpenRouterUrl(process.env.ANTHROPIC_BASE_URL);
 }
 
 /**
@@ -96,13 +122,41 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
   if (s.defaultHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.defaultHaikuModel;
   if (s.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.subagentModel;
 
+  // ── Claude Code → OpenRouter endpoint routing ───────────────────
+  // Point the native Claude Code harness at OpenRouter's Anthropic-compatible
+  // gateway. Overrides the manual base-url/key/token fields above. The base URL
+  // is OpenRouter's `/api` (no `/v1`); the key rides as the Bearer auth token,
+  // and ANTHROPIC_API_KEY is forced empty so any inherited subscription key in
+  // process.env can't shadow the OpenRouter token.
+  if (s.claudeCodeUseOpenRouter && s.claudeCodeOpenRouterApiKey?.trim()) {
+    env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
+    env.ANTHROPIC_AUTH_TOKEN = s.claudeCodeOpenRouterApiKey.trim();
+    env.ANTHROPIC_API_KEY = "";
+    // Role-model defaults. Through OpenRouter, Claude Code's built-in bare model
+    // ids (e.g. "claude-opus-4-x") may not resolve — the gateway expects fully
+    // qualified `anthropic/*` slugs. So when a role field is blank, fall back to
+    // the newest matching anthropic slug from the live OpenRouter catalog (never
+    // goes stale). Subagent inherits the sonnet default. Each only fills when the
+    // user left it empty (the generic block above already set any explicit value).
+    const roleDefaults = getLatestAnthropicRoleModels();
+    if (!s.defaultOpusModel && roleDefaults.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = roleDefaults.opus;
+    if (!s.defaultSonnetModel && roleDefaults.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = roleDefaults.sonnet;
+    if (!s.defaultHaikuModel && roleDefaults.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = roleDefaults.haiku;
+    if (!s.subagentModel && roleDefaults.sonnet) env.CLAUDE_CODE_SUBAGENT_MODEL = roleDefaults.sonnet;
+  }
+
   // ── Codex provider env ──────────────────────────────────────────
   // CODEX_HOME is injected ALWAYS so callboard controls where the Codex CLI
   // reads auth.json + sessions/ from (defaults to ~/.codex when unset). In
   // api-key mode we also pass the OpenAI key/base URL through to the SDK
   // subprocess; subscription mode leaves auth to the stored ChatGPT login.
   env.CODEX_HOME = s.codexHome?.trim() || join(homedir(), ".codex");
-  if (s.codexAuthMode === "api-key") {
+  if (s.codexUseOpenRouter && s.codexOpenRouterApiKey?.trim()) {
+    // OpenRouter endpoint routing wins over codexAuthMode. The
+    // `[model_providers.openrouter]` block (injected via the Codex SDK config in
+    // the options adapter) reads the key from OPENROUTER_API_KEY via its env_key.
+    env.OPENROUTER_API_KEY = s.codexOpenRouterApiKey.trim();
+  } else if (s.codexAuthMode === "api-key") {
     if (s.codexApiKey) env.OPENAI_API_KEY = s.codexApiKey;
     if (s.codexBaseUrl) env.OPENAI_BASE_URL = s.codexBaseUrl;
   }

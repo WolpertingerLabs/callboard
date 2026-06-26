@@ -68,6 +68,7 @@ import {
   ensureRemoteProxyConfigDir,
   migrateDrawlatchDirs,
   migrateKeyDirectories,
+  detectClaudeCodeOpenRouterEnv,
 } from "./services/agent-settings.js";
 import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
@@ -75,7 +76,7 @@ import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
-import { getCodexAuthSource, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
+import { getCodexAuthSource, detectCodexOpenRouterEnv, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 
 const log = createLogger("server");
 
@@ -390,9 +391,16 @@ app.get(
     // library's default. Falls back to the OR library's own default when no
     // user override is configured.
     let openRouterMaxBudgetUsd: number = OR_LIBRARY_DEFAULT_MAX_BUDGET_USD;
+    // Whether each native harness is routed through OpenRouter (key set + toggle
+    // on). The model selectors and New Chat panel read these to switch their
+    // catalog/ordering to OpenRouter. Keys themselves are never exposed.
+    let claudeCodeUseOpenRouter = false;
+    let codexUseOpenRouter = false;
     try {
       const s = getAgentSettings();
       openRouterConfigured = Boolean(s.openRouterApiKey?.trim());
+      claudeCodeUseOpenRouter = Boolean(s.claudeCodeUseOpenRouter && s.claudeCodeOpenRouterApiKey?.trim());
+      codexUseOpenRouter = Boolean(s.codexUseOpenRouter && s.codexOpenRouterApiKey?.trim());
       if (typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd)) {
         openRouterMaxBudgetUsd = s.openRouterMaxBudgetUsd;
       }
@@ -413,6 +421,26 @@ app.get(
     } catch {
       // Treat any failure as unconfigured.
     }
+    // OpenRouter routing is its own credential path: the native Codex harness
+    // authenticates via the OpenRouter key, so it's usable even without a
+    // ChatGPT login / OpenAI key / config.toml provider.
+    if (codexUseOpenRouter) {
+      codexConfigured = true;
+      if (!codexAuthSource) codexAuthSource = "config.toml";
+    }
+
+    // Detect whether the ambient environment already routes each harness through
+    // OpenRouter (ANTHROPIC_BASE_URL / OPENAI base / config.toml pointing at
+    // openrouter.ai). Settings → API defaults the routing toggle on from these
+    // when the user hasn't explicitly saved a choice.
+    let claudeCodeOpenRouterDetected = false;
+    let codexOpenRouterDetected = false;
+    try {
+      claudeCodeOpenRouterDetected = detectClaudeCodeOpenRouterEnv();
+      codexOpenRouterDetected = detectCodexOpenRouterEnv();
+    } catch {
+      // best effort — detection failures just leave the toggles defaulting off
+    }
 
     res.json({
       version,
@@ -428,6 +456,10 @@ app.get(
       models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
       openRouterConfigured,
       openRouterMaxBudgetUsd,
+      claudeCodeUseOpenRouter,
+      codexUseOpenRouter,
+      claudeCodeOpenRouterDetected,
+      codexOpenRouterDetected,
       codexConfigured,
       codexAuthSource,
     });

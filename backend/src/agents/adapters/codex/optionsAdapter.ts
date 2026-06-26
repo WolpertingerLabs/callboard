@@ -61,6 +61,14 @@ export interface CodexOptionsExtras {
   apiKey?: string;
   /** Base URL override — api-key mode only (→ CodexOptions.baseUrl → --config openai_base_url). */
   baseUrl?: string;
+  /**
+   * Route the native Codex harness through OpenRouter. When true, a custom
+   * `[model_providers.openrouter]` block (base_url https://openrouter.ai/api/v1,
+   * wire_api "responses") is injected into the Codex config and `model_provider`
+   * is set to "openrouter". Takes precedence over {@link authMode}; the key rides
+   * in via OPENROUTER_API_KEY (the block's env_key), set by getApiEnvOverrides.
+   */
+  useOpenRouter?: boolean;
   /** Default model, e.g. "gpt-5.5". Overrides a top-level `options.model`. */
   model?: string;
   /**
@@ -361,7 +369,25 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   codexOpts.config = {
     model_reasoning_summary: reasoningEffort === "none" ? "none" : "auto",
   };
-  if (authMode === "api-key") {
+  // ── OpenRouter endpoint routing ──────────────────────────────────
+  // Inject a custom config.toml model provider so the native Codex harness
+  // talks to OpenRouter. wire_api MUST be "responses" (Codex dropped the legacy
+  // "chat" value); the key is read from OPENROUTER_API_KEY (set by
+  // getApiEnvOverrides). Wins over api-key mode below.
+  if (extras.useOpenRouter) {
+    codexOpts.config = {
+      ...codexOpts.config,
+      model_provider: "openrouter",
+      model_providers: {
+        openrouter: {
+          name: "OpenRouter",
+          base_url: "https://openrouter.ai/api/v1",
+          env_key: "OPENROUTER_API_KEY",
+          wire_api: "responses",
+        },
+      },
+    };
+  } else if (authMode === "api-key") {
     if (extras.apiKey) codexOpts.apiKey = extras.apiKey;
     if (extras.baseUrl) codexOpts.baseUrl = extras.baseUrl;
   }

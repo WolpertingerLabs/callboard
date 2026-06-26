@@ -27,6 +27,7 @@ import {
   getChat,
   getMessages,
   getPending,
+  getSystemInfo,
   respondToChat,
   uploadImages,
   uploadImagesOnly,
@@ -341,6 +342,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // "" for model / `undefined` for effort) is attached to the next existing-
   // chat send and persisted to metadata server-side, then cleared on success.
   const [pendingModel, setPendingModel] = useState<string | null>(null);
+  // Whether the pinned native harness is routed through OpenRouter — flips the
+  // composer's model picker to OpenRouter's catalog. Sourced from /system-info.
+  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
+  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getSystemInfo()
+      .then((info) => {
+        if (cancelled) return;
+        setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
+        setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   // For effort we need a tri-state: `null` = no change pending,
   // `undefined` = user explicitly cleared (revert to model default),
   // an EffortLevel = user picked a new level.
@@ -2870,6 +2888,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   codexConfigured={true}
                   openRouterConfigured={true}
                   openRouterMaxBudgetUsd={null}
+                  claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
+                  codexUseOpenRouter={codexUseOpenRouter}
                   onOpenApiSettings={() => navigate("/settings/api")}
                 />
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>

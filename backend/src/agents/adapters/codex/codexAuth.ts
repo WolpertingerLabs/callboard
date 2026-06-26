@@ -78,3 +78,23 @@ export function getCodexAuthSource(): CodexAuthSource {
 export function isCodexConfigured(): boolean {
   return getCodexAuthSource() !== null;
 }
+
+/**
+ * Detect whether the ambient environment already routes the native Codex
+ * harness through OpenRouter — either OPENAI_BASE_URL points at openrouter.ai,
+ * or `$CODEX_HOME/config.toml` declares an openrouter base_url. Surfaced via
+ * /api/system-info so Settings → API can default the "Route through OpenRouter"
+ * toggle on before the user explicitly chooses.
+ */
+export function detectCodexOpenRouterEnv(): boolean {
+  if (/openrouter\.ai/i.test(process.env.OPENAI_BASE_URL ?? "")) return true;
+  try {
+    const tomlPath = join(resolveCodexHome(), "config.toml");
+    if (existsSync(tomlPath) && /openrouter\.ai/i.test(readFileSync(tomlPath, "utf-8"))) {
+      return true;
+    }
+  } catch {
+    // ignore — treat as not detected
+  }
+  return false;
+}
