@@ -42,6 +42,14 @@ export interface AgentSettings {
   /** Public hostname for "named" mode (display + reference). */
   remoteAccessHostname?: string;
 
+  /**
+   * Optional allowlist of IPs / CIDRs permitted to reach callboard through the
+   * remote-access tunnel. Empty or absent ⇒ no restriction (anyone with the URL
+   * can reach the login page). Loopback and private-LAN ranges are ALWAYS
+   * allowed and are never gated by this list. See backend/src/utils/ip-allowlist.ts.
+   */
+  remoteAccessIpAllowlist?: string[];
+
   /** Default local MCP config directory path (read-only, computed by backend) */
   defaultLocalMcpConfigDir?: string;
 

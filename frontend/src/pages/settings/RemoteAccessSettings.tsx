@@ -13,6 +13,7 @@ export default function RemoteAccessSettings() {
   const [mode, setMode] = useState<Mode>("quick");
   const [token, setToken] = useState("");
   const [hostname, setHostname] = useState("");
+  const [ipAllowlist, setIpAllowlist] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,6 +33,7 @@ export default function RemoteAccessSettings() {
         setMode(s.remoteAccessMode === "named" ? "named" : "quick");
         setToken(s.cloudflaredToken || "");
         setHostname(s.remoteAccessHostname || "");
+        setIpAllowlist((s.remoteAccessIpAllowlist || []).join("\n"));
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -64,6 +66,7 @@ export default function RemoteAccessSettings() {
         remoteAccessMode: mode,
         cloudflaredToken: token,
         remoteAccessHostname: hostname,
+        remoteAccessIpAllowlist: parseAllowlistInput(ipAllowlist),
       });
       setEnabled(nextEnabled);
       setSaved(true);
@@ -93,6 +96,15 @@ export default function RemoteAccessSettings() {
   const confirmEnable = () => {
     setShowWarning(false);
     void persist(true);
+  };
+
+  const addMyIp = () => {
+    const ip = status?.callerIp;
+    if (!ip) return;
+    const lines = parseAllowlistInput(ipAllowlist);
+    if (!lines.includes(ip)) {
+      setIpAllowlist([...lines, ip].join("\n"));
+    }
   };
 
   const handleCopy = (url: string) => {
@@ -262,6 +274,48 @@ export default function RemoteAccessSettings() {
           </div>
         )}
 
+        {/* IP allowlist */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Allowed IP addresses</div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+            Restrict which remote clients can reach callboard through the tunnel — one IP or CIDR range per line (e.g.{" "}
+            <code>203.0.113.7</code> or <code>203.0.113.0/24</code>). Leave empty to allow{" "}
+            <strong>anyone with the URL</strong>. Local and LAN access is always allowed regardless of this list.
+          </div>
+          <textarea
+            value={ipAllowlist}
+            onChange={(e) => setIpAllowlist(e.target.value)}
+            placeholder={"203.0.113.7\n203.0.113.0/24"}
+            rows={4}
+            spellCheck={false}
+            style={{ ...inputStyle, fontFamily: "monospace", resize: "vertical", lineHeight: 1.5 }}
+          />
+          {status?.callerIp && (
+            <div style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span>
+                Your current IP: <code>{status.callerIp}</code>
+              </span>
+              <button
+                type="button"
+                onClick={addMyIp}
+                disabled={parseAllowlistInput(ipAllowlist).includes(status.callerIp)}
+                style={{
+                  padding: "3px 8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--text)",
+                  fontSize: 12,
+                  cursor: parseAllowlistInput(ipAllowlist).includes(status.callerIp) ? "default" : "pointer",
+                  opacity: parseAllowlistInput(ipAllowlist).includes(status.callerIp) ? 0.6 : 1,
+                }}
+              >
+                Add my IP
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Apply button (re-spawns the tunnel with the latest config when enabled) */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <button
@@ -392,6 +446,15 @@ const inputStyle: React.CSSProperties = {
   fontSize: 13,
   fontFamily: "inherit",
 };
+
+/** Split the allowlist textarea into trimmed, de-duplicated, non-empty entries. */
+function parseAllowlistInput(raw: string): string[] {
+  const seen = new Set<string>();
+  return raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !seen.has(l) && seen.add(l));
+}
 
 function statusLabel(s?: RemoteAccessStatus["status"]): string {
   switch (s) {

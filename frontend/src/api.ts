@@ -840,6 +840,8 @@ export interface RemoteAccessStatus {
   status: "down" | "starting" | "up" | "error";
   url: string | null;
   error: string | null;
+  /** The requesting client's resolved IP (real remote IP behind the tunnel) — used by the allowlist UI. */
+  callerIp?: string;
 }
 
 /** Current status of the remote-access (public cloudflared) tunnel. */
