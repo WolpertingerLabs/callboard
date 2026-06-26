@@ -529,12 +529,18 @@ async function cmdSetPassword() {
   ensureDataDir();
   ensureEnvFile();
 
-  const { hashPassword, generateSalt } = await import(join(PKG_ROOT, "backend/dist/utils/password.js"));
+  const { hashPassword, generateSalt, validateNewPassword } = await import(join(PKG_ROOT, "backend/dist/utils/password.js"));
   const { updateEnvFile } = await import(join(PKG_ROOT, "backend/dist/utils/env-writer.js"));
 
   const password = await promptPassword("Enter new password: ");
   if (!password) {
     console.error("Error: Password cannot be empty.");
+    process.exit(1);
+  }
+
+  const strength = validateNewPassword(password);
+  if (!strength.valid) {
+    console.error(`Error: ${strength.error}`);
     process.exit(1);
   }
 

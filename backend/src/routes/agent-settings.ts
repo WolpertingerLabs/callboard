@@ -18,6 +18,8 @@ import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllCl
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
 import { isPasswordConfigured } from "../auth.js";
+import { getClientKey } from "../utils/client-ip.js";
+import { parseAllowlist, validateAllowlistEntry, isIpAllowed, isPrivateOrLoopback } from "../utils/ip-allowlist.js";
 import { startWebTunnel, stopWebTunnel, getWebTunnelStatus, isCloudflaredAvailable, resolveCallboardPort } from "../services/web-tunnel.js";
 import { importBundle, BundleImportError } from "../services/bundle-import.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
@@ -49,6 +51,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     remoteAccessMode,
     cloudflaredToken,
     remoteAccessHostname,
+    remoteAccessIpAllowlist,
     apiBaseUrl,
     apiKey,
     authToken,
@@ -243,6 +246,24 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     return;
   }
 
+  // ── Remote-access IP allowlist ───────────────────────────────────────
+  // Validate entries and guard against a remote saver locking themselves out.
+  // Local/LAN savers are exempt (they're never gated by the allowlist anyway).
+  let normalizedAllowlist: string[] | undefined;
+  if (remoteAccessIpAllowlist !== undefined) {
+    normalizedAllowlist = parseAllowlist(remoteAccessIpAllowlist);
+    const bad = normalizedAllowlist.find((e) => !validateAllowlistEntry(e));
+    if (bad) {
+      res.status(400).json({ error: `Invalid IP or CIDR in allowlist: "${bad}"` });
+      return;
+    }
+    const saverIp = getClientKey(req);
+    if (normalizedAllowlist.length > 0 && !isPrivateOrLoopback(saverIp) && !isIpAllowed(saverIp, normalizedAllowlist)) {
+      res.status(400).json({ error: `Add your current IP (${saverIp}) to the allowlist before saving, or you'll lose access through the tunnel.` });
+      return;
+    }
+  }
+
   try {
     const updated = updateAgentSettings({
       proxyMode: proxyMode ?? undefined,
@@ -252,6 +273,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(remoteAccessMode !== undefined && { remoteAccessMode: normalizeRemoteMode(remoteAccessMode) }),
       ...(cloudflaredToken !== undefined && { cloudflaredToken: normalize(cloudflaredToken) }),
       ...(remoteAccessHostname !== undefined && { remoteAccessHostname: normalize(remoteAccessHostname) }),
+      ...(remoteAccessIpAllowlist !== undefined && { remoteAccessIpAllowlist: normalizedAllowlist }),
       ...(apiBaseUrl !== undefined && { apiBaseUrl: normalize(apiBaseUrl) }),
       ...(apiKey !== undefined && { apiKey: normalize(apiKey) }),
       ...(authToken !== undefined && { authToken: normalize(authToken) }),
@@ -417,13 +439,16 @@ agentSettingsRouter.get("/daemon-status", async (_req: Request, res: Response): 
  * can show the install hint before the tunnel is ever started). Distinct from
  * /daemon-status, which reports the drawlatch webhook daemon.
  */
-agentSettingsRouter.get("/remote-access-status", async (_req: Request, res: Response): Promise<void> => {
+agentSettingsRouter.get("/remote-access-status", async (req: Request, res: Response): Promise<void> => {
   try {
     const status = getWebTunnelStatus();
     if (status.available === null) {
       status.available = await isCloudflaredAvailable();
     }
-    res.json(status);
+    // callerIp lets the allowlist UI offer an "Add my IP" shortcut. Behind the
+    // tunnel this is the real remote client (CF-Connecting-IP); locally it's the
+    // socket address. See utils/client-ip.ts.
+    res.json({ ...status, callerIp: getClientKey(req) });
   } catch (err: any) {
     log.error(`Error getting remote-access status: ${err.message}`);
     res.status(500).json({ error: "Failed to get remote-access status" });
