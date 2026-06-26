@@ -74,6 +74,7 @@
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "prepare": "npm run build",
     "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm test && npm run build",
@@ -106,6 +107,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@types/eslint__js": "^8.42.3",
+    "@vitest/coverage-v8": "^4.1.9",
     "concurrently": "^9.0.0",
     "eslint": "^9.39.2",
     "eslint-plugin-react": "^7.37.5",
