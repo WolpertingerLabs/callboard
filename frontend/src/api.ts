@@ -833,6 +833,22 @@ export async function updateAgentSettings(settings: Partial<AgentSettings>): Pro
   return res.json();
 }
 
+export interface RemoteAccessStatus {
+  enabled: boolean;
+  mode: "quick" | "named";
+  available: boolean | null;
+  status: "down" | "starting" | "up" | "error";
+  url: string | null;
+  error: string | null;
+}
+
+/** Current status of the remote-access (public cloudflared) tunnel. */
+export async function getRemoteAccessStatus(): Promise<RemoteAccessStatus> {
+  const res = await fetch(`${BASE}/agent-settings/remote-access-status`, { credentials: "include" });
+  await assertOk(res, "Failed to get remote-access status");
+  return res.json();
+}
+
 export async function getKeyAliases(proxyMode?: "local" | "remote"): Promise<KeyAliasInfo[]> {
   const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
   const res = await fetch(`${BASE}/agent-settings/key-aliases${params}`, { credentials: "include" });
@@ -1362,14 +1378,9 @@ export function getJobExportUrl(id: string): string {
  * throwing, so the UI can prompt the user and re-call with a `mode`. Any other
  * non-OK response (validation/parse error) throws with the backend message.
  */
-export async function importJob(
-  payload: unknown,
-  mode?: "copy" | "overwrite",
-): Promise<{ job?: JobDefinition; conflict?: { id: string } }> {
+export async function importJob(payload: unknown, mode?: "copy" | "overwrite"): Promise<{ job?: JobDefinition; conflict?: { id: string } }> {
   const body =
-    payload && typeof payload === "object" && !Array.isArray(payload)
-      ? { ...(payload as Record<string, unknown>), ...(mode ? { mode } : {}) }
-      : payload;
+    payload && typeof payload === "object" && !Array.isArray(payload) ? { ...(payload as Record<string, unknown>), ...(mode ? { mode } : {}) } : payload;
   const res = await fetch(`${BASE}/jobs/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

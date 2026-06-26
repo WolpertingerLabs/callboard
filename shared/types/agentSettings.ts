@@ -19,6 +19,29 @@ export interface AgentSettings {
   /** Enable cloudflared tunnel for webhook event ingestion (local mode only) */
   tunnelEnabled?: boolean;
 
+  // ── Remote access (expose callboard's web UI to the internet) ─────
+  // Distinct from `tunnelEnabled` above: that tunnels the drawlatch daemon for
+  // webhook ingestion; these expose callboard's OWN web server via cloudflared
+  // so the user can reach their instance from outside the LAN. Off by default —
+  // enabling makes the site globally reachable, so the backend blocks enabling
+  // unless a login password is configured. See services/web-tunnel.ts.
+
+  /** Master toggle for the remote-access cloudflared tunnel. Default: false. */
+  remoteAccessEnabled?: boolean;
+
+  /**
+   * Tunnel flavour. "quick" → ephemeral *.trycloudflare.com URL (no Cloudflare
+   * account). "named" → stable hostname via a token-based Cloudflare tunnel.
+   * Default: "quick".
+   */
+  remoteAccessMode?: "quick" | "named";
+
+  /** Cloudflare tunnel token (secret) — required for "named" mode. */
+  cloudflaredToken?: string;
+
+  /** Public hostname for "named" mode (display + reference). */
+  remoteAccessHostname?: string;
+
   /** Default local MCP config directory path (read-only, computed by backend) */
   defaultLocalMcpConfigDir?: string;
 

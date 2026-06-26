@@ -72,6 +72,7 @@ import {
 } from "./services/agent-settings.js";
 import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
+import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
@@ -608,6 +609,19 @@ app.listen(PORT, () => {
       }
     })();
   }
+
+  // Bring up the remote-access (public) tunnel if the user left it enabled.
+  // Independent of proxy mode — this exposes callboard's own web UI. Failures
+  // are surfaced via /api/agent-settings/remote-access-status, never fatal.
+  if (settings.remoteAccessEnabled) {
+    void startWebTunnel({
+      port: Number(PORT),
+      host: "127.0.0.1",
+      mode: settings.remoteAccessMode === "named" ? "named" : "quick",
+      token: settings.cloudflaredToken,
+      hostname: settings.remoteAccessHostname,
+    }).catch((err: any) => log.error(`Remote-access tunnel start failed: ${err.message}`));
+  }
 });
 
 // Graceful shutdown
@@ -624,6 +638,13 @@ async function gracefulShutdown(signal: string) {
     await stopLocalDaemon();
   } catch (err: any) {
     log.error(`Failed to stop local drawlatch daemon: ${err.message}`);
+  }
+
+  // Tear down the remote-access tunnel (no-op when not running).
+  try {
+    await stopWebTunnel();
+  } catch (err: any) {
+    log.error(`Failed to stop remote-access tunnel: ${err.message}`);
   }
 
   process.exit(0);
