@@ -1,9 +1,11 @@
 import { randomBytes } from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions, deleteAllSessionsExcept } from "./services/sessions.js";
-import { verifyPassword, hashPassword, generateSalt } from "./utils/password.js";
+import { verifyPassword, hashPassword, generateSalt, validateNewPassword } from "./utils/password.js";
 import { updateEnvFile } from "./utils/env-writer.js";
 import { getClientKey } from "./utils/client-ip.js";
+import { isIpAllowed, isPrivateOrLoopback } from "./utils/ip-allowlist.js";
+import { getAgentSettings } from "./services/agent-settings.js";
 
 // ── Password helpers ────────────────────────────────────────────────
 
@@ -131,8 +133,9 @@ export async function changePasswordHandler(req: Request, res: Response) {
     return res.status(400).json({ error: "Both currentPassword and newPassword are required." });
   }
 
-  if (!newPassword) {
-    return res.status(400).json({ error: "New password cannot be empty." });
+  const strength = validateNewPassword(newPassword);
+  if (!strength.valid) {
+    return res.status(400).json({ error: strength.error });
   }
 
   // Verify current password
@@ -165,6 +168,18 @@ export async function changePasswordHandler(req: Request, res: Response) {
 // ── Middleware ───────────────────────────────────────────────────────
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  // Remote-access IP allowlist — applies to ALL /api routes (including login),
+  // so a non-allowlisted remote client can't even reach the login endpoint.
+  // Local & LAN clients (loopback / private ranges) are never gated, and an
+  // empty allowlist means no restriction. See utils/ip-allowlist.ts.
+  const clientIp = getClientKey(req);
+  if (!isPrivateOrLoopback(clientIp)) {
+    const allowlist = getAgentSettings().remoteAccessIpAllowlist ?? [];
+    if (!isIpAllowed(clientIp, allowlist)) {
+      return res.status(403).json({ error: "Access denied: your IP is not on the allowlist." });
+    }
+  }
+
   // Allow login/auth-check endpoints through
   if (req.path === "/api/auth/login" || req.path === "/api/auth/check" || req.path === "/api/auth/logout") {
     return next();

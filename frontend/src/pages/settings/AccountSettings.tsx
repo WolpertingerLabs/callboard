@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { LogOut, Lock, Eye, EyeOff } from "lucide-react";
 import ConfirmModal from "../../components/ConfirmModal";
+import PasswordStrengthMeter from "../../components/PasswordStrengthMeter";
+import { MIN_PASSWORD_LENGTH } from "../../utils/passwordStrength";
 import { changePassword } from "../../api";
 
 interface AccountSettingsProps {
@@ -21,7 +23,7 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
   const [success, setSuccess] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const canSubmit = currentPassword && newPassword && confirmPassword && !saving;
+  const canSubmit = currentPassword && newPassword.length >= MIN_PASSWORD_LENGTH && confirmPassword && !saving;
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,8 +35,8 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
       return;
     }
 
-    if (!newPassword) {
-      setError("New password cannot be empty.");
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
 
@@ -129,6 +131,7 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
                 {showNew ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
+            <PasswordStrengthMeter password={newPassword} />
           </div>
 
           {/* Confirm New Password */}
