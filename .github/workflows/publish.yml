@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: write      # push the release tag
-  id-token: write      # npm provenance
+  id-token: write      # OIDC trusted publishing + provenance
 
 jobs:
   publish:
@@ -30,7 +30,13 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # Trusted Publishing (OIDC) requires npm >= 11.5.1; Node 22 ships ~10.9.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
+      # Skipped on dry-run so rehearsals work even at the current published version.
       - name: Version lock — fail if already published
+        if: ${{ inputs.dry_run == false }}
         run: |
           PKG=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
@@ -49,9 +55,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      # No NODE_AUTH_TOKEN: auth is via OIDC trusted publishing (id-token: write).
+      # Configure the trusted publisher on npmjs.com (repo + this workflow file).
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             npm publish --provenance --access public --dry-run
