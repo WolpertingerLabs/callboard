@@ -81,7 +81,10 @@ export function isIpAllowed(addr: string, entries: string[] | string | undefined
     if (entry.includes("/")) {
       try {
         const cidr = ipaddr.parseCIDR(entry);
-        if (cidr[0].kind() === parsed.kind() && parsed.match(cidr)) return true;
+        // Kinds are verified equal at runtime; cast to a concrete type so the
+        // overloaded match() signature resolves (the IPv4 | IPv6 union is not callable).
+        if (cidr[0].kind() === parsed.kind() && (parsed as ipaddr.IPv4).match(cidr as [ipaddr.IPv4, number]))
+          return true;
       } catch {
         // skip malformed CIDR
       }
