@@ -17,6 +17,8 @@ import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
+import { isPasswordConfigured } from "../auth.js";
+import { startWebTunnel, stopWebTunnel, getWebTunnelStatus, isCloudflaredAvailable, resolveCallboardPort } from "../services/web-tunnel.js";
 import { importBundle, BundleImportError } from "../services/bundle-import.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
 import { refreshCodexModelsCache } from "../services/codex-models.js";
@@ -43,6 +45,10 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     proxyMode,
     remoteServerUrl,
     tunnelEnabled,
+    remoteAccessEnabled,
+    remoteAccessMode,
+    cloudflaredToken,
+    remoteAccessHostname,
     apiBaseUrl,
     apiKey,
     authToken,
@@ -221,11 +227,31 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
   const normalizeCodexSandboxMode = (v: unknown): "read-only" | "workspace-write" | "danger-full-access" | undefined =>
     v === "read-only" || v === "workspace-write" || v === "danger-full-access" ? v : undefined;
 
+  const normalizeRemoteMode = (v: unknown): "quick" | "named" | undefined => (v === "quick" || v === "named" ? v : undefined);
+
+  // ── Remote-access (public tunnel) gate ───────────────────────────────
+  // Enabling exposes callboard to the internet — the login password becomes the
+  // only barrier. Block the enable if no password is configured (the UI mirrors
+  // this, but the server is the real gate). Only fires when the request itself
+  // asks to enable; unrelated saves while already-enabled are untouched.
+  const remoteFieldsTouched =
+    remoteAccessEnabled !== undefined || remoteAccessMode !== undefined || cloudflaredToken !== undefined || remoteAccessHostname !== undefined;
+  if (remoteAccessEnabled === true && !isPasswordConfigured()) {
+    res.status(400).json({
+      error: "Set a login password before enabling remote access — it makes callboard reachable from the public internet.",
+    });
+    return;
+  }
+
   try {
     const updated = updateAgentSettings({
       proxyMode: proxyMode ?? undefined,
       remoteServerUrl: remoteServerUrl ?? undefined,
       tunnelEnabled: tunnelEnabled ?? undefined,
+      ...(remoteAccessEnabled !== undefined && { remoteAccessEnabled: typeof remoteAccessEnabled === "boolean" ? remoteAccessEnabled : undefined }),
+      ...(remoteAccessMode !== undefined && { remoteAccessMode: normalizeRemoteMode(remoteAccessMode) }),
+      ...(cloudflaredToken !== undefined && { cloudflaredToken: normalize(cloudflaredToken) }),
+      ...(remoteAccessHostname !== undefined && { remoteAccessHostname: normalize(remoteAccessHostname) }),
       ...(apiBaseUrl !== undefined && { apiBaseUrl: normalize(apiBaseUrl) }),
       ...(apiKey !== undefined && { apiKey: normalize(apiKey) }),
       ...(authToken !== undefined && { authToken: normalize(authToken) }),
@@ -259,6 +285,24 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     // Handle proxy mode switching — creates/destroys LocalProxy as needed
     // and resets cached remote ProxyClient instances
     await switchProxyMode(updated.proxyMode);
+
+    // Apply remote-access tunnel changes live (only when a relevant field was
+    // touched, so an unrelated settings save never tears down a healthy tunnel).
+    if (remoteFieldsTouched) {
+      if (updated.remoteAccessEnabled) {
+        // Fire-and-forget: quick tunnels can take several seconds to surface a
+        // URL. The client polls /remote-access-status for the result.
+        void startWebTunnel({
+          port: resolveCallboardPort(),
+          host: "127.0.0.1",
+          mode: updated.remoteAccessMode === "named" ? "named" : "quick",
+          token: updated.cloudflaredToken,
+          hostname: updated.remoteAccessHostname,
+        }).catch((err) => log.error(`Remote-access tunnel start failed: ${err.message}`));
+      } else {
+        await stopWebTunnel().catch((err) => log.error(`Remote-access tunnel stop failed: ${err.message}`));
+      }
+    }
     if (apiFieldsTouched) {
       // Kick off a refresh so the About tab and any subsequent sessions see
       // the updated account / models. Don't await — the client gets back
@@ -362,6 +406,27 @@ agentSettingsRouter.get("/daemon-status", async (_req: Request, res: Response): 
   } catch (err: any) {
     log.error(`Error getting daemon status: ${err.message}`);
     res.status(500).json({ error: "Failed to get daemon status" });
+  }
+});
+
+/**
+ * GET /api/agent-settings/remote-access-status — public-tunnel status.
+ *
+ * Reports whether the cloudflared remote-access tunnel is up, its public URL,
+ * and whether the `cloudflared` binary is installed (refreshed here so the UI
+ * can show the install hint before the tunnel is ever started). Distinct from
+ * /daemon-status, which reports the drawlatch webhook daemon.
+ */
+agentSettingsRouter.get("/remote-access-status", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const status = getWebTunnelStatus();
+    if (status.available === null) {
+      status.available = await isCloudflaredAvailable();
+    }
+    res.json(status);
+  } catch (err: any) {
+    log.error(`Error getting remote-access status: ${err.message}`);
+    res.status(500).json({ error: "Failed to get remote-access status" });
   }
 });
 

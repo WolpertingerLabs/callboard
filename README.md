@@ -135,6 +135,22 @@ Callboard stores its config at `~/.callboard/.env` (created automatically on fir
 
 Passwords are stored as scrypt hashes — plaintext is never saved.
 
+## Remote access (Cloudflare tunnel)
+
+Callboard can expose its web UI to the public internet through a [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+tunnel, so you can reach your instance from outside your LAN. It is **off by default** —
+enable it under **Settings → Remote Access**.
+
+- **Quick tunnel** — free, no Cloudflare account; gets a random `*.trycloudflare.com`
+  URL that changes on each restart.
+- **Named tunnel** — paste a token from the Cloudflare Zero Trust dashboard (route the
+  hostname to `http://localhost:8000`) for a stable hostname.
+
+> ⚠️ **Security:** enabling remote access makes callboard reachable by anyone with the
+> URL — your login password becomes the only barrier to your sessions, files, and
+> connected services. Callboard refuses to enable the tunnel until a password is set;
+> make sure it is strong and unique. The `cloudflared` binary must be installed.
+
 ## Development
 
 If you want to contribute or run from source:
