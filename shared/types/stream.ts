@@ -2,6 +2,7 @@ export interface StreamEvent {
   type:
     | "text"
     | "thinking"
+    | "message_item_start"
     | "tool_use"
     | "tool_result"
     | "done"
@@ -16,6 +17,20 @@ export interface StreamEvent {
     | "nudge";
   content: string;
   toolName?: string;
+  /**
+   * Discrete-item boundary metadata, attached to "message_item_start" events.
+   * Signals that a new assistant text bubble (`kind: "message"`) or thinking
+   * block (`kind: "reasoning"`) begins, so the chat UI can flush the live
+   * bubble and start a fresh, discrete one. `phase` distinguishes intermediate
+   * coordinator commentary from a final answer; `sessionId` labels which
+   * orchestration participant produced the item. Currently emitted for
+   * OpenRouter chats only.
+   */
+  kind?: "message" | "reasoning";
+  itemId?: string;
+  outputIndex?: number;
+  phase?: "commentary" | "final_answer";
+  sessionId?: string;
   /**
    * Where the tool executed — "openrouter_server" for OpenRouter server
    * tools (datetime / web_search / web_fetch), "local"/absent for tools run

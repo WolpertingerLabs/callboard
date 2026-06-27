@@ -218,6 +218,18 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
           ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
         });
+      } else if (event.type === "message_item_start") {
+        // Discrete-item boundary (OpenRouter) — forwarded with its metadata,
+        // mirroring createSSEHandler in utils/sse.ts, so the chat UI can flush
+        // the live bubble and begin a fresh, discrete one.
+        sendSSE(res, {
+          type: "message_item_start",
+          ...(event.kind && { kind: event.kind }),
+          ...(event.itemId && { itemId: event.itemId }),
+          ...(typeof event.outputIndex === "number" && { outputIndex: event.outputIndex }),
+          ...(event.phase && { phase: event.phase }),
+          ...(event.sessionId && { sessionId: event.sessionId }),
+        });
       } else {
         sendSSE(res, { type: "message_update" });
       }
