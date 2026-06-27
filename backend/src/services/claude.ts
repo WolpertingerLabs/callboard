@@ -1427,6 +1427,26 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               emitter.emit("event", { type: "compacting", content: event.content || "Conversation compacted" } as StreamEvent);
               break;
 
+            case "message_item_start":
+              // Discrete-item boundary from the OpenRouter adapter: a new
+              // assistant message (text bubble) or reasoning (thinking block)
+              // output item starts here. Forward it verbatim to the SSE layer
+              // so the chat UI can flush the current live bubble and begin a
+              // fresh, discrete one — each coordinator/worker message and each
+              // reasoning block renders as its own successive chat message. No
+              // trimming, no separators, no combining; metadata
+              // (kind/itemId/phase/sessionId) rides along only when present.
+              emitter.emit("event", {
+                type: "message_item_start",
+                content: "",
+                kind: event.kind,
+                itemId: event.itemId,
+                ...(event.outputIndex !== undefined && { outputIndex: event.outputIndex }),
+                ...(event.phase !== undefined && { phase: event.phase }),
+                ...(event.sessionId !== undefined && { sessionId: event.sessionId }),
+              } as StreamEvent);
+              break;
+
             case "text":
               emitter.emit("event", { type: "text", content: event.content } as StreamEvent);
               break;

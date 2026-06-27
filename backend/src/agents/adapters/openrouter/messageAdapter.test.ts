@@ -7,8 +7,31 @@
  * the bottom against a captured event sequence.
  */
 import { describe, expect, it } from "vitest";
-import type { AgentCoreEvent } from "@wolpertingerlabs/openrouter-agent-harness";
-import { translateEvent } from "./messageAdapter.js";
+import type {
+  AgentCoreEvent,
+  CommandLoader,
+  OpenRouterAgentRun,
+} from "@wolpertingerlabs/openrouter-agent-harness";
+import { translateEvent, translateOpenRouterEvents } from "./messageAdapter.js";
+import type { AgentEvent } from "../../ports/events.js";
+
+/**
+ * Drive the full async-iter path with a scripted AgentCoreEvent sequence.
+ * A stub command loader returning `[]` suppresses the synthetic
+ * `slash_commands` event (and avoids touching the filesystem), so the output
+ * is exactly the translation of the scripted events in stream order.
+ */
+async function collect(events: AgentCoreEvent[]): Promise<AgentEvent[]> {
+  const run = (async function* () {
+    for (const event of events) yield event;
+  })() as unknown as OpenRouterAgentRun;
+  const loader = { list: async () => [] } as unknown as CommandLoader;
+  const out: AgentEvent[] = [];
+  for await (const ev of translateOpenRouterEvents(run, "/tmp/or-adapter-test", loader)) {
+    out.push(ev);
+  }
+  return out;
+}
 
 describe("translateEvent — direct one-to-one mappings", () => {
   it("session_started → session_started (parentSessionId is dropped)", () => {
@@ -40,6 +63,161 @@ describe("translateEvent — direct one-to-one mappings", () => {
       input: { path: "x" },
       callId: "c1",
     });
+  });
+});
+
+describe("translateEvent — message_item_start boundary", () => {
+  it("maps a message item start verbatim, passing through all metadata", () => {
+    expect(
+      translateEvent({
+        type: "message_item_start",
+        kind: "message",
+        itemId: "item_42",
+        outputIndex: 3,
+        phase: "final_answer",
+        sessionId: "sess_worker_1",
+      }),
+    ).toEqual({
+      type: "message_item_start",
+      kind: "message",
+      itemId: "item_42",
+      outputIndex: 3,
+      phase: "final_answer",
+      sessionId: "sess_worker_1",
+    });
+  });
+
+  it("maps a reasoning item start and omits phase (reasoning carries none)", () => {
+    expect(
+      translateEvent({ type: "message_item_start", kind: "reasoning", itemId: "rsn_1" }),
+    ).toEqual({
+      type: "message_item_start",
+      kind: "reasoning",
+      itemId: "rsn_1",
+    });
+  });
+
+  it("omits optional fields (outputIndex/phase/sessionId) when the source lacks them", () => {
+    const result = translateEvent({
+      type: "message_item_start",
+      kind: "message",
+      itemId: "m1",
+    });
+    // Exact equality proves no `undefined`-valued optional keys leak through.
+    expect(result).toEqual({ type: "message_item_start", kind: "message", itemId: "m1" });
+    expect(result).not.toHaveProperty("phase");
+    expect(result).not.toHaveProperty("outputIndex");
+    expect(result).not.toHaveProperty("sessionId");
+  });
+});
+
+describe("translateOpenRouterEvents — discrete per-item rendering", () => {
+  it("splits two consecutive message items into two discrete messages (no concatenation)", async () => {
+    const out = await collect([
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "commentary" },
+      { type: "text_delta", content: "Coordinator: " },
+      { type: "text_delta", content: "delegating to worker." },
+      { type: "message_item_start", kind: "message", itemId: "m2", phase: "final_answer" },
+      { type: "text_delta", content: "Worker: done." },
+    ]);
+
+    expect(out).toEqual([
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "commentary" },
+      { type: "text", content: "Coordinator: " },
+      { type: "text", content: "delegating to worker." },
+      { type: "message_item_start", kind: "message", itemId: "m2", phase: "final_answer" },
+      { type: "text", content: "Worker: done." },
+    ]);
+
+    // Two discrete items: a boundary precedes each run of text deltas, and the
+    // second item's boundary sits BETWEEN the two messages' text — so a
+    // consumer flushes m1 before m2's text arrives (not one merged bubble).
+    const boundaries = out.filter((e) => e.type === "message_item_start");
+    expect(boundaries).toHaveLength(2);
+    const firstBoundary = out.findIndex((e) => e.type === "message_item_start");
+    const lastBoundary = out.map((e) => e.type).lastIndexOf("message_item_start");
+    expect(lastBoundary).toBeGreaterThan(firstBoundary);
+  });
+
+  it("renders a reasoning item as its own discrete thinking message, interleaved in order", async () => {
+    const out = await collect([
+      { type: "message_item_start", kind: "reasoning", itemId: "r1" },
+      { type: "reasoning_delta", content: "Let me think about this." },
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "final_answer" },
+      { type: "text_delta", content: "Here is the answer." },
+    ]);
+
+    expect(out).toEqual([
+      { type: "message_item_start", kind: "reasoning", itemId: "r1" },
+      { type: "thinking", content: "Let me think about this." },
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "final_answer" },
+      { type: "text", content: "Here is the answer." },
+    ]);
+
+    // The reasoning boundary is discrete (its own kind, no phase) and precedes
+    // the thinking delta — the thinking block does not bleed into the message.
+    expect(out[0]).toEqual({ type: "message_item_start", kind: "reasoning", itemId: "r1" });
+    expect(out[1]).toEqual({ type: "thinking", content: "Let me think about this." });
+  });
+
+  it("keeps tool items flushing in stream order between message boundaries", async () => {
+    const out = await collect([
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "commentary" },
+      { type: "text_delta", content: "Reading the file." },
+      { type: "tool_call", callId: "c1", name: "read_file", input: { path: "x" } },
+      { type: "tool_result", callId: "c1", output: "file contents", isError: false },
+      { type: "message_item_start", kind: "message", itemId: "m2", phase: "final_answer" },
+      { type: "text_delta", content: "Done." },
+    ]);
+
+    expect(out).toEqual([
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "commentary" },
+      { type: "text", content: "Reading the file." },
+      { type: "tool_use", toolName: "read_file", input: { path: "x" }, callId: "c1" },
+      { type: "tool_result", callId: "c1", content: "file contents", isError: false },
+      { type: "message_item_start", kind: "message", itemId: "m2", phase: "final_answer" },
+      { type: "text", content: "Done." },
+    ]);
+
+    // Tool events do NOT emit their own message_item_start — they flush via
+    // tool_use/tool_result. Only the two message items carry a boundary.
+    expect(out.filter((e) => e.type === "message_item_start")).toHaveLength(2);
+  });
+
+  it("leaves a single message item unchanged (one boundary, one verbatim text event)", async () => {
+    const out = await collect([
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "final_answer" },
+      { type: "text_delta", content: "Just one message." },
+    ]);
+
+    expect(out).toEqual([
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "final_answer" },
+      { type: "text", content: "Just one message." },
+    ]);
+    expect(out.filter((e) => e.type === "message_item_start")).toHaveLength(1);
+  });
+
+  it("preserves content verbatim — no trimming of boundary whitespace, no injected separators", async () => {
+    const part1 = "  leading & trailing spaces kept  ";
+    const part2 = "\n\nnewlines and\ttabs kept\n";
+    const out = await collect([
+      { type: "message_item_start", kind: "message", itemId: "m1", phase: "commentary" },
+      { type: "text_delta", content: part1 },
+      { type: "message_item_start", kind: "message", itemId: "m2", phase: "final_answer" },
+      { type: "text_delta", content: part2 },
+    ]);
+
+    const texts = out.filter((e): e is Extract<AgentEvent, { type: "text" }> => e.type === "text");
+    // Each delta survives byte-for-byte — not trimmed, not collapsed.
+    expect(texts.map((t) => t.content)).toEqual([part1, part2]);
+    // Boundary markers carry no text payload: nothing is appended to or
+    // injected between the items' content.
+    expect(out.filter((e) => e.type === "message_item_start").every((e) => !("content" in e))).toBe(
+      true,
+    );
+    // Concatenating the relayed text equals concatenating the inputs exactly —
+    // proving no separator characters were inserted anywhere.
+    expect(texts.map((t) => t.content).join("")).toBe(part1 + part2);
   });
 });
 

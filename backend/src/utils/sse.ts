@@ -87,6 +87,18 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
         ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
         ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
       });
+    } else if (event.type === "message_item_start") {
+      // Discrete-item boundary (OpenRouter). Forward with its metadata so the
+      // chat UI can flush the live bubble and start a fresh, discrete one —
+      // collapsing it into a bare message_update would discard the boundary.
+      sendSSE(res, {
+        type: "message_item_start",
+        ...(event.kind && { kind: event.kind }),
+        ...(event.itemId && { itemId: event.itemId }),
+        ...(typeof event.outputIndex === "number" && { outputIndex: event.outputIndex }),
+        ...(event.phase && { phase: event.phase }),
+        ...(event.sessionId && { sessionId: event.sessionId }),
+      });
     } else {
       sendSSE(res, { type: "message_update" });
     }

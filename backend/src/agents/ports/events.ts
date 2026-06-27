@@ -27,6 +27,47 @@ export type AgentResultStatus = "success" | "max_turns" | "max_budget" | "error"
 
 export type AgentEvent =
   | { type: "session_started"; sessionId: string }
+  | {
+      /**
+       * Boundary marker for the START of a new discrete assistant output
+       * item — a `message` (text bubble) or `reasoning` (thinking block) —
+       * emitted BEFORE that item's `text`/`thinking` deltas. It lets a
+       * consumer FLUSH the in-progress live bubble and START a fresh, discrete
+       * one, so adjacent items (e.g. a coordinator message immediately
+       * followed by a worker message, or a reasoning block followed by an
+       * answer) render as separate successive chat messages instead of one
+       * concatenated bubble.
+       *
+       * PURELY ADDITIVE: the `text`/`thinking` deltas that follow are
+       * unchanged — no trimming, no injected separators, no combining. Tool
+       * and server-tool items flush naturally via their own
+       * `tool_use`/`tool_result` events and do NOT emit this boundary, so a
+       * new message/reasoning item is signalled ONLY by this event.
+       *
+       * Currently produced only by the OpenRouter adapter (mirrors the
+       * harness's `message_item_start` AgentCoreEvent); the Claude Code
+       * adapter already yields each content block as a discrete `text` /
+       * `thinking` event so it has no analogue.
+       */
+      type: "message_item_start";
+      /** `'message'` ⇒ assistant text bubble; `'reasoning'` ⇒ thinking block. */
+      kind: "message" | "reasoning";
+      /** The raw output item's id (provenance / future per-item keying). */
+      itemId: string;
+      /** Item position in the response output array, when the source reports it. */
+      outputIndex?: number;
+      /**
+       * For `message` items: `'commentary'` (intermediate) vs `'final_answer'`
+       * (the turn's final assistant message). Absent for `reasoning` items.
+       */
+      phase?: "commentary" | "final_answer";
+      /**
+       * Present when the proxy stamped a `session_id` on the raw item — labels
+       * which orchestration participant (coordinator vs a specific worker)
+       * produced the item.
+       */
+      sessionId?: string;
+    }
   | { type: "text"; content: string }
   | { type: "thinking"; content: string }
   | {
