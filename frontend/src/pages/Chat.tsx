@@ -1665,6 +1665,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         style={{
           padding: "12px 16px",
           borderBottom: "1px solid var(--border)",
+          background: "var(--bg-sidebar)",
           display: "flex",
           alignItems: "center",
           gap: 12,
@@ -2660,8 +2661,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // (response-chained state can't be truncated), and Codex
                   // chats (on-disk rollout sessions aren't fork-wired) are excluded.
                   const msgTimestamp = item.message.timestamp;
-                  const canFork =
-                    chatProvider === "claude-code" && item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
+                  const canFork = chatProvider === "claude-code" && item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
                       <MessageBubble message={item.message} teamColorMap={teamColorMap} onFork={canFork ? () => handleFork(msgTimestamp!) : undefined} />
