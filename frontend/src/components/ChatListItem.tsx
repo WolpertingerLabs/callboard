@@ -89,7 +89,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
             color: "var(--chatlist-item-time-text)",
           }}
         >
-          {time}
+          <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
           {chat.git_branch && (
             <span
               title={chat.folder !== chat.displayFolder ? `Worktree: ${chat.git_branch}` : `Branch: ${chat.git_branch}`}
