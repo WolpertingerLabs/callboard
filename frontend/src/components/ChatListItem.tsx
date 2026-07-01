@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell, Workflow } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
+import { useIsMobile } from "../hooks/useIsMobile";
 import ProviderBadge from "./ProviderBadge";
 import FolderPathPill from "./FolderPathPill";
 
@@ -16,6 +17,9 @@ interface Props {
 
 export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, sessionStatus }: Props) {
   const [hovered, setHovered] = useState(false);
+  const isMobile = useIsMobile();
+  // On touch/mobile there is no hover, so keep the row actions visible.
+  const showActions = isMobile || hovered;
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
@@ -265,50 +269,49 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           </div>
         )}
       </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 0,
-          marginLeft: 6,
-          flexShrink: 0,
-          opacity: hovered ? 1 : 0,
-          pointerEvents: hovered ? "auto" : "none",
-          transition: "opacity 0.12s ease",
-        }}
-      >
-        {onToggleBookmark && (
+      {showActions && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0,
+            marginLeft: 6,
+            flexShrink: 0,
+          }}
+        >
+          {onToggleBookmark && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleBookmark(!isBookmarked);
+              }}
+              title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
+              style={{
+                background: "none",
+                color: isBookmarked ? "var(--chatlist-bookmark-icon)" : "var(--chatlist-icon)",
+                padding: "2px",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <Bookmark size={14} fill={isBookmarked ? "currentColor" : "none"} />
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onToggleBookmark(!isBookmarked);
+              onDelete();
             }}
-            title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
             style={{
               background: "none",
-              color: isBookmarked ? "var(--chatlist-bookmark-icon)" : "var(--chatlist-icon)",
-              padding: "2px",
-              display: "flex",
-              alignItems: "center",
+              color: "var(--chatlist-icon-delete)",
+              padding: "2px 4px",
             }}
           >
-            <Bookmark size={14} fill={isBookmarked ? "currentColor" : "none"} />
+            <X size={14} />
           </button>
-        )}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          style={{
-            background: "none",
-            color: "var(--chatlist-icon-delete)",
-            padding: "2px 4px",
-          }}
-        >
-          <X size={14} />
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
