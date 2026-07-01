@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell, Workflow } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
@@ -14,6 +15,7 @@ interface Props {
 }
 
 export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, sessionStatus }: Props) {
+  const [hovered, setHovered] = useState(false);
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
@@ -58,6 +60,8 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   return (
     <div
       onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         padding: "10px 14px",
         borderBottom: "1px solid var(--chatlist-item-border)",
@@ -261,7 +265,18 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           </div>
         )}
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 0, marginLeft: 6, flexShrink: 0 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 0,
+          marginLeft: 6,
+          flexShrink: 0,
+          opacity: hovered ? 1 : 0,
+          pointerEvents: hovered ? "auto" : "none",
+          transition: "opacity 0.12s ease",
+        }}
+      >
         {onToggleBookmark && (
           <button
             onClick={(e) => {

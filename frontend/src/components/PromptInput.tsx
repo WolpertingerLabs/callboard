@@ -235,7 +235,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
         padding: "8px 12px",
         paddingBottom: "calc(8px + var(--safe-bottom))",
         borderTop: "1px solid var(--border)",
-        background: "var(--bg)",
+        background: "var(--bg-sidebar)",
         flexShrink: 0,
       }}
     >
