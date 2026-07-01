@@ -9,6 +9,9 @@
 :root {
   /* Core palette */
   --bg: #0d1117;
+  /* Background layers: main window (--bg) < sidebar/header < new-chat popout */
+  --bg-sidebar: #131920;
+  --bg-popout: #1d2531;
   --surface: #161b22;
   --border: #30363d;
   --text: #e6edf3;
@@ -125,6 +128,9 @@
 [data-theme="light"] {
   /* Core palette */
   --bg: #ffffff;
+  /* Background layers: main window (--bg) < sidebar/header < new-chat popout */
+  --bg-sidebar: #eef1f6;
+  --bg-popout: #fdfeff;
   --surface: #f8fafc;
   --border: #e2e8f0;
   --text: #1e293b;
