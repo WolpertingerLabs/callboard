@@ -300,6 +300,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         style={{
           padding: "12px 20px",
           borderBottom: "1px solid var(--chatlist-header-border)",
+          background: "var(--bg-popout)",
         }}
       >
         {/* Mode Toggle */}

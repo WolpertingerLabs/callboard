@@ -195,7 +195,7 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
           borderRight: "1px solid var(--border)",
           display: "flex",
           flexDirection: "column",
-          background: "var(--bg)",
+          background: "var(--bg-sidebar)",
           overflow: "hidden",
         }}
       >
