@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, getSystemInfo, type DefaultPermissions, type AgentConfig } from "../api";
+import { listAgents, getAgentIdentityPrompt, getSystemInfo, getAgentSettings, type DefaultPermissions, type AgentConfig } from "../api";
+import type { ModelRoutingConfig } from "shared/types/index.js";
 import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
@@ -114,6 +115,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // pickers to OpenRouter's catalog. Sourced from /system-info.
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  // Model Routing (OpenRouter-only). Config is loaded from agent settings so we
+  // know whether the feature is enabled and which ranks/tiers to offer. The
+  // per-chat opt-in (`modelRouting`) resets to off each time the panel opens.
+  const [routingConfig, setRoutingConfig] = useState<ModelRoutingConfig | null>(null);
+  const [modelRouting, setModelRouting] = useState(false);
+  const [modelRoutingRankId, setModelRoutingRankId] = useState<string>("");
+  const routingAvailable = provider === "openrouter" && !!routingConfig?.enabled && routingConfig.ranks.length > 0;
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
   const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
@@ -184,6 +192,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         ...((effectiveProvider === "openrouter" || effectiveProvider === "codex") && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
+        ...(effectiveProvider === "openrouter" && modelRouting && routingAvailable && { modelRouting: true, modelRoutingRankId }),
       },
     });
   };
@@ -228,6 +237,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         provider: effectiveProvider,
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
+        ...(effectiveProvider === "openrouter" && modelRouting && routingAvailable && { modelRouting: true, modelRoutingRankId }),
       },
     });
   };
@@ -239,6 +249,27 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // we silently flip the in-memory state to claude-code without touching
   // localStorage (the user's saved preference is preserved for the next time
   // they re-enable OR).
+  // Load the model-routing config so the panel can offer the router toggle +
+  // rank selector when the feature is enabled. Best-effort — the toggle simply
+  // stays hidden if this fails.
+  useEffect(() => {
+    let cancelled = false;
+    getAgentSettings()
+      .then((s) => {
+        if (cancelled) return;
+        const cfg = s.modelRouting ?? null;
+        setRoutingConfig(cfg);
+        if (cfg) {
+          const ranks = [...cfg.ranks].sort((a, b) => a.order - b.order);
+          setModelRoutingRankId(cfg.defaultRankId || ranks[0]?.id || "");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     getSystemInfo()
@@ -364,6 +395,42 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={openApiSettings}
             />
+
+            {/* Model Routing — OpenRouter-only, shown when configured/enabled */}
+            {routingAvailable && (
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}>
+                  <input type="checkbox" checked={modelRouting} onChange={(e) => setModelRouting(e.target.checked)} style={{ width: 16, height: 16 }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>Use model router</span>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— classify the prompt to pick the model</span>
+                </label>
+                {modelRouting && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, paddingLeft: 24 }}>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Tier</span>
+                    <select
+                      value={modelRoutingRankId}
+                      onChange={(e) => setModelRoutingRankId(e.target.value)}
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        border: "1px solid var(--border)",
+                        background: "var(--surface)",
+                        color: "var(--text)",
+                        fontSize: 13,
+                      }}
+                    >
+                      {[...(routingConfig?.ranks ?? [])]
+                        .sort((a, b) => a.order - b.order)
+                        .map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.label}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Permissions Section — collapsible, default closed */}
             <div style={{ marginBottom: 8 }}>

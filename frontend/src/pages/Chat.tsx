@@ -130,6 +130,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // honored on creation — persisted into chat metadata, so follow-up messages
   // inherit it server-side without re-threading.
   const newChatRequireCompletion = (location.state as any)?.requireExplicitCompletion as boolean | undefined;
+  // Model routing (OpenRouter-only) for NEW chats, set by NewChatPanel. Only
+  // honored on creation — the classifier picks the model server-side and it's
+  // persisted into chat metadata so follow-ups keep routing.
+  const newChatModelRouting = (location.state as any)?.modelRouting as boolean | undefined;
+  const newChatModelRoutingRankId = (location.state as any)?.modelRoutingRankId as string | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
@@ -1277,6 +1282,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
           if (newChatRequireCompletion === true) {
             requestBody.requireExplicitCompletion = true;
+          }
+          // Model routing — OpenRouter-only opt-in. Server drops it on any
+          // other provider, so it's safe to send whenever the panel set it.
+          if (newChatModelRouting === true && newChatProvider === "openrouter") {
+            requestBody.modelRouting = true;
+            if (newChatModelRoutingRankId) {
+              requestBody.modelRoutingRankId = newChatModelRoutingRankId;
+            }
           }
 
           res = await fetch("/api/chats/new/message", {
