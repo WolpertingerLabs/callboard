@@ -13,6 +13,21 @@ export interface AgentSettings {
   /** Proxy mode: 'local' runs in-process, 'remote' connects to external server */
   proxyMode?: "local" | "remote";
 
+  // ── Default enrolled caller for regular (non-agent) sessions ──────
+  // Regular, human-operated sessions have no agent to grant them a drawlatch
+  // caller, so they borrow a configured "default" caller instead. These fields
+  // hold the chosen caller alias per proxy mode. Semantics:
+  //   - undefined  → not configured; fall back to the built-in "default" caller
+  //                  if it is still enrolled (legacy / out-of-box behavior).
+  //   - ""         → explicitly no default; regular sessions get NO proxy access.
+  //   - "<alias>"  → use that enrolled caller for regular sessions in this mode.
+
+  /** Default caller alias for regular sessions in local proxy mode. */
+  defaultCallerLocal?: string;
+
+  /** Default caller alias for regular sessions in remote proxy mode. */
+  defaultCallerRemote?: string;
+
   /** URL of the remote MCP secure proxy server (used in 'remote' mode only) */
   remoteServerUrl?: string;
 
@@ -273,4 +288,10 @@ export interface EnrolledCaller {
   agents: EnrolledCallerAgent[];
   /** False when one or more agents reference it — deletion is blocked. */
   canDelete: boolean;
+  /**
+   * True when this caller is the default for regular (non-agent) sessions in
+   * this mode. At most one caller per mode is the default; when none is, regular
+   * sessions have no drawlatch/MCP-proxy access.
+   */
+  isDefault: boolean;
 }

@@ -911,6 +911,22 @@ export async function getEnrolledCallers(proxyMode?: "local" | "remote"): Promis
 }
 
 /**
+ * Set (or clear) the default enrolled caller for regular (non-agent) sessions.
+ * Pass a caller alias to make it the default, or `null` to clear it so regular
+ * sessions have no MCP-proxy access. Mode defaults to the active proxy mode.
+ */
+export async function setDefaultCaller(alias: string | null, proxyMode?: "local" | "remote"): Promise<void> {
+  const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
+  const res = await fetch(`${BASE}/agent-settings/default-caller${params}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ alias }),
+  });
+  await assertOk(res, "Failed to set default caller");
+}
+
+/**
  * Delete an enrolled caller. Rejects with the server's message when the caller
  * is still bound to agents (HTTP 409) — deletion requires zero associated agents.
  */

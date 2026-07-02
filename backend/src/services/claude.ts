@@ -29,6 +29,7 @@ import {
   getAgentSettings,
   getActiveMcpConfigDir,
   resolveAgentKeyAlias,
+  resolveDefaultCaller,
   getApiEnvOverrides,
   getClaudeCodeExecutablePath,
   resolveOpenRouterModel,
@@ -954,13 +955,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   //     no implicit "default" fallback — an agent must be granted a caller
   //     before it can reach drawlatch, so an unassigned agent can't borrow a
   //     caller it was never given access to.
-  //   - Regular (human-operated) sessions fall back to the "default" caller.
+  //   - Regular (human-operated) sessions use the configured default caller for
+  //     the active proxy mode (Proxy Settings → "Default" toggle). When no
+  //     default is set, they get NO caller and the proxy tools are not injected.
   let proxyKeyAlias: string | undefined;
   if (opts.agentAlias) {
     const proxyAgent = getAgent(opts.agentAlias);
     proxyKeyAlias = proxyAgent ? resolveAgentKeyAlias(proxyAgent).mcpKeyAlias : undefined;
   } else {
-    proxyKeyAlias = "default";
+    proxyKeyAlias = resolveDefaultCaller();
   }
 
   if (agentSettings.proxyMode && activeMcpConfigDir && proxyKeyAlias) {

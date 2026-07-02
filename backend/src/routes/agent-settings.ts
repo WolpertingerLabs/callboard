@@ -7,12 +7,13 @@
  *   POST /api/agent-settings/test-connection  — test remote proxy connection
  *   GET  /api/agent-settings/daemon-status    — drawlatch daemon URL/health/enrollment
  *   POST /api/agent-settings/import-bundle     — import a drawlatch caller credential bundle
+ *   PUT  /api/agent-settings/default-caller    — set/clear the default caller for regular sessions
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { validateServerTools, validateParamProfile } from "shared/types/index.js";
-import { getAgentSettings, updateAgentSettings, discoverKeyAliases, listEnrolledCallers, deleteEnrolledCaller } from "../services/agent-settings.js";
+import { getAgentSettings, updateAgentSettings, discoverKeyAliases, listEnrolledCallers, deleteEnrolledCaller, setDefaultCaller } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
@@ -506,6 +507,36 @@ agentSettingsRouter.delete("/callers/:alias", (req: Request, res: Response): voi
   } catch (err: any) {
     log.error(`Error deleting enrolled caller "${alias}": ${err.message}`);
     res.status(500).json({ error: "Failed to delete enrolled caller" });
+  }
+});
+
+/**
+ * PUT /api/agent-settings/default-caller — set/clear the default caller.
+ *
+ * Regular (non-agent) sessions borrow this caller for their drawlatch identity.
+ * Body: { alias: string | null } — a caller alias to make default, or null/""
+ * to explicitly clear it (regular sessions then get no proxy access). Mode
+ * defaults to the active one; pass ?proxyMode=remote to target a key store.
+ * Rejects (404) when a non-empty alias is not an enrolled caller.
+ */
+agentSettingsRouter.put("/default-caller", (req: Request, res: Response): void => {
+  const { alias } = req.body ?? {};
+  if (alias !== null && alias !== undefined && typeof alias !== "string") {
+    res.status(400).json({ error: "alias must be a string or null" });
+    return;
+  }
+  if (typeof alias === "string" && alias !== "" && !CALLER_ALIAS_REGEX.test(alias)) {
+    res.status(400).json({ error: "Invalid caller alias" });
+    return;
+  }
+  const proxyMode = req.query.proxyMode === "remote" || req.query.proxyMode === "local" ? req.query.proxyMode : undefined;
+
+  try {
+    setDefaultCaller(alias ?? null, proxyMode);
+    res.json({ status: "ok", alias: alias || null });
+  } catch (err: any) {
+    // setDefaultCaller throws when the alias isn't an enrolled caller.
+    res.status(404).json({ error: err.message || "Failed to set default caller" });
   }
 });
 

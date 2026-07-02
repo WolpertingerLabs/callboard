@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, X, ExternalLink, Server, Upload, Lock, Trash2 } from "lucide-react";
+import { FolderOpen, Check, Save, KeyRound, Globe, Monitor, Wifi, WifiOff, ShieldAlert, Loader2, X, ExternalLink, Server, Upload, Lock, Trash2, Star } from "lucide-react";
 import {
   getAgentSettings,
   updateAgentSettings,
@@ -9,6 +9,7 @@ import {
   importCallerBundle,
   getEnrolledCallers,
   deleteEnrolledCaller,
+  setDefaultCaller,
 } from "../../api";
 import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, DaemonStatus, ParsedCallerBundle, EnrolledCaller } from "../../api";
 
@@ -79,6 +80,7 @@ export default function ProxySettings() {
   const [enrolledCallers, setEnrolledCallers] = useState<EnrolledCaller[]>([]);
   const [callersError, setCallersError] = useState<string | null>(null);
   const [deletingAlias, setDeletingAlias] = useState<string | null>(null);
+  const [settingDefaultAlias, setSettingDefaultAlias] = useState<string | null>(null);
 
   // Load daemon status on mount (independent of settings; both fire in parallel)
   useEffect(() => {
@@ -149,6 +151,21 @@ export default function ProxySettings() {
       setCallersError(err.message || "Failed to delete caller");
     } finally {
       setDeletingAlias(null);
+    }
+  };
+
+  // Toggle a caller as the default for regular (non-agent) sessions. Clicking
+  // the current default clears it (no default → regular sessions get no proxy).
+  const handleToggleDefault = async (alias: string, isCurrentlyDefault: boolean) => {
+    setSettingDefaultAlias(alias);
+    setCallersError(null);
+    try {
+      await setDefaultCaller(isCurrentlyDefault ? null : alias, proxyMode);
+      loadCallers();
+    } catch (err: any) {
+      setCallersError(err.message || "Failed to set default caller");
+    } finally {
+      setSettingDefaultAlias(null);
     }
   };
 
@@ -408,7 +425,8 @@ export default function ProxySettings() {
 
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
                   Each caller is a drawlatch credential this callboard holds. The fingerprint identifies the keypair — use it to spot stale callers. A caller
-                  can only be deleted once no agents use it.
+                  can only be deleted once no agents use it. Mark one caller as the <strong>Default</strong> to give regular (non-agent) sessions MCP-proxy
+                  access through it; with no default set, regular sessions have no proxy access.
                 </div>
 
                 {callersError && (
@@ -473,28 +491,56 @@ export default function ProxySettings() {
                             )}
                           </div>
                         </div>
-                        <button
-                          onClick={() => handleDeleteCaller(c.alias)}
-                          disabled={!c.canDelete || deletingAlias === c.alias}
-                          title={c.canDelete ? "Delete caller" : `In use by ${c.agents.length} agent(s) — reassign them first`}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "6px 10px",
-                            borderRadius: 8,
-                            border: "1px solid var(--border)",
-                            background: "var(--bg)",
-                            color: c.canDelete ? "var(--danger)" : "var(--text-muted)",
-                            fontSize: 12,
-                            cursor: c.canDelete && deletingAlias !== c.alias ? "pointer" : "not-allowed",
-                            opacity: c.canDelete ? 1 : 0.5,
-                            flexShrink: 0,
-                          }}
-                        >
-                          {deletingAlias === c.alias ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <Trash2 size={13} />}
-                          Delete
-                        </button>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                          <button
+                            onClick={() => handleToggleDefault(c.alias, c.isDefault)}
+                            disabled={settingDefaultAlias === c.alias}
+                            title={c.isDefault ? "Default caller for regular sessions — click to clear" : "Set as the default caller for regular (non-agent) sessions"}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: 6,
+                              padding: "6px 10px",
+                              borderRadius: 8,
+                              border: c.isDefault ? "1px solid var(--accent)" : "1px solid var(--border)",
+                              background: c.isDefault ? "var(--accent)" : "var(--bg)",
+                              color: c.isDefault ? "var(--text-on-accent)" : "var(--text)",
+                              fontSize: 12,
+                              fontWeight: c.isDefault ? 600 : 400,
+                              cursor: settingDefaultAlias === c.alias ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            {settingDefaultAlias === c.alias ? (
+                              <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
+                            ) : (
+                              <Star size={13} fill={c.isDefault ? "currentColor" : "none"} />
+                            )}
+                            {c.isDefault ? "Default" : "Set default"}
+                          </button>
+                          <button
+                            onClick={() => handleDeleteCaller(c.alias)}
+                            disabled={!c.canDelete || deletingAlias === c.alias}
+                            title={c.canDelete ? "Delete caller" : `In use by ${c.agents.length} agent(s) — reassign them first`}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: 6,
+                              padding: "6px 10px",
+                              borderRadius: 8,
+                              border: "1px solid var(--border)",
+                              background: "var(--bg)",
+                              color: c.canDelete ? "var(--danger)" : "var(--text-muted)",
+                              fontSize: 12,
+                              cursor: c.canDelete && deletingAlias !== c.alias ? "pointer" : "not-allowed",
+                              opacity: c.canDelete ? 1 : 0.5,
+                            }}
+                          >
+                            {deletingAlias === c.alias ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <Trash2 size={13} />}
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
