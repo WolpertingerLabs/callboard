@@ -81,6 +81,8 @@ streamRouter.post("/new/message", async (req, res) => {
     effort,
     model,
     requireExplicitCompletion,
+    modelRouting,
+    modelRoutingRankId,
   } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
@@ -157,6 +159,14 @@ streamRouter.post("/new/message", async (req, res) => {
     // the global Settings → API field.
     const safeModel: string | undefined = typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined;
 
+    // Model routing — OpenRouter-only opt-in. Honored only when the chat runs on
+    // OpenRouter; on any other provider the flag is dropped (default behavior).
+    const safeModelRouting = modelRouting === true && safeProvider === "openrouter";
+    const safeModelRoutingRankId: string | undefined =
+      safeModelRouting && typeof modelRoutingRankId === "string" && modelRoutingRankId.trim().length > 0
+        ? modelRoutingRankId.trim()
+        : undefined;
+
     const emitter = await sendMessage({
       prompt,
       folder: effectiveFolder,
@@ -169,6 +179,8 @@ streamRouter.post("/new/message", async (req, res) => {
       ...(safeProvider && { provider: safeProvider }),
       ...(safeEffort && { effort: safeEffort }),
       ...(safeModel && { model: safeModel }),
+      ...(safeModelRouting && { modelRouting: true }),
+      ...(safeModelRoutingRankId && { modelRoutingRankId: safeModelRoutingRankId }),
       // Boolean-validated at the route boundary; anything else is dropped
       // (same outcome as omitting — the default behavior).
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),

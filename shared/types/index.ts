@@ -76,6 +76,9 @@ export {
 
 export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./providers.js";
 
+export type { ModelRoutingClass, ModelRoutingRank, ModelRoutingConfig } from "./modelRouting.js";
+export { validateModelRoutingConfig, resolveRoutedModel } from "./modelRouting.js";
+
 export type { ContactChannel, UserContactInfo, NotifiableChannel } from "./userContact.js";
 
 export type {

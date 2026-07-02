@@ -41,6 +41,13 @@ export interface QuickCompletionOptions {
   systemPrompt?: string;
   /** Model to use. Auto-routes to latest version. Default: "haiku". */
   model?: QuickModel;
+  /**
+   * OpenRouter-only: an explicit OR slug/alias to run this completion on,
+   * overriding the {@link QuickModel} → OR-slug mapping. Ignored on other
+   * providers. Used by model routing's classifier call, which runs on a
+   * user-configured classifier model rather than a fixed haiku/sonnet/opus tier.
+   */
+  openRouterModel?: string;
   /** Claude Code tools to make available alongside return_result. Default: [] (none). */
   tools?: string[];
   /** Effort level for reasoning. Default: "low". */
@@ -130,7 +137,11 @@ const QUICK_MODEL_TO_OPENROUTER: Record<QuickModel, string> = {
  * {@link isOpenRouterConfigured} is true, but the explicit check keeps the
  * failure mode legible.
  */
-function buildOpenRouterExtras(model: QuickModel, effort: "low" | "medium" | "high"): OpenRouterOptionsExtras {
+function buildOpenRouterExtras(
+  model: QuickModel,
+  effort: "low" | "medium" | "high",
+  modelOverride?: string,
+): OpenRouterOptionsExtras {
   const s = getAgentSettings();
   const apiKey = s.openRouterApiKey?.trim();
   if (!apiKey) {
@@ -139,7 +150,7 @@ function buildOpenRouterExtras(model: QuickModel, effort: "low" | "medium" | "hi
   return {
     apiKey,
     ...(s.openRouterBaseUrl && { baseUrl: s.openRouterBaseUrl }),
-    model: QUICK_MODEL_TO_OPENROUTER[model],
+    model: modelOverride?.trim() || QUICK_MODEL_TO_OPENROUTER[model],
     ...(s.openRouterLogsRoot && { logsRoot: s.openRouterLogsRoot }),
     ...(typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd) && { maxBudgetUsd: s.openRouterMaxBudgetUsd }),
     // quickCompletion's effort union ("low"|"medium"|"high") is a subset of the
@@ -288,7 +299,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
         allowDangerouslySkipPermissions: true,
         // OR-specific config the OpenRouter adapter's optionsAdapter requires.
         // Claude-code ignores this key, so it's safe to include only for OR.
-        ...(isOpenRouter && { openRouter: buildOpenRouterExtras(model, effort) }),
+        ...(isOpenRouter && { openRouter: buildOpenRouterExtras(model, effort, opts.openRouterModel) }),
         env: {
           ...process.env,
           // Prevent "cannot be launched inside another Claude Code session" errors

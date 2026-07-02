@@ -261,6 +261,11 @@ export function translateEvent(event: AgentCoreEvent): AgentEvent | AgentEvent[]
       // carrying the same message in `reason`.
       return null;
   }
+  // Defensive fallback: any AgentCoreEvent variant not handled above is dropped
+  // (consistent with this function's contract of returning null for variants
+  // that shouldn't surface). Keeps translation total as the harness's event
+  // union evolves.
+  return null;
 }
 
 function buildUsage(event: Extract<AgentCoreEvent, { type: "stream_complete" }>): TokenUsage | null {

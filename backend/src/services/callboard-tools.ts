@@ -44,6 +44,8 @@ type MessageSender = (opts: {
   defaultPermissions?: any;
   provider?: "claude-code" | "openrouter" | "codex";
   model?: string;
+  modelRouting?: boolean;
+  modelRoutingRankId?: string;
   requireExplicitCompletion?: boolean;
 }) => Promise<import("events").EventEmitter>;
 
@@ -603,6 +605,8 @@ export function buildCallboardToolsSpec(
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
               provider: providerModel.provider,
               ...(providerModel.model && { model: providerModel.model }),
+              ...(providerModel.modelRouting && { modelRouting: true }),
+              ...(providerModel.modelRoutingRankId && { modelRoutingRankId: providerModel.modelRoutingRankId }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
             });
 

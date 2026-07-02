@@ -22,6 +22,8 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
+import { buildModelRoutingToolsSpec } from "./model-routing-tools.js";
+import { classifyAndResolve, getUsableRoutingConfig } from "./model-routing.js";
 import { getRun as getJobRun } from "./job-store.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { getProxy, ensureCallerEnrolled } from "./proxy-singleton.js";
@@ -702,6 +704,16 @@ interface SendMessageOptions {
    */
   model?: string;
   /**
+   * Model routing (OpenRouter-only). When true AND provider is "openrouter" AND
+   * the global model-routing config is enabled/usable, a classifier picks the
+   * model for this new chat from the first prompt (and a `reclassify_model` tool
+   * is exposed to the agent). Only honored for new chats — persisted into
+   * metadata so follow-ups keep routing. Default: false (current behavior).
+   */
+  modelRouting?: boolean;
+  /** The chosen model-routing rank/tier id (paired with modelRouting). */
+  modelRoutingRankId?: string;
+  /**
    * When true, the session is not considered done until it explicitly calls
    * a completion tool: objective_complete (injected for this run) for normal
    * sessions, or complete_job_step for job-step sessions. If the message
@@ -800,6 +812,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // chats pass it to the SDK as options.model. Ignored for other
       // providers (codex/mock).
       ...(opts.model && (opts.provider === "openrouter" || (opts.provider ?? "claude-code") === "claude-code") && { model: opts.model }),
+      // Pin model routing (OpenRouter-only). When on, the classifier below picks
+      // the model for this chat and a reclassify_model tool is exposed. Follow-up
+      // messages inherit the flag + chosen rank so re-classification keeps working.
+      ...(opts.modelRouting && opts.provider === "openrouter" && { modelRouting: true }),
+      ...(opts.modelRouting && opts.provider === "openrouter" && opts.modelRoutingRankId && { modelRoutingRankId: opts.modelRoutingRankId }),
       // Pin the explicit-completion requirement so follow-up messages to
       // this chat keep nudging for objective_complete without every caller
       // having to re-thread the flag.
@@ -943,6 +960,41 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }
     } catch (err: any) {
       log.error(`Failed to build objective-tools server: ${err.message}`);
+    }
+  }
+
+  // ── Model routing (OpenRouter-only) ──
+  // For NEW routed chats, classify the first prompt to pick the model before the
+  // OpenRouter config block below reads initialMetadata.model. The switch is
+  // pinned into metadata so subsequent turns reuse it without re-classifying.
+  // The reclassify_model tool (injected below) handles mid-conversation changes.
+  if (isNewChat && providerKind === "openrouter" && initialMetadata.modelRouting) {
+    const promptText = typeof prompt === "string" ? prompt : null;
+    if (promptText) {
+      try {
+        const decision = await classifyAndResolve(promptText, initialMetadata.modelRoutingRankId);
+        if (decision) {
+          initialMetadata.modelRoutingClassId = decision.classId;
+          if (decision.model) initialMetadata.model = decision.model;
+        }
+      } catch (err: any) {
+        log.warn(`Model routing classification failed: ${err.message} — using default model`);
+      }
+    }
+  }
+
+  // ── Model routing tools: injected only for routed OpenRouter chats ──
+  if (providerKind === "openrouter" && initialMetadata.modelRouting && getUsableRoutingConfig()) {
+    try {
+      const spec = buildModelRoutingToolsSpec(() => trackingId);
+      const server = agentProvider.buildToolServer(spec);
+      if (server) {
+        mcpServers["model-routing"] = server;
+        allowedTools.push("mcp__model-routing__*");
+        log.info("Injected model-routing MCP server (reclassify_model)");
+      }
+    } catch (err: any) {
+      log.error(`Failed to build model-routing server: ${err.message}`);
     }
   }
 

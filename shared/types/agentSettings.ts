@@ -1,4 +1,5 @@
 import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "./openrouterCatalog.js";
+import type { ModelRoutingConfig } from "./modelRouting.js";
 
 export interface AgentSettings {
   /** @deprecated Use localMcpConfigDir / remoteMcpConfigDir instead. Kept as fallback. */
@@ -167,6 +168,16 @@ export interface AgentSettings {
    * {@link openRouterModelParamsDefault} at run time.
    */
   openRouterModelParamProfiles?: Record<string, OpenRouterParamProfile>;
+
+  /**
+   * Model Routing (OpenRouter-only). When present and `enabled`, new OpenRouter
+   * chats can opt into classifier-driven model selection: a cheap classifier
+   * model picks a task CLASS from the first prompt, which combines with the
+   * chat's chosen RANK (tier) to select the model via a class×rank matrix. See
+   * {@link ModelRoutingConfig}. Absent/`enabled:false` ⇒ feature unavailable
+   * (current behavior — chats use their fixed selected/default model).
+   */
+  modelRouting?: ModelRoutingConfig;
 
   // ── Codex (alternative provider, subscription-auth) ───────────────
   // Populated when the user enables the OpenAI Codex provider in

@@ -10,8 +10,8 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
-import { validateServerTools, validateParamProfile } from "shared/types/index.js";
+import type { OpenRouterServerToolConfig, OpenRouterParamProfile, ModelRoutingConfig } from "shared/types/index.js";
+import { validateServerTools, validateParamProfile, validateModelRoutingConfig } from "shared/types/index.js";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases, listEnrolledCallers, deleteEnrolledCaller } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
@@ -71,6 +71,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterServerTools,
     openRouterModelParamsDefault,
     openRouterModelParamProfiles,
+    modelRouting,
     codexAuthMode,
     codexApiKey,
     codexBaseUrl,
@@ -224,6 +225,22 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     normalizedParamProfiles = Object.keys(cleaned).length > 0 ? cleaned : undefined;
   }
 
+  // Validate the model-routing config. Errors 400 before anything is written.
+  // `null` explicitly clears the config; a valid object is normalized/cleaned.
+  let normalizedModelRouting: ModelRoutingConfig | undefined | null;
+  if (modelRouting !== undefined) {
+    if (modelRouting === null) {
+      normalizedModelRouting = null;
+    } else {
+      const { value, errors } = validateModelRoutingConfig(modelRouting);
+      if (errors.length > 0) {
+        res.status(400).json({ error: errors.join("; ") });
+        return;
+      }
+      normalizedModelRouting = value;
+    }
+  }
+
   // Codex enum fields — validate against the allowed values; an unrecognized
   // value clears the override (falls back to the default at consume time).
   const normalizeCodexAuthMode = (v: unknown): "subscription" | "api-key" | undefined => (v === "subscription" || v === "api-key" ? v : undefined);
@@ -293,6 +310,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterServerTools !== undefined && { openRouterServerTools: normalizedServerTools }),
       ...(openRouterModelParamsDefault !== undefined && { openRouterModelParamsDefault: normalizedParamsDefault }),
       ...(openRouterModelParamProfiles !== undefined && { openRouterModelParamProfiles: normalizedParamProfiles }),
+      ...(modelRouting !== undefined && { modelRouting: normalizedModelRouting ?? undefined }),
       ...(codexAuthMode !== undefined && { codexAuthMode: normalizeCodexAuthMode(codexAuthMode) }),
       ...(codexApiKey !== undefined && { codexApiKey: normalize(codexApiKey) }),
       ...(codexBaseUrl !== undefined && { codexBaseUrl: normalize(codexBaseUrl) }),
