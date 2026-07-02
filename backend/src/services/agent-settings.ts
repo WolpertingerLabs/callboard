@@ -523,6 +523,72 @@ export function resolveAgentKeyAliasForMode(agent: AgentConfig, mode: "local" | 
 }
 
 /**
+ * Whether a caller alias is fully enrolled (has both public keys) for a mode.
+ */
+function isCallerEnrolled(alias: string, mode: "local" | "remote"): boolean {
+  return discoverKeyAliases(mode).some((a) => a.alias === alias && a.hasSigningPub && a.hasExchangePub);
+}
+
+/**
+ * Resolve the default caller alias for regular (non-agent) sessions in an
+ * EXPLICIT proxy mode. Regular sessions have no agent to grant them a caller,
+ * so they borrow this one.
+ *
+ * Semantics of the per-mode `defaultCaller{Local,Remote}` setting:
+ *   - undefined  → not configured; fall back to the built-in "default" caller
+ *                  when it is still enrolled (legacy / out-of-box behavior).
+ *   - ""         → explicitly no default; returns undefined (no proxy access).
+ *   - "<alias>"  → that caller, when still enrolled; otherwise undefined.
+ */
+export function resolveDefaultCallerForMode(mode: "local" | "remote"): string | undefined {
+  const settings = loadSettings();
+  const field = mode === "remote" ? settings.defaultCallerRemote : settings.defaultCallerLocal;
+
+  if (field !== undefined) {
+    const alias = field || undefined; // "" ⇒ explicit no-default
+    return alias && isCallerEnrolled(alias, mode) ? alias : undefined;
+  }
+
+  // Unconfigured: preserve legacy behavior — use the built-in "default" caller
+  // if it exists, otherwise no default.
+  return isCallerEnrolled("default", mode) ? "default" : undefined;
+}
+
+/**
+ * Resolve the default caller alias for the ACTIVE proxy mode. Used when starting
+ * a regular (non-agent) session to give it a drawlatch identity. Returns
+ * undefined when no default is configured — the session then gets no proxy tools.
+ */
+export function resolveDefaultCaller(): string | undefined {
+  const { proxyMode } = loadSettings();
+  return resolveDefaultCallerForMode(proxyMode === "remote" ? "remote" : "local");
+}
+
+/**
+ * Set (or clear) the default caller for regular sessions in a mode
+ * (default: active mode). Pass `null`/empty to explicitly clear the default so
+ * regular sessions have no proxy access. Throws when a non-empty alias is not
+ * an enrolled caller in the target mode.
+ */
+export function setDefaultCaller(alias: string | null, overrideMode?: "local" | "remote"): void {
+  const settings = loadSettings();
+  const mode = overrideMode ?? (settings.proxyMode === "remote" ? "remote" : "local");
+
+  const value = alias || ""; // null/empty ⇒ explicit no-default
+  if (value && !isCallerEnrolled(value, mode)) {
+    throw new Error(`No enrolled caller "${value}" in ${mode} mode`);
+  }
+
+  if (mode === "remote") {
+    settings.defaultCallerRemote = value;
+  } else {
+    settings.defaultCallerLocal = value;
+  }
+  saveSettings(settings);
+  log.info(`Default caller for ${mode} mode set to ${value ? `"${value}"` : "(none)"}`);
+}
+
+/**
  * Fingerprint of an enrolled caller, recomputed from its stored public keys.
  * Uses drawlatch's exact fingerprint algorithm so it matches what was shown at
  * import time. Returns null if the keys are missing or unparseable.
@@ -550,6 +616,7 @@ export function listEnrolledCallers(overrideMode?: "local" | "remote"): Enrolled
 
   const aliases = discoverKeyAliases(mode).filter((a) => a.hasSigningPub && a.hasExchangePub);
   const agents = listAgents();
+  const defaultAlias = resolveDefaultCallerForMode(mode);
 
   return aliases.map(({ alias }) => {
     const boundAgents = agents
@@ -561,6 +628,7 @@ export function listEnrolledCallers(overrideMode?: "local" | "remote"): Enrolled
       fingerprint: getCallerFingerprint(alias, mode),
       agents: boundAgents,
       canDelete: boundAgents.length === 0,
+      isDefault: alias === defaultAlias,
     };
   });
 }
@@ -595,6 +663,18 @@ export function deleteEnrolledCaller(alias: string, overrideMode?: "local" | "re
   }
 
   rmSync(callerDir, { recursive: true, force: true });
+
+  // If this caller was the explicit default for the mode, clear the stale
+  // reference so the setting doesn't point at a deleted caller.
+  const settings = loadSettings();
+  const defaultField = mode === "remote" ? settings.defaultCallerRemote : settings.defaultCallerLocal;
+  if (defaultField === alias) {
+    if (mode === "remote") settings.defaultCallerRemote = "";
+    else settings.defaultCallerLocal = "";
+    saveSettings(settings);
+    log.info(`Cleared default caller for ${mode} mode (deleted caller "${alias}")`);
+  }
+
   log.info(`Deleted enrolled caller "${alias}" (${mode} mode) at ${callerDir}`);
   return { status: "deleted" };
 }
