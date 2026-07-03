@@ -22,7 +22,7 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
-import { buildModelRoutingToolsSpec } from "./model-routing-tools.js";
+import { buildModelRoutingToolsSpec, takePendingModelSwitch, clearPendingModelSwitch } from "./model-routing-tools.js";
 import { classifyAndResolve, getUsableRoutingConfig } from "./model-routing.js";
 import { getRun as getJobRun } from "./job-store.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
@@ -782,6 +782,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       opts.requireExplicitCompletion = true;
     }
     stopSession(opts.chatId);
+    // Drop any model switch left pending from a prior run of this chat — a new
+    // message starts fresh; the loop below re-reads the model from metadata.
+    clearPendingModelSwitch(opts.chatId);
   } else if (opts.folder) {
     // New chat flow — store the actual working directory (may be a worktree).
     // The SDK creates logs keyed by this path, so we must preserve it exactly.
@@ -1533,6 +1536,34 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               }
               break;
             }
+          }
+        }
+
+        // ── Model switch (reclassify_model) ──
+        // If the agent called reclassify_model this turn and it picked a new
+        // model, resume the SAME session on that model right away — the agent
+        // continues its work without the user sending another message. Skipped
+        // on abort / provider error / hard caps (those end the session as usual).
+        if (
+          providerKind === "openrouter" &&
+          !abortController.signal.aborted &&
+          errorDetail === undefined &&
+          !endReason &&
+          queryOpts.options.openRouter
+        ) {
+          const sw = takePendingModelSwitch(trackingId);
+          if (sw) {
+            log.info(`Session ${trackingId} — reclassify_model switch → resuming on model=${sw.model} (class=${sw.classId})`);
+            queryOpts.options.openRouter.model = sw.model;
+            queryOpts.options.resume = sessionId ?? resumeSessionId;
+            const contText =
+              `You switched the active model (classification: ${sw.classId}). ` +
+              `This turn is now running on the newly selected model — continue working on the task.`;
+            queryOpts.prompt = (async function* () {
+              yield { type: "user" as const, message: { role: "user" as const, content: contText } };
+            })();
+            sessionId = null;
+            continue;
           }
         }
 
