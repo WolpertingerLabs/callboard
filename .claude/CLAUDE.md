@@ -2,7 +2,7 @@
 
 ## Development
 
-- When installing dependencies on a branch or worktree, use `npm install --include=dev` — without `--include=dev`, devDependencies (TypeScript, Vite, etc.) won't be installed and the build will fail.
+- Installing dependencies: `npm install` should install devDependencies (TypeScript, Vite, etc.) normally. The historical need for `npm install --include=dev` came from the callboard daemon leaking `NODE_ENV=production` into agent shells (npm then omits devDeps and the `prepare` build fails). That leak is fixed at the spawn boundary (`backend/src/agents/agentEnvPolicy.ts`), but the fix only applies to agents spawned after a daemon rebuild + `callboard restart`. **Check before relying on this:** run `echo $NODE_ENV` — if it prints `production`, the current shell predates the fix, so use `npm install --include=dev`; if it's empty, plain `npm install` works and this note can be removed.
 - When running the development server, always run it in the background using `run_in_background: true` so you can test the functionality while it's running
 
 ## Production Deployment
