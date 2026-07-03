@@ -391,6 +391,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           const ranks = [...cfg.ranks].sort((a, b) => a.order - b.order);
           setPendingModelRoutingRankId(cfg.defaultRankId || ranks[0]?.id || "");
         }
+        // Default the router ON for a new chat when routing is enabled globally
+        // and the New Chat panel didn't explicitly pass a choice — matches the
+        // panel's default so routing engages once configured (opt-out per chat).
+        if (cfg?.enabled && newChatModelRouting === undefined) {
+          setPendingModelRouting(true);
+        }
       })
       .catch(() => {});
     return () => {
