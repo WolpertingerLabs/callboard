@@ -262,6 +262,11 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         if (cfg) {
           const ranks = [...cfg.ranks].sort((a, b) => a.order - b.order);
           setModelRoutingRankId(cfg.defaultRankId || ranks[0]?.id || "");
+          // Default the per-chat router toggle ON when routing is enabled
+          // globally, so configuring it in Settings actually takes effect for
+          // new OpenRouter chats (opt-out per chat) rather than silently
+          // requiring the toggle to be flipped every time.
+          setModelRouting(cfg.enabled);
         }
       })
       .catch(() => {});

@@ -28,6 +28,7 @@ import {
   getMessages,
   getPending,
   getSystemInfo,
+  getAgentSettings,
   respondToChat,
   uploadImages,
   uploadImagesOnly,
@@ -62,6 +63,7 @@ import ChatDebugPanel from "../components/ChatDebugPanel";
 import JobRunPanel from "../components/JobRunPanel";
 import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions, type EffortLevel } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
+import type { ModelRoutingConfig } from "shared/types/index.js";
 import { getActivePlugins } from "../utils/plugins";
 
 interface ToolGroup {
@@ -370,6 +372,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [pendingEffort, setPendingEffort] = useState<EffortLevel | undefined | null>(null);
   // Whether the composer-side model/effort popover is open.
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
+
+  // Model Routing (OpenRouter-only). Loaded from agent settings so the composer
+  // popover can offer the "use model router" toggle when composing a NEW chat.
+  // Only meaningful for new OpenRouter chats — routing is decided at creation.
+  const [routingConfig, setRoutingConfig] = useState<ModelRoutingConfig | null>(null);
+  const [pendingModelRouting, setPendingModelRouting] = useState<boolean>(newChatModelRouting === true);
+  const [pendingModelRoutingRankId, setPendingModelRoutingRankId] = useState<string>(newChatModelRoutingRankId ?? "");
+  const routingAvailable = !id && chatProvider === "openrouter" && !!routingConfig?.enabled && routingConfig.ranks.length > 0;
+  useEffect(() => {
+    let cancelled = false;
+    getAgentSettings()
+      .then((s) => {
+        if (cancelled) return;
+        const cfg = s.modelRouting ?? null;
+        setRoutingConfig(cfg);
+        if (cfg && !pendingModelRoutingRankId) {
+          const ranks = [...cfg.ranks].sort((a, b) => a.order - b.order);
+          setPendingModelRoutingRankId(cfg.defaultRankId || ranks[0]?.id || "");
+        }
+        // Default the router ON for a new chat when routing is enabled globally
+        // and the New Chat panel didn't explicitly pass a choice — matches the
+        // panel's default so routing engages once configured (opt-out per chat).
+        if (cfg?.enabled && newChatModelRouting === undefined) {
+          setPendingModelRouting(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Clear any pending change when navigating to a different chat — selection
   // is per-chat, not global.
@@ -1283,12 +1317,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatRequireCompletion === true) {
             requestBody.requireExplicitCompletion = true;
           }
-          // Model routing — OpenRouter-only opt-in. Server drops it on any
-          // other provider, so it's safe to send whenever the panel set it.
-          if (newChatModelRouting === true && newChatProvider === "openrouter") {
+          // Model routing — OpenRouter-only opt-in. Reflects the composer's
+          // "use model router" toggle (initialized from the New Chat panel's
+          // choice). Server drops it on any other provider.
+          if (pendingModelRouting && chatProvider === "openrouter") {
             requestBody.modelRouting = true;
-            if (newChatModelRoutingRankId) {
-              requestBody.modelRoutingRankId = newChatModelRoutingRankId;
+            if (pendingModelRoutingRankId) {
+              requestBody.modelRoutingRankId = pendingModelRoutingRankId;
             }
           }
 
@@ -1424,6 +1459,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatModel,
       newChatRequireCompletion,
       pendingModel,
+      pendingModelRouting,
+      pendingModelRoutingRankId,
       chatProvider,
       readSSE,
       activePluginIds,
@@ -2905,6 +2942,46 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   codexUseOpenRouter={codexUseOpenRouter}
                   onOpenApiSettings={() => navigate("/settings/api")}
                 />
+                {/* Model Routing — OpenRouter-only, new chats only */}
+                {routingAvailable && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={pendingModelRouting}
+                        onChange={(e) => setPendingModelRouting(e.target.checked)}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Use model router</span>
+                      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— classify the prompt to pick the model</span>
+                    </label>
+                    {pendingModelRouting && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, paddingLeft: 24 }}>
+                        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Tier</span>
+                        <select
+                          value={pendingModelRoutingRankId}
+                          onChange={(e) => setPendingModelRoutingRankId(e.target.value)}
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 8,
+                            border: "1px solid var(--border)",
+                            background: "var(--surface)",
+                            color: "var(--text)",
+                            fontSize: 13,
+                          }}
+                        >
+                          {[...(routingConfig?.ranks ?? [])]
+                            .sort((a, b) => a.order - b.order)
+                            .map((r) => (
+                              <option key={r.id} value={r.id}>
+                                {r.label}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>
               </div>
             </>
