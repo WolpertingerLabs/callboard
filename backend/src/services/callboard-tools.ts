@@ -25,6 +25,7 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
+import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -1218,6 +1219,12 @@ export function buildCallboardToolsSpec(
             via: "chat",
           })
         : []),
+
+      // ── Model Routing config: view/edit the global routing setup ────
+      // Available in every session (the config is global, not per-chat).
+      // Distinct from reclassify_model (model-routing-tools.ts), which is
+      // per-chat and only injected for routed chats.
+      ...buildModelRoutingConfigTools(),
     ],
   };
 }
