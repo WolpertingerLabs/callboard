@@ -254,11 +254,15 @@ export function translateEvent(event: AgentCoreEvent): AgentEvent | AgentEvent[]
         };
       }
       return null;
+    case "message_item_start":
     case "turn_start":
     case "error":
-      // Turn starts roll up into the final stream_complete; bridge `error`
-      // events are always followed by a stream_complete with status: "error"
-      // carrying the same message in `reason`.
+      // Message-item starts are lifecycle beacons only — the actual message /
+      // reasoning content still arrives via text_delta / reasoning_delta, so
+      // the start marker is dropped. Turn starts roll up into the final
+      // stream_complete; bridge `error` events are always followed by a
+      // stream_complete with status: "error" carrying the same message in
+      // `reason`.
       return null;
   }
 }

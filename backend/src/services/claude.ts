@@ -34,6 +34,7 @@ import {
   getClaudeCodeExecutablePath,
   resolveOpenRouterModel,
 } from "./agent-settings.js";
+import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -1087,7 +1088,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(hookOpts ? { hooks: hookOpts } : {}),
       ...(systemPromptAppend ? { systemPrompt: { type: "preset", preset: "claude_code", append: systemPromptAppend } } : {}),
       env: {
-        ...process.env,
+        // Inherit the daemon env, MINUS callboard/drawlatch server-internal vars
+        // (auth secrets, NODE_ENV, PORT, data dirs, drawlatch/event-watcher wiring —
+        // see agentEnvPolicy.ts). Intentional overrides below are applied AFTER, so
+        // anything an agent legitimately needs (API keys, MCP env) still lands.
+        ...sanitizeInheritedAgentEnv(process.env),
         // Propagate resolved MCP server env vars to the CLI subprocess so that plugins
         // loaded by the CLI can resolve ${VAR} templates in their .mcp.json files.
         ...(mcpOpts?.resolvedEnvVars ?? {}),
