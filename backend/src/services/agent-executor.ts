@@ -67,6 +67,14 @@ export interface ExecuteAgentOptions {
    * — ends-without-calling gets nudged to continue. Default: false.
    */
   requireExplicitCompletion?: boolean;
+  /**
+   * Chat that spawned this agent session — links the new chat into the
+   * cross-engine chat parentage tree. Skipped when the parent has no
+   * stored record.
+   */
+  parentChatId?: string;
+  /** Free-form role label for the new chat's tree node (e.g. "agent-deploy"). */
+  chatRole?: string;
 }
 
 export interface ExecuteAgentResult {
@@ -126,6 +134,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       ...(model && { model }),
       ...(effort && { effort }),
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),
+      ...(opts.parentChatId && { parentChatId: opts.parentChatId, ...(opts.chatRole && { chatRole: opts.chatRole }) }),
     });
 
     // Wait for chat_created event to get chatId

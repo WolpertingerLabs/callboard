@@ -49,6 +49,7 @@ import {
 import { useIsSessionActive } from "../contexts/SessionContext";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
+import ChatTreeIndicator from "../components/ChatTreeIndicator";
 import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
@@ -130,6 +131,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // honored on creation — persisted into chat metadata, so follow-up messages
   // inherit it server-side without re-threading.
   const newChatRequireCompletion = (location.state as any)?.requireExplicitCompletion as boolean | undefined;
+  // Parentage-tree linkage for new chats spawned from an existing chat
+  // (e.g. the "New linked chat" action in ChatTreeIndicator). Forwarded to
+  // the new-chat request so the backend stamps parentChatId/rootChatId.
+  const newChatParentId = (location.state as any)?.parentChatId as string | undefined;
+  const newChatRole = (location.state as any)?.chatRole as string | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight message is passed
   // via router state so it survives the component remount.
@@ -1278,6 +1284,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatRequireCompletion === true) {
             requestBody.requireExplicitCompletion = true;
           }
+          if (newChatParentId) {
+            requestBody.parentChatId = newChatParentId;
+            if (newChatRole) {
+              requestBody.chatRole = newChatRole;
+            }
+          }
 
           res = await fetch("/api/chats/new/message", {
             method: "POST",
@@ -1754,6 +1766,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 the composer's hamburger menu (see PromptInput's `menuItems`
                 prop below). */}
             <ProviderBadge provider={chatProvider} />
+            {/* Parentage-tree indicator — parent breadcrumb + tree dropdown
+                for chats linked into a cross-engine chat tree. Renders
+                nothing when the chat has no lineage and no descendants. */}
+            {id && <ChatTreeIndicator key={id} chatId={id} folder={chat?.folder} compact={isMobile} />}
             {/* Spend indicator — shown for OR chats whenever any cost data is
                 available. Derived from the live messages array so it updates
                 incrementally without waiting for a run to complete.

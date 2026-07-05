@@ -28,6 +28,8 @@ interface LocalStorageData {
   /** Desktop sidebar width in pixels when expanded. Clamped to >= SIDEBAR_MIN_WIDTH on read. */
   sidebarWidth?: number;
   sidebarViewMode?: "folders" | "chats" | "jobs";
+  /** Chat list presentation: flat list (default) or parentage-tree groups. */
+  chatListLayout?: "flat" | "tree";
   folderMaxAgeDays?: number;
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
@@ -348,6 +350,19 @@ export function getSidebarViewMode(): SidebarViewMode {
 export function saveSidebarViewMode(mode: SidebarViewMode): void {
   const data = getStorageData();
   data.sidebarViewMode = mode;
+  setStorageData(data);
+}
+
+export type ChatListLayout = "flat" | "tree";
+
+export function getChatListLayout(): ChatListLayout {
+  const data = getStorageData();
+  return data.chatListLayout ?? "flat";
+}
+
+export function saveChatListLayout(layout: ChatListLayout): void {
+  const data = getStorageData();
+  data.chatListLayout = layout;
   setStorageData(data);
 }
 

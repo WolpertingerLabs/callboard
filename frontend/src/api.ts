@@ -6,6 +6,9 @@ import type {
   Chat,
   ParsedMessage,
   ChatListResponse,
+  ChatTreeAncestor,
+  ChatTreeNode,
+  ChatTreeResponse,
   FolderSummary,
   FolderListResponse,
   PermissionLevel,
@@ -63,6 +66,9 @@ export type {
   Chat,
   ParsedMessage,
   ChatListResponse,
+  ChatTreeAncestor,
+  ChatTreeNode,
+  ChatTreeResponse,
   FolderSummary,
   FolderListResponse,
   PermissionLevel,
@@ -146,6 +152,12 @@ export async function listFolders(maxAgeDays?: number): Promise<FolderListRespon
   if (maxAgeDays !== undefined) params.append("maxAgeDays", maxAgeDays.toString());
   const res = await fetch(`${BASE}/chats/folders${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list folders");
+  return res.json();
+}
+
+export async function getChatTree(id: string): Promise<ChatTreeResponse> {
+  const res = await fetch(`${BASE}/chats/${id}/tree`);
+  await assertOk(res, "Failed to get chat tree");
   return res.json();
 }
 

@@ -39,6 +39,7 @@ import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
 import { sessionRegistry } from "./session-registry.js";
+import { resolveParentage } from "./chat-lineage.js";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -720,6 +721,20 @@ interface SendMessageOptions {
    * (default: 3).
    */
   maxNudges?: number;
+  /**
+   * Chat id of the chat that spawned this one. Only honored for new chats —
+   * stamps `parentChatId`/`rootChatId` into the new chat's metadata, linking
+   * it into the cross-engine chat parentage tree (get_chat_tree,
+   * GET /api/chats/:id/tree, sidebar tree view). Silently skipped when the
+   * parent has no file-storage record (e.g. a still-temp tracking id).
+   */
+  parentChatId?: string;
+  /**
+   * Free-form role label (≤40 chars) for this chat's node in the parentage
+   * tree, e.g. "subagent", "monitor", "router", "fork", "engine-switch".
+   * Only honored for new chats, and only when parentage resolves.
+   */
+  chatRole?: string;
 }
 
 /** Default number of times a requiring session is nudged to continue before giving up. */
@@ -794,8 +809,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // codex (→ Codex `modelReasoningEffort`); their config blocks below pull it
       // out of metadata. The stream.ts boundary already drops `effort` when the
       // paired provider can't use it, so this second guard is defense-in-depth.
-      ...(opts.effort &&
-        (opts.provider === "openrouter" || opts.provider === "codex") && { effort: opts.effort }),
+      ...(opts.effort && (opts.provider === "openrouter" || opts.provider === "codex") && { effort: opts.effort }),
       // Pin the per-chat model alongside provider/effort. Meaningful for both
       // user-facing providers: openrouter chats prefer it over the global
       // agentSettings.openRouterModel (OR config block below); claude-code
@@ -807,6 +821,17 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // having to re-thread the flag.
       ...(opts.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
     };
+    // Link this chat into the parentage tree when spawned by another chat.
+    // resolveParentage returns null when the parent has no stored record
+    // (e.g. temp tracking id) — in that case the chat is simply unlinked.
+    if (opts.parentChatId) {
+      const lineage = resolveParentage(opts.parentChatId);
+      if (lineage) {
+        initialMetadata.parentChatId = lineage.parentChatId;
+        initialMetadata.rootChatId = lineage.rootChatId;
+        if (opts.chatRole) initialMetadata.chatRole = opts.chatRole.slice(0, 40);
+      }
+    }
     // Record initial branch for drift detection on subsequent messages
     const gitInfo = getGitInfo(folder);
     if (gitInfo.branch) {
@@ -1012,7 +1037,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
 
     try {
-      const spec = buildAgentToolsSpec(opts.agentAlias);
+      const spec = buildAgentToolsSpec(opts.agentAlias, () => trackingId);
       const server = agentProvider.buildToolServer(spec);
       if (server) {
         mcpServers["callboard"] = server;
@@ -1196,8 +1221,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // block. Requires its dedicated OR key (→ OPENROUTER_API_KEY).
     const useOpenRouter = Boolean(agentSettings.codexUseOpenRouter && agentSettings.codexOpenRouterApiKey?.trim());
     if (agentSettings.codexUseOpenRouter && !agentSettings.codexOpenRouterApiKey?.trim()) {
-      const message =
-        "Codex chat selected with OpenRouter routing, but no OpenRouter API key is configured in Settings → API.";
+      const message = "Codex chat selected with OpenRouter routing, but no OpenRouter API key is configured in Settings → API.";
       log.error(message);
       throw new Error(message);
     }
@@ -1211,8 +1235,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Per-chat model override (persisted to metadata) takes precedence over the
     // global codexModel default. Covers new chats (just written above) and
     // resumed chats (loaded from disk).
-    const requestedModel =
-      (typeof initialMetadata.model === "string" && initialMetadata.model.trim()) || agentSettings.codexModel?.trim();
+    const requestedModel = (typeof initialMetadata.model === "string" && initialMetadata.model.trim()) || agentSettings.codexModel?.trim();
     // Per-chat reasoning effort (the OR-style control), persisted to metadata the
     // same way OR's is — maps onto Codex's modelReasoningEffort in the
     // optionsAdapter.
@@ -1224,12 +1247,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     queryOpts.options.codex = {
       authMode,
       ...(useOpenRouter && { useOpenRouter: true }),
-      ...(!useOpenRouter &&
-        authMode === "api-key" &&
-        agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
-      ...(!useOpenRouter &&
-        authMode === "api-key" &&
-        agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
+      ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
+      ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
       ...(chatEffort && { reasoningEffort: chatEffort }),

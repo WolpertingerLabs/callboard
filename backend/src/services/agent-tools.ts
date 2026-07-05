@@ -48,6 +48,8 @@ type MessageSender = (opts: {
   defaultPermissions?: any;
   provider?: "claude-code" | "openrouter" | "codex";
   model?: string;
+  parentChatId?: string;
+  chatRole?: string;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -71,8 +73,12 @@ function getSendMessage(): MessageSender {
  * Build a tool-server spec scoped to a specific agent.
  * The agentAlias is baked into the closure so scoped tools (cron jobs, activity)
  * only access that agent's data. Orchestration tools can target other agents.
+ *
+ * `getChatId` (when provided) exposes the calling chat's id so orchestration
+ * tools (talk_to_agent, deploy_agent) can link spawned sessions into the
+ * chat parentage tree.
  */
-export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
+export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string): ToolServerSpec {
   const agentConfig = getAgent(agentAlias);
   const agentTimezone = agentConfig?.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -128,7 +134,8 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               };
             })();
 
-            // 6. Start target agent session
+            // 6. Start target agent session (linked into the caller's chat
+            // parentage tree when the calling chat is resolvable)
             const emitter = await sendMessage({
               prompt: promptIterable,
               folder: workspacePath,
@@ -138,6 +145,7 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
               provider: providerModel.provider,
               ...(providerModel.model && { model: providerModel.model }),
+              ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-consult" }),
             });
 
             // 7. Wait for chat_created to get chatId
@@ -214,7 +222,8 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
 
-            // 2. Execute the agent using the shared helper
+            // 2. Execute the agent using the shared helper (linked into the
+            // caller's chat parentage tree when the calling chat is resolvable)
             const result = await executeAgent({
               agentAlias: args.targetAlias,
               prompt: args.prompt,
@@ -223,6 +232,7 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
               maxTurns: args.maxTurns,
               provider: providerModel.provider,
               ...(providerModel.model && { model: providerModel.model }),
+              ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-deploy" }),
             });
 
             if (!result) {

@@ -49,6 +49,8 @@ streamRouter.post("/new/message", async (req, res) => {
             agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
             model: { type: "string", description: "Model for the chat's provider. OpenRouter: a model slug (e.g. 'anthropic/claude-opus-4.7') or alias. Claude Code: an Anthropic model alias ('opus', 'sonnet', 'haiku', 'opusplan') or full model ID (e.g. 'claude-sonnet-4-6'). Omit to use the provider's global default." },
             requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
+            parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
+            chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the new chat's tree node, e.g. 'subagent', 'monitor', 'engine-switch'. Only used with parentChatId." },
             branchConfig: {
               type: "object",
               properties: {
@@ -81,6 +83,8 @@ streamRouter.post("/new/message", async (req, res) => {
     effort,
     model,
     requireExplicitCompletion,
+    parentChatId,
+    chatRole,
   } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
@@ -172,6 +176,13 @@ streamRouter.post("/new/message", async (req, res) => {
       // Boolean-validated at the route boundary; anything else is dropped
       // (same outcome as omitting — the default behavior).
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),
+      // Parentage-tree linkage — sendMessage skips it silently when the
+      // parent chat has no stored record.
+      ...(typeof parentChatId === "string" &&
+        parentChatId && {
+          parentChatId,
+          ...(typeof chatRole === "string" && chatRole && { chatRole }),
+        }),
     });
 
     writeSSEHeaders(res);
