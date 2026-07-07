@@ -26,6 +26,7 @@ import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
+import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -45,6 +46,8 @@ type MessageSender = (opts: {
   defaultPermissions?: any;
   provider?: "claude-code" | "openrouter" | "codex";
   model?: string;
+  modelRouting?: boolean;
+  modelRoutingRankId?: string;
   requireExplicitCompletion?: boolean;
   parentChatId?: string;
   chatRole?: string;
@@ -625,6 +628,8 @@ export function buildCallboardToolsSpec(
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
               provider: providerModel.provider,
               ...(providerModel.model && { model: providerModel.model }),
+              ...(providerModel.modelRouting && { modelRouting: true }),
+              ...(providerModel.modelRoutingRankId && { modelRoutingRankId: providerModel.modelRoutingRankId }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
               ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
             });
@@ -1295,6 +1300,12 @@ export function buildCallboardToolsSpec(
             via: "chat",
           })
         : []),
+
+      // ── Model Routing config: view/edit the global routing setup ────
+      // Available in every session (the config is global, not per-chat).
+      // Distinct from reclassify_model (model-routing-tools.ts), which is
+      // per-chat and only injected for routed chats.
+      ...buildModelRoutingConfigTools(),
     ],
   };
 }
