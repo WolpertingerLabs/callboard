@@ -701,10 +701,17 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
           userTimezone: z.string().optional().describe("User's timezone (e.g. 'America/New_York')"),
           userLocation: z.string().optional().describe("User's location"),
           userContext: z.string().optional().describe("Additional context about the user"),
+          // IMPORTANT: must stay `.optional()`, NOT `.nullish()`. A nullable
+          // union serializes to JSON Schema `anyOf: [string, null]`, and
+          // OpenRouter silently drops ALL `openrouter:*` server tools
+          // (web_search/web_fetch/datetime) from any request whose toolset
+          // contains an `anyOf` anywhere in a tool's parameters. The empty
+          // string alone is the clear sentinel (it survives JSON
+          // serialization; only `undefined` ever got lost in transit).
           mcpKeyAlias: z
             .string()
-            .nullish()
-            .describe("MCP secure proxy key alias for this agent. Pass an empty string or null to clear/unbind the alias; omit to leave it unchanged."),
+            .optional()
+            .describe("MCP secure proxy key alias for this agent. Pass an empty string to clear/unbind the alias; omit to leave it unchanged."),
         },
         async (args) => {
           try {
@@ -734,9 +741,11 @@ export function buildAgentToolsSpec(agentAlias: string): ToolServerSpec {
             };
 
             // Route mcpKeyAlias to the correct per-mode field. An empty string
-            // or null clears the binding (normalized to "" — the "clear"
-            // sentinel routeKeyAliasForPersist honors); omitting the field
-            // (undefined) leaves the existing alias untouched.
+            // clears the binding (the "clear" sentinel routeKeyAliasForPersist
+            // honors); omitting the field (undefined) leaves the existing
+            // alias untouched. `?? ""` also maps a null from older callers to
+            // the clear sentinel (the schema no longer accepts null, but the
+            // handler stays lenient).
             if (args.mcpKeyAlias !== undefined) {
               updated = routeKeyAliasForPersist(updated, args.mcpKeyAlias ?? "");
             } else {
