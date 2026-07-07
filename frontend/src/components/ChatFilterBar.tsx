@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bookmark, SlidersHorizontal, Search, Loader2, Zap } from "lucide-react";
+import { Bookmark, SlidersHorizontal, Search, Loader2, Zap, ListTree } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
 import { hasActiveFilters, type ChatFilters } from "../types/chatFilters";
 
@@ -8,6 +8,8 @@ interface ChatFilterBarProps {
   onToggleBookmark: () => void;
   showTriggered: boolean;
   onToggleTriggered: () => void;
+  treeLayout: boolean;
+  onToggleTreeLayout: () => void;
   filters: ChatFilters;
   onFiltersChange: (filters: ChatFilters) => void;
   searchQuery: string;
@@ -21,6 +23,8 @@ export default function ChatFilterBar({
   onToggleBookmark,
   showTriggered,
   onToggleTriggered,
+  treeLayout,
+  onToggleTreeLayout,
   filters,
   onFiltersChange,
   searchQuery,
@@ -87,6 +91,26 @@ export default function ChatFilterBar({
           title={showTriggered ? "Hide triggered chats" : "Show triggered chats"}
         >
           <Zap size={16} fill={showTriggered ? "currentColor" : "none"} />
+        </button>
+
+        {/* Tree layout toggle — group chats by parentage tree */}
+        <button
+          onClick={onToggleTreeLayout}
+          style={{
+            background: treeLayout ? "var(--accent)" : "var(--bg-secondary)",
+            color: treeLayout ? "var(--text-on-accent)" : "var(--text)",
+            padding: "8px",
+            borderRadius: 6,
+            border: treeLayout ? "none" : "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+          title={treeLayout ? "Flat chat list" : "Group chats by parentage tree"}
+        >
+          <ListTree size={16} />
         </button>
 
         {/* Filter button */}

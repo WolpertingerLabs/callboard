@@ -13,7 +13,7 @@ export type {
   PluginHooksConfig,
 } from "./appPlugins.js";
 
-export type { Chat, ChatListResponse, FolderSummary, FolderListResponse } from "./chat.js";
+export type { Chat, ChatListResponse, FolderSummary, FolderListResponse, ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "./chat.js";
 
 export type { ParsedMessage } from "./message.js";
 

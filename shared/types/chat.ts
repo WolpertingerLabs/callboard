@@ -64,3 +64,44 @@ export interface FolderSummary {
 export interface FolderListResponse {
   folders: FolderSummary[];
 }
+
+// ── Chat parentage tree ─────────────────────────────────────────────
+// Chats spawned by other chats (start_chat_session, forks, engine
+// switches) carry `parentChatId` / `rootChatId` / `chatRole` in their
+// metadata, forming cross-engine trees. These types describe the
+// assembled tree served by GET /api/chats/:id/tree and the
+// get_chat_tree MCP tool.
+
+export interface ChatTreeAncestor {
+  chatId: string;
+  title: string | null;
+  /** Free-form role label (e.g. "subagent", "monitor", "router", "fork"). */
+  role?: string;
+}
+
+export interface ChatTreeNode {
+  chatId: string;
+  title: string | null;
+  /** Free-form role label (e.g. "subagent", "monitor", "router", "fork"). */
+  role?: string;
+  /** "claude-code" | "openrouter" | "codex" */
+  provider: string;
+  status: "ongoing" | "waiting" | "stopped";
+  chatStatus?: string;
+  chatStatusEmoji?: string;
+  folder: string;
+  createdAt: string;
+  updatedAt: string;
+  children: ChatTreeNode[];
+}
+
+export interface ChatTreeResponse {
+  /** The chat the tree was requested for. */
+  targetChatId: string;
+  /** Highest existing ancestor of the target chat. */
+  rootChatId: string;
+  /** Ancestors of the target, ordered root-first (empty when target is the root). */
+  ancestors: ChatTreeAncestor[];
+  /** Full tree rooted at rootChatId. */
+  tree: ChatTreeNode;
+}

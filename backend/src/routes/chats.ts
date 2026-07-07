@@ -7,6 +7,7 @@ import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest } from "../services/claude.js";
+import { buildChatTree } from "../services/chat-lineage.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { createLogger } from "../utils/logger.js";
@@ -616,7 +617,12 @@ chatsRouter.post("/:id/fork", (req, res) => {
   const forkMeta = {
     session_ids: [newSessionId],
     title: baseTitle ? `Fork: ${baseTitle}` : "Fork",
+    // Legacy parent pointer (kept for compat) plus the parentage-tree
+    // fields — the fork becomes a child of the original in the chat tree.
     forkedFrom: chat.id,
+    parentChatId: chat.id,
+    rootChatId: meta.rootChatId || chat.id,
+    chatRole: "fork",
     ...(meta.defaultPermissions && { defaultPermissions: meta.defaultPermissions }),
     ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
     ...(meta.lastBranch && { lastBranch: meta.lastBranch }),
@@ -628,6 +634,27 @@ chatsRouter.post("/:id/fork", (req, res) => {
     res.status(201).json(newChat);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Get the parentage tree for a chat (ancestors + full descendant tree)
+chatsRouter.get("/:id/tree", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Get the chat parentage tree'
+  // #swagger.description = 'Returns the ancestors of this chat and the full tree of related chats spawned from the same root, across all engines. Nodes include chatId, title, role, provider, status, and folder.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "ChatTreeResponse: { targetChatId, rootChatId, ancestors, tree }" } */
+  /* #swagger.responses[404] = { description: "Chat not found or has no stored record" } */
+  try {
+    const chat = findChat(req.params.id, false);
+    const result = buildChatTree(chat?.id ?? req.params.id);
+    if (!result) {
+      return res.status(404).json({ error: "Chat not found or has no stored record" });
+    }
+    res.json(result);
+  } catch (err: any) {
+    log.error(`Error building chat tree for ${req.params.id}: ${err}`);
+    res.status(500).json({ error: "Failed to build chat tree", details: err.message });
   }
 });
 

@@ -5,13 +5,21 @@ import { listChats, deleteChat, toggleBookmark, getDrafts, deleteDraft, type Cha
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
 import ChatListItem from "../components/ChatListItem";
+import ChatTreeList from "../components/ChatTreeList";
 import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { DEFAULT_CHAT_FILTERS, hasActiveFilters, type ChatFilters } from "../types/chatFilters";
-import { initializeSuggestedDirectories, getShowTriggeredChats, saveShowTriggeredChats, type SidebarViewMode } from "../utils/localStorage";
+import {
+  initializeSuggestedDirectories,
+  getShowTriggeredChats,
+  saveShowTriggeredChats,
+  getChatListLayout,
+  saveChatListLayout,
+  type SidebarViewMode,
+} from "../utils/localStorage";
 
 interface ChatListProps {
   activeChatId?: string;
@@ -41,6 +49,7 @@ export default function ChatList({
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
   const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
+  const [treeLayout, setTreeLayout] = useState(() => getChatListLayout() === "tree");
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
@@ -267,6 +276,12 @@ export default function ChatList({
     saveShowTriggeredChats(newValue);
   };
 
+  const handleToggleTreeLayout = () => {
+    const newValue = !treeLayout;
+    setTreeLayout(newValue);
+    saveChatListLayout(newValue ? "tree" : "flat");
+  };
+
   // Client-side filtering for advanced filters and content search
   // Note: triggered chat filtering is now handled server-side via excludeTriggered param
   const filteredChats = useMemo(() => {
@@ -460,6 +475,8 @@ export default function ChatList({
         onToggleBookmark={handleToggleBookmarkFilter}
         showTriggered={showTriggered}
         onToggleTriggered={handleToggleTriggered}
+        treeLayout={treeLayout}
+        onToggleTreeLayout={handleToggleTreeLayout}
         filters={filters}
         onFiltersChange={setFilters}
         searchQuery={searchQuery}
@@ -520,17 +537,28 @@ export default function ChatList({
             {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
           </p>
         )}
-        {filteredChats.map((chat) => (
-          <ChatListItem
-            key={chat.id}
-            chat={chat}
-            isActive={chat.id === activeChatId}
-            onClick={() => handleChatClick(chat)}
-            onDelete={() => handleDelete(chat)}
-            onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
-            sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
+        {treeLayout ? (
+          <ChatTreeList
+            chats={filteredChats}
+            activeChatId={activeChatId}
+            onChatClick={handleChatClick}
+            onDelete={handleDelete}
+            onToggleBookmark={handleToggleBookmark}
+            sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           />
-        ))}
+        ) : (
+          filteredChats.map((chat) => (
+            <ChatListItem
+              key={chat.id}
+              chat={chat}
+              isActive={chat.id === activeChatId}
+              onClick={() => handleChatClick(chat)}
+              onDelete={() => handleDelete(chat)}
+              onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
+              sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
+            />
+          ))
+        )}
 
         {showTriggered && triggeredCount > 0 && (
           <div

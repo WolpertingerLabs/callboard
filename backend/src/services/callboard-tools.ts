@@ -24,6 +24,7 @@ import { customSkillsService, slugifySkillName } from "./custom-skills-service.j
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
+import { buildChatTree, getParentChatId } from "./chat-lineage.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { createLogger } from "../utils/logger.js";
@@ -48,6 +49,8 @@ type MessageSender = (opts: {
   modelRouting?: boolean;
   modelRoutingRankId?: string;
   requireExplicitCompletion?: boolean;
+  parentChatId?: string;
+  chatRole?: string;
 }) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
@@ -546,7 +549,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "start_chat_session",
-        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration. Set onComplete=true to be automatically notified (a new turn in THIS chat) when the spawned session finishes — no polling required.",
+        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration. Set onComplete=true to be automatically notified (a new turn in THIS chat) when the spawned session finishes — no polling required. The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node.",
         {
           prompt: z.string().describe("The task or message for the chat session"),
           folder: z.string().describe("Absolute path to the working directory for the session"),
@@ -565,6 +568,13 @@ export function buildCallboardToolsSpec(
             .optional()
             .describe(
               "If true, the spawned session must explicitly call the objective_complete tool before it is considered done — if its message stream ends without the call, it is re-prompted to continue (up to a cap). Default: false.",
+            ),
+          role: z
+            .string()
+            .max(40)
+            .optional()
+            .describe(
+              'Free-form label for the spawned chat\'s node in the chat parentage tree, e.g. "subagent", "monitor", "router", "engine-switch". Shown in the tree UI and get_chat_tree output.',
             ),
           ...providerModelSchema,
         },
@@ -591,11 +601,23 @@ export function buildCallboardToolsSpec(
 
             const effectiveFolder = branchResult.folder;
 
+            // Resolve the calling chat for parentage linking. getChatId can
+            // return a temp tracking id (`new-<ts>`) for a still-registering
+            // caller — only link when the parent has a real stored record.
+            const callerChatId = getChatId?.();
+            const parentChat = callerChatId ? chatFileService.getChat(callerChatId) : null;
+
+            // Give the child context about its caller so it can pull details
+            // on demand (works across engines — the tools are engine-agnostic).
+            const childPrompt = parentChat
+              ? `${args.prompt}\n\n(Spawned by chat ${parentChat.id}. For caller context, use the callboard get_chat_tree tool or read_session_messages with chatId "${parentChat.id}".)`
+              : args.prompt;
+
             // Build async generator prompt (required when MCP servers are present)
             const promptIterable = (async function* () {
               yield {
                 type: "user" as const,
-                message: { role: "user" as const, content: args.prompt },
+                message: { role: "user" as const, content: childPrompt },
               };
             })();
 
@@ -609,6 +631,7 @@ export function buildCallboardToolsSpec(
               ...(providerModel.modelRouting && { modelRouting: true }),
               ...(providerModel.modelRoutingRankId && { modelRoutingRankId: providerModel.modelRoutingRankId }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
+              ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
             });
 
             // Listen for chat_created to get the chatId
@@ -668,7 +691,13 @@ export function buildCallboardToolsSpec(
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ chatId, status: "started", folder: effectiveFolder, ...(onComplete && { onComplete }) }),
+                  text: JSON.stringify({
+                    chatId,
+                    status: "started",
+                    folder: effectiveFolder,
+                    ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
+                    ...(onComplete && { onComplete }),
+                  }),
                 },
               ],
             };
@@ -1054,6 +1083,14 @@ export function buildCallboardToolsSpec(
           triggered: z.boolean().optional().describe("Filter to automated (true) or manual (false) sessions"),
           updatedAfter: z.string().optional().describe("ISO-8601 date — only chats updated after this time"),
           updatedBefore: z.string().optional().describe("ISO-8601 date — only chats updated before this time"),
+          parentChatId: z
+            .string()
+            .optional()
+            .describe("Filter to direct children of this chat in the parentage tree (folder-scoped — use get_chat_tree for the full cross-folder tree)"),
+          rootChatId: z
+            .string()
+            .optional()
+            .describe("Filter to chats belonging to the tree rooted at this chat (folder-scoped — use get_chat_tree for the full cross-folder tree)"),
           sort: z.enum(["updated", "created"]).optional().describe("Sort field (default: updated)"),
           limit: z.number().optional().describe("Max results to return (default: 10, max: 50)"),
         },
@@ -1075,12 +1112,56 @@ export function buildCallboardToolsSpec(
               });
               allChats.push(...providerResult.chats);
             }
-            const result = { chats: allChats, total: allChats.length };
+
+            // Lineage post-filters — parentage lives in callboard chat
+            // metadata, not in provider transcripts, so filter here instead
+            // of widening the provider search seam.
+            let filtered = allChats;
+            if (args.parentChatId || args.rootChatId) {
+              filtered = allChats.filter((c: any) => {
+                const stored = chatFileService.getChat(c.chatId ?? c.id);
+                if (!stored) return false;
+                let meta: Record<string, any> = {};
+                try {
+                  meta = JSON.parse(stored.metadata || "{}");
+                } catch {}
+                if (args.parentChatId && getParentChatId(meta) !== args.parentChatId) return false;
+                if (args.rootChatId && meta.rootChatId !== args.rootChatId && stored.id !== args.rootChatId) return false;
+                return true;
+              });
+            }
+            const result = { chats: filtered, total: filtered.length };
 
             return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
           } catch (err: any) {
             log.error(`find_chats failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error searching chats: ${err.message}` }] };
+          }
+        },
+      ),
+
+      defineTool(
+        "get_chat_tree",
+        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, openrouter). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats.",
+        {
+          chatId: z.string().optional().describe("Chat ID to get the tree for (default: the current chat)"),
+        },
+        async (args) => {
+          try {
+            const requestedId = args.chatId || getChatId?.();
+            if (!requestedId) {
+              return error("No chat context available — pass chatId explicitly");
+            }
+            // Resolve session ids or chat ids to the stored chat record.
+            const chat = findChat(requestedId, false);
+            const result = buildChatTree(chat?.id ?? requestedId);
+            if (!result) {
+              return error(`Chat "${requestedId}" not found or has no stored record`);
+            }
+            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          } catch (err: any) {
+            log.error(`get_chat_tree failed: ${err.message}`);
+            return { content: [{ type: "text" as const, text: `Error getting chat tree: ${err.message}` }] };
           }
         },
       ),

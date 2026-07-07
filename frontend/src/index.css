@@ -122,6 +122,8 @@
   --chatlist-load-more-bg: var(--surface);
   --chatlist-load-more-text: var(--text);
   --chatlist-load-more-border: var(--border);
+  --chatlist-tree-line: var(--border);
+  --chatlist-tree-group-bg: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
 /* Light mode overrides (applied via data-theme attribute on <html>) */
@@ -238,6 +240,8 @@
   --chatlist-load-more-bg: var(--surface);
   --chatlist-load-more-text: var(--text);
   --chatlist-load-more-border: var(--border);
+  --chatlist-tree-line: var(--border);
+  --chatlist-tree-group-bg: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
 html,
