@@ -52,9 +52,16 @@ interface LocalStorageData {
    * global default from Settings → API". */
   defaultCodexModel?: string;
   /** Whether tool call inputs/results render JSON pretty-printed (true) or
-   * as the raw string (false). Toggled inline from any tool view. */
+   * as the raw string (false). Superseded by {@link jsonViewMode}; kept so
+   * existing stored preferences migrate ("false" → "raw"). */
   jsonPrettyPrint?: boolean;
+  /** How tool call inputs/results render JSON: collapsible key-value tree,
+   * pretty-printed JSON text, or the raw string. Toggled inline from any
+   * tool view. */
+  jsonViewMode?: JsonViewMode;
 }
+
+export type JsonViewMode = "tree" | "pretty" | "raw";
 
 /** Check if a path is inside the Callboard agent-workspaces directory (excluded from recommended folders). */
 function isCallboardWorkspacePath(path: string): boolean {
@@ -280,14 +287,20 @@ export function saveShowTriggeredChats(value: boolean): void {
   setStorageData(data);
 }
 
-export function getJsonPrettyPrint(): boolean {
+export function getJsonViewMode(): JsonViewMode {
   const data = getStorageData();
-  return data.jsonPrettyPrint ?? true;
+  if (data.jsonViewMode === "tree" || data.jsonViewMode === "pretty" || data.jsonViewMode === "raw") {
+    return data.jsonViewMode;
+  }
+  // Migrate the pre-tree boolean preference: an explicit "raw" choice is
+  // preserved; pretty-printing (or no preference) upgrades to the tree view.
+  if (data.jsonPrettyPrint === false) return "raw";
+  return "tree";
 }
 
-export function saveJsonPrettyPrint(value: boolean): void {
+export function saveJsonViewMode(mode: JsonViewMode): void {
   const data = getStorageData();
-  data.jsonPrettyPrint = value;
+  data.jsonViewMode = mode;
   setStorageData(data);
 }
 
