@@ -4,6 +4,7 @@ import type { ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
+import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 
 interface TodoItem {
   content: string;
@@ -68,82 +69,10 @@ export function ToolSourceBadge({ toolSource }: { toolSource?: ParsedMessage["to
   );
 }
 
-// Generate contextual summary for tool usage
-export function getToolSummary(toolName: string, content: string): string {
-  try {
-    const input = JSON.parse(content);
-
-    switch (toolName) {
-      // OpenRouter server tools — the model's input usually isn't preserved
-      // (content is "{}"), so fall back to a generic label when the
-      // recoverable fields are absent.
-      case "datetime":
-        return " - current date/time";
-      case "web_search":
-        return input.query ? ` - '${input.query}'` : " - web search";
-      case "web_fetch": {
-        if (input.url) {
-          try {
-            return ` - ${new URL(input.url).hostname}`;
-          } catch {
-            return ` - ${input.url}`;
-          }
-        }
-        return input.title ? ` - ${input.title}` : " - web fetch";
-      }
-      case "Read":
-        return input.file_path ? ` - ${input.file_path.split("/").pop()}` : "";
-      case "Write":
-      case "Edit":
-      case "MultiEdit":
-        return input.file_path ? ` - ${input.file_path.split("/").pop()}` : "";
-      case "Bash": {
-        const cmd = input.command || "";
-        const truncated = cmd.length > 40 ? cmd.substring(0, 40) + "..." : cmd;
-        return cmd ? ` - ${truncated}` : "";
-      }
-      case "Grep":
-        return input.pattern ? ` - '${input.pattern}'` : "";
-      case "Glob":
-        return input.pattern ? ` - ${input.pattern}` : "";
-      case "WebFetch":
-        if (input.url) {
-          try {
-            const domain = new URL(input.url).hostname;
-            return ` - ${domain}`;
-          } catch {
-            return ` - ${input.url}`;
-          }
-        }
-        return "";
-      case "Task":
-        return input.description ? ` - ${input.description}` : "";
-      case "NotebookEdit":
-        return input.notebook_path ? ` - ${input.notebook_path.split("/").pop()}` : "";
-      case "mcp__callboard-tools__render_file":
-        if (input.file_path) return ` - ${input.file_path.split("/").pop()}`;
-        if (input.url) {
-          try {
-            const urlName = new URL(input.url).pathname.split("/").pop();
-            return urlName ? ` - ${urlName}` : ` - ${input.url}`;
-          } catch {
-            return ` - ${input.url}`;
-          }
-        }
-        return "";
-      case "mcp__callboard-tools__create_canvas":
-        return input.name ? ` - ${input.name}` : "";
-      case "mcp__callboard-tools__update_canvas":
-        return input.canvas_id ? ` - ${input.canvas_id}` : "";
-      case "mcp__callboard-tools__read_canvas":
-        return input.canvas_id ? ` - ${input.canvas_id}` : "";
-      default:
-        return "";
-    }
-  } catch {
-    return "";
-  }
-}
+// Tool-call formatting (summaries, display names) lives in toolFormatting.ts —
+// it handles all three provider naming conventions (Claude Code, OpenRouter
+// harness, Codex). Re-exported here for existing import sites.
+export { getToolSummary };
 
 const StatusIcon = ({ status }: { status: string }) => {
   switch (status) {
@@ -697,8 +626,8 @@ export default function MessageBubble({ message, teamColorMap, onFork }: Props) 
             borderLeft: "2px solid var(--accent)",
           }}
         >
-          <span style={{ fontWeight: 500 }}>
-            Tool: {message.toolName || "unknown"}
+          <span style={{ fontWeight: 500 }} title={message.toolName}>
+            Tool: {message.toolName ? getToolDisplayName(message.toolName) : "unknown"}
             {getToolSummary(message.toolName || "", message.content)}
             <ToolSourceBadge toolSource={message.toolSource} />
           </span>
@@ -722,10 +651,10 @@ export default function MessageBubble({ message, teamColorMap, onFork }: Props) 
             borderLeft: "2px solid var(--border)",
           }}
         >
-          <span style={{ fontStyle: "italic" }}>
+          <span style={{ fontStyle: "italic" }} title={message.toolName}>
             {expanded
-              ? `Result${message.toolName ? `: ${message.toolName}` : ""}`
-              : `Tool result${message.toolName ? `: ${message.toolName}` : ""} (tap to expand)`}
+              ? `Result${message.toolName ? `: ${getToolDisplayName(message.toolName)}` : ""}`
+              : `Tool result${message.toolName ? `: ${getToolDisplayName(message.toolName)}` : ""} (tap to expand)`}
             <ToolSourceBadge toolSource={message.toolSource} />
           </span>
           {expanded && (

@@ -1,7 +1,8 @@
 import { useState, useMemo } from "react";
 import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
-import { getToolSummary, parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge } from "./MessageBubble";
+import { parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge } from "./MessageBubble";
+import { getToolSummary, getToolDisplayName, isCallboardTool } from "./toolFormatting";
 import MediaRenderer from "./MediaRenderer";
 import CanvasRenderer from "./CanvasRenderer";
 import JsonContentView from "./JsonContentView";
@@ -24,9 +25,11 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
     return null;
   }, [toolUse]);
 
-  // Special case: render_file renders as MediaRenderer
+  // Special case: render_file renders as MediaRenderer. Matched by bare tool
+  // name so all providers hit it (Claude: mcp__callboard-tools__render_file,
+  // Codex: callboard-tools__render_file, OpenRouter: render_file).
   const renderFileData = useMemo(() => {
-    if (toolUse.toolName === "mcp__callboard-tools__render_file" && toolResult) {
+    if (toolUse.toolName && isCallboardTool(toolUse.toolName, "render_file") && toolResult) {
       try {
         const parsed = JSON.parse(toolResult.content);
         if (parsed?.type === "render_file") return parsed;
@@ -39,7 +42,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
 
   // Special case: create_canvas / update_canvas renders as CanvasRenderer
   const canvasData = useMemo(() => {
-    const isCanvasTool = toolUse.toolName === "mcp__callboard-tools__create_canvas" || toolUse.toolName === "mcp__callboard-tools__update_canvas";
+    const isCanvasTool = !!toolUse.toolName && (isCallboardTool(toolUse.toolName, "create_canvas") || isCallboardTool(toolUse.toolName, "update_canvas"));
     if (isCanvasTool && toolResult) {
       try {
         const parsed = JSON.parse(toolResult.content);
@@ -64,6 +67,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
   }
 
   const toolName = toolUse.toolName || "unknown";
+  const displayName = toolUse.toolName ? getToolDisplayName(toolUse.toolName) : "unknown";
   const summary = getToolSummary(toolName, toolUse.content);
 
   return (
@@ -89,8 +93,8 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
           <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
             {inputExpanded ? <ChevronDown size={12} style={{ opacity: 0.5 }} /> : <ChevronRight size={12} style={{ opacity: 0.5 }} />}
           </span>
-          <span style={{ fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {toolName}
+          <span style={{ fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={toolName}>
+            {displayName}
             {summary}
             <ToolSourceBadge toolSource={toolUse.toolSource} />
           </span>
