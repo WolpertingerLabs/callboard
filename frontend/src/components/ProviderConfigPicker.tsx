@@ -53,6 +53,10 @@ interface ProviderConfigPickerProps {
   // True when the native Codex harness is routed through OpenRouter — the Codex
   // model picker then lists OpenRouter slugs (openai/* first).
   codexUseOpenRouter?: boolean;
+  // When provided (OpenRouter only), renders in place of the per-chat model
+  // field — used to swap in the Manual/Router model switcher. Sits beside the
+  // reasoning-effort selector so both share the OpenRouter control row.
+  openRouterModelSlot?: React.ReactNode;
 }
 
 /**
@@ -89,6 +93,7 @@ export default function ProviderConfigPicker({
   showProviderToggle = true,
   claudeCodeUseOpenRouter = false,
   codexUseOpenRouter = false,
+  openRouterModelSlot,
 }: ProviderConfigPickerProps) {
   const inline = mode === "inline";
   const showOrKnobs = provider === "openrouter" && openRouterConfigured !== false;
@@ -153,29 +158,36 @@ export default function ProviderConfigPicker({
     <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
       {effortControl}
 
-      {/* Per-chat model override — OpenRouter only. Empty value falls back to
-          the global default configured in Settings → API. */}
+      {/* Per-chat model override — OpenRouter only. When the caller supplies a
+          slot (the Manual/Router switcher) it replaces the plain model field;
+          otherwise the field falls back to the global default from Settings → API. */}
       <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
-        <label
-          htmlFor={inline ? "inlineModel" : "newChatModel"}
-          style={{
-            display: "block",
-            fontSize: inline ? 11 : 13,
-            fontWeight: 600,
-            color: "var(--text-muted)",
-            marginBottom: inline ? 4 : 6,
-          }}
-        >
-          Model
-        </label>
-        <OpenRouterModelSelector
-          id={inline ? "inlineModel" : "newChatModel"}
-          value={model}
-          onChange={onModelChange}
-          placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
-        />
-        {!inline && (
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Optional — leave empty to use the global default from Settings → API.</div>
+        {openRouterModelSlot ?? (
+          <>
+            <label
+              htmlFor={inline ? "inlineModel" : "newChatModel"}
+              style={{
+                display: "block",
+                fontSize: inline ? 11 : 13,
+                fontWeight: 600,
+                color: "var(--text-muted)",
+                marginBottom: inline ? 4 : 6,
+              }}
+            >
+              Model
+            </label>
+            <OpenRouterModelSelector
+              id={inline ? "inlineModel" : "newChatModel"}
+              value={model}
+              onChange={onModelChange}
+              placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
+            />
+            {!inline && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                Optional — leave empty to use the global default from Settings → API.
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
