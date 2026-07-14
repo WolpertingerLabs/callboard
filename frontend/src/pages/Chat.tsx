@@ -64,6 +64,7 @@ import ChatDebugPanel from "../components/ChatDebugPanel";
 import JobRunPanel from "../components/JobRunPanel";
 import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions, type EffortLevel } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
+import ModelRouterField from "../components/ModelRouterField";
 import type { ModelRoutingConfig } from "shared/types/index.js";
 import { getActivePlugins } from "../utils/plugins";
 
@@ -2957,47 +2958,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
                   codexUseOpenRouter={codexUseOpenRouter}
                   onOpenApiSettings={() => navigate("/settings/api")}
-                />
-                {/* Model Routing — OpenRouter-only, new chats only */}
-                {routingAvailable && (
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={pendingModelRouting}
-                        onChange={(e) => setPendingModelRouting(e.target.checked)}
-                        style={{ width: 16, height: 16 }}
+                  // New OpenRouter chats can route — swap the plain model field
+                  // for the Manual/Router switcher so the two are mutually
+                  // exclusive (routing is decided at creation, hence !id only).
+                  openRouterModelSlot={
+                    routingAvailable ? (
+                      <ModelRouterField
+                        mode="inline"
+                        routingConfig={routingConfig}
+                        useRouter={pendingModelRouting}
+                        onUseRouterChange={setPendingModelRouting}
+                        rankId={pendingModelRoutingRankId}
+                        onRankChange={setPendingModelRoutingRankId}
+                        model={pendingModel ?? currentModel}
+                        onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                        idPrefix="composer"
                       />
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Use model router</span>
-                      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— classify the prompt to pick the model</span>
-                    </label>
-                    {pendingModelRouting && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, paddingLeft: 24 }}>
-                        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Tier</span>
-                        <select
-                          value={pendingModelRoutingRankId}
-                          onChange={(e) => setPendingModelRoutingRankId(e.target.value)}
-                          style={{
-                            padding: "6px 10px",
-                            borderRadius: 8,
-                            border: "1px solid var(--border)",
-                            background: "var(--surface)",
-                            color: "var(--text)",
-                            fontSize: 13,
-                          }}
-                        >
-                          {[...(routingConfig?.ranks ?? [])]
-                            .sort((a, b) => a.order - b.order)
-                            .map((r) => (
-                              <option key={r.id} value={r.id}>
-                                {r.label}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                )}
+                    ) : undefined
+                  }
+                />
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>
               </div>
             </>

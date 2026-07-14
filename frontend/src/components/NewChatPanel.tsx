@@ -7,6 +7,7 @@ import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
 import ProviderConfigPicker from "./ProviderConfigPicker";
+import ModelRouterField from "./ModelRouterField";
 import {
   getDefaultPermissions,
   saveDefaultPermissions,
@@ -192,7 +193,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         ...((effectiveProvider === "openrouter" || effectiveProvider === "codex") && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
-        ...(effectiveProvider === "openrouter" && modelRouting && routingAvailable && { modelRouting: true, modelRoutingRankId }),
+        // Pass the router toggle as an explicit boolean (not only when true) so
+        // Chat.tsx can tell "user unchecked it" (false) apart from "panel didn't
+        // offer a choice" (undefined) — otherwise unchecking gets re-defaulted ON.
+        ...(effectiveProvider === "openrouter" && routingAvailable && { modelRouting, modelRoutingRankId }),
       },
     });
   };
@@ -237,7 +241,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         provider: effectiveProvider,
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
-        ...(effectiveProvider === "openrouter" && modelRouting && routingAvailable && { modelRouting: true, modelRoutingRankId }),
+        // Pass the router toggle as an explicit boolean (not only when true) so
+        // Chat.tsx can tell "user unchecked it" (false) apart from "panel didn't
+        // offer a choice" (undefined) — otherwise unchecking gets re-defaulted ON.
+        ...(effectiveProvider === "openrouter" && routingAvailable && { modelRouting, modelRoutingRankId }),
       },
     });
   };
@@ -399,43 +406,25 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={openApiSettings}
+              // When routing is available, swap the plain model field for the
+              // Manual/Router switcher so the two model sources stay mutually
+              // exclusive instead of a router silently overriding a visible model.
+              openRouterModelSlot={
+                routingAvailable ? (
+                  <ModelRouterField
+                    mode="panel"
+                    routingConfig={routingConfig}
+                    useRouter={modelRouting}
+                    onUseRouterChange={setModelRouting}
+                    rankId={modelRoutingRankId}
+                    onRankChange={setModelRoutingRankId}
+                    model={model}
+                    onModelChange={setModel}
+                    idPrefix="newChat"
+                  />
+                ) : undefined
+              }
             />
-
-            {/* Model Routing — OpenRouter-only, shown when configured/enabled */}
-            {routingAvailable && (
-              <div style={{ marginBottom: 8 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}>
-                  <input type="checkbox" checked={modelRouting} onChange={(e) => setModelRouting(e.target.checked)} style={{ width: 16, height: 16 }} />
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>Use model router</span>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— classify the prompt to pick the model</span>
-                </label>
-                {modelRouting && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, paddingLeft: 24 }}>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Tier</span>
-                    <select
-                      value={modelRoutingRankId}
-                      onChange={(e) => setModelRoutingRankId(e.target.value)}
-                      style={{
-                        padding: "6px 10px",
-                        borderRadius: 8,
-                        border: "1px solid var(--border)",
-                        background: "var(--surface)",
-                        color: "var(--text)",
-                        fontSize: 13,
-                      }}
-                    >
-                      {[...(routingConfig?.ranks ?? [])]
-                        .sort((a, b) => a.order - b.order)
-                        .map((r) => (
-                          <option key={r.id} value={r.id}>
-                            {r.label}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Permissions Section — collapsible, default closed */}
             <div style={{ marginBottom: 8 }}>
