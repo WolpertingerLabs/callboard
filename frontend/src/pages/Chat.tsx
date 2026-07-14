@@ -413,12 +413,33 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }, []);
 
   // Clear any pending change when navigating to a different chat — selection
-  // is per-chat, not global.
+  // is per-chat, not global. Keyed on location.key rather than id: /chat/new
+  // and /chat/:id render this same Chat instance, so navigating between them
+  // (or /chat/new → /chat/new via the New Chat panel) never remounts — a
+  // location change is the only reliable "new chat context" signal.
   useEffect(() => {
     setPendingModel(null);
     setPendingEffort(null);
     setModelPopoverOpen(false);
-  }, [id]);
+  }, [location.key]);
+
+  // Re-sync the router toggle from navigation state on every navigation, for
+  // the same reason: the useState initializers above captured only the first
+  // mount's nav state. Without this, the routing default set while viewing any
+  // chat (the settings-fetch effect above) survives into a later /chat/new
+  // visit and overrides the New Chat panel's explicit "Manual" choice — the
+  // router then runs even though the user picked a model.
+  useEffect(() => {
+    if (id) return; // routing is decided at creation; only new chats read this
+    setPendingModelRouting(newChatModelRouting !== undefined ? newChatModelRouting === true : !!routingConfig?.enabled);
+    if (newChatModelRoutingRankId) {
+      setPendingModelRoutingRankId(newChatModelRoutingRankId);
+    } else if (routingConfig) {
+      const ranks = [...routingConfig.ranks].sort((a, b) => a.order - b.order);
+      setPendingModelRoutingRankId(routingConfig.defaultRankId || ranks[0]?.id || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
 
   // Resolve effective permissions for this chat
   const effectivePermissions = useMemo((): DefaultPermissions => {
