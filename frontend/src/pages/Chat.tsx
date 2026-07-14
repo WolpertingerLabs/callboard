@@ -1317,9 +1317,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             requestBody.effort = newChatEffort;
           }
           // Model applies to both providers — an OR slug/alias or an
-          // Anthropic model alias/ID for claude-code.
-          if (newChatModel) {
-            requestBody.model = newChatModel;
+          // Anthropic model alias/ID for claude-code. Prefer the composer's
+          // staged pick (pendingModel) over the New Chat panel's forwarded
+          // value, so switching to a manual model in the composer's Manual/Router
+          // switcher actually takes effect. `pendingModel === ""` is a deliberate
+          // "use the global default"; `null` means "no composer edit" → fall
+          // back to the panel value.
+          const newChatSelectedModel = pendingModel ?? newChatModel;
+          if (newChatSelectedModel) {
+            requestBody.model = newChatSelectedModel;
           }
           if (newChatRequireCompletion === true) {
             requestBody.requireExplicitCompletion = true;
