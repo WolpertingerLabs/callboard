@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import {
   RotateCw,
@@ -1752,6 +1752,53 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     );
   }
 
+  // View mode radio-style switcher: explicit Chat button first (active by
+  // default), followed by Git diff / Debug / Job buttons when applicable.
+  const viewModeButtons: { mode: "chat" | "diff" | "debug" | "job"; icon: ReactNode; title: string }[] = [
+    { mode: "chat", icon: <MessageSquare size={16} />, title: "Show chat" },
+  ];
+  if ((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) {
+    viewModeButtons.push({ mode: "diff", icon: <GitBranch size={16} />, title: "Show git diff" });
+  }
+  if (id) {
+    viewModeButtons.push({ mode: "debug", icon: <Activity size={16} />, title: "Show debug metrics" });
+  }
+  if (chatJobRunId) {
+    viewModeButtons.push({ mode: "job", icon: <Workflow size={16} />, title: "Show job run progress" });
+  }
+  const viewModeSwitcher =
+    viewModeButtons.length > 1 ? (
+      <div
+        role="radiogroup"
+        aria-label="View mode"
+        style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)", flexShrink: 0 }}
+      >
+        {viewModeButtons.map((b, i) => (
+          <button
+            key={b.mode}
+            role="radio"
+            aria-checked={viewMode === b.mode}
+            onClick={() => setViewMode(b.mode)}
+            style={{
+              background: viewMode === b.mode ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
+              color: viewMode === b.mode ? "var(--text-on-accent, #fff)" : "var(--text)",
+              padding: "8px",
+              border: "none",
+              borderRight: i < viewModeButtons.length - 1 ? "1px solid var(--border)" : "none",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "all 0.15s ease",
+            }}
+            title={b.title}
+          >
+            {b.icon}
+          </button>
+        ))}
+      </div>
+    ) : null;
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <header
@@ -1909,70 +1956,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         {/* Desktop: action buttons inline, right-aligned */}
         {!isMobile && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
-            {/* View mode toggle group - Git diff & Debug */}
-            {(id || info?.is_git_repo) && (
-              <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
-                {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
-                  <button
-                    onClick={() => setViewMode(viewMode === "diff" ? "chat" : "diff")}
-                    style={{
-                      background: viewMode === "diff" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
-                      color: viewMode === "diff" ? "var(--text-on-accent, #fff)" : "var(--text)",
-                      padding: "8px",
-                      border: "none",
-                      borderRight: id ? "1px solid var(--border)" : "none",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      transition: "all 0.15s ease",
-                    }}
-                    title={viewMode === "diff" ? "Back to chat" : "Show git diff"}
-                  >
-                    {viewMode === "diff" ? <MessageSquare size={16} /> : <GitBranch size={16} />}
-                  </button>
-                )}
-                {id && (
-                  <button
-                    onClick={() => setViewMode(viewMode === "debug" ? "chat" : "debug")}
-                    style={{
-                      background: viewMode === "debug" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
-                      color: viewMode === "debug" ? "var(--text-on-accent, #fff)" : "var(--text)",
-                      padding: "8px",
-                      border: "none",
-                      borderRight: chatJobRunId ? "1px solid var(--border)" : "none",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      transition: "all 0.15s ease",
-                    }}
-                    title={viewMode === "debug" ? "Back to chat" : "Show debug metrics"}
-                  >
-                    <Activity size={16} />
-                  </button>
-                )}
-                {chatJobRunId && (
-                  <button
-                    onClick={() => setViewMode(viewMode === "job" ? "chat" : "job")}
-                    style={{
-                      background: viewMode === "job" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
-                      color: viewMode === "job" ? "var(--text-on-accent, #fff)" : "var(--text)",
-                      padding: "8px",
-                      border: "none",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      transition: "all 0.15s ease",
-                    }}
-                    title={viewMode === "job" ? "Back to chat" : "Show job run progress"}
-                  >
-                    <Workflow size={16} />
-                  </button>
-                )}
-              </div>
-            )}
+            {/* View mode switcher - Chat / Git diff / Debug / Job */}
+            {viewModeSwitcher}
 
             {id && userMessageIndices.length > 1 && (
               <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
@@ -2217,70 +2202,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             flexShrink: 0,
           }}
         >
-          {/* View mode toggle group - Git diff & Debug */}
-          {(id || info?.is_git_repo) && (
-            <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)", flexShrink: 0 }}>
-              {((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) && (
-                <button
-                  onClick={() => setViewMode(viewMode === "diff" ? "chat" : "diff")}
-                  style={{
-                    background: viewMode === "diff" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
-                    color: viewMode === "diff" ? "var(--text-on-accent, #fff)" : "var(--text)",
-                    padding: "8px",
-                    border: "none",
-                    borderRight: id ? "1px solid var(--border)" : "none",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transition: "all 0.15s ease",
-                  }}
-                  title={viewMode === "diff" ? "Back to chat" : "Show git diff"}
-                >
-                  {viewMode === "diff" ? <MessageSquare size={16} /> : <GitBranch size={16} />}
-                </button>
-              )}
-              {id && (
-                <button
-                  onClick={() => setViewMode(viewMode === "debug" ? "chat" : "debug")}
-                  style={{
-                    background: viewMode === "debug" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
-                    color: viewMode === "debug" ? "var(--text-on-accent, #fff)" : "var(--text)",
-                    padding: "8px",
-                    border: "none",
-                    borderRight: chatJobRunId ? "1px solid var(--border)" : "none",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transition: "all 0.15s ease",
-                  }}
-                  title={viewMode === "debug" ? "Back to chat" : "Show debug metrics"}
-                >
-                  <Activity size={16} />
-                </button>
-              )}
-              {chatJobRunId && (
-                <button
-                  onClick={() => setViewMode(viewMode === "job" ? "chat" : "job")}
-                  style={{
-                    background: viewMode === "job" ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
-                    color: viewMode === "job" ? "var(--text-on-accent, #fff)" : "var(--text)",
-                    padding: "8px",
-                    border: "none",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transition: "all 0.15s ease",
-                  }}
-                  title={viewMode === "job" ? "Back to chat" : "Show job run progress"}
-                >
-                  <Workflow size={16} />
-                </button>
-              )}
-            </div>
-          )}
+          {/* View mode switcher - Chat / Git diff / Debug / Job */}
+          {viewModeSwitcher}
 
           {id && userMessageIndices.length > 1 && (
             <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)", flexShrink: 0 }}>
