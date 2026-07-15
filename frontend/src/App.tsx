@@ -4,6 +4,7 @@ import SplitLayout from "./components/SplitLayout";
 import Login from "./pages/Login";
 import CodeLoginModal from "./components/CodeLoginModal";
 import { SessionProvider } from "./contexts/SessionContext";
+import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight";
 import { checkClaudeStatus, type ClaudeAuthStatus } from "./api";
 import { getThemeMode, getCustomThemeName } from "./utils/localStorage";
 import { getTheme } from "./api";
@@ -71,6 +72,9 @@ export function reloadCustomTheme() {
 }
 
 export default function App() {
+  // Size the app to the visual viewport so the mobile keyboard doesn't cover the composer.
+  useVisualViewportHeight();
+
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [serverError, setServerError] = useState("");
 
@@ -161,7 +165,10 @@ export default function App() {
           <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
           <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
           <Route path="/settings" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
-          <Route path="/settings/:tab" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+          <Route
+            path="/settings/:tab"
+            element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+          />
 
           {/* Agent routes - rendered inside SplitLayout */}
           <Route path="/agents" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
