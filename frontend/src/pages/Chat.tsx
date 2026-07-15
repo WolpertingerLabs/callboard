@@ -2853,122 +2853,125 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         </div>
       )}
 
-      {pendingAction ? (
-        <FeedbackPanel action={pendingAction} onRespond={handleRespond} agentName={providerDisplayName} />
-      ) : (
-        // Wrap the composer in a positioned container so the model/effort
-        // popover can anchor to the composer's edges (not the hamburger menu
-        // that opens it — anchoring to a button inside the composer would
-        // push the popover off the left edge on narrow viewports).
-        <div style={{ position: "relative" }}>
-          {modelPopoverOpen && (
-            <>
-              {/* Click-away overlay */}
-              <div onClick={() => setModelPopoverOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
-              <div
-                style={{
-                  position: "absolute",
-                  bottom: "calc(100% + 8px)",
-                  // Span the composer's horizontal padding (12px each side)
-                  // so the popover hugs the chat column on mobile. On wide
-                  // viewports `maxWidth` + `marginLeft: auto` keeps it
-                  // pinned to the right-hand side (where the toggle is) at
-                  // a comfortable size rather than stretching across the
-                  // whole chat column.
-                  left: 12,
-                  right: 12,
-                  maxWidth: 480,
-                  marginLeft: "auto",
-                  zIndex: 51,
-                  padding: 12,
-                  borderRadius: 8,
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  boxShadow: "var(--shadow-md)",
-                }}
-              >
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
-                  {chatProvider === "claude-code" ? "Model for this chat" : "Model & reasoning effort for this chat"}
-                </div>
-                {/* All three model props share the same pending-model cell —
-                    only the control matching the chat's pinned provider renders. */}
-                <ProviderConfigPicker
-                  provider={chatProvider}
-                  onProviderChange={() => {}}
-                  showProviderToggle={false}
-                  mode="inline"
-                  effort={pendingEffort !== null ? pendingEffort : currentEffort}
-                  onEffortChange={(v) => setPendingEffort(v === currentEffort ? null : v)}
-                  model={pendingModel ?? currentModel}
-                  onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                  claudeModel={pendingModel ?? currentModel}
-                  onClaudeModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                  codexModel={pendingModel ?? currentModel}
-                  onCodexModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                  codexConfigured={true}
-                  openRouterConfigured={true}
-                  openRouterMaxBudgetUsd={null}
-                  claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
-                  codexUseOpenRouter={codexUseOpenRouter}
-                  onOpenApiSettings={() => navigate("/settings/api")}
-                  // New OpenRouter chats can route — swap the plain model field
-                  // for the Manual/Router switcher so the two are mutually
-                  // exclusive (routing is decided at creation, hence !id only).
-                  openRouterModelSlot={
-                    routingAvailable ? (
-                      <ModelRouterField
-                        mode="inline"
-                        routingConfig={routingConfig}
-                        useRouter={pendingModelRouting}
-                        onUseRouterChange={setPendingModelRouting}
-                        rankId={pendingModelRoutingRankId}
-                        onRankChange={setPendingModelRoutingRankId}
-                        model={pendingModel ?? currentModel}
-                        onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                        idPrefix="composer"
-                      />
-                    ) : undefined
-                  }
-                />
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>
+      {pendingAction && <FeedbackPanel action={pendingAction} onRespond={handleRespond} agentName={providerDisplayName} />}
+      {/* Wrap the composer in a positioned container so the model/effort
+          popover can anchor to the composer's edges (not the hamburger menu
+          that opens it — anchoring to a button inside the composer would
+          push the popover off the left edge on narrow viewports).
+
+          While a pendingAction panel (permission request / user question /
+          plan review) is up, the composer is HIDDEN rather than unmounted:
+          PromptInput keeps its draft (typed text + attached images) in local
+          state, so unmounting it would silently wipe whatever the user was
+          typing when the panel appeared. */}
+      <div style={{ position: "relative", display: pendingAction ? "none" : undefined }}>
+        {modelPopoverOpen && (
+          <>
+            {/* Click-away overlay */}
+            <div onClick={() => setModelPopoverOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
+            <div
+              style={{
+                position: "absolute",
+                bottom: "calc(100% + 8px)",
+                // Span the composer's horizontal padding (12px each side)
+                // so the popover hugs the chat column on mobile. On wide
+                // viewports `maxWidth` + `marginLeft: auto` keeps it
+                // pinned to the right-hand side (where the toggle is) at
+                // a comfortable size rather than stretching across the
+                // whole chat column.
+                left: 12,
+                right: 12,
+                maxWidth: 480,
+                marginLeft: "auto",
+                zIndex: 51,
+                padding: 12,
+                borderRadius: 8,
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                boxShadow: "var(--shadow-md)",
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
+                {chatProvider === "claude-code" ? "Model for this chat" : "Model & reasoning effort for this chat"}
               </div>
-            </>
-          )}
-          <PromptInput
-            onSend={handleSend}
-            disabled={!id && streaming}
-            onSaveDraft={handleSaveDraft}
-            slashCommands={allSlashCommands}
-            commandDescriptions={pluginCommandDescriptions}
-            onSetValue={setPromptInputSetValue}
-            menuItems={
-              !streaming
-                ? [
-                    // Opens the model (+ effort for OR) popover above the
-                    // composer. Hidden while streaming so the model can't
-                    // change mid-run; the header shows the active provider
-                    // via ProviderBadge.
-                    {
-                      key: "model",
-                      icon: <SlidersHorizontal size={16} />,
-                      label: chatProvider === "claude-code" ? "Model" : "Model & reasoning effort",
-                      onClick: () => setModelPopoverOpen(true),
-                      active: pendingModel !== null || pendingEffort !== null,
-                      title:
-                        pendingModel !== null || pendingEffort !== null
-                          ? "Model change pending — applies on next message"
-                          : chatProvider === "openrouter"
-                            ? "Change model / reasoning effort for this chat"
-                            : chatProvider === "codex"
-                              ? "Change the Codex model / reasoning effort for this chat"
-                              : "Change the Anthropic model for this chat",
-                    },
-                  ]
-                : []
-            }
-          />
-        </div>
-      )}
+              {/* All three model props share the same pending-model cell —
+                    only the control matching the chat's pinned provider renders. */}
+              <ProviderConfigPicker
+                provider={chatProvider}
+                onProviderChange={() => {}}
+                showProviderToggle={false}
+                mode="inline"
+                effort={pendingEffort !== null ? pendingEffort : currentEffort}
+                onEffortChange={(v) => setPendingEffort(v === currentEffort ? null : v)}
+                model={pendingModel ?? currentModel}
+                onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                claudeModel={pendingModel ?? currentModel}
+                onClaudeModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                codexModel={pendingModel ?? currentModel}
+                onCodexModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                codexConfigured={true}
+                openRouterConfigured={true}
+                openRouterMaxBudgetUsd={null}
+                claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
+                codexUseOpenRouter={codexUseOpenRouter}
+                onOpenApiSettings={() => navigate("/settings/api")}
+                // New OpenRouter chats can route — swap the plain model field
+                // for the Manual/Router switcher so the two are mutually
+                // exclusive (routing is decided at creation, hence !id only).
+                openRouterModelSlot={
+                  routingAvailable ? (
+                    <ModelRouterField
+                      mode="inline"
+                      routingConfig={routingConfig}
+                      useRouter={pendingModelRouting}
+                      onUseRouterChange={setPendingModelRouting}
+                      rankId={pendingModelRoutingRankId}
+                      onRankChange={setPendingModelRoutingRankId}
+                      model={pendingModel ?? currentModel}
+                      onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                      idPrefix="composer"
+                    />
+                  ) : undefined
+                }
+              />
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>
+            </div>
+          </>
+        )}
+        <PromptInput
+          onSend={handleSend}
+          disabled={!id && streaming}
+          onSaveDraft={handleSaveDraft}
+          slashCommands={allSlashCommands}
+          commandDescriptions={pluginCommandDescriptions}
+          onSetValue={setPromptInputSetValue}
+          menuItems={
+            !streaming
+              ? [
+                  // Opens the model (+ effort for OR) popover above the
+                  // composer. Hidden while streaming so the model can't
+                  // change mid-run; the header shows the active provider
+                  // via ProviderBadge.
+                  {
+                    key: "model",
+                    icon: <SlidersHorizontal size={16} />,
+                    label: chatProvider === "claude-code" ? "Model" : "Model & reasoning effort",
+                    onClick: () => setModelPopoverOpen(true),
+                    active: pendingModel !== null || pendingEffort !== null,
+                    title:
+                      pendingModel !== null || pendingEffort !== null
+                        ? "Model change pending — applies on next message"
+                        : chatProvider === "openrouter"
+                          ? "Change model / reasoning effort for this chat"
+                          : chatProvider === "codex"
+                            ? "Change the Codex model / reasoning effort for this chat"
+                            : "Change the Anthropic model for this chat",
+                  },
+                ]
+              : []
+          }
+        />
+      </div>
 
       <DraftModal
         isOpen={showDraftModal}
