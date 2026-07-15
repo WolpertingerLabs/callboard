@@ -70,6 +70,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [recentDirs, setRecentDirs] = useState(() => getRecentDirectories().map((r) => r.path));
   const [chatMode, setChatMode] = useState<"claude-code" | "agent">("claude-code");
   const [permissionsOpen, setPermissionsOpen] = useState(false);
+  // Behavior section (harness behavior toggles) — collapsible, default
+  // closed to match the Permissions section.
+  const [behaviorOpen, setBehaviorOpen] = useState(false);
   const [pathOpen, setPathOpen] = useState(true);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsFetched, setAgentsFetched] = useState(false);
@@ -248,6 +251,44 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       },
     });
   };
+
+  // Behavior Section — collapsible, default closed (same pattern as
+  // Permissions). Houses harness-behavior toggles for the chat being created;
+  // rendered in both the Callboard and Agent modes.
+  const renderBehaviorSection = () => (
+    <div style={{ marginBottom: 8 }}>
+      <button
+        onClick={() => setBehaviorOpen(!behaviorOpen)}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "8px 0",
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 13,
+          fontWeight: 600,
+          color: "var(--text-muted)",
+          textAlign: "left",
+        }}
+      >
+        {behaviorOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <span>Behavior: {requireCompletion ? "Require explicit completion" : "Default"}</span>
+      </button>
+      {behaviorOpen && (
+        <div>
+          {/* Require explicit completion — per-chat, resets to off */}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}>
+            <input type="checkbox" checked={requireCompletion} onChange={(e) => setRequireCompletion(e.target.checked)} style={{ width: 16, height: 16 }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>Require explicit completion</span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— re-prompt until objective_complete is called</span>
+          </label>
+        </div>
+      )}
+    </div>
+  );
 
   // Fetch system info once to learn whether OpenRouter is configured. Until
   // the fetch resolves, openRouterConfigured stays `null` and the UI treats
@@ -451,14 +492,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />}
             </div>
 
-            {/* Require explicit completion — per-chat, resets to off */}
-            <div style={{ marginBottom: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}>
-                <input type="checkbox" checked={requireCompletion} onChange={(e) => setRequireCompletion(e.target.checked)} style={{ width: 16, height: 16 }} />
-                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>Require explicit completion</span>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— re-prompt until objective_complete is called</span>
-              </label>
-            </div>
+            {/* Behavior Section — collapsible, default closed */}
+            {renderBehaviorSection()}
 
             {/* Directory Section — collapsible, default open */}
             <div>
@@ -640,14 +675,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onOpenApiSettings={openApiSettings}
             />
 
-            {/* Require explicit completion — forwarded by handleAgentCreate */}
-            <div style={{ marginBottom: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}>
-                <input type="checkbox" checked={requireCompletion} onChange={(e) => setRequireCompletion(e.target.checked)} style={{ width: 16, height: 16 }} />
-                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>Require explicit completion</span>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— re-prompt until objective_complete is called</span>
-              </label>
-            </div>
+            {/* Behavior Section — collapsible, default closed; the checkbox
+                inside is forwarded by handleAgentCreate */}
+            {renderBehaviorSection()}
 
             {agentsLoading ? (
               <div style={{ padding: "20px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>Loading agents...</div>
