@@ -112,6 +112,10 @@ interface ChatProps {
 // auto-scroll re-latches and follows new messages again.
 const AUTO_SCROLL_LATCH_PX = 100;
 
+// Past-max scrollTop target for the auto-scroll pin loop; the browser clamps
+// it to the actual bottom.
+const PIN_SCROLL_MAX = 1e9;
+
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -1163,7 +1167,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
     let raf = 0;
     const pin = () => {
-      container.scrollTop = container.scrollHeight; // clamped by the browser
+      // Assign past-max and let the browser clamp to the bottom — avoids an
+      // explicit scrollHeight read (a potential forced-layout) every frame
+      container.scrollTop = PIN_SCROLL_MAX;
       raf = requestAnimationFrame(pin);
     };
     pin();
@@ -1187,13 +1193,55 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
     const unlatch = () => setAutoScroll(false);
 
+    // Message bubbles contain their own scrollable regions (tool-result
+    // JSON, code blocks). A scroll gesture that an inner region can consume
+    // itself scrolls that region, not the chat — it isn't chat-scroll
+    // intent and must not touch the latch.
+    const innerScrollableConsumes = (target: EventTarget | null, upward: boolean): boolean => {
+      let el = target instanceof HTMLElement ? target : null;
+      while (el && el !== container) {
+        if (el.scrollHeight > el.clientHeight + 1) {
+          const overflowY = window.getComputedStyle(el).overflowY;
+          if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+            const canConsume = upward ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+            if (canConsume) return true;
+          }
+        }
+        el = el.parentElement;
+      }
+      return false;
+    };
+
     const handleWheel = (e: WheelEvent) => {
       // Ignore horizontal-dominant panning (e.g. inside wide code blocks)
       if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      if (innerScrollableConsumes(e.target, e.deltaY < 0)) return;
       if (e.deltaY < 0) {
         unlatch();
       } else {
         suppressRelatchRef.current = false; // wheeling down: user takes over
+      }
+    };
+
+    // Keyboard scrolling targets the nearest scrollable ancestor of the
+    // focused element (or the last-clicked scroller when focus is on the
+    // body) — without this path, keyboard users pressing PageUp/Home would
+    // be pinned straight back to the bottom.
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        // Typing/caret navigation in editable controls (the composer) is not scroll intent
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
+        // Only when the browser would plausibly scroll the chat container
+        if (target !== document.body && !container.contains(target)) return;
+      }
+      const upward = e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey);
+      const downward = e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey);
+      if (upward) {
+        unlatch();
+      } else if (downward) {
+        suppressRelatchRef.current = false;
       }
     };
 
@@ -1211,6 +1259,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       lastTouchX = x;
       lastTouchY = y;
       if (Math.abs(dy) <= Math.abs(dx)) return; // horizontal pan
+      if (innerScrollableConsumes(e.target, dy > 0)) return;
       if (dy > 0) {
         unlatch(); // finger moving down = scrolling up
       } else {
@@ -1269,6 +1318,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     container.addEventListener("touchmove", handleTouchMove, { passive: true });
     container.addEventListener("pointerdown", handlePointerDown);
     window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("keydown", handleKeyDown);
     container.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
       container.removeEventListener("wheel", handleWheel);
@@ -1276,6 +1326,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       container.removeEventListener("touchmove", handleTouchMove);
       container.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("keydown", handleKeyDown);
       container.removeEventListener("scroll", handleScroll);
       window.clearTimeout(suppressSettleTimer);
     };
