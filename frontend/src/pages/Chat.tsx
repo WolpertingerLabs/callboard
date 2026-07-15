@@ -108,6 +108,14 @@ interface ChatProps {
   onChatListRefresh?: () => void;
 }
 
+// How close (in px) to the bottom of the chat the user must scroll before
+// auto-scroll re-latches and follows new messages again.
+const AUTO_SCROLL_LATCH_PX = 100;
+
+// Past-max scrollTop target for the auto-scroll pin loop; the browser clamps
+// it to the actual bottom.
+const PIN_SCROLL_MAX = 1e9;
+
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -1072,6 +1080,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setNetworkError(null);
     setInfo(null); // Clear new-chat info when transitioning to existing mode
     setViewMode("chat"); // Reset to chat view when switching chats
+    setAutoScroll(true); // Opening a chat always starts latched to the latest messages
 
     // Reset first response flag and plan approval tracking when chat ID changes
     hasReceivedFirstResponseRef.current = false;
@@ -1146,19 +1155,185 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     };
   }, [id, loadSlashCommands]);
 
+  // ── Smart auto-scroll ──
+  //
+  // While latched, hard-pin the view to the bottom every animation frame.
+  // This follows incoming content regardless of message size or arrival
+  // rate — smooth scrollIntoView lags and restarts under fast streaming,
+  // and nothing re-fires on single-message growth (deps only see length).
+  // Assigning an unchanged scrollTop is a no-op, so idle frames are cheap,
+  // and rAF pauses entirely while the tab is hidden.
   useEffect(() => {
-    // Only auto-scroll if auto-scroll is enabled
-    if (!autoScroll) return;
+    if (!autoScroll || viewMode !== "chat") return;
+    const container = chatContainerRef.current;
+    if (!container) return;
 
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, inFlightMessage, autoScroll]);
+    let raf = 0;
+    const pin = () => {
+      // Assign past-max and let the browser clamp to the bottom — avoids an
+      // explicit scrollHeight read (a potential forced-layout) every frame
+      container.scrollTop = PIN_SCROLL_MAX;
+      raf = requestAnimationFrame(pin);
+    };
+    pin();
+    return () => cancelAnimationFrame(raf);
+  }, [autoScroll, viewMode, id]);
 
-  // Auto-scroll to bottom when switching from diff view back to chat
+  // Unlatch only on explicit user intent — wheel up, touch-drag up, or
+  // scrollbar-drag up. Never infer intent from scroll positions alone:
+  // large streaming messages shift/clamp scrollTop in ways that look like
+  // scrolling, which would break the latch mid-stream. Re-latch when the
+  // user scrolls back down to within AUTO_SCROLL_LATCH_PX of the bottom.
+  //
+  // suppressRelatchRef guards programmatic scrolls away from the bottom
+  // (scroll-to-top, jump-to-message): their smooth animation starts at the
+  // bottom, so without the guard the first scroll events would instantly
+  // re-latch and yank the user back down.
+  const suppressRelatchRef = useRef(false);
   useEffect(() => {
-    if (viewMode === "chat") {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [viewMode]);
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    const unlatch = () => setAutoScroll(false);
+
+    // Message bubbles contain their own scrollable regions (tool-result
+    // JSON, code blocks). A scroll gesture that an inner region can consume
+    // itself scrolls that region, not the chat — it isn't chat-scroll
+    // intent and must not touch the latch.
+    const innerScrollableConsumes = (target: EventTarget | null, upward: boolean): boolean => {
+      let el = target instanceof HTMLElement ? target : null;
+      while (el && el !== container) {
+        if (el.scrollHeight > el.clientHeight + 1) {
+          const overflowY = window.getComputedStyle(el).overflowY;
+          if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+            const canConsume = upward ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+            if (canConsume) return true;
+          }
+        }
+        el = el.parentElement;
+      }
+      return false;
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      // Ignore horizontal-dominant panning (e.g. inside wide code blocks)
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      if (innerScrollableConsumes(e.target, e.deltaY < 0)) return;
+      if (e.deltaY < 0) {
+        unlatch();
+      } else {
+        suppressRelatchRef.current = false; // wheeling down: user takes over
+      }
+    };
+
+    // Keyboard scrolling targets the nearest scrollable ancestor of the
+    // focused element (or the last-clicked scroller when focus is on the
+    // body) — without this path, keyboard users pressing PageUp/Home would
+    // be pinned straight back to the bottom.
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        // Typing/caret navigation in editable controls (the composer) is not scroll intent
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
+        // Only when the browser would plausibly scroll the chat container
+        if (target !== document.body && !container.contains(target)) return;
+      }
+      const upward = e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey);
+      const downward = e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey);
+      if (upward) {
+        unlatch();
+      } else if (downward) {
+        suppressRelatchRef.current = false;
+      }
+    };
+
+    let lastTouchX = 0;
+    let lastTouchY = 0;
+    const handleTouchStart = (e: TouchEvent) => {
+      lastTouchX = e.touches[0]?.clientX ?? 0;
+      lastTouchY = e.touches[0]?.clientY ?? 0;
+    };
+    const handleTouchMove = (e: TouchEvent) => {
+      const x = e.touches[0]?.clientX ?? 0;
+      const y = e.touches[0]?.clientY ?? 0;
+      const dx = x - lastTouchX;
+      const dy = y - lastTouchY;
+      lastTouchX = x;
+      lastTouchY = y;
+      if (Math.abs(dy) <= Math.abs(dx)) return; // horizontal pan
+      if (innerScrollableConsumes(e.target, dy > 0)) return;
+      if (dy > 0) {
+        unlatch(); // finger moving down = scrolling up
+      } else {
+        suppressRelatchRef.current = false;
+      }
+    };
+
+    // Scrollbar presses land outside the client area (clientWidth excludes
+    // the scrollbar), invisible to wheel/touch handlers — track the drag so
+    // the scroll handler can attribute upward movement to the user.
+    let scrollbarDrag = false;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (e.offsetX >= container.clientWidth) {
+        scrollbarDrag = true;
+        suppressRelatchRef.current = false;
+      }
+    };
+    const handlePointerUp = () => {
+      scrollbarDrag = false;
+    };
+
+    let prevScrollTop = container.scrollTop;
+    let suppressSettleTimer: number | undefined;
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      const scrolledUp = scrollTop < prevScrollTop;
+      prevScrollTop = scrollTop;
+
+      if (scrollbarDrag && scrolledUp && distanceFromBottom > AUTO_SCROLL_LATCH_PX) {
+        unlatch();
+        return;
+      }
+
+      // A programmatic scroll away from the bottom is animating: don't
+      // re-latch while it passes through the bottom zone; clear the
+      // suppression once the animation settles.
+      if (suppressRelatchRef.current) {
+        window.clearTimeout(suppressSettleTimer);
+        suppressSettleTimer = window.setTimeout(() => {
+          suppressRelatchRef.current = false;
+        }, 150);
+        return;
+      }
+
+      // Re-latch only on downward movement into the bottom zone — upward
+      // movement inside the zone is the user starting to scroll away, and
+      // re-latching would trap them there.
+      if (!scrolledUp && distanceFromBottom <= AUTO_SCROLL_LATCH_PX) {
+        setAutoScroll(true);
+      }
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: true });
+    container.addEventListener("touchstart", handleTouchStart, { passive: true });
+    container.addEventListener("touchmove", handleTouchMove, { passive: true });
+    container.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("keydown", handleKeyDown);
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("wheel", handleWheel);
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("keydown", handleKeyDown);
+      container.removeEventListener("scroll", handleScroll);
+      window.clearTimeout(suppressSettleTimer);
+    };
+  }, [viewMode, id]);
 
   // ── Auto-mark chat as read when user has scrolled to the bottom ──
   // Uses IntersectionObserver on bottomRef (the sentinel div at the end of
@@ -1248,17 +1423,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return { allSlashCommands: uniqueCmds, pluginCommandDescriptions: descriptions };
   }, [slashCommands, plugins, activePluginIds, appPluginsData]);
 
-  const toggleAutoScroll = useCallback(() => {
-    setAutoScroll((prev) => {
-      const newAutoScroll = !prev;
-      // If turning auto-scroll on, immediately scroll to bottom
-      if (newAutoScroll) {
-        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-      }
-      return newAutoScroll;
-    });
-  }, []);
-
   // Pre-populate prompt input when navigating from a draft in staging
   useEffect(() => {
     if (routerDraftRef.current && promptInputSetValue) {
@@ -1272,6 +1436,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   const handleSend = useCallback(
     async (prompt: string, images?: File[]) => {
+      // Sending a message re-latches auto-scroll so the user sees their
+      // message and the response, even if they had scrolled up
+      suppressRelatchRef.current = false;
+      setAutoScroll(true);
       // Set in-flight message to show user's message immediately
       setInFlightMessage(prompt);
       // Create object URLs for image previews in the in-flight bubble
@@ -1638,6 +1806,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Navigate to previous (older) user message
   const navigatePrevUserMessage = useCallback(() => {
     if (userMessageIndices.length === 0) return;
+    suppressRelatchRef.current = true;
     setAutoScroll(false);
     const newNavIndex = userMsgNavIndex === null ? userMessageIndices.length - 1 : Math.max(0, userMsgNavIndex - 1);
     setUserMsgNavIndex(newNavIndex);
@@ -1659,12 +1828,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     if (userMessageIndices.length === 0 || userMsgNavIndex === null) return;
     const newNavIndex = userMsgNavIndex + 1;
     if (newNavIndex >= userMessageIndices.length) {
-      // Past the last user message — go to bottom
+      // Past the last user message — go to bottom and re-latch
       setUserMsgNavIndex(null);
+      suppressRelatchRef.current = false;
       setAutoScroll(true);
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
       return;
     }
+    suppressRelatchRef.current = true;
     setUserMsgNavIndex(newNavIndex);
     const msgIndex = userMessageIndices[newNavIndex];
     const el = document.querySelector(`[data-message-index="${msgIndex}"]`) as HTMLElement | null;
@@ -1681,14 +1851,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Scroll to top of chat
   const scrollToTop = useCallback(() => {
+    suppressRelatchRef.current = true;
     setAutoScroll(false);
     chatContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
-  // Scroll to bottom of chat
+  // Scroll to bottom of chat — re-latching hands off to the pin loop
   const scrollToBottom = useCallback(() => {
+    suppressRelatchRef.current = false;
     setAutoScroll(true);
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
   // Check if there are any TodoWrite tool calls in the conversation
@@ -1707,9 +1878,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
 
     if (latestTodoIndex >= 0) {
-      // Scroll to the todo list
+      // Scroll to the todo list — unlatch so auto-scroll doesn't yank the
+      // user back to the bottom while they're looking at it
       const targetElement = document.querySelector(`[data-message-index="${latestTodoIndex}"]`) as HTMLElement | null;
       if (targetElement) {
+        suppressRelatchRef.current = true;
+        setAutoScroll(false);
         targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
         targetElement.style.outline = "2px solid var(--accent)";
         targetElement.style.borderRadius = "8px";
@@ -2811,17 +2985,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           </div>
         )}
 
-        {/* Auto-scroll toggle button - only show in existing chat mode */}
-        {id && viewMode === "chat" && (
+        {/* Jump-to-bottom button - appears when the user has scrolled up
+            (auto-scroll unlatched); clicking scrolls down and re-latches */}
+        {id && viewMode === "chat" && !autoScroll && (
           <button
-            onClick={toggleAutoScroll}
+            onClick={scrollToBottom}
             style={{
               position: "absolute",
               bottom: "20px",
               right: "20px",
-              background: autoScroll ? "var(--accent)" : "var(--bg-secondary)",
-              color: autoScroll ? "var(--text-on-accent)" : "var(--text)",
-              border: autoScroll ? "none" : "1px solid var(--border)",
+              background: "var(--accent)",
+              color: "var(--text-on-accent)",
+              border: "none",
               borderRadius: "50%",
               width: "40px",
               height: "40px",
@@ -2839,7 +3014,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             onMouseLeave={(e) => {
               e.currentTarget.style.transform = "scale(1)";
             }}
-            title={autoScroll ? "Auto-scroll is ON - Click to disable" : "Auto-scroll is OFF - Click to enable"}
+            title="Scroll to bottom and resume auto-scroll"
           >
             <ArrowDown size={20} />
           </button>
