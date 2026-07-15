@@ -296,6 +296,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return "claude-code";
   }, [id, newChatProvider, chat?.metadata]);
 
+  // Human-readable harness name for status text ("Claude is thinking...").
+  const providerDisplayName = chatProvider === "openrouter" ? "OpenRouter" : chatProvider === "codex" ? "Codex" : "Claude";
+
   // Fork the conversation at a message: the backend copies session history
   // up to and including that message into a new chat, which we navigate to.
   // No agent run is started — the user sends the next message from there.
@@ -2721,7 +2724,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         />
                       ))}
                     </span>
-                    <span>Claude is thinking...</span>
+                    <span>{providerDisplayName} is thinking...</span>
                   </div>
                 )}
               </>
@@ -2873,7 +2876,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         />
                       ))}
                     </span>
-                    <span>{compacting ? "Compacting conversation..." : "Claude is thinking..."}</span>
+                    <span>{compacting ? "Compacting conversation..." : `${providerDisplayName} is thinking...`}</span>
                     <span style={{ fontSize: 11, opacity: 0.7 }}>
                       {compacting ? "(Summarizing context to free up space)" : "(You can send another message anytime)"}
                     </span>
@@ -2928,7 +2931,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       )}
 
       {pendingAction ? (
-        <FeedbackPanel action={pendingAction} onRespond={handleRespond} />
+        <FeedbackPanel action={pendingAction} onRespond={handleRespond} agentName={providerDisplayName} />
       ) : (
         // Wrap the composer in a positioned container so the model/effort
         // popover can anchor to the composer's edges (not the hamburger menu

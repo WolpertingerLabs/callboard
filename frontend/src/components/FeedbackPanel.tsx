@@ -16,9 +16,11 @@ export interface PendingAction {
 interface Props {
   action: PendingAction;
   onRespond: (allow: boolean, updatedInput?: Record<string, unknown>) => void;
+  /** Display name of the harness running this chat (e.g. "Claude", "OpenRouter", "Codex") */
+  agentName?: string;
 }
 
-export default function FeedbackPanel({ action, onRespond }: Props) {
+export default function FeedbackPanel({ action, onRespond, agentName = "Claude" }: Props) {
   const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
   const [otherText, setOtherText] = useState<Record<number, string>>({});
   const [planExpanded, setPlanExpanded] = useState(false);
@@ -45,7 +47,7 @@ export default function FeedbackPanel({ action, onRespond }: Props) {
     const questions = action.questions || [];
     return (
       <div style={questionPanelStyle}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8, flexShrink: 0 }}>Claude is asking</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8, flexShrink: 0 }}>{agentName} is asking</div>
         <div style={questionScrollArea}>
           {questions.map((q: any, qi: number) => (
             <div key={qi} style={{ marginBottom: 12 }}>
