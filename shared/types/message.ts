@@ -35,7 +35,11 @@ export interface ParsedMessage {
   durationMs?: number;
   /** API service tier, e.g. "standard" */
   serviceTier?: string;
-  /** Image IDs attached to this user message (for rendering sent images) */
+  /**
+   * Image IDs attached to this message — user-sent images on user messages,
+   * or images the agent read (e.g. Read tool on an image file) on tool_result
+   * messages. Served from GET /api/images/:id.
+   */
   imageIds?: string[];
 
   // ── Debug / metrics fields ──

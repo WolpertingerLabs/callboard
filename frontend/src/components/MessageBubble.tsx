@@ -323,7 +323,7 @@ function ImageFullscreen({ src, onClose }: { src: string; onClose: () => void })
   );
 }
 
-function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
+export function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
   const [fullscreenSrc, setFullscreenSrc] = useState<string | null>(null);
 
   return (

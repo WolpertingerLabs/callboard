@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
-import { parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge } from "./MessageBubble";
+import { parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge, ImageThumbnails } from "./MessageBubble";
 import { getToolSummary, getToolDisplayName, isCallboardTool } from "./toolFormatting";
 import MediaRenderer from "./MediaRenderer";
 import CanvasRenderer from "./CanvasRenderer";
@@ -163,6 +163,13 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
                 }}
               />
             )}
+          </div>
+        )}
+
+        {/* Images the tool returned (e.g. Read on an image file) — always visible */}
+        {toolResult?.imageIds && toolResult.imageIds.length > 0 && (
+          <div style={{ padding: "0 12px 8px 12px" }}>
+            <ImageThumbnails imageIds={toolResult.imageIds} />
           </div>
         )}
       </div>

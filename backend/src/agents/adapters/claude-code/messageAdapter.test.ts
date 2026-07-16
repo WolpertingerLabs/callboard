@@ -85,9 +85,7 @@ describe("translateSdkMessages — system / lifecycle", () => {
   });
 
   it("emits compaction_boundary with content when compact_boundary arrives", async () => {
-    const events = await collect([
-      { type: "system", subtype: "compact_boundary", content: "summarized up to turn 50" },
-    ]);
+    const events = await collect([{ type: "system", subtype: "compact_boundary", content: "summarized up to turn 50" }]);
     expect(events).toEqual([{ type: "compaction_boundary", content: "summarized up to turn 50" }]);
   });
 
@@ -97,16 +95,15 @@ describe("translateSdkMessages — system / lifecycle", () => {
   });
 
   it("ignores missing or empty session_id", async () => {
-    const events = await collect([{ type: "system", subtype: "init", session_id: "" }, { type: "system", subtype: "init" }]);
+    const events = await collect([
+      { type: "system", subtype: "init", session_id: "" },
+      { type: "system", subtype: "init" },
+    ]);
     expect(events.filter((e) => e.type === "session_started")).toHaveLength(0);
   });
 
   it("re-emits session_started on repeat arrivals (callers dedupe)", async () => {
-    const events = await collect([
-      { session_id: "sess-1" },
-      { session_id: "sess-1" },
-      { session_id: "sess-1" },
-    ]);
+    const events = await collect([{ session_id: "sess-1" }, { session_id: "sess-1" }, { session_id: "sess-1" }]);
     expect(events).toEqual([
       { type: "session_started", sessionId: "sess-1" },
       { type: "session_started", sessionId: "sess-1" },
@@ -144,9 +141,7 @@ describe("translateSdkMessages — content blocks", () => {
   });
 
   it("coerces tool_result content — string passes through", async () => {
-    const [event] = await collect([
-      { message: { content: [{ type: "tool_result", tool_use_id: "t", content: "plain string" }] } },
-    ]);
+    const [event] = await collect([{ message: { content: [{ type: "tool_result", tool_use_id: "t", content: "plain string" }] } }]);
     expect(event).toEqual({ type: "tool_result", callId: "t", content: "plain string" });
   });
 
@@ -172,16 +167,29 @@ describe("translateSdkMessages — content blocks", () => {
   });
 
   it("coerces tool_result content — object stringifies via JSON", async () => {
-    const [event] = await collect([
-      { message: { content: [{ type: "tool_result", tool_use_id: "t", content: { foo: "bar", n: 1 } }] } },
-    ]);
+    const [event] = await collect([{ message: { content: [{ type: "tool_result", tool_use_id: "t", content: { foo: "bar", n: 1 } }] } }]);
     expect(event).toMatchObject({ type: "tool_result", callId: "t", content: '{"foo":"bar","n":1}' });
   });
 
-  it("tool_result preserves is_error when true", async () => {
+  it("coerces tool_result content — image blocks become a placeholder, not inlined base64", async () => {
     const [event] = await collect([
-      { message: { content: [{ type: "tool_result", tool_use_id: "t", content: "oops", is_error: true }] } },
+      {
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t",
+              content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }],
+            },
+          ],
+        },
+      },
     ]);
+    expect(event).toMatchObject({ type: "tool_result", callId: "t", content: "[Image: image/png]" });
+  });
+
+  it("tool_result preserves is_error when true", async () => {
+    const [event] = await collect([{ message: { content: [{ type: "tool_result", tool_use_id: "t", content: "oops", is_error: true }] } }]);
     expect(event).toEqual({ type: "tool_result", callId: "t", content: "oops", isError: true });
   });
 
@@ -189,9 +197,7 @@ describe("translateSdkMessages — content blocks", () => {
     // Empty thinking content represents a redacted (encrypted) extended-thinking
     // block. We pass it through with empty content so the frontend can render an
     // `🔒 Thinking (encrypted)` placeholder — see frontend/MessageBubble.tsx.
-    const events = await collect([
-      { message: { content: [{ type: "text" }, { type: "thinking" }] } },
-    ]);
+    const events = await collect([{ message: { content: [{ type: "text" }, { type: "thinking" }] } }]);
     expect(events).toEqual([
       { type: "text", content: "" },
       { type: "thinking", content: "" },
@@ -219,7 +225,14 @@ describe("translateSdkMessages — content blocks", () => {
 
   it("drops unknown block types silently", async () => {
     const events = await collect([
-      { message: { content: [{ type: "mystery_block", data: "?" }, { type: "text", text: "ok" }] } },
+      {
+        message: {
+          content: [
+            { type: "mystery_block", data: "?" },
+            { type: "text", text: "ok" },
+          ],
+        },
+      },
     ]);
     expect(events).toEqual([{ type: "text", content: "ok" }]);
   });

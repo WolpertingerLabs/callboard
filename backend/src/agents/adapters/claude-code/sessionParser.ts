@@ -75,18 +75,32 @@ export function getFirstUserMessage(filePath: string, maxLength: number = 200): 
 
 // ── Tool result content coercion ────────────────────────────────────
 
-function extractToolResultContent(block: any): string {
-  if (typeof block.content === "string") return block.content;
+/**
+ * Coerce a tool_result block into display text, interning any base64 image
+ * blocks (e.g. from Read on an image file) into the shared image store so
+ * the frontend can render them as thumbnails instead of a stringified blob.
+ */
+function extractToolResultContent(block: any): { content: string; imageIds: string[] } {
+  const imageIds: string[] = [];
+  if (typeof block.content === "string") return { content: block.content, imageIds };
   if (Array.isArray(block.content)) {
-    return block.content
+    const content = block.content
       .map((c: any) => {
         if (typeof c === "string") return c;
         if (c.type === "text") return c.text;
+        if (c.type === "image" && c.source?.type === "base64" && c.source.data && c.source.media_type) {
+          const imageId = storeBase64Image(c.source.data, c.source.media_type);
+          if (imageId) {
+            imageIds.push(imageId);
+            return `[Image: ${c.source.media_type}]`;
+          }
+        }
         return JSON.stringify(c);
       })
       .join("\n");
+    return { content, imageIds };
   }
-  return JSON.stringify(block.content);
+  return { content: JSON.stringify(block.content), imageIds };
 }
 
 // ── Subagent map building ───────────────────────────────────────────
@@ -261,17 +275,20 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
             ...meta,
           });
           break;
-        case "tool_result":
+        case "tool_result": {
+          const { content: resultContent, imageIds } = extractToolResultContent(block);
           result.push({
             role: "assistant",
             type: "tool_result",
-            content: extractToolResultContent(block),
+            content: resultContent,
             toolName: block.tool_use_id,
             toolUseId: block.tool_use_id,
             timestamp,
+            ...(imageIds.length > 0 && { imageIds }),
             ...meta,
           });
           break;
+        }
       }
     }
 
