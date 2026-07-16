@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions, deleteAllSessionsExcept } from "./services/sessions.js";
+import { verifyApiToken } from "./services/api-keys.js";
 import { verifyPassword, hashPassword, generateSalt, validateNewPassword } from "./utils/password.js";
 import { updateEnvFile } from "./utils/env-writer.js";
 import { getClientKey } from "./utils/client-ip.js";
@@ -71,6 +72,20 @@ function rollSession(token: string, res: Response): void {
 // Session cleanup on startup
 cleanupExpiredSessions();
 
+// ── Bearer token helpers ────────────────────────────────────────────
+
+/**
+ * Extract a `cbk_` API token from the Authorization header, if present.
+ * Returns undefined when the header is absent or not a Bearer scheme.
+ */
+function getBearerToken(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  if (!header) return undefined;
+  const [scheme, token] = header.split(" ");
+  if (scheme?.toLowerCase() !== "bearer" || !token) return undefined;
+  return token;
+}
+
 // ── Handlers ────────────────────────────────────────────────────────
 
 export async function loginHandler(req: Request, res: Response) {
@@ -112,6 +127,14 @@ export function checkAuthHandler(req: Request, res: Response) {
   if (!isPasswordConfigured()) {
     return res.json({ authenticated: false, error: "Server misconfigured: no password is set." });
   }
+  // Bearer API keys can validate themselves here too (e.g. a "test
+  // connection" button in an external integration).
+  const bearerToken = getBearerToken(req);
+  if (bearerToken) {
+    const apiKey = verifyApiToken(bearerToken);
+    return res.json({ authenticated: !!apiKey });
+  }
+
   const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.json({ authenticated: false });
   const entry = getSession(token);
@@ -189,6 +212,21 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return res.status(503).json({ error: "Server misconfigured: no password is set." });
   }
 
+  // Bearer API keys are accepted alongside session cookies. When an
+  // Authorization header is present it takes precedence — no fallthrough to
+  // the cookie, so an invalid/expired key fails loudly instead of silently
+  // riding a browser session.
+  const bearerToken = getBearerToken(req);
+  if (bearerToken) {
+    const apiKey = verifyApiToken(bearerToken);
+    if (!apiKey) {
+      return res.status(401).json({ error: "Invalid or expired API key" });
+    }
+    res.locals.authMethod = "bearer";
+    res.locals.apiKeyId = apiKey.id;
+    return next();
+  }
+
   const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.status(401).json({ error: "Not authenticated" });
 
@@ -200,6 +238,19 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   // Auto-extend the session on every authenticated request (rolling session)
   rollSession(token, res);
+  res.locals.authMethod = "session";
 
+  next();
+}
+
+/**
+ * Guard for routes that manage credentials (e.g. the API-key CRUD routes):
+ * only a cookie session — someone who logged in with the password — may use
+ * them. A bearer key minting more bearer keys would defeat expiry/revocation.
+ */
+export function requireSessionAuth(req: Request, res: Response, next: NextFunction) {
+  if (res.locals.authMethod !== "session") {
+    return res.status(403).json({ error: "This endpoint requires a logged-in session, not an API key." });
+  }
   next();
 }

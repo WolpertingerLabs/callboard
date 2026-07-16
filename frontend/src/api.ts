@@ -1016,6 +1016,44 @@ export async function changePassword(currentPassword: string, newPassword: strin
   await assertOk(res, "Failed to change password");
 }
 
+// API keys (bearer tokens for external integrations)
+
+export interface ApiKeyInfo {
+  id: string;
+  name: string;
+  description: string;
+  tokenPreview: string;
+  created_at: number;
+  expires_at: number | null;
+  last_used_at: number | null;
+}
+
+export async function listApiKeys(): Promise<ApiKeyInfo[]> {
+  const res = await fetch(`${BASE}/api-keys`, { credentials: "include" });
+  await assertOk(res, "Failed to load API keys");
+  const data = await res.json();
+  return data.keys;
+}
+
+export async function createApiKey(name: string, description: string, expiresAt: number | null): Promise<{ key: ApiKeyInfo; token: string }> {
+  const res = await fetch(`${BASE}/api-keys`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ name, description, expiresAt }),
+  });
+  await assertOk(res, "Failed to create API key");
+  return res.json();
+}
+
+export async function deleteApiKey(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/api-keys/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to revoke API key");
+}
+
 // Claude Code auth status API
 
 export interface ClaudeAuthStatus {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { LogOut, Lock, Eye, EyeOff } from "lucide-react";
 import ConfirmModal from "../../components/ConfirmModal";
+import ApiKeysSection from "./ApiKeysSection";
 import PasswordStrengthMeter from "../../components/PasswordStrengthMeter";
 import { MIN_PASSWORD_LENGTH } from "../../utils/passwordStrength";
 import { changePassword } from "../../api";
@@ -165,6 +166,9 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
           </button>
         </form>
       </div>
+
+      {/* API Keys Section */}
+      <ApiKeysSection />
 
       {/* Account / Logout Section */}
       <div
