@@ -134,6 +134,7 @@ export async function listChats(
   bookmarked?: boolean,
   excludeTriggered?: boolean,
   cached?: boolean,
+  includeLineage?: boolean,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -141,6 +142,7 @@ export async function listChats(
   if (bookmarked) params.append("bookmarked", "true");
   if (excludeTriggered) params.append("excludeTriggered", "true");
   if (cached === false) params.append("cached", "false");
+  if (includeLineage) params.append("includeLineage", "true");
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");
