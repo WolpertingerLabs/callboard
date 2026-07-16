@@ -41,7 +41,10 @@ function coerceToolResultContent(raw: unknown): string {
       .map((c) => {
         if (typeof c === "string") return c;
         if (c && typeof c === "object") {
-          const obj = c as { text?: string };
+          const obj = c as { type?: string; text?: string; source?: { media_type?: string } };
+          // Don't inline base64 image payloads (Read on an image file) into
+          // the event stream — the session parser interns them for display.
+          if (obj.type === "image") return `[Image: ${obj.source?.media_type ?? "unknown"}]`;
           return obj.text ?? JSON.stringify(c);
         }
         return JSON.stringify(c);
