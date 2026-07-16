@@ -21,6 +21,14 @@ import {
   type SidebarViewMode,
 } from "../utils/localStorage";
 
+/**
+ * Chats that count toward the pagination window — excludes tree relatives
+ * appended by includeLineage, which are returned beyond the requested limit.
+ */
+function windowedCount(chats: Chat[]): number {
+  return chats.filter((c) => !c._lineage_appended).length;
+}
+
 interface ChatListProps {
   activeChatId?: string;
   onRefresh: (refreshFn: () => void) => void;
@@ -124,17 +132,20 @@ export default function ChatList({
       // When triggered chats are hidden, tell the API to exclude them so we
       // always get LIMIT real chats back (not LIMIT minus triggered ones)
       const excludeTriggered = !showTriggered;
-      const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined);
+      // Tree layout needs every member of a parentage tree the page touches,
+      // even those outside the pagination window
+      const includeLineage = treeLayout || undefined;
+      const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, undefined, includeLineage);
       setChats(response.chats);
       setHasMore(shouldFetchAll ? false : response.hasMore);
-      if (!shouldFetchAll) loadedCountRef.current = response.chats.length;
+      if (!shouldFetchAll) loadedCountRef.current = windowedCount(response.chats);
 
       // If the response was stale (cached), immediately fetch fresh data
       if (response.stale) {
-        const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false);
+        const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false, includeLineage);
         setChats(freshResponse.chats);
         setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
-        if (!shouldFetchAll) loadedCountRef.current = freshResponse.chats.length;
+        if (!shouldFetchAll) loadedCountRef.current = windowedCount(freshResponse.chats);
       }
 
       setIsInitialLoading(false);
@@ -145,7 +156,7 @@ export default function ChatList({
         initializeSuggestedDirectories(chatDirectories);
       }
     },
-    [bookmarkFilter, anyFilterActive, showTriggered],
+    [bookmarkFilter, anyFilterActive, showTriggered, treeLayout],
   );
 
   const loadMore = async () => {
@@ -154,10 +165,23 @@ export default function ChatList({
     setIsLoadingMore(true);
     try {
       const excludeTriggered = !showTriggered;
-      const response = await listChats(20, chats.length, bookmarkFilter || undefined, excludeTriggered || undefined);
-      setChats((prev) => [...prev, ...response.chats]);
+      // Offset counts only windowed chats — lineage-appended relatives sit
+      // outside the pagination window
+      const response = await listChats(
+        20,
+        loadedCountRef.current,
+        bookmarkFilter || undefined,
+        excludeTriggered || undefined,
+        undefined,
+        treeLayout || undefined,
+      );
+      // Later pages can re-include chats already appended as lineage relatives
+      setChats((prev) => {
+        const seen = new Set(prev.map((c) => c.id));
+        return [...prev, ...response.chats.filter((c) => !seen.has(c.id))];
+      });
       setHasMore(response.hasMore);
-      loadedCountRef.current = chats.length + response.chats.length;
+      loadedCountRef.current += windowedCount(response.chats);
     } finally {
       setIsLoadingMore(false);
     }

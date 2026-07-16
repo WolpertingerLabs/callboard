@@ -17,6 +17,12 @@ export interface Chat {
   git_branch?: string;
   slash_commands?: SlashCommand[];
   plugins?: Plugin[];
+  /**
+   * True when the chat was returned beyond the pagination window because it
+   * belongs to a parentage tree touched by the page (includeLineage=true).
+   * Such chats don't count toward pagination offsets.
+   */
+  _lineage_appended?: boolean;
 }
 
 export interface ChatListResponse {

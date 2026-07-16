@@ -31,15 +31,44 @@ interface LineageInfo {
   hasLineage: boolean;
 }
 
-function lineageOf(chat: Chat): LineageInfo {
+/** Defense cap against corrupt parent-pointer chains (mirrors the server). */
+const MAX_LINEAGE_DEPTH = 50;
+
+function parseMeta(chat: Chat): Record<string, any> {
   try {
-    const meta = JSON.parse(chat.metadata || "{}");
-    const parent = meta.parentChatId || meta.forkedFrom || undefined;
-    const rootKey = meta.rootChatId || parent || chat.id;
-    return { rootKey, hasLineage: !!(meta.rootChatId || parent) };
+    return JSON.parse(chat.metadata || "{}");
   } catch {
-    return { rootKey: chat.id, hasLineage: false };
+    return {};
   }
+}
+
+/**
+ * Resolve a chat's lineage group key by walking parent pointers through the
+ * loaded chats (the API loads a tree's full membership via includeLineage),
+ * so multi-level chains — including legacy forkedFrom-only links without a
+ * stamped rootChatId — converge on one key. When an ancestor isn't loaded,
+ * falls back to the stamped rootChatId or the dangling parent id, which is
+ * consistent for every loaded member reaching that same ancestor.
+ */
+function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
+  const meta = parseMeta(chat);
+  const hasLineage = !!(meta.rootChatId || meta.parentChatId || meta.forkedFrom);
+  let current = chat;
+  const visited = new Set<string>([chat.id]);
+  for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
+    const m = current === chat ? meta : parseMeta(current);
+    const parentId = m.parentChatId || m.forkedFrom;
+    if (!parentId || visited.has(parentId)) {
+      return { rootKey: m.rootChatId || current.id, hasLineage };
+    }
+    const parent = byId.get(parentId);
+    if (!parent) {
+      return { rootKey: m.rootChatId || parentId, hasLineage };
+    }
+    visited.add(parentId);
+    current = parent;
+  }
+  return { rootKey: current.id, hasLineage };
 }
 
 const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
@@ -155,17 +184,20 @@ export default function ChatTreeList({ chats, activeChatId, onChatClick, onDelet
   // Group loaded chats by lineage root, preserving the flat list's order:
   // each group appears at the position of its most recently updated member.
   const rows = useMemo(() => {
-    const seen = new Set<string>();
+    const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
+    const infoById = new Map<string, LineageInfo>();
     const groupSizes = new Map<string, number>();
     const groupLineage = new Map<string, boolean>();
     for (const chat of chats) {
-      const { rootKey, hasLineage } = lineageOf(chat);
-      groupSizes.set(rootKey, (groupSizes.get(rootKey) || 0) + 1);
-      if (hasLineage) groupLineage.set(rootKey, true);
+      const info = lineageOf(chat, byId);
+      infoById.set(chat.id, info);
+      groupSizes.set(info.rootKey, (groupSizes.get(info.rootKey) || 0) + 1);
+      if (info.hasLineage) groupLineage.set(info.rootKey, true);
     }
+    const seen = new Set<string>();
     const result: { chat: Chat; rootKey: string; isGroup: boolean }[] = [];
     for (const chat of chats) {
-      const { rootKey, hasLineage } = lineageOf(chat);
+      const { rootKey, hasLineage } = infoById.get(chat.id)!;
       if (seen.has(rootKey)) continue;
       seen.add(rootKey);
       const isGroup = (groupSizes.get(rootKey) || 0) > 1 || hasLineage || groupLineage.get(rootKey) === true;
