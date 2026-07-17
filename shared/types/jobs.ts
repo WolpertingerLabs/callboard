@@ -8,7 +8,7 @@ import type { UiAgentProviderKind, EffortLevel } from "./providers.js";
 // and the work inside steps is done by spawned agent sessions.
 // Spawning a job creates a JobRun — a persisted state machine.
 
-export type JobStepType = "agent" | "approval" | "poll" | "wait_event" | "gate" | "notify" | "parallel";
+export type JobStepType = "agent" | "approval" | "poll" | "wait_event" | "gate" | "notify" | "parallel" | "job";
 
 export interface JobInputDef {
   key: string;
@@ -145,7 +145,25 @@ export interface ParallelJobStep extends JobStepBase {
   onFailure?: string;
 }
 
-export type JobStep = AgentJobStep | ApprovalJobStep | PollJobStep | WaitEventJobStep | GateJobStep | NotifyJobStep | ParallelJobStep;
+export interface SubJobStep extends JobStepBase {
+  type: "job";
+  /** Id of the job to run as a child. The child's definition is frozen when this step starts (not when the parent spawns). */
+  jobId: string;
+  /** Input values for the child run — values support {{...}} templating like prompts. */
+  inputs?: Record<string, string>;
+  /**
+   * Output keys harvested from the child run's declared run-level outputs.
+   * Missing keys fail the step. Omit to accept whatever the child produces.
+   */
+  outputs?: string[];
+  timeoutHours?: number;
+  /** Step id or "fail" (default) when timeoutHours elapses — the child run is cancelled. */
+  onTimeout?: string;
+  /** Step id or "fail" (default) when the child run fails or is cancelled. */
+  onFailure?: string;
+}
+
+export type JobStep = AgentJobStep | ApprovalJobStep | PollJobStep | WaitEventJobStep | GateJobStep | NotifyJobStep | ParallelJobStep | SubJobStep;
 
 export interface JobDefinition {
   /** Slug, unique across jobs (e.g. "bake-devin-pr"). */
@@ -168,6 +186,13 @@ export interface JobDefinition {
     maxDurationHours?: number;
   };
   steps: JobStep[];
+  /**
+   * Run-level outputs, resolved from the run context when a run succeeds
+   * (e.g. { "pr_url": "{{steps.create_pr.outputs.pr_url}}" }). A value that
+   * is exactly one {{ref}} keeps the referenced value's native type. This is
+   * what a parent run's "job" step harvests.
+   */
+  outputs?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
   createdBy?: { kind: "chat" | "agent" | "ui" | "api"; ref?: string };
@@ -187,6 +212,7 @@ export interface JobDefinitionPayload {
   defaults?: JobDefinition["defaults"];
   limits?: JobDefinition["limits"];
   steps: JobStep[];
+  outputs?: JobDefinition["outputs"];
 }
 
 /** Self-describing envelope for exporting/importing a single job definition. */
@@ -196,7 +222,7 @@ export interface JobExportEnvelope {
   job: JobDefinitionPayload;
 }
 
-export type JobRunStatus = "running" | "waiting_approval" | "waiting_event" | "sleeping" | "paused" | "succeeded" | "failed" | "cancelled";
+export type JobRunStatus = "running" | "waiting_approval" | "waiting_event" | "waiting_child" | "sleeping" | "paused" | "succeeded" | "failed" | "cancelled";
 
 /** Structured result reported by a step session via complete_job_step. */
 export interface JobStepResult {
@@ -215,6 +241,8 @@ export interface JobRunHistoryEntry {
   chatId?: string;
   /** Branch id when this entry records one branch of a parallel step. */
   branchId?: string;
+  /** Child run id when this entry records a "job" step. */
+  childRunId?: string;
   result:
     | "completed"
     | "completed_unstructured"
@@ -249,6 +277,8 @@ export interface JobRunActiveStep {
   stepId: string;
   attempt: number;
   chatId?: string;
+  /** Child run spawned by a "job" step — the run this step is waiting on. */
+  childRunId?: string;
   startedAt: string;
   /** Written by the complete_job_step tool, harvested when the session ends. */
   pendingResult?: JobStepResult;
@@ -277,6 +307,14 @@ export interface JobRun {
   loopCounts: Record<string, number>;
   sessionsSpawned: number;
   history: JobRunHistoryEntry[];
+  /** Declared run-level outputs, resolved when the run succeeds. */
+  outputs?: Record<string, unknown>;
+  /** Set when this run was spawned by a parent run's "job" step. */
+  parentRunId?: string;
+  /** The parent's "job" step id that spawned this run. */
+  parentStepId?: string;
+  /** Sub-job nesting depth (0 for top-level runs). Bounded by MAX_JOB_DEPTH. */
+  depth?: number;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -305,6 +343,10 @@ export interface JobRunListItem {
   /** Chat backing the active step session, falling back to the most recent step chat. */
   latestChatId?: string;
   activeParallel?: { mode: "race" | "all"; completed: number; total: number; winnerBranchId?: string };
+  /** Set when this run is a sub-job spawned by a parent run's "job" step. */
+  parentRunId?: string;
+  /** Child run the active "job" step is waiting on. */
+  activeChildRunId?: string;
   nextWakeAt?: string;
   error?: string;
   createdAt: string;

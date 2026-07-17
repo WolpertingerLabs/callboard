@@ -29,6 +29,8 @@ export const TERMINAL_JOB_RUN_STATUSES: ReadonlySet<JobRunStatus> = new Set(["su
 
 export const DEFAULT_MAX_TOTAL_SESSIONS = 50;
 export const DEFAULT_MAX_DURATION_HOURS = 168;
+/** Max sub-job nesting depth ("job" steps). The runtime guard behind the static cycle check, since definitions drift after validation. */
+export const MAX_JOB_DEPTH = 5;
 
 const jobsDir = join(DATA_DIR, "jobs");
 const definitionsDir = join(jobsDir, "definitions");
@@ -106,6 +108,7 @@ export function createJob(input: JobDefinitionInput): JobDefinition {
     ...(input.defaults && { defaults: input.defaults }),
     ...(input.limits && { limits: input.limits }),
     steps: input.steps,
+    ...(input.outputs && Object.keys(input.outputs).length > 0 && { outputs: input.outputs }),
     createdAt: now,
     updatedAt: now,
     ...(input.createdBy && { createdBy: input.createdBy }),
@@ -129,6 +132,7 @@ export function updateJob(id: string, input: JobDefinitionInput): JobDefinition 
     defaults: input.defaults || undefined,
     limits: input.limits || undefined,
     steps: input.steps,
+    outputs: input.outputs && Object.keys(input.outputs).length > 0 ? input.outputs : undefined,
     version: existing.version + 1,
     updatedAt: new Date().toISOString(),
   };
@@ -170,6 +174,7 @@ function toPayload(def: Record<string, unknown>): JobDefinitionPayload {
     ...(def.defaults !== undefined && { defaults: def.defaults as JobDefinitionPayload["defaults"] }),
     ...(def.limits !== undefined && { limits: def.limits as JobDefinitionPayload["limits"] }),
     steps: def.steps as JobStep[],
+    ...(def.outputs !== undefined && { outputs: def.outputs as JobDefinitionPayload["outputs"] }),
   };
 }
 
@@ -209,10 +214,7 @@ export function uniqueJobId(base: string): string {
  *
  * Validation errors propagate as JobValidationError.
  */
-export function importJobDefinition(
-  raw: unknown,
-  opts?: { mode?: "copy" | "overwrite"; createdBy?: JobDefinition["createdBy"] },
-): JobDefinition {
+export function importJobDefinition(raw: unknown, opts?: { mode?: "copy" | "overwrite"; createdBy?: JobDefinition["createdBy"] }): JobDefinition {
   if (!raw || typeof raw !== "object") throw new Error("Import payload must be a JSON object");
   const obj = raw as Record<string, unknown>;
 
@@ -286,6 +288,8 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
             ...(run.activeStep.parallel.winnerBranchId && { winnerBranchId: run.activeStep.parallel.winnerBranchId }),
           },
         }),
+        ...(run.parentRunId && { parentRunId: run.parentRunId }),
+        ...(run.activeStep?.childRunId && { activeChildRunId: run.activeStep.childRunId }),
         ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
         ...(run.error && { error: run.error }),
         createdAt: run.createdAt,
@@ -316,7 +320,14 @@ export function saveRun(run: JobRun): void {
   atomicWrite(join(runsDir, `${run.runId}.json`), JSON.stringify(run, null, 2));
 }
 
-export function createRun(job: JobDefinition, inputs: Record<string, string>): JobRun {
+/** Parent linkage for runs spawned by a "job" step. */
+export interface RunParentLink {
+  parentRunId: string;
+  parentStepId: string;
+  depth: number;
+}
+
+export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink): JobRun {
   const now = new Date().toISOString();
   const run: JobRun = {
     runId: `run-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
@@ -329,6 +340,7 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>): J
     loopCounts: {},
     sessionsSpawned: 0,
     history: [],
+    ...(parent && { parentRunId: parent.parentRunId, parentStepId: parent.parentStepId, depth: parent.depth }),
     createdAt: now,
     updatedAt: now,
   };
@@ -401,18 +413,20 @@ export class JobValidationError extends Error {
   }
 }
 
-const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify", "parallel"]);
+const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify", "parallel", "job"]);
 const GATE_OPS = new Set(["eq", "neq", "contains", "exists", "not_exists", "gt", "lt"]);
 
 /**
- * Control-flow successors of a step — the step ids it can transition to,
+ * Control-flow successors of a step — the targets it can transition to,
  * mirroring the runner's routing (resolveNext / gate onPass-onFail /
  * onReject / onTimeout). `followingStepId` is the next step in the array
- * (what a bare `next` defaults to). Sentinel targets ("end"/"fail", and the
- * implicit "end" after the last step) are terminal and dropped.
+ * (what a bare `next` defaults to; undefined after the last step means the
+ * implicit "end"). Successful termination is kept as the "end" sentinel so
+ * the dominator graph can treat it as a node; "fail" edges are dropped —
+ * paths that fail the run never need template refs to resolve.
  */
 function stepFlowTargets(step: JobStep, followingStepId: string | undefined): string[] {
-  const defaultNext = step.next ?? followingStepId; // undefined ⇒ implicit "end"
+  const defaultNext = step.next ?? followingStepId ?? JOB_TARGET_END;
   const targets: (string | undefined)[] = [];
   switch (step.type) {
     case "gate":
@@ -428,10 +442,13 @@ function stepFlowTargets(step: JobStep, followingStepId: string | undefined): st
     case "parallel":
       targets.push(defaultNext, step.onFailure);
       break;
+    case "job":
+      targets.push(defaultNext, step.onFailure, step.onTimeout);
+      break;
     default: // agent, notify — single success edge
       targets.push(defaultNext);
   }
-  return targets.filter((t): t is string => typeof t === "string" && t !== JOB_TARGET_END && t !== JOB_TARGET_FAIL);
+  return targets.filter((t): t is string => typeof t === "string" && t !== JOB_TARGET_FAIL);
 }
 
 /**
@@ -445,6 +462,11 @@ function stepFlowTargets(step: JobStep, followingStepId: string | undefined): st
  * always resolves at runtime. This follows the step edges (next, gate
  * onPass/onFail, onReject, onTimeout), so a backward loop jump correctly makes
  * a forward-in-array reference valid.
+ *
+ * The graph also contains the "end" sentinel as a node ("end" is a reserved
+ * step id, so it never collides): `dom.get(JOB_TARGET_END)` is the set of
+ * steps guaranteed to have executed on every successful path — the condition
+ * for a definition-level outputs template to always resolve.
  */
 function computeStepDominators(steps: JobStep[]): { dom: Map<string, Set<string>>; reachable: Set<string> } {
   const idSet = new Set(steps.map((s) => s?.id).filter((id): id is string => typeof id === "string"));
@@ -456,7 +478,7 @@ function computeStepDominators(steps: JobStep[]): { dom: Map<string, Set<string>
     const following = steps[i + 1]?.id;
     succ.set(
       step.id,
-      stepFlowTargets(step, typeof following === "string" ? following : undefined).filter((t) => idSet.has(t)),
+      stepFlowTargets(step, typeof following === "string" ? following : undefined).filter((t) => idSet.has(t) || t === JOB_TARGET_END),
     );
   });
 
@@ -683,10 +705,100 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
         if (!step.message || typeof step.message !== "string") errors.push(`step "${step.id}": notify steps require a message`);
         else checkTemplate(step.id, "message", step.message);
         break;
+      case "job": {
+        checkTarget(step.id, "onFailure", step.onFailure, true);
+        checkTarget(step.id, "onTimeout", step.onTimeout, true);
+        for (const [key, template] of Object.entries(step.inputs ?? {})) {
+          if (typeof template !== "string") errors.push(`step "${step.id}": inputs.${key} must be a string`);
+          else checkTemplate(step.id, `inputs.${key}`, template);
+        }
+        if (!step.jobId || typeof step.jobId !== "string") {
+          errors.push(`step "${step.id}": job steps require a jobId`);
+          break;
+        }
+        if (step.jobId === input.id) {
+          errors.push(`step "${step.id}": a job cannot reference itself as a sub-job`);
+          break;
+        }
+        const child = getJob(step.jobId);
+        if (!child) {
+          errors.push(`step "${step.id}": references unknown job "${step.jobId}" — create the child job first`);
+          break;
+        }
+        // Best-effort cross-job checks — authoritative rechecks happen when the
+        // step starts, since the child definition is only frozen then.
+        const declared = new Set(Object.keys(child.outputs ?? {}));
+        for (const key of step.outputs ?? []) {
+          if (!declared.has(key)) errors.push(`step "${step.id}": child job "${step.jobId}" does not declare a run-level output "${key}"`);
+        }
+        const provided = new Set(Object.keys(step.inputs ?? {}));
+        for (const def of child.inputs ?? []) {
+          if (def.required && def.default === undefined && !provided.has(def.key)) {
+            errors.push(`step "${step.id}": child job "${step.jobId}" requires input "${def.key}"`);
+          }
+        }
+        const cycle = findJobReferenceCycle(input.id, step.jobId);
+        if (cycle) errors.push(`step "${step.id}": sub-job reference cycle ${cycle.join(" → ")}`);
+        break;
+      }
     }
   });
 
+  // Definition-level outputs: resolved when a run succeeds, so every ref must
+  // point at a declared input or a step guaranteed to have run on every
+  // successful path (a dominator of "end").
+  const endDominators = dom.get(JOB_TARGET_END);
+  for (const [key, template] of Object.entries(input.outputs ?? {})) {
+    if (typeof template !== "string") {
+      errors.push(`outputs.${key} must be a template string`);
+      continue;
+    }
+    for (const ref of extractTemplateRefs(template)) {
+      const parts = ref.split(".");
+      if (parts[0] === "inputs") {
+        if (parts.length < 2 || !inputKeys.has(parts[1])) errors.push(`outputs.${key} references undeclared input "{{${ref}}}"`);
+      } else if (parts[0] === "steps") {
+        if (parts.length < 4 || parts[2] !== "outputs") {
+          errors.push(`outputs.${key} reference "{{${ref}}}" must be steps.<id>.outputs.<key>`);
+        } else if (!stepIds.has(parts[1])) {
+          errors.push(`outputs.${key} references unknown step "{{${ref}}}"`);
+        } else if (endDominators && !endDominators.has(parts[1])) {
+          errors.push(
+            `outputs.${key} references "{{${ref}}}" but step "${parts[1]}" is not guaranteed to run on every successful path — ` +
+              `the output would be missing on runs that finish without it`,
+          );
+        }
+      } else if (parts[0] !== "run") {
+        errors.push(`outputs.${key} has unknown reference "{{${ref}}}" (use inputs.*, steps.<id>.outputs.*, or run.*)`);
+      }
+    }
+  }
+
   return errors;
+}
+
+/**
+ * Walk saved definitions along "job" step references looking for a path from
+ * `fromJobId` back to `rootJobId`. Best-effort (definitions drift after save)
+ * — MAX_JOB_DEPTH is the authoritative runtime guard. Returns the cycle path
+ * for the error message, or null.
+ */
+function findJobReferenceCycle(rootJobId: string, fromJobId: string): string[] | null {
+  const path: string[] = [rootJobId];
+  const visited = new Set<string>([rootJobId]);
+  const walk = (jobId: string): boolean => {
+    if (jobId === rootJobId) return true;
+    if (visited.has(jobId)) return false;
+    visited.add(jobId);
+    path.push(jobId);
+    const job = getJob(jobId);
+    for (const step of job?.steps ?? []) {
+      if (step.type === "job" && walk(step.jobId)) return true;
+    }
+    path.pop();
+    return false;
+  };
+  return walk(fromJobId) ? [...path, rootJobId] : null;
 }
 
 /** Extract `a.b.c` paths from `{{a.b.c}}` placeholders. */

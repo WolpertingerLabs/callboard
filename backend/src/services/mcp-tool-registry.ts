@@ -320,7 +320,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "get_model_routing",
     qualifiedName: "mcp__callboard-tools__get_model_routing",
-    description: "View the global Model Routing configuration (OpenRouter-only): enabled, classifier model, classifications, ranks/tiers, the class×rank model matrix, and defaults.",
+    description:
+      "View the global Model Routing configuration (OpenRouter-only): enabled, classifier model, classifications, ranks/tiers, the class×rank model matrix, and defaults.",
     parameters: [],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -350,8 +351,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     parameters: [
       { name: "enabled", type: "boolean", description: "Toggle model routing on/off", required: false },
       { name: "classifierModel", type: "string", description: "Set the classifier model (OpenRouter slug/alias)", required: false },
-      { name: "defaultRankId", type: "string", description: 'Set the default tier id (empty string clears)', required: false },
-      { name: "defaultClassId", type: "string", description: 'Set the fallback class id (empty string clears)', required: false },
+      { name: "defaultRankId", type: "string", description: "Set the default tier id (empty string clears)", required: false },
+      { name: "defaultClassId", type: "string", description: "Set the fallback class id (empty string clears)", required: false },
       { name: "upsertClasses", type: "array", description: "Add/update classes: [{ id?, label, description? }]", required: false },
       { name: "removeClassIds", type: "array", description: "Class ids to remove", required: false },
       { name: "upsertRanks", type: "array", description: "Add/update ranks: [{ id?, label, order? }]", required: false },
@@ -416,7 +417,7 @@ function jobToolDefs(serverName: string, serverLabel: string, category: McpToolD
           type: "enum",
           description: "Only runs in this status",
           required: false,
-          enumValues: ["running", "waiting_approval", "waiting_event", "sleeping", "paused", "succeeded", "failed", "cancelled"],
+          enumValues: ["running", "waiting_approval", "waiting_event", "waiting_child", "sleeping", "paused", "succeeded", "failed", "cancelled"],
         },
         { name: "limit", type: "number", description: "Max results (default 20)", required: false },
       ],
