@@ -39,6 +39,7 @@ import {
   getRun,
   saveRun,
   createRun,
+  findChildRun,
   listResumableRuns,
   validateJobDefinition,
   JobValidationError,
@@ -176,7 +177,12 @@ function resumeRunAfterRestart(run: JobRun): void {
           log.error(`Restart harvest failed for run ${run.runId}: ${err.message}`);
         });
       } else if (run.currentStepId) {
-        // Died between entering the step and the session spawning — re-enter.
+        // Died between entering the step and the session/child spawning. For a
+        // job step, first look for a child spawned in the crash window before
+        // the waiting_child linkage was persisted — adopt it rather than
+        // spawning a duplicate.
+        const step = findStep(run, run.currentStepId);
+        if (step?.type === "job" && adoptOrphanChildRun(run, step)) break;
         enterStep(run, run.currentStepId, 0);
       } else {
         // Never entered the first step.
@@ -223,7 +229,10 @@ export function spawnJobRun(jobId: string, inputs: Record<string, string>, paren
   const job = getJob(jobId);
   if (!job) throw new Error(`Job "${jobId}" not found`);
 
-  const errors = validateJobDefinition(job);
+  // Spawn-time validation skips cross-job checks: a "job" step whose child
+  // was deleted or drifted must route its onFailure at step start, not block
+  // the whole run (or a parent's unrelated spawn) here.
+  const errors = validateJobDefinition(job, { crossJob: false });
   if (errors.length > 0) throw new JobValidationError(errors);
 
   // Validate inputs against declarations; apply defaults.
@@ -313,6 +322,7 @@ export function pauseRun(runId: string): JobRun {
   // Pausing a waiting_child run does NOT pause the child — it keeps running
   // and can be paused independently; resume reconciles if it finished.
   run.pausedFrom = run.status;
+  run.pausedAt = new Date().toISOString();
   run.status = "paused";
   saveRun(run);
   notifyRunUpdated(run);
@@ -323,7 +333,15 @@ export function resumeRun(runId: string): JobRun {
   const run = mustGetRun(runId);
   if (run.status !== "paused") throw new Error(`Run ${runId} is not paused (status: ${run.status})`);
   run.status = run.pausedFrom ?? "sleeping";
+  // The pause suspended the clock: push any pending deadline (poll interval,
+  // approval/event/child timeout) out by the paused duration, so resuming
+  // past a stale deadline doesn't fire it instantly.
+  if (run.nextWakeAt && run.pausedAt) {
+    const pausedMs = Date.now() - new Date(run.pausedAt).getTime();
+    if (pausedMs > 0) run.nextWakeAt = new Date(new Date(run.nextWakeAt).getTime() + pausedMs).toISOString();
+  }
   delete run.pausedFrom;
+  delete run.pausedAt;
   saveRun(run);
   resumeRunAfterRestart(run);
   notifyRunUpdated(run);
@@ -417,7 +435,7 @@ function enterStep(run: JobRun, target: string, syncDepth: number): void {
       enterApprovalStep(run, step);
       break;
     case "job":
-      startSubJobStep(run, step);
+      startSubJobStep(run, step, syncDepth);
       break;
     case "wait_event":
       run.status = "waiting_event";
@@ -507,19 +525,22 @@ function enterApprovalStep(run: JobRun, step: ApprovalJobStep): void {
 // queue) — no polling. The child enforces its own limits; the parent only
 // bounds nesting depth and wall-clock time.
 
-function startSubJobStep(run: JobRun, step: SubJobStep): void {
+function startSubJobStep(run: JobRun, step: SubJobStep, syncDepth: number): void {
   const depth = run.depth ?? 0;
   if (depth >= MAX_JOB_DEPTH) {
     failRun(run, `Job step "${step.id}" would exceed the max sub-job nesting depth (${MAX_JOB_DEPTH})`);
     return;
   }
 
+  // Anything that can throw is computed before the child is spawned, so a
+  // failure here never leaves an orphaned child behind.
+  const timeoutAt = step.timeoutHours ? new Date(Date.now() + step.timeoutHours * 3_600_000).toISOString() : undefined;
   let childInputs: Record<string, string>;
   try {
     const ctx = buildRunContext(run);
     childInputs = Object.fromEntries(Object.entries(step.inputs ?? {}).map(([key, template]) => [key, interpolate(template, ctx)]));
   } catch (err: any) {
-    routeStepFailure(run, step.onFailure, `Job step "${step.id}": ${err.message}`);
+    failSubJobStep(run, step, `Job step "${step.id}": ${err.message}`, syncDepth);
     return;
   }
 
@@ -531,7 +552,7 @@ function startSubJobStep(run: JobRun, step: SubJobStep): void {
     const declared = new Set(Object.keys(childJob.outputs ?? {}));
     const undeclared = (step.outputs ?? []).filter((key) => !declared.has(key));
     if (undeclared.length > 0) {
-      routeStepFailure(run, step.onFailure, `Job step "${step.id}": child job "${step.jobId}" does not declare required output(s): ${undeclared.join(", ")}`);
+      failSubJobStep(run, step, `Job step "${step.id}": child job "${step.jobId}" does not declare required output(s): ${undeclared.join(", ")}`, syncDepth);
       return;
     }
   }
@@ -540,7 +561,7 @@ function startSubJobStep(run: JobRun, step: SubJobStep): void {
   try {
     child = spawnJobRun(step.jobId, childInputs, { parentRunId: run.runId, parentStepId: step.id, depth: depth + 1 });
   } catch (err: any) {
-    routeStepFailure(run, step.onFailure, `Job step "${step.id}" failed to spawn child job "${step.jobId}": ${err.message}`);
+    failSubJobStep(run, step, `Job step "${step.id}" failed to spawn child job "${step.jobId}": ${err.message}`, syncDepth);
     return;
   }
 
@@ -549,11 +570,51 @@ function startSubJobStep(run: JobRun, step: SubJobStep): void {
   // a microtask and must find childRunId set when it runs.
   run.activeStep = { stepId: step.id, attempt: 1, startedAt: new Date().toISOString(), childRunId: child.runId };
   run.status = "waiting_child";
-  if (step.timeoutHours) run.nextWakeAt = new Date(Date.now() + step.timeoutHours * 3_600_000).toISOString();
+  if (timeoutAt) run.nextWakeAt = timeoutAt;
   saveRun(run);
   notifyRunUpdated(run);
   armWakeTimer(run);
   log.info(`Run ${run.runId}: job step "${step.id}" waiting on child run ${child.runId} ("${step.jobId}")`);
+}
+
+/** Record a job-step failure in history, then route it via the given target with loop bounding. */
+function failSubJobStep(run: JobRun, step: SubJobStep, message: string, syncDepth: number): void {
+  appendHistory(run, {
+    stepId: step.id,
+    stepType: "job",
+    attempt: run.activeStep?.attempt ?? 1,
+    startedAt: run.activeStep?.startedAt ?? new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    ...(run.activeStep?.childRunId && { childRunId: run.activeStep.childRunId }),
+    result: "error",
+    detail: message,
+  });
+  routeSubJobExit(run, step, step.onFailure, message, syncDepth);
+}
+
+/**
+ * Route a job step's failure/timeout target. A backward (or self) jump is one
+ * retry-loop iteration — enforce the step's maxLoops bound (validation
+ * requires it for such targets), mirroring the gate rule. syncDepth threads
+ * through to enterStep so a synchronous failure loop trips the sync-chain
+ * guard instead of recursing unbounded.
+ */
+function routeSubJobExit(run: JobRun, step: SubJobStep, target: string | undefined, message: string, syncDepth: number): void {
+  const resolved = target ?? JOB_TARGET_FAIL;
+  if (resolved !== JOB_TARGET_FAIL && resolved !== JOB_TARGET_END) {
+    const stepIdx = run.definition.steps.findIndex((s) => s.id === step.id);
+    const targetIdx = run.definition.steps.findIndex((s) => s.id === resolved);
+    if (targetIdx !== -1 && targetIdx <= stepIdx) {
+      const count = (run.loopCounts[step.id] ?? 0) + 1;
+      run.loopCounts[step.id] = count;
+      if (step.maxLoops !== undefined && count > step.maxLoops) {
+        failRun(run, `Job step "${step.id}" exceeded maxLoops (${step.maxLoops}): ${message}`);
+        return;
+      }
+      saveRun(run);
+    }
+  }
+  routeStepFailure(run, resolved, message, syncDepth);
 }
 
 /** Harvest a terminal child run into its parent's waiting "job" step. */
@@ -576,8 +637,10 @@ async function handleChildRunEnd(parentRunId: string, childRunId: string): Promi
     const missing = (step.outputs ?? []).filter((key) => outputs[key] === undefined);
     if (missing.length > 0) {
       const reason = `child run succeeded but did not produce required output(s): ${missing.join(", ")}`;
-      appendHistory(run, { stepId: step.id, stepType: "job", attempt, startedAt, endedAt, childRunId, result: "error", detail: reason });
-      routeStepFailure(run, step.onFailure, `Job step "${step.id}" ${reason}`);
+      // Keep the partial outputs the child did produce — a failure-path step
+      // may still reference them (parallel error entries do the same).
+      appendHistory(run, { stepId: step.id, stepType: "job", attempt, startedAt, endedAt, childRunId, result: "error", outputs, detail: reason });
+      routeSubJobExit(run, step, step.onFailure, `Job step "${step.id}" ${reason}`, 0);
       return;
     }
     appendHistory(run, {
@@ -607,7 +670,35 @@ async function handleChildRunEnd(parentRunId: string, childRunId: string): Promi
     result: child.status === "cancelled" ? "cancelled" : "failed",
     detail,
   });
-  routeStepFailure(run, step.onFailure, `Job step "${step.id}": ${detail}`);
+  routeSubJobExit(run, step, step.onFailure, `Job step "${step.id}": ${detail}`, 0);
+}
+
+/**
+ * Restart-only: re-link a child run that was spawned before the parent's
+ * waiting_child state hit disk. Returns false when no unharvested child of
+ * this step exists (caller re-enters the step instead).
+ */
+function adoptOrphanChildRun(run: JobRun, step: SubJobStep): boolean {
+  const harvested = new Set(run.history.filter((h) => h.stepId === step.id && h.childRunId).map((h) => h.childRunId!));
+  const orphan = findChildRun(run.runId, step.id, harvested);
+  if (!orphan) return false;
+
+  log.info(`Run ${run.runId}: adopting orphaned child run ${orphan.runId} for job step "${step.id}" after restart`);
+  const startedAt = run.activeStep?.startedAt ?? new Date().toISOString();
+  run.activeStep = { stepId: step.id, attempt: run.activeStep?.attempt ?? 1, startedAt, childRunId: orphan.runId };
+  run.status = "waiting_child";
+  if (step.timeoutHours) run.nextWakeAt = new Date(new Date(startedAt).getTime() + step.timeoutHours * 3_600_000).toISOString();
+  saveRun(run);
+  notifyRunUpdated(run);
+
+  if (TERMINAL_JOB_RUN_STATUSES.has(orphan.status)) {
+    void enqueueRun(run.runId, () => handleChildRunEnd(run.runId, orphan.runId)).catch((err) => {
+      log.error(`Adopted-child reconciliation failed for run ${run.runId}: ${err.message}`);
+    });
+  } else {
+    armWakeTimer(run);
+  }
+  return true;
 }
 
 /** Notify a waiting parent that this child run reached a terminal status. */
@@ -1171,15 +1262,15 @@ async function resolveParallelIfReady(runId: string, stepId: string): Promise<vo
   }
 }
 
-/** Route a failed parallel/job step via its onFailure target (default: fail). */
-function routeStepFailure(run: JobRun, onFailure: string | undefined, message: string): void {
+/** Route a failed/timed-out step via the given target (default: fail). */
+function routeStepFailure(run: JobRun, onFailure: string | undefined, message: string, syncDepth = 0): void {
   const target = onFailure ?? JOB_TARGET_FAIL;
   if (target === JOB_TARGET_FAIL) {
     failRun(run, message);
   } else {
     log.info(`Run ${run.runId}: ${message} → continuing at "${target}"`);
     run.status = "running";
-    enterStep(run, target, 0);
+    enterStep(run, target, syncDepth + 1);
   }
 }
 
@@ -1307,7 +1398,7 @@ function onWake(run: JobRun): void {
         result: "timeout",
         detail: `Child run did not finish within ${subJob.timeoutHours}h`,
       });
-      routeTimeout(run, subJob, `Job step "${step.id}" timed out after ${subJob.timeoutHours}h — child run cancelled`);
+      routeSubJobExit(run, subJob, subJob.onTimeout, `Job step "${step.id}" timed out after ${subJob.timeoutHours}h`, 0);
       break;
     }
   }
@@ -1315,14 +1406,7 @@ function onWake(run: JobRun): void {
 
 /** Route an exhausted/timed-out step via its onTimeout target (default: fail). */
 function routeTimeout(run: JobRun, step: JobStep & { onTimeout?: string }, message: string): void {
-  const target = step.onTimeout ?? JOB_TARGET_FAIL;
-  if (target === JOB_TARGET_FAIL) {
-    failRun(run, message);
-  } else {
-    log.info(`Run ${run.runId}: ${message} → continuing at "${target}"`);
-    run.status = "running";
-    enterStep(run, target, 0);
-  }
+  routeStepFailure(run, step.onTimeout, message);
 }
 
 function onWaitEventMatch(runId: string, source: string, eventType: string, data: unknown): void {

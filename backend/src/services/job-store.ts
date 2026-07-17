@@ -92,9 +92,9 @@ export interface JobDefinitionInput extends JobDefinitionPayload {
   createdBy?: JobDefinition["createdBy"];
 }
 
-export function createJob(input: JobDefinitionInput): JobDefinition {
+export function createJob(input: JobDefinitionInput, opts?: JobValidationOptions): JobDefinition {
   const id = input.id?.trim() || slugifyJobId(input.name);
-  const errors = validateJobDefinition({ ...input, id });
+  const errors = validateJobDefinition({ ...input, id }, opts);
   if (errors.length > 0) throw new JobValidationError(errors);
   if (getJob(id)) throw new Error(`Job "${id}" already exists — use update_job to modify it`);
 
@@ -118,10 +118,10 @@ export function createJob(input: JobDefinitionInput): JobDefinition {
   return job;
 }
 
-export function updateJob(id: string, input: JobDefinitionInput): JobDefinition {
+export function updateJob(id: string, input: JobDefinitionInput, opts?: JobValidationOptions): JobDefinition {
   const existing = getJob(id);
   if (!existing) throw new Error(`Job "${id}" not found`);
-  const errors = validateJobDefinition({ ...input, id });
+  const errors = validateJobDefinition({ ...input, id }, opts);
   if (errors.length > 0) throw new JobValidationError(errors);
 
   const job: JobDefinition = {
@@ -230,24 +230,29 @@ export function importJobDefinition(raw: unknown, opts?: { mode?: "copy" | "over
     defLike = obj;
   }
 
-  // Strip/ignore server-managed fields, then validate.
+  // Strip/ignore server-managed fields, then validate. Cross-job checks are
+  // skipped on import: a job graph is imported one definition at a time in
+  // arbitrary order (parent before child must work), and dangling references
+  // fail cleanly at runtime via the job step's onFailure route. This also
+  // keeps copy-mode from being validated under its pre-rename id.
+  const lenient = { crossJob: false };
   const payload = toPayload(defLike);
   const id = payload.id?.trim() || slugifyJobId(typeof payload.name === "string" ? payload.name : "");
-  const errors = validateJobDefinition({ ...payload, id });
+  const errors = validateJobDefinition({ ...payload, id }, lenient);
   if (errors.length > 0) throw new JobValidationError(errors);
 
   const createdBy = opts?.createdBy ?? { kind: "api" as const };
   const existing = getJob(id);
 
   if (!existing) {
-    return createJob({ ...payload, id, createdBy });
+    return createJob({ ...payload, id, createdBy }, lenient);
   }
   if (opts?.mode === "overwrite") {
-    return updateJob(id, { ...payload, id, createdBy });
+    return updateJob(id, { ...payload, id, createdBy }, lenient);
   }
   if (opts?.mode === "copy") {
     const newId = uniqueJobId(id);
-    return createJob({ ...payload, id: newId, createdBy });
+    return createJob({ ...payload, id: newId, createdBy }, lenient);
   }
   throw new JobImportConflictError(id);
 }
@@ -353,6 +358,25 @@ export function deleteRun(runId: string): boolean {
   if (!existsSync(filepath)) return false;
   unlinkSync(filepath);
   return true;
+}
+
+/**
+ * Newest child run spawned by a given parent step, excluding already-harvested
+ * ones. Restart-only path: lets a parent that crashed between spawning a child
+ * and persisting the linkage adopt the orphan instead of spawning a duplicate.
+ */
+export function findChildRun(parentRunId: string, parentStepId: string, exclude: ReadonlySet<string>): JobRun | null {
+  let newest: JobRun | null = null;
+  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
+    try {
+      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
+      if (run.parentRunId !== parentRunId || run.parentStepId !== parentStepId || exclude.has(run.runId)) continue;
+      if (!newest || run.createdAt > newest.createdAt) newest = run;
+    } catch (err: any) {
+      log.error(`Failed to read job run ${file}: ${err.message}`);
+    }
+  }
+  return newest;
 }
 
 /** All runs in a non-terminal status — what the runner resumes on boot. */
@@ -528,9 +552,29 @@ function computeStepDominators(steps: JobStep[]): { dom: Map<string, Set<string>
   return { dom, reachable };
 }
 
+export interface JobValidationOptions {
+  /**
+   * Check "job" step references against saved definitions (existence,
+   * declared outputs, required inputs, cycles). Default true — the right
+   * strictness for authoring (create/update). Skipped on import (graphs
+   * import in arbitrary order) and at spawn time (the frozen-at-step-start
+   * semantics mean dangling/drifted references route the step's onFailure
+   * instead of blocking the whole run).
+   */
+  crossJob?: boolean;
+}
+
 /** Validate a definition (sans version/timestamps). Returns human-readable errors. */
-export function validateJobDefinition(input: JobDefinitionInput & { id: string }): string[] {
+export function validateJobDefinition(input: JobDefinitionInput & { id: string }, opts?: JobValidationOptions): string[] {
   const errors: string[] = [];
+  const crossJob = opts?.crossJob !== false;
+  // One definition read per referenced job for this whole validate call
+  // (shared by the per-step checks and the cycle walks).
+  const defCache = new Map<string, JobDefinition | null>();
+  const readJob = (jobId: string): JobDefinition | null => {
+    if (!defCache.has(jobId)) defCache.set(jobId, getJob(jobId));
+    return defCache.get(jobId)!;
+  };
 
   if (!input.name || typeof input.name !== "string" || !input.name.trim()) errors.push("name is required");
   if (!SLUG_RE.test(input.id)) errors.push(`id "${input.id}" must be a slug (lowercase letters, digits, hyphens)`);
@@ -564,6 +608,16 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
     stepIds.add(step.id);
     stepIndex.set(step.id, i);
   });
+
+  // Step-level `outputs` is a string[] (the definition-level `outputs` is a
+  // Record) — reject the wrong shape here so the runner's iterations never
+  // throw on it.
+  const checkStepOutputs = (stepId: string, outputs: unknown): void => {
+    if (outputs === undefined) return;
+    if (!Array.isArray(outputs) || outputs.some((key) => typeof key !== "string")) {
+      errors.push(`step "${stepId}": outputs must be an array of strings`);
+    }
+  };
 
   const checkTarget = (stepId: string, field: string, target: string | undefined, allowFail: boolean): void => {
     if (target === undefined) return;
@@ -615,6 +669,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
       case "agent":
         if (!step.prompt || typeof step.prompt !== "string") errors.push(`step "${step.id}": agent steps require a prompt`);
         else checkTemplate(step.id, "prompt", step.prompt);
+        checkStepOutputs(step.id, step.outputs);
         if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
           errors.push(`step "${step.id}": model is only valid with provider "openrouter" or "claude-code"`);
         if (step.retry && (!Number.isInteger(step.retry.attempts) || step.retry.attempts < 1)) {
@@ -630,6 +685,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
       case "poll":
         if (!step.prompt || typeof step.prompt !== "string") errors.push(`step "${step.id}": poll steps require a checker prompt`);
         else checkTemplate(step.id, "prompt", step.prompt);
+        checkStepOutputs(step.id, step.outputs);
         if (!(step.intervalMinutes >= 1)) errors.push(`step "${step.id}": intervalMinutes must be >= 1`);
         if (!Number.isInteger(step.maxAttempts) || step.maxAttempts < 1) errors.push(`step "${step.id}": maxAttempts must be a positive integer`);
         if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
@@ -695,6 +751,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
           if (branch.retry !== undefined) errors.push(`${label}: branch-level retry is not supported in v1`);
           if (!branch.prompt || typeof branch.prompt !== "string") errors.push(`${label}: agent branches require a prompt`);
           else checkTemplate(step.id, `${label} prompt`, branch.prompt);
+          checkStepOutputs(step.id, branch.outputs);
           if (branch.model && branch.provider && !["openrouter", "claude-code"].includes(branch.provider)) {
             errors.push(`${label}: model is only valid with provider "openrouter" or "claude-code"`);
           }
@@ -708,9 +765,27 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
       case "job": {
         checkTarget(step.id, "onFailure", step.onFailure, true);
         checkTarget(step.id, "onTimeout", step.onTimeout, true);
-        for (const [key, template] of Object.entries(step.inputs ?? {})) {
-          if (typeof template !== "string") errors.push(`step "${step.id}": inputs.${key} must be a string`);
-          else checkTemplate(step.id, `inputs.${key}`, template);
+        if (step.timeoutHours !== undefined && !(typeof step.timeoutHours === "number" && Number.isFinite(step.timeoutHours) && step.timeoutHours > 0)) {
+          errors.push(`step "${step.id}": timeoutHours must be a positive number`);
+        }
+        if (step.inputs !== undefined && (typeof step.inputs !== "object" || step.inputs === null || Array.isArray(step.inputs))) {
+          errors.push(`step "${step.id}": inputs must be an object of { key: template } pairs`);
+        } else {
+          for (const [key, template] of Object.entries(step.inputs ?? {})) {
+            if (typeof template !== "string") errors.push(`step "${step.id}": inputs.${key} must be a string`);
+            else checkTemplate(step.id, `inputs.${key}`, template);
+          }
+        }
+        checkStepOutputs(step.id, step.outputs);
+        // Backward (or self) failure/timeout jumps re-enter this step — require
+        // an explicit bound, mirroring the gate rule.
+        const jobIndex = stepIndex.get(step.id) ?? 0;
+        for (const target of [step.onFailure, step.onTimeout]) {
+          if (target && stepIds.has(target) && (stepIndex.get(target) ?? Infinity) <= jobIndex) {
+            if (!Number.isInteger(step.maxLoops) || (step.maxLoops as number) < 1) {
+              errors.push(`step "${step.id}": onFailure/onTimeout jumps backwards to "${target}" — maxLoops (positive integer) is required`);
+            }
+          }
         }
         if (!step.jobId || typeof step.jobId !== "string") {
           errors.push(`step "${step.id}": job steps require a jobId`);
@@ -720,7 +795,8 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
           errors.push(`step "${step.id}": a job cannot reference itself as a sub-job`);
           break;
         }
-        const child = getJob(step.jobId);
+        if (!crossJob) break;
+        const child = readJob(step.jobId);
         if (!child) {
           errors.push(`step "${step.id}": references unknown job "${step.jobId}" — create the child job first`);
           break;
@@ -728,7 +804,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
         // Best-effort cross-job checks — authoritative rechecks happen when the
         // step starts, since the child definition is only frozen then.
         const declared = new Set(Object.keys(child.outputs ?? {}));
-        for (const key of step.outputs ?? []) {
+        for (const key of Array.isArray(step.outputs) ? step.outputs : []) {
           if (!declared.has(key)) errors.push(`step "${step.id}": child job "${step.jobId}" does not declare a run-level output "${key}"`);
         }
         const provided = new Set(Object.keys(step.inputs ?? {}));
@@ -737,7 +813,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
             errors.push(`step "${step.id}": child job "${step.jobId}" requires input "${def.key}"`);
           }
         }
-        const cycle = findJobReferenceCycle(input.id, step.jobId);
+        const cycle = findJobReferenceCycle(input.id, step.jobId, readJob);
         if (cycle) errors.push(`step "${step.id}": sub-job reference cycle ${cycle.join(" → ")}`);
         break;
       }
@@ -747,6 +823,10 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
   // Definition-level outputs: resolved when a run succeeds, so every ref must
   // point at a declared input or a step guaranteed to have run on every
   // successful path (a dominator of "end").
+  if (input.outputs !== undefined && (typeof input.outputs !== "object" || input.outputs === null || Array.isArray(input.outputs))) {
+    errors.push("outputs must be an object of { key: template } pairs");
+    return errors;
+  }
   const endDominators = dom.get(JOB_TARGET_END);
   for (const [key, template] of Object.entries(input.outputs ?? {})) {
     if (typeof template !== "string") {
@@ -783,7 +863,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
  * — MAX_JOB_DEPTH is the authoritative runtime guard. Returns the cycle path
  * for the error message, or null.
  */
-function findJobReferenceCycle(rootJobId: string, fromJobId: string): string[] | null {
+function findJobReferenceCycle(rootJobId: string, fromJobId: string, readJob: (jobId: string) => JobDefinition | null): string[] | null {
   const path: string[] = [rootJobId];
   const visited = new Set<string>([rootJobId]);
   const walk = (jobId: string): boolean => {
@@ -791,7 +871,7 @@ function findJobReferenceCycle(rootJobId: string, fromJobId: string): string[] |
     if (visited.has(jobId)) return false;
     visited.add(jobId);
     path.push(jobId);
-    const job = getJob(jobId);
+    const job = readJob(jobId);
     for (const step of job?.steps ?? []) {
       if (step.type === "job" && walk(step.jobId)) return true;
     }

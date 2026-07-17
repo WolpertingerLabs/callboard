@@ -416,6 +416,173 @@ describe("job step — pause/resume and restart", () => {
   });
 });
 
+// ── Review fixes: loop bounds, lenient spawn, pause clock, adoption ─────
+
+describe("job step — failure-loop bounds", () => {
+  it("bounds an async retry loop (onFailure back to the same step) by maxLoops", async () => {
+    const childId = makeChildJob();
+    const parentId = makeJob({
+      steps: [{ id: "sub", type: "job", jobId: childId, outputs: ["result"], onFailure: "sub", maxLoops: 2 }],
+    });
+    const { parentRunId } = await spawnParentAndChild(parentId);
+
+    // Fail each spawned child until the loop bound trips.
+    for (let i = 0; i < 3; i++) {
+      const childRunId = store.getRun(parentRunId)!.activeStep!.childRunId!;
+      await flush(() => !!store.getRun(childRunId)?.activeStep?.chatId || store.getRun(parentRunId)!.status === "failed");
+      if (store.getRun(parentRunId)!.status === "failed") break;
+      endStep(childRunId, "work", { summary: "no result" });
+      await flush(() => store.getRun(parentRunId)!.activeStep?.childRunId !== childRunId || store.getRun(parentRunId)!.status === "failed");
+    }
+
+    await flush(() => store.getRun(parentRunId)!.status === "failed");
+    expect(store.getRun(parentRunId)!.error).toContain("exceeded maxLoops (2)");
+    // Initial entry + 2 bounded retries = 3 child runs, then the bound tripped.
+    expect(store.getRun(parentRunId)!.loopCounts.sub).toBe(3);
+  });
+
+  it("bounds a synchronous failure loop (deleted child job) without blowing the stack", async () => {
+    const childId = makeChildJob();
+    const parentId = makeJob({
+      steps: [{ id: "sub", type: "job", jobId: childId, onFailure: "sub", maxLoops: 2 }],
+    });
+    store.deleteJob(childId);
+
+    // Spawn no longer hard-fails on the dangling reference (lenient cross-job
+    // checks at spawn time); the step fails and loops synchronously, bounded.
+    const run = runner.spawnJobRun(parentId, {});
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("exceeded maxLoops (2)");
+    const errors = run.history.filter((h) => h.stepId === "sub" && h.result === "error");
+    expect(errors).toHaveLength(3);
+    expect(errors[0].detail).toContain("failed to spawn");
+  });
+
+  it("records a history entry for early job-step failures so downstream refs see the step", async () => {
+    const childId = makeChildJob();
+    const parentId = makeJob({ steps: [{ id: "sub", type: "job", jobId: childId }] });
+    store.deleteJob(childId);
+
+    const run = runner.spawnJobRun(parentId, {});
+    expect(run.status).toBe("failed");
+    const entry = run.history.find((h) => h.stepId === "sub");
+    expect(entry?.result).toBe("error");
+    expect(entry?.detail).toContain(`failed to spawn child job "${childId}"`);
+  });
+});
+
+describe("job step — pause suspends the timeout clock", () => {
+  it("extends nextWakeAt by the paused duration on resume", async () => {
+    const childId = makeChildJob();
+    const parentId = makeJob({
+      steps: [
+        { id: "sub", type: "job", jobId: childId, outputs: ["result"], timeoutHours: 0.001 },
+        { id: "after", type: "agent", prompt: "After" },
+      ],
+    });
+    const { parentRunId, childRunId } = await spawnParentAndChild(parentId);
+    const deadlineBefore = new Date(store.getRun(parentRunId)!.nextWakeAt!).getTime();
+
+    runner.pauseRun(parentRunId);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    runner.resumeRun(parentRunId);
+
+    const parent = store.getRun(parentRunId)!;
+    expect(parent.status).toBe("waiting_child");
+    expect(new Date(parent.nextWakeAt!).getTime()).toBeGreaterThanOrEqual(deadlineBefore + 100);
+    expect(parent.pausedAt).toBeUndefined();
+
+    // The healthy child was not cancelled and still completes the step.
+    endStep(childRunId, "work", { outputs: { result: "ok" } });
+    await flush(() => store.getRun(parentRunId)!.currentStepId === "after");
+  });
+});
+
+describe("job step — orphan adoption after a crash mid-spawn", () => {
+  it("re-links the already-spawned child instead of spawning a duplicate", async () => {
+    const childId = makeChildJob();
+    const parentId = makeJob({
+      steps: [
+        { id: "sub", type: "job", jobId: childId, outputs: ["result"] },
+        { id: "after", type: "agent", prompt: "After" },
+      ],
+    });
+    const { parentRunId, childRunId } = await spawnParentAndChild(parentId);
+    store.recordStepResult(childRunId, "work", { outputs: { result: "ok" } });
+
+    // Simulate the crash window: child persisted, parent died before its
+    // waiting_child linkage was saved.
+    const parent = store.getRun(parentRunId)!;
+    parent.status = "running";
+    delete parent.activeStep!.childRunId;
+    store.saveRun(parent);
+
+    await load(dataDir);
+    await flush(() => store.getRun(parentRunId)!.currentStepId === "after");
+
+    // Same child was adopted and harvested — no duplicate spawned.
+    expect(store.getRun(parentRunId)!.history.find((h) => h.stepId === "sub")?.childRunId).toBe(childRunId);
+    expect(store.listRuns({}).filter((r) => r.parentRunId === parentRunId)).toHaveLength(1);
+  });
+});
+
+describe("job step — null outputs and partial outputs", () => {
+  it("preserves an explicitly-null child output through harvest", async () => {
+    const childId = makeJob({
+      steps: [{ id: "work", type: "agent", prompt: "Check", outputs: ["found"] }],
+      outputs: { found: "{{steps.work.outputs.found}}" },
+    });
+    const parentId = makeJob({
+      steps: [
+        { id: "sub", type: "job", jobId: childId, outputs: ["found"] },
+        { id: "after", type: "agent", prompt: "After" },
+      ],
+    });
+    const { parentRunId, childRunId } = await spawnParentAndChild(parentId);
+
+    endStep(childRunId, "work", { outputs: { found: null } });
+    await flush(() => store.getRun(parentRunId)!.currentStepId === "after");
+
+    expect(store.getRun(childRunId)!.outputs).toEqual({ found: null });
+    expect(store.getRun(parentRunId)!.history.find((h) => h.stepId === "sub")?.outputs).toEqual({ found: null });
+  });
+
+  it("keeps the child's partial outputs on the missing-required-output error entry", async () => {
+    const childId = makeJob({
+      steps: [{ id: "work", type: "agent", prompt: "Do it", outputs: ["a"] }],
+      outputs: { a: "{{steps.work.outputs.a}}", b: "{{steps.work.outputs.b}}" },
+    });
+    const parentId = makeJob({
+      steps: [{ id: "sub", type: "job", jobId: childId, outputs: ["a", "b"] }],
+    });
+    const { parentRunId, childRunId } = await spawnParentAndChild(parentId);
+
+    endStep(childRunId, "work", { outputs: { a: "1" } }); // b never produced
+    await flush(() => store.getRun(parentRunId)!.status === "failed");
+
+    const entry = store.getRun(parentRunId)!.history.find((h) => h.stepId === "sub");
+    expect(entry?.result).toBe("error");
+    expect(entry?.outputs).toEqual({ a: "1" });
+  });
+});
+
+describe("import and delete flows with job steps", () => {
+  it("imports a parent whose child job does not exist yet", () => {
+    const imported = store.importJobDefinition({
+      name: "Parent First",
+      steps: [{ id: "sub", type: "job", jobId: "not-imported-yet" }],
+    });
+    expect(imported.steps[0]).toMatchObject({ type: "job", jobId: "not-imported-yet" });
+  });
+
+  it("copy-mode import is not rejected by a cycle that only exists under the pre-rename id", () => {
+    const bId = makeJob({ steps: [{ id: "w", type: "agent", prompt: "b" }] });
+    const aId = makeJob({ steps: [{ id: "sub", type: "job", jobId: bId }] });
+    const imported = store.importJobDefinition({ id: bId, name: "B updated", steps: [{ id: "sub", type: "job", jobId: aId }] }, { mode: "copy" });
+    expect(imported.id).not.toBe(bId);
+  });
+});
+
 // ── Validation ──────────────────────────────────────────────────────────
 
 describe("validation — job steps and run-level outputs", () => {
@@ -470,6 +637,43 @@ describe("validation — job steps and run-level outputs", () => {
     });
     expect(errors.some((e) => e.includes("outputs.e") && e.includes("every successful path"))).toBe(true);
     expect(errors.some((e) => e.includes("outputs.v"))).toBe(false); // check dominates end
+  });
+
+  it("requires maxLoops when onFailure/onTimeout jumps backwards or to the step itself", () => {
+    const childId = makeChildJob();
+    const errors = validate({ steps: [{ id: "sub", type: "job", jobId: childId, onFailure: "sub" }] });
+    expect(errors.some((e) => e.includes("maxLoops (positive integer) is required"))).toBe(true);
+    const ok = validate({ steps: [{ id: "sub", type: "job", jobId: childId, onFailure: "sub", maxLoops: 3 }] });
+    expect(ok).toEqual([]);
+  });
+
+  it("rejects invalid timeoutHours values", () => {
+    const childId = makeChildJob();
+    for (const bad of ["1 hour", -1, 0, NaN]) {
+      const errors = validate({ steps: [{ id: "sub", type: "job", jobId: childId, timeoutHours: bad }] });
+      expect(errors.some((e) => e.includes("timeoutHours must be a positive number"))).toBe(true);
+    }
+  });
+
+  it("rejects wrong-shaped step outputs and inputs with a validation error, not a crash", () => {
+    const childId = makeChildJob();
+    const objOutputs = validate({ steps: [{ id: "sub", type: "job", jobId: childId, outputs: { pr: "x" } }] });
+    expect(objOutputs.some((e) => e.includes("outputs must be an array of strings"))).toBe(true);
+    const badInputs = validate({ steps: [{ id: "sub", type: "job", jobId: childId, inputs: ["nope"] }] });
+    expect(badInputs.some((e) => e.includes("inputs must be an object"))).toBe(true);
+    const agentOutputs = validate({ steps: [{ id: "work", type: "agent", prompt: "w", outputs: { r: 1 } }] });
+    expect(agentOutputs.some((e) => e.includes("outputs must be an array of strings"))).toBe(true);
+    const defOutputs = validate({ steps: [{ id: "work", type: "agent", prompt: "w" }], outputs: ["a"] });
+    expect(defOutputs.some((e) => e.includes("outputs must be an object"))).toBe(true);
+  });
+
+  it("skips cross-job checks when crossJob is false but keeps intrinsic ones", () => {
+    const errors = store.validateJobDefinition(
+      { id: "test-job", name: "Test", steps: [{ id: "sub", type: "job", jobId: "missing-child", onFailure: "sub" }] } as never,
+      { crossJob: false },
+    );
+    expect(errors.some((e) => e.includes("unknown job"))).toBe(false);
+    expect(errors.some((e) => e.includes("maxLoops"))).toBe(true); // intrinsic check still applies
   });
 
   it("rejects malformed run-level output references", () => {

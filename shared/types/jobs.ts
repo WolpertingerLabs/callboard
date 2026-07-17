@@ -161,6 +161,8 @@ export interface SubJobStep extends JobStepBase {
   onTimeout?: string;
   /** Step id or "fail" (default) when the child run fails or is cancelled. */
   onFailure?: string;
+  /** Required when onFailure/onTimeout jumps backwards (or to this step) — bounds the retry loop. */
+  maxLoops?: number;
 }
 
 export type JobStep = AgentJobStep | ApprovalJobStep | PollJobStep | WaitEventJobStep | GateJobStep | NotifyJobStep | ParallelJobStep | SubJobStep;
@@ -321,6 +323,8 @@ export interface JobRun {
   endedAt?: string;
   /** Status the run was in when paused, restored on resume. */
   pausedFrom?: JobRunStatus;
+  /** When the run was paused — used to extend nextWakeAt by the paused duration on resume. */
+  pausedAt?: string;
 }
 
 /** Compact row for run listings. */

@@ -79,8 +79,10 @@ const BARE_REF_RE = /^\{\{([^}]+)\}\}$/;
  * Resolve a run's declared run-level outputs (definition.outputs) against its
  * final context. Unlike interpolate(), a key whose template does not resolve
  * is omitted rather than throwing — the run already succeeded, and a parent
- * "job" step enforces its own required keys loudly. Returns the resolved map
- * and the omitted keys (for logging).
+ * "job" step enforces its own required keys loudly. A bare ref that resolves
+ * to an explicit null is KEPT (matching the step-level required-output check,
+ * which only treats undefined as missing). Returns the resolved map and the
+ * omitted keys (for logging).
  */
 export function resolveRunOutputs(run: JobRun): { outputs: Record<string, unknown>; omitted: string[] } {
   const ctx = buildRunContext(run);
@@ -98,7 +100,7 @@ export function resolveRunOutputs(run: JobRun): { outputs: Record<string, unknow
         value = undefined;
       }
     }
-    if (value === undefined || value === null) omitted.push(key);
+    if (value === undefined) omitted.push(key);
     else outputs[key] = value;
   }
   return { outputs, omitted };
