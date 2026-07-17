@@ -94,6 +94,7 @@ export type {
   NotifyJobStep,
   ParallelAgentBranch,
   ParallelJobStep,
+  SubJobStep,
   JobStep,
   JobDefinition,
   JobDefinitionPayload,

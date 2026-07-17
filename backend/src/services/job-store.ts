@@ -29,6 +29,8 @@ export const TERMINAL_JOB_RUN_STATUSES: ReadonlySet<JobRunStatus> = new Set(["su
 
 export const DEFAULT_MAX_TOTAL_SESSIONS = 50;
 export const DEFAULT_MAX_DURATION_HOURS = 168;
+/** Max sub-job nesting depth ("job" steps). The runtime guard behind the static cycle check, since definitions drift after validation. */
+export const MAX_JOB_DEPTH = 5;
 
 const jobsDir = join(DATA_DIR, "jobs");
 const definitionsDir = join(jobsDir, "definitions");
@@ -90,9 +92,9 @@ export interface JobDefinitionInput extends JobDefinitionPayload {
   createdBy?: JobDefinition["createdBy"];
 }
 
-export function createJob(input: JobDefinitionInput): JobDefinition {
+export function createJob(input: JobDefinitionInput, opts?: JobValidationOptions): JobDefinition {
   const id = input.id?.trim() || slugifyJobId(input.name);
-  const errors = validateJobDefinition({ ...input, id });
+  const errors = validateJobDefinition({ ...input, id }, opts);
   if (errors.length > 0) throw new JobValidationError(errors);
   if (getJob(id)) throw new Error(`Job "${id}" already exists — use update_job to modify it`);
 
@@ -106,6 +108,7 @@ export function createJob(input: JobDefinitionInput): JobDefinition {
     ...(input.defaults && { defaults: input.defaults }),
     ...(input.limits && { limits: input.limits }),
     steps: input.steps,
+    ...(input.outputs && Object.keys(input.outputs).length > 0 && { outputs: input.outputs }),
     createdAt: now,
     updatedAt: now,
     ...(input.createdBy && { createdBy: input.createdBy }),
@@ -115,10 +118,10 @@ export function createJob(input: JobDefinitionInput): JobDefinition {
   return job;
 }
 
-export function updateJob(id: string, input: JobDefinitionInput): JobDefinition {
+export function updateJob(id: string, input: JobDefinitionInput, opts?: JobValidationOptions): JobDefinition {
   const existing = getJob(id);
   if (!existing) throw new Error(`Job "${id}" not found`);
-  const errors = validateJobDefinition({ ...input, id });
+  const errors = validateJobDefinition({ ...input, id }, opts);
   if (errors.length > 0) throw new JobValidationError(errors);
 
   const job: JobDefinition = {
@@ -129,6 +132,7 @@ export function updateJob(id: string, input: JobDefinitionInput): JobDefinition 
     defaults: input.defaults || undefined,
     limits: input.limits || undefined,
     steps: input.steps,
+    outputs: input.outputs && Object.keys(input.outputs).length > 0 ? input.outputs : undefined,
     version: existing.version + 1,
     updatedAt: new Date().toISOString(),
   };
@@ -170,6 +174,7 @@ function toPayload(def: Record<string, unknown>): JobDefinitionPayload {
     ...(def.defaults !== undefined && { defaults: def.defaults as JobDefinitionPayload["defaults"] }),
     ...(def.limits !== undefined && { limits: def.limits as JobDefinitionPayload["limits"] }),
     steps: def.steps as JobStep[],
+    ...(def.outputs !== undefined && { outputs: def.outputs as JobDefinitionPayload["outputs"] }),
   };
 }
 
@@ -209,10 +214,7 @@ export function uniqueJobId(base: string): string {
  *
  * Validation errors propagate as JobValidationError.
  */
-export function importJobDefinition(
-  raw: unknown,
-  opts?: { mode?: "copy" | "overwrite"; createdBy?: JobDefinition["createdBy"] },
-): JobDefinition {
+export function importJobDefinition(raw: unknown, opts?: { mode?: "copy" | "overwrite"; createdBy?: JobDefinition["createdBy"] }): JobDefinition {
   if (!raw || typeof raw !== "object") throw new Error("Import payload must be a JSON object");
   const obj = raw as Record<string, unknown>;
 
@@ -228,24 +230,29 @@ export function importJobDefinition(
     defLike = obj;
   }
 
-  // Strip/ignore server-managed fields, then validate.
+  // Strip/ignore server-managed fields, then validate. Cross-job checks are
+  // skipped on import: a job graph is imported one definition at a time in
+  // arbitrary order (parent before child must work), and dangling references
+  // fail cleanly at runtime via the job step's onFailure route. This also
+  // keeps copy-mode from being validated under its pre-rename id.
+  const lenient = { crossJob: false };
   const payload = toPayload(defLike);
   const id = payload.id?.trim() || slugifyJobId(typeof payload.name === "string" ? payload.name : "");
-  const errors = validateJobDefinition({ ...payload, id });
+  const errors = validateJobDefinition({ ...payload, id }, lenient);
   if (errors.length > 0) throw new JobValidationError(errors);
 
   const createdBy = opts?.createdBy ?? { kind: "api" as const };
   const existing = getJob(id);
 
   if (!existing) {
-    return createJob({ ...payload, id, createdBy });
+    return createJob({ ...payload, id, createdBy }, lenient);
   }
   if (opts?.mode === "overwrite") {
-    return updateJob(id, { ...payload, id, createdBy });
+    return updateJob(id, { ...payload, id, createdBy }, lenient);
   }
   if (opts?.mode === "copy") {
     const newId = uniqueJobId(id);
-    return createJob({ ...payload, id: newId, createdBy });
+    return createJob({ ...payload, id: newId, createdBy }, lenient);
   }
   throw new JobImportConflictError(id);
 }
@@ -286,6 +293,8 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
             ...(run.activeStep.parallel.winnerBranchId && { winnerBranchId: run.activeStep.parallel.winnerBranchId }),
           },
         }),
+        ...(run.parentRunId && { parentRunId: run.parentRunId }),
+        ...(run.activeStep?.childRunId && { activeChildRunId: run.activeStep.childRunId }),
         ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
         ...(run.error && { error: run.error }),
         createdAt: run.createdAt,
@@ -316,7 +325,14 @@ export function saveRun(run: JobRun): void {
   atomicWrite(join(runsDir, `${run.runId}.json`), JSON.stringify(run, null, 2));
 }
 
-export function createRun(job: JobDefinition, inputs: Record<string, string>): JobRun {
+/** Parent linkage for runs spawned by a "job" step. */
+export interface RunParentLink {
+  parentRunId: string;
+  parentStepId: string;
+  depth: number;
+}
+
+export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink): JobRun {
   const now = new Date().toISOString();
   const run: JobRun = {
     runId: `run-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
@@ -329,6 +345,7 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>): J
     loopCounts: {},
     sessionsSpawned: 0,
     history: [],
+    ...(parent && { parentRunId: parent.parentRunId, parentStepId: parent.parentStepId, depth: parent.depth }),
     createdAt: now,
     updatedAt: now,
   };
@@ -341,6 +358,25 @@ export function deleteRun(runId: string): boolean {
   if (!existsSync(filepath)) return false;
   unlinkSync(filepath);
   return true;
+}
+
+/**
+ * Newest child run spawned by a given parent step, excluding already-harvested
+ * ones. Restart-only path: lets a parent that crashed between spawning a child
+ * and persisting the linkage adopt the orphan instead of spawning a duplicate.
+ */
+export function findChildRun(parentRunId: string, parentStepId: string, exclude: ReadonlySet<string>): JobRun | null {
+  let newest: JobRun | null = null;
+  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
+    try {
+      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
+      if (run.parentRunId !== parentRunId || run.parentStepId !== parentStepId || exclude.has(run.runId)) continue;
+      if (!newest || run.createdAt > newest.createdAt) newest = run;
+    } catch (err: any) {
+      log.error(`Failed to read job run ${file}: ${err.message}`);
+    }
+  }
+  return newest;
 }
 
 /** All runs in a non-terminal status — what the runner resumes on boot. */
@@ -401,18 +437,20 @@ export class JobValidationError extends Error {
   }
 }
 
-const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify", "parallel"]);
+const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify", "parallel", "job"]);
 const GATE_OPS = new Set(["eq", "neq", "contains", "exists", "not_exists", "gt", "lt"]);
 
 /**
- * Control-flow successors of a step — the step ids it can transition to,
+ * Control-flow successors of a step — the targets it can transition to,
  * mirroring the runner's routing (resolveNext / gate onPass-onFail /
  * onReject / onTimeout). `followingStepId` is the next step in the array
- * (what a bare `next` defaults to). Sentinel targets ("end"/"fail", and the
- * implicit "end" after the last step) are terminal and dropped.
+ * (what a bare `next` defaults to; undefined after the last step means the
+ * implicit "end"). Successful termination is kept as the "end" sentinel so
+ * the dominator graph can treat it as a node; "fail" edges are dropped —
+ * paths that fail the run never need template refs to resolve.
  */
 function stepFlowTargets(step: JobStep, followingStepId: string | undefined): string[] {
-  const defaultNext = step.next ?? followingStepId; // undefined ⇒ implicit "end"
+  const defaultNext = step.next ?? followingStepId ?? JOB_TARGET_END;
   const targets: (string | undefined)[] = [];
   switch (step.type) {
     case "gate":
@@ -428,10 +466,13 @@ function stepFlowTargets(step: JobStep, followingStepId: string | undefined): st
     case "parallel":
       targets.push(defaultNext, step.onFailure);
       break;
+    case "job":
+      targets.push(defaultNext, step.onFailure, step.onTimeout);
+      break;
     default: // agent, notify — single success edge
       targets.push(defaultNext);
   }
-  return targets.filter((t): t is string => typeof t === "string" && t !== JOB_TARGET_END && t !== JOB_TARGET_FAIL);
+  return targets.filter((t): t is string => typeof t === "string" && t !== JOB_TARGET_FAIL);
 }
 
 /**
@@ -445,6 +486,11 @@ function stepFlowTargets(step: JobStep, followingStepId: string | undefined): st
  * always resolves at runtime. This follows the step edges (next, gate
  * onPass/onFail, onReject, onTimeout), so a backward loop jump correctly makes
  * a forward-in-array reference valid.
+ *
+ * The graph also contains the "end" sentinel as a node ("end" is a reserved
+ * step id, so it never collides): `dom.get(JOB_TARGET_END)` is the set of
+ * steps guaranteed to have executed on every successful path — the condition
+ * for a definition-level outputs template to always resolve.
  */
 function computeStepDominators(steps: JobStep[]): { dom: Map<string, Set<string>>; reachable: Set<string> } {
   const idSet = new Set(steps.map((s) => s?.id).filter((id): id is string => typeof id === "string"));
@@ -456,7 +502,7 @@ function computeStepDominators(steps: JobStep[]): { dom: Map<string, Set<string>
     const following = steps[i + 1]?.id;
     succ.set(
       step.id,
-      stepFlowTargets(step, typeof following === "string" ? following : undefined).filter((t) => idSet.has(t)),
+      stepFlowTargets(step, typeof following === "string" ? following : undefined).filter((t) => idSet.has(t) || t === JOB_TARGET_END),
     );
   });
 
@@ -506,9 +552,29 @@ function computeStepDominators(steps: JobStep[]): { dom: Map<string, Set<string>
   return { dom, reachable };
 }
 
+export interface JobValidationOptions {
+  /**
+   * Check "job" step references against saved definitions (existence,
+   * declared outputs, required inputs, cycles). Default true — the right
+   * strictness for authoring (create/update). Skipped on import (graphs
+   * import in arbitrary order) and at spawn time (the frozen-at-step-start
+   * semantics mean dangling/drifted references route the step's onFailure
+   * instead of blocking the whole run).
+   */
+  crossJob?: boolean;
+}
+
 /** Validate a definition (sans version/timestamps). Returns human-readable errors. */
-export function validateJobDefinition(input: JobDefinitionInput & { id: string }): string[] {
+export function validateJobDefinition(input: JobDefinitionInput & { id: string }, opts?: JobValidationOptions): string[] {
   const errors: string[] = [];
+  const crossJob = opts?.crossJob !== false;
+  // One definition read per referenced job for this whole validate call
+  // (shared by the per-step checks and the cycle walks).
+  const defCache = new Map<string, JobDefinition | null>();
+  const readJob = (jobId: string): JobDefinition | null => {
+    if (!defCache.has(jobId)) defCache.set(jobId, getJob(jobId));
+    return defCache.get(jobId)!;
+  };
 
   if (!input.name || typeof input.name !== "string" || !input.name.trim()) errors.push("name is required");
   if (!SLUG_RE.test(input.id)) errors.push(`id "${input.id}" must be a slug (lowercase letters, digits, hyphens)`);
@@ -542,6 +608,16 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
     stepIds.add(step.id);
     stepIndex.set(step.id, i);
   });
+
+  // Step-level `outputs` is a string[] (the definition-level `outputs` is a
+  // Record) — reject the wrong shape here so the runner's iterations never
+  // throw on it.
+  const checkStepOutputs = (stepId: string, outputs: unknown): void => {
+    if (outputs === undefined) return;
+    if (!Array.isArray(outputs) || outputs.some((key) => typeof key !== "string")) {
+      errors.push(`step "${stepId}": outputs must be an array of strings`);
+    }
+  };
 
   const checkTarget = (stepId: string, field: string, target: string | undefined, allowFail: boolean): void => {
     if (target === undefined) return;
@@ -593,6 +669,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
       case "agent":
         if (!step.prompt || typeof step.prompt !== "string") errors.push(`step "${step.id}": agent steps require a prompt`);
         else checkTemplate(step.id, "prompt", step.prompt);
+        checkStepOutputs(step.id, step.outputs);
         if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
           errors.push(`step "${step.id}": model is only valid with provider "openrouter" or "claude-code"`);
         if (step.retry && (!Number.isInteger(step.retry.attempts) || step.retry.attempts < 1)) {
@@ -608,6 +685,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
       case "poll":
         if (!step.prompt || typeof step.prompt !== "string") errors.push(`step "${step.id}": poll steps require a checker prompt`);
         else checkTemplate(step.id, "prompt", step.prompt);
+        checkStepOutputs(step.id, step.outputs);
         if (!(step.intervalMinutes >= 1)) errors.push(`step "${step.id}": intervalMinutes must be >= 1`);
         if (!Number.isInteger(step.maxAttempts) || step.maxAttempts < 1) errors.push(`step "${step.id}": maxAttempts must be a positive integer`);
         if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
@@ -673,6 +751,7 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
           if (branch.retry !== undefined) errors.push(`${label}: branch-level retry is not supported in v1`);
           if (!branch.prompt || typeof branch.prompt !== "string") errors.push(`${label}: agent branches require a prompt`);
           else checkTemplate(step.id, `${label} prompt`, branch.prompt);
+          checkStepOutputs(step.id, branch.outputs);
           if (branch.model && branch.provider && !["openrouter", "claude-code"].includes(branch.provider)) {
             errors.push(`${label}: model is only valid with provider "openrouter" or "claude-code"`);
           }
@@ -683,10 +762,123 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
         if (!step.message || typeof step.message !== "string") errors.push(`step "${step.id}": notify steps require a message`);
         else checkTemplate(step.id, "message", step.message);
         break;
+      case "job": {
+        checkTarget(step.id, "onFailure", step.onFailure, true);
+        checkTarget(step.id, "onTimeout", step.onTimeout, true);
+        if (step.timeoutHours !== undefined && !(typeof step.timeoutHours === "number" && Number.isFinite(step.timeoutHours) && step.timeoutHours > 0)) {
+          errors.push(`step "${step.id}": timeoutHours must be a positive number`);
+        }
+        if (step.inputs !== undefined && (typeof step.inputs !== "object" || step.inputs === null || Array.isArray(step.inputs))) {
+          errors.push(`step "${step.id}": inputs must be an object of { key: template } pairs`);
+        } else {
+          for (const [key, template] of Object.entries(step.inputs ?? {})) {
+            if (typeof template !== "string") errors.push(`step "${step.id}": inputs.${key} must be a string`);
+            else checkTemplate(step.id, `inputs.${key}`, template);
+          }
+        }
+        checkStepOutputs(step.id, step.outputs);
+        // Backward (or self) failure/timeout jumps re-enter this step — require
+        // an explicit bound, mirroring the gate rule.
+        const jobIndex = stepIndex.get(step.id) ?? 0;
+        for (const target of [step.onFailure, step.onTimeout]) {
+          if (target && stepIds.has(target) && (stepIndex.get(target) ?? Infinity) <= jobIndex) {
+            if (!Number.isInteger(step.maxLoops) || (step.maxLoops as number) < 1) {
+              errors.push(`step "${step.id}": onFailure/onTimeout jumps backwards to "${target}" — maxLoops (positive integer) is required`);
+            }
+          }
+        }
+        if (!step.jobId || typeof step.jobId !== "string") {
+          errors.push(`step "${step.id}": job steps require a jobId`);
+          break;
+        }
+        if (step.jobId === input.id) {
+          errors.push(`step "${step.id}": a job cannot reference itself as a sub-job`);
+          break;
+        }
+        if (!crossJob) break;
+        const child = readJob(step.jobId);
+        if (!child) {
+          errors.push(`step "${step.id}": references unknown job "${step.jobId}" — create the child job first`);
+          break;
+        }
+        // Best-effort cross-job checks — authoritative rechecks happen when the
+        // step starts, since the child definition is only frozen then.
+        const declared = new Set(Object.keys(child.outputs ?? {}));
+        for (const key of Array.isArray(step.outputs) ? step.outputs : []) {
+          if (!declared.has(key)) errors.push(`step "${step.id}": child job "${step.jobId}" does not declare a run-level output "${key}"`);
+        }
+        const provided = new Set(Object.keys(step.inputs ?? {}));
+        for (const def of child.inputs ?? []) {
+          if (def.required && def.default === undefined && !provided.has(def.key)) {
+            errors.push(`step "${step.id}": child job "${step.jobId}" requires input "${def.key}"`);
+          }
+        }
+        const cycle = findJobReferenceCycle(input.id, step.jobId, readJob);
+        if (cycle) errors.push(`step "${step.id}": sub-job reference cycle ${cycle.join(" → ")}`);
+        break;
+      }
     }
   });
 
+  // Definition-level outputs: resolved when a run succeeds, so every ref must
+  // point at a declared input or a step guaranteed to have run on every
+  // successful path (a dominator of "end").
+  if (input.outputs !== undefined && (typeof input.outputs !== "object" || input.outputs === null || Array.isArray(input.outputs))) {
+    errors.push("outputs must be an object of { key: template } pairs");
+    return errors;
+  }
+  const endDominators = dom.get(JOB_TARGET_END);
+  for (const [key, template] of Object.entries(input.outputs ?? {})) {
+    if (typeof template !== "string") {
+      errors.push(`outputs.${key} must be a template string`);
+      continue;
+    }
+    for (const ref of extractTemplateRefs(template)) {
+      const parts = ref.split(".");
+      if (parts[0] === "inputs") {
+        if (parts.length < 2 || !inputKeys.has(parts[1])) errors.push(`outputs.${key} references undeclared input "{{${ref}}}"`);
+      } else if (parts[0] === "steps") {
+        if (parts.length < 4 || parts[2] !== "outputs") {
+          errors.push(`outputs.${key} reference "{{${ref}}}" must be steps.<id>.outputs.<key>`);
+        } else if (!stepIds.has(parts[1])) {
+          errors.push(`outputs.${key} references unknown step "{{${ref}}}"`);
+        } else if (endDominators && !endDominators.has(parts[1])) {
+          errors.push(
+            `outputs.${key} references "{{${ref}}}" but step "${parts[1]}" is not guaranteed to run on every successful path — ` +
+              `the output would be missing on runs that finish without it`,
+          );
+        }
+      } else if (parts[0] !== "run") {
+        errors.push(`outputs.${key} has unknown reference "{{${ref}}}" (use inputs.*, steps.<id>.outputs.*, or run.*)`);
+      }
+    }
+  }
+
   return errors;
+}
+
+/**
+ * Walk saved definitions along "job" step references looking for a path from
+ * `fromJobId` back to `rootJobId`. Best-effort (definitions drift after save)
+ * — MAX_JOB_DEPTH is the authoritative runtime guard. Returns the cycle path
+ * for the error message, or null.
+ */
+function findJobReferenceCycle(rootJobId: string, fromJobId: string, readJob: (jobId: string) => JobDefinition | null): string[] | null {
+  const path: string[] = [rootJobId];
+  const visited = new Set<string>([rootJobId]);
+  const walk = (jobId: string): boolean => {
+    if (jobId === rootJobId) return true;
+    if (visited.has(jobId)) return false;
+    visited.add(jobId);
+    path.push(jobId);
+    const job = readJob(jobId);
+    for (const step of job?.steps ?? []) {
+      if (step.type === "job" && walk(step.jobId)) return true;
+    }
+    path.pop();
+    return false;
+  };
+  return walk(fromJobId) ? [...path, rootJobId] : null;
 }
 
 /** Extract `a.b.c` paths from `{{a.b.c}}` placeholders. */

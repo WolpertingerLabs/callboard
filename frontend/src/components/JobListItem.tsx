@@ -2,7 +2,7 @@ import { Workflow } from "lucide-react";
 import type { JobRunListItem } from "../api";
 import { JOB_RUN_STATUS_META } from "./JobRunPanel";
 
-export const ACTIVE_JOB_RUN_STATUSES = ["running", "waiting_approval", "waiting_event", "sleeping"];
+export const ACTIVE_JOB_RUN_STATUSES = ["running", "waiting_approval", "waiting_event", "waiting_child", "sleeping"];
 
 interface Props {
   run: JobRunListItem;
@@ -83,6 +83,22 @@ export default function JobListItem({ run, isActive, onClick, now }: Props) {
               }}
             >
               {statusMeta.label}
+            </span>
+          )}
+          {run.parentRunId && (
+            <span
+              title={`Spawned by run ${run.parentRunId}`}
+              style={{
+                padding: "1px 8px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--text-muted)",
+                border: "1px solid var(--border)",
+                flexShrink: 0,
+              }}
+            >
+              sub-job
             </span>
           )}
         </div>

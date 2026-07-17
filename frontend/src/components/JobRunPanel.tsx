@@ -1,6 +1,22 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckCircle2, XCircle, Circle, CircleDot, Loader2, Clock, MessageSquare, Ban, Pause, Play, RotateCcw, Trophy } from "lucide-react";
+import {
+  CheckCircle2,
+  XCircle,
+  Circle,
+  CircleDot,
+  Loader2,
+  Clock,
+  MessageSquare,
+  Ban,
+  Pause,
+  Play,
+  RotateCcw,
+  Trophy,
+  ChevronDown,
+  ChevronRight,
+  Workflow,
+} from "lucide-react";
 import { getJobRun, respondJobApproval, cancelJobRun, pauseJobRun, resumeJobRun, retryJobStep } from "../api";
 import type { JobRun, JobRunStatus, JobStep } from "../api";
 
@@ -10,6 +26,7 @@ export const JOB_RUN_STATUS_META: Record<JobRunStatus, { label: string; color: s
   running: { label: "Running", color: "var(--accent)" },
   waiting_approval: { label: "Waiting for approval", color: "var(--warning)" },
   waiting_event: { label: "Waiting for event", color: "var(--badge-info)" },
+  waiting_child: { label: "Running sub-job", color: "var(--accent)" },
   sleeping: { label: "Sleeping", color: "var(--badge-info)" },
   paused: { label: "Paused", color: "var(--text-muted)" },
   succeeded: { label: "Succeeded", color: "var(--success)" },
@@ -21,18 +38,21 @@ interface JobRunPanelProps {
   runId: string;
   /** Compact mode for embedding (settings runs table expansion). */
   compact?: boolean;
+  /** Nesting level when rendered as a child run inside a parent's "job" step. */
+  nested?: boolean;
 }
 
 /**
  * Live view of a job run: status, step progress, approval actions, history.
  * Polls the run every 4s while it is in a non-terminal status.
  */
-export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
+export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps) {
   const navigate = useNavigate();
   const [run, setRun] = useState<JobRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
   const [comment, setComment] = useState("");
+  const [expandedChildren, setExpandedChildren] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(() => {
     return getJobRun(runId)
@@ -145,11 +165,52 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
     );
   };
 
+  /** Child run of a "job" step: the live one while waiting, else the latest recorded one. */
+  const subJobChildRunId = (step: JobStep): string | undefined => {
+    if (step.type !== "job") return undefined;
+    if (run.activeStep?.stepId === step.id && run.activeStep.childRunId) return run.activeStep.childRunId;
+    return [...run.history].reverse().find((h) => h.stepId === step.id && h.childRunId)?.childRunId;
+  };
+
+  const subJobRows = (step: JobStep) => {
+    const childRunId = subJobChildRunId(step);
+    if (!childRunId) return null;
+    const expanded = !!expandedChildren[step.id];
+    return (
+      <div style={{ marginTop: 6 }}>
+        <button
+          onClick={() => setExpandedChildren((prev) => ({ ...prev, [step.id]: !expanded }))}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            background: "none",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+            color: "var(--accent)",
+            fontSize: 12,
+          }}
+        >
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <Workflow size={12} />
+          <span style={{ fontFamily: "var(--font-mono)" }}>{childRunId}</span>
+        </button>
+        {expanded && (
+          <div style={{ marginTop: 4, border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface)" }}>
+            <JobRunPanel runId={childRunId} compact nested />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const stepIcon = (step: JobStep) => {
     const latest = latestByStep.get(step.id);
     const isCurrent = run.currentStepId === step.id && !TERMINAL_STATUSES.includes(run.status);
     if (isCurrent) {
-      if (run.status === "running") return <Loader2 size={15} style={{ color: "var(--accent)", animation: "spin 1.5s linear infinite" }} />;
+      if (run.status === "running" || run.status === "waiting_child")
+        return <Loader2 size={15} style={{ color: "var(--accent)", animation: "spin 1.5s linear infinite" }} />;
       if (run.status === "waiting_approval") return <Clock size={15} style={{ color: "var(--warning)" }} />;
       if (run.status === "sleeping" || run.status === "waiting_event") return <Clock size={15} style={{ color: "var(--badge-info)" }} />;
       return <CircleDot size={15} style={{ color: "var(--text-muted)" }} />;
@@ -163,7 +224,7 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
   };
 
   return (
-    <div style={{ padding: compact ? 12 : 16, fontSize: 13, color: "var(--text)" }}>
+    <div style={{ padding: nested ? 10 : compact ? 12 : 16, fontSize: 13, color: "var(--text)" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <span style={{ fontSize: compact ? 14 : 16, fontWeight: 600 }}>{run.jobName}</span>
@@ -183,7 +244,7 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
         <span style={{ flex: 1 }} />
         {!TERMINAL_STATUSES.includes(run.status) && (
           <>
-            {["sleeping", "waiting_event", "waiting_approval"].includes(run.status) && (
+            {["sleeping", "waiting_event", "waiting_approval", "waiting_child"].includes(run.status) && (
               <button onClick={() => act(() => pauseJobRun(run.runId))} disabled={acting} style={actionButtonStyle}>
                 <Pause size={13} /> Pause
               </button>
@@ -294,6 +355,23 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
         </div>
       )}
 
+      {/* Run-level outputs (resolved when the run succeeds) */}
+      {run.outputs && Object.keys(run.outputs).length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4 }}>
+            Outputs
+          </div>
+          {Object.entries(run.outputs).map(([key, value]) => (
+            <div key={key} style={{ display: "flex", gap: 8, marginBottom: 2 }}>
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)", flexShrink: 0 }}>{key}:</span>
+              <span style={{ wordBreak: "break-word", whiteSpace: "pre-wrap", maxHeight: 60, overflow: "hidden", textOverflow: "ellipsis" }}>
+                {typeof value === "string" ? value : JSON.stringify(value)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Stepper */}
       <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4 }}>Steps</div>
       <div style={{ display: "flex", flexDirection: "column", marginBottom: 14 }}>
@@ -322,7 +400,7 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
                     <span style={{ fontSize: 11, color: "var(--text-muted)" }}>attempt {run.activeStep.attempt}</span>
                   )}
                   {loopCount !== undefined && <span style={{ fontSize: 11, color: "var(--badge-trigger)" }}>loops: {loopCount}</span>}
-                  {isCurrent && run.nextWakeAt && ["sleeping", "waiting_approval", "waiting_event"].includes(run.status) && (
+                  {isCurrent && run.nextWakeAt && ["sleeping", "waiting_approval", "waiting_event", "waiting_child"].includes(run.status) && (
                     <span style={{ fontSize: 11, color: "var(--text-muted)" }}>wakes {new Date(run.nextWakeAt).toLocaleString()}</span>
                   )}
                 </div>
@@ -332,6 +410,7 @@ export default function JobRunPanel({ runId, compact }: JobRunPanelProps) {
                   </div>
                 )}
                 {branchRows(step)}
+                {subJobRows(step)}
                 {stepEntries.length > 0 && (
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                     {stepEntries.map((entry, j) => (

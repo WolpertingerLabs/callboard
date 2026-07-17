@@ -466,9 +466,11 @@ export default function JobsSettings() {
               />
               <div style={helpStyle}>
                 JSON definition — step types: <code>agent</code>, <code>approval</code>, <code>poll</code>, <code>wait_event</code>, <code>gate</code>,{" "}
-                <code>notify</code>, <code>parallel</code>. Parallel v1 supports only agent branches (<code>mode</code>: <code>race</code> or <code>all</code>).
-                Prompts support <code>{"{{inputs.<key>}}"}</code> and <code>{"{{steps.<id>.outputs.<key>}}"}</code> templating. The server validates on save and
-                lists every problem.
+                <code>notify</code>, <code>parallel</code>, <code>job</code>. Parallel v1 supports only agent branches (<code>mode</code>: <code>race</code> or{" "}
+                <code>all</code>). A <code>job</code> step runs another job as a child run (<code>jobId</code>, templated <code>inputs</code>, harvested{" "}
+                <code>outputs</code>) — declare a top-level <code>outputs</code> map on the child job so parents can harvest its results. Prompts support{" "}
+                <code>{"{{inputs.<key>}}"}</code> and <code>{"{{steps.<id>.outputs.<key>}}"}</code> templating. The server validates on save and lists every
+                problem.
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -747,8 +749,8 @@ export default function JobsSettings() {
           >
             <h2 style={{ margin: "0 0 16px 0", fontSize: 18 }}>Job already exists</h2>
             <p style={{ margin: "0 0 24px 0", fontSize: 14, color: "var(--text)", lineHeight: 1.4 }}>
-              A job with id <code style={{ fontFamily: "var(--font-mono)" }}>{conflict.id}</code> already exists. Import as a copy with a new id, or
-              overwrite the existing definition?
+              A job with id <code style={{ fontFamily: "var(--font-mono)" }}>{conflict.id}</code> already exists. Import as a copy with a new id, or overwrite
+              the existing definition?
             </p>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", flexWrap: "wrap" }}>
               <button

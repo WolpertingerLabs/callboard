@@ -72,6 +72,40 @@ export function interpolate(template: string, ctx: JobRunContext): string {
   return result;
 }
 
+/** A template that is exactly one {{ref}} — resolved to the raw value, preserving its type. */
+const BARE_REF_RE = /^\{\{([^}]+)\}\}$/;
+
+/**
+ * Resolve a run's declared run-level outputs (definition.outputs) against its
+ * final context. Unlike interpolate(), a key whose template does not resolve
+ * is omitted rather than throwing — the run already succeeded, and a parent
+ * "job" step enforces its own required keys loudly. A bare ref that resolves
+ * to an explicit null is KEPT (matching the step-level required-output check,
+ * which only treats undefined as missing). Returns the resolved map and the
+ * omitted keys (for logging).
+ */
+export function resolveRunOutputs(run: JobRun): { outputs: Record<string, unknown>; omitted: string[] } {
+  const ctx = buildRunContext(run);
+  const outputs: Record<string, unknown> = {};
+  const omitted: string[] = [];
+  for (const [key, template] of Object.entries(run.definition.outputs ?? {})) {
+    const bare = BARE_REF_RE.exec(template.trim());
+    let value: unknown;
+    if (bare) {
+      value = resolveRef(ctx, bare[1]);
+    } else {
+      try {
+        value = interpolate(template, ctx);
+      } catch {
+        value = undefined;
+      }
+    }
+    if (value === undefined) omitted.push(key);
+    else outputs[key] = value;
+  }
+  return { outputs, omitted };
+}
+
 function evaluateCondition(ctx: JobRunContext, cond: JobGateCondition): boolean {
   const value = resolveRef(ctx, cond.ref);
   switch (cond.op) {

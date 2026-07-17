@@ -37,7 +37,8 @@ const JOB_SCHEMA_DOC = `A job definition is JSON:
   "inputs": [{ "key": "task", "label": "Task", "type": "string"|"text", "required": true, "default": "..." }],
   "defaults": { "folder": "/abs/path", "provider": "claude-code"|"openrouter", "model": "or-slug", "agentAlias": "name" },
   "limits": { "maxTotalSessions": 50, "maxDurationHours": 168 },
-  "steps": [ ...ordered steps... ]
+  "steps": [ ...ordered steps... ],
+  "outputs": { "<key>": "{{steps.<stepId>.outputs.<key>}}" } (optional — run-level outputs, resolved when a run succeeds; each referenced step must run on every successful path. A value that is exactly one {{ref}} keeps the referenced value's native type. Harvested by "job" steps in parent jobs.)
 }
 Each step has { "id": "slug", "type": ..., "next": "<stepId>|end" (optional — defaults to the following step) } plus type-specific fields.
 Prompt/message fields support {{inputs.<key>}}, {{steps.<stepId>.outputs.<key>}}, {{run.id}} templating.
@@ -49,6 +50,7 @@ Step types:
 - "gate": deterministic branch. Fields: condition { all?: [...], any?: [...] } with conditions { ref: "steps.<id>.outputs.<key>", op: eq|neq|contains|exists|not_exists|gt|lt, value }, onFail (required: stepId or "fail"), onPass (default next), maxLoops (required when jumping backwards — bounds the loop).
 - "notify": message the user via their contact channels. Fields: message (required), channel ("discord"|"telegram"|"email").
 - "parallel": run agent branches concurrently. Fields: mode ("race" first successful branch wins and cancels losers, or "all" wait for all), branches (agent leaf steps with id,type:"agent",prompt,outputs/session fields; no next/retry/nested steps in v1), onFailure ("fail" default or step id). Aggregate outputs are nested by branch id; race also sets _winner and _winnerOutputs.
+- "job": run another job as a child run and wait for it. Fields: jobId (required — the child job; must exist at save time, no self-reference or cycles), inputs ({ key: value } for the child's declared inputs; values support templating), outputs (array of keys harvested from the child's run-level outputs declaration — missing keys fail the step), timeoutHours (positive number; child run is cancelled on timeout), onTimeout ("fail" default or stepId), onFailure ("fail" default or stepId — child failed or was cancelled), maxLoops (required when onFailure/onTimeout jumps backwards or to this step — bounds the retry loop). The child definition is frozen when the step starts; nesting is bounded (depth 5). The child enforces its own limits; cancelling the parent cascades to the child.
 Targets "end" (finish run successfully) and "fail" (fail the run) are valid anywhere a step id is accepted.`;
 
 function error(message: string) {
@@ -80,11 +82,13 @@ function condenseRun(run: JobRun) {
     jobName: run.jobName,
     status: run.status,
     currentStepId: run.currentStepId,
+    ...(run.parentRunId && { parentRunId: run.parentRunId, parentStepId: run.parentStepId, depth: run.depth }),
     ...(run.activeStep && {
       activeStep: {
         stepId: run.activeStep.stepId,
         attempt: run.activeStep.attempt,
         chatId: run.activeStep.chatId,
+        ...(run.activeStep.childRunId && { childRunId: run.activeStep.childRunId }),
         startedAt: run.activeStep.startedAt,
         ...(run.status === "waiting_approval" && run.activeStep.pendingResult?.summary && { approvalMessage: run.activeStep.pendingResult.summary }),
         ...(run.activeStep.parallel && {
@@ -111,10 +115,12 @@ function condenseRun(run: JobRun) {
       endedAt: h.endedAt,
       ...(h.branchId && { branchId: h.branchId }),
       ...(h.chatId && { chatId: h.chatId }),
+      ...(h.childRunId && { childRunId: h.childRunId }),
       ...(h.detail && { detail: h.detail }),
       ...(condenseOutputs(h.outputs) && { outputs: condenseOutputs(h.outputs) }),
     })),
     sessionsSpawned: run.sessionsSpawned,
+    ...(run.outputs && { outputs: condenseOutputs(run.outputs) }),
     ...(run.error && { error: run.error }),
     createdAt: run.createdAt,
     ...(run.endedAt && { endedAt: run.endedAt }),
@@ -265,7 +271,7 @@ export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition
       {
         jobId: z.string().optional().describe("Only runs of this job"),
         status: z
-          .enum(["running", "waiting_approval", "waiting_event", "sleeping", "paused", "succeeded", "failed", "cancelled"])
+          .enum(["running", "waiting_approval", "waiting_event", "waiting_child", "sleeping", "paused", "succeeded", "failed", "cancelled"])
           .optional()
           .describe("Only runs in this status"),
         limit: z.number().optional().describe("Max results (default 20)"),
