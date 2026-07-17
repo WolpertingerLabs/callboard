@@ -13,7 +13,8 @@ export interface StreamEvent {
     | "compacting"
     | "cleared"
     | "budget"
-    | "nudge";
+    | "nudge"
+    | "auto_recovery";
   content: string;
   toolName?: string;
   /**
@@ -29,7 +30,11 @@ export interface StreamEvent {
   chatId?: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   chat?: any;
-  /** Reason the session ended (e.g. "max_turns", "aborted") — attached to "done" events */
+  /**
+   * Reason the session ended (e.g. "max_turns", "aborted") — attached to
+   * "done" events. Also carries the attempt counter on "nudge"
+   * ("nudge_1_of_3") and "auto_recovery" ("stream_recovery_1_of_3") events.
+   */
   reason?: string;
   /**
    * Cumulative USD spent in the run so far, when the adapter reports one.
