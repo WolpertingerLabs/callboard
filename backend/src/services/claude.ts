@@ -25,6 +25,13 @@ import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompleti
 import { buildModelRoutingToolsSpec, takePendingModelSwitch, clearPendingModelSwitch } from "./model-routing-tools.js";
 import { classifyAndResolve, getUsableRoutingConfig } from "./model-routing.js";
 import { getRun as getJobRun } from "./job-store.js";
+import {
+  isStreamClosedToolFailure,
+  isStreamClosedSessionError,
+  buildStreamRecoveryPrompt,
+  MAX_STREAM_RECOVERIES,
+  STREAM_CLOSED_TOOL_FAILURE_THRESHOLD,
+} from "./stream-recovery.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { getProxy, ensureCallerEnrolled } from "./proxy-singleton.js";
 import {
@@ -1389,6 +1396,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         return hasObjectiveCompletion(trackingId);
       };
       let nudgesUsed = 0;
+      // Stop-and-resume recoveries performed after a "Stream closed"
+      // transport failure (see stream-recovery.ts) — capped per run so a
+      // persistently-broken environment surfaces as an error instead of
+      // restarting forever.
+      let recoveriesUsed = 0;
 
       // ── Query loop ──
       // Runs exactly once for normal sessions. When requireExplicitCompletion
@@ -1400,8 +1412,32 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
       while (true) {
         const conversation = agentProvider.query(queryOpts);
+        // "Stream closed" watch for THIS query: consecutive failing tool
+        // results (a healthy one resets the count) and a flag the recovery
+        // block below acts on. Claude-Code-only — the failure mode lives in
+        // the SDK↔CLI transport.
+        let streamClosedFailures = 0;
+        let streamRecoveryNeeded = false;
+        const canAttemptRecovery = () => providerKind === "claude-code" && recoveriesUsed < MAX_STREAM_RECOVERIES && !abortController.signal.aborted;
 
-        for await (const event of conversation) {
+        // The SDK can also surface transport death as a thrown error instead
+        // of failing tool results. Guard the iteration so that case ends the
+        // stream with the recovery flag set, rather than unwinding to the
+        // outer catch and killing the session.
+        const guardedEvents = async function* () {
+          try {
+            yield* conversation;
+          } catch (err: any) {
+            if (err?.name !== "AbortError" && canAttemptRecovery() && isStreamClosedSessionError(err?.message)) {
+              log.warn(`Session ${trackingId} query threw "${err.message}" — attempting stream recovery`);
+              streamRecoveryNeeded = true;
+              return;
+            }
+            throw err;
+          }
+        };
+
+        for await (const event of guardedEvents()) {
           if (abortController.signal.aborted) break;
 
           switch (event.type) {
@@ -1414,8 +1450,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                 endReason = "max_budget";
                 log.warn(`Session ${trackingId} ended: max budget reached`);
               } else if (event.status === "error") {
-                errorDetail = event.reason || "The model provider returned an error response.";
-                log.error(`Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`);
+                if (canAttemptRecovery() && isStreamClosedSessionError(event.reason)) {
+                  // Transport death reported as an execution-error result —
+                  // recoverable by stop-and-resume, not a real provider error.
+                  streamRecoveryNeeded = true;
+                  log.warn(`Session ${trackingId} result reported "${event.reason}" — attempting stream recovery`);
+                } else {
+                  errorDetail = event.reason || "The model provider returned an error response.";
+                  log.error(`Session ${trackingId} (provider=${providerKind}) ended: execution error — ${event.reason || "unknown"}`);
+                }
               }
               if (typeof event.usage?.costUsd === "number") {
                 lastCostUsd = event.usage.costUsd;
@@ -1527,6 +1570,24 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               break;
 
             case "tool_result":
+              // Watch for the "Stream closed" transport-failure signature.
+              // The failing result is still emitted (the transcript shows
+              // what happened); recovery triggers only after consecutive
+              // failures — one healthy result in between resets the count.
+              if (providerKind === "claude-code") {
+                if (isStreamClosedToolFailure(event.content, event.isError)) {
+                  streamClosedFailures++;
+                  log.warn(
+                    `Session ${trackingId} tool_result "Stream closed" failure ` +
+                      `(${streamClosedFailures}/${STREAM_CLOSED_TOOL_FAILURE_THRESHOLD} before recovery)`,
+                  );
+                  if (streamClosedFailures >= STREAM_CLOSED_TOOL_FAILURE_THRESHOLD && canAttemptRecovery()) {
+                    streamRecoveryNeeded = true;
+                  }
+                } else {
+                  streamClosedFailures = 0;
+                }
+              }
               emitter.emit("event", {
                 type: "tool_result",
                 content: event.content,
@@ -1556,6 +1617,56 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               break;
             }
           }
+
+          // A flagged transport failure ends this query immediately — no
+          // point letting the model burn more turns against dead tools; the
+          // recovery block below stops and resumes the session.
+          if (streamRecoveryNeeded) break;
+        }
+
+        // ── Stream-closed auto-recovery ──
+        // The automated version of what users did manually: stop the broken
+        // conversation and resume the session with a "please continue". Runs
+        // before the model-switch/nudge blocks so those see only healthy
+        // stream ends. Requires a session id to resume into — when the
+        // transport died before session_started on a brand-new chat there is
+        // nothing to recover into and the failure surfaces as an error.
+        if (streamRecoveryNeeded && !abortController.signal.aborted) {
+          const resumeTarget = sessionId ?? (queryOpts.options.resume as string | undefined) ?? resumeSessionId;
+          if (resumeTarget) {
+            recoveriesUsed++;
+            log.warn(
+              `Session ${trackingId} — "Stream closed" transport failure; auto-recovering ` +
+                `(${recoveriesUsed}/${MAX_STREAM_RECOVERIES}) by resuming session ${resumeTarget}`,
+            );
+            // Kill the broken query's subprocess before starting the
+            // replacement — it may still be live and writing to the same
+            // session file.
+            try {
+              await conversation.close();
+            } catch {
+              // Transport already dead — expected.
+            }
+            const recoveryText = buildStreamRecoveryPrompt(recoveriesUsed, MAX_STREAM_RECOVERIES);
+            emitter.emit("event", {
+              type: "auto_recovery",
+              content: recoveryText,
+              reason: `stream_recovery_${recoveriesUsed}_of_${MAX_STREAM_RECOVERIES}`,
+            } as StreamEvent);
+            queryOpts.options.resume = resumeTarget;
+            queryOpts.prompt = (async function* () {
+              yield {
+                type: "user" as const,
+                message: { role: "user" as const, content: recoveryText },
+              };
+            })();
+            sessionId = null;
+            continue;
+          }
+          // No session to resume into — surface as a hard error (matches the
+          // pre-recovery behavior of a thrown transport error).
+          log.warn(`Session ${trackingId} — stream failure before any session id arrived; cannot auto-recover`);
+          errorDetail = 'The session transport failed ("Stream closed") before a session was established.';
         }
 
         // ── Model switch (reclassify_model) ──
@@ -1563,13 +1674,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // model, resume the SAME session on that model right away — the agent
         // continues its work without the user sending another message. Skipped
         // on abort / provider error / hard caps (those end the session as usual).
-        if (
-          providerKind === "openrouter" &&
-          !abortController.signal.aborted &&
-          errorDetail === undefined &&
-          !endReason &&
-          queryOpts.options.openRouter
-        ) {
+        if (providerKind === "openrouter" && !abortController.signal.aborted && errorDetail === undefined && !endReason && queryOpts.options.openRouter) {
           const sw = takePendingModelSwitch(trackingId);
           if (sw) {
             log.info(`Session ${trackingId} — reclassify_model switch → resuming on model=${sw.model} (class=${sw.classId})`);
