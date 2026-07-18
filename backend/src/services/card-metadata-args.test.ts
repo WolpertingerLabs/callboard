@@ -79,6 +79,19 @@ describe("buildMetadataPatch", () => {
     expect(buildMetadataPatch(undefined, ["  "])).toEqual({ ok: false, error: expect.stringMatching(/non-empty/) });
   });
 
+  it("rejects __proto__ on either side rather than silently no-oping", () => {
+    // `metadata["__proto__"] = ...` would set the patch object's prototype, so
+    // the store would never see the write or the delete.
+    // Built via JSON.parse, not a literal: `{ __proto__: ... }` is prototype-
+    // setter syntax and has no own key, whereas a real tool payload does.
+    const set = JSON.parse('{"__proto__":"v"}') as Record<string, string>;
+    expect(buildMetadataPatch(set)).toEqual({ ok: false, error: expect.stringMatching(/__proto__/) });
+    expect(buildMetadataPatch(undefined, ["__proto__"])).toEqual({
+      ok: false,
+      error: expect.stringMatching(/__proto__/),
+    });
+  });
+
   it("rejects non-string remove entries", () => {
     expect(buildMetadataPatch(undefined, [42 as unknown as string])).toEqual({
       ok: false,

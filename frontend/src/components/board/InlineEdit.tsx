@@ -10,6 +10,8 @@ interface InlineEditProps {
   startEditing?: boolean;
   /** Fired when editing ends, whether committed or cancelled. */
   onEditingEnd?: () => void;
+  /** Caps the editor, so an over-limit edit can't round-trip to a 400. */
+  maxLength?: number;
   style?: CSSProperties;
   inputStyle?: CSSProperties;
 }
@@ -18,7 +20,7 @@ interface InlineEditProps {
  * Click-to-edit text. Enter (or blur) commits, Escape cancels. The multiline
  * variant commits on blur only — Enter inserts newlines.
  */
-export default function InlineEdit({ value, onSave, placeholder, multiline, startEditing, onEditingEnd, style, inputStyle }: InlineEditProps) {
+export default function InlineEdit({ value, onSave, placeholder, multiline, startEditing, onEditingEnd, maxLength, style, inputStyle }: InlineEditProps) {
   const [editing, setEditing] = useState(startEditing ?? false);
   const [draft, setDraft] = useState(value);
   const ref = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
@@ -73,6 +75,7 @@ export default function InlineEdit({ value, onSave, placeholder, multiline, star
         }}
         value={draft}
         rows={Math.max(4, draft.split("\n").length + 1)}
+        maxLength={maxLength}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -90,6 +93,7 @@ export default function InlineEdit({ value, onSave, placeholder, multiline, star
         ref.current = el;
       }}
       value={draft}
+      maxLength={maxLength}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {

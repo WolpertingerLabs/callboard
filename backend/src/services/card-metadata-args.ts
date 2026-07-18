@@ -43,6 +43,7 @@ export function buildMetadataPatch(set?: Record<string, string>, remove?: string
   if (hasSet) {
     for (const [key, value] of Object.entries(set!)) {
       if (!key.trim()) return { ok: false, error: "metadata keys must be non-empty" };
+      if (key.trim() === "__proto__") return { ok: false, error: '"__proto__" is not a valid metadata key' };
       metadata[key] = value;
     }
   }
@@ -51,6 +52,9 @@ export function buildMetadataPatch(set?: Record<string, string>, remove?: string
       if (typeof key !== "string" || !key.trim()) {
         return { ok: false, error: "`remove` entries must be non-empty key strings" };
       }
+      // Assigning it would set the patch object's prototype, not register a
+      // delete — the store would never see the removal.
+      if (key.trim() === "__proto__") return { ok: false, error: '"__proto__" is not a valid metadata key' };
       metadata[key] = null;
     }
   }

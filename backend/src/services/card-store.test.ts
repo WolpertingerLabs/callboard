@@ -170,6 +170,17 @@ describe("updateCard metadata", () => {
     expect(updateCard(card.id, { metadata: { a: "1" } })!.metadata).toEqual({ a: "1" });
   });
 
+  it("rejects __proto__ rather than reporting success for a silent no-op", () => {
+    const card = createCard({ title: "T" });
+    // The merge target has no own `__proto__`, so assigning it would hit the
+    // inherited setter and write nothing while still returning 200.
+    // Built via JSON.parse, not a literal: `{ __proto__: ... }` is prototype-
+    // setter syntax and has no own key, whereas a real request body does.
+    const metadata = JSON.parse('{"__proto__":"v"}') as Record<string, string>;
+    expect(() => updateCard(card.id, { metadata })).toThrow(/__proto__/);
+    expect(getCard(card.id)!.metadata).toBeUndefined();
+  });
+
   describe("limits", () => {
     it("rejects blank keys, over-long keys, and over-long values", () => {
       const card = createCard({ title: "T" });

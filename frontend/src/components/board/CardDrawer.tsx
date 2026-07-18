@@ -15,7 +15,8 @@ const METADATA_VALUE_MAX = 2048;
 
 interface CardDrawerProps {
   card: CardSummary;
-  onPatch: (patch: CardPatch) => void;
+  /** Resolves false when the patch was rejected — editors stay open so input isn't lost. */
+  onPatch: (patch: CardPatch) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -330,7 +331,7 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
  * `{ [key]: null }` to delete — so concurrent agent writes to other keys
  * survive.
  */
-function MetadataSection({ metadata, onPatch }: { metadata?: Record<string, string>; onPatch: (patch: CardPatch) => void }) {
+function MetadataSection({ metadata, onPatch }: { metadata?: Record<string, string>; onPatch: (patch: CardPatch) => Promise<boolean> }) {
   const [adding, setAdding] = useState(false);
   const entries = Object.entries(metadata ?? {});
 
@@ -388,9 +389,10 @@ function MetadataSection({ metadata, onPatch }: { metadata?: Record<string, stri
       {adding && (
         <AddMetadataField
           existingKeys={entries.map(([key]) => key)}
-          onAdd={(key, value) => {
-            onPatch({ metadata: { [key]: value } });
-            setAdding(false);
+          // Close only once the patch lands — a rejected add (entry cap,
+          // over-limit value) would otherwise discard what the user typed.
+          onAdd={async (key, value) => {
+            if (await onPatch({ metadata: { [key]: value } })) setAdding(false);
           }}
           onCancel={() => setAdding(false)}
         />
@@ -431,6 +433,7 @@ function MetadataValue({ value, onSave }: { value: string; onSave: (value: strin
       // editor directly; ending the edit returns it to link rendering.
       startEditing={editing}
       onEditingEnd={() => setEditing(false)}
+      maxLength={METADATA_VALUE_MAX}
       placeholder="Empty — click to set"
       style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
       inputStyle={{ fontSize: 12 }}
@@ -439,19 +442,37 @@ function MetadataValue({ value, onSave }: { value: string; onSave: (value: strin
 }
 
 /** Key + value inputs for a new entry, with client-side empty/duplicate rejection. */
-function AddMetadataField({ existingKeys, onAdd, onCancel }: { existingKeys: string[]; onAdd: (key: string, value: string) => void; onCancel: () => void }) {
+function AddMetadataField({ existingKeys, onAdd, onCancel }: { existingKeys: string[]; onAdd: (key: string, value: string) => Promise<void>; onCancel: () => void }) {
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const trimmedKey = key.trim();
+  const trimmedValue = value.trim();
   const hint = !trimmedKey
     ? key
       ? "Key can't be blank."
       : null
     : existingKeys.includes(trimmedKey)
       ? `"${trimmedKey}" already exists — edit it above.`
-      : null;
-  const canAdd = trimmedKey.length > 0 && !hint;
+      : !trimmedValue && value
+        ? "Value can't be blank."
+        : null;
+  // A blank value would persist an empty string, which the edit path treats as
+  // a delete — so there is no way to add an entry we couldn't then clear.
+  const canAdd = trimmedKey.length > 0 && trimmedValue.length > 0 && !hint && !saving;
+
+  // The parent closes this editor only on success, so a rejected add leaves the
+  // typed key and value in place to correct.
+  const submit = async () => {
+    if (!canAdd) return;
+    setSaving(true);
+    try {
+      await onAdd(trimmedKey, trimmedValue);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const inputStyle: React.CSSProperties = {
     background: "var(--bg)",
@@ -480,7 +501,7 @@ function AddMetadataField({ existingKeys, onAdd, onCancel }: { existingKeys: str
           maxLength={METADATA_VALUE_MAX}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && canAdd) onAdd(trimmedKey, value);
+            if (e.key === "Enter") void submit();
             if (e.key === "Escape") onCancel();
           }}
           placeholder="value"
@@ -493,7 +514,7 @@ function AddMetadataField({ existingKeys, onAdd, onCancel }: { existingKeys: str
           Cancel
         </button>
         <button
-          onClick={() => canAdd && onAdd(trimmedKey, value)}
+          onClick={() => void submit()}
           disabled={!canAdd}
           style={{
             fontSize: 12,

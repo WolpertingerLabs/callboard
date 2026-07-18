@@ -130,12 +130,15 @@ export default function Board() {
 
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) : undefined;
 
-  const patchCard = async (cardId: string, patch: CardPatch) => {
+  /** Resolves false when the patch was rejected, so callers can keep their editor open. */
+  const patchCard = async (cardId: string, patch: CardPatch): Promise<boolean> => {
     try {
       const res = await updateCard(cardId, patch);
       setCards((prev) => prev.map((c) => (c.id === cardId ? res.card : c)));
+      return true;
     } catch (err: any) {
       setError(err.message || "Failed to update card");
+      return false;
     }
   };
 

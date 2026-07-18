@@ -125,6 +125,9 @@ function applyMetadataPatch(
   for (const [rawKey, value] of Object.entries(patch)) {
     const key = rawKey.trim();
     if (!key) throw new CardValidationError("metadata keys must be non-empty");
+    // `merged` has no own `__proto__`, so assigning it would hit the inherited
+    // Object.prototype setter — silently writing nothing and reporting success.
+    if (key === "__proto__") throw new CardValidationError('"__proto__" is not a valid metadata key');
     if (key.length > CARD_METADATA_KEY_MAX) {
       throw new CardValidationError(`metadata key "${key.slice(0, 20)}…" exceeds ${CARD_METADATA_KEY_MAX} characters`);
     }
