@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { CardSummary, CardPatch } from "../../api";
+import { getAgentIdentityPrompt } from "../../api";
 import MarkdownRenderer from "../MarkdownRenderer";
 import InlineEdit from "./InlineEdit";
 import { formatRelativeTime } from "../../utils/dateFormat";
+import { getRecentDirectories } from "../../utils/localStorage";
 import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow } from "lucide-react";
 
 interface CardDrawerProps {
@@ -19,11 +21,51 @@ const CHAT_STATUS_COLORS: Record<string, string> = {
   stopped: "var(--board-rollup-idle)",
 };
 
+/** Icon/text buttons must set a background — the global button reset leaves
+ * the browser default (a light pill) otherwise. */
+const ICON_BUTTON: React.CSSProperties = {
+  background: "transparent",
+  padding: 6,
+  borderRadius: 6,
+  cursor: "pointer",
+};
+
 /** Right-hand drawer with the card's editable identity, members, and actions. */
 export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) {
   const navigate = useNavigate();
   const [editingDescription, setEditingDescription] = useState(false);
   const closed = card.lifecycle === "closed";
+
+  // Start a chat in the card's working context: the most recently active
+  // member chat's folder, and — when that chat runs a configured agent —
+  // the agent's identity prompt and permissions (mirrors AgentDashboard's
+  // start-chat flow). Falls back to the most recent New Chat directory.
+  const startChatOnCard = async () => {
+    const recent = card.memberChats[0]; // sorted newest-first server-side
+    const folder = recent?.folder ?? getRecentDirectories()[0]?.path;
+    if (!folder) {
+      // No known folder anywhere — land on the picker message rather than guessing.
+      navigate("/chat/new", { state: { cardId: card.id } });
+      return;
+    }
+
+    let agentState: Record<string, unknown> = {};
+    if (recent?.agentAlias) {
+      let systemPrompt: string | undefined;
+      try {
+        systemPrompt = await getAgentIdentityPrompt(recent.agentAlias);
+      } catch {
+        // Continue without identity prompt if fetch fails
+      }
+      agentState = {
+        agentAlias: recent.agentAlias,
+        ...(systemPrompt && { systemPrompt }),
+        defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+      };
+    }
+
+    navigate(`/chat/new?folder=${encodeURIComponent(folder)}`, { state: { cardId: card.id, ...agentState } });
+  };
 
   return (
     <>
@@ -54,11 +96,11 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
           <button
             onClick={() => onPatch({ pinned: !card.pinned })}
             title={card.pinned ? "Unpin" : "Pin to top"}
-            style={{ padding: 6, borderRadius: 6, color: card.pinned ? "var(--accent)" : "var(--text-muted)", cursor: "pointer" }}
+            style={{ ...ICON_BUTTON, color: card.pinned ? "var(--accent)" : "var(--text-muted)" }}
           >
             {card.pinned ? <PinOff size={16} /> : <Pin size={16} />}
           </button>
-          <button onClick={onClose} title="Close panel" style={{ padding: 6, borderRadius: 6, color: "var(--text-muted)", cursor: "pointer" }}>
+          <button onClick={onClose} title="Close panel" style={{ ...ICON_BUTTON, color: "var(--text-muted)" }}>
             <X size={16} />
           </button>
         </div>
@@ -88,7 +130,7 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
               <button
                 onClick={() => setEditingDescription((v) => !v)}
                 title="Edit description"
-                style={{ display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)", cursor: "pointer" }}
+                style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)" }}
               >
                 <Pencil size={12} />
               </button>
@@ -194,7 +236,12 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
         <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
           {!closed && (
             <button
-              onClick={() => navigate("/chat/new", { state: { cardId: card.id } })}
+              onClick={startChatOnCard}
+              title={
+                card.memberChats[0]?.agentAlias
+                  ? `Start a chat as agent "${card.memberChats[0].agentAlias}" in this card's context`
+                  : "Start a chat in this card's most recent folder"
+              }
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -263,7 +310,7 @@ function InlineEditDescription({ value, onSave, onCancel }: { value: string; onS
         }}
       />
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 8px", cursor: "pointer" }}>
+        <button onClick={onCancel} style={{ background: "transparent", fontSize: 12, color: "var(--text-muted)", padding: "4px 8px", cursor: "pointer" }}>
           Cancel
         </button>
         <button

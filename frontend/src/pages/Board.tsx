@@ -74,6 +74,24 @@ export default function Board() {
     return () => clearTimeout(timer);
   }, [metadataVersion, loadCards, loadInbox, inboxExpanded]);
 
+  // Rollup states also change WITHOUT a metadata event (a session starting or
+  // stopping bumps the session version, not metadataVersion), so poll the
+  // cards every 15s as a safety net. Skipped while the tab is hidden; a
+  // visibility change refreshes immediately to catch up.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!document.hidden) loadCards();
+    }, 15_000);
+    const onVisible = () => {
+      if (!document.hidden) loadCards();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [loadCards]);
+
   const toggleInbox = () => {
     const next = !inboxExpanded;
     setInboxExpanded(next);
@@ -347,12 +365,14 @@ export default function Board() {
                     alignItems: "center",
                     gap: 6,
                     marginBottom: 10,
-                    color: "var(--text-muted)",
+                    color: "var(--board-section-label-text)",
                     fontSize: 12,
                     fontWeight: 700,
                     textTransform: "uppercase",
                     letterSpacing: 0.6,
                     cursor: "pointer",
+                    background: "transparent",
+                    padding: 0,
                   }}
                 >
                   {closedExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}

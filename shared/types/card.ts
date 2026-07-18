@@ -60,6 +60,8 @@ export interface CardMemberChat {
   unread: boolean;
   isTriggered: boolean;
   provider?: string;
+  /** Configured agent running this chat — new chats on the card inherit its context. */
+  agentAlias?: string;
   jobRunId?: string;
   createdAt: string;
   updatedAt: string;

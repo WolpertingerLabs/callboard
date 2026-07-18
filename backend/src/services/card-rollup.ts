@@ -59,6 +59,7 @@ function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberC
     unread: lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false,
     isTriggered: meta.triggered === true,
     ...(typeof meta.provider === "string" && meta.provider && { provider: meta.provider }),
+    ...(typeof meta.agentAlias === "string" && meta.agentAlias && { agentAlias: meta.agentAlias }),
     ...(typeof meta.jobRunId === "string" && meta.jobRunId && { jobRunId: meta.jobRunId }),
     createdAt: chat.created_at,
     updatedAt: chat.updated_at,
