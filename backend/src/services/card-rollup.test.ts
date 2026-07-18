@@ -147,6 +147,12 @@ describe("membership", () => {
     expect(summary.lastActivityAt).toBe("2026-07-01T00:00:00.000Z");
   });
 
+  it("passes card metadata through to the summary, and leaves it absent when unset", () => {
+    const meta = { "github-pr": "https://gh/42", linear: "ENG-1" };
+    expect(rollupOf([card({ metadata: meta })], [], []).metadata).toEqual(meta);
+    expect(rollupOf([card()], [], []).metadata).toBeUndefined();
+  });
+
   it("sorts member chats newest-first", () => {
     const summary = rollupOf(
       [card()],

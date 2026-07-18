@@ -25,7 +25,8 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
-import { createCard, getCard, listCards, updateCard } from "./card-store.js";
+import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX } from "./card-store.js";
+import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
@@ -476,6 +477,7 @@ export function buildCallboardToolsSpec(
               ...(c.closedAt && { closedAt: c.closedAt }),
               ...(c.status && { status: c.status }),
               ...(c.statusEmoji && { statusEmoji: c.statusEmoji }),
+              ...(c.metadata && { metadata: c.metadata }),
               ...(c.description && { description: c.description.length > 200 ? `${c.description.slice(0, 200)}…` : c.description }),
               updatedAt: c.updatedAt,
             }));
@@ -537,6 +539,43 @@ export function buildCallboardToolsSpec(
             content: [
               { type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, status: card.status ?? null, emoji: card.statusEmoji ?? null }) },
             ],
+          };
+        },
+      ),
+
+      defineTool(
+        "set_card_metadata",
+        "Attach arbitrary key→value cross-references to a card (ticket) — a GitHub PR URL, a Linear/Jira ticket id, a Slack thread link, an external session id, etc. Keys are arbitrary and chosen by you; prefer short stable slugs like 'github-pr' or 'linear'. Updates merge per key: keys you don't mention are left alone, so this is safe to call while the user or another agent is editing the same card. Defaults to the current chat's card.",
+        {
+          set: z
+            .record(z.string(), z.string().max(CARD_METADATA_VALUE_MAX))
+            .optional()
+            .describe("Keys to write or overwrite, e.g. { \"github-pr\": \"https://github.com/org/repo/pull/42\" }"),
+          remove: z.array(z.string()).optional().describe("Keys to delete from the card's metadata"),
+          card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
+        },
+        async (args) => {
+          const patch = buildMetadataPatch(args.set, args.remove);
+          if (!patch.ok) return error(patch.error);
+
+          let cardId = args.card_id;
+          if (!cardId) {
+            if (!getChatId) return error("Chat context not available — pass card_id explicitly");
+            cardId = getChatCardId(getChatId());
+            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
+          }
+
+          let card;
+          try {
+            card = updateCard(cardId, { metadata: patch.metadata });
+          } catch (err: any) {
+            return error(err.message);
+          }
+          if (!card) return error(`Card "${cardId}" not found`);
+
+          sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, metadata: card.metadata ?? {} }) }],
           };
         },
       ),

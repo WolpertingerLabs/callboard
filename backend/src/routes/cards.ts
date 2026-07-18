@@ -8,8 +8,9 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { Card, CardPatch, CardSummary } from "shared";
-import { listCards, getCard, createCard, updateCard } from "../services/card-store.js";
+import { listCards, getCard, createCard, updateCard, CardValidationError } from "../services/card-store.js";
 import { buildCardSummaries } from "../services/card-rollup.js";
+import { validateMetadataPatch } from "../services/card-metadata-args.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setChatCardMembership } from "../services/card-membership.js";
@@ -84,11 +85,11 @@ cardsRouter.get("/:id", (req: Request, res: Response) => {
   res.json({ card: summarize([card])[0] });
 });
 
-const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "lifecycle"] as const;
+const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "lifecycle", "metadata"] as const;
 
 cardsRouter.patch("/:id", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
-  // #swagger.summary = 'Update a card (title, description, pin, narrative status, lifecycle)'
+  // #swagger.summary = 'Update a card (title, description, pin, narrative status, lifecycle, metadata)'
   /* #swagger.responses[404] = { description: "Card not found" } */
   const body = req.body ?? {};
   const patch: CardPatch = {};
@@ -118,12 +119,17 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
   if (patch.lifecycle !== undefined && patch.lifecycle !== "open" && patch.lifecycle !== "closed") {
     return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });
   }
+  if (patch.metadata !== undefined) {
+    const metadataError = validateMetadataPatch(patch.metadata);
+    if (metadataError) return res.status(400).json({ error: metadataError });
+  }
   try {
     const card = updateCard(req.params.id, patch);
     if (!card) return res.status(404).json({ error: "Card not found" });
     sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
     res.json({ card: summarize([card])[0] });
   } catch (err: any) {
+    if (err instanceof CardValidationError) return res.status(400).json({ error: err.message });
     if (/title/i.test(err.message ?? "")) return res.status(400).json({ error: err.message });
     log.error(`Error updating card: ${err}`);
     res.status(500).json({ error: "Failed to update card", details: err.message });

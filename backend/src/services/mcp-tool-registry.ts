@@ -158,6 +158,19 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     category: "platform",
   },
   {
+    name: "set_card_metadata",
+    qualifiedName: "mcp__callboard-tools__set_card_metadata",
+    description: "Attach arbitrary key→value cross-references (PR URLs, ticket ids, conversation links) to a card (ticket). Merges per key.",
+    parameters: [
+      { name: "set", type: "object", description: "Keys to write or overwrite", required: false },
+      { name: "remove", type: "array", description: "Keys to delete from the card's metadata", required: false },
+      { name: "card_id", type: "string", description: "Target card id (default: the current chat's card)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
     name: "add_chat_to_card",
     qualifiedName: "mcp__callboard-tools__add_chat_to_card",
     description: "Assign the current chat to an existing open card (ticket).",
