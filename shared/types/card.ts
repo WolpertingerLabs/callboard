@@ -48,12 +48,20 @@ export interface CardPatch {
  */
 export type CardRollupState = "needs_you" | "job_running" | "active" | "idle";
 
+/**
+ * What a waiting chat is blocked on — a tool-use approval, a question the
+ * agent asked the user, or a plan awaiting review.
+ */
+export type CardPendingKind = "permission" | "question" | "plan";
+
 /** Compact member-chat row for board tiles/drawer. */
 export interface CardMemberChat {
   chatId: string;
   title: string | null;
   folder: string;
   status: "ongoing" | "waiting" | "stopped";
+  /** Set when status === "waiting": the kind of input the chat is blocked on. */
+  pendingKind?: CardPendingKind;
   chatStatus?: string;
   chatStatusEmoji?: string;
   hasSummon: boolean;

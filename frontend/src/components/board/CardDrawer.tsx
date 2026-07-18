@@ -5,6 +5,7 @@ import { getAgentIdentityPrompt } from "../../api";
 import MarkdownRenderer from "../MarkdownRenderer";
 import InlineEdit from "./InlineEdit";
 import { formatRelativeTime } from "../../utils/dateFormat";
+import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
 import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow } from "lucide-react";
 
@@ -223,6 +224,38 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
                   >
                     {chat.title || "Untitled chat"}
                   </span>
+                  {chat.pendingKind && (
+                    <span
+                      title={`Blocked on a ${PENDING_CHIPS[chat.pendingKind]} — open the chat to respond`}
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: "var(--board-rollup-needs-you)",
+                        background: "color-mix(in srgb, var(--board-rollup-needs-you) 15%, transparent)",
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {PENDING_CHIPS[chat.pendingKind]}
+                    </span>
+                  )}
+                  {chat.hasSummon && !chat.pendingKind && (
+                    <span
+                      title="The agent summoned you — open the chat"
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: "var(--board-rollup-needs-you)",
+                        background: "color-mix(in srgb, var(--board-rollup-needs-you) 15%, transparent)",
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        flexShrink: 0,
+                      }}
+                    >
+                      summon
+                    </span>
+                  )}
                   {chat.chatStatusEmoji && <span style={{ fontSize: 11, flexShrink: 0 }}>{chat.chatStatusEmoji}</span>}
                   {chat.unread && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />}
                   <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>{formatRelativeTime(chat.updatedAt)}</span>
