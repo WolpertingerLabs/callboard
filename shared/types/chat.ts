@@ -29,6 +29,12 @@ export interface ChatListResponse {
   chats: Chat[];
   hasMore: boolean;
   total: number;
+  /**
+   * Pagination units consumed by this page: raw chats normally, sidebar
+   * tree rows when includeLineage folds parentage groups. Advance paging
+   * offsets by this rather than counting the returned chats.
+   */
+  windowRows: number;
   stale?: boolean;
 }
 
