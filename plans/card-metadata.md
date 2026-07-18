@@ -100,7 +100,7 @@ In `frontend/src/components/board/CardDrawer.tsx`, add a **Metadata** section (b
 
 **Phase 3 — Frontend editor**
 **Goal:** users can view, add, edit, and remove metadata entries in the CardDrawer.
-1. Metadata section in `CardDrawer.tsx` (rows, link rendering, InlineEdit values, remove buttons, add-field affordance) using theme variables only.
+1. Metadata section in `CardDrawer.tsx` (rows, link rendering, InlineEdit values, remove buttons, add-field affordance) using theme variables only. — **landed** (0a3cf9a)
 2. Widened `CardPatch` typing through `api.ts` / `Board.tsx` as needed.
 3. Manual verification against the dev server (add/edit/remove as user; `set_card_metadata` from an agent chat; confirm live refetch updates the drawer).
 
