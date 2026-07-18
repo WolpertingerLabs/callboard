@@ -8,7 +8,8 @@ import CardTile from "../components/board/CardTile";
 import CardDrawer from "../components/board/CardDrawer";
 import CardPicker from "../components/board/CardPicker";
 import InboxRow from "../components/board/InboxRow";
-import { Plus, ChevronRight, ChevronDown, LayoutGrid } from "lucide-react";
+import { Plus, ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide-react";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 /** How many recent non-triggered chats to consider for the inbox. */
 const INBOX_FETCH_LIMIT = 30;
@@ -17,6 +18,7 @@ type Section = { key: string; label: string; cards: CardSummary[] };
 
 export default function Board() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const metadataVersion = useMetadataVersion();
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [inboxChats, setInboxChats] = useState<Chat[]>([]);
@@ -160,8 +162,8 @@ export default function Board() {
 
   const sectionHeader = (label: string, count: number) => (
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</span>
-      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{count}</span>
+      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--board-section-label-text)", textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</span>
+      <span style={{ fontSize: 11, color: "var(--board-section-label-text)" }}>{count}</span>
     </div>
   );
 
@@ -173,9 +175,28 @@ export default function Board() {
 
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "var(--bg)" }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 24px 60px" }}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 24 }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? "14px 12px 48px" : "24px 24px 60px" }}>
+        {/* Header — mobile gets the standard full-page back button (same
+            convention as AgentList/Settings) since there's no sidebar. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: isMobile ? 16 : 24 }}>
+          {isMobile && (
+            <button
+              onClick={() => navigate("/")}
+              title="Back"
+              style={{
+                background: "none",
+                border: "none",
+                padding: "4px 8px",
+                cursor: "pointer",
+                color: "var(--text)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <ChevronLeft size={20} />
+            </button>
+          )}
           <LayoutGrid size={20} style={{ color: "var(--accent)" }} />
           <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text)", flex: 1 }}>Board</h1>
           <button
@@ -205,7 +226,7 @@ export default function Board() {
               marginBottom: 16,
               padding: "10px 14px",
               borderRadius: 8,
-              background: "var(--danger-bg, var(--surface))",
+              background: "var(--danger-bg)",
               color: "var(--danger)",
               fontSize: 13,
             }}
