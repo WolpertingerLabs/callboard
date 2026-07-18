@@ -14,6 +14,7 @@ import { findChatForStatus } from "../utils/chat-lookup.js";
 import { writeSSEHeaders, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
+import { cardExists } from "../services/card-store.js";
 
 const log = createLogger("stream");
 
@@ -51,6 +52,7 @@ streamRouter.post("/new/message", async (req, res) => {
             requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the new chat's tree node, e.g. 'subagent', 'monitor', 'engine-switch'. Only used with parentChatId." },
+            cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
             branchConfig: {
               type: "object",
               properties: {
@@ -85,6 +87,7 @@ streamRouter.post("/new/message", async (req, res) => {
     requireExplicitCompletion,
     parentChatId,
     chatRole,
+    cardId,
     modelRouting,
     modelRoutingRankId,
   } = req.body;
@@ -167,9 +170,7 @@ streamRouter.post("/new/message", async (req, res) => {
     // OpenRouter; on any other provider the flag is dropped (default behavior).
     const safeModelRouting = modelRouting === true && safeProvider === "openrouter";
     const safeModelRoutingRankId: string | undefined =
-      safeModelRouting && typeof modelRoutingRankId === "string" && modelRoutingRankId.trim().length > 0
-        ? modelRoutingRankId.trim()
-        : undefined;
+      safeModelRouting && typeof modelRoutingRankId === "string" && modelRoutingRankId.trim().length > 0 ? modelRoutingRankId.trim() : undefined;
 
     const emitter = await sendMessage({
       prompt,
@@ -195,6 +196,9 @@ streamRouter.post("/new/message", async (req, res) => {
           parentChatId,
           ...(typeof chatRole === "string" && chatRole && { chatRole }),
         }),
+      // Card membership — unknown card ids are dropped silently, matching
+      // the route's other lenient validations.
+      ...(typeof cardId === "string" && cardId && cardExists(cardId) && { cardId }),
     });
 
     writeSSEHeaders(res);

@@ -15,6 +15,8 @@ import { defineTool } from "../agents/ports/tools.js";
 import type { AnyToolDefinition } from "../agents/ports/tools.js";
 import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, JobValidationError } from "./job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "./job-runner.js";
+import { cardExists } from "./card-store.js";
+import { chatFileService } from "./chat-file-service.js";
 import type { JobDefinition, JobRun, JobRunStatus } from "shared";
 
 /** Who is calling these tools — recorded on created definitions and approvals. */
@@ -23,6 +25,24 @@ export interface JobToolsContext {
   getCreatedBy: () => NonNullable<JobDefinition["createdBy"]>;
   /** Recorded in run history when relaying approval decisions. */
   via: "chat" | "agent";
+  /** Calling chat's id — lets spawn_job default the run's card to the chat's card. */
+  getChatId?: () => string;
+}
+
+/**
+ * Card for a spawned run: explicit card_id arg (validated), else the calling
+ * chat's card. Unknown ids resolve to undefined rather than failing the spawn.
+ */
+function resolveCardId(explicit: string | undefined, ctx: JobToolsContext): string | undefined {
+  if (explicit) return cardExists(explicit) ? explicit : undefined;
+  if (!ctx.getChatId) return undefined;
+  try {
+    const chat = chatFileService.getChat(ctx.getChatId());
+    const meta = JSON.parse(chat?.metadata || "{}");
+    return typeof meta.cardId === "string" && meta.cardId ? meta.cardId : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Jobs: schema documentation embedded in tool descriptions ────────
@@ -240,17 +260,18 @@ export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition
 
     defineTool(
       "spawn_job",
-      "Spawn a run of a job: freezes the current definition and starts executing the first step. Returns the runId. The run proceeds autonomously — use get_job_run to check progress; approval steps notify the user and wait.",
+      "Spawn a run of a job: freezes the current definition and starts executing the first step. Returns the runId. The run proceeds autonomously — use get_job_run to check progress; approval steps notify the user and wait. Runs spawned from a chat on a card (ticket) inherit that card; override with card_id.",
       {
         jobId: z.string().describe("The job id to spawn"),
         inputs: z
           .record(z.string(), z.string())
           .optional()
           .describe("Values for the job's declared inputs (required ones must be present unless they have defaults)"),
+        card_id: z.string().optional().describe("Card (ticket) to attach the run to (default: the calling chat's card, if any)"),
       },
       async (args) => {
         try {
-          const run = spawnJobRun(args.jobId, args.inputs ?? {});
+          const run = spawnJobRun(args.jobId, args.inputs ?? {}, undefined, { cardId: resolveCardId(args.card_id, ctx) });
           return {
             content: [
               {

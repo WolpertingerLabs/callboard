@@ -909,6 +909,7 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
       ...buildJobManagementTools({
         getCreatedBy: () => ({ kind: "agent", ref: agentAlias }),
         via: "agent",
+        ...(getChatId && { getChatId }),
       }),
     ],
   };

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Bot, PanelLeftClose, List, FolderOpen, Workflow, AlertTriangle, Plus } from "lucide-react";
+import { Settings, Bot, PanelLeftClose, List, FolderOpen, Workflow, AlertTriangle, Plus, LayoutGrid } from "lucide-react";
 import { fetchInstanceName } from "../api";
 import type { SidebarViewMode } from "../utils/localStorage";
 
@@ -25,6 +25,7 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
   const location = useLocation();
   const isSettingsActive = location.pathname === "/settings";
   const isAgentsActive = location.pathname.startsWith("/agents");
+  const isBoardActive = location.pathname === "/board";
 
   useEffect(() => {
     fetchInstanceName()
@@ -101,17 +102,35 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
         )}
         <div style={{ display: "flex" }}>
           <button
-            onClick={() => navigate("/agents")}
+            onClick={() => navigate("/board")}
             style={{
-              background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
-              color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
+              background: isBoardActive ? "var(--accent)" : "var(--bg-secondary)",
+              color: isBoardActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
               padding: "6px",
               borderTopLeftRadius: 6,
               borderBottomLeftRadius: 6,
               borderTopRightRadius: 0,
               borderBottomRightRadius: 0,
+              border: isBoardActive ? "none" : "1px solid var(--chatlist-item-border)",
+              borderRight: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Board"
+          >
+            <LayoutGrid size={16} />
+          </button>
+          <button
+            onClick={() => navigate("/agents")}
+            style={{
+              background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
+              color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
+              padding: "6px",
+              borderRadius: 0,
               border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
               borderRight: "none",
+              borderLeft: "none",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",

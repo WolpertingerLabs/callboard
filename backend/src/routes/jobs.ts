@@ -1,8 +1,21 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { JobRunStatus } from "shared";
-import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, exportJobEnvelope, importJobDefinition, JobValidationError, JobImportConflictError } from "../services/job-store.js";
+import {
+  listJobs,
+  getJob,
+  createJob,
+  updateJob,
+  deleteJob,
+  listRuns,
+  getRun,
+  exportJobEnvelope,
+  importJobDefinition,
+  JobValidationError,
+  JobImportConflictError,
+} from "../services/job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "../services/job-runner.js";
+import { cardExists } from "../services/card-store.js";
 
 export const jobsRouter = Router();
 
@@ -192,7 +205,10 @@ jobsRouter.post("/:id/spawn", (req: Request, res: Response): void => {
   // #swagger.summary = 'Spawn a run of a job'
   try {
     const inputs = req.body?.inputs && typeof req.body.inputs === "object" ? req.body.inputs : {};
-    const run = spawnJobRun(req.params.id, inputs);
+    // Attach the run to a card when a valid one is named; invalid ids are
+    // dropped silently, matching the route's lenient body handling.
+    const cardId = typeof req.body?.cardId === "string" && req.body.cardId && cardExists(req.body.cardId) ? req.body.cardId : undefined;
+    const run = spawnJobRun(req.params.id, inputs, undefined, { cardId });
     res.status(201).json({ run });
   } catch (err: any) {
     sendError(res, err);

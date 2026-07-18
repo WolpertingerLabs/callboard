@@ -8,6 +8,7 @@ import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest } from "../services/claude.js";
 import { buildChatTree, getParentChatId } from "../services/chat-lineage.js";
+import { getCard } from "../services/card-store.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { createLogger } from "../utils/logger.js";
@@ -896,6 +897,82 @@ chatsRouter.patch("/:id/read", (req, res) => {
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
     res.status(500).json({ error: "Failed to mark chat as read", details: err.message });
+  }
+});
+
+// Assign a chat to a card (or unassign with cardId: null)
+chatsRouter.patch("/:id/card", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Assign or unassign a chat to a card'
+  // #swagger.description = 'Sets metadata.cardId, making the chat a member of the card on the board view. Pass cardId: null to unassign.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[404] = { description: "Chat or card not found" } */
+  /* #swagger.responses[409] = { description: "Card is closed" } */
+  const { cardId } = req.body ?? {};
+  if (cardId !== null && (typeof cardId !== "string" || !cardId)) {
+    return res.status(400).json({ error: "cardId must be a non-empty string or null" });
+  }
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    if (typeof cardId === "string") {
+      const card = getCard(cardId);
+      if (!card) return res.status(404).json({ error: "Card not found" });
+      if (card.lifecycle === "closed") return res.status(409).json({ error: "Card is closed — reopen it to add chats" });
+    }
+
+    let meta: Record<string, any> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+
+    // Unassign keeps the key as null — consumers check for a string value.
+    meta.cardId = cardId;
+    const updatedMetadata = JSON.stringify(meta);
+
+    // Upsert: creates file storage record if it only existed on filesystem
+    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+
+    clearChatListCache();
+    sessionRegistry.notifyMetadata(chat.id, { cardId });
+    res.json(updatedChat);
+  } catch (err: any) {
+    log.error(`Error assigning chat to card: ${err}`);
+    res.status(500).json({ error: "Failed to assign chat to card", details: err.message });
+  }
+});
+
+// Dismiss a chat from the board inbox (view-only flag; touches nothing else)
+chatsRouter.patch("/:id/board", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Dismiss or restore a chat in the board inbox'
+  // #swagger.description = 'Sets metadata.boardDismissed. Dismissed chats are hidden from the board inbox only — all other views are unaffected.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const dismissed = req.body?.dismissed === true;
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    let meta: Record<string, any> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+
+    meta.boardDismissed = dismissed;
+    const updatedMetadata = JSON.stringify(meta);
+
+    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+
+    clearChatListCache();
+    sessionRegistry.notifyMetadata(chat.id, { boardDismissed: dismissed });
+    res.json(updatedChat);
+  } catch (err: any) {
+    log.error(`Error updating board dismissal: ${err}`);
+    res.status(500).json({ error: "Failed to update board dismissal", details: err.message });
   }
 });
 

@@ -20,6 +20,7 @@ import {
   Activity,
   SlidersHorizontal,
   Workflow,
+  LayoutGrid,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -38,6 +39,10 @@ import {
   getMcpTools,
   deleteDraft,
   forkChat,
+  listCards,
+  createCard,
+  assignChatToCard,
+  type CardSummary,
   type Chat as ChatType,
   type ParsedMessage,
   type Plugin,
@@ -58,6 +63,7 @@ import ConfirmModal from "../components/ConfirmModal";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
+import CardPicker from "../components/board/CardPicker";
 import BranchSelector from "../components/BranchSelector";
 import GitDiffView from "../components/GitDiffView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
@@ -147,6 +153,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // the new-chat request so the backend stamps parentChatId/rootChatId.
   const newChatParentId = (location.state as any)?.parentChatId as string | undefined;
   const newChatRole = (location.state as any)?.chatRole as string | undefined;
+  // Card (ticket) membership for new chats started from the board's
+  // "New chat on card" action — the backend stamps metadata.cardId.
+  const newChatCardId = (location.state as any)?.cardId as string | undefined;
   // Model routing (OpenRouter-only) for NEW chats, set by NewChatPanel. Only
   // honored on creation — the classifier picks the model server-side and it's
   // persisted into chat metadata so follow-ups keep routing.
@@ -214,6 +223,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [chatPermissions, setChatPermissions] = useState<DefaultPermissions | null>(null);
+  // "Add to card…" picker — cards are fetched lazily when the picker opens.
+  const [showCardPicker, setShowCardPicker] = useState(false);
+  const [pickerCards, setPickerCards] = useState<CardSummary[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -289,6 +301,34 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       return undefined;
     }
   }, [id, chat?.metadata]);
+
+  // Card (ticket) this chat belongs to — drives the composer's card action.
+  // Unassign leaves `cardId: null` in metadata, hence the string check.
+  const chatCardId = useMemo((): string | undefined => {
+    if (!id || !chat?.metadata) return undefined;
+    try {
+      const meta = JSON.parse(chat.metadata);
+      return typeof meta.cardId === "string" && meta.cardId ? meta.cardId : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [id, chat?.metadata]);
+
+  const openCardPicker = useCallback(() => {
+    setShowCardPicker(true);
+    listCards()
+      .then((res) => setPickerCards(res.cards))
+      .catch(() => setPickerCards([]));
+  }, []);
+
+  const handleCardAssigned = useCallback(() => {
+    setShowCardPicker(false);
+    if (id) {
+      getChat(id)
+        .then((updated) => setChat(updated))
+        .catch(() => {});
+    }
+  }, [id]);
 
   const chatProvider = useMemo((): "claude-code" | "openrouter" | "codex" => {
     if (!id) return newChatProvider ?? "claude-code";
@@ -1527,6 +1567,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             if (newChatRole) {
               requestBody.chatRole = newChatRole;
             }
+          }
+          if (newChatCardId) {
+            requestBody.cardId = newChatCardId;
           }
           // Model routing — OpenRouter-only opt-in. Reflects the composer's
           // "use model router" toggle (initialized from the New Chat panel's
@@ -3142,11 +3185,54 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                             ? "Change the Codex model / reasoning effort for this chat"
                             : "Change the Anthropic model for this chat",
                   },
+                  // Card (ticket) membership — existing chats only; new chats
+                  // get their card via the board's "New chat on card" action.
+                  ...(id
+                    ? [
+                        chatCardId
+                          ? {
+                              key: "card",
+                              icon: <LayoutGrid size={16} />,
+                              label: "Remove from card",
+                              onClick: () => {
+                                assignChatToCard(id, null)
+                                  .then(handleCardAssigned)
+                                  .catch(() => {});
+                              },
+                              active: true,
+                              title: "This chat is on a card — click to remove it (board view only)",
+                            }
+                          : {
+                              key: "card",
+                              icon: <LayoutGrid size={16} />,
+                              label: "Add to card…",
+                              onClick: openCardPicker,
+                              title: "Group this chat under a card (ticket) on the board",
+                            },
+                      ]
+                    : []),
                 ]
               : []
           }
         />
       </div>
+
+      {showCardPicker && id && (
+        <CardPicker
+          cards={pickerCards}
+          onSelect={(cardId) => {
+            assignChatToCard(id, cardId)
+              .then(handleCardAssigned)
+              .catch(() => setShowCardPicker(false));
+          }}
+          onCreate={(title) => {
+            createCard({ title }, id)
+              .then(handleCardAssigned)
+              .catch(() => setShowCardPicker(false));
+          }}
+          onClose={() => setShowCardPicker(false)}
+        />
+      )}
 
       <DraftModal
         isOpen={showDraftModal}

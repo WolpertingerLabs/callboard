@@ -28,6 +28,8 @@ interface LineageMeta {
   parentChatId?: string;
   rootChatId?: string;
   chatRole?: string;
+  /** Card (ticket) the parent belongs to — children inherit membership. */
+  cardId?: string;
 }
 
 type ChatMeta = Record<string, unknown>;
@@ -61,11 +63,14 @@ export function resolveParentage(parentChatId: string): LineageMeta | null {
   const parentMeta = parseMeta(parent);
   // Trust the parent's denormalized root when present (creation-time-only
   // stamping means it cannot be stale); otherwise walk up.
-  const rootChatId =
-    typeof parentMeta.rootChatId === "string" && parentMeta.rootChatId
-      ? parentMeta.rootChatId
-      : walkToRootId(parent.id);
-  return { parentChatId: parent.id, rootChatId };
+  const rootChatId = typeof parentMeta.rootChatId === "string" && parentMeta.rootChatId ? parentMeta.rootChatId : walkToRootId(parent.id);
+  return {
+    parentChatId: parent.id,
+    rootChatId,
+    // Unassign merges `cardId: null`, so a string check (not key presence)
+    // decides whether there is a card to inherit.
+    ...(typeof parentMeta.cardId === "string" && parentMeta.cardId && { cardId: parentMeta.cardId }),
+  };
 }
 
 /**

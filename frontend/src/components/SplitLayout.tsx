@@ -5,6 +5,7 @@ import ChatList from "../pages/ChatList";
 import FolderList from "../pages/FolderList";
 import JobList from "../pages/JobList";
 import Chat from "../pages/Chat";
+import Board from "../pages/Board";
 import Settings from "../pages/Settings";
 import AgentList from "../pages/agents/AgentList";
 import CreateAgent from "../pages/agents/CreateAgent";
@@ -104,6 +105,9 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   // Check if we're on the new chat page
   const isNewChat = location.pathname === "/chat/new";
 
+  // Check if we're on the cards board page
+  const isBoard = location.pathname === "/board";
+
   // Check if we're on a chat page (but not the "new" page)
   const chatMatch = !isNewChat && location.pathname.match(/^\/chat\/(.+)$/);
   const activeChatId = chatMatch ? chatMatch[1] : null;
@@ -131,6 +135,9 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
     }
     if (isAgentDashboard) {
       return <AgentDashboard />;
+    }
+    if (isBoard) {
+      return <Board />;
     }
     if (isNewChat) {
       return <Chat onChatListRefresh={refreshChatList} />;
@@ -268,6 +275,8 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
           <CreateAgent />
         ) : isAgentDashboard ? (
           <AgentDashboard />
+        ) : isBoard ? (
+          <Board />
         ) : isNewChat ? (
           <Chat onChatListRefresh={refreshChatList} />
         ) : activeChatId ? (

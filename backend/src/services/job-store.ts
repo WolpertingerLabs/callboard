@@ -295,6 +295,7 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
         }),
         ...(run.parentRunId && { parentRunId: run.parentRunId }),
         ...(run.activeStep?.childRunId && { activeChildRunId: run.activeStep.childRunId }),
+        ...(run.cardId && { cardId: run.cardId }),
         ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
         ...(run.error && { error: run.error }),
         createdAt: run.createdAt,
@@ -332,7 +333,7 @@ export interface RunParentLink {
   depth: number;
 }
 
-export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink): JobRun {
+export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink, cardId?: string): JobRun {
   const now = new Date().toISOString();
   const run: JobRun = {
     runId: `run-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
@@ -346,6 +347,7 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>, pa
     sessionsSpawned: 0,
     history: [],
     ...(parent && { parentRunId: parent.parentRunId, parentStepId: parent.parentStepId, depth: parent.depth }),
+    ...(cardId && { cardId }),
     createdAt: now,
     updatedAt: now,
   };
