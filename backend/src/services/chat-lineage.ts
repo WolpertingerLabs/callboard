@@ -61,10 +61,7 @@ export function resolveParentage(parentChatId: string): LineageMeta | null {
   const parentMeta = parseMeta(parent);
   // Trust the parent's denormalized root when present (creation-time-only
   // stamping means it cannot be stale); otherwise walk up.
-  const rootChatId =
-    typeof parentMeta.rootChatId === "string" && parentMeta.rootChatId
-      ? parentMeta.rootChatId
-      : walkToRootId(parent.id);
+  const rootChatId = typeof parentMeta.rootChatId === "string" && parentMeta.rootChatId ? parentMeta.rootChatId : walkToRootId(parent.id);
   return { parentChatId: parent.id, rootChatId };
 }
 
@@ -113,6 +110,134 @@ function toNode(chat: Chat, meta: ChatMeta): ChatTreeNode {
     updatedAt: chat.updated_at,
     children: [],
   };
+}
+
+/** Lineage fields extracted once per chat by buildLineageIndex. */
+interface LineageRecord {
+  parentId?: string;
+  rootChatId?: string;
+}
+
+export interface LineageIndex<T> {
+  /** Every chat in the snapshot, by id. */
+  byId: Map<string, T>;
+  /** Children grouped by parent chat id (self-parent pointers ignored). */
+  childrenByParent: Map<string, T[]>;
+  /** Parent pointer for a snapshot chat (aliases legacy forkedFrom). */
+  parentIdOf: (chatId: string) => string | undefined;
+  /** Memoized row/group key — see buildLineageIndex. */
+  rootKeyOf: (chatId: string) => string;
+}
+
+/**
+ * Build a lineage index over a snapshot of chat records, parsing each
+ * chat's metadata exactly once (unlike walkToRootId, which re-reads
+ * through chatFileService per step — too slow to run per listed chat).
+ *
+ * `rootKeyOf` resolves the pagination/grouping key for a chat and MUST
+ * mirror the sidebar's client-side grouping (ChatTreeList's lineageOf),
+ * or server-counted rows diverge from rendered rows: walk parent pointers
+ * through chats present in the snapshot; at a dangling or cyclic boundary
+ * fall back to the stamped rootChatId (or the dangling parent id itself)
+ * so orphaned siblings resolve to the SAME key the client folds them
+ * under. Results are memoized with path compression, so resolving every
+ * chat in the snapshot is O(n) overall.
+ */
+export function buildLineageIndex<T extends { id: string; metadata?: string | null }>(chats: T[]): LineageIndex<T> {
+  const byId = new Map<string, T>();
+  const lineageById = new Map<string, LineageRecord>();
+  const childrenByParent = new Map<string, T[]>();
+
+  for (const chat of chats) {
+    byId.set(chat.id, chat);
+    let meta: ChatMeta = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+    const rawParentId = getParentChatId(meta);
+    const parentId = rawParentId !== chat.id ? rawParentId : undefined;
+    const rootChatId = typeof meta.rootChatId === "string" && meta.rootChatId ? meta.rootChatId : undefined;
+    lineageById.set(chat.id, { parentId, rootChatId });
+    if (!parentId) continue;
+    const group = childrenByParent.get(parentId) || [];
+    group.push(chat);
+    childrenByParent.set(parentId, group);
+  }
+
+  const rootKeyById = new Map<string, string>();
+  const rootKeyOf = (chatId: string): string => {
+    const memoized = rootKeyById.get(chatId);
+    if (memoized !== undefined) return memoized;
+    const path: string[] = [];
+    const visited = new Set<string>();
+    let currentId = chatId;
+    let key = chatId;
+    for (let depth = 0; depth <= MAX_LINEAGE_DEPTH; depth++) {
+      const memo = rootKeyById.get(currentId);
+      if (memo !== undefined) {
+        key = memo;
+        break;
+      }
+      const lineage = lineageById.get(currentId);
+      if (!lineage) {
+        // Not in the snapshot (e.g. a filesystem-only session): own root.
+        key = currentId;
+        break;
+      }
+      path.push(currentId);
+      visited.add(currentId);
+      key = lineage.rootChatId || currentId;
+      if (!lineage.parentId || visited.has(lineage.parentId)) break; // root reached, or cycle
+      if (!lineageById.has(lineage.parentId)) {
+        // Deleted parent: key on the stamped root / dangling id — the
+        // client's fallback — so orphaned siblings still share one row.
+        key = lineage.rootChatId || lineage.parentId;
+        break;
+      }
+      currentId = lineage.parentId;
+    }
+    for (const id of path) rootKeyById.set(id, key);
+    return key;
+  };
+
+  return {
+    byId,
+    childrenByParent,
+    parentIdOf: (chatId) => lineageById.get(chatId)?.parentId,
+    rootKeyOf,
+  };
+}
+
+/**
+ * Group a recency-ordered chat list into sidebar tree rows and slice the
+ * requested page of ROWS. Items sharing a `rowKeyOf` key (their parentage
+ * tree root) fold into a single row positioned at the group's first — i.e.
+ * most recent — member, mirroring how the sidebar tree view renders one
+ * header row per lineage group. Paginating by rows rather than raw chats
+ * keeps every page worth `limit` visible entries no matter how many chats
+ * fold together.
+ *
+ * Returns the page's items (every member of a windowed row, original order
+ * preserved), the total row count, and `windowRows` — the number of rows in
+ * this window, which is what paging offsets should advance by.
+ */
+export function paginateTreeRows<T>(
+  items: T[],
+  rowKeyOf: (item: T) => string,
+  limit: number,
+  offset: number,
+): { page: T[]; total: number; windowRows: number } {
+  const keys = items.map(rowKeyOf);
+  const rowOrder: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rowOrder.push(key);
+  }
+  const windowKeys = new Set(rowOrder.slice(offset, offset + limit));
+  const page = items.filter((_, i) => windowKeys.has(keys[i]));
+  return { page, total: rowOrder.length, windowRows: windowKeys.size };
 }
 
 /**
