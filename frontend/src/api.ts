@@ -153,6 +153,7 @@ export async function listChats(
   excludeTriggered?: boolean,
   cached?: boolean,
   includeLineage?: boolean,
+  boardInbox?: boolean,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -161,6 +162,7 @@ export async function listChats(
   if (excludeTriggered) params.append("excludeTriggered", "true");
   if (cached === false) params.append("cached", "false");
   if (includeLineage) params.append("includeLineage", "true");
+  if (boardInbox) params.append("boardInbox", "true");
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");
@@ -260,7 +262,7 @@ export async function updateCard(id: string, patch: CardPatch): Promise<CardResp
 }
 
 /** Assign a chat to a card, or unassign with cardId: null. */
-export async function assignChatToCard(chatId: string, cardId: string | null): Promise<Chat> {
+export async function assignChatToCard(chatId: string, cardId: string | null): Promise<{ success: boolean; cardId: string | null }> {
   const res = await fetch(`${BASE}/chats/${chatId}/card`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -271,7 +273,7 @@ export async function assignChatToCard(chatId: string, cardId: string | null): P
 }
 
 /** Hide (or restore) a chat in the board inbox — affects no other view. */
-export async function dismissFromBoard(chatId: string, dismissed: boolean): Promise<Chat> {
+export async function dismissFromBoard(chatId: string, dismissed: boolean): Promise<{ success: boolean; dismissed: boolean }> {
   const res = await fetch(`${BASE}/chats/${chatId}/board`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

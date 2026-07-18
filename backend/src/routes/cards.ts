@@ -12,7 +12,7 @@ import { listCards, getCard, createCard, updateCard } from "../services/card-sto
 import { buildCardSummaries } from "../services/card-rollup.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
-import { clearChatListCache } from "./chats.js";
+import { setChatCardMembership } from "../services/card-membership.js";
 import { listRuns } from "../services/job-store.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { createLogger } from "../utils/logger.js";
@@ -22,7 +22,9 @@ const log = createLogger("cards");
 export const cardsRouter = Router();
 
 function summarize(cards: Card[]): CardSummary[] {
-  return buildCardSummaries(cards, chatFileService.getAllChats(), listRuns({ limit: 500 }));
+  // Only card-bearing runs matter to a rollup; filtering here (not slicing the
+  // newest N) keeps a long-dormant member run from silently dropping out.
+  return buildCardSummaries(cards, chatFileService.getAllChats(), listRuns({ assignedToCard: true }));
 }
 
 cardsRouter.get("/", (_req: Request, res: Response) => {
@@ -51,10 +53,8 @@ cardsRouter.post("/", (req: Request, res: Response) => {
     // Resolve the founding chat before creating the card so a bad chatId
     // can't leave an orphan card behind. findChat also covers chats that
     // only exist as filesystem sessions (no file-storage record yet).
-    let chat: any = null;
-    if (typeof chatId === "string" && chatId) {
-      chat = findChat(chatId, false);
-      if (!chat) return res.status(404).json({ error: "Chat not found" });
+    if (typeof chatId === "string" && chatId && !findChat(chatId, false)) {
+      return res.status(404).json({ error: "Chat not found" });
     }
 
     const card = createCard({
@@ -63,17 +63,9 @@ cardsRouter.post("/", (req: Request, res: Response) => {
       ...(typeof emoji === "string" && emoji && { emoji }),
     });
 
-    if (chat) {
-      let meta: Record<string, unknown> = {};
-      try {
-        meta = JSON.parse(chat.metadata || "{}");
-      } catch {}
-      meta.cardId = card.id;
-      // Upsert: creates the file-storage record if the chat only existed
-      // on the filesystem (same pattern as PATCH /chats/:id/card).
-      chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: JSON.stringify(meta) });
-      clearChatListCache();
-    }
+    // View-only assignment: doesn't bump the chat's updated_at, clears the
+    // chat-list cache, handles filesystem-only chats.
+    if (typeof chatId === "string" && chatId) setChatCardMembership(chatId, card.id);
 
     sessionRegistry.notifyMetadata(card.id, { cardEvent: "created" });
     res.status(201).json({ card: summarize([card])[0] });
@@ -102,6 +94,26 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
   const patch: CardPatch = {};
   for (const field of PATCHABLE_FIELDS) {
     if (field in body) (patch as Record<string, unknown>)[field] = body[field];
+  }
+  // Validate types up front so a malformed body is a 400, not a 500 from a
+  // downstream `.trim()` on null etc.
+  if (patch.title !== undefined && typeof patch.title !== "string") {
+    return res.status(400).json({ error: "title must be a string" });
+  }
+  if (patch.description !== undefined && typeof patch.description !== "string") {
+    return res.status(400).json({ error: "description must be a string" });
+  }
+  if (patch.emoji !== undefined && typeof patch.emoji !== "string") {
+    return res.status(400).json({ error: "emoji must be a string" });
+  }
+  if (patch.pinned !== undefined && typeof patch.pinned !== "boolean") {
+    return res.status(400).json({ error: "pinned must be a boolean" });
+  }
+  if (patch.status !== undefined && patch.status !== null && typeof patch.status !== "string") {
+    return res.status(400).json({ error: "status must be a string or null" });
+  }
+  if (patch.statusEmoji !== undefined && patch.statusEmoji !== null && typeof patch.statusEmoji !== "string") {
+    return res.status(400).json({ error: "statusEmoji must be a string or null" });
   }
   if (patch.lifecycle !== undefined && patch.lifecycle !== "open" && patch.lifecycle !== "closed") {
     return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });

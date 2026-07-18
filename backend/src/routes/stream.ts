@@ -14,7 +14,7 @@ import { findChatForStatus } from "../utils/chat-lookup.js";
 import { writeSSEHeaders, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
-import { cardExists } from "../services/card-store.js";
+import { getCard } from "../services/card-store.js";
 
 const log = createLogger("stream");
 
@@ -196,9 +196,11 @@ streamRouter.post("/new/message", async (req, res) => {
           parentChatId,
           ...(typeof chatRole === "string" && chatRole && { chatRole }),
         }),
-      // Card membership — unknown card ids are dropped silently, matching
-      // the route's other lenient validations.
-      ...(typeof cardId === "string" && cardId && cardExists(cardId) && { cardId }),
+      // Card membership — attach only to an existing OPEN card. Unknown or
+      // closed ids are dropped silently (the chat lands in the board inbox
+      // where the user can re-file it) rather than failing the send or
+      // stamping a chat onto a card hidden in the Closed strip.
+      ...(typeof cardId === "string" && cardId && getCard(cardId)?.lifecycle === "open" && { cardId }),
     });
 
     writeSSEHeaders(res);

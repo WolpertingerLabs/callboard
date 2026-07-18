@@ -26,6 +26,7 @@ import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
 import { createCard, getCard, listCards, updateCard } from "./card-store.js";
+import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { createLogger } from "../utils/logger.js";
@@ -447,7 +448,7 @@ export function buildCallboardToolsSpec(
 
           let assigned = false;
           if (args.assign_current_chat !== false && getChatId) {
-            assigned = chatFileService.updateChatMetadata(getChatId(), { cardId: card.id });
+            assigned = setChatCardMembership(getChatId(), card.id);
           }
 
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "created" });
@@ -524,13 +525,8 @@ export function buildCallboardToolsSpec(
           let cardId = args.card_id;
           if (!cardId) {
             if (!getChatId) return error("Chat context not available — pass card_id explicitly");
-            const chat = chatFileService.getChat(getChatId());
-            let meta: Record<string, unknown> = {};
-            try {
-              meta = JSON.parse(chat?.metadata || "{}");
-            } catch {}
-            if (typeof meta.cardId === "string" && meta.cardId) cardId = meta.cardId;
-            else return error("This chat is not on a card — pass card_id explicitly or create_card first");
+            cardId = getChatCardId(getChatId());
+            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
           }
 
           const card = updateCard(cardId, { status: args.status || null, statusEmoji: args.emoji || null });
@@ -558,10 +554,9 @@ export function buildCallboardToolsSpec(
           if (card.lifecycle === "closed") return error(`Card "${args.card_id}" is closed — the user can reopen it from the board`);
 
           const chatId = getChatId();
-          const ok = chatFileService.updateChatMetadata(chatId, { cardId: card.id });
+          const ok = setChatCardMembership(chatId, card.id);
           if (!ok) return error("Chat not found — assignment may not be available until the session is fully initialized");
 
-          sessionRegistry.notifyMetadata(chatId, { cardId: card.id });
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, chatId, cardId: card.id, cardTitle: card.title }) }] };
         },
       ),

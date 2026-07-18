@@ -15,7 +15,7 @@ import {
   JobImportConflictError,
 } from "../services/job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "../services/job-runner.js";
-import { cardExists } from "../services/card-store.js";
+import { getCard } from "../services/card-store.js";
 
 export const jobsRouter = Router();
 
@@ -205,9 +205,9 @@ jobsRouter.post("/:id/spawn", (req: Request, res: Response): void => {
   // #swagger.summary = 'Spawn a run of a job'
   try {
     const inputs = req.body?.inputs && typeof req.body.inputs === "object" ? req.body.inputs : {};
-    // Attach the run to a card when a valid one is named; invalid ids are
-    // dropped silently, matching the route's lenient body handling.
-    const cardId = typeof req.body?.cardId === "string" && req.body.cardId && cardExists(req.body.cardId) ? req.body.cardId : undefined;
+    // Attach the run to a card when an OPEN one is named; unknown or closed
+    // ids are dropped silently, matching the route's lenient body handling.
+    const cardId = typeof req.body?.cardId === "string" && getCard(req.body.cardId)?.lifecycle === "open" ? req.body.cardId : undefined;
     const run = spawnJobRun(req.params.id, inputs, undefined, { cardId });
     res.status(201).json({ run });
   } catch (err: any) {

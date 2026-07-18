@@ -3220,16 +3220,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       {showCardPicker && id && (
         <CardPicker
           cards={pickerCards}
-          onSelect={(cardId) => {
+          onSelect={(cardId) =>
             assignChatToCard(id, cardId)
               .then(handleCardAssigned)
-              .catch(() => setShowCardPicker(false));
-          }}
-          onCreate={(title) => {
+              .catch(() => setShowCardPicker(false))
+          }
+          onCreate={(title) =>
             createCard({ title }, id)
               .then(handleCardAssigned)
-              .catch(() => setShowCardPicker(false));
-          }}
+              .catch(() => setShowCardPicker(false))
+          }
           onClose={() => setShowCardPicker(false)}
         />
       )}

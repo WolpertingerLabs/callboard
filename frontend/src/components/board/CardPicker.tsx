@@ -5,18 +5,31 @@ import { Plus } from "lucide-react";
 
 interface CardPickerProps {
   cards: CardSummary[];
-  onSelect: (cardId: string) => void;
-  onCreate: (title: string) => void;
+  onSelect: (cardId: string) => void | Promise<void>;
+  onCreate: (title: string) => void | Promise<void>;
   onClose: () => void;
 }
 
 /** Pick an open card, or create a new one inline. */
 export default function CardPicker({ cards, onSelect, onCreate, onClose }: CardPickerProps) {
   const [newTitle, setNewTitle] = useState("");
+  // In-flight guard: the parent unmounts this picker only after its request
+  // resolves, so without it a second Enter/click fires a duplicate create.
+  const [busy, setBusy] = useState(false);
   const openCards = cards.filter((c) => c.lifecycle === "open");
 
+  const run = async (action: void | Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await action;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const create = () => {
-    if (newTitle.trim()) onCreate(newTitle.trim());
+    if (newTitle.trim()) run(onCreate(newTitle.trim()));
   };
 
   return (
@@ -42,7 +55,8 @@ export default function CardPicker({ cards, onSelect, onCreate, onClose }: CardP
           {openCards.map((card) => (
             <button
               key={card.id}
-              onClick={() => onSelect(card.id)}
+              onClick={() => run(onSelect(card.id))}
+              disabled={busy}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -54,7 +68,8 @@ export default function CardPicker({ cards, onSelect, onCreate, onClose }: CardP
                 color: "var(--text)",
                 textAlign: "left",
                 fontSize: 13,
-                cursor: "pointer",
+                cursor: busy ? "default" : "pointer",
+                opacity: busy ? 0.6 : 1,
               }}
             >
               <span>{card.emoji}</span>
@@ -84,7 +99,7 @@ export default function CardPicker({ cards, onSelect, onCreate, onClose }: CardP
           />
           <button
             onClick={create}
-            disabled={!newTitle.trim()}
+            disabled={!newTitle.trim() || busy}
             style={{
               display: "flex",
               alignItems: "center",
@@ -94,8 +109,8 @@ export default function CardPicker({ cards, onSelect, onCreate, onClose }: CardP
               padding: "6px 12px",
               borderRadius: 6,
               fontSize: 13,
-              cursor: newTitle.trim() ? "pointer" : "default",
-              opacity: newTitle.trim() ? 1 : 0.5,
+              cursor: newTitle.trim() && !busy ? "pointer" : "default",
+              opacity: newTitle.trim() && !busy ? 1 : 0.5,
             }}
           >
             <Plus size={14} />

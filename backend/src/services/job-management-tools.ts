@@ -15,8 +15,8 @@ import { defineTool } from "../agents/ports/tools.js";
 import type { AnyToolDefinition } from "../agents/ports/tools.js";
 import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, JobValidationError } from "./job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "./job-runner.js";
-import { cardExists } from "./card-store.js";
-import { chatFileService } from "./chat-file-service.js";
+import { getCard } from "./card-store.js";
+import { getChatCardId } from "./card-membership.js";
 import type { JobDefinition, JobRun, JobRunStatus } from "shared";
 
 /** Who is calling these tools — recorded on created definitions and approvals. */
@@ -30,19 +30,20 @@ export interface JobToolsContext {
 }
 
 /**
- * Card for a spawned run: explicit card_id arg (validated), else the calling
- * chat's card. Unknown ids resolve to undefined rather than failing the spawn.
+ * Card for a spawned run. An explicit card_id is strictly validated (unknown or
+ * closed → error string, so the caller isn't told the attachment silently
+ * dropped); with no explicit id, the run inherits the calling chat's card
+ * quietly. Returns { cardId } on success or { error } to abort the spawn.
  */
-function resolveCardId(explicit: string | undefined, ctx: JobToolsContext): string | undefined {
-  if (explicit) return cardExists(explicit) ? explicit : undefined;
-  if (!ctx.getChatId) return undefined;
-  try {
-    const chat = chatFileService.getChat(ctx.getChatId());
-    const meta = JSON.parse(chat?.metadata || "{}");
-    return typeof meta.cardId === "string" && meta.cardId ? meta.cardId : undefined;
-  } catch {
-    return undefined;
+function resolveSpawnCardId(explicit: string | undefined, ctx: JobToolsContext): { cardId?: string; error?: string } {
+  if (explicit) {
+    const card = getCard(explicit);
+    if (!card) return { error: `Card "${explicit}" not found` };
+    if (card.lifecycle === "closed") return { error: `Card "${explicit}" is closed — the user can reopen it from the board` };
+    return { cardId: explicit };
   }
+  if (!ctx.getChatId) return {};
+  return { cardId: getChatCardId(ctx.getChatId()) };
 }
 
 // ─── Jobs: schema documentation embedded in tool descriptions ────────
@@ -271,7 +272,9 @@ export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition
       },
       async (args) => {
         try {
-          const run = spawnJobRun(args.jobId, args.inputs ?? {}, undefined, { cardId: resolveCardId(args.card_id, ctx) });
+          const resolved = resolveSpawnCardId(args.card_id, ctx);
+          if (resolved.error) return error(resolved.error);
+          const run = spawnJobRun(args.jobId, args.inputs ?? {}, undefined, { cardId: resolved.cardId });
           return {
             content: [
               {

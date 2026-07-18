@@ -26,6 +26,19 @@ export const CARD_TITLE_MAX = 200;
 export const CARD_STATUS_MAX = 160;
 const DEFAULT_EMOJI = "🗂️";
 
+/**
+ * Card ids we generate ({@link createCard}). Enforced on every read/write so a
+ * route param can never escape cardsDir via `../` or an absolute path —
+ * Express decodes %2F inside a path segment, so `..%2F..%2Ffoo` would otherwise
+ * reach `join(cardsDir, "../../foo.json")`.
+ */
+const CARD_ID_RE = /^card-[A-Za-z0-9_-]+$/;
+
+function cardFilePath(id: string): string | null {
+  if (!CARD_ID_RE.test(id)) return null;
+  return join(cardsDir, `${id}.json`);
+}
+
 function atomicWrite(filepath: string, content: string): void {
   const tmp = `${filepath}.tmp`;
   writeFileSync(tmp, content);
@@ -33,7 +46,9 @@ function atomicWrite(filepath: string, content: string): void {
 }
 
 function saveCard(card: Card): void {
-  atomicWrite(join(cardsDir, `${card.id}.json`), JSON.stringify(card, null, 2));
+  const filepath = cardFilePath(card.id);
+  if (!filepath) throw new Error(`Invalid card id: ${card.id}`);
+  atomicWrite(filepath, JSON.stringify(card, null, 2));
 }
 
 export function listCards(): Card[] {
@@ -49,8 +64,8 @@ export function listCards(): Card[] {
 }
 
 export function getCard(id: string): Card | null {
-  const filepath = join(cardsDir, `${id}.json`);
-  if (!existsSync(filepath)) return null;
+  const filepath = cardFilePath(id);
+  if (!filepath || !existsSync(filepath)) return null;
   try {
     return JSON.parse(readFileSync(filepath, "utf8"));
   } catch (err: any) {

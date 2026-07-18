@@ -29,7 +29,10 @@ export default function Board() {
 
   const load = useCallback(async () => {
     try {
-      const [cardsRes, chatsRes] = await Promise.all([listCards(), listChats(INBOX_FETCH_LIMIT, 0, undefined, true)]);
+      // boardInbox=true filters out carded/dismissed chats server-side, so the
+      // window returns the newest un-triaged chats instead of draining as the
+      // recent slots fill with already-filed ones.
+      const [cardsRes, chatsRes] = await Promise.all([listCards(), listChats(INBOX_FETCH_LIMIT, 0, undefined, true, undefined, undefined, true)]);
       setCards(cardsRes.cards);
       setInboxChats(chatsRes.chats);
       setError(null);

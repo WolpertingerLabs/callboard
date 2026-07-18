@@ -147,7 +147,9 @@ export class ChatFileService {
       this.saveChat(updatedChat);
       return updatedChat;
     } else {
-      // Create new
+      // Create new. Honor caller-supplied timestamps when present so a
+      // view-only write (e.g. carding a filesystem-only chat) can preserve
+      // the session's real updated_at instead of resurfacing it as fresh.
       const now = new Date().toISOString();
       const newChat: Chat = {
         id,
@@ -155,8 +157,8 @@ export class ChatFileService {
         session_id: sessionId,
         session_log_path: null,
         metadata: updates.metadata || "{}",
-        created_at: now,
-        updated_at: now,
+        created_at: updates.created_at || now,
+        updated_at: updates.updated_at || now,
       };
 
       this.saveChat(newChat);
@@ -164,8 +166,11 @@ export class ChatFileService {
     }
   }
 
-  // Update specific metadata fields on a chat (read-merge-write)
-  updateChatMetadata(id: string, fields: Record<string, unknown>): boolean {
+  // Update specific metadata fields on a chat (read-merge-write).
+  // `touch: false` preserves updated_at — for view-only writes (board card
+  // membership, inbox dismissal) that must not resurface a chat as unread or
+  // reorder it in the sidebar.
+  updateChatMetadata(id: string, fields: Record<string, unknown>, opts?: { touch?: boolean }): boolean {
     const chat = this.getChat(id);
     if (!chat) return false;
 
@@ -173,7 +178,7 @@ export class ChatFileService {
       const meta = JSON.parse(chat.metadata || "{}");
       const merged = { ...meta, ...fields };
       chat.metadata = JSON.stringify(merged);
-      chat.updated_at = new Date().toISOString();
+      if (opts?.touch !== false) chat.updated_at = new Date().toISOString();
       this.saveChat(chat);
       return true;
     } catch (error) {

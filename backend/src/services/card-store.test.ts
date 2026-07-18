@@ -100,6 +100,24 @@ describe("updateCard", () => {
   });
 });
 
+describe("path traversal", () => {
+  it("rejects ids that escape the cards dir on read and write", () => {
+    // Express decodes %2F inside a path segment, so a route param can arrive
+    // containing '../' — getCard/updateCard must refuse it.
+    expect(getCard("../../etc/passwd")).toBeNull();
+    expect(getCard("..%2f..%2fsecret")).toBeNull();
+    expect(cardExists("../jobs/runs/run-1")).toBe(false);
+    expect(updateCard("../../foo", { title: "x" })).toBeNull();
+  });
+
+  it("only accepts card- prefixed ids", () => {
+    const card = createCard({ title: "T" });
+    expect(card.id.startsWith("card-")).toBe(true);
+    expect(getCard(card.id)).not.toBeNull();
+    expect(getCard("run-abc123")).toBeNull();
+  });
+});
+
 describe("listCards", () => {
   it("lists all cards and skips corrupt files without throwing", () => {
     const a = createCard({ title: "A" });
