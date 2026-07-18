@@ -259,13 +259,16 @@ export function importJobDefinition(raw: unknown, opts?: { mode?: "copy" | "over
 
 // ── Runs ────────────────────────────────────────────────────────────
 
-export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number }): JobRunListItem[] {
+export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number; assignedToCard?: boolean }): JobRunListItem[] {
   const items: JobRunListItem[] = [];
   for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
     try {
       const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
       if (filter?.jobId && run.jobId !== filter.jobId) continue;
       if (filter?.status && run.status !== filter.status) continue;
+      // Card rollups need every run on a card, so they filter here (before the
+      // limit slice below) rather than truncating the newest N runs.
+      if (filter?.assignedToCard && !run.cardId) continue;
       const stepIndex = run.currentStepId ? run.definition.steps.findIndex((s) => s.id === run.currentStepId) : -1;
       const currentStep = stepIndex >= 0 ? run.definition.steps[stepIndex] : undefined;
       // Active step session, else the most recent step that ran in a chat.
@@ -295,6 +298,7 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
         }),
         ...(run.parentRunId && { parentRunId: run.parentRunId }),
         ...(run.activeStep?.childRunId && { activeChildRunId: run.activeStep.childRunId }),
+        ...(run.cardId && { cardId: run.cardId }),
         ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
         ...(run.error && { error: run.error }),
         createdAt: run.createdAt,
@@ -332,7 +336,7 @@ export interface RunParentLink {
   depth: number;
 }
 
-export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink): JobRun {
+export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink, cardId?: string): JobRun {
   const now = new Date().toISOString();
   const run: JobRun = {
     runId: `run-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
@@ -346,6 +350,7 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>, pa
     sessionsSpawned: 0,
     history: [],
     ...(parent && { parentRunId: parent.parentRunId, parentStepId: parent.parentStepId, depth: parent.depth }),
+    ...(cardId && { cardId }),
     createdAt: now,
     updatedAt: now,
   };

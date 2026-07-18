@@ -170,6 +170,9 @@ export default function App() {
             element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
           />
 
+          {/* Cards board - rendered inside SplitLayout */}
+          <Route path="/board" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+
           {/* Agent routes - rendered inside SplitLayout */}
           <Route path="/agents" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
           <Route

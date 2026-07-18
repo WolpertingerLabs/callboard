@@ -69,6 +69,8 @@ export interface JobContext {
   branchId?: string;
   /** Advisory sessions (approval notifiers) never advance the run. */
   advisory?: boolean;
+  /** Card (ticket) the run belongs to — stamped into step-chat metadata.cardId. */
+  cardId?: string;
 }
 
 type MessageSender = (opts: {
@@ -225,7 +227,7 @@ function resumeRunAfterRestart(run: JobRun): void {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-export function spawnJobRun(jobId: string, inputs: Record<string, string>, parent?: RunParentLink): JobRun {
+export function spawnJobRun(jobId: string, inputs: Record<string, string>, parent?: RunParentLink, opts?: { cardId?: string }): JobRun {
   const job = getJob(jobId);
   if (!job) throw new Error(`Job "${jobId}" not found`);
 
@@ -245,7 +247,7 @@ export function spawnJobRun(jobId: string, inputs: Record<string, string>, paren
     if (value !== undefined) resolved[def.key] = value;
   }
 
-  const run = createRun(job, resolved, parent);
+  const run = createRun(job, resolved, parent, opts?.cardId);
   log.info(`Spawned run ${run.runId} of job "${jobId}" (version ${job.version})${parent ? ` as child of ${parent.parentRunId}` : ""}`);
   enterStep(run, job.steps[0].id, 0);
   return getRun(run.runId) ?? run;
@@ -559,7 +561,7 @@ function startSubJobStep(run: JobRun, step: SubJobStep, syncDepth: number): void
 
   let child: JobRun;
   try {
-    child = spawnJobRun(step.jobId, childInputs, { parentRunId: run.runId, parentStepId: step.id, depth: depth + 1 });
+    child = spawnJobRun(step.jobId, childInputs, { parentRunId: run.runId, parentStepId: step.id, depth: depth + 1 }, { cardId: run.cardId });
   } catch (err: any) {
     failSubJobStep(run, step, `Job step "${step.id}" failed to spawn child job "${step.jobId}": ${err.message}`, syncDepth);
     return;
@@ -861,7 +863,13 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     provider,
     ...(model && { model }),
     ...(sessionFields?.effort && provider === "openrouter" && { effort: sessionFields.effort }),
-    jobContext: { runId, stepId, ...(opts.branchId && { branchId: opts.branchId }), ...(opts.advisory && { advisory: true }) },
+    jobContext: {
+      runId,
+      stepId,
+      ...(opts.branchId && { branchId: opts.branchId }),
+      ...(opts.advisory && { advisory: true }),
+      ...(run.cardId && { cardId: run.cardId }),
+    },
     // Nudge the step session to keep going until it reports via
     // complete_job_step (advisory sessions have no step result to report).
     ...(!opts.advisory && sessionFields?.requireExplicitCompletion === true && { requireExplicitCompletion: true }),

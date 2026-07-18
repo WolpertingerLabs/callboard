@@ -25,6 +25,8 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
+import { createCard, getCard, listCards, updateCard } from "./card-store.js";
+import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { createLogger } from "../utils/logger.js";
@@ -419,6 +421,143 @@ export function buildCallboardToolsSpec(
               },
             ],
           };
+        },
+      ),
+
+      // ── Cards (tickets) ──────────────────────────────────────────────
+      // Cards group chats and job runs around a topic for the /board
+      // manager view. Membership lives in chat metadata (cardId); child
+      // chats and job-step chats inherit it automatically.
+
+      defineTool(
+        "create_card",
+        "Create a card (ticket) — a durable grouping of chats and job runs around a topic, shown on the user's board view. By default the current chat is assigned to the new card, and chats/jobs spawned from it inherit the membership.",
+        {
+          title: z.string().max(200).describe("Short card title"),
+          description: z.string().optional().describe("Markdown description of the topic/goal"),
+          emoji: z.string().optional().describe("Single emoji shown on the card face"),
+          assign_current_chat: z.boolean().optional().describe("Assign the current chat to the new card (default: true)"),
+        },
+        async (args) => {
+          let card;
+          try {
+            card = createCard({ title: args.title, description: args.description, emoji: args.emoji });
+          } catch (err: any) {
+            return error(err.message);
+          }
+
+          let assigned = false;
+          if (args.assign_current_chat !== false && getChatId) {
+            assigned = setChatCardMembership(getChatId(), card.id);
+          }
+
+          sessionRegistry.notifyMetadata(card.id, { cardEvent: "created" });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, title: card.title, assignedCurrentChat: assigned }) }],
+          };
+        },
+      ),
+
+      defineTool(
+        "list_cards",
+        "List cards (tickets) with their lifecycle and narrative status. Includes closed cards by default — useful to check whether a topic was already handled. Filter with lifecycle: 'open' or 'closed'.",
+        {
+          lifecycle: z.enum(["open", "closed"]).optional().describe("Only cards in this lifecycle (default: all)"),
+        },
+        async (args) => {
+          const cards = listCards()
+            .filter((c) => !args.lifecycle || c.lifecycle === args.lifecycle)
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .map((c) => ({
+              cardId: c.id,
+              title: c.title,
+              emoji: c.emoji,
+              lifecycle: c.lifecycle,
+              ...(c.closedAt && { closedAt: c.closedAt }),
+              ...(c.status && { status: c.status }),
+              ...(c.statusEmoji && { statusEmoji: c.statusEmoji }),
+              ...(c.description && { description: c.description.length > 200 ? `${c.description.slice(0, 200)}…` : c.description }),
+              updatedAt: c.updatedAt,
+            }));
+          return { content: [{ type: "text" as const, text: JSON.stringify({ cards }) }] };
+        },
+      ),
+
+      defineTool(
+        "get_card",
+        "Get a card (ticket) with its full description and member chats (id, title, live status).",
+        {
+          card_id: z.string().describe("The card id"),
+        },
+        async (args) => {
+          const card = getCard(args.card_id);
+          if (!card) return error(`Card "${args.card_id}" not found`);
+          const members = chatFileService
+            .getAllChats()
+            .map((chat) => {
+              let meta: Record<string, unknown> = {};
+              try {
+                meta = JSON.parse(chat.metadata || "{}");
+              } catch {}
+              return { chat, meta };
+            })
+            .filter(({ meta }) => typeof meta.cardId === "string" && meta.cardId === card.id)
+            .map(({ chat, meta }) => ({
+              chatId: chat.id,
+              title: (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || null,
+              ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),
+              ...(typeof meta.jobRunId === "string" && meta.jobRunId && { jobRunId: meta.jobRunId }),
+              updatedAt: chat.updated_at,
+            }));
+          return { content: [{ type: "text" as const, text: JSON.stringify({ card, memberChats: members }) }] };
+        },
+      ),
+
+      defineTool(
+        "set_card_status",
+        "Set the narrative status shown on a card (ticket) face in the board view, e.g. 'waiting on CI for branch 3/4'. Defaults to the current chat's card. Pass an empty status string to clear it.",
+        {
+          status: z.string().max(160).describe("Short status line (max 160 chars). Empty string clears the status."),
+          emoji: z.string().optional().describe("Single emoji prefix (e.g. '⏳', '🧪')"),
+          card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
+        },
+        async (args) => {
+          let cardId = args.card_id;
+          if (!cardId) {
+            if (!getChatId) return error("Chat context not available — pass card_id explicitly");
+            cardId = getChatCardId(getChatId());
+            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
+          }
+
+          const card = updateCard(cardId, { status: args.status || null, statusEmoji: args.emoji || null });
+          if (!card) return error(`Card "${cardId}" not found`);
+
+          sessionRegistry.notifyMetadata(card.id, { cardEvent: "status" });
+          return {
+            content: [
+              { type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, status: card.status ?? null, emoji: card.statusEmoji ?? null }) },
+            ],
+          };
+        },
+      ),
+
+      defineTool(
+        "add_chat_to_card",
+        "Assign the current chat to an existing open card (ticket). Future chats and jobs spawned from this chat inherit the membership.",
+        {
+          card_id: z.string().describe("The card id to join"),
+        },
+        async (args) => {
+          if (!getChatId) return error("Chat context not available");
+          const card = getCard(args.card_id);
+          if (!card) return error(`Card "${args.card_id}" not found`);
+          if (card.lifecycle === "closed") return error(`Card "${args.card_id}" is closed — the user can reopen it from the board`);
+
+          const chatId = getChatId();
+          const ok = setChatCardMembership(chatId, card.id);
+          if (!ok) return error("Chat not found — assignment may not be available until the session is fully initialized");
+
+          return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, chatId, cardId: card.id, cardTitle: card.title }) }] };
         },
       ),
 
@@ -1298,6 +1437,7 @@ export function buildCallboardToolsSpec(
               return agentAlias ? { kind: "agent", ref: agentAlias } : { kind: "chat", ref: getChatId?.() };
             },
             via: "chat",
+            ...(getChatId && { getChatId }),
           })
         : []),
 

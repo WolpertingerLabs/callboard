@@ -754,6 +754,12 @@ interface SendMessageOptions {
    * Only honored for new chats, and only when parentage resolves.
    */
   chatRole?: string;
+  /**
+   * Card (ticket) to attach the new chat to — stamps `cardId` into
+   * metadata so the chat shows as a member on the /board view. Only
+   * honored for new chats; wins over a parent's inherited cardId.
+   */
+  cardId?: string;
 }
 
 /** Default number of times a requiring session is nudged to continue before giving up. */
@@ -818,7 +824,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(opts.triggered && { triggered: true }),
       ...(opts.triggeredBy && { triggeredBy: opts.triggeredBy }),
       // Tag job-step chats so the UI can badge them and link to the run.
-      ...(opts.jobContext && { jobRunId: opts.jobContext.runId, jobStepId: opts.jobContext.stepId }),
+      // Runs spawned on a card pass their cardId through so step chats
+      // become card members (board rollup + inheritance for their children).
+      ...(opts.jobContext && {
+        jobRunId: opts.jobContext.runId,
+        jobStepId: opts.jobContext.stepId,
+        ...(opts.jobContext.cardId && { cardId: opts.jobContext.cardId }),
+      }),
+      // Attach the chat to a card (ticket) when spawned on one.
+      ...(opts.cardId && { cardId: opts.cardId }),
       // Pin the provider for the lifetime of this chat. Once written here,
       // the metadata-routing block below sees it and getAgentProvider()
       // returns the matching adapter for every subsequent message in the
@@ -857,6 +871,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         initialMetadata.parentChatId = lineage.parentChatId;
         initialMetadata.rootChatId = lineage.rootChatId;
         if (opts.chatRole) initialMetadata.chatRole = opts.chatRole.slice(0, 40);
+        // Children work the same ticket as their parent unless the spawner
+        // said otherwise (explicit opts.cardId above wins).
+        if (lineage.cardId && !initialMetadata.cardId) initialMetadata.cardId = lineage.cardId;
       }
     }
     // Record initial branch for drift detection on subsequent messages

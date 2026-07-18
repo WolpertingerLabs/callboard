@@ -56,6 +56,7 @@ import { mcpToolsRouter } from "./routes/mcp-tools.js";
 import { openRouterRouter } from "./routes/openrouter.js";
 import { codexRouter } from "./routes/codex.js";
 import { jobsRouter } from "./routes/jobs.js";
+import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
@@ -213,6 +214,7 @@ app.use("/api/mcp-tools", mcpToolsRouter);
 app.use("/api/openrouter", openRouterRouter);
 app.use("/api/codex", codexRouter);
 app.use("/api/jobs", jobsRouter);
+app.use("/api/cards", cardsRouter);
 app.use("/api/api-keys", apiKeysRouter);
 
 // Instance name endpoints (requires auth)

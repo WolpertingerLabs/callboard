@@ -56,6 +56,15 @@ import type {
   JobRunListItem,
   JobRunStatus,
   JobRunHistoryEntry,
+  Card,
+  CardPayload,
+  CardPatch,
+  CardSummary,
+  CardRollupState,
+  CardMemberChat,
+  CardMemberRun,
+  CardListResponse,
+  CardResponse,
 } from "shared/types/index.js";
 
 export type {
@@ -116,6 +125,15 @@ export type {
   JobRunListItem,
   JobRunStatus,
   JobRunHistoryEntry,
+  Card,
+  CardPayload,
+  CardPatch,
+  CardSummary,
+  CardRollupState,
+  CardMemberChat,
+  CardMemberRun,
+  CardListResponse,
+  CardResponse,
 };
 
 const BASE = "/api";
@@ -135,6 +153,7 @@ export async function listChats(
   excludeTriggered?: boolean,
   cached?: boolean,
   includeLineage?: boolean,
+  boardInbox?: boolean,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -143,6 +162,7 @@ export async function listChats(
   if (excludeTriggered) params.append("excludeTriggered", "true");
   if (cached === false) params.append("cached", "false");
   if (includeLineage) params.append("includeLineage", "true");
+  if (boardInbox) params.append("boardInbox", "true");
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");
@@ -203,6 +223,63 @@ export async function dismissSummon(id: string): Promise<Chat> {
     body: JSON.stringify({ dismiss: true }),
   });
   await assertOk(res, "Failed to dismiss summon");
+  return res.json();
+}
+
+// ── Cards (board view) ──────────────────────────────────────────────
+
+export async function listCards(): Promise<CardListResponse> {
+  const res = await fetch(`${BASE}/cards`);
+  await assertOk(res, "Failed to list cards");
+  return res.json();
+}
+
+export async function getCard(id: string): Promise<CardResponse> {
+  const res = await fetch(`${BASE}/cards/${id}`);
+  await assertOk(res, "Failed to get card");
+  return res.json();
+}
+
+/** Create a card; when chatId is given the chat is assigned as its first member. */
+export async function createCard(payload: CardPayload, chatId?: string): Promise<CardResponse> {
+  const res = await fetch(`${BASE}/cards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, ...(chatId && { chatId }) }),
+  });
+  await assertOk(res, "Failed to create card");
+  return res.json();
+}
+
+export async function updateCard(id: string, patch: CardPatch): Promise<CardResponse> {
+  const res = await fetch(`${BASE}/cards/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  await assertOk(res, "Failed to update card");
+  return res.json();
+}
+
+/** Assign a chat to a card, or unassign with cardId: null. */
+export async function assignChatToCard(chatId: string, cardId: string | null): Promise<{ success: boolean; cardId: string | null }> {
+  const res = await fetch(`${BASE}/chats/${chatId}/card`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cardId }),
+  });
+  await assertOk(res, "Failed to assign chat to card");
+  return res.json();
+}
+
+/** Hide (or restore) a chat in the board inbox — affects no other view. */
+export async function dismissFromBoard(chatId: string, dismissed: boolean): Promise<{ success: boolean; dismissed: boolean }> {
+  const res = await fetch(`${BASE}/chats/${chatId}/board`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dismissed }),
+  });
+  await assertOk(res, "Failed to update board dismissal");
   return res.json();
 }
 

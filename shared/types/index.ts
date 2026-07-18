@@ -15,6 +15,19 @@ export type {
 
 export type { Chat, ChatListResponse, FolderSummary, FolderListResponse, ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "./chat.js";
 
+export type {
+  Card,
+  CardPayload,
+  CardPatch,
+  CardLifecycle,
+  CardRollupState,
+  CardMemberChat,
+  CardMemberRun,
+  CardSummary,
+  CardListResponse,
+  CardResponse,
+} from "./card.js";
+
 export type { ParsedMessage } from "./message.js";
 
 export type { StoredImage, ImageUploadResult } from "./image.js";

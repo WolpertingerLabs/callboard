@@ -8,27 +8,20 @@ import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
+import { getCard } from "../services/card-store.js";
+import { setChatCardMembership, setBoardDismissed } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { createLogger } from "../utils/logger.js";
 import type { FolderSummary } from "shared/types/index.js";
+// Chat-list response cache lives in a standalone module so services can
+// invalidate it without closing an import cycle back through this route.
+import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
+export { clearChatListCache };
 
 const log = createLogger("chats");
 
 export const chatsRouter = Router();
-
-// Cache for chat list responses (stale-while-revalidate)
-interface CachedChatListResponse {
-  data: { chats: any[]; hasMore: boolean; total: number; windowRows: number };
-  createdAt: number;
-}
-const chatListCache = new Map<string, CachedChatListResponse>();
-const CHAT_LIST_CACHE_TTL = 5_000; // 5 seconds — fresh
-const CHAT_LIST_CACHE_MAX_AGE = 300_000; // 5 minutes — serve stale
-
-export function clearChatListCache() {
-  chatListCache.clear();
-}
 
 // Cache for git info to avoid repeated expensive operations
 const gitInfoCache = new Map<string, { isGitRepo: boolean; branch?: string; cachedAt: number }>();
@@ -257,7 +250,7 @@ chatsRouter.get("/", (req, res) => {
   try {
     // Check cache (stale-while-revalidate)
     const bypassCache = req.query.cached === "false";
-    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}`;
+    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.boardInbox || ""}`;
     const now = Date.now();
 
     if (!bypassCache) {
@@ -306,6 +299,10 @@ chatsRouter.get("/", (req, res) => {
     const bookmarkedFilter = req.query.bookmarked === "true";
     const excludeTriggered = req.query.excludeTriggered === "true";
     const includeLineage = req.query.includeLineage === "true";
+    // Board inbox: card-less, non-dismissed chats. Filtered server-side (like
+    // excludeTriggered) so a fixed LIMIT window can't fill up with already-
+    // triaged chats and starve the inbox of un-triaged ones.
+    const boardInbox = req.query.boardInbox === "true";
 
     // Build set of bookmarked session IDs when filtering
     let bookmarkedSessionIds: Set<string> | null = null;
@@ -326,7 +323,7 @@ chatsRouter.get("/", (req, res) => {
     // flag lives in chat file metadata). For bookmarks, fetch all. For excludeTriggered,
     // over-fetch to ensure we get enough non-triggered results. includeLineage also
     // needs the full session list so out-of-window tree relatives can be augmented.
-    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage;
+    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || boardInbox;
     const fetchLimit = needsPostFilter ? 9999 : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: paginatedSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
@@ -403,6 +400,16 @@ chatsRouter.get("/", (req, res) => {
       }
     };
 
+    /** Board inbox excludes chats already on a card or dismissed from the inbox. */
+    const isTriagedForBoard = (chat: any): boolean => {
+      try {
+        const meta = JSON.parse(chat.metadata || "{}");
+        return (typeof meta.cardId === "string" && !!meta.cardId) || meta.boardDismissed === true;
+      } catch {
+        return false;
+      }
+    };
+
     // Lineage index over file-storage chats — built only when the tree
     // view asks for lineage; shared by row-based pagination and the
     // lineage-append pass below. One metadata parse per chat, memoized
@@ -446,12 +453,18 @@ chatsRouter.get("/", (req, res) => {
       if (excludeTriggered) {
         augmented = augmented.filter((c) => !isTriggered(c));
       }
+      if (boardInbox) {
+        augmented = augmented.filter((c) => !isTriagedForBoard(c));
+      }
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
-    } else if (excludeTriggered) {
-      // Augment all fetched sessions, filter out triggered, then paginate
-      const allAugmented = paginatedSessions.map(augmentSession);
-      const nonTriggered = allAugmented.filter((c) => !isTriggered(c));
-      ({ page: chatsFromLogs, total, windowRows } = paginateWindow(nonTriggered, (c) => c.id));
+    } else if (excludeTriggered || boardInbox) {
+      // Augment all fetched sessions, drop triggered and/or already-triaged
+      // (carded/dismissed) chats, then paginate — so the window is filled
+      // from what's left instead of draining as recent chats get filed.
+      let augmented = paginatedSessions.map(augmentSession);
+      if (excludeTriggered) augmented = augmented.filter((c) => !isTriggered(c));
+      if (boardInbox) augmented = augmented.filter((c) => !isTriagedForBoard(c));
+      ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
     } else if (includeLineage) {
       // Sessions were over-fetched for lineage lookup — paginate manually
       // (by row), augmenting only the windowed sessions.
@@ -894,6 +907,57 @@ chatsRouter.patch("/:id/read", (req, res) => {
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
     res.status(500).json({ error: "Failed to mark chat as read", details: err.message });
+  }
+});
+
+// Assign a chat to a card (or unassign with cardId: null)
+chatsRouter.patch("/:id/card", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Assign or unassign a chat to a card'
+  // #swagger.description = 'Sets metadata.cardId, making the chat a member of the card on the board view. Pass cardId: null to unassign.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[404] = { description: "Chat or card not found" } */
+  /* #swagger.responses[409] = { description: "Card is closed" } */
+  const { cardId } = req.body ?? {};
+  if (cardId !== null && (typeof cardId !== "string" || !cardId)) {
+    return res.status(400).json({ error: "cardId must be a non-empty string or null" });
+  }
+  try {
+    if (typeof cardId === "string") {
+      const card = getCard(cardId);
+      if (!card) return res.status(404).json({ error: "Card not found" });
+      if (card.lifecycle === "closed") return res.status(409).json({ error: "Card is closed — reopen it to add chats" });
+    }
+
+    // View-only write: preserves updated_at and clears the chat-list cache.
+    const ok = setChatCardMembership(req.params.id, cardId);
+    if (!ok) return res.status(404).json({ error: "Chat not found" });
+    res.json({ success: true, cardId });
+  } catch (err: any) {
+    log.error(`Error assigning chat to card: ${err}`);
+    res.status(500).json({ error: "Failed to assign chat to card", details: err.message });
+  }
+});
+
+// Dismiss a chat from the board inbox (view-only flag; touches nothing else)
+chatsRouter.patch("/:id/board", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Dismiss or restore a chat in the board inbox'
+  // #swagger.description = 'Sets metadata.boardDismissed. Dismissed chats are hidden from the board inbox only — all other views are unaffected.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const dismissed = req.body?.dismissed === true;
+  try {
+    // View-only write: preserves updated_at so dismissing never resurfaces
+    // the chat as unread or reorders it elsewhere.
+    const ok = setBoardDismissed(req.params.id, dismissed);
+    if (!ok) return res.status(404).json({ error: "Chat not found" });
+    res.json({ success: true, dismissed });
+  } catch (err: any) {
+    log.error(`Error updating board dismissal: ${err}`);
+    res.status(500).json({ error: "Failed to update board dismissal", details: err.message });
   }
 });
 
