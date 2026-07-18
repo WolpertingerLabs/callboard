@@ -6,6 +6,12 @@ interface InlineEditProps {
   placeholder?: string;
   /** Render a textarea instead of a single-line input. */
   multiline?: boolean;
+  /** Mount straight into the editor — for callers whose display state isn't clickable. */
+  startEditing?: boolean;
+  /** Fired when editing ends, whether committed or cancelled. */
+  onEditingEnd?: () => void;
+  /** Caps the editor, so an over-limit edit can't round-trip to a 400. */
+  maxLength?: number;
   style?: CSSProperties;
   inputStyle?: CSSProperties;
 }
@@ -14,8 +20,8 @@ interface InlineEditProps {
  * Click-to-edit text. Enter (or blur) commits, Escape cancels. The multiline
  * variant commits on blur only — Enter inserts newlines.
  */
-export default function InlineEdit({ value, onSave, placeholder, multiline, style, inputStyle }: InlineEditProps) {
-  const [editing, setEditing] = useState(false);
+export default function InlineEdit({ value, onSave, placeholder, multiline, startEditing, onEditingEnd, maxLength, style, inputStyle }: InlineEditProps) {
+  const [editing, setEditing] = useState(startEditing ?? false);
   const [draft, setDraft] = useState(value);
   const ref = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
 
@@ -25,12 +31,14 @@ export default function InlineEdit({ value, onSave, placeholder, multiline, styl
 
   const commit = () => {
     setEditing(false);
+    onEditingEnd?.();
     if (draft !== value) onSave(draft);
   };
 
   const cancel = () => {
     setDraft(value);
     setEditing(false);
+    onEditingEnd?.();
   };
 
   if (!editing) {
@@ -67,6 +75,7 @@ export default function InlineEdit({ value, onSave, placeholder, multiline, styl
         }}
         value={draft}
         rows={Math.max(4, draft.split("\n").length + 1)}
+        maxLength={maxLength}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -84,6 +93,7 @@ export default function InlineEdit({ value, onSave, placeholder, multiline, styl
         ref.current = el;
       }}
       value={draft}
+      maxLength={maxLength}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {

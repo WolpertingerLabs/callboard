@@ -7,11 +7,16 @@ import InlineEdit from "./InlineEdit";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
-import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow } from "lucide-react";
+import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus } from "lucide-react";
+
+/** Mirrors the store-side limits in backend/src/services/card-store.ts. */
+const METADATA_KEY_MAX = 64;
+const METADATA_VALUE_MAX = 2048;
 
 interface CardDrawerProps {
   card: CardSummary;
-  onPatch: (patch: CardPatch) => void;
+  /** Resolves false when the patch was rejected — editors stay open so input isn't lost. */
+  onPatch: (patch: CardPatch) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -155,6 +160,9 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
               </div>
             )}
           </div>
+
+          {/* Metadata */}
+          <MetadataSection metadata={card.metadata} onPatch={onPatch} />
 
           {/* Member job runs */}
           {card.memberRuns.length > 0 && (
@@ -314,6 +322,214 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * Arbitrary key→value cross-references (PR URLs, ticket ids, conversation
+ * links). Every mutation is a per-key patch — `{ [key]: value }` to set,
+ * `{ [key]: null }` to delete — so concurrent agent writes to other keys
+ * survive.
+ */
+function MetadataSection({ metadata, onPatch }: { metadata?: Record<string, string>; onPatch: (patch: CardPatch) => Promise<boolean> }) {
+  const [adding, setAdding] = useState(false);
+  const entries = Object.entries(metadata ?? {});
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Metadata</span>
+        <button
+          onClick={() => setAdding((v) => !v)}
+          title="Add a field"
+          style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)" }}
+        >
+          <Plus size={12} />
+        </button>
+      </div>
+
+      {entries.length === 0 && !adding && (
+        <div onClick={() => setAdding(true)} style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", cursor: "pointer" }}>
+          Link a PR, ticket, or conversation…
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {entries.map(([key, value]) => (
+          <div
+            key={key}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--board-item-border)",
+              background: "var(--board-item-bg)",
+              fontSize: 12,
+            }}
+          >
+            <span title={key} style={{ color: "var(--text-muted)", flexShrink: 0, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {key}
+            </span>
+            <div style={{ flex: 1, minWidth: 0, color: "var(--text)" }}>
+              <MetadataValue value={value} onSave={(next) => onPatch({ metadata: { [key]: next.trim() || null } })} />
+            </div>
+            <button
+              onClick={() => onPatch({ metadata: { [key]: null } })}
+              title={`Remove "${key}"`}
+              style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)", flexShrink: 0 }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {adding && (
+        <AddMetadataField
+          existingKeys={entries.map(([key]) => key)}
+          // Close only once the patch lands — a rejected add (entry cap,
+          // over-limit value) would otherwise discard what the user typed.
+          onAdd={async (key, value) => {
+            if (await onPatch({ metadata: { [key]: value } })) setAdding(false);
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** URL values render as links; anything else is click-to-edit text. */
+function MetadataValue({ value, onSave }: { value: string; onSave: (value: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const isUrl = /^https?:\/\//.test(value);
+
+  if (isUrl && !editing) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        <a
+          href={value}
+          target="_blank"
+          rel="noreferrer"
+          title={value}
+          style={{ color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          {value}
+        </a>
+        <button onClick={() => setEditing(true)} title="Edit value" style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)", flexShrink: 0 }}>
+          <Pencil size={10} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <InlineEdit
+      value={value}
+      onSave={onSave}
+      // A URL row's display state is a link, so the pencil has to open the
+      // editor directly; ending the edit returns it to link rendering.
+      startEditing={editing}
+      onEditingEnd={() => setEditing(false)}
+      maxLength={METADATA_VALUE_MAX}
+      placeholder="Empty — click to set"
+      style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+      inputStyle={{ fontSize: 12 }}
+    />
+  );
+}
+
+/** Key + value inputs for a new entry, with client-side empty/duplicate rejection. */
+function AddMetadataField({ existingKeys, onAdd, onCancel }: { existingKeys: string[]; onAdd: (key: string, value: string) => Promise<void>; onCancel: () => void }) {
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const trimmedKey = key.trim();
+  const trimmedValue = value.trim();
+  const hint = !trimmedKey
+    ? key
+      ? "Key can't be blank."
+      : null
+    : existingKeys.includes(trimmedKey)
+      ? `"${trimmedKey}" already exists — edit it above.`
+      : !trimmedValue && value
+        ? "Value can't be blank."
+        : null;
+  // A blank value would persist an empty string, which the edit path treats as
+  // a delete — so there is no way to add an entry we couldn't then clear.
+  const canAdd = trimmedKey.length > 0 && trimmedValue.length > 0 && !hint && !saving;
+
+  // The parent closes this editor only on success, so a rejected add leaves the
+  // typed key and value in place to correct.
+  const submit = async () => {
+    if (!canAdd) return;
+    setSaving(true);
+    try {
+      await onAdd(trimmedKey, trimmedValue);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    background: "var(--bg)",
+    color: "var(--text)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    padding: "4px 8px",
+    fontSize: 12,
+    minWidth: 0,
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+      <div style={{ display: "flex", gap: 6 }}>
+        <input
+          autoFocus
+          value={key}
+          maxLength={METADATA_KEY_MAX}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && onCancel()}
+          placeholder="key (e.g. github-pr)"
+          style={{ ...inputStyle, flex: "0 0 40%" }}
+        />
+        <input
+          value={value}
+          maxLength={METADATA_VALUE_MAX}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void submit();
+            if (e.key === "Escape") onCancel();
+          }}
+          placeholder="value"
+          style={{ ...inputStyle, flex: 1 }}
+        />
+      </div>
+      {hint && <div style={{ fontSize: 11, color: "var(--danger)" }}>{hint}</div>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ background: "transparent", fontSize: 12, color: "var(--text-muted)", padding: "4px 8px", cursor: "pointer" }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => void submit()}
+          disabled={!canAdd}
+          style={{
+            fontSize: 12,
+            background: "var(--accent)",
+            color: "var(--text-on-accent)",
+            padding: "4px 12px",
+            borderRadius: 6,
+            cursor: canAdd ? "pointer" : "not-allowed",
+            opacity: canAdd ? 1 : 0.5,
+          }}
+        >
+          Add
+        </button>
+      </div>
+    </div>
   );
 }
 

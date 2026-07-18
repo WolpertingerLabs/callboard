@@ -6,14 +6,24 @@
  * top-level dynamic import) — each test file gets its own throwaway data dir.
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-card-store-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
-const { createCard, getCard, listCards, updateCard, cardExists, CARD_TITLE_MAX } = await import("./card-store.js");
+const {
+  createCard,
+  getCard,
+  listCards,
+  updateCard,
+  cardExists,
+  CARD_TITLE_MAX,
+  CARD_METADATA_KEY_MAX,
+  CARD_METADATA_VALUE_MAX,
+  CARD_METADATA_MAX_ENTRIES,
+} = await import("./card-store.js");
 
 const cardsDir = join(tmpRoot, "cards");
 
@@ -97,6 +107,124 @@ describe("updateCard", () => {
     const card = createCard({ title: "Keep" });
     expect(() => updateCard(card.id, { title: "  " })).toThrow(/title/i);
     expect(getCard(card.id)!.title).toBe("Keep");
+  });
+});
+
+describe("updateCard metadata", () => {
+  it("is absent on a freshly created card", () => {
+    expect(createCard({ title: "T" }).metadata).toBeUndefined();
+  });
+
+  it("merges per key: sets, overwrites, and leaves other keys untouched", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { linear: "ENG-1", slack: "https://s/1" } });
+
+    // A patch naming only `linear` must not disturb `slack`.
+    const merged = updateCard(card.id, { metadata: { linear: "ENG-2", "github-pr": "https://gh/42" } })!;
+    expect(merged.metadata).toEqual({
+      linear: "ENG-2",
+      slack: "https://s/1",
+      "github-pr": "https://gh/42",
+    });
+  });
+
+  it("null deletes a single key and prunes the field once empty", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { a: "1", b: "2" } });
+
+    expect(updateCard(card.id, { metadata: { a: null } })!.metadata).toEqual({ b: "2" });
+
+    const emptied = updateCard(card.id, { metadata: { b: null } })!;
+    expect(emptied.metadata).toBeUndefined();
+    // Never persisted as `{}` — the on-disk card simply lacks the key.
+    expect(JSON.parse(readFileSync(join(cardsDir, `${card.id}.json`), "utf8"))).not.toHaveProperty("metadata");
+  });
+
+  it("deleting a key that was never set is a no-op", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { a: "1" } });
+    expect(updateCard(card.id, { metadata: { nope: null } })!.metadata).toEqual({ a: "1" });
+  });
+
+  it("trims keys and keeps values verbatim", () => {
+    const card = createCard({ title: "T" });
+    const updated = updateCard(card.id, { metadata: { "  linear  ": "  ENG-1  " } })!;
+    expect(updated.metadata).toEqual({ linear: "  ENG-1  " });
+  });
+
+  it("accepts empty-string values (distinct from null deletion)", () => {
+    const card = createCard({ title: "T" });
+    expect(updateCard(card.id, { metadata: { note: "" } })!.metadata).toEqual({ note: "" });
+  });
+
+  it("leaves metadata alone when the patch omits it", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { a: "1" } });
+    expect(updateCard(card.id, { title: "New" })!.metadata).toEqual({ a: "1" });
+  });
+
+  it("reads legacy cards with no metadata field and adds entries to them", () => {
+    const card = createCard({ title: "T" });
+    // Simulate a card written before `metadata` existed.
+    expect(getCard(card.id)!.metadata).toBeUndefined();
+    expect(updateCard(card.id, { metadata: { a: "1" } })!.metadata).toEqual({ a: "1" });
+  });
+
+  it("rejects __proto__ rather than reporting success for a silent no-op", () => {
+    const card = createCard({ title: "T" });
+    // The merge target has no own `__proto__`, so assigning it would hit the
+    // inherited setter and write nothing while still returning 200.
+    // Built via JSON.parse, not a literal: `{ __proto__: ... }` is prototype-
+    // setter syntax and has no own key, whereas a real request body does.
+    const metadata = JSON.parse('{"__proto__":"v"}') as Record<string, string>;
+    expect(() => updateCard(card.id, { metadata })).toThrow(/__proto__/);
+    expect(getCard(card.id)!.metadata).toBeUndefined();
+  });
+
+  describe("limits", () => {
+    it("rejects blank keys, over-long keys, and over-long values", () => {
+      const card = createCard({ title: "T" });
+      expect(() => updateCard(card.id, { metadata: { "   ": "v" } })).toThrow(/non-empty/i);
+      expect(() => updateCard(card.id, { metadata: { ["k".repeat(CARD_METADATA_KEY_MAX + 1)]: "v" } })).toThrow(
+        /key/i,
+      );
+      expect(() => updateCard(card.id, { metadata: { k: "v".repeat(CARD_METADATA_VALUE_MAX + 1) } })).toThrow(
+        /value/i,
+      );
+    });
+
+    it("accepts keys and values exactly at the limit", () => {
+      const card = createCard({ title: "T" });
+      const key = "k".repeat(CARD_METADATA_KEY_MAX);
+      const value = "v".repeat(CARD_METADATA_VALUE_MAX);
+      expect(updateCard(card.id, { metadata: { [key]: value } })!.metadata![key]).toBe(value);
+    });
+
+    it("rejects non-string values", () => {
+      const card = createCard({ title: "T" });
+      expect(() => updateCard(card.id, { metadata: { k: 42 as unknown as string } })).toThrow(/string or null/i);
+    });
+
+    it("caps total entries after the merge", () => {
+      const card = createCard({ title: "T" });
+      const full: Record<string, string> = {};
+      for (let i = 0; i < CARD_METADATA_MAX_ENTRIES; i++) full[`k${i}`] = "v";
+      updateCard(card.id, { metadata: full });
+
+      expect(() => updateCard(card.id, { metadata: { overflow: "v" } })).toThrow(/50 entries/);
+      // Overwriting an existing key stays within the cap.
+      expect(updateCard(card.id, { metadata: { k0: "changed" } })!.metadata!.k0).toBe("changed");
+    });
+
+    it("does not clobber the card when validation fails", () => {
+      const card = createCard({ title: "Keep" });
+      updateCard(card.id, { metadata: { a: "1" } });
+      expect(() => updateCard(card.id, { title: "Changed", metadata: { "": "v" } })).toThrow();
+
+      const onDisk = getCard(card.id)!;
+      expect(onDisk.title).toBe("Keep");
+      expect(onDisk.metadata).toEqual({ a: "1" });
+    });
   });
 });
 
