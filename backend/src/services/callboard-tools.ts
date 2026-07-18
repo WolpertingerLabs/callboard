@@ -476,6 +476,7 @@ export function buildCallboardToolsSpec(
               ...(c.closedAt && { closedAt: c.closedAt }),
               ...(c.status && { status: c.status }),
               ...(c.statusEmoji && { statusEmoji: c.statusEmoji }),
+              ...(c.metadata && Object.keys(c.metadata).length > 0 && { metadata: c.metadata }),
               ...(c.description && { description: c.description.length > 200 ? `${c.description.slice(0, 200)}…` : c.description }),
               updatedAt: c.updatedAt,
             }));
@@ -537,6 +538,38 @@ export function buildCallboardToolsSpec(
             content: [
               { type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, status: card.status ?? null, emoji: card.statusEmoji ?? null }) },
             ],
+          };
+        },
+      ),
+
+      defineTool(
+        "set_card_metadata",
+        "Set, update, or remove arbitrary key→value metadata on a card (ticket) — e.g. a GitHub PR url, Trello card link, Linear ticket id, Slack thread, or external conversation id. Entries merge with the card's existing metadata; pass an empty string value to remove a key. Shown in the card's drawer on the board. Defaults to the current chat's card.",
+        {
+          entries: z
+            .record(z.string(), z.string())
+            .describe('Key→value pairs to merge, e.g. {"github_pr": "https://github.com/org/repo/pull/42"}. An empty string value removes the key.'),
+          card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
+        },
+        async (args) => {
+          let cardId = args.card_id;
+          if (!cardId) {
+            if (!getChatId) return error("Chat context not available — pass card_id explicitly");
+            cardId = getChatCardId(getChatId());
+            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
+          }
+
+          let card;
+          try {
+            card = updateCard(cardId, { metadata: args.entries });
+          } catch (err: any) {
+            return error(err.message);
+          }
+          if (!card) return error(`Card "${cardId}" not found`);
+
+          sessionRegistry.notifyMetadata(card.id, { cardEvent: "metadata" });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, metadata: card.metadata ?? {} }) }],
           };
         },
       ),

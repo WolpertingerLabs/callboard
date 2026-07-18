@@ -20,6 +20,12 @@ export interface Card {
   /** Agent-settable narrative status (set_card_status tool), max 160 chars. */
   status?: string;
   statusEmoji?: string;
+  /**
+   * Arbitrary key→value annotations (GitHub PR url, Trello card link,
+   * Linear ticket id, Slack thread, …). Editable by both the user (board
+   * drawer) and agents (set_card_metadata tool). Absent when empty.
+   */
+  metadata?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,7 +37,11 @@ export interface CardPayload {
   emoji?: string;
 }
 
-/** Partial update; null clears the nullable narrative-status fields. */
+/**
+ * Partial update; null clears the nullable narrative-status fields.
+ * `metadata` uses merge-patch semantics: provided keys are set, keys with a
+ * null (or empty-string) value are removed, unmentioned keys are untouched.
+ */
 export interface CardPatch {
   title?: string;
   description?: string;
@@ -40,6 +50,7 @@ export interface CardPatch {
   status?: string | null;
   statusEmoji?: string | null;
   lifecycle?: CardLifecycle;
+  metadata?: Record<string, string | null>;
 }
 
 /**

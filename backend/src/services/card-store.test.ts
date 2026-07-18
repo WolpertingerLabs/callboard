@@ -13,7 +13,8 @@ import { join } from "node:path";
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-card-store-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
-const { createCard, getCard, listCards, updateCard, cardExists, CARD_TITLE_MAX } = await import("./card-store.js");
+const { createCard, getCard, listCards, updateCard, cardExists, CARD_TITLE_MAX, CARD_METADATA_MAX_ENTRIES, CARD_METADATA_KEY_MAX, CARD_METADATA_VALUE_MAX } =
+  await import("./card-store.js");
 
 const cardsDir = join(tmpRoot, "cards");
 
@@ -97,6 +98,62 @@ describe("updateCard", () => {
     const card = createCard({ title: "Keep" });
     expect(() => updateCard(card.id, { title: "  " })).toThrow(/title/i);
     expect(getCard(card.id)!.title).toBe("Keep");
+  });
+});
+
+describe("metadata", () => {
+  it("sets, merges, and preserves entries across unrelated patches", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { github_pr: "https://github.com/org/repo/pull/42" } });
+    updateCard(card.id, { metadata: { linear: "ENG-123" } });
+    updateCard(card.id, { title: "Renamed" });
+
+    const after = getCard(card.id)!;
+    expect(after.metadata).toEqual({ github_pr: "https://github.com/org/repo/pull/42", linear: "ENG-123" });
+  });
+
+  it("overwrites an existing key on re-set", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { pr: "old" } });
+    updateCard(card.id, { metadata: { pr: "new" } });
+    expect(getCard(card.id)!.metadata).toEqual({ pr: "new" });
+  });
+
+  it("null or blank value removes the key; field is dropped when the last entry goes", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { a: "1", b: "2" } });
+
+    updateCard(card.id, { metadata: { a: null } });
+    expect(getCard(card.id)!.metadata).toEqual({ b: "2" });
+
+    updateCard(card.id, { metadata: { b: "  " } });
+    expect(getCard(card.id)!.metadata).toBeUndefined();
+  });
+
+  it("trims keys and values", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { "  pr  ": "  https://x.example  " } });
+    expect(getCard(card.id)!.metadata).toEqual({ pr: "https://x.example" });
+  });
+
+  it("rejects blank keys, oversized keys/values, and the entry cap — without partial writes", () => {
+    const card = createCard({ title: "T" });
+    updateCard(card.id, { metadata: { keep: "me" } });
+
+    expect(() => updateCard(card.id, { metadata: { "   ": "x" } })).toThrow(/metadata key/i);
+    expect(() => updateCard(card.id, { metadata: { ["k".repeat(CARD_METADATA_KEY_MAX + 1)]: "x" } })).toThrow(/metadata key/i);
+    expect(() => updateCard(card.id, { metadata: { big: "v".repeat(CARD_METADATA_VALUE_MAX + 1) } })).toThrow(/metadata value/i);
+
+    const tooMany = Object.fromEntries(Array.from({ length: CARD_METADATA_MAX_ENTRIES + 1 }, (_, i) => [`k${i}`, "v"]));
+    expect(() => updateCard(card.id, { metadata: tooMany })).toThrow(/metadata entries/i);
+
+    expect(getCard(card.id)!.metadata).toEqual({ keep: "me" });
+  });
+
+  it("removing a missing key is a no-op, not an error", () => {
+    const card = createCard({ title: "T" });
+    const updated = updateCard(card.id, { metadata: { ghost: null } })!;
+    expect(updated.metadata).toBeUndefined();
   });
 });
 

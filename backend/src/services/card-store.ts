@@ -24,6 +24,9 @@ if (!existsSync(cardsDir)) mkdirSync(cardsDir, { recursive: true });
 
 export const CARD_TITLE_MAX = 200;
 export const CARD_STATUS_MAX = 160;
+export const CARD_METADATA_MAX_ENTRIES = 50;
+export const CARD_METADATA_KEY_MAX = 100;
+export const CARD_METADATA_VALUE_MAX = 2000;
 const DEFAULT_EMOJI = "🗂️";
 
 /**
@@ -97,9 +100,34 @@ export function createCard(payload: CardPayload): Card {
 }
 
 /**
+ * Merge a metadata patch into the card's existing entries. Keys are trimmed;
+ * a null or blank value removes the key. Throws on invalid keys, oversized
+ * values, or exceeding the entry cap — before anything is written.
+ */
+function mergeMetadata(existing: Record<string, string> | undefined, patch: Record<string, string | null>): Record<string, string> | undefined {
+  const merged: Record<string, string> = { ...existing };
+  for (const [rawKey, value] of Object.entries(patch)) {
+    const key = rawKey.trim();
+    if (!key) throw new Error("Metadata keys must be non-empty");
+    if (key.length > CARD_METADATA_KEY_MAX) throw new Error(`Metadata keys must be at most ${CARD_METADATA_KEY_MAX} characters`);
+    const trimmed = value?.trim();
+    if (!trimmed) {
+      delete merged[key];
+    } else {
+      if (trimmed.length > CARD_METADATA_VALUE_MAX) throw new Error(`Metadata values must be at most ${CARD_METADATA_VALUE_MAX} characters`);
+      merged[key] = trimmed;
+    }
+  }
+  const count = Object.keys(merged).length;
+  if (count > CARD_METADATA_MAX_ENTRIES) throw new Error(`Cards support at most ${CARD_METADATA_MAX_ENTRIES} metadata entries (would have ${count})`);
+  return count > 0 ? merged : undefined;
+}
+
+/**
  * Read-merge-write partial update. Only provided fields are applied;
  * `status`/`statusEmoji: null` clear the narrative status, lifecycle
- * transitions maintain `closedAt`. Returns null when the card is missing.
+ * transitions maintain `closedAt`, `metadata` merges per-key (null value
+ * removes the key). Returns null when the card is missing.
  */
 export function updateCard(id: string, patch: CardPatch): Card | null {
   const card = getCard(id);
@@ -120,6 +148,11 @@ export function updateCard(id: string, patch: CardPatch): Card | null {
   if (patch.statusEmoji !== undefined) {
     if (patch.statusEmoji === null || !patch.statusEmoji.trim()) delete card.statusEmoji;
     else card.statusEmoji = patch.statusEmoji;
+  }
+  if (patch.metadata !== undefined) {
+    const merged = mergeMetadata(card.metadata, patch.metadata);
+    if (merged) card.metadata = merged;
+    else delete card.metadata;
   }
   if (patch.lifecycle !== undefined && patch.lifecycle !== card.lifecycle) {
     card.lifecycle = patch.lifecycle;

@@ -158,6 +158,23 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     category: "platform",
   },
   {
+    name: "set_card_metadata",
+    qualifiedName: "mcp__callboard-tools__set_card_metadata",
+    description: "Set, update, or remove arbitrary key→value metadata on a card (PR urls, ticket ids, external links).",
+    parameters: [
+      {
+        name: "entries",
+        type: "object",
+        description: "Key→value pairs to merge into the card's metadata. An empty string value removes the key.",
+        required: true,
+      },
+      { name: "card_id", type: "string", description: "Target card id (default: the current chat's card)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
     name: "add_chat_to_card",
     qualifiedName: "mcp__callboard-tools__add_chat_to_card",
     description: "Assign the current chat to an existing open card (ticket).",

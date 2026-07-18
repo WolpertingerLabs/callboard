@@ -7,7 +7,7 @@ import InlineEdit from "./InlineEdit";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
-import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow } from "lucide-react";
+import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, ExternalLink } from "lucide-react";
 
 interface CardDrawerProps {
   card: CardSummary;
@@ -155,6 +155,9 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
               </div>
             )}
           </div>
+
+          {/* Arbitrary key→value metadata (PR urls, ticket ids, …) */}
+          <MetadataSection metadata={card.metadata} onPatch={onPatch} />
 
           {/* Member job runs */}
           {card.memberRuns.length > 0 && (
@@ -314,6 +317,232 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
         </div>
       </div>
     </>
+  );
+}
+
+const URL_RE = /^https?:\/\/\S+$/i;
+
+/**
+ * Arbitrary key→value annotations (GitHub PR url, Linear ticket id, …).
+ * Values that look like urls render as links; everything is editable inline.
+ * Removal and edits go through the merge-patch `metadata` field — a null
+ * (or blank) value deletes the key server-side.
+ */
+function MetadataSection({ metadata, onPatch }: { metadata?: Record<string, string>; onPatch: (patch: CardPatch) => void }) {
+  const [adding, setAdding] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const entries = Object.entries(metadata ?? {}).sort(([a], [b]) => a.localeCompare(b));
+
+  const submitNew = () => {
+    if (!newKey.trim() || !newValue.trim()) return;
+    onPatch({ metadata: { [newKey.trim()]: newValue.trim() } });
+    setNewKey("");
+    setNewValue("");
+    setAdding(false);
+  };
+
+  if (entries.length === 0 && !adding) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Metadata</span>
+        <button
+          onClick={() => setAdding(true)}
+          title="Add a metadata entry (e.g. a PR url or ticket id)"
+          style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)" }}
+        >
+          <Plus size={12} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Metadata</span>
+        <button
+          onClick={() => setAdding((v) => !v)}
+          title="Add a metadata entry (e.g. a PR url or ticket id)"
+          style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)" }}
+        >
+          <Plus size={12} />
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {entries.map(([key, value]) => (
+          <MetadataRow key={key} name={key} value={value} onPatch={onPatch} />
+        ))}
+        {adding && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              padding: "8px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--accent)",
+              background: "var(--board-item-bg)",
+            }}
+          >
+            <input
+              autoFocus
+              value={newKey}
+              onChange={(e) => setNewKey(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setAdding(false)}
+              placeholder="Key (e.g. github_pr)"
+              style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", fontSize: 12 }}
+            />
+            <input
+              value={newValue}
+              onChange={(e) => setNewValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitNew();
+                if (e.key === "Escape") setAdding(false);
+              }}
+              placeholder="Value (url, ticket id, …)"
+              style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", fontSize: 12 }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setAdding(false)}
+                style={{ background: "transparent", fontSize: 12, color: "var(--text-muted)", padding: "2px 8px", cursor: "pointer" }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitNew}
+                disabled={!newKey.trim() || !newValue.trim()}
+                style={{
+                  fontSize: 12,
+                  background: "var(--accent)",
+                  color: "var(--text-on-accent)",
+                  padding: "2px 10px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  opacity: !newKey.trim() || !newValue.trim() ? 0.5 : 1,
+                }}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MetadataRow({ name, value, onPatch }: { name: string; value: string; onPatch: (patch: CardPatch) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const isUrl = URL_RE.test(value);
+
+  const commit = () => {
+    setEditing(false);
+    // Merge-patch: a blank value removes the key server-side.
+    if (draft.trim() !== value) onPatch({ metadata: { [name]: draft.trim() || null } });
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 10px",
+        borderRadius: 6,
+        border: "1px solid var(--board-item-border)",
+        background: "var(--board-item-bg)",
+        fontSize: 12,
+        minWidth: 0,
+      }}
+    >
+      <span
+        title={name}
+        style={{
+          color: "var(--text-muted)",
+          fontWeight: 600,
+          flexShrink: 0,
+          maxWidth: "40%",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {name}
+      </span>
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") {
+              setDraft(value);
+              setEditing(false);
+            }
+          }}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: "var(--bg)",
+            color: "var(--text)",
+            border: "1px solid var(--accent)",
+            borderRadius: 6,
+            padding: "2px 6px",
+            fontSize: 12,
+          }}
+        />
+      ) : (
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>
+          {isUrl ? (
+            <a
+              href={value}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={value}
+              style={{ color: "var(--accent)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%" }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</span>
+              <ExternalLink size={11} style={{ flexShrink: 0 }} />
+            </a>
+          ) : (
+            <span
+              title={value}
+              style={{ cursor: "text" }}
+              onClick={() => {
+                setDraft(value);
+                setEditing(true);
+              }}
+            >
+              {value}
+            </span>
+          )}
+        </span>
+      )}
+      {!editing && (
+        <button
+          onClick={() => {
+            setDraft(value);
+            setEditing(true);
+          }}
+          title="Edit value"
+          style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)" }}
+        >
+          <Pencil size={11} />
+        </button>
+      )}
+      <button
+        onClick={() => onPatch({ metadata: { [name]: null } })}
+        title="Remove this entry"
+        style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)" }}
+      >
+        <X size={11} />
+      </button>
+    </div>
   );
 }
 
