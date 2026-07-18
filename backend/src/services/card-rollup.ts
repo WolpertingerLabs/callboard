@@ -12,11 +12,19 @@
 import type { Card, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
+import { getSessionProviders } from "../agents/factory.js";
 
 export interface RollupDeps {
   isSessionActive: (chatId: string, sessionId: string) => boolean;
   /** The kind of input a chat is blocked on, or undefined when not waiting. */
   pendingKindOf: (chatId: string, sessionId: string) => CardPendingKind | undefined;
+  /**
+   * First-user-message preview for a chat whose metadata carries no title —
+   * the same fallback the sidebar shows, so untitled chats never render as
+   * "Untitled chat" on the board. Null when the session log can't be found
+   * or has no user message yet.
+   */
+  previewOf: (sessionId: string) => string | null;
 }
 
 const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
@@ -25,12 +33,31 @@ const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
   plan_review: "plan",
 };
 
+/**
+ * Previews by session ID. A session's first user message is immutable once
+ * written, so hits never go stale; misses (log not found / no user message
+ * yet) are not cached so they can resolve on a later rollup.
+ */
+const previewCache = new Map<string, string>();
+
 /** Production deps — same double-keyed lookups as chatStatus() in chat-lineage.ts. */
 export const ROLLUP_DEPS: RollupDeps = {
   isSessionActive: (chatId, sessionId) => sessionRegistry.has(chatId) || sessionRegistry.has(sessionId),
   pendingKindOf: (chatId, sessionId) => {
     const pending = getPendingRequest(chatId) ?? getPendingRequest(sessionId);
     return pending ? PENDING_KIND_BY_EVENT[pending.eventType] : undefined;
+  },
+  previewOf: (sessionId) => {
+    const cached = previewCache.get(sessionId);
+    if (cached !== undefined) return cached;
+    for (const provider of getSessionProviders()) {
+      const resolved = provider.resolveSession(sessionId);
+      if (!resolved) continue;
+      const preview = provider.getSessionPreview(resolved.logPath);
+      if (preview) previewCache.set(sessionId, preview);
+      return preview;
+    }
+    return null;
   },
 };
 
@@ -53,7 +80,10 @@ function metaCardId(meta: ChatMeta): string | undefined {
 }
 
 function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberChat {
-  const rawTitle = (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || null;
+  // metadata.preview is only stamped by the chats route at response time, so
+  // raw file-storage records won't have it — previewOf reads the session log.
+  const rawTitle =
+    (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || deps.previewOf(chat.session_id) || null;
   const title = typeof rawTitle === "string" ? rawTitle.replace(/\s+/g, " ").trim().slice(0, 120) : null;
   // A pending request outranks "ongoing": the session may still be
   // registered while it sits blocked on user input, and blocked-on-you is
