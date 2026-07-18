@@ -358,6 +358,66 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>, pa
   return run;
 }
 
+/** Every step-chat id a run has spawned: active session(s) plus history. */
+function collectRunChatIds(run: JobRun): string[] {
+  const ids: string[] = [];
+  if (run.activeStep?.chatId) ids.push(run.activeStep.chatId);
+  for (const branch of Object.values(run.activeStep?.parallel?.branches ?? {})) {
+    if (branch.chatId) ids.push(branch.chatId);
+  }
+  for (const entry of run.history) {
+    if (entry.chatId) ids.push(entry.chatId);
+  }
+  return ids;
+}
+
+/**
+ * Assign a card to a run's entire workflow tree: walk up to the root run,
+ * then down through every descendant. Each run's `cardId` is set and saved,
+ * so the runner's next fresh read propagates the card into newly spawned
+ * child runs and step-session metadata. Returns the updated run ids and
+ * every step-chat id seen across the tree (deduped) so the caller can stamp
+ * chat-side card membership retroactively; null when `runId` doesn't exist.
+ */
+export function assignCardToRunTree(runId: string, cardId: string): { runIds: string[]; chatIds: string[] } | null {
+  let root = getRun(runId);
+  if (!root) return null;
+  while (root.parentRunId) {
+    const parent = getRun(root.parentRunId);
+    if (!parent) break;
+    root = parent;
+  }
+
+  // Child links only point upward, so index every run's children in one scan.
+  const children = new Map<string, JobRun[]>();
+  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
+    try {
+      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
+      if (!run.parentRunId) continue;
+      const siblings = children.get(run.parentRunId) ?? [];
+      siblings.push(run);
+      children.set(run.parentRunId, siblings);
+    } catch (err: any) {
+      log.error(`Failed to read job run ${file}: ${err.message}`);
+    }
+  }
+
+  const runIds: string[] = [];
+  const chatIds = new Set<string>();
+  const queue: JobRun[] = [root];
+  while (queue.length > 0) {
+    const run = queue.shift()!;
+    if (run.cardId !== cardId) {
+      run.cardId = cardId;
+      saveRun(run);
+    }
+    runIds.push(run.runId);
+    for (const chatId of collectRunChatIds(run)) chatIds.add(chatId);
+    queue.push(...(children.get(run.runId) ?? []));
+  }
+  return { runIds, chatIds: [...chatIds] };
+}
+
 export function deleteRun(runId: string): boolean {
   const filepath = join(runsDir, `${runId}.json`);
   if (!existsSync(filepath)) return false;
