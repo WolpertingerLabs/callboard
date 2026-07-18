@@ -24,7 +24,18 @@ if (!existsSync(cardsDir)) mkdirSync(cardsDir, { recursive: true });
 
 export const CARD_TITLE_MAX = 200;
 export const CARD_STATUS_MAX = 160;
+export const CARD_METADATA_KEY_MAX = 64;
+export const CARD_METADATA_VALUE_MAX = 2048;
+export const CARD_METADATA_MAX_ENTRIES = 50;
 const DEFAULT_EMOJI = "🗂️";
+
+/** Thrown by {@link updateCard} on bad metadata; routes/tools map it to 400. */
+export class CardValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CardValidationError";
+  }
+}
 
 /**
  * Card ids we generate ({@link createCard}). Enforced on every read/write so a
@@ -97,9 +108,50 @@ export function createCard(payload: CardPayload): Card {
 }
 
 /**
+ * Merge a {@link CardPatch} metadata map onto a card's existing entries: each
+ * key is set to its value, `null` deletes it, absent keys are untouched. Keys
+ * are trimmed. Throws {@link CardValidationError} rather than silently
+ * truncating, since a clipped URL or ticket id is worse than a rejected write.
+ */
+function applyMetadataPatch(
+  current: Record<string, string> | undefined,
+  patch: Record<string, string | null>,
+): Record<string, string> {
+  if (typeof patch !== "object" || patch === null || Array.isArray(patch)) {
+    throw new CardValidationError("metadata must be an object");
+  }
+  const merged: Record<string, string> = { ...(current ?? {}) };
+
+  for (const [rawKey, value] of Object.entries(patch)) {
+    const key = rawKey.trim();
+    if (!key) throw new CardValidationError("metadata keys must be non-empty");
+    if (key.length > CARD_METADATA_KEY_MAX) {
+      throw new CardValidationError(`metadata key "${key.slice(0, 20)}…" exceeds ${CARD_METADATA_KEY_MAX} characters`);
+    }
+    if (value === null) {
+      delete merged[key];
+      continue;
+    }
+    if (typeof value !== "string") {
+      throw new CardValidationError(`metadata value for "${key}" must be a string or null`);
+    }
+    if (value.length > CARD_METADATA_VALUE_MAX) {
+      throw new CardValidationError(`metadata value for "${key}" exceeds ${CARD_METADATA_VALUE_MAX} characters`);
+    }
+    merged[key] = value;
+  }
+
+  if (Object.keys(merged).length > CARD_METADATA_MAX_ENTRIES) {
+    throw new CardValidationError(`metadata is limited to ${CARD_METADATA_MAX_ENTRIES} entries`);
+  }
+  return merged;
+}
+
+/**
  * Read-merge-write partial update. Only provided fields are applied;
  * `status`/`statusEmoji: null` clear the narrative status, lifecycle
- * transitions maintain `closedAt`. Returns null when the card is missing.
+ * transitions maintain `closedAt`, and `metadata` merges per key (see
+ * {@link applyMetadataPatch}). Returns null when the card is missing.
  */
 export function updateCard(id: string, patch: CardPatch): Card | null {
   const card = getCard(id);
@@ -120,6 +172,11 @@ export function updateCard(id: string, patch: CardPatch): Card | null {
   if (patch.statusEmoji !== undefined) {
     if (patch.statusEmoji === null || !patch.statusEmoji.trim()) delete card.statusEmoji;
     else card.statusEmoji = patch.statusEmoji;
+  }
+  if (patch.metadata !== undefined) {
+    const merged = applyMetadataPatch(card.metadata, patch.metadata);
+    if (Object.keys(merged).length === 0) delete card.metadata;
+    else card.metadata = merged;
   }
   if (patch.lifecycle !== undefined && patch.lifecycle !== card.lifecycle) {
     card.lifecycle = patch.lifecycle;

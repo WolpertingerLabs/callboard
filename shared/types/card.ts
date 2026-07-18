@@ -20,6 +20,13 @@ export interface Card {
   /** Agent-settable narrative status (set_card_status tool), max 160 chars. */
   status?: string;
   statusEmoji?: string;
+  /**
+   * Arbitrary key→value cross-references to external systems (PR URLs, ticket
+   * ids, conversation links). Absent — never `{}` — when the card has no
+   * entries, including on cards written before this field existed; read it as
+   * `card.metadata ?? {}`.
+   */
+  metadata?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,6 +47,13 @@ export interface CardPatch {
   status?: string | null;
   statusEmoji?: string | null;
   lifecycle?: CardLifecycle;
+  /**
+   * Per-key merge, not whole-object replace: each key present is set to its
+   * value, a `null` value deletes that key, and keys absent from the patch are
+   * left untouched — so a stale client can't wipe entries another writer just
+   * added.
+   */
+  metadata?: Record<string, string | null>;
 }
 
 /**
