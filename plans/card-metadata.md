@@ -102,7 +102,26 @@ In `frontend/src/components/board/CardDrawer.tsx`, add a **Metadata** section (b
 **Goal:** users can view, add, edit, and remove metadata entries in the CardDrawer.
 1. Metadata section in `CardDrawer.tsx` (rows, link rendering, InlineEdit values, remove buttons, add-field affordance) using theme variables only. — **landed** (0a3cf9a)
 2. Widened `CardPatch` typing through `api.ts` / `Board.tsx` as needed. — **landed** (no code changes needed; `api.ts updateCard` and `Board.tsx patchCard` pass `CardPatch` through whole, so the widened type flowed with a clean typecheck)
-3. Manual verification against the dev server (add/edit/remove as user; `set_card_metadata` from an agent chat; confirm live refetch updates the drawer).
+3. Manual verification against the dev server (add/edit/remove as user; `set_card_metadata` from an agent chat; confirm live refetch updates the drawer). — **landed**
+
+   Driven against a dev server on current HEAD (isolated `~/.callboard-dev` data dir), not a stale tree — 827 vitest tests, matching HEAD.
+
+   **`set_card_metadata` from real agent chats (MCP, not unit-level).** Three Claude sessions spawned via `POST /api/chats/new/message`, tool calls and results read back from their transcripts:
+   - Chat on a card, **no `card_id`** → resolved via `getChatCardId(getChatId())` to the owning card and returned `{"success":true,"cardId":"card-9a7a88a8-…"}`. Chat→card fallback confirmed.
+   - **`set` + `remove` in one call** → `linear` overwritten, `slack` added, `scratch` deleted, `github-pr` untouched. Per-key merge confirmed across two sequential agent calls.
+   - Chat **not** on a card, no `card_id` → `"This chat is not on a card — pass card_id explicitly or create_card first"`.
+   - Unknown `card_id` → `"Card \"card-does-not-exist-xyz\" not found"`.
+   - 100-char key → `updateCard` throw mapped to `"metadata key \"kkkk…\" exceeds 64 characters"`. `CardValidationError`→error mapping confirmed.
+   - Not reachable from a real chat: the `"Chat context not available"` branch fires only when `getChatId` is undefined, which cannot occur in a spawned session — it stays covered by inspection only.
+
+   **`notifyMetadata` broadcast → live refetch.** With the drawer open and untouched, an agent chat called `set_card_metadata`; the new row appeared in the drawer ~5.5s later with **0 page reloads**.
+
+   **Browser pass (Playwright, current HEAD)** — covers the paths cc0597b changed:
+   - Rejected add (card at the 50-entry cap) → server 400, **add editor stays open with the typed key and value intact**. This is the new `onPatch: Promise<boolean>` contract; previously the input was discarded.
+   - Blank and whitespace-only values → Add disabled with a `"Value can't be blank."` hint.
+   - Duplicate key → Add disabled with an `"already exists — edit it above."` hint.
+   - `__proto__` key → server 400 `"\"__proto__\" is not a valid metadata key"`, editor stays open with input preserved.
+   - Happy path add → 200, editor closes, URL value renders as an `_blank` link; remove button → 200, row gone.
 
 ## Design decisions & rejected alternatives
 
