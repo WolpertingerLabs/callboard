@@ -88,6 +88,7 @@ type MessageSender = (opts: {
   effort?: EffortLevel;
   jobContext?: JobContext;
   requireExplicitCompletion?: boolean;
+  chatTitle?: string;
 }) => Promise<EventEmitter>;
 
 interface JobRunnerDeps {
@@ -857,6 +858,11 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     yield { type: "user" as const, message: { role: "user" as const, content: prompt } };
   })();
 
+  // Deterministic chat title: triggered chats skip LLM title generation, so
+  // without this the step chats render as "untitled" on the card/board.
+  const stepDisplay = (step && "name" in step && step.name) || stepId;
+  const chatTitle = `${run.title || run.jobName} — ${stepDisplay}${opts.branchId ? ` (${opts.branchId})` : ""}`;
+
   const emitter = await deps().sendMessage({
     prompt: promptIterable,
     folder,
@@ -879,6 +885,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     // Nudge the step session to keep going until it reports via
     // complete_job_step (advisory sessions have no step result to report).
     ...(!opts.advisory && sessionFields?.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
+    chatTitle: chatTitle.slice(0, 120),
   });
 
   const chatId = await new Promise<string>((resolve, reject) => {
