@@ -91,7 +91,7 @@ export default function NewCardModal({ onCreate, onClose }: NewCardModalProps) {
         />
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button onClick={onClose} style={{ fontSize: 13, color: "var(--text-muted)", padding: "6px 10px", cursor: "pointer" }}>
+          <button onClick={onClose} style={{ background: "transparent", fontSize: 13, color: "var(--text-muted)", padding: "6px 10px", cursor: "pointer" }}>
             Cancel
           </button>
           <button

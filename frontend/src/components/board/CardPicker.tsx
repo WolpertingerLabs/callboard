@@ -119,7 +119,7 @@ export default function CardPicker({ cards, onSelect, onCreate, onClose }: CardP
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button onClick={onClose} style={{ fontSize: 13, color: "var(--text-muted)", padding: "4px 8px", cursor: "pointer" }}>
+          <button onClick={onClose} style={{ background: "transparent", fontSize: 13, color: "var(--text-muted)", padding: "4px 8px", cursor: "pointer" }}>
             Cancel
           </button>
         </div>
