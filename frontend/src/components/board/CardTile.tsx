@@ -1,5 +1,6 @@
 import type { CardSummary, CardRollupState } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
+import { needsYouLabel } from "./pendingLabels";
 import { MessageSquare, Pin } from "lucide-react";
 
 interface CardTileProps {
@@ -99,7 +100,7 @@ export default function CardTile({ card, onClick }: CardTileProps) {
               ...(live && { boxShadow: `0 0 5px ${rollupColor}` }),
             }}
           />
-          {closed ? "Closed" : ROLLUP_LABELS[card.rollup]}
+          {closed ? "Closed" : card.rollup === "needs_you" ? needsYouLabel(card) : ROLLUP_LABELS[card.rollup]}
         </span>
         {activeRun && !closed && (
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={activeRun.jobName}>

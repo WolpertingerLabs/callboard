@@ -21,6 +21,7 @@ export type {
   CardPatch,
   CardLifecycle,
   CardRollupState,
+  CardPendingKind,
   CardMemberChat,
   CardMemberRun,
   CardSummary,

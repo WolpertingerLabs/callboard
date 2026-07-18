@@ -20,7 +20,7 @@ afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-const IDLE_DEPS: RollupDeps = { isSessionActive: () => false, isWaiting: () => false };
+const IDLE_DEPS: RollupDeps = { isSessionActive: () => false, pendingKindOf: () => undefined };
 
 function card(overrides: Partial<Card> = {}): Card {
   return {
@@ -77,18 +77,37 @@ describe("rollup precedence", () => {
   });
 
   it("active when a member session is ongoing", () => {
-    const deps: RollupDeps = { isSessionActive: (id) => id === "chat-1", isWaiting: () => false };
+    const deps: RollupDeps = { isSessionActive: (id) => id === "chat-1", pendingKindOf: () => undefined };
     expect(rollupOf([card()], [chat()], [], deps).rollup).toBe("active");
   });
 
   it.each(["running", "sleeping", "waiting_child", "waiting_event"] as const)("job_running when a member run is %s, beating an active chat", (status) => {
-    const deps: RollupDeps = { isSessionActive: () => true, isWaiting: () => false };
+    const deps: RollupDeps = { isSessionActive: () => true, pendingKindOf: () => undefined };
     expect(rollupOf([card()], [chat()], [run({ status })], deps).rollup).toBe("job_running");
   });
 
   it("needs_you when a member chat is waiting, beating a running job", () => {
-    const deps: RollupDeps = { isSessionActive: () => false, isWaiting: (id) => id === "chat-1" };
+    const deps: RollupDeps = { isSessionActive: () => false, pendingKindOf: (id) => (id === "chat-1" ? "question" : undefined) };
     expect(rollupOf([card()], [chat()], [run({ status: "running" })], deps).rollup).toBe("needs_you");
+  });
+
+  it("a pending request outranks the chat's own live session", () => {
+    // A session blocked on approval is still in the registry — the board
+    // must show it as waiting, not active.
+    const deps: RollupDeps = { isSessionActive: () => true, pendingKindOf: () => "permission" };
+    const summary = rollupOf([card()], [chat()], [], deps);
+    expect(summary.rollup).toBe("needs_you");
+    expect(summary.memberChats[0].status).toBe("waiting");
+    expect(summary.memberChats[0].pendingKind).toBe("permission");
+  });
+
+  it.each(["permission", "question", "plan"] as const)("propagates pendingKind %s onto the member row", (kind) => {
+    const deps: RollupDeps = { isSessionActive: () => false, pendingKindOf: () => kind };
+    expect(rollupOf([card()], [chat()], [], deps).memberChats[0].pendingKind).toBe(kind);
+  });
+
+  it("non-waiting chats carry no pendingKind", () => {
+    expect(rollupOf([card()], [chat()], []).memberChats[0].pendingKind).toBeUndefined();
   });
 
   it("needs_you on a summon even with no live session", () => {

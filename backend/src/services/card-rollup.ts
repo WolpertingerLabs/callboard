@@ -9,19 +9,29 @@
  * Pure over its inputs — session-registry lookups are injected so tests
  * can run without the registry (production deps in ROLLUP_DEPS).
  */
-import type { Card, CardMemberChat, CardMemberRun, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
+import type { Card, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
 import { sessionRegistry } from "./session-registry.js";
-import { hasPendingRequest } from "./claude.js";
+import { getPendingRequest } from "./claude.js";
 
 export interface RollupDeps {
   isSessionActive: (chatId: string, sessionId: string) => boolean;
-  isWaiting: (chatId: string, sessionId: string) => boolean;
+  /** The kind of input a chat is blocked on, or undefined when not waiting. */
+  pendingKindOf: (chatId: string, sessionId: string) => CardPendingKind | undefined;
 }
+
+const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
+  permission_request: "permission",
+  user_question: "question",
+  plan_review: "plan",
+};
 
 /** Production deps — same double-keyed lookups as chatStatus() in chat-lineage.ts. */
 export const ROLLUP_DEPS: RollupDeps = {
   isSessionActive: (chatId, sessionId) => sessionRegistry.has(chatId) || sessionRegistry.has(sessionId),
-  isWaiting: (chatId, sessionId) => hasPendingRequest(chatId) || hasPendingRequest(sessionId),
+  pendingKindOf: (chatId, sessionId) => {
+    const pending = getPendingRequest(chatId) ?? getPendingRequest(sessionId);
+    return pending ? PENDING_KIND_BY_EVENT[pending.eventType] : undefined;
+  },
 };
 
 /** Run statuses that count as "the job is still going" for the rollup. */
@@ -45,13 +55,18 @@ function metaCardId(meta: ChatMeta): string | undefined {
 function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberChat {
   const rawTitle = (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || null;
   const title = typeof rawTitle === "string" ? rawTitle.replace(/\s+/g, " ").trim().slice(0, 120) : null;
-  const status = deps.isSessionActive(chat.id, chat.session_id) ? "ongoing" : deps.isWaiting(chat.id, chat.session_id) ? "waiting" : "stopped";
+  // A pending request outranks "ongoing": the session may still be
+  // registered while it sits blocked on user input, and blocked-on-you is
+  // the state the board must surface.
+  const pendingKind = deps.pendingKindOf(chat.id, chat.session_id);
+  const status = pendingKind ? "waiting" : deps.isSessionActive(chat.id, chat.session_id) ? "ongoing" : "stopped";
   const lastReadAt = typeof meta.lastReadAt === "string" ? meta.lastReadAt : undefined;
   return {
     chatId: chat.id,
     title: title || null,
     folder: chat.folder,
     status,
+    ...(pendingKind && { pendingKind }),
     ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),
     ...(typeof meta.chatStatusEmoji === "string" && meta.chatStatusEmoji && { chatStatusEmoji: meta.chatStatusEmoji }),
     hasSummon: !!meta.summon,
