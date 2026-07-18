@@ -92,7 +92,7 @@ In `frontend/src/components/board/CardDrawer.tsx`, add a **Metadata** section (b
 2. Add limit constants and the `updateCard` metadata branch (merge, delete, prune-empty, validate) in `card-store.ts`.
 3. Vitest coverage for the store behavior above.
 
-**Phase 2 — REST + MCP surface**
+**Phase 2 — REST + MCP surface** — **landed** (d9cd905)
 **Goal:** users' HTTP clients and agents can both mutate metadata.
 1. `PATCHABLE_FIELDS` + validation branch in `routes/cards.ts`; route tests.
 2. Verify `metadata` flows through card rollups/summaries (`card-rollup.ts`) and the `get_card`/`list_cards` MCP responses.
