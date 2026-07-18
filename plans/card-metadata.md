@@ -86,7 +86,7 @@ In `frontend/src/components/board/CardDrawer.tsx`, add a **Metadata** section (b
 
 ## Implementation phases
 
-**Phase 1 — Model + store**
+**Phase 1 — Model + store** — **landed** (b735b3c)
 **Goal:** `metadata` persists with per-key merge semantics and enforced limits.
 1. Add `metadata` to `Card` and `CardPatch` in `shared/types/card.ts` with doc comments stating merge/`null`-delete semantics.
 2. Add limit constants and the `updateCard` metadata branch (merge, delete, prune-empty, validate) in `card-store.ts`.
