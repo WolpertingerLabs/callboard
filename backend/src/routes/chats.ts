@@ -7,7 +7,7 @@ import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest } from "../services/claude.js";
-import { buildChatTree, getParentChatId } from "../services/chat-lineage.js";
+import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
 import { getCard } from "../services/card-store.js";
 import { setChatCardMembership, setBoardDismissed } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -240,13 +240,13 @@ chatsRouter.get("/", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'List all chats'
   // #swagger.description = 'Returns paginated list of chats from filesystem session logs, augmented with file storage metadata. Sorted by most recently updated.'
-  /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Number of chats per page (default: 20)' } */
-  /* #swagger.parameters['offset'] = { in: 'query', type: 'integer', description: 'Offset for pagination (default: 0)' } */
+  /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Number of chats per page (default: 20). With includeLineage, counts sidebar tree rows — a parentage group folds into one row and all its members are returned.' } */
+  /* #swagger.parameters['offset'] = { in: 'query', type: 'integer', description: 'Offset for pagination (default: 0). Same unit as limit: chats normally, tree rows with includeLineage.' } */
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
-  /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, chats related to the page through parentage trees (ancestors and descendants outside the pagination window) are appended to the results, flagged with _lineage_appended. They do not count toward pagination.' } */
+  /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
-  /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, and stale fields" } */
+  /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields" } */
   try {
     // Check cache (stale-while-revalidate)
     const bypassCache = req.query.cached === "false";
@@ -410,9 +410,41 @@ chatsRouter.get("/", (req, res) => {
       }
     };
 
+    // Lineage index over file-storage chats — built only when the tree
+    // view asks for lineage; shared by row-based pagination and the
+    // lineage-append pass below. One metadata parse per chat, memoized
+    // root resolution.
+    const lineageIndex = includeLineage ? buildLineageIndex(fileChats) : null;
+
+    /**
+     * Slice a recency-ordered, already-filtered list into the requested
+     * page. Without includeLineage, limit/offset count chats. With
+     * includeLineage they count sidebar tree ROWS: chats sharing a
+     * parentage root fold into one row, so a page always contributes
+     * `limit` visible rows no matter how many chats fold together.
+     */
+    const paginateWindow = <T>(items: T[], chatIdOf: (item: T) => string): { page: T[]; total: number; windowRows: number } => {
+      if (!lineageIndex) {
+        const page = items.slice(offset, offset + limit);
+        return { page, total: items.length, windowRows: page.length };
+      }
+      // Multiple sessions can map to one chat (resume/compaction appends
+      // to metadata.session_ids) — keep only the most recent so a folded
+      // row can't emit duplicate chat entries (the tree view would render
+      // a lineage-less chat as a phantom expandable group).
+      const seenIds = new Set<string>();
+      const unique = items.filter((item) => {
+        const id = chatIdOf(item);
+        if (seenIds.has(id)) return false;
+        seenIds.add(id);
+        return true;
+      });
+      return paginateTreeRows(unique, (item) => lineageIndex.rootKeyOf(chatIdOf(item)), limit, offset);
+    };
+
     let chatsFromLogs;
     let total: number;
-    let hasMore: boolean;
+    let windowRows: number;
 
     if (bookmarkedFilter && bookmarkedSessionIds) {
       // Filter to only bookmarked sessions, then augment and paginate
@@ -424,79 +456,46 @@ chatsRouter.get("/", (req, res) => {
       if (boardInbox) {
         augmented = augmented.filter((c) => !isTriagedForBoard(c));
       }
-      total = augmented.length;
-      chatsFromLogs = augmented.slice(offset, offset + limit);
-      hasMore = offset + limit < total;
+      ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
     } else if (excludeTriggered || boardInbox) {
       // Augment all fetched sessions, drop triggered and/or already-triaged
-      // chats, then paginate — so the LIMIT window is filled from what's left.
+      // (carded/dismissed) chats, then paginate — so the window is filled
+      // from what's left instead of draining as recent chats get filed.
       let augmented = paginatedSessions.map(augmentSession);
       if (excludeTriggered) augmented = augmented.filter((c) => !isTriggered(c));
       if (boardInbox) augmented = augmented.filter((c) => !isTriagedForBoard(c));
-      total = augmented.length;
-      chatsFromLogs = augmented.slice(offset, offset + limit);
-      hasMore = offset + limit < total;
+      ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
     } else if (includeLineage) {
       // Sessions were over-fetched for lineage lookup — paginate manually
-      chatsFromLogs = paginatedSessions.slice(offset, offset + limit).map(augmentSession);
-      total = rawTotal;
-      hasMore = offset + limit < total;
+      // (by row), augmenting only the windowed sessions.
+      const window = paginateWindow(paginatedSessions, (s) => fileChatsBySessionId.get(s.sessionId)?.id ?? s.sessionId);
+      chatsFromLogs = window.page.map(augmentSession);
+      ({ total, windowRows } = window);
     } else {
       // Normal path: sessions are already paginated
       chatsFromLogs = paginatedSessions.map(augmentSession);
       total = rawTotal;
-      hasMore = offset + limit < total;
+      windowRows = chatsFromLogs.length;
     }
+    const hasMore = offset + limit < total;
 
     // When the page touches a parentage tree, append the tree's remaining
     // members (ancestors and descendants outside the pagination window) so
     // the sidebar tree view can group and expand reliably. Appended chats
     // are flagged and do not count toward pagination.
-    if (includeLineage && fileChats.length > 0) {
-      const fileById = new Map<string, any>();
-      for (const fc of fileChats) fileById.set(fc.id, fc);
-
-      const parentIdOf = (fc: any): string | undefined => {
-        try {
-          const parentId = getParentChatId(JSON.parse(fc.metadata || "{}"));
-          return parentId !== fc.id ? parentId : undefined;
-        } catch {
-          return undefined;
-        }
-      };
-
-      const childrenByParent = new Map<string, any[]>();
-      for (const fc of fileChats) {
-        const parentId = parentIdOf(fc);
-        if (!parentId) continue;
-        const group = childrenByParent.get(parentId) || [];
-        group.push(fc);
-        childrenByParent.set(parentId, group);
-      }
-
-      // Highest EXISTING ancestor (dangling pointers degrade to "self is root")
-      const walkToRoot = (id: string): string => {
-        let currentId = id;
-        const visited = new Set<string>([id]);
-        for (let depth = 0; depth < 50; depth++) {
-          const fc = fileById.get(currentId);
-          if (!fc) return currentId;
-          const parentId = parentIdOf(fc);
-          if (!parentId || visited.has(parentId) || !fileById.has(parentId)) return currentId;
-          visited.add(parentId);
-          currentId = parentId;
-        }
-        return currentId;
-      };
+    if (lineageIndex && fileChats.length > 0) {
+      const { byId: fileById, childrenByParent, parentIdOf, rootKeyOf } = lineageIndex;
 
       // Union of full tree memberships (root + all descendants) for every
-      // paged chat that participates in a lineage tree.
+      // paged chat that participates in a lineage tree. rootKeyOf may
+      // return a deleted ancestor's id — the traversal still reaches every
+      // existing member through childrenByParent, and the append loop
+      // below skips ids without a file record.
       const relatedIds = new Set<string>();
       for (const chat of chatsFromLogs) {
-        const fc = fileById.get(chat.id);
-        if (!fc) continue;
-        if (!parentIdOf(fc) && !childrenByParent.has(chat.id)) continue;
-        const stack = [walkToRoot(chat.id)];
+        if (!fileById.has(chat.id)) continue;
+        if (!parentIdOf(chat.id) && !childrenByParent.has(chat.id)) continue;
+        const stack = [rootKeyOf(chat.id)];
         while (stack.length > 0) {
           const currentId = stack.pop()!;
           if (relatedIds.has(currentId)) continue;
@@ -528,7 +527,7 @@ chatsRouter.get("/", (req, res) => {
       chatsFromLogs = [...chatsFromLogs, ...appended];
     }
 
-    const responseData = { chats: chatsFromLogs, hasMore, total };
+    const responseData = { chats: chatsFromLogs, hasMore, total, windowRows };
     chatListCache.set(cacheKey, { data: responseData, createdAt: Date.now() });
     res.json({ ...responseData, stale: false });
   } catch (err: any) {

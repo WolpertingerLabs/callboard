@@ -21,14 +21,6 @@ import {
   type SidebarViewMode,
 } from "../utils/localStorage";
 
-/**
- * Chats that count toward the pagination window — excludes tree relatives
- * appended by includeLineage, which are returned beyond the requested limit.
- */
-function windowedCount(chats: Chat[]): number {
-  return chats.filter((c) => !c._lineage_appended).length;
-}
-
 interface ChatListProps {
   activeChatId?: string;
   onRefresh: (refreshFn: () => void) => void;
@@ -51,9 +43,16 @@ export default function ChatList({
   const { activeSessions, metadataVersion } = useSessionContext();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
-  // Number of chats currently shown (grows via "load more"). Refreshes refetch
-  // this many so an expanded list isn't cut back to the first page.
+  // Pagination units currently shown (grows via "load more"): chats in flat
+  // layout, tree rows in tree layout — a parentage group folds into one row,
+  // and the server paginates by rows so a page is always a full page of
+  // visible entries. Refreshes refetch this many so an expanded list isn't
+  // cut back to the first page.
   const loadedCountRef = useRef(20);
+  // Bumped every time a full refresh replaces the list (which re-baselines
+  // loadedCountRef, whose units depend on the layout). An in-flight "load
+  // more" page from before the bump has a stale offset — drop it.
+  const loadGenRef = useRef(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
   const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
@@ -136,16 +135,18 @@ export default function ChatList({
       // even those outside the pagination window
       const includeLineage = treeLayout || undefined;
       const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, undefined, includeLineage);
+      loadGenRef.current += 1;
       setChats(response.chats);
       setHasMore(shouldFetchAll ? false : response.hasMore);
-      if (!shouldFetchAll) loadedCountRef.current = windowedCount(response.chats);
+      if (!shouldFetchAll) loadedCountRef.current = response.windowRows;
 
       // If the response was stale (cached), immediately fetch fresh data
       if (response.stale) {
         const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false, includeLineage);
+        loadGenRef.current += 1;
         setChats(freshResponse.chats);
         setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
-        if (!shouldFetchAll) loadedCountRef.current = windowedCount(freshResponse.chats);
+        if (!shouldFetchAll) loadedCountRef.current = freshResponse.windowRows;
       }
 
       setIsInitialLoading(false);
@@ -164,9 +165,11 @@ export default function ChatList({
 
     setIsLoadingMore(true);
     try {
+      const gen = loadGenRef.current;
       const excludeTriggered = !showTriggered;
-      // Offset counts only windowed chats — lineage-appended relatives sit
-      // outside the pagination window
+      // Offset advances by the server-reported window size (rows in tree
+      // layout, chats in flat) — lineage-appended relatives sit outside
+      // the pagination window
       const response = await listChats(
         20,
         loadedCountRef.current,
@@ -175,13 +178,17 @@ export default function ChatList({
         undefined,
         treeLayout || undefined,
       );
+      // A refresh (layout/filter toggle, SSE event, poll) replaced the list
+      // while this page was in flight — its offset no longer lines up (and
+      // may be in the other layout's units), so drop the stale page.
+      if (gen !== loadGenRef.current) return;
       // Later pages can re-include chats already appended as lineage relatives
       setChats((prev) => {
         const seen = new Set(prev.map((c) => c.id));
         return [...prev, ...response.chats.filter((c) => !seen.has(c.id))];
       });
       setHasMore(response.hasMore);
-      loadedCountRef.current += windowedCount(response.chats);
+      loadedCountRef.current += response.windowRows;
     } finally {
       setIsLoadingMore(false);
     }

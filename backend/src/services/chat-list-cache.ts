@@ -7,7 +7,7 @@
  * an import cycle back here.
  */
 export interface CachedChatListResponse {
-  data: { chats: any[]; hasMore: boolean; total: number };
+  data: { chats: any[]; hasMore: boolean; total: number; windowRows: number };
   createdAt: number;
 }
 
