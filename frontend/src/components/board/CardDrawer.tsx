@@ -12,10 +12,11 @@ interface CardDrawerProps {
   onClose: () => void;
 }
 
+/** Live-status dot colors — themable via the --board-* section of index.css. */
 const CHAT_STATUS_COLORS: Record<string, string> = {
-  ongoing: "var(--status-active)",
-  waiting: "var(--warning)",
-  stopped: "var(--text-muted)",
+  ongoing: "var(--board-rollup-active)",
+  waiting: "var(--board-rollup-needs-you)",
+  stopped: "var(--board-rollup-idle)",
 };
 
 /** Right-hand drawer with the card's editable identity, members, and actions. */
@@ -36,7 +37,7 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
           right: 0,
           bottom: 0,
           width: "min(440px, 92vw)",
-          background: "var(--bg)",
+          background: "var(--board-drawer-bg)",
           borderLeft: "1px solid var(--border)",
           boxShadow: "var(--shadow-lg)",
           zIndex: 101,
@@ -128,8 +129,8 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
                       gap: 8,
                       padding: "6px 10px",
                       borderRadius: 6,
-                      border: "1px solid var(--border)",
-                      background: "var(--surface)",
+                      border: "1px solid var(--board-item-border)",
+                      background: "var(--board-item-bg)",
                       fontSize: 12,
                       color: "var(--text)",
                     }}
@@ -160,8 +161,8 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
                     gap: 8,
                     padding: "7px 10px",
                     borderRadius: 6,
-                    border: "1px solid var(--border)",
-                    background: "var(--surface)",
+                    border: "1px solid var(--board-item-border)",
+                    background: "var(--board-item-bg)",
                     cursor: "pointer",
                     minWidth: 0,
                   }}
@@ -181,7 +182,7 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
                     {chat.title || "Untitled chat"}
                   </span>
                   {chat.chatStatusEmoji && <span style={{ fontSize: 11, flexShrink: 0 }}>{chat.chatStatusEmoji}</span>}
-                  {chat.unread && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--chatlist-unread-dot)", flexShrink: 0 }} />}
+                  {chat.unread && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />}
                   <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>{formatRelativeTime(chat.updatedAt)}</span>
                 </div>
               ))}

@@ -124,6 +124,21 @@
   --chatlist-load-more-border: var(--border);
   --chatlist-tree-line: var(--border);
   --chatlist-tree-group-bg: color-mix(in srgb, var(--accent) 4%, transparent);
+
+  /* Board (cards view) — derived from core vars so custom themes cascade */
+  --board-tile-bg: var(--surface);
+  --board-tile-border: var(--border);
+  --board-tile-title-text: var(--text);
+  --board-tile-meta-text: var(--text-muted);
+  --board-section-label-text: var(--text-muted);
+  --board-rollup-needs-you: var(--warning);
+  --board-rollup-job-running: var(--accent);
+  --board-rollup-active: var(--status-active);
+  --board-rollup-idle: var(--text-muted);
+  --board-unread-dot: var(--chatlist-unread-dot);
+  --board-drawer-bg: var(--bg);
+  --board-item-bg: var(--surface);
+  --board-item-border: var(--border);
 }
 
 /* Light mode overrides (applied via data-theme attribute on <html>) */
@@ -242,6 +257,21 @@
   --chatlist-load-more-border: var(--border);
   --chatlist-tree-line: var(--border);
   --chatlist-tree-group-bg: color-mix(in srgb, var(--accent) 4%, transparent);
+
+  /* Board (cards view) — derived from core vars so custom themes cascade */
+  --board-tile-bg: var(--surface);
+  --board-tile-border: var(--border);
+  --board-tile-title-text: var(--text);
+  --board-tile-meta-text: var(--text-muted);
+  --board-section-label-text: var(--text-muted);
+  --board-rollup-needs-you: var(--warning);
+  --board-rollup-job-running: var(--accent);
+  --board-rollup-active: var(--status-active);
+  --board-rollup-idle: var(--text-muted);
+  --board-unread-dot: var(--chatlist-unread-dot);
+  --board-drawer-bg: var(--bg);
+  --board-item-bg: var(--surface);
+  --board-item-border: var(--border);
 }
 
 html,

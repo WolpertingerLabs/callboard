@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import type { Chat, CardSummary, CardPatch } from "../api";
+import type { Chat, CardSummary, CardPatch, CardPayload } from "../api";
 import { listCards, listChats, createCard, updateCard, assignChatToCard, dismissFromBoard } from "../api";
 import { useMetadataVersion } from "../contexts/SessionContext";
-import { getBoardClosedExpanded, saveBoardClosedExpanded } from "../utils/localStorage";
+import { getBoardClosedExpanded, saveBoardClosedExpanded, getBoardInboxExpanded, saveBoardInboxExpanded } from "../utils/localStorage";
 import CardTile from "../components/board/CardTile";
 import CardDrawer from "../components/board/CardDrawer";
 import CardPicker from "../components/board/CardPicker";
 import InboxRow from "../components/board/InboxRow";
-import { Plus, ChevronRight, ChevronDown, LayoutGrid } from "lucide-react";
+import NewCardModal from "../components/board/NewCardModal";
+import { Plus, ChevronRight, ChevronDown, ChevronLeft, LayoutGrid, Inbox } from "lucide-react";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 /** How many recent non-triggered chats to consider for the inbox. */
 const INBOX_FETCH_LIMIT = 30;
@@ -17,24 +19,23 @@ type Section = { key: string; label: string; cards: CardSummary[] };
 
 export default function Board() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const metadataVersion = useMetadataVersion();
   const [cards, setCards] = useState<CardSummary[]>([]);
-  const [inboxChats, setInboxChats] = useState<Chat[]>([]);
+  const [inboxChats, setInboxChats] = useState<Chat[] | null>(null);
+  const [inboxLoading, setInboxLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [pickerChatId, setPickerChatId] = useState<string | null>(null);
   const [closedExpanded, setClosedExpanded] = useState(() => getBoardClosedExpanded());
-  const [creating, setCreating] = useState(false);
+  const [inboxExpanded, setInboxExpanded] = useState(() => getBoardInboxExpanded());
+  const [showNewCard, setShowNewCard] = useState(false);
 
-  const load = useCallback(async () => {
+  const loadCards = useCallback(async () => {
     try {
-      // boardInbox=true filters out carded/dismissed chats server-side, so the
-      // window returns the newest un-triaged chats instead of draining as the
-      // recent slots fill with already-filed ones.
-      const [cardsRes, chatsRes] = await Promise.all([listCards(), listChats(INBOX_FETCH_LIMIT, 0, undefined, true, undefined, undefined, true)]);
-      setCards(cardsRes.cards);
-      setInboxChats(chatsRes.chats);
+      const res = await listCards();
+      setCards(res.cards);
       setError(null);
     } catch (err: any) {
       setError(err.message || "Failed to load board");
@@ -43,16 +44,42 @@ export default function Board() {
     }
   }, []);
 
+  // The inbox scans every session file server-side (boardInbox filters out
+  // carded/dismissed chats before windowing), which is the slowest query on
+  // the page — so it only runs while the section is expanded.
+  const loadInbox = useCallback(async () => {
+    setInboxLoading(true);
+    try {
+      const res = await listChats(INBOX_FETCH_LIMIT, 0, undefined, true, undefined, undefined, true);
+      setInboxChats(res.chats);
+    } catch (err: any) {
+      setError(err.message || "Failed to load inbox");
+    } finally {
+      setInboxLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    load();
-  }, [load]);
+    loadCards();
+    if (getBoardInboxExpanded()) loadInbox();
+  }, [loadCards, loadInbox]);
 
   // Refetch shortly after any chat/card metadata change (same debounce as the sidebar).
   useEffect(() => {
     if (metadataVersion === 0) return;
-    const timer = setTimeout(() => load(), 300);
+    const timer = setTimeout(() => {
+      loadCards();
+      if (inboxExpanded) loadInbox();
+    }, 300);
     return () => clearTimeout(timer);
-  }, [metadataVersion, load]);
+  }, [metadataVersion, loadCards, loadInbox, inboxExpanded]);
+
+  const toggleInbox = () => {
+    const next = !inboxExpanded;
+    setInboxExpanded(next);
+    saveBoardInboxExpanded(next);
+    if (next && inboxChats === null) loadInbox();
+  };
 
   const open = cards.filter((c) => c.lifecycle === "open");
   const closed = cards.filter((c) => c.lifecycle === "closed");
@@ -72,7 +99,7 @@ export default function Board() {
   // Card-less, non-dismissed chats. Membership/dismissal live in metadata.
   const inbox = useMemo(
     () =>
-      inboxChats.filter((chat) => {
+      (inboxChats ?? []).filter((chat) => {
         try {
           const meta = JSON.parse(chat.metadata || "{}");
           return !(typeof meta.cardId === "string" && meta.cardId) && meta.boardDismissed !== true;
@@ -103,27 +130,31 @@ export default function Board() {
     }
   };
 
+  /** Refresh after a mutation — the inbox only when it's showing. */
+  const refresh = useCallback(async () => {
+    await Promise.all([loadCards(), inboxExpanded ? loadInbox() : Promise.resolve()]);
+  }, [loadCards, loadInbox, inboxExpanded]);
+
   const promoteChat = async (chat: Chat) => {
     try {
       const res = await createCard({ title: chatTitle(chat).slice(0, 120) }, chat.id);
       setOpenCardId(res.card.id);
-      await load();
+      await refresh();
     } catch (err: any) {
       setError(err.message || "Failed to create card");
     }
   };
 
-  const newCard = async () => {
-    if (creating) return;
-    setCreating(true);
+  // "New card" drafts locally in a modal; the card is only created on save.
+  const createFromModal = async (payload: CardPayload) => {
     try {
-      const res = await createCard({ title: "New card" });
-      await load();
+      const res = await createCard(payload);
+      setShowNewCard(false);
+      await loadCards();
       setOpenCardId(res.card.id);
     } catch (err: any) {
       setError(err.message || "Failed to create card");
-    } finally {
-      setCreating(false);
+      setShowNewCard(false);
     }
   };
 
@@ -132,7 +163,7 @@ export default function Board() {
     try {
       await assignChatToCard(pickerChatId, cardId);
       setPickerChatId(null);
-      await load();
+      await refresh();
     } catch (err: any) {
       setError(err.message || "Failed to assign chat");
     }
@@ -143,7 +174,7 @@ export default function Board() {
     try {
       await createCard({ title }, pickerChatId);
       setPickerChatId(null);
-      await load();
+      await refresh();
     } catch (err: any) {
       setError(err.message || "Failed to create card");
     }
@@ -152,7 +183,7 @@ export default function Board() {
   const dismissChat = async (chat: Chat) => {
     try {
       await dismissFromBoard(chat.id, true);
-      setInboxChats((prev) => prev.filter((c) => c.id !== chat.id));
+      setInboxChats((prev) => (prev ? prev.filter((c) => c.id !== chat.id) : prev));
     } catch (err: any) {
       setError(err.message || "Failed to dismiss chat");
     }
@@ -160,8 +191,8 @@ export default function Board() {
 
   const sectionHeader = (label: string, count: number) => (
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</span>
-      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{count}</span>
+      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--board-section-label-text)", textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</span>
+      <span style={{ fontSize: 11, color: "var(--board-section-label-text)" }}>{count}</span>
     </div>
   );
 
@@ -173,14 +204,32 @@ export default function Board() {
 
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "var(--bg)" }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 24px 60px" }}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 24 }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? "14px 12px 48px" : "24px 24px 60px" }}>
+        {/* Header — mobile gets the standard full-page back button (same
+            convention as AgentList/Settings) since there's no sidebar. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: isMobile ? 16 : 24 }}>
+          {isMobile && (
+            <button
+              onClick={() => navigate("/")}
+              title="Back"
+              style={{
+                background: "none",
+                border: "none",
+                padding: "4px 8px",
+                cursor: "pointer",
+                color: "var(--text)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <ChevronLeft size={20} />
+            </button>
+          )}
           <LayoutGrid size={20} style={{ color: "var(--accent)" }} />
           <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text)", flex: 1 }}>Board</h1>
           <button
-            onClick={newCard}
-            disabled={creating}
+            onClick={() => setShowNewCard(true)}
             style={{
               display: "flex",
               alignItems: "center",
@@ -191,7 +240,6 @@ export default function Board() {
               borderRadius: 6,
               fontSize: 13,
               cursor: "pointer",
-              opacity: creating ? 0.6 : 1,
             }}
           >
             <Plus size={14} />
@@ -205,7 +253,7 @@ export default function Board() {
               marginBottom: 16,
               padding: "10px 14px",
               borderRadius: 8,
-              background: "var(--danger-bg, var(--surface))",
+              background: "var(--danger-bg)",
               color: "var(--danger)",
               fontSize: 13,
             }}
@@ -220,7 +268,7 @@ export default function Board() {
           <>
             {open.length === 0 && (
               <div style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 28 }}>
-                No open cards. Create one, or promote a chat from the inbox below.
+                No open cards. Create one, or open the inbox below to promote a recent chat.
               </div>
             )}
 
@@ -238,24 +286,52 @@ export default function Board() {
                 ),
             )}
 
-            {/* Inbox — recent chats that belong to no card */}
-            {inbox.length > 0 && (
-              <div style={{ marginBottom: 28 }}>
-                {sectionHeader("Inbox", inbox.length)}
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {inbox.map((chat) => (
-                    <InboxRow
-                      key={chat.id}
-                      chat={chat}
-                      onOpen={() => navigate(`/chat/${chat.id}`)}
-                      onPromote={() => promoteChat(chat)}
-                      onAddToCard={() => setPickerChatId(chat.id)}
-                      onDismiss={() => dismissChat(chat)}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Inbox — recent card-less chats. Collapsed by default and
+                fetched only on expand: its server query scans every session
+                file, the most expensive call on the page. */}
+            <div style={{ marginBottom: 28 }}>
+              <button
+                onClick={toggleInbox}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginBottom: 10,
+                  color: "var(--board-section-label-text)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.6,
+                  cursor: "pointer",
+                  background: "transparent",
+                  padding: 0,
+                }}
+              >
+                {inboxExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <Inbox size={13} />
+                Inbox
+                {inboxChats !== null && <span style={{ fontWeight: 400 }}>{inbox.length}</span>}
+              </button>
+              {inboxExpanded &&
+                (inboxLoading && inboxChats === null ? (
+                  <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading recent chats…</div>
+                ) : inbox.length === 0 ? (
+                  <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Inbox is clear — no un-filed recent chats.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {inbox.map((chat) => (
+                      <InboxRow
+                        key={chat.id}
+                        chat={chat}
+                        onOpen={() => navigate(`/chat/${chat.id}`)}
+                        onPromote={() => promoteChat(chat)}
+                        onAddToCard={() => setPickerChatId(chat.id)}
+                        onDismiss={() => dismissChat(chat)}
+                      />
+                    ))}
+                  </div>
+                ))}
+            </div>
 
             {/* Closed strip */}
             {closed.length > 0 && (
@@ -301,6 +377,8 @@ export default function Board() {
       {openCard && <CardDrawer card={openCard} onPatch={(patch) => patchCard(openCard.id, patch)} onClose={() => setOpenCardId(null)} />}
 
       {pickerChatId && <CardPicker cards={cards} onSelect={assignFromPicker} onCreate={createFromPicker} onClose={() => setPickerChatId(null)} />}
+
+      {showNewCard && <NewCardModal onCreate={createFromModal} onClose={() => setShowNewCard(false)} />}
     </div>
   );
 }

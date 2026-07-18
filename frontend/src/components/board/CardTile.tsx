@@ -14,11 +14,12 @@ const ROLLUP_LABELS: Record<CardRollupState, string> = {
   idle: "Idle",
 };
 
-const ROLLUP_COLORS: Record<CardRollupState, string> = {
-  needs_you: "var(--warning)",
-  job_running: "var(--accent)",
-  active: "var(--status-active)",
-  idle: "var(--text-muted)",
+/** Rollup-state colors — themable via the --board-* section of index.css. */
+export const ROLLUP_COLORS: Record<CardRollupState, string> = {
+  needs_you: "var(--board-rollup-needs-you)",
+  job_running: "var(--board-rollup-job-running)",
+  active: "var(--board-rollup-active)",
+  idle: "var(--board-rollup-idle)",
 };
 
 export default function CardTile({ card, onClick }: CardTileProps) {
@@ -36,8 +37,8 @@ export default function CardTile({ card, onClick }: CardTileProps) {
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
       style={{
-        background: "var(--surface)",
-        border: `1px solid ${live ? rollupColor : "var(--border)"}`,
+        background: "var(--board-tile-bg)",
+        border: `1px solid ${live ? rollupColor : "var(--board-tile-border)"}`,
         borderRadius: 10,
         padding: "12px 14px",
         cursor: "pointer",
@@ -55,7 +56,7 @@ export default function CardTile({ card, onClick }: CardTileProps) {
           style={{
             fontSize: 14,
             fontWeight: 600,
-            color: "var(--text)",
+            color: "var(--board-tile-title-text)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -67,7 +68,7 @@ export default function CardTile({ card, onClick }: CardTileProps) {
         </span>
         {card.pinned && <Pin size={12} style={{ color: "var(--accent)", flexShrink: 0 }} />}
         {card.unread && (
-          <span title="Unread activity" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--chatlist-unread-dot)", flexShrink: 0 }} />
+          <span title="Unread activity" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />
         )}
       </div>
 
@@ -75,7 +76,7 @@ export default function CardTile({ card, onClick }: CardTileProps) {
         <div
           style={{
             fontSize: 12,
-            color: "var(--text-muted)",
+            color: "var(--board-tile-meta-text)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -87,7 +88,7 @@ export default function CardTile({ card, onClick }: CardTileProps) {
         </div>
       )}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--text-muted)", minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--board-tile-meta-text)", minWidth: 0 }}>
         <span style={{ display: "flex", alignItems: "center", gap: 5, color: rollupColor, fontWeight: 600, flexShrink: 0 }}>
           <span
             style={{
