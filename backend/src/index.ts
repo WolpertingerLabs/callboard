@@ -2,7 +2,6 @@ import dotenv from "dotenv";
 import { execSync, spawn } from "child_process";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import express from "express";
-import compression from "compression";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -95,17 +94,6 @@ const isProduction = process.env.NODE_ENV === "production";
 const PORT = (!isProduction && process.env.DEV_PORT_SERVER) || process.env.PORT || 8000;
 
 app.use(cors({ origin: true, credentials: true }));
-// gzip responses (static bundle + API JSON). SSE streams are skipped —
-// compression buffers output, which would hold back event delivery. The
-// filter runs at first write, after writeSSEHeaders has set Content-Type.
-app.use(
-  compression({
-    filter: (req, res) => {
-      if (String(res.getHeader("Content-Type") ?? "").includes("text/event-stream")) return false;
-      return compression.filter(req, res);
-    },
-  }),
-);
 app.use(cookieParser());
 
 app.use(express.json({ limit: "50mb" }));
@@ -554,22 +542,9 @@ app.post(
   },
 );
 
-// Serve frontend static files in production.
-// - gzip: the JS bundle is >1MB raw (~a third compressed) — the dominant
-//   cost of a cold page load, especially on mobile.
-// - immutable caching for /assets: Vite content-hashes those filenames, so
-//   they can be cached forever; a new build changes the URL. index.html
-//   (and anything unhashed) stays revalidated so deploys show up.
+// Serve frontend static files in production
 const frontendDist = path.join(__pkgRoot, "frontend/dist");
-app.use(
-  express.static(frontendDist, {
-    setHeaders: (res, filePath) => {
-      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      }
-    },
-  }),
-);
+app.use(express.static(frontendDist));
 app.get("*", (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
