@@ -760,6 +760,15 @@ interface SendMessageOptions {
    * honored for new chats; wins over a parent's inherited cardId.
    */
   cardId?: string;
+  /**
+   * Preset title stamped into the new chat's metadata. Used by spawners that
+   * already know what the chat is (e.g. job-step sessions), where the
+   * LLM title generation for manual chats is deliberately skipped —
+   * without a stored title such chats render as "untitled" everywhere that
+   * reads chat records directly (card rollup, board). Only honored for new
+   * chats; the session can still overwrite it via set_chat_title.
+   */
+  chatTitle?: string;
 }
 
 /** Default number of times a requiring session is nudged to continue before giving up. */
@@ -833,6 +842,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }),
       // Attach the chat to a card (ticket) when spawned on one.
       ...(opts.cardId && { cardId: opts.cardId }),
+      // Preset title from the spawner (e.g. "Repo Branch Prep — prep").
+      // Triggered chats skip LLM title generation, so this is the only
+      // title they get unless the session overwrites it.
+      ...(opts.chatTitle && { title: opts.chatTitle.slice(0, 240) }),
       // Pin the provider for the lifetime of this chat. Once written here,
       // the metadata-routing block below sees it and getAgentProvider()
       // returns the matching adapter for every subsequent message in the
