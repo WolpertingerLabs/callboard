@@ -9,6 +9,9 @@
  *   2. A thrown transport error mid-iteration recovers the same way.
  *   3. Recoveries are capped — a persistently-broken stream stops retrying.
  *   4. A healthy tool result between failures resets the counter (no recovery).
+ *   5. Metadata written mid-run (e.g. card assignment) survives the resume —
+ *      the recovery's session_started must merge into the stored record, not
+ *      overwrite it with the stale message-start snapshot.
  */
 import { describe, expect, it, afterEach, afterAll } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
@@ -29,6 +32,8 @@ const { sendMessage } = await import("./claude.js");
 const { setAgentProviderForTesting } = await import("../agents/factory.js");
 const { MockAgentProvider } = await import("../agents/adapters/mock/MockAgentProvider.js");
 const { MAX_STREAM_RECOVERIES } = await import("./stream-recovery.js");
+const { chatFileService } = await import("./chat-file-service.js");
+const { setChatCardMembership } = await import("./card-membership.js");
 
 const STREAM_CLOSED_TOOL_EVENTS = (callIdPrefix: string): AgentEvent[] => [
   { type: "tool_use", toolName: "Bash", input: { command: "ls" }, callId: `${callIdPrefix}-1` },
@@ -169,6 +174,50 @@ describe("stream-closed auto-recovery", () => {
     expect(mock.queryRecords).toHaveLength(MAX_STREAM_RECOVERIES + 1);
     expect(events.filter((e) => e.type === "auto_recovery")).toHaveLength(MAX_STREAM_RECOVERIES);
     expect(events.at(-1)!.type).toBe("done");
+  });
+
+  it("preserves metadata written mid-run (card assignment) across a recovery resume", async () => {
+    // Reproduces the card <-> chat association loss: a chat is assigned to a
+    // card while its session is streaming; a "Stream closed" recovery then
+    // re-fires session_started, which used to overwrite the chat's metadata
+    // with the stale message-start snapshot — silently dropping the cardId.
+    const mock = new MockAgentProvider({
+      eventScripts: [
+        [{ type: "session_started", sessionId: "sr-meta-1" }, ...STREAM_CLOSED_TOOL_EVENTS("meta")],
+        [{ type: "session_started", sessionId: "sr-meta-2" }, ...HEALTHY_FINISH],
+      ],
+    });
+
+    setAgentProviderForTesting(mock);
+    let chatId: string | null = null;
+    let cardWriteOk: boolean | null = null;
+    const emitter = await sendMessage({ prompt: "do the thing", folder: workDir, triggered: true });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("session did not finish within 10s")), 10_000);
+      emitter.on("event", (e: StreamEvent) => {
+        if (e.type === "chat_created") {
+          chatId = (e as { chatId?: string }).chatId ?? null;
+          // Simulate the user carding the chat while the session streams —
+          // this lands on disk after the snapshot was taken at message start.
+          // Asserted after the run: a throw here would surface inside the
+          // provider loop, not as a test failure at this line.
+          cardWriteOk = chatId ? setChatCardMembership(chatId, "card-mid-run") : false;
+        }
+        if (e.type === "done" || e.type === "error") {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+
+    expect(cardWriteOk).toBe(true);
+    const chat = chatFileService.getChat(chatId!);
+    expect(chat).not.toBeNull();
+    const meta = JSON.parse(chat!.metadata);
+    // The association must survive the recovery's session_started rewrite...
+    expect(meta.cardId).toBe("card-mid-run");
+    // ...and the resumed session id must still be appended.
+    expect(meta.session_ids).toEqual(["sr-meta-1", "sr-meta-2"]);
   });
 
   it("does not recover when a healthy result sits between two failures", async () => {
