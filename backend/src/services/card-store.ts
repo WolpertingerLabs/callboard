@@ -9,7 +9,7 @@
  * metadata.cardId and job runs via run.cardId, discovered by scan at
  * rollup time.
  */
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, renameSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, renameSync, rmSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { Card, CardPatch, CardPayload } from "shared";
@@ -89,6 +89,24 @@ export function cardExists(id: string): boolean {
   return getCard(id) !== null;
 }
 
+/**
+ * Remove a card's file. Best-effort cleanup for cards that were created as
+ * part of a larger operation that then failed (e.g. auto-created alongside a
+ * chat record whose write threw) — cards are otherwise never deleted, only
+ * closed. Returns false when the id is invalid or the file is already gone.
+ */
+export function deleteCard(id: string): boolean {
+  const filepath = cardFilePath(id);
+  if (!filepath || !existsSync(filepath)) return false;
+  try {
+    rmSync(filepath);
+    return true;
+  } catch (err: any) {
+    log.error(`Failed to delete card ${id}: ${err.message}`);
+    return false;
+  }
+}
+
 export function createCard(payload: CardPayload): Card {
   const title = (payload.title ?? "").trim();
   if (!title) throw new Error("Card title is required");
@@ -113,10 +131,7 @@ export function createCard(payload: CardPayload): Card {
  * are trimmed. Throws {@link CardValidationError} rather than silently
  * truncating, since a clipped URL or ticket id is worse than a rejected write.
  */
-function applyMetadataPatch(
-  current: Record<string, string> | undefined,
-  patch: Record<string, string | null>,
-): Record<string, string> {
+function applyMetadataPatch(current: Record<string, string> | undefined, patch: Record<string, string | null>): Record<string, string> {
   if (typeof patch !== "object" || patch === null || Array.isArray(patch)) {
     throw new CardValidationError("metadata must be an object");
   }
