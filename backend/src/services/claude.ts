@@ -47,6 +47,7 @@ import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
+import { createCard as createCardRecord, updateCard, getCard as getCardRecord, deleteCard as deleteCardRecord } from "./card-store.js";
 import { sessionRegistry } from "./session-registry.js";
 import { resolveParentage } from "./chat-lineage.js";
 import { getGitInfo } from "../utils/git.js";
@@ -760,6 +761,14 @@ interface SendMessageOptions {
    * honored for new chats; wins over a parent's inherited cardId.
    */
   cardId?: string;
+  /**
+   * Create a new open card and attach this chat to it. Only honored for
+   * new chats, and only when no cardId resolves (an explicit or inherited
+   * cardId wins). The card is created alongside the chat record with a
+   * prompt-derived placeholder title, replaced by the LLM-generated chat
+   * title when that succeeds — one title call covers both.
+   */
+  createCard?: boolean;
   /**
    * Preset title stamped into the new chat's metadata. Used by spawners that
    * already know what the chat is (e.g. job-step sessions), where the
@@ -1511,12 +1520,44 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               if (!chatRecordCreated) {
                 // New chat: create the chat record and migrate tracking from temp ID to real chat ID
                 chatRecordCreated = true;
+                // Auto-create a card for this chat. Done here — not at the route —
+                // so the card exists iff the chat record does (no orphan cards when
+                // branch resolution or session startup fails). An explicit or
+                // inherited cardId in metadata wins over auto-creation. The
+                // placeholder title is replaced by the generated chat title below.
+                let autoCreatedCardId: string | undefined;
+                let autoCardPlaceholderTitle: string | undefined;
+                if (opts.createCard && !initialMetadata.cardId) {
+                  try {
+                    const promptText = typeof prompt === "string" ? prompt.replace(/\s+/g, " ").trim() : "";
+                    let placeholder = promptText.slice(0, 120);
+                    // Don't leave a dangling high surrogate when the cut lands
+                    // mid-astral-character (e.g. an emoji at the boundary).
+                    if (/[\uD800-\uDBFF]$/.test(placeholder)) placeholder = placeholder.slice(0, -1);
+                    const card = createCardRecord({ title: placeholder || "New chat" });
+                    initialMetadata.cardId = card.id;
+                    autoCreatedCardId = card.id;
+                    autoCardPlaceholderTitle = card.title;
+                    log.debug(`Auto-created card ${card.id} for new chat`);
+                  } catch (err: any) {
+                    log.warn(`Auto-create card failed: ${err.message} — chat proceeds without a card`);
+                  }
+                }
                 initialMetadata.session_ids = [sessionId];
                 const meta = { ...initialMetadata };
                 log.debug(`Creating chat record — sessionId=${sessionId}, folder=${folder}`);
-                const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
-                  metadata: JSON.stringify(meta),
-                });
+                let chat;
+                try {
+                  chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
+                    metadata: JSON.stringify(meta),
+                  });
+                } catch (err) {
+                  // Keep the card-exists-iff-chat-exists invariant: the chat
+                  // record write failed, so remove the just-created card
+                  // rather than leaving a memberless orphan on the board.
+                  if (autoCreatedCardId) deleteCardRecord(autoCreatedCardId);
+                  throw err;
+                }
 
                 const oldTrackingId = trackingId;
                 trackingId = sessionId;
@@ -1561,6 +1602,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                         if (title) {
                           chatFileService.updateChatMetadata(chatId, { title });
                           log.debug(`Generated title for chat ${chatId}: "${title}"`);
+                          // Same title for the auto-created card — one LLM call
+                          // covers both. Compare-and-set against the placeholder:
+                          // a rename that landed while the title was generating
+                          // wins, and pre-existing cards are never retitled.
+                          if (autoCreatedCardId && getCardRecord(autoCreatedCardId)?.title === autoCardPlaceholderTitle) {
+                            updateCard(autoCreatedCardId, { title });
+                          }
                         }
                       })
                       .catch(() => {}); // Title generation is non-critical

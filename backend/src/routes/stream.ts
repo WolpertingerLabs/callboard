@@ -53,6 +53,7 @@ streamRouter.post("/new/message", async (req, res) => {
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the new chat's tree node, e.g. 'subagent', 'monitor', 'engine-switch'. Only used with parentChatId." },
             cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
+            createCard: { type: "boolean", description: "Create a new open card and attach the chat to it. Ignored when cardId resolves to an existing open card. The card title follows the chat's auto-generated title." },
             branchConfig: {
               type: "object",
               properties: {
@@ -88,6 +89,7 @@ streamRouter.post("/new/message", async (req, res) => {
     parentChatId,
     chatRole,
     cardId,
+    createCard,
     modelRouting,
     modelRoutingRankId,
   } = req.body;
@@ -172,6 +174,8 @@ streamRouter.post("/new/message", async (req, res) => {
     const safeModelRoutingRankId: string | undefined =
       safeModelRouting && typeof modelRoutingRankId === "string" && modelRoutingRankId.trim().length > 0 ? modelRoutingRankId.trim() : undefined;
 
+    const safeCardId: string | undefined = typeof cardId === "string" && cardId && getCard(cardId)?.lifecycle === "open" ? cardId : undefined;
+
     const emitter = await sendMessage({
       prompt,
       folder: effectiveFolder,
@@ -200,7 +204,11 @@ streamRouter.post("/new/message", async (req, res) => {
       // closed ids are dropped silently (the chat lands in the board inbox
       // where the user can re-file it) rather than failing the send or
       // stamping a chat onto a card hidden in the Closed strip.
-      ...(typeof cardId === "string" && cardId && getCard(cardId)?.lifecycle === "open" && { cardId }),
+      ...(safeCardId && { cardId: safeCardId }),
+      // Auto-create a card only when no explicit card was requested at all —
+      // a stale (closed/deleted) cardId drops the association entirely
+      // rather than surprising the user with a brand-new card.
+      ...(createCard === true && !cardId && { createCard: true }),
     });
 
     writeSSEHeaders(res);

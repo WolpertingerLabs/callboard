@@ -65,6 +65,7 @@ import SlashCommandsModal from "../components/SlashCommandsModal";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import CardPicker from "../components/board/CardPicker";
 import BranchSelector from "../components/BranchSelector";
+import CardAssociationSelector, { type CardAssociationConfig } from "../components/CardAssociationSelector";
 import GitDiffView from "../components/GitDiffView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
 import JobRunPanel from "../components/JobRunPanel";
@@ -205,6 +206,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // max_budget end-of-session message.
   const [effectiveMaxBudgetUsd, setEffectiveMaxBudgetUsd] = useState<number | null>(null);
   const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
+  // Card association for NEW chats: create a card alongside the chat, join an
+  // existing open card (seeded from the board's "New chat on card" action), or
+  // neither (default).
+  const [cardConfig, setCardConfig] = useState<CardAssociationConfig>({
+    createCard: false,
+    cardId: newChatCardId ?? null,
+  });
+  // Re-seed on every new-chat navigation: Chat is rendered unkeyed in
+  // SplitLayout, so /chat/new → /chat/new navigations don't remount it and a
+  // mount-time seed alone would leak the previous selection into an
+  // unrelated new chat. location.key changes on each navigation.
+  useEffect(() => {
+    if (id) return;
+    setCardConfig({ createCard: false, cardId: newChatCardId ?? null });
+  }, [id, location.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const [branchChangeConfirm, setBranchChangeConfirm] = useState<{
     isOpen: boolean;
     prompt: string;
@@ -1568,8 +1584,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               requestBody.chatRole = newChatRole;
             }
           }
-          if (newChatCardId) {
-            requestBody.cardId = newChatCardId;
+          if (cardConfig.cardId) {
+            requestBody.cardId = cardConfig.cardId;
+          } else if (cardConfig.createCard) {
+            requestBody.createCard = true;
           }
           // Model routing — OpenRouter-only opt-in. Reflects the composer's
           // "use model router" toggle (initialized from the New Chat panel's
@@ -1720,6 +1738,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       activePluginIds,
       chat,
       branchConfig,
+      cardConfig,
       activeDraftId,
     ],
   );
@@ -3063,6 +3082,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           </button>
         )}
       </div>
+
+      {/* Card association - shown above the git section for new chats.
+          Not gated on is_git_repo: cards are unrelated to git. */}
+      {!id && !pendingAction && (
+        <div style={{ padding: "0 16px" }}>
+          <CardAssociationSelector value={cardConfig} onChange={setCardConfig} />
+        </div>
+      )}
 
       {/* Branch selector for git repos - shown above prompt for new chats */}
       {!id && info?.is_git_repo && !pendingAction && (
