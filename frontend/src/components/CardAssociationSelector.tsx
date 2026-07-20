@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { LayoutGrid, Sparkles } from "lucide-react";
-import { listCards, type CardSummary } from "../api";
+import { listCards, CARD_CATEGORY_MAX, type CardSummary } from "../api";
+import { uniqueCategories } from "../utils/cardCategories";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /** Card association choice for a new chat: create a new card, join an
@@ -8,6 +9,8 @@ import { useIsMobile } from "../hooks/useIsMobile";
 export interface CardAssociationConfig {
   createCard: boolean;
   cardId: string | null;
+  /** Optional category for the auto-created card (only used with createCard). */
+  category: string;
 }
 
 interface CardAssociationSelectorProps {
@@ -18,6 +21,9 @@ interface CardAssociationSelectorProps {
 
 export default function CardAssociationSelector({ value, onChange }: CardAssociationSelectorProps) {
   const [openCards, setOpenCards] = useState<CardSummary[]>([]);
+  // Autocomplete suggestions for the category input — from ALL cards (closed
+  // included) so an established category survives its last open card closing.
+  const [knownCategories, setKnownCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
 
@@ -43,6 +49,7 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
           .filter((c) => c.lifecycle === "open")
           .sort((a, b) => (a.pinned === b.pinned ? b.updatedAt.localeCompare(a.updatedAt) : a.pinned ? -1 : 1));
         setOpenCards(open);
+        setKnownCategories(uniqueCategories(data.cards));
         setLoading(false);
         // Drop a preselected card that is provably no longer open — the
         // backend would silently ignore it, so don't pretend it's attached.
@@ -63,12 +70,15 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
     };
   }, []);
 
+  // The typed category is kept across an uncheck/re-check — it's only ever
+  // read when createCard is set (see Chat.tsx), so leaving it in place costs
+  // nothing and saves the user retyping after a glance at the card dropdown.
   const handleCreateChange = (checked: boolean) => {
-    onChange({ createCard: checked, cardId: checked ? null : value.cardId });
+    onChange({ ...value, createCard: checked, cardId: checked ? null : value.cardId });
   };
 
   const handleCardSelect = (selected: string) => {
-    onChange({ createCard: false, cardId: selected || null });
+    onChange({ ...value, createCard: false, cardId: selected || null });
   };
 
   const hasChoice = value.createCard || !!value.cardId;
@@ -101,21 +111,48 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
   );
 
   const cardSelect = value.createCard ? (
-    <div
-      style={{
-        flex: 1,
-        padding: "4px 8px",
-        fontSize: 12,
-        color: "var(--accent)",
-        fontStyle: "italic",
-        opacity: 0.85,
-        minWidth: 0,
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-      }}
-    >
-      Will create a card titled from the first message
+    <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+      <div
+        style={{
+          padding: "4px 0",
+          fontSize: 12,
+          color: "var(--accent)",
+          fontStyle: "italic",
+          opacity: 0.85,
+          minWidth: 0,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          flexShrink: 1,
+        }}
+      >
+        Will create a card titled from the first message
+      </div>
+      <input
+        value={value.category}
+        onChange={(e) => onChange({ ...value, category: e.target.value })}
+        maxLength={CARD_CATEGORY_MAX}
+        list="card-association-category-options"
+        placeholder="Category (optional)"
+        title="Optional category — the board groups open cards by category"
+        style={{
+          background: "var(--bg)",
+          color: "var(--text)",
+          border: "1px solid var(--border)",
+          borderRadius: 5,
+          padding: "4px 8px",
+          fontSize: 12,
+          outline: "none",
+          ...(isMobile ? { flex: 1, minWidth: 0 } : { width: 180, flexShrink: 0 }),
+        }}
+      />
+      {knownCategories.length > 0 && (
+        <datalist id="card-association-category-options">
+          {knownCategories.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
+      )}
     </div>
   ) : loading ? (
     <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</span>

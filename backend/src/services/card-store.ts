@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rename
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { Card, CardPatch, CardPayload } from "shared";
+import { CARD_CATEGORY_MAX } from "shared";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -24,6 +25,7 @@ if (!existsSync(cardsDir)) mkdirSync(cardsDir, { recursive: true });
 
 export const CARD_TITLE_MAX = 200;
 export const CARD_STATUS_MAX = 160;
+export { CARD_CATEGORY_MAX };
 export const CARD_METADATA_KEY_MAX = 64;
 export const CARD_METADATA_VALUE_MAX = 2048;
 export const CARD_METADATA_MAX_ENTRIES = 50;
@@ -90,10 +92,11 @@ export function cardExists(id: string): boolean {
 }
 
 /**
- * Remove a card's file. Best-effort cleanup for cards that were created as
- * part of a larger operation that then failed (e.g. auto-created alongside a
- * chat record whose write threw) — cards are otherwise never deleted, only
- * closed. Returns false when the id is invalid or the file is already gone.
+ * Remove a card's file. Used for user-initiated deletion of CLOSED cards
+ * (the route enforces lifecycle) and as best-effort cleanup for cards created
+ * as part of a larger operation that then failed (e.g. auto-created alongside
+ * a chat record whose write threw). Returns false when the id is invalid or
+ * the file is already gone.
  */
 export function deleteCard(id: string): boolean {
   const filepath = cardFilePath(id);
@@ -111,12 +114,14 @@ export function createCard(payload: CardPayload): Card {
   const title = (payload.title ?? "").trim();
   if (!title) throw new Error("Card title is required");
   const now = new Date().toISOString();
+  const category = typeof payload.category === "string" ? payload.category.trim().slice(0, CARD_CATEGORY_MAX) : "";
   const card: Card = {
     id: `card-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
     title: title.slice(0, CARD_TITLE_MAX),
     description: typeof payload.description === "string" ? payload.description : "",
     emoji: payload.emoji?.trim() || DEFAULT_EMOJI,
     lifecycle: "open",
+    ...(category && { category }),
     pinned: false,
     createdAt: now,
     updatedAt: now,
@@ -186,6 +191,11 @@ export function updateCard(id: string, patch: CardPatch): Card | null {
   if (patch.status !== undefined) {
     if (patch.status === null || !patch.status.trim()) delete card.status;
     else card.status = patch.status.slice(0, CARD_STATUS_MAX);
+  }
+  if (patch.category !== undefined) {
+    const category = patch.category === null ? "" : patch.category.trim();
+    if (!category) delete card.category;
+    else card.category = category.slice(0, CARD_CATEGORY_MAX);
   }
   if (patch.statusEmoji !== undefined) {
     if (patch.statusEmoji === null || !patch.statusEmoji.trim()) delete card.statusEmoji;

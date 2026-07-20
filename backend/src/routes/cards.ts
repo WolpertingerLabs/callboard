@@ -8,12 +8,12 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { Card, CardPatch, CardSummary } from "shared";
-import { listCards, getCard, createCard, updateCard, CardValidationError } from "../services/card-store.js";
+import { listCards, getCard, createCard, updateCard, deleteCard, CardValidationError, CARD_CATEGORY_MAX } from "../services/card-store.js";
 import { buildCardSummaries } from "../services/card-rollup.js";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
-import { setChatCardMembership } from "../services/card-membership.js";
+import { setChatCardMembership, unassignAllChatsFromCard } from "../services/card-membership.js";
 import { listRuns } from "../services/job-store.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { createLogger } from "../utils/logger.js";
@@ -46,9 +46,18 @@ cardsRouter.post("/", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Create a card, optionally assigning an existing chat'
   /* #swagger.responses[201] = { description: "Created card with rollup" } */
-  const { title, description, emoji, chatId } = req.body ?? {};
+  const { title, description, emoji, category, chatId } = req.body ?? {};
   if (typeof title !== "string" || !title.trim()) {
     return res.status(400).json({ error: "title is required" });
+  }
+  if (category !== undefined && typeof category !== "string") {
+    return res.status(400).json({ error: "category must be a string" });
+  }
+  // Reject rather than let the store truncate: a silently clipped label would
+  // group the card somewhere the caller never asked for. Matches the MCP
+  // tool's zod .max().
+  if (typeof category === "string" && category.trim().length > CARD_CATEGORY_MAX) {
+    return res.status(400).json({ error: `category exceeds ${CARD_CATEGORY_MAX} characters` });
   }
   try {
     // Resolve the founding chat before creating the card so a bad chatId
@@ -62,6 +71,7 @@ cardsRouter.post("/", (req: Request, res: Response) => {
       title,
       ...(typeof description === "string" && { description }),
       ...(typeof emoji === "string" && emoji && { emoji }),
+      ...(typeof category === "string" && category.trim() && { category }),
     });
 
     // View-only assignment: doesn't bump the chat's updated_at, clears the
@@ -85,7 +95,7 @@ cardsRouter.get("/:id", (req: Request, res: Response) => {
   res.json({ card: summarize([card])[0] });
 });
 
-const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "lifecycle", "metadata"] as const;
+const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "category", "lifecycle", "metadata"] as const;
 
 cardsRouter.patch("/:id", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
@@ -116,6 +126,12 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
   if (patch.statusEmoji !== undefined && patch.statusEmoji !== null && typeof patch.statusEmoji !== "string") {
     return res.status(400).json({ error: "statusEmoji must be a string or null" });
   }
+  if (patch.category !== undefined && patch.category !== null && typeof patch.category !== "string") {
+    return res.status(400).json({ error: "category must be a string or null" });
+  }
+  if (typeof patch.category === "string" && patch.category.trim().length > CARD_CATEGORY_MAX) {
+    return res.status(400).json({ error: `category exceeds ${CARD_CATEGORY_MAX} characters` });
+  }
   if (patch.lifecycle !== undefined && patch.lifecycle !== "open" && patch.lifecycle !== "closed") {
     return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });
   }
@@ -133,5 +149,34 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     if (/title/i.test(err.message ?? "")) return res.status(400).json({ error: err.message });
     log.error(`Error updating card: ${err}`);
     res.status(500).json({ error: "Failed to update card", details: err.message });
+  }
+});
+
+cardsRouter.delete("/:id", (req: Request, res: Response) => {
+  // #swagger.tags = ['Cards']
+  // #swagger.summary = 'Permanently delete a CLOSED card; member chats are unassigned, not deleted'
+  /* #swagger.responses[404] = { description: "Card not found" } */
+  /* #swagger.responses[409] = { description: "Card is still open — close it first" } */
+  const card = getCard(req.params.id);
+  if (!card) return res.status(404).json({ error: "Card not found" });
+  if (card.lifecycle !== "closed") {
+    return res.status(409).json({ error: "Only closed cards can be deleted — close the card first" });
+  }
+  try {
+    // Remove the card file FIRST: if the unlink fails we still have a
+    // consistent board (card present, members intact) rather than a card whose
+    // chats were already detached. Job runs keep their historical `cardId` —
+    // rollups only ever project runs onto cards that still exist, so a stale
+    // run reference is inert, unlike a chat's (which feeds default-card
+    // resolution in the MCP tools).
+    if (!deleteCard(card.id)) {
+      return res.status(500).json({ error: "Failed to delete card" });
+    }
+    unassignAllChatsFromCard(card.id);
+    sessionRegistry.notifyMetadata(card.id, { cardEvent: "deleted" });
+    res.json({ success: true });
+  } catch (err: any) {
+    log.error(`Error deleting card: ${err}`);
+    res.status(500).json({ error: "Failed to delete card", details: err.message });
   }
 });

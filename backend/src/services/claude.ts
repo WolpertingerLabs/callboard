@@ -770,6 +770,11 @@ interface SendMessageOptions {
    */
   createCard?: boolean;
   /**
+   * Optional category stamped on the auto-created card (only meaningful with
+   * createCard). The board groups open cards by category.
+   */
+  cardCategory?: string;
+  /**
    * Preset title stamped into the new chat's metadata. Used by spawners that
    * already know what the chat is (e.g. job-step sessions), where the
    * LLM title generation for manual chats is deliberately skipped —
@@ -1534,7 +1539,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                     // Don't leave a dangling high surrogate when the cut lands
                     // mid-astral-character (e.g. an emoji at the boundary).
                     if (/[\uD800-\uDBFF]$/.test(placeholder)) placeholder = placeholder.slice(0, -1);
-                    const card = createCardRecord({ title: placeholder || "New chat" });
+                    const card = createCardRecord({
+                      title: placeholder || "New chat",
+                      ...(opts.cardCategory && { category: opts.cardCategory }),
+                    });
                     initialMetadata.cardId = card.id;
                     autoCreatedCardId = card.id;
                     autoCardPlaceholderTitle = card.title;

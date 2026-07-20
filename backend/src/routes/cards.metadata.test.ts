@@ -22,7 +22,7 @@ vi.mock("../services/claude.js", () => ({ getActiveSession: () => null }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: () => {} } }));
 
 const { cardsRouter } = await import("./cards.js");
-const { createCard, getCard, CARD_METADATA_VALUE_MAX } = await import("../services/card-store.js");
+const { createCard, getCard, CARD_METADATA_VALUE_MAX, CARD_CATEGORY_MAX } = await import("../services/card-store.js");
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -106,5 +106,18 @@ describe("PATCH /api/cards/:id metadata", () => {
   it("404s for a card that does not exist", async () => {
     const res = await patchCard("card-does-not-exist", { metadata: { a: "1" } });
     expect(res.code).toBe(404);
+  });
+
+  it("400s on an over-long category rather than silently truncating it", async () => {
+    const res = await patchCard(cardId, { category: "c".repeat(CARD_CATEGORY_MAX + 1) });
+    expect(res.code).toBe(400);
+    expect(res.body.error).toMatch(/exceeds/);
+    expect(getCard(cardId)!.category).toBeUndefined();
+  });
+
+  it("accepts a category exactly at the limit and clears it with null", async () => {
+    const atLimit = "c".repeat(CARD_CATEGORY_MAX);
+    expect((await patchCard(cardId, { category: atLimit })).body.card.category).toBe(atLimit);
+    expect((await patchCard(cardId, { category: null })).body.card.category).toBeUndefined();
   });
 });

@@ -212,6 +212,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [cardConfig, setCardConfig] = useState<CardAssociationConfig>({
     createCard: false,
     cardId: newChatCardId ?? null,
+    category: "",
   });
   // Re-seed on every new-chat navigation: Chat is rendered unkeyed in
   // SplitLayout, so /chat/new → /chat/new navigations don't remount it and a
@@ -219,7 +220,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // unrelated new chat. location.key changes on each navigation.
   useEffect(() => {
     if (id) return;
-    setCardConfig({ createCard: false, cardId: newChatCardId ?? null });
+    setCardConfig({ createCard: false, cardId: newChatCardId ?? null, category: "" });
   }, [id, location.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const [branchChangeConfirm, setBranchChangeConfirm] = useState<{
     isOpen: boolean;
@@ -1588,6 +1589,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             requestBody.cardId = cardConfig.cardId;
           } else if (cardConfig.createCard) {
             requestBody.createCard = true;
+            if (cardConfig.category.trim()) {
+              requestBody.cardCategory = cardConfig.category.trim();
+            }
           }
           // Model routing — OpenRouter-only opt-in. Reflects the composer's
           // "use model router" toggle (initialized from the New Chat panel's

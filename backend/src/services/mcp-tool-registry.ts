@@ -112,6 +112,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       { name: "title", type: "string", description: "Short card title (max 200 chars)", required: true },
       { name: "description", type: "string", description: "Markdown description of the topic/goal", required: false },
       { name: "emoji", type: "string", description: "Single emoji shown on the card face", required: false },
+      { name: "category", type: "string", description: "Optional category label (max 64 chars) — the board groups open cards by category", required: false },
       { name: "assign_current_chat", type: "boolean", description: "Assign the current chat to the new card (default: true)", required: false },
     ],
     serverName: "callboard-tools",
@@ -151,6 +152,18 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     parameters: [
       { name: "status", type: "string", description: "Short status line (max 160 chars). Empty string clears.", required: true },
       { name: "emoji", type: "string", description: "Single emoji prefix", required: false },
+      { name: "card_id", type: "string", description: "Target card id (default: the current chat's card)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "set_card_category",
+    qualifiedName: "mcp__callboard-tools__set_card_category",
+    description: "Set or clear the optional category label a card (ticket) is grouped under on the board view.",
+    parameters: [
+      { name: "category", type: "string", description: "Category label (max 64 chars). Empty string clears.", required: true },
       { name: "card_id", type: "string", description: "Target card id (default: the current chat's card)", required: false },
     ],
     serverName: "callboard-tools",

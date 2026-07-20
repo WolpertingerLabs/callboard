@@ -63,3 +63,27 @@ function writeViewMeta(chatId: string, fields: Record<string, unknown>): boolean
 export function setChatCardMembership(chatId: string, cardId: string | null): boolean {
   return writeViewMeta(chatId, { cardId });
 }
+
+/**
+ * Unassign every chat that points at `cardId`. Used when a card is deleted so
+ * no chat is left carrying a dead card id — `getChatCardId` would otherwise
+ * resolve one, and the MCP tools' default-card path would fail with "card not
+ * found" instead of the clearer "this chat is not on a card".
+ *
+ * Membership is read with the same non-empty-string rule as everywhere else in
+ * this module, so an unassigned `cardId: null` is never mistaken for a member.
+ * Returns the number of chats changed.
+ */
+export function unassignAllChatsFromCard(cardId: string): number {
+  let changed = 0;
+  for (const chat of chatFileService.getAllChats()) {
+    let meta: Record<string, unknown> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {
+      continue;
+    }
+    if (typeof meta.cardId === "string" && meta.cardId === cardId && setChatCardMembership(chat.id, null)) changed++;
+  }
+  return changed;
+}

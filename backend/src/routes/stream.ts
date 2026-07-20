@@ -54,6 +54,7 @@ streamRouter.post("/new/message", async (req, res) => {
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the new chat's tree node, e.g. 'subagent', 'monitor', 'engine-switch'. Only used with parentChatId." },
             cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
             createCard: { type: "boolean", description: "Create a new open card and attach the chat to it. Ignored when cardId resolves to an existing open card. The card title follows the chat's auto-generated title." },
+            cardCategory: { type: "string", description: "Optional category for the auto-created card (used with createCard; max 64 chars). The board groups open cards by category." },
             branchConfig: {
               type: "object",
               properties: {
@@ -90,6 +91,7 @@ streamRouter.post("/new/message", async (req, res) => {
     chatRole,
     cardId,
     createCard,
+    cardCategory,
     modelRouting,
     modelRoutingRankId,
   } = req.body;
@@ -208,7 +210,11 @@ streamRouter.post("/new/message", async (req, res) => {
       // Auto-create a card only when no explicit card was requested at all —
       // a stale (closed/deleted) cardId drops the association entirely
       // rather than surprising the user with a brand-new card.
-      ...(createCard === true && !cardId && { createCard: true }),
+      ...(createCard === true &&
+        !cardId && {
+          createCard: true,
+          ...(typeof cardCategory === "string" && cardCategory.trim() && { cardCategory: cardCategory.trim() }),
+        }),
     });
 
     writeSSEHeaders(res);

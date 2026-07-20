@@ -20,6 +20,7 @@ const {
   updateCard,
   cardExists,
   CARD_TITLE_MAX,
+  CARD_CATEGORY_MAX,
   CARD_METADATA_KEY_MAX,
   CARD_METADATA_VALUE_MAX,
   CARD_METADATA_MAX_ENTRIES,
@@ -107,6 +108,34 @@ describe("updateCard", () => {
     const card = createCard({ title: "Keep" });
     expect(() => updateCard(card.id, { title: "  " })).toThrow(/title/i);
     expect(getCard(card.id)!.title).toBe("Keep");
+  });
+});
+
+describe("category", () => {
+  it("is absent by default and absent for a blank payload value", () => {
+    expect(createCard({ title: "T" }).category).toBeUndefined();
+    expect(createCard({ title: "T", category: "   " }).category).toBeUndefined();
+  });
+
+  it("is trimmed and capped on create", () => {
+    const card = createCard({ title: "T", category: `  ${"c".repeat(CARD_CATEGORY_MAX + 10)}  ` });
+    expect(card.category!.length).toBe(CARD_CATEGORY_MAX);
+  });
+
+  it("sets, updates, and clears via null or blank", () => {
+    const card = createCard({ title: "T" });
+    expect(updateCard(card.id, { category: " Infra " })!.category).toBe("Infra");
+    expect(updateCard(card.id, { category: "Bugs" })!.category).toBe("Bugs");
+
+    expect(updateCard(card.id, { category: null })!.category).toBeUndefined();
+    updateCard(card.id, { category: "Bugs" });
+    expect(updateCard(card.id, { category: "  " })!.category).toBeUndefined();
+  });
+
+  it("is left alone when the patch omits it", () => {
+    const card = createCard({ title: "T", category: "Infra" });
+    updateCard(card.id, { title: "Renamed" });
+    expect(getCard(card.id)!.category).toBe("Infra");
   });
 });
 
