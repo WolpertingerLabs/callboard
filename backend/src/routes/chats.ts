@@ -633,7 +633,7 @@ chatsRouter.post("/", (req, res) => {
 chatsRouter.post("/:id/fork", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Fork a chat'
-  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message.'
+  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the card membership of the original chat.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -702,6 +702,9 @@ chatsRouter.post("/:id/fork", (req, res) => {
     parentChatId: chat.id,
     rootChatId: meta.rootChatId || chat.id,
     chatRole: "fork",
+    // A fork stays on the original's card. Unassign merges `cardId: null`,
+    // so a string check (not key presence) decides whether to inherit.
+    ...(typeof meta.cardId === "string" && meta.cardId && { cardId: meta.cardId }),
     ...(meta.defaultPermissions && { defaultPermissions: meta.defaultPermissions }),
     ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
     ...(meta.lastBranch && { lastBranch: meta.lastBranch }),
