@@ -7,6 +7,12 @@
 
 export type CardLifecycle = "open" | "closed";
 
+/**
+ * Max length of {@link Card.category}. Lives here so the store, the routes,
+ * the MCP tool schema, and every frontend input enforce one number.
+ */
+export const CARD_CATEGORY_MAX = 64;
+
 export interface Card {
   id: string;
   title: string;
@@ -14,6 +20,11 @@ export interface Card {
   description: string;
   emoji: string;
   lifecycle: CardLifecycle;
+  /**
+   * Optional free-form grouping label ({@link CARD_CATEGORY_MAX} chars max) —
+   * open cards on the board are grouped under it. Absent when uncategorized.
+   */
+  category?: string;
   /** Set when lifecycle === "closed"; cleared on reopen. */
   closedAt?: string;
   pinned: boolean;
@@ -36,6 +47,7 @@ export interface CardPayload {
   title: string;
   description?: string;
   emoji?: string;
+  category?: string;
 }
 
 /** Partial update; null clears the nullable narrative-status fields. */
@@ -46,6 +58,8 @@ export interface CardPatch {
   pinned?: boolean;
   status?: string | null;
   statusEmoji?: string | null;
+  /** null (or blank) clears the category. */
+  category?: string | null;
   lifecycle?: CardLifecycle;
   /**
    * Per-key merge, not whole-object replace: each key present is set to its

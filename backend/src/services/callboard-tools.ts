@@ -25,7 +25,7 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { getAgentSettings } from "./agent-settings.js";
 import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
-import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX } from "./card-store.js";
+import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CARD_CATEGORY_MAX } from "./card-store.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
@@ -437,12 +437,17 @@ export function buildCallboardToolsSpec(
           title: z.string().max(200).describe("Short card title"),
           description: z.string().optional().describe("Markdown description of the topic/goal"),
           emoji: z.string().optional().describe("Single emoji shown on the card face"),
+          category: z
+            .string()
+            .max(CARD_CATEGORY_MAX)
+            .optional()
+            .describe("Optional free-form category label — the board groups open cards by category. Reuse an existing category from list_cards when one fits."),
           assign_current_chat: z.boolean().optional().describe("Assign the current chat to the new card (default: true)"),
         },
         async (args) => {
           let card;
           try {
-            card = createCard({ title: args.title, description: args.description, emoji: args.emoji });
+            card = createCard({ title: args.title, description: args.description, emoji: args.emoji, category: args.category });
           } catch (err: any) {
             return error(err.message);
           }
@@ -474,6 +479,7 @@ export function buildCallboardToolsSpec(
               title: c.title,
               emoji: c.emoji,
               lifecycle: c.lifecycle,
+              ...(c.category && { category: c.category }),
               ...(c.closedAt && { closedAt: c.closedAt }),
               ...(c.status && { status: c.status }),
               ...(c.statusEmoji && { statusEmoji: c.statusEmoji }),
@@ -539,6 +545,31 @@ export function buildCallboardToolsSpec(
             content: [
               { type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, status: card.status ?? null, emoji: card.statusEmoji ?? null }) },
             ],
+          };
+        },
+      ),
+
+      defineTool(
+        "set_card_category",
+        "Set or clear the category on a card (ticket). Categories are optional free-form labels the board groups open cards under — reuse an existing category from list_cards when one fits. Defaults to the current chat's card. Pass an empty string to clear.",
+        {
+          category: z.string().max(CARD_CATEGORY_MAX).describe(`Category label (max ${CARD_CATEGORY_MAX} chars). Empty string clears the category.`),
+          card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
+        },
+        async (args) => {
+          let cardId = args.card_id;
+          if (!cardId) {
+            if (!getChatId) return error("Chat context not available — pass card_id explicitly");
+            cardId = getChatCardId(getChatId());
+            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
+          }
+
+          const card = updateCard(cardId, { category: args.category || null });
+          if (!card) return error(`Card "${cardId}" not found`);
+
+          sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, category: card.category ?? null }) }],
           };
         },
       ),

@@ -138,6 +138,8 @@ export type {
   CardResponse,
 };
 
+export { CARD_CATEGORY_MAX } from "shared/types/index.js";
+
 const BASE = "/api";
 
 /** Shared error handler: throws with the server's error message or a fallback. */
@@ -258,6 +260,13 @@ export async function updateCard(id: string, patch: CardPatch): Promise<CardResp
     body: JSON.stringify(patch),
   });
   await assertOk(res, "Failed to update card");
+  return res.json();
+}
+
+/** Permanently delete a CLOSED card. Member chats are unassigned, not deleted. */
+export async function deleteCard(id: string): Promise<{ success: boolean }> {
+  const res = await fetch(`${BASE}/cards/${id}`, { method: "DELETE" });
+  await assertOk(res, "Failed to delete card");
   return res.json();
 }
 

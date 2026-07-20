@@ -1,13 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import type { CardSummary, CardPatch } from "../../api";
-import { getAgentIdentityPrompt } from "../../api";
+import { getAgentIdentityPrompt, CARD_CATEGORY_MAX } from "../../api";
 import MarkdownRenderer from "../MarkdownRenderer";
 import InlineEdit from "./InlineEdit";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
-import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus } from "lucide-react";
+import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag, Trash2 } from "lucide-react";
 
 /** Mirrors the store-side limits in backend/src/services/card-store.ts. */
 const METADATA_KEY_MAX = 64;
@@ -15,8 +15,12 @@ const METADATA_VALUE_MAX = 2048;
 
 interface CardDrawerProps {
   card: CardSummary;
+  /** Existing category labels offered as autocomplete suggestions. */
+  categories: string[];
   /** Resolves false when the patch was rejected — editors stay open so input isn't lost. */
   onPatch: (patch: CardPatch) => Promise<boolean>;
+  /** Permanently delete the card — only invoked on closed cards, after an in-drawer confirm. */
+  onDelete: () => void | Promise<void>;
   onClose: () => void;
 }
 
@@ -37,10 +41,20 @@ const ICON_BUTTON: React.CSSProperties = {
 };
 
 /** Right-hand drawer with the card's editable identity, members, and actions. */
-export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) {
+export default function CardDrawer({ card, categories, onPatch, onDelete, onClose }: CardDrawerProps) {
   const navigate = useNavigate();
   const [editingDescription, setEditingDescription] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const closed = card.lifecycle === "closed";
+
+  // Disarm the delete confirmation after a few seconds rather than on blur:
+  // the board re-renders on every metadata poll, and a blur-triggered reset
+  // between the two clicks would silently swallow the confirming click.
+  useEffect(() => {
+    if (!confirmingDelete) return;
+    const timer = setTimeout(() => setConfirmingDelete(false), 5000);
+    return () => clearTimeout(timer);
+  }, [confirmingDelete]);
 
   // Start a chat in the card's working context: the most recently active
   // member chat's folder, and — when that chat runs a configured agent —
@@ -160,6 +174,9 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
               </div>
             )}
           </div>
+
+          {/* Category */}
+          <CategorySection category={card.category} categories={categories} onPatch={onPatch} />
 
           {/* Metadata */}
           <MetadataSection metadata={card.metadata} onPatch={onPatch} />
@@ -319,9 +336,155 @@ export default function CardDrawer({ card, onPatch, onClose }: CardDrawerProps) 
             {closed ? <ArchiveRestore size={14} /> : <Archive size={14} />}
             {closed ? "Reopen" : "Close card"}
           </button>
+          {closed && (
+            <button
+              onClick={() => {
+                if (!confirmingDelete) {
+                  setConfirmingDelete(true);
+                  return;
+                }
+                void onDelete();
+              }}
+              title={
+                confirmingDelete
+                  ? "Click again to permanently delete this card — chats are unassigned, not deleted"
+                  : "Delete this card permanently (chats are unassigned, not deleted)"
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 12px",
+                borderRadius: 6,
+                border: "1px solid var(--danger)",
+                background: confirmingDelete ? "var(--danger)" : "var(--danger-bg)",
+                color: confirmingDelete ? "var(--text-on-danger)" : "var(--danger)",
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              <Trash2 size={14} />
+              {confirmingDelete ? "Confirm delete" : "Delete"}
+            </button>
+          )}
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * Optional free-form category the board groups open cards under. Display is a
+ * tag chip (or an "add" affordance); editing is an input with autocomplete
+ * from the other cards' categories. Saving blank clears the category.
+ */
+function CategorySection({
+  category,
+  categories,
+  onPatch,
+}: {
+  category?: string;
+  categories: string[];
+  onPatch: (patch: CardPatch) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(category ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const startEditing = () => {
+    setDraft(category ?? "");
+    setEditing(true);
+  };
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      if (await onPatch({ category: draft.trim() || null })) setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Category</span>
+        <button
+          onClick={() => (editing ? setEditing(false) : startEditing())}
+          title="Edit category"
+          style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)" }}
+        >
+          <Pencil size={12} />
+        </button>
+      </div>
+
+      {editing ? (
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input
+            autoFocus
+            value={draft}
+            maxLength={CARD_CATEGORY_MAX}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void save();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            list="card-drawer-category-options"
+            placeholder="Category (blank to clear)"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              background: "var(--bg)",
+              color: "var(--text)",
+              border: "1px solid var(--accent)",
+              borderRadius: 6,
+              padding: "4px 8px",
+              fontSize: 12,
+            }}
+          />
+          {categories.length > 0 && (
+            <datalist id="card-drawer-category-options">
+              {categories.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
+          )}
+          <button
+            onClick={() => void save()}
+            disabled={saving}
+            style={{ fontSize: 12, background: "var(--accent)", color: "var(--text-on-accent)", padding: "4px 12px", borderRadius: 6, cursor: "pointer" }}
+          >
+            Save
+          </button>
+        </div>
+      ) : category ? (
+        <span
+          onClick={startEditing}
+          title="Click to edit category"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 12,
+            color: "var(--text)",
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            padding: "3px 10px",
+            cursor: "pointer",
+            maxWidth: "100%",
+          }}
+        >
+          <Tag size={11} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{category}</span>
+        </span>
+      ) : (
+        <div onClick={startEditing} style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", cursor: "pointer" }}>
+          Group this card under a category…
+        </div>
+      )}
+    </div>
   );
 }
 

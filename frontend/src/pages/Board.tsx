@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import type { CardSummary, CardPatch, CardPayload } from "../api";
-import { listCards, createCard, updateCard } from "../api";
+import { listCards, createCard, updateCard, deleteCard } from "../api";
 import { useMetadataVersion } from "../contexts/SessionContext";
 import { getBoardClosedExpanded, saveBoardClosedExpanded } from "../utils/localStorage";
+import { uniqueCategories } from "../utils/cardCategories";
 import CardTile from "../components/board/CardTile";
 import CardDrawer from "../components/board/CardDrawer";
 import NewCardModal from "../components/board/NewCardModal";
@@ -11,6 +12,29 @@ import { Plus, ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide
 import { useIsMobile } from "../hooks/useIsMobile";
 
 type Section = { key: string; label: string; cards: CardSummary[] };
+
+/** Higher = more urgent; used to order cards inside a category group. */
+const ROLLUP_RANK: Record<CardSummary["rollup"], number> = { needs_you: 3, job_running: 2, active: 1, idle: 0 };
+
+/**
+ * Pinned first, then urgency, then activity. Two idle cards sort STALEST
+ * first — the same nudge-to-close-out the ungrouped Idle section applies —
+ * while anything live sorts freshest first.
+ */
+function sortWithinCategory(cards: CardSummary[]): CardSummary[] {
+  return [...cards].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    if (ROLLUP_RANK[a.rollup] !== ROLLUP_RANK[b.rollup]) return ROLLUP_RANK[b.rollup] - ROLLUP_RANK[a.rollup];
+    if (a.rollup === "idle" && b.rollup === "idle") return a.lastActivityAt.localeCompare(b.lastActivityAt);
+    return b.lastActivityAt.localeCompare(a.lastActivityAt);
+  });
+}
+
+/** Rank of the most urgent card in a group — decides where the group sorts. */
+function peakUrgency(cards: CardSummary[]): number {
+  return cards.reduce((max, c) => Math.max(max, ROLLUP_RANK[c.rollup]), 0);
+}
+
 
 export default function Board() {
   const navigate = useNavigate();
@@ -66,18 +90,49 @@ export default function Board() {
 
   const open = cards.filter((c) => c.lifecycle === "open");
   const closed = cards.filter((c) => c.lifecycle === "closed");
-  const sections: Section[] = [
-    { key: "needs_you", label: "Needs you", cards: open.filter((c) => c.rollup === "needs_you") },
-    { key: "running", label: "Running", cards: open.filter((c) => c.rollup === "job_running" || c.rollup === "active") },
-    // Stalest first — a gentle nudge to close out or kick forward.
-    {
-      key: "idle",
-      label: "Idle",
-      cards: open
-        .filter((c) => c.rollup === "idle")
-        .sort((a, b) => (a.pinned === b.pinned ? a.lastActivityAt.localeCompare(b.lastActivityAt) : a.pinned ? -1 : 1)),
-    },
-  ];
+  // Datalist suggestions for the category inputs — includes closed cards so a
+  // category doesn't vanish from autocomplete when its last open card closes.
+  const knownCategories = uniqueCategories(cards);
+
+  // Open cards group by category once any card has one; uncategorized cards
+  // collect in an "Uncategorized" group. With no categories at all, keep the
+  // classic urgency sections.
+  //
+  // Groups are ordered by their most urgent card, NOT alphabetically: a card
+  // needing you must stay near the top of the board, and alphabetical order
+  // would happily bury it under an unrelated category. Alphabetical is only
+  // the tie-break between equally-urgent groups. Uncategorized sorts by the
+  // same rule so it isn't pinned to the bottom while holding a blocked chat.
+  const openCategories = uniqueCategories(open);
+  const sections: Section[] =
+    openCategories.length > 0
+      ? [
+          ...openCategories.map((category) => ({
+            key: `category:${category}`,
+            label: category,
+            cards: sortWithinCategory(open.filter((c) => c.category === category)),
+          })),
+          { key: "category:none", label: "Uncategorized", cards: sortWithinCategory(open.filter((c) => !c.category)) },
+        ]
+          .filter((section) => section.cards.length > 0)
+          .sort((a, b) => {
+            // Peak urgency, not cards[0] — a pinned idle card can lead a group
+            // that also holds the one card blocked on you.
+            const urgency = peakUrgency(b.cards) - peakUrgency(a.cards);
+            return urgency !== 0 ? urgency : a.label.localeCompare(b.label);
+          })
+      : [
+          { key: "needs_you", label: "Needs you", cards: open.filter((c) => c.rollup === "needs_you") },
+          { key: "running", label: "Running", cards: open.filter((c) => c.rollup === "job_running" || c.rollup === "active") },
+          // Stalest first — a gentle nudge to close out or kick forward.
+          {
+            key: "idle",
+            label: "Idle",
+            cards: open
+              .filter((c) => c.rollup === "idle")
+              .sort((a, b) => (a.pinned === b.pinned ? a.lastActivityAt.localeCompare(b.lastActivityAt) : a.pinned ? -1 : 1)),
+          },
+        ];
 
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) : undefined;
 
@@ -90,6 +145,17 @@ export default function Board() {
     } catch (err: any) {
       setError(err.message || "Failed to update card");
       return false;
+    }
+  };
+
+  /** Permanent removal — only offered on closed cards (the server enforces it too). */
+  const removeCard = async (cardId: string) => {
+    try {
+      await deleteCard(cardId);
+      setCards((prev) => prev.filter((c) => c.id !== cardId));
+      setOpenCardId(null);
+    } catch (err: any) {
+      setError(err.message || "Failed to delete card");
     }
   };
 
@@ -246,9 +312,17 @@ export default function Board() {
         )}
       </div>
 
-      {openCard && <CardDrawer card={openCard} onPatch={(patch) => patchCard(openCard.id, patch)} onClose={() => setOpenCardId(null)} />}
+      {openCard && (
+        <CardDrawer
+          card={openCard}
+          categories={knownCategories}
+          onPatch={(patch) => patchCard(openCard.id, patch)}
+          onDelete={() => removeCard(openCard.id)}
+          onClose={() => setOpenCardId(null)}
+        />
+      )}
 
-      {showNewCard && <NewCardModal onCreate={createFromModal} onClose={() => setShowNewCard(false)} />}
+      {showNewCard && <NewCardModal categories={knownCategories} onCreate={createFromModal} onClose={() => setShowNewCard(false)} />}
     </div>
   );
 }

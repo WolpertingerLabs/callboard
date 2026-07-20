@@ -28,6 +28,7 @@ export type {
   CardListResponse,
   CardResponse,
 } from "./card.js";
+export { CARD_CATEGORY_MAX } from "./card.js";
 
 export type { ParsedMessage } from "./message.js";
 

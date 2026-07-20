@@ -1,9 +1,12 @@
 import { useState } from "react";
 import type { CardPayload } from "../../api";
+import { CARD_CATEGORY_MAX } from "../../api";
 import ModalOverlay from "../ModalOverlay";
 import { Plus } from "lucide-react";
 
 interface NewCardModalProps {
+  /** Existing category labels offered as autocomplete suggestions. */
+  categories: string[];
   onCreate: (payload: CardPayload) => void | Promise<void>;
   onClose: () => void;
 }
@@ -19,9 +22,10 @@ const inputStyle: React.CSSProperties = {
 };
 
 /** Draft a card locally — nothing is created until the user saves. */
-export default function NewCardModal({ onCreate, onClose }: NewCardModalProps) {
+export default function NewCardModal({ categories, onCreate, onClose }: NewCardModalProps) {
   const [title, setTitle] = useState("");
   const [emoji, setEmoji] = useState("");
+  const [category, setCategory] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -34,6 +38,7 @@ export default function NewCardModal({ onCreate, onClose }: NewCardModalProps) {
       await onCreate({
         title: title.trim(),
         ...(emoji.trim() && { emoji: emoji.trim() }),
+        ...(category.trim() && { category: category.trim() }),
         ...(description.trim() && { description }),
       });
     } finally {
@@ -78,6 +83,26 @@ export default function NewCardModal({ onCreate, onClose }: NewCardModalProps) {
             style={inputStyle}
           />
         </div>
+
+        <input
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") create();
+            if (e.key === "Escape") onClose();
+          }}
+          maxLength={CARD_CATEGORY_MAX}
+          list="new-card-category-options"
+          placeholder="Category (optional — groups the card on the board)"
+          style={inputStyle}
+        />
+        {categories.length > 0 && (
+          <datalist id="new-card-category-options">
+            {categories.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+        )}
 
         <textarea
           value={description}
