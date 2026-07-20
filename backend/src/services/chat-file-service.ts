@@ -175,8 +175,8 @@ export class ChatFileService {
 
   // Update specific metadata fields on a chat (read-merge-write).
   // `touch: false` preserves updated_at — for view-only writes (board card
-  // membership, inbox dismissal) that must not resurface a chat as unread or
-  // reorder it in the sidebar.
+  // membership) that must not resurface a chat as unread or reorder it in
+  // the sidebar.
   updateChatMetadata(id: string, fields: Record<string, unknown>, opts?: { touch?: boolean }): boolean {
     const chat = this.getChat(id);
     if (!chat) return false;

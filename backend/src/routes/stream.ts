@@ -201,9 +201,9 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(typeof chatRole === "string" && chatRole && { chatRole }),
         }),
       // Card membership — attach only to an existing OPEN card. Unknown or
-      // closed ids are dropped silently (the chat lands in the board inbox
-      // where the user can re-file it) rather than failing the send or
-      // stamping a chat onto a card hidden in the Closed strip.
+      // closed ids are dropped silently (the chat stays card-less and the
+      // user can file it from the sidebar's chat menu) rather than failing
+      // the send or stamping a chat onto a card hidden in the Closed strip.
       ...(safeCardId && { cardId: safeCardId }),
       // Auto-create a card only when no explicit card was requested at all —
       // a stale (closed/deleted) cardId drops the association entirely

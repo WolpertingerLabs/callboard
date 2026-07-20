@@ -23,6 +23,8 @@ interface Props {
   onChatClick: (chat: Chat) => void;
   onDelete: (chat: Chat) => void;
   onToggleBookmark: (chat: Chat, bookmarked: boolean) => void;
+  onCreateCard: (chat: Chat) => void;
+  onAddToCard: (chat: Chat) => void;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
 }
 
@@ -175,7 +177,7 @@ function TreeNodeRow({
   );
 }
 
-export default function ChatTreeList({ chats, activeChatId, onChatClick, onDelete, onToggleBookmark, sessionStatusFor }: Props) {
+export default function ChatTreeList({ chats, activeChatId, onChatClick, onDelete, onToggleBookmark, onCreateCard, onAddToCard, sessionStatusFor }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [trees, setTrees] = useState<Record<string, ChatTreeResponse>>({});
@@ -252,6 +254,8 @@ export default function ChatTreeList({ chats, activeChatId, onChatClick, onDelet
               onClick={() => onChatClick(chat)}
               onDelete={() => onDelete(chat)}
               onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
+              onCreateCard={() => onCreateCard(chat)}
+              onAddToCard={() => onAddToCard(chat)}
               sessionStatus={sessionStatusFor(chat.id)}
             />
           );
@@ -296,6 +300,8 @@ export default function ChatTreeList({ chats, activeChatId, onChatClick, onDelet
                   onClick={() => onChatClick(chat)}
                   onDelete={() => onDelete(chat)}
                   onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
+                  onCreateCard={() => onCreateCard(chat)}
+                  onAddToCard={() => onAddToCard(chat)}
                   sessionStatus={sessionStatusFor(chat.id)}
                 />
               </div>

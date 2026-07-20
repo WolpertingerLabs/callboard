@@ -1,7 +1,19 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Plus, Settings, Bot, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText } from "lucide-react";
-import { listChats, deleteChat, toggleBookmark, getDrafts, deleteDraft, type Chat, type QueueItem } from "../api";
+import {
+  listChats,
+  deleteChat,
+  toggleBookmark,
+  getDrafts,
+  deleteDraft,
+  listCards,
+  createCard,
+  assignChatToCard,
+  type Chat,
+  type QueueItem,
+  type CardSummary,
+} from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
 import ChatListItem from "../components/ChatListItem";
@@ -10,6 +22,7 @@ import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
+import CardPicker from "../components/board/CardPicker";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { DEFAULT_CHAT_FILTERS, hasActiveFilters, type ChatFilters } from "../types/chatFilters";
 import {
@@ -66,6 +79,9 @@ export default function ChatList({
     chatId: "",
     chatName: "",
   });
+  // Card-picker modal state for the per-chat "Add to card…" action.
+  const [pickerChat, setPickerChat] = useState<Chat | null>(null);
+  const [pickerCards, setPickerCards] = useState<CardSummary[]>([]);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
@@ -293,6 +309,53 @@ export default function ChatList({
     } catch (err) {
       console.error("Failed to toggle bookmark:", err);
     }
+  };
+
+  /** Optimistically stamp a chat's card membership into local state. */
+  const applyCardId = (chatId: string, cardId: string) => {
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id !== chatId) return c;
+        try {
+          const meta = JSON.parse(c.metadata || "{}");
+          meta.cardId = cardId;
+          return { ...c, metadata: JSON.stringify(meta) };
+        } catch {
+          return c;
+        }
+      }),
+    );
+  };
+
+  /** Title for a card promoted from a chat — same derivation as the board's old inbox promote. */
+  const chatCardTitle = (chat: Chat): string => {
+    try {
+      const meta = JSON.parse(chat.metadata || "{}");
+      return ((typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || "Untitled chat").slice(0, 120);
+    } catch {
+      return "Untitled chat";
+    }
+  };
+
+  const handleCreateCard = async (chat: Chat) => {
+    try {
+      const res = await createCard({ title: chatCardTitle(chat) }, chat.id);
+      applyCardId(chat.id, res.card.id);
+    } catch (err) {
+      console.error("Failed to create card from chat:", err);
+    }
+  };
+
+  const handleAddToCard = (chat: Chat) => {
+    setPickerChat(chat);
+    setPickerCards([]);
+    listCards()
+      .then((res) => setPickerCards(res.cards))
+      .catch((err) => {
+        // Close rather than show a misleading "No open cards yet" empty state.
+        console.error("Failed to load cards:", err);
+        setPickerChat(null);
+      });
   };
 
   const handleToggleBookmarkFilter = () => {
@@ -575,6 +638,8 @@ export default function ChatList({
             onChatClick={handleChatClick}
             onDelete={handleDelete}
             onToggleBookmark={handleToggleBookmark}
+            onCreateCard={handleCreateCard}
+            onAddToCard={handleAddToCard}
             sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           />
         ) : (
@@ -586,6 +651,8 @@ export default function ChatList({
               onClick={() => handleChatClick(chat)}
               onDelete={() => handleDelete(chat)}
               onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
+              onCreateCard={() => handleCreateCard(chat)}
+              onAddToCard={() => handleAddToCard(chat)}
               sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
             />
           ))
@@ -636,6 +703,33 @@ export default function ChatList({
         confirmText="Delete"
         confirmStyle="danger"
       />
+
+      {pickerChat && (
+        <CardPicker
+          cards={pickerCards}
+          onSelect={async (cardId) => {
+            try {
+              await assignChatToCard(pickerChat.id, cardId);
+              applyCardId(pickerChat.id, cardId);
+              setPickerChat(null);
+            } catch (err) {
+              // Keep the picker open so the failure is visible and retryable.
+              console.error("Failed to assign chat to card:", err);
+            }
+          }}
+          onCreate={async (title) => {
+            try {
+              const res = await createCard({ title }, pickerChat.id);
+              applyCardId(pickerChat.id, res.card.id);
+              setPickerChat(null);
+            } catch (err) {
+              // Keep the picker open so the failure is visible and retryable.
+              console.error("Failed to create card from chat:", err);
+            }
+          }}
+          onClose={() => setPickerChat(null)}
+        />
+      )}
     </div>
   );
 }
