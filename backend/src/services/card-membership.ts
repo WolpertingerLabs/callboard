@@ -1,12 +1,11 @@
 /**
  * Card membership on the chat side. Chats point at a card via
  * metadata.cardId; unassign writes `cardId: null` (the key stays present, so
- * membership is a string check, never key presence). Board dismissal is the
- * same shape via metadata.boardDismissed.
+ * membership is a string check, never key presence).
  *
  * All writes here are VIEW-ONLY: they must not bump updated_at (which would
  * mark the chat unread and reorder the sidebar) and must invalidate the
- * chat-list cache so the board inbox reflects the change on its next poll.
+ * chat-list cache so chat lists reflect the change on their next poll.
  * Single choke point so the REST routes and the MCP tools behave identically,
  * including for chats that exist only as filesystem sessions.
  */
@@ -63,9 +62,4 @@ function writeViewMeta(chatId: string, fields: Record<string, unknown>): boolean
 /** Assign the chat to a card, or unassign with cardId = null. Lifecycle is the caller's to enforce. */
 export function setChatCardMembership(chatId: string, cardId: string | null): boolean {
   return writeViewMeta(chatId, { cardId });
-}
-
-/** Hide/restore a chat in the board inbox — affects no other view. */
-export function setBoardDismissed(chatId: string, dismissed: boolean): boolean {
-  return writeViewMeta(chatId, { boardDismissed: dismissed });
 }

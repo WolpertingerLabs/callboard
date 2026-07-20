@@ -1,10 +1,11 @@
-import { useState } from "react";
-import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell, Workflow } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell, Workflow, EllipsisVertical, SquarePlus, FolderInput } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ProviderBadge from "./ProviderBadge";
 import FolderPathPill from "./FolderPathPill";
+import MenuRow from "./MenuRow";
 
 interface Props {
   chat: Chat;
@@ -12,14 +13,45 @@ interface Props {
   onClick: () => void;
   onDelete: () => void;
   onToggleBookmark?: (bookmarked: boolean) => void;
+  /** Promote this card-less chat to a brand-new card. Hidden when the chat already has a card. */
+  onCreateCard?: () => void;
+  /** Open a picker to file this card-less chat onto an existing card. Hidden when the chat already has a card. */
+  onAddToCard?: () => void;
   sessionStatus?: { active: boolean; type: string };
 }
 
-export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, sessionStatus }: Props) {
+/** Rough popup height used to decide whether the menu opens downward or upward. */
+const MENU_ESTIMATED_HEIGHT = 210;
+
+export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, onCreateCard, onAddToCard, sessionStatus }: Props) {
   const [hovered, setHovered] = useState(false);
+  // The kebab popup escapes the sidebar's overflow:auto scroll container via
+  // position:fixed, anchored to the button's viewport rect at open time.
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+  const menuOpen = menuPos !== null;
   const isMobile = useIsMobile();
-  // On touch/mobile there is no hover, so keep the row actions visible.
-  const showActions = isMobile || hovered;
+  // On touch/mobile there is no hover, so keep the row actions visible. Also
+  // keep the kebab mounted while its menu is open (hover is lost to the popup).
+  const showActions = isMobile || hovered || menuOpen;
+
+  // The menu is anchored to the kebab's viewport rect at open time, so close
+  // it on any scroll (else it detaches from its row) and on Escape — matching
+  // the composer menu's behavior in PromptInput.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuPos(null);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
   const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
@@ -41,11 +73,13 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let provider: string | undefined;
   let jobRunId: string | undefined;
   let jobStepId: string | undefined;
+  let hasCard = false;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     title = meta.title;
     preview = meta.preview;
     isBookmarked = meta.bookmarked === true;
+    hasCard = typeof meta.cardId === "string" && !!meta.cardId;
     agentAlias = meta.agentAlias;
     isTriggered = meta.triggered === true;
     lastReadAt = meta.lastReadAt;
@@ -279,37 +313,111 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
             flexShrink: 0,
           }}
         >
-          {onToggleBookmark && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleBookmark(!isBookmarked);
-              }}
-              title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
-              style={{
-                background: "none",
-                color: isBookmarked ? "var(--chatlist-bookmark-icon)" : "var(--chatlist-icon)",
-                padding: "2px",
-                display: "flex",
-                alignItems: "center",
-              }}
-            >
-              <Bookmark size={14} fill={isBookmarked ? "currentColor" : "none"} />
-            </button>
-          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onDelete();
+              if (menuOpen) {
+                setMenuPos(null);
+                return;
+              }
+              const rect = e.currentTarget.getBoundingClientRect();
+              const right = Math.max(8, window.innerWidth - rect.right);
+              // Flip upward when there isn't room below in the viewport.
+              if (rect.bottom + MENU_ESTIMATED_HEIGHT > window.innerHeight) {
+                setMenuPos({ bottom: window.innerHeight - rect.top + 4, right });
+              } else {
+                setMenuPos({ top: rect.bottom + 4, right });
+              }
             }}
+            title="Chat actions"
             style={{
               background: "none",
-              color: "var(--chatlist-icon-delete)",
+              color: menuOpen ? "var(--chatlist-icon-active)" : "var(--chatlist-icon)",
               padding: "2px 4px",
+              display: "flex",
+              alignItems: "center",
             }}
           >
-            <X size={14} />
+            <EllipsisVertical size={14} />
           </button>
+          {menuOpen && (
+            <>
+              {/* Click-away overlay — also blocks the row's onClick. */}
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuPos(null);
+                }}
+                style={{ position: "fixed", inset: 0, zIndex: 50 }}
+              />
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "fixed",
+                  top: menuPos.top,
+                  bottom: menuPos.bottom,
+                  right: menuPos.right,
+                  minWidth: 180,
+                  zIndex: 51,
+                  padding: 6,
+                  borderRadius: 10,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  boxShadow: "var(--shadow-md)",
+                }}
+              >
+                {onToggleBookmark && (
+                  <MenuRow
+                    icon={
+                      <Bookmark
+                        size={16}
+                        style={{ color: isBookmarked ? "var(--chatlist-bookmark-icon)" : undefined }}
+                        fill={isBookmarked ? "var(--chatlist-bookmark-icon)" : "none"}
+                      />
+                    }
+                    label={isBookmarked ? "Remove bookmark" : "Bookmark"}
+                    title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
+                    onClick={() => {
+                      setMenuPos(null);
+                      onToggleBookmark(!isBookmarked);
+                    }}
+                  />
+                )}
+                {!hasCard && onCreateCard && (
+                  <MenuRow
+                    icon={<SquarePlus size={16} />}
+                    label="Create card"
+                    title="Promote this chat to a new card"
+                    onClick={() => {
+                      setMenuPos(null);
+                      onCreateCard();
+                    }}
+                  />
+                )}
+                {!hasCard && onAddToCard && (
+                  <MenuRow
+                    icon={<FolderInput size={16} />}
+                    label="Add to card…"
+                    title="Add this chat to an existing card"
+                    onClick={() => {
+                      setMenuPos(null);
+                      onAddToCard();
+                    }}
+                  />
+                )}
+                <MenuRow
+                  icon={<X size={16} />}
+                  label="Delete"
+                  title="Delete this chat"
+                  danger
+                  onClick={() => {
+                    setMenuPos(null);
+                    onDelete();
+                  }}
+                />
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

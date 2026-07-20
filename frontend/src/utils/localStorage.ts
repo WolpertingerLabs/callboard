@@ -32,8 +32,6 @@ interface LocalStorageData {
   chatListLayout?: "flat" | "tree";
   /** Whether the board's Closed section is expanded. */
   boardClosedExpanded?: boolean;
-  /** Whether the board's Inbox section is expanded (it fetches lazily on expand). */
-  boardInboxExpanded?: boolean;
   folderMaxAgeDays?: number;
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
@@ -378,17 +376,6 @@ export function getBoardClosedExpanded(): boolean {
 export function saveBoardClosedExpanded(expanded: boolean): void {
   const data = getStorageData();
   data.boardClosedExpanded = expanded;
-  setStorageData(data);
-}
-
-export function getBoardInboxExpanded(): boolean {
-  const data = getStorageData();
-  return data.boardInboxExpanded === true;
-}
-
-export function saveBoardInboxExpanded(expanded: boolean): void {
-  const data = getStorageData();
-  data.boardInboxExpanded = expanded;
   setStorageData(data);
 }
 
