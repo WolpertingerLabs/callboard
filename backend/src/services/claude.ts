@@ -1567,12 +1567,33 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   }
                 }
               } else {
-                // Existing chat: append session_id to metadata
-                const ids: string[] = initialMetadata.session_ids || [];
+                // Existing chat: append the new session id, merging into a
+                // FRESH read of the stored record. `initialMetadata` is a
+                // snapshot from when this message started, and this branch
+                // re-runs on stream-recovery / nudge / model-switch resumes —
+                // by then the snapshot can be minutes stale, and overwriting
+                // with it would silently drop anything written concurrently
+                // (card membership, generated title, read state, ...).
+                const stored = chatFileService.getChat(trackingId);
+                let meta: Record<string, any> | null = null;
+                if (stored) {
+                  try {
+                    const parsed = JSON.parse(stored.metadata || "{}");
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed;
+                  } catch {}
+                }
+                // Record missing or unreadable mid-run — fall back to the
+                // snapshot so a deleted record is recreated and the live
+                // session stays reachable from the UI.
+                if (!meta) meta = initialMetadata;
+                const ids: string[] = Array.isArray(meta.session_ids) ? meta.session_ids : initialMetadata.session_ids || [];
                 if (!ids.includes(sessionId)) ids.push(sessionId);
+                meta.session_ids = ids;
+                // Keep the snapshot's list in sync so the fallback above
+                // stays complete on later resumes in this run.
                 initialMetadata.session_ids = ids;
                 chatFileService.upsertChat(trackingId, folder, sessionId, {
-                  metadata: JSON.stringify(initialMetadata),
+                  metadata: JSON.stringify(meta),
                 });
               }
               break;

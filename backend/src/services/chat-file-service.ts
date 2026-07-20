@@ -125,6 +125,13 @@ export class ChatFileService {
   }
 
   // Create or update a chat - useful when chat might only exist in filesystem
+  //
+  // CAUTION: `updates.metadata` replaces the ENTIRE metadata blob (last write
+  // wins). Never pass a metadata string parsed before an await or event
+  // boundary — concurrent field writes (cardId, title, lastReadAt, ...) would
+  // be silently dropped. For field-level changes use updateChatMetadata,
+  // which read-merge-writes atomically; only pass metadata here when it was
+  // derived from a fresh synchronous read (or the record is known not to exist).
   upsertChat(id: string, folder: string, sessionId: string, updates: Partial<Chat>): Chat {
     log.debug(`upsertChat — id=${id}, folder=${folder}, sessionId=${sessionId}`);
     const existingChat = this.getChat(id);
