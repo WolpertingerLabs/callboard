@@ -3,6 +3,7 @@ import { Route, Plus, Trash2, Save, Check } from "lucide-react";
 import { getAgentSettings, updateAgentSettings } from "../../api";
 import type { ModelAlias } from "shared/types/index.js";
 import { validateModelAliases } from "shared/types/index.js";
+import ClaudeModelSelector from "../../components/ClaudeModelSelector";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 
@@ -202,15 +203,7 @@ export default function ModelAliasesSettings() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
                 <div style={{ minWidth: 0 }}>
                   <label style={colLabel}>Claude Code</label>
-                  <input
-                    type="text"
-                    value={row.claudeCode}
-                    onChange={(e) => update(i, { claudeCode: e.target.value })}
-                    placeholder="opus / claude-sonnet-4-6"
-                    autoComplete="off"
-                    spellCheck={false}
-                    style={inputStyle}
-                  />
+                  <ClaudeModelSelector value={row.claudeCode} onChange={(v) => update(i, { claudeCode: v })} placeholder="opus / claude-sonnet-4-6" />
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <label style={colLabel}>OpenRouter</label>
