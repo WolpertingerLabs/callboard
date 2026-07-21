@@ -14,7 +14,7 @@ export const providerModelSchema = {
     .string()
     .optional()
     .describe(
-      'Model for the session. With provider="openrouter": an OR slug (e.g. "anthropic/claude-opus-4.7") or alias ("~anthropic/claude-sonnet-latest") — use search_openrouter_models to discover. With provider="codex": a Codex model slug (e.g. "gpt-5.5") — use search_codex_models to discover. With provider="claude-code": an Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or full model ID (e.g. "claude-sonnet-4-6"). Omit to use the provider\'s configured default.',
+      'Model for the session. With provider="openrouter": an OR slug (e.g. "anthropic/claude-opus-4.7") or alias ("~anthropic/claude-sonnet-latest") — use search_openrouter_models to discover. With provider="codex": a Codex model slug (e.g. "gpt-5.5") — use search_codex_models to discover. With provider="claude-code": an Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or full model ID (e.g. "claude-sonnet-4-6"). A cross-harness model alias (e.g. "planner") also works with ANY provider and resolves to that provider\'s configured target — use list_model_aliases to discover. Omit to use the provider\'s configured default.',
     ),
   modelRouting: z
     .boolean()

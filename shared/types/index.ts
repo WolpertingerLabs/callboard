@@ -94,6 +94,9 @@ export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./prov
 export type { ModelRoutingClass, ModelRoutingRank, ModelRoutingConfig } from "./modelRouting.js";
 export { validateModelRoutingConfig, resolveRoutedModel } from "./modelRouting.js";
 
+export type { HarnessProvider, ModelAlias, ModelAliasInfo } from "./modelAlias.js";
+export { HARNESS_PROVIDERS, validateModelAliases } from "./modelAlias.js";
+
 export type { ContactChannel, UserContactInfo, NotifiableChannel } from "./userContact.js";
 
 export type {

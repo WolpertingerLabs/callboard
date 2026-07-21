@@ -447,7 +447,6 @@ export default function ApiSettings() {
   const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState("");
   // Custom model aliases, edited as ordered rows; converted to the
   // Record<alias, modelId> shape on save. Blank rows are dropped on save.
-  const [aliasRows, setAliasRows] = useState<{ alias: string; modelId: string }[]>([]);
   // OpenRouter server tools. `undefined` = unowned (toggles show harness
   // defaults); any user edit transitions to an explicit array we own — even
   // `[]`, which means "all server tools disabled".
@@ -496,7 +495,6 @@ export default function ApiSettings() {
       setOpenRouterModel(s.openRouterModel ?? "");
       setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
       setOpenRouterMaxBudgetUsd(typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "");
-      setAliasRows(Object.entries(s.openRouterModelAliases ?? {}).map(([alias, modelId]) => ({ alias, modelId })));
       setServerTools(s.openRouterServerTools);
       setModelParamsDefault(s.openRouterModelParamsDefault ?? {});
       setModelParamRows(Object.entries(s.openRouterModelParamProfiles ?? {}).map(([slug, profile]) => ({ slug, profile })));
@@ -584,11 +582,6 @@ export default function ApiSettings() {
         // prior saved value intact, making the input unable to clear an
         // override.
         openRouterMaxBudgetUsd: (openRouterMaxBudgetUsd.trim() === "" ? null : Number(openRouterMaxBudgetUsd)) as number | undefined,
-        // Rows with either side blank are dropped; an empty map clears all
-        // aliases (the route stores undefined for an empty object).
-        openRouterModelAliases: Object.fromEntries(
-          aliasRows.map((r) => [r.alias.trim(), r.modelId.trim()]).filter(([alias, modelId]) => alias !== "" && modelId !== ""),
-        ),
         // Server tools: send the explicit array (including `[]` = all disabled)
         // once owned; `undefined` while unowned so the harness keeps its
         // defaults. JSON.stringify drops `undefined`, so the route's
@@ -614,8 +607,6 @@ export default function ApiSettings() {
         codexOpenRouterApiKey,
       });
       setSettings(updated);
-      // Re-sync alias rows so blank rows dropped on save disappear from the form.
-      setAliasRows(Object.entries(updated.openRouterModelAliases ?? {}).map(([alias, modelId]) => ({ alias, modelId })));
       // Re-sync the OR tool/param state from the saved value.
       setServerTools(updated.openRouterServerTools);
       setModelParamsDefault(updated.openRouterModelParamsDefault ?? {});
@@ -654,10 +645,6 @@ export default function ApiSettings() {
 
   // Inline alias validation — mirrors the backend's write-time rules so the
   // user sees the problem before Save bounces with a 400.
-  const aliasNames = aliasRows.map((r) => r.alias.trim().toLowerCase()).filter((a) => a !== "");
-  const duplicateAliasNames = [...new Set(aliasNames.filter((a, i) => aliasNames.indexOf(a) !== i))];
-  const aliasNameSet = new Set(aliasNames);
-  const aliasTargetingAlias = aliasRows.find((r) => r.modelId.trim() !== "" && aliasNameSet.has(r.modelId.trim().toLowerCase()));
 
   return (
     <>
@@ -1035,82 +1022,9 @@ export default function ApiSettings() {
 
             <div style={fieldWrap}>
               <label style={labelStyle}>Model Aliases</label>
-              <div style={{ ...helpStyle, marginTop: 0, marginBottom: 8 }}>
-                Name your own shortcuts for models — e.g. <code style={{ fontSize: 11 }}>low coder</code> →{" "}
-                <code style={{ fontSize: 11 }}>deepseek/deepseek-chat</code>. Aliases work anywhere an OpenRouter model can be set (new chats, the default model
-                above, scheduled jobs). Re-pointing an alias applies to every chat using it. An alias with the same name as a real model wins.
-              </div>
-              {aliasRows.map((row, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-                  <input
-                    type="text"
-                    value={row.alias}
-                    onChange={(e) => setAliasRows((rows) => rows.map((r, j) => (j === i ? { ...r, alias: e.target.value } : r)))}
-                    placeholder="low coder"
-                    autoComplete="off"
-                    spellCheck={false}
-                    style={{ ...inputStyle, width: 180, flexShrink: 0 }}
-                  />
-                  <span style={{ color: "var(--text-muted)", fontSize: 12, flexShrink: 0 }}>→</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <OpenRouterModelSelector
-                      value={row.modelId}
-                      onChange={(v) => setAliasRows((rows) => rows.map((r, j) => (j === i ? { ...r, modelId: v } : r)))}
-                      placeholder="deepseek/deepseek-chat"
-                      excludeAliases
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setAliasRows((rows) => rows.filter((_, j) => j !== i))}
-                    title="Remove alias"
-                    style={{
-                      background: "transparent",
-                      border: "1px solid var(--border)",
-                      borderRadius: 8,
-                      color: "var(--text-muted)",
-                      cursor: "pointer",
-                      padding: 8,
-                      display: "flex",
-                      alignItems: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-              {duplicateAliasNames.length > 0 && (
-                <div style={{ fontSize: 11, color: "var(--error)", marginBottom: 8 }}>
-                  Duplicate alias name{duplicateAliasNames.length > 1 ? "s" : ""}: {duplicateAliasNames.join(", ")}
-                </div>
-              )}
-              {aliasTargetingAlias && (
-                <div style={{ fontSize: 11, color: "var(--error)", marginBottom: 8 }}>
-                  &ldquo;{aliasTargetingAlias.modelId.trim()}&rdquo; is itself an alias — targets must be real model slugs.
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setAliasRows((rows) => [...rows, { alias: "", modelId: "" }])}
-                style={{
-                  background: "transparent",
-                  border: "1px dashed var(--border)",
-                  borderRadius: 8,
-                  color: "var(--text-muted)",
-                  cursor: "pointer",
-                  padding: "8px 12px",
-                  fontSize: 12,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <Plus size={14} /> Add alias
-              </button>
-              <div style={helpStyle}>
-                Deleting an alias does not update chats already using it — they will fail to start until the alias is recreated or the chat&rsquo;s model is
-                changed.
+              <div style={{ ...helpStyle, marginTop: 0 }}>
+                Model aliases now live in their own <strong>Settings → Model Aliases</strong> tab and work across all three harnesses (Claude Code,
+                OpenRouter, Codex), not just OpenRouter. Any aliases you had here were carried over automatically.
               </div>
             </div>
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
-import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Route } from "lucide-react";
+import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Route, Tags } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
 import PluginsSettings from "./settings/PluginsSettings";
@@ -12,10 +12,12 @@ import ApiSettings from "./settings/ApiSettings";
 import SkillsSettings from "./settings/SkillsSettings";
 import JobsSettings from "./settings/JobsSettings";
 import ModelRoutingSettings from "./settings/ModelRoutingSettings";
+import ModelAliasesSettings from "./settings/ModelAliasesSettings";
 
 const tabs = [
   { key: "general", label: "General", icon: SlidersHorizontal },
   { key: "api", label: "API", icon: Key },
+  { key: "model-aliases", label: "Model Aliases", icon: Tags },
   { key: "model-routing", label: "Model Routing", icon: Route },
   { key: "skills", label: "Skills", icon: Sparkles },
   { key: "jobs", label: "Jobs", icon: Workflow },
@@ -124,6 +126,7 @@ export default function Settings({ onLogout }: SettingsProps) {
       <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
         {activeTab === "general" && <GeneralSettings />}
         {activeTab === "api" && <ApiSettings />}
+        {activeTab === "model-aliases" && <ModelAliasesSettings />}
         {activeTab === "model-routing" && <ModelRoutingSettings />}
         {activeTab === "skills" && <SkillsSettings />}
         {activeTab === "jobs" && <JobsSettings />}

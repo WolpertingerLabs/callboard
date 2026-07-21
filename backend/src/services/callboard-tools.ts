@@ -30,6 +30,7 @@ import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
+import { buildModelAliasTools } from "./model-alias-tools.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -1516,6 +1517,11 @@ export function buildCallboardToolsSpec(
       // Distinct from reclassify_model (model-routing-tools.ts), which is
       // per-chat and only injected for routed chats.
       ...buildModelRoutingConfigTools(),
+
+      // ── Model aliases: view/edit the cross-harness alias registry ───
+      // Global (not per-chat). `model: "<alias>"` resolves to a different
+      // concrete model per provider at session start (resolveModelAlias).
+      ...buildModelAliasTools(),
     ],
   };
 }

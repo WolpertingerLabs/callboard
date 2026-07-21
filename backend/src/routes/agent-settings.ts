@@ -11,8 +11,8 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { OpenRouterServerToolConfig, OpenRouterParamProfile, ModelRoutingConfig } from "shared/types/index.js";
-import { validateServerTools, validateParamProfile, validateModelRoutingConfig } from "shared/types/index.js";
+import type { OpenRouterServerToolConfig, OpenRouterParamProfile, ModelRoutingConfig, ModelAlias } from "shared/types/index.js";
+import { validateServerTools, validateParamProfile, validateModelRoutingConfig, validateModelAliases } from "shared/types/index.js";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases, listEnrolledCallers, deleteEnrolledCaller, setDefaultCaller } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
@@ -69,6 +69,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterLogsRoot,
     openRouterMaxBudgetUsd,
     openRouterModelAliases,
+    modelAliases,
     openRouterServerTools,
     openRouterModelParamsDefault,
     openRouterModelParamProfiles,
@@ -171,6 +172,16 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       return;
     }
     normalizedAliases = result.aliases;
+  }
+
+  let normalizedModelAliases: ModelAlias[] | undefined;
+  if (modelAliases !== undefined) {
+    const { value, errors } = validateModelAliases(modelAliases);
+    if (errors.length > 0) {
+      res.status(400).json({ error: errors.join("; ") });
+      return;
+    }
+    normalizedModelAliases = value.length > 0 ? value : undefined;
   }
 
   // Validate the OpenRouter server-tools list. An explicit empty array is
@@ -308,6 +319,13 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
       ...(openRouterMaxBudgetUsd !== undefined && { openRouterMaxBudgetUsd: normalizeNumber(openRouterMaxBudgetUsd) }),
       ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
+      // Writing the unified registry retires the deprecated OR-only map (its
+      // entries are already folded into the openrouter targets on load). Skip
+      // the retire if the same request also explicitly set the legacy map.
+      ...(modelAliases !== undefined && {
+        modelAliases: normalizedModelAliases,
+        ...(openRouterModelAliases === undefined && { openRouterModelAliases: undefined }),
+      }),
       ...(openRouterServerTools !== undefined && { openRouterServerTools: normalizedServerTools }),
       ...(openRouterModelParamsDefault !== undefined && { openRouterModelParamsDefault: normalizedParamsDefault }),
       ...(openRouterModelParamProfiles !== undefined && { openRouterModelParamProfiles: normalizedParamProfiles }),

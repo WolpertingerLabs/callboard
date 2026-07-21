@@ -1,46 +1,122 @@
 import { describe, it, expect } from "vitest";
-import { resolveOpenRouterModel } from "./agent-settings.js";
-import type { AgentSettings } from "shared";
+import { resolveModelAlias, resolveOpenRouterModel, resolveSessionModel } from "./agent-settings.js";
+import type { AgentSettings, ModelAlias } from "shared";
 
-const settings = (aliases?: Record<string, string>): AgentSettings => ({
+const withAliases = (modelAliases?: ModelAlias[]): AgentSettings => ({
+  proxyMode: "local",
+  ...(modelAliases && { modelAliases }),
+});
+
+const legacy = (aliases?: Record<string, string>): AgentSettings => ({
   proxyMode: "local",
   ...(aliases && { openRouterModelAliases: aliases }),
 });
 
-describe("resolveOpenRouterModel", () => {
-  it("resolves an alias to its target slug", () => {
-    const s = settings({ "low coder": "deepseek/deepseek-chat" });
-    expect(resolveOpenRouterModel("low coder", s)).toBe("deepseek/deepseek-chat");
+const planner: ModelAlias = {
+  name: "planner",
+  targets: { "claude-code": "opus", openrouter: "anthropic/claude-opus-4.8", codex: "gpt-5.5" },
+};
+
+describe("resolveModelAlias", () => {
+  it("resolves an alias to the target for the requested provider", () => {
+    const s = withAliases([planner]);
+    expect(resolveModelAlias("planner", "claude-code", s)).toBe("opus");
+    expect(resolveModelAlias("planner", "openrouter", s)).toBe("anthropic/claude-opus-4.8");
+    expect(resolveModelAlias("planner", "codex", s)).toBe("gpt-5.5");
   });
 
-  it("is case-insensitive on the alias name", () => {
-    const s = settings({ "Low Coder": "deepseek/deepseek-chat" });
-    expect(resolveOpenRouterModel("low coder", s)).toBe("deepseek/deepseek-chat");
-    expect(resolveOpenRouterModel("LOW CODER", s)).toBe("deepseek/deepseek-chat");
+  it("returns undefined when the alias has no target for that provider", () => {
+    const s = withAliases([{ name: "worker", targets: { openrouter: "moonshotai/kimi-k2" } }]);
+    expect(resolveModelAlias("worker", "openrouter", s)).toBe("moonshotai/kimi-k2");
+    expect(resolveModelAlias("worker", "claude-code", s)).toBeUndefined();
+    expect(resolveModelAlias("worker", "codex", s)).toBeUndefined();
   });
 
-  it("trims surrounding whitespace before matching", () => {
-    const s = settings({ "low coder": "deepseek/deepseek-chat" });
-    expect(resolveOpenRouterModel("  low coder ", s)).toBe("deepseek/deepseek-chat");
+  it("is case-insensitive and trims the alias name", () => {
+    const s = withAliases([{ name: "Planner", targets: { codex: "gpt-5.5" } }]);
+    expect(resolveModelAlias("  PLANNER ", "codex", s)).toBe("gpt-5.5");
   });
 
-  it("passes non-alias values through unchanged", () => {
-    const s = settings({ "low coder": "deepseek/deepseek-chat" });
-    expect(resolveOpenRouterModel("anthropic/claude-opus-4.7", s)).toBe("anthropic/claude-opus-4.7");
+  it("passes non-alias values through unchanged for every provider", () => {
+    const s = withAliases([planner]);
+    expect(resolveModelAlias("anthropic/claude-opus-4.7", "openrouter", s)).toBe("anthropic/claude-opus-4.7");
+    expect(resolveModelAlias("opus", "claude-code", s)).toBe("opus");
+    expect(resolveModelAlias("gpt-5.5-mini", "codex", s)).toBe("gpt-5.5-mini");
   });
 
-  it("lets an alias shadow a real model slug of the same name", () => {
-    const s = settings({ "anthropic/claude-sonnet-4-6": "moonshotai/kimi-k2" });
-    expect(resolveOpenRouterModel("anthropic/claude-sonnet-4-6", s)).toBe("moonshotai/kimi-k2");
-  });
-
-  it("passes values through when no aliases are configured", () => {
-    expect(resolveOpenRouterModel("openai/gpt-4o", settings())).toBe("openai/gpt-4o");
+  it("lets an alias shadow a real model id of the same name", () => {
+    const s = withAliases([{ name: "gpt-5.5", targets: { codex: "gpt-5.5-mini" } }]);
+    expect(resolveModelAlias("gpt-5.5", "codex", s)).toBe("gpt-5.5-mini");
   });
 
   it("returns undefined/empty input unchanged", () => {
-    const s = settings({ "low coder": "deepseek/deepseek-chat" });
-    expect(resolveOpenRouterModel(undefined, s)).toBeUndefined();
-    expect(resolveOpenRouterModel("", s)).toBe("");
+    const s = withAliases([planner]);
+    expect(resolveModelAlias(undefined, "codex", s)).toBeUndefined();
+    expect(resolveModelAlias("", "codex", s)).toBe("");
+  });
+
+  it("passes values through when no aliases are configured", () => {
+    expect(resolveModelAlias("openai/gpt-4o", "openrouter", withAliases())).toBe("openai/gpt-4o");
+  });
+
+  it("migrates a legacy openRouterModelAliases map into the openrouter target", () => {
+    const s = legacy({ "low coder": "deepseek/deepseek-chat" });
+    expect(resolveModelAlias("low coder", "openrouter", s)).toBe("deepseek/deepseek-chat");
+    // legacy map only carries an openrouter target — other providers fall through
+    expect(resolveModelAlias("low coder", "codex", s)).toBeUndefined();
+  });
+
+  it("does not let a legacy map overwrite an explicit openrouter target", () => {
+    const s: AgentSettings = {
+      proxyMode: "local",
+      openRouterModelAliases: { planner: "legacy/slug" },
+      modelAliases: [planner],
+    };
+    expect(resolveModelAlias("planner", "openrouter", s)).toBe("anthropic/claude-opus-4.8");
+  });
+});
+
+describe("resolveSessionModel", () => {
+  const s = withAliases([planner, { name: "codexonly", targets: { codex: "gpt-5.5" } }]);
+
+  it("prefers the per-chat override when it resolves for the provider", () => {
+    expect(resolveSessionModel("planner", "anthropic/default", "openrouter", s)).toBe("anthropic/claude-opus-4.8");
+  });
+
+  it("falls back to the provider default when there is no per-chat override", () => {
+    expect(resolveSessionModel(undefined, "anthropic/default", "openrouter", s)).toBe("anthropic/default");
+    expect(resolveSessionModel("", "anthropic/default", "openrouter", s)).toBe("anthropic/default");
+  });
+
+  it("resolves an alias used as the provider default", () => {
+    expect(resolveSessionModel(undefined, "planner", "codex", s)).toBe("gpt-5.5");
+  });
+
+  it("falls back to the configured default when the per-chat alias has no target for this provider", () => {
+    // "codexonly" has no openrouter target — must not be sent as a slug; use the default.
+    expect(resolveSessionModel("codexonly", "anthropic/default", "openrouter", s)).toBe("anthropic/default");
+  });
+
+  it("returns undefined when neither the override nor the default resolves", () => {
+    expect(resolveSessionModel("codexonly", undefined, "openrouter", s)).toBeUndefined();
+    expect(resolveSessionModel(undefined, undefined, "codex", s)).toBeUndefined();
+  });
+
+  it("passes a real slug override through, trimming whitespace", () => {
+    expect(resolveSessionModel("  openai/gpt-4o ", "x", "openrouter", s)).toBe("openai/gpt-4o");
+  });
+});
+
+describe("resolveOpenRouterModel (back-compat shim)", () => {
+  it("resolves via the openrouter provider", () => {
+    expect(resolveOpenRouterModel("planner", withAliases([planner]))).toBe("anthropic/claude-opus-4.8");
+  });
+
+  it("still resolves a legacy openRouterModelAliases map", () => {
+    expect(resolveOpenRouterModel("low coder", legacy({ "low coder": "deepseek/deepseek-chat" }))).toBe("deepseek/deepseek-chat");
+  });
+
+  it("passes non-alias values through", () => {
+    expect(resolveOpenRouterModel("openai/gpt-4o", legacy({ "low coder": "deepseek/deepseek-chat" }))).toBe("openai/gpt-4o");
   });
 });
