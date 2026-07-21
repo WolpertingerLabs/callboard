@@ -69,7 +69,14 @@ import CardAssociationSelector, { type CardAssociationConfig } from "../componen
 import GitDiffView from "../components/GitDiffView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
 import JobRunPanel from "../components/JobRunPanel";
-import { addRecentDirectory, getMaxTurns, getDefaultPermissions as getLocalDefaultPermissions, type EffortLevel } from "../utils/localStorage";
+import {
+  addRecentDirectory,
+  getMaxTurns,
+  getDefaultPermissions as getLocalDefaultPermissions,
+  getDefaultCreateCard,
+  saveDefaultCreateCard,
+  type EffortLevel,
+} from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import ModelRouterField from "../components/ModelRouterField";
 import type { ModelRoutingConfig } from "shared/types/index.js";
@@ -210,7 +217,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // existing open card (seeded from the board's "New chat on card" action), or
   // neither (default).
   const [cardConfig, setCardConfig] = useState<CardAssociationConfig>({
-    createCard: false,
+    // Default the "Create card" toggle to the user's last-used choice, unless
+    // this chat is seeded onto an existing card (that path joins, not creates).
+    createCard: newChatCardId ? false : getDefaultCreateCard(),
     cardId: newChatCardId ?? null,
     category: "",
   });
@@ -220,8 +229,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // unrelated new chat. location.key changes on each navigation.
   useEffect(() => {
     if (id) return;
-    setCardConfig({ createCard: false, cardId: newChatCardId ?? null, category: "" });
+    setCardConfig({ createCard: newChatCardId ? false : getDefaultCreateCard(), cardId: newChatCardId ?? null, category: "" });
   }, [id, location.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Persist the "Create card" choice so it defaults to the user's last decision
+  // on the next new chat. Category stays per-chat (not persisted).
+  const handleCardConfigChange = useCallback((config: CardAssociationConfig) => {
+    setCardConfig(config);
+    saveDefaultCreateCard(config.createCard);
+  }, []);
   const [branchChangeConfirm, setBranchChangeConfirm] = useState<{
     isOpen: boolean;
     prompt: string;
@@ -3091,7 +3106,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           Not gated on is_git_repo: cards are unrelated to git. */}
       {!id && !pendingAction && (
         <div style={{ padding: "0 16px" }}>
-          <CardAssociationSelector value={cardConfig} onChange={setCardConfig} />
+          <CardAssociationSelector value={cardConfig} onChange={handleCardConfigChange} />
         </div>
       )}
 
