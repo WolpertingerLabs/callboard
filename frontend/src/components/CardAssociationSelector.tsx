@@ -99,21 +99,20 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
       }}
       title="Auto-create a card for this chat, titled from the first message"
     >
-      <input
-        type="checkbox"
-        checked={value.createCard}
-        onChange={(e) => handleCreateChange(e.target.checked)}
-        style={{ cursor: "pointer", margin: 0 }}
-      />
+      <input type="checkbox" checked={value.createCard} onChange={(e) => handleCreateChange(e.target.checked)} style={{ cursor: "pointer", margin: 0 }} />
       <Sparkles size={12} style={{ flexShrink: 0 }} />
       Create card
     </label>
   );
 
   const cardSelect = value.createCard ? (
-    <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+    // On mobile the category input is forced to a full-width flex basis so it
+    // wraps onto its own second row (the outer flex container has flexWrap);
+    // on desktop it stays inline at a fixed width alongside the hint text.
+    <>
       <div
         style={{
+          flex: 1,
           padding: "4px 0",
           fontSize: 12,
           color: "var(--accent)",
@@ -123,7 +122,6 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",
-          flexShrink: 1,
         }}
       >
         Will create a card titled from the first message
@@ -143,7 +141,7 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
           padding: "4px 8px",
           fontSize: 12,
           outline: "none",
-          ...(isMobile ? { flex: 1, minWidth: 0 } : { width: 180, flexShrink: 0 }),
+          ...(isMobile ? { flex: "1 1 100%", minWidth: 0 } : { width: 180, flexShrink: 0 }),
         }}
       />
       {knownCategories.length > 0 && (
@@ -153,7 +151,7 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
           ))}
         </datalist>
       )}
-    </div>
+    </>
   ) : loading ? (
     <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</span>
   ) : loadFailed ? (
