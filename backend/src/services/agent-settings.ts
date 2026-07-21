@@ -14,7 +14,7 @@ import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR,
 import { createLogger } from "../utils/logger.js";
 import { listAgents } from "./agent-file-service.js";
 import { getLatestAnthropicRoleModels } from "./openrouter-models.js";
-import type { AgentConfig, AgentSettings, KeyAliasInfo, EnrolledCaller } from "shared";
+import type { AgentConfig, AgentSettings, KeyAliasInfo, EnrolledCaller, ModelAlias, HarnessProvider } from "shared";
 
 const log = createLogger("agent-settings");
 const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
@@ -38,11 +38,38 @@ function loadSettings(): AgentSettings {
     if (!raw.proxyMode) {
       raw.proxyMode = "local";
     }
-    return raw;
+    return migrateModelAliases(raw);
   } catch (err: any) {
     log.warn(`Failed to load agent settings: ${err.message}`);
     return { proxyMode: "local" };
   }
+}
+
+/**
+ * Fold the deprecated OpenRouter-only `openRouterModelAliases` map into the
+ * cross-harness `modelAliases` registry as each alias's `openrouter` target.
+ * Pure and idempotent — safe to run on every load and on already-migrated
+ * settings. Never overwrites an explicit `openrouter` target already present in
+ * `modelAliases`; the legacy field is left in place as a rollback fallback.
+ */
+function migrateModelAliases(settings: AgentSettings): AgentSettings {
+  const legacy = settings.openRouterModelAliases;
+  if (!legacy || Object.keys(legacy).length === 0) return settings;
+  const aliases: ModelAlias[] = (settings.modelAliases ?? []).map((a) => ({ ...a, targets: { ...a.targets } }));
+  const byName = new Map(aliases.map((a) => [a.name.trim().toLowerCase(), a]));
+  for (const [name, slug] of Object.entries(legacy)) {
+    if (!slug) continue;
+    const key = name.trim().toLowerCase();
+    const existing = byName.get(key);
+    if (existing) {
+      if (existing.targets.openrouter === undefined) existing.targets.openrouter = slug;
+    } else {
+      const created: ModelAlias = { name, targets: { openrouter: slug } };
+      aliases.push(created);
+      byName.set(key, created);
+    }
+  }
+  return { ...settings, modelAliases: aliases };
 }
 
 function saveSettings(settings: AgentSettings): void {
@@ -84,24 +111,48 @@ export function detectClaudeCodeOpenRouterEnv(): boolean {
 }
 
 /**
- * Resolve a user-defined OpenRouter model alias to its target slug.
+ * Resolve a cross-harness model alias to the concrete model for `provider`.
  *
- * Lookup is case-insensitive on the alias name. An alias shadows a real
- * model slug of the same name (custom overrides the OpenRouter namespace);
- * anything that doesn't match an alias passes through unchanged, so raw
- * slugs keep working everywhere aliases are accepted. Resolution is one hop
- * by construction — the settings route rejects alias targets that are
- * themselves aliases.
+ * Lookup is case-insensitive on the alias name. An alias shadows a real model
+ * id of the same name (custom overrides the provider namespace); anything that
+ * doesn't match an alias passes through unchanged, so raw slugs/ids keep working
+ * everywhere aliases are accepted. Resolution is one hop by construction — the
+ * settings route rejects targets that are themselves aliases.
+ *
+ * Fallback semantics:
+ *   - no alias match            → return `value` unchanged (real model id).
+ *   - alias match, has target   → return the per-provider target.
+ *   - alias match, no target    → return `undefined` (caller falls back to the
+ *     provider's configured default) + warn — never send the bare alias name as
+ *     a model id.
+ *
+ * The given `settings` is migrated defensively so callers holding a
+ * legacy-shaped object (only `openRouterModelAliases`) still resolve correctly.
+ */
+export function resolveModelAlias(
+  value: string | undefined,
+  provider: HarnessProvider,
+  settings?: AgentSettings,
+): string | undefined {
+  if (!value) return value;
+  const aliases = migrateModelAliases(settings ?? loadSettings()).modelAliases;
+  if (!aliases || aliases.length === 0) return value;
+  const needle = value.trim().toLowerCase();
+  const alias = aliases.find((a) => a.name.trim().toLowerCase() === needle);
+  if (!alias) return value;
+  const target = alias.targets[provider];
+  if (target) return target;
+  log.warn(`Model alias "${value}" has no ${provider} target; falling back to provider default`);
+  return undefined;
+}
+
+/**
+ * @deprecated Use {@link resolveModelAlias} with an explicit provider. Kept as a
+ * thin shim (openrouter provider) so existing OpenRouter call sites and tests
+ * keep working.
  */
 export function resolveOpenRouterModel(value: string | undefined, settings?: AgentSettings): string | undefined {
-  if (!value) return value;
-  const aliases = (settings ?? loadSettings()).openRouterModelAliases;
-  if (!aliases) return value;
-  const needle = value.trim().toLowerCase();
-  for (const [alias, target] of Object.entries(aliases)) {
-    if (alias.trim().toLowerCase() === needle) return target;
-  }
-  return value;
+  return resolveModelAlias(value, "openrouter", settings);
 }
 
 /**

@@ -40,8 +40,8 @@ import {
   resolveAgentKeyAlias,
   resolveDefaultCaller,
   getApiEnvOverrides,
+  resolveModelAlias,
   getClaudeCodeExecutablePath,
-  resolveOpenRouterModel,
 } from "./agent-settings.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { appendActivity } from "./agent-activity.js";
@@ -1199,9 +1199,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // passed so the existing env-var / subscription default behavior is
   // unchanged. OR chats route their model through options.openRouter.model
   // instead (below).
+  // A cross-harness alias (e.g. "planner") is resolved to its claude-code target
+  // here — an Anthropic alias/ID like "opus" or a full model id. A raw value
+  // with no matching alias passes through unchanged, so the built-in names
+  // (opus/sonnet/haiku/opusplan) and full ids keep working. An alias with no
+  // claude-code target resolves to undefined ⇒ no --model passed ⇒ the env-var /
+  // subscription default takes over (same as the unset case).
   const claudeCodeModel =
     providerKind === "claude-code" && typeof initialMetadata.model === "string" && initialMetadata.model.trim().length > 0
-      ? initialMetadata.model.trim()
+      ? resolveModelAlias(initialMetadata.model.trim(), "claude-code", agentSettings)
       : undefined;
 
   const queryOpts: any = {
@@ -1267,7 +1273,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // slug here on every session start, so re-pointing an alias in Settings
     // applies to existing chats too.
     const requestedModel = (initialMetadata.model as string | undefined) || agentSettings.openRouterModel;
-    const chatModel = resolveOpenRouterModel(requestedModel, agentSettings);
+    const chatModel = resolveModelAlias(requestedModel, "openrouter", agentSettings);
     // Server tools: map the persisted list to the harness's verbatim wire shape.
     // Left undefined when the setting is absent (harness injects its defaults);
     // an explicit empty array is preserved (disable all server tools).
@@ -1341,7 +1347,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Per-chat model override (persisted to metadata) takes precedence over the
     // global codexModel default. Covers new chats (just written above) and
     // resumed chats (loaded from disk).
-    const requestedModel = (typeof initialMetadata.model === "string" && initialMetadata.model.trim()) || agentSettings.codexModel?.trim();
+    const requestedModel = resolveModelAlias(
+      (typeof initialMetadata.model === "string" && initialMetadata.model.trim()) || agentSettings.codexModel?.trim(),
+      "codex",
+      agentSettings,
+    );
     // Per-chat reasoning effort (the OR-style control), persisted to metadata the
     // same way OR's is — maps onto Codex's modelReasoningEffort in the
     // optionsAdapter.

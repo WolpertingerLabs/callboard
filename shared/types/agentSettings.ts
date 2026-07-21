@@ -1,5 +1,6 @@
 import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "./openrouterCatalog.js";
 import type { ModelRoutingConfig } from "./modelRouting.js";
+import type { ModelAlias } from "./modelAlias.js";
 
 export interface AgentSettings {
   /** @deprecated Use localMcpConfigDir / remoteMcpConfigDir instead. Kept as fallback. */
@@ -148,16 +149,29 @@ export interface AgentSettings {
   openRouterMaxBudgetUsd?: number;
 
   /**
+   * @deprecated Superseded by the cross-harness {@link modelAliases} registry.
+   * Retained for backward compatibility: on load, each `{name → slug}` entry is
+   * folded into the `openrouter` target of a matching {@link ModelAlias} (see
+   * migrateModelAliases). Still accepted on write and merged in, but new code
+   * should read/write `modelAliases`.
+   *
    * User-defined model aliases — maps a custom name (e.g. "low coder") to a
-   * real OpenRouter model slug (e.g. "deepseek/deepseek-chat"). Aliases are
-   * accepted anywhere an OpenRouter model is configured (new chats, per-chat
-   * overrides, the global default above, cron/trigger actions, MCP tools)
-   * and resolve to the target slug when the session starts. Lookup is
-   * case-insensitive; an alias shadows a real model slug of the same name.
-   * Targets must be real slugs, never other aliases (keeps resolution one
-   * hop and cycle-free).
+   * real OpenRouter model slug (e.g. "deepseek/deepseek-chat").
    */
   openRouterModelAliases?: Record<string, string>;
+
+  /**
+   * Cross-harness model aliases. One named alias resolves to a different
+   * concrete model per provider — an Anthropic alias/ID for claude-code, an OR
+   * slug for openrouter, a Codex slug for codex — so `model: "planner"` works on
+   * any harness. Accepted anywhere a model is configured (new chats, per-chat
+   * overrides, provider defaults, cron/trigger actions, job steps, MCP tools)
+   * and resolved to the per-provider target when the session starts. Lookup is
+   * case-insensitive; an alias shadows a real model id of the same name. Targets
+   * must be real model ids, never other aliases (one-hop, cycle-free). See
+   * {@link ModelAlias} and resolveModelAlias.
+   */
+  modelAliases?: ModelAlias[];
 
   /**
    * OpenRouter server tools (executed on OR's servers) to enable, with their
