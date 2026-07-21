@@ -41,6 +41,7 @@ import {
   resolveDefaultCaller,
   getApiEnvOverrides,
   resolveModelAlias,
+  resolveSessionModel,
   getClaudeCodeExecutablePath,
 } from "./agent-settings.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
@@ -1273,7 +1274,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // slug here on every session start, so re-pointing an alias in Settings
     // applies to existing chats too.
     const requestedModel = (initialMetadata.model as string | undefined) || agentSettings.openRouterModel;
-    const chatModel = resolveModelAlias(requestedModel, "openrouter", agentSettings);
+    // Per-chat override wins; either it or the global OR default may be a
+    // cross-harness alias. A per-chat alias with no openrouter target falls back
+    // to the configured OR default rather than the library default.
+    const chatModel = resolveSessionModel(initialMetadata.model as string | undefined, agentSettings.openRouterModel, "openrouter", agentSettings);
     // Server tools: map the persisted list to the harness's verbatim wire shape.
     // Left undefined when the setting is absent (harness injects its defaults);
     // an explicit empty array is preserved (disable all server tools).
@@ -1347,8 +1351,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Per-chat model override (persisted to metadata) takes precedence over the
     // global codexModel default. Covers new chats (just written above) and
     // resumed chats (loaded from disk).
-    const requestedModel = resolveModelAlias(
-      (typeof initialMetadata.model === "string" && initialMetadata.model.trim()) || agentSettings.codexModel?.trim(),
+    // Per-chat override wins; either it or the global codexModel default may be a
+    // cross-harness alias. A per-chat alias with no codex target falls back to the
+    // configured codexModel default rather than the SDK's built-in default.
+    const requestedModel = resolveSessionModel(
+      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
+      agentSettings.codexModel,
       "codex",
       agentSettings,
     );

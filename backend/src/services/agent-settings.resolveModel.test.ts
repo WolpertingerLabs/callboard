@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveModelAlias, resolveOpenRouterModel } from "./agent-settings.js";
+import { resolveModelAlias, resolveOpenRouterModel, resolveSessionModel } from "./agent-settings.js";
 import type { AgentSettings, ModelAlias } from "shared";
 
 const withAliases = (modelAliases?: ModelAlias[]): AgentSettings => ({
@@ -73,6 +73,37 @@ describe("resolveModelAlias", () => {
       modelAliases: [planner],
     };
     expect(resolveModelAlias("planner", "openrouter", s)).toBe("anthropic/claude-opus-4.8");
+  });
+});
+
+describe("resolveSessionModel", () => {
+  const s = withAliases([planner, { name: "codexonly", targets: { codex: "gpt-5.5" } }]);
+
+  it("prefers the per-chat override when it resolves for the provider", () => {
+    expect(resolveSessionModel("planner", "anthropic/default", "openrouter", s)).toBe("anthropic/claude-opus-4.8");
+  });
+
+  it("falls back to the provider default when there is no per-chat override", () => {
+    expect(resolveSessionModel(undefined, "anthropic/default", "openrouter", s)).toBe("anthropic/default");
+    expect(resolveSessionModel("", "anthropic/default", "openrouter", s)).toBe("anthropic/default");
+  });
+
+  it("resolves an alias used as the provider default", () => {
+    expect(resolveSessionModel(undefined, "planner", "codex", s)).toBe("gpt-5.5");
+  });
+
+  it("falls back to the configured default when the per-chat alias has no target for this provider", () => {
+    // "codexonly" has no openrouter target — must not be sent as a slug; use the default.
+    expect(resolveSessionModel("codexonly", "anthropic/default", "openrouter", s)).toBe("anthropic/default");
+  });
+
+  it("returns undefined when neither the override nor the default resolves", () => {
+    expect(resolveSessionModel("codexonly", undefined, "openrouter", s)).toBeUndefined();
+    expect(resolveSessionModel(undefined, undefined, "codex", s)).toBeUndefined();
+  });
+
+  it("passes a real slug override through, trimming whitespace", () => {
+    expect(resolveSessionModel("  openai/gpt-4o ", "x", "openrouter", s)).toBe("openai/gpt-4o");
   });
 });
 

@@ -147,6 +147,26 @@ export function resolveModelAlias(
 }
 
 /**
+ * Resolve the model for a session on `provider`: the per-chat override if it
+ * yields a target, otherwise the provider's configured default (both are
+ * alias-aware). Blank inputs are treated as absent. Returns `undefined` when
+ * neither resolves — the caller then omits the model so the harness uses its own
+ * default. This is what makes a per-chat alias with no target for the active
+ * provider fall back to the configured default rather than silently dropping to
+ * the library/built-in default.
+ */
+export function resolveSessionModel(
+  perChat: string | undefined,
+  providerDefault: string | undefined,
+  provider: HarnessProvider,
+  settings?: AgentSettings,
+): string | undefined {
+  const pc = perChat?.trim() ? perChat.trim() : undefined;
+  const def = providerDefault?.trim() ? providerDefault.trim() : undefined;
+  return resolveModelAlias(pc, provider, settings) ?? resolveModelAlias(def, provider, settings);
+}
+
+/**
  * @deprecated Use {@link resolveModelAlias} with an explicit provider. Kept as a
  * thin shim (openrouter provider) so existing OpenRouter call sites and tests
  * keep working.
