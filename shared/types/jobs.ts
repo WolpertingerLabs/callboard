@@ -39,7 +39,9 @@ interface JobSessionFields {
   /**
    * Model for the step's provider — an OR slug/alias for "openrouter", an
    * Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or full ID
-   * for "claude-code". Omit to use the provider's configured default.
+   * for "claude-code", a Codex slug for "codex". A cross-harness model alias
+   * (e.g. "planner") also works with any provider and resolves to that
+   * provider's configured target. Omit to use the provider's configured default.
    */
   model?: string;
   /** OpenRouter reasoning effort — only valid with provider "openrouter". */

@@ -39,3 +39,73 @@ export interface ModelAlias {
 export interface ModelAliasInfo extends ModelAlias {
   resolvedNames?: Partial<Record<HarnessProvider, string>>;
 }
+
+/** The three harnesses an alias can target, in canonical order. */
+export const HARNESS_PROVIDERS: HarnessProvider[] = ["claude-code", "openrouter", "codex"];
+
+/**
+ * Validate + normalize a model-alias registry. Shared by the settings route and
+ * the model-alias MCP tools so both enforce identical rules:
+ *   - each entry is an object with a non-empty `name` and a `targets` object;
+ *   - blank target values are dropped; an alias left with no valid target is
+ *     dropped entirely (like a blank row);
+ *   - names are unique case-insensitively;
+ *   - `targets` keys must be known providers;
+ *   - no target may name another alias (one-hop, cycle-free).
+ * Returns the cleaned list plus any hard errors (a non-empty `errors` array
+ * means the input must be fixed; callers reject rather than persist).
+ */
+export function validateModelAliases(input: unknown): { value: ModelAlias[]; errors: string[] } {
+  const errors: string[] = [];
+  if (!Array.isArray(input)) {
+    return { value: [], errors: ["modelAliases must be an array of { name, targets } entries"] };
+  }
+  const out: ModelAlias[] = [];
+  const seenNames = new Set<string>();
+  for (const raw of input) {
+    if (typeof raw !== "object" || raw === null) {
+      errors.push("Each model alias must be an object with a name and targets");
+      continue;
+    }
+    const entry = raw as Record<string, unknown>;
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (!name) continue; // nameless rows are dropped, not errors
+    const key = name.toLowerCase();
+    if (seenNames.has(key)) {
+      errors.push(`Duplicate alias name (case-insensitive): "${name}"`);
+      continue;
+    }
+    const rawTargets = entry.targets;
+    if (typeof rawTargets !== "object" || rawTargets === null || Array.isArray(rawTargets)) {
+      errors.push(`Alias "${name}" targets must be an object mapping provider → model id`);
+      continue;
+    }
+    const targetsRec = rawTargets as Record<string, unknown>;
+    const targets: Partial<Record<HarnessProvider, string>> = {};
+    for (const provider of HARNESS_PROVIDERS) {
+      const t = typeof targetsRec[provider] === "string" ? (targetsRec[provider] as string).trim() : "";
+      if (t) targets[provider] = t;
+    }
+    let unknownProvider = false;
+    for (const k of Object.keys(targetsRec)) {
+      if (!HARNESS_PROVIDERS.includes(k as HarnessProvider) && typeof targetsRec[k] === "string" && (targetsRec[k] as string).trim()) {
+        errors.push(`Alias "${name}" has an unknown provider target "${k}"`);
+        unknownProvider = true;
+      }
+    }
+    if (unknownProvider) continue;
+    if (Object.keys(targets).length === 0) continue; // no valid target ⇒ drop
+    seenNames.add(key);
+    const description = typeof entry.description === "string" && entry.description.trim() ? entry.description.trim() : undefined;
+    out.push({ name, ...(description && { description }), targets });
+  }
+  // One-hop: reject any target that names another alias.
+  for (const a of out) {
+    for (const t of Object.values(a.targets)) {
+      if (seenNames.has(t.toLowerCase())) {
+        errors.push(`Alias "${a.name}" points to another alias ("${t}") — targets must be real model ids`);
+      }
+    }
+  }
+  return { value: out, errors };
+}

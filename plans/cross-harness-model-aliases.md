@@ -177,6 +177,19 @@ page). Update `getOpenRouterCatalog` consumers / add a `ModelAliasInfo` display 
   `agent-settings.resolveModel.test.ts` (12 tests). Backend `tsc -b` clean, tests
   green, 0 lint errors.
 - **Phase 2 (MCP tools):** list/set/delete_model_alias + schema-description updates.
+  ✅ DONE. Extracted shared `validateModelAliases` (shared/types/modelAlias.ts;
+  route now uses it too). New `backend/src/services/model-alias-tools.ts`
+  (`buildModelAliasTools`) registered in callboard-tools.ts. Writing the registry
+  retires the deprecated `openRouterModelAliases` map (else migration resurrects
+  deleted entries) — done in both the tools and the route. Updated
+  `providerModelSchema` + job-step `model` descriptions. `modelAlias.validate.test.ts`
+  (7 tests).
 - **Phase 3 (frontend):** dedicated Model Aliases settings page; migrate OR editor.
+  ✅ DONE. New `frontend/src/pages/settings/ModelAliasesSettings.tsx` (per-harness
+  table: name | description | Claude Code | OpenRouter | Codex; OR col uses
+  OpenRouterModelSelector, Codex col uses CodexModelSelector; live client
+  validation via the shared validator). Registered a "Model Aliases" tab in
+  Settings.tsx. Excised the OR-only alias editor from ApiSettings.tsx, leaving a
+  pointer note. Frontend `tsc -b` + vite build clean; 0 lint errors.
 
 Callboard-only — no drawlatch change, so no version-lockstep bump required.

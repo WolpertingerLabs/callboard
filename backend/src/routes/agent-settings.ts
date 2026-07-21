@@ -11,8 +11,8 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { OpenRouterServerToolConfig, OpenRouterParamProfile, ModelRoutingConfig, ModelAlias, HarnessProvider } from "shared/types/index.js";
-import { validateServerTools, validateParamProfile, validateModelRoutingConfig } from "shared/types/index.js";
+import type { OpenRouterServerToolConfig, OpenRouterParamProfile, ModelRoutingConfig, ModelAlias } from "shared/types/index.js";
+import { validateServerTools, validateParamProfile, validateModelRoutingConfig, validateModelAliases } from "shared/types/index.js";
 import { getAgentSettings, updateAgentSettings, discoverKeyAliases, listEnrolledCallers, deleteEnrolledCaller, setDefaultCaller } from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
@@ -141,58 +141,6 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     return { aliases: Object.keys(aliases).length > 0 ? aliases : undefined };
   };
 
-  // Sanitize the cross-harness model alias registry. Each entry is
-  // { name, description?, targets: { "claude-code"?, openrouter?, codex? } }.
-  // Blank target values are dropped; an alias left with no valid target is
-  // dropped entirely (like a blank row). Names must be unique case-insensitively
-  // and no target may point at another alias name (one-hop, cycle-free).
-  const HARNESS_PROVIDERS: HarnessProvider[] = ["claude-code", "openrouter", "codex"];
-  const normalizeModelAliases = (v: unknown): { aliases?: ModelAlias[]; error?: string } => {
-    if (!Array.isArray(v)) {
-      return { error: "modelAliases must be an array of { name, targets } entries" };
-    }
-    const out: ModelAlias[] = [];
-    const seenNames = new Set<string>();
-    for (const raw of v) {
-      if (typeof raw !== "object" || raw === null) {
-        return { error: "Each model alias must be an object with a name and targets" };
-      }
-      const name = typeof raw.name === "string" ? raw.name.trim() : "";
-      if (!name) continue; // nameless rows are dropped, not errors
-      const key = name.toLowerCase();
-      if (seenNames.has(key)) {
-        return { error: `Duplicate alias name (case-insensitive): "${name}"` };
-      }
-      const rawTargets = raw.targets;
-      if (typeof rawTargets !== "object" || rawTargets === null || Array.isArray(rawTargets)) {
-        return { error: `Alias "${name}" targets must be an object mapping provider → model id` };
-      }
-      const targets: Partial<Record<HarnessProvider, string>> = {};
-      for (const provider of HARNESS_PROVIDERS) {
-        const t = typeof rawTargets[provider] === "string" ? rawTargets[provider].trim() : "";
-        if (t) targets[provider] = t;
-      }
-      for (const k of Object.keys(rawTargets)) {
-        if (!HARNESS_PROVIDERS.includes(k as HarnessProvider) && typeof rawTargets[k] === "string" && rawTargets[k].trim()) {
-          return { error: `Alias "${name}" has an unknown provider target "${k}"` };
-        }
-      }
-      if (Object.keys(targets).length === 0) continue; // no valid target ⇒ drop
-      seenNames.add(key);
-      const description = typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined;
-      out.push({ name, ...(description && { description }), targets });
-    }
-    // Resolution is one hop — reject any target that names another alias.
-    for (const a of out) {
-      for (const t of Object.values(a.targets)) {
-        if (seenNames.has(t.toLowerCase())) {
-          return { error: `Alias "${a.name}" points to another alias ("${t}") — targets must be real model ids` };
-        }
-      }
-    }
-    return { aliases: out.length > 0 ? out : undefined };
-  };
-
   // Track whether any API / auth / model override field was included so we
   // know to refresh the SDK info cache (account + supported models).
   const apiFieldsTouched =
@@ -228,12 +176,12 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
 
   let normalizedModelAliases: ModelAlias[] | undefined;
   if (modelAliases !== undefined) {
-    const result = normalizeModelAliases(modelAliases);
-    if (result.error) {
-      res.status(400).json({ error: result.error });
+    const { value, errors } = validateModelAliases(modelAliases);
+    if (errors.length > 0) {
+      res.status(400).json({ error: errors.join("; ") });
       return;
     }
-    normalizedModelAliases = result.aliases;
+    normalizedModelAliases = value.length > 0 ? value : undefined;
   }
 
   // Validate the OpenRouter server-tools list. An explicit empty array is
@@ -371,7 +319,13 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
       ...(openRouterMaxBudgetUsd !== undefined && { openRouterMaxBudgetUsd: normalizeNumber(openRouterMaxBudgetUsd) }),
       ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
-      ...(modelAliases !== undefined && { modelAliases: normalizedModelAliases }),
+      // Writing the unified registry retires the deprecated OR-only map (its
+      // entries are already folded into the openrouter targets on load). Skip
+      // the retire if the same request also explicitly set the legacy map.
+      ...(modelAliases !== undefined && {
+        modelAliases: normalizedModelAliases,
+        ...(openRouterModelAliases === undefined && { openRouterModelAliases: undefined }),
+      }),
       ...(openRouterServerTools !== undefined && { openRouterServerTools: normalizedServerTools }),
       ...(openRouterModelParamsDefault !== undefined && { openRouterModelParamsDefault: normalizedParamsDefault }),
       ...(openRouterModelParamProfiles !== undefined && { openRouterModelParamProfiles: normalizedParamProfiles }),
