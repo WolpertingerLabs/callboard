@@ -122,6 +122,16 @@ export interface AgentSettings {
   /** Dedicated OpenRouter API key for Claude-Code-via-OpenRouter (→ ANTHROPIC_AUTH_TOKEN). */
   claudeCodeOpenRouterApiKey?: string;
 
+  /**
+   * Override the OpenRouter Anthropic-gateway endpoint used when
+   * {@link claudeCodeUseOpenRouter} is on (→ ANTHROPIC_BASE_URL). Blank/unset ⇒
+   * the default `https://openrouter.ai/api`. Exists so users can point the native
+   * Claude Code harness at OpenRouter's regional endpoints (US/EU) or any future
+   * variant without a code change. Must include the Anthropic-compatible `/api`
+   * path (NO `/v1` suffix) — this is a full base URL, not just a host.
+   */
+  claudeCodeOpenRouterBaseUrl?: string;
+
   // ── OpenRouter (alternative provider) ─────────────────────────────
   // Populated when the user enables the OpenRouter provider in
   // Settings → API. Empty values mean "OpenRouter unavailable" — the
@@ -256,6 +266,17 @@ export interface AgentSettings {
 
   /** Dedicated OpenRouter API key for Codex-via-OpenRouter (→ OPENROUTER_API_KEY). */
   codexOpenRouterApiKey?: string;
+
+  /**
+   * Override the OpenRouter endpoint used when {@link codexUseOpenRouter} is on
+   * (→ the injected `[model_providers.openrouter]` block's `base_url`).
+   * Blank/unset ⇒ the default `https://openrouter.ai/api/v1`. Lets users target
+   * OpenRouter's regional endpoints (US/EU) without a code change. Must include
+   * the OpenAI-compatible `/api/v1` path — note this differs from
+   * {@link claudeCodeOpenRouterBaseUrl}, which takes the bare `/api` Anthropic
+   * gateway path.
+   */
+  codexOpenRouterBaseUrl?: string;
 
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the start_chat_session onComplete feature, which automatically

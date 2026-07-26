@@ -13,7 +13,14 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import type { OpenRouterServerToolConfig, OpenRouterParamProfile, ModelRoutingConfig, ModelAlias } from "shared/types/index.js";
 import { validateServerTools, validateParamProfile, validateModelRoutingConfig, validateModelAliases } from "shared/types/index.js";
-import { getAgentSettings, updateAgentSettings, discoverKeyAliases, listEnrolledCallers, deleteEnrolledCaller, setDefaultCaller } from "../services/agent-settings.js";
+import {
+  getAgentSettings,
+  updateAgentSettings,
+  discoverKeyAliases,
+  listEnrolledCallers,
+  deleteEnrolledCaller,
+  setDefaultCaller,
+} from "../services/agent-settings.js";
 import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
@@ -63,6 +70,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     subagentModel,
     claudeCodeUseOpenRouter,
     claudeCodeOpenRouterApiKey,
+    claudeCodeOpenRouterBaseUrl,
     openRouterApiKey,
     openRouterBaseUrl,
     openRouterModel,
@@ -82,6 +90,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexSandboxMode,
     codexUseOpenRouter,
     codexOpenRouterApiKey,
+    codexOpenRouterBaseUrl,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -153,7 +162,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultHaikuModel !== undefined ||
     subagentModel !== undefined ||
     claudeCodeUseOpenRouter !== undefined ||
-    claudeCodeOpenRouterApiKey !== undefined;
+    claudeCodeOpenRouterApiKey !== undefined ||
+    claudeCodeOpenRouterBaseUrl !== undefined;
 
   const codexFieldsTouched =
     codexAuthMode !== undefined ||
@@ -161,7 +171,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexBaseUrl !== undefined ||
     codexHome !== undefined ||
     codexUseOpenRouter !== undefined ||
-    codexOpenRouterApiKey !== undefined;
+    codexOpenRouterApiKey !== undefined ||
+    codexOpenRouterBaseUrl !== undefined;
 
   // Validate the alias map up front so bad input 400s before anything is written.
   let normalizedAliases: Record<string, string> | undefined;
@@ -313,6 +324,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(subagentModel !== undefined && { subagentModel: normalize(subagentModel) }),
       ...(claudeCodeUseOpenRouter !== undefined && { claudeCodeUseOpenRouter: normalizeBool(claudeCodeUseOpenRouter) }),
       ...(claudeCodeOpenRouterApiKey !== undefined && { claudeCodeOpenRouterApiKey: normalize(claudeCodeOpenRouterApiKey) }),
+      ...(claudeCodeOpenRouterBaseUrl !== undefined && { claudeCodeOpenRouterBaseUrl: normalize(claudeCodeOpenRouterBaseUrl) }),
       ...(openRouterApiKey !== undefined && { openRouterApiKey: normalize(openRouterApiKey) }),
       ...(openRouterBaseUrl !== undefined && { openRouterBaseUrl: normalize(openRouterBaseUrl) }),
       ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
@@ -338,6 +350,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
       ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
+      ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });
