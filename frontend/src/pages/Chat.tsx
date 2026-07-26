@@ -55,6 +55,7 @@ import {
   type McpToolsResponse,
 } from "../api";
 import { useIsSessionActive } from "../contexts/SessionContext";
+import { newChatTrackingId } from "../utils/ids";
 import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "../utils/inFlightMessages";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
@@ -1697,8 +1698,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // Temp session key so the run is stoppable during the window before
           // chat_created arrives — until then there's no chat id to address,
           // and aborting this fetch alone would leave the run alive on the
-          // server with no way to reach it.
-          const clientTrackingId = `new-${crypto.randomUUID()}`;
+          // server with no way to reach it. Generated without `crypto.randomUUID`,
+          // which insecure origins (plain HTTP on a LAN IP or tunnel host) don't
+          // expose at all.
+          const clientTrackingId = newChatTrackingId();
           tempChatIdRef.current = clientTrackingId;
 
           const requestBody: any = {
