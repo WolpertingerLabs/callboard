@@ -1,5 +1,5 @@
 import { getAgentProvider } from "../agents/factory.js";
-import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
+import { isRoutableProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter/optionsAdapter.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
@@ -426,10 +426,36 @@ export function respondToPermission(
   return { ok: true, toolName };
 }
 
+/**
+ * Cancel the run backing `chatId` — the whole request, not just the event
+ * stream the UI happens to be reading.
+ *
+ * Three things have to happen, in this order:
+ *  1. `abort()` — the signal every adapter threads into its harness (SDK
+ *     subprocess, `codex exec` spawn, OpenRouter fetch) and that the query
+ *     loop, nudge/recovery continuations and pending permission requests all
+ *     check. This is the cooperative half.
+ *  2. `closeQuery()` — hard-terminate the provider run. A run parked in a tool
+ *     call (or an adapter whose event stream simply ends instead of throwing)
+ *     can otherwise stay alive after the abort, still holding a subprocess and
+ *     still billing. Fire-and-forget: the caller shouldn't block on a
+ *     harness teardown, and the run's own unwind emits the terminal
+ *     `done` (reason: "aborted") that the UI waits on.
+ *  3. Drop registry + pending state so the session reads as inactive
+ *     immediately.
+ *
+ * Returns false when there's no stoppable web session (already finished, or a
+ * CLI session, whose execution the server doesn't own).
+ */
 export function stopSession(chatId: string): boolean {
   const info = sessionRegistry.get(chatId);
   if (info && info.abortController) {
     info.abortController.abort();
+    void info.closeQuery?.().catch((err: any) => {
+      // Already-dead transports throw here — the abort above is the part that
+      // must land, so this is diagnostic only.
+      log.debug(`stopSession: closing query for ${chatId} threw: ${err?.message ?? err}`);
+    });
     sessionRegistry.unregister(chatId);
     pendingRequests.delete(chatId);
     return true;
@@ -784,6 +810,15 @@ interface SendMessageOptions {
    * chats; the session can still overwrite it via set_chat_title.
    */
   chatTitle?: string;
+  /**
+   * Caller-supplied tracking id for a NEW chat, used as the session registry
+   * key until the real session id arrives. Without it the key is a
+   * server-generated `new-<ts>` the client never learns, so a new chat is
+   * uncancellable (POST /:id/stop has no id to address) for the whole
+   * provider-startup window. Ignored when a session is already registered
+   * under the same id, and irrelevant for existing chats (they key by chatId).
+   */
+  clientTrackingId?: string;
 }
 
 /** Default number of times a requiring session is nudged to continue before giving up. */
@@ -948,9 +983,25 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   const emitter = new EventEmitter();
   const abortController = new AbortController();
 
-  // Mutable tracking ID: for new chats starts as a temp ID, migrates to real chatId on session_id arrival
-  let trackingId = opts.chatId || `new-${Date.now()}`;
-  sessionRegistry.register(trackingId, { type: "web", abortController, emitter });
+  // Mutable tracking ID: for new chats starts as a temp ID, migrates to real chatId on session_id arrival.
+  // A caller-supplied temp id wins so the client can address /stop before the
+  // real session id exists — unless it's already taken, which would silently
+  // evict a live session's registry entry.
+  const clientTrackingId = opts.clientTrackingId && !sessionRegistry.has(opts.clientTrackingId) ? opts.clientTrackingId : undefined;
+  let trackingId = opts.chatId || clientTrackingId || `new-${Date.now()}`;
+  // The query currently backing this session. Reassigned on every iteration of
+  // the query loop below (nudge / stream-recovery / model-switch continuations
+  // each build a fresh one), so stopSession always closes the live one rather
+  // than a stale handle.
+  let activeQuery: AgentQuery | null = null;
+  sessionRegistry.register(trackingId, {
+    type: "web",
+    abortController,
+    emitter,
+    closeQuery: async () => {
+      await activeQuery?.close();
+    },
+  });
 
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 
@@ -1476,6 +1527,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
       while (true) {
         const conversation = agentProvider.query(queryOpts);
+        // Hand this iteration's query to stopSession (via the registry's
+        // closeQuery) so a stop kills the live provider run, not just the
+        // stream we're draining here.
+        activeQuery = conversation;
         // "Stream closed" watch for THIS query: consecutive failing tool
         // results (a healthy one resets the count) and a flag the recovery
         // block below acts on. Claude-Code-only — the failure mode lives in
@@ -1857,6 +1912,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         sessionId = null;
       }
 
+      // A stopped run only reaches here when the provider's stream ended
+      // quietly instead of throwing AbortError (OpenRouter and Codex both do:
+      // the abort lands as a terminal stream event, and the loop's
+      // `signal.aborted` guard breaks before that event is classified). Without
+      // this the run would report as a normal completion — the frontend would
+      // show no interruption marker, and an errored-then-aborted run would show
+      // a red error bubble for a stop the user asked for.
+      if (abortController.signal.aborted) {
+        endReason = "aborted";
+        errorDetail = undefined;
+      }
+
       chatFileService.updateChat(trackingId, {});
 
       // Provider-level error: surface the actual error message to the user as a
@@ -1900,6 +1967,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {
+      // This run's query is done with — drop the handle so a late stop on a
+      // replacement session can never close it a second time.
+      activeQuery = null;
       // Only clean up if the registry entry still belongs to THIS run. A
       // follow-up sendMessage to the same chat calls stopSession() and then
       // register()s a REPLACEMENT session under the same chatId — and this

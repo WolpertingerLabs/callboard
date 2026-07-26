@@ -13,6 +13,16 @@ export interface SessionInfo {
   abortController?: AbortController;
   /** Only set for web sessions */
   emitter?: EventEmitter;
+  /**
+   * Hard-terminates the provider run currently backing this session (kills the
+   * CLI subprocess / aborts the in-flight provider request), regardless of how
+   * far the event stream has been drained. Only set for web sessions.
+   *
+   * Aborting {@link SessionInfo.abortController} alone only asks each adapter
+   * to unwind cooperatively — the run can stay alive (and keep spending) until
+   * it next checks the signal. `stopSession` calls both.
+   */
+  closeQuery?: () => Promise<void>;
 }
 
 export interface SessionEvent {

@@ -21,6 +21,7 @@ import {
   SlidersHorizontal,
   Workflow,
   LayoutGrid,
+  Loader2,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -31,6 +32,7 @@ import {
   getSystemInfo,
   getAgentSettings,
   respondToChat,
+  stopChat,
   uploadImages,
   uploadImagesOnly,
   getSlashCommandsAndPlugins,
@@ -130,6 +132,21 @@ const AUTO_SCROLL_LATCH_PX = 100;
 // it to the actual bottom.
 const PIN_SCROLL_MAX = 1e9;
 
+// Transcript marker for a run the user stopped. Shown both when the run's own
+// terminal event reports the abort and when we settle the stop locally.
+const INTERRUPTED_MESSAGE = "Session was interrupted.";
+
+// How long to wait for the stopped run's terminal event before settling the UI
+// anyway. Generous: the server has already aborted the run and killed the
+// provider process, and a run parked in a slow tool call can take a moment to
+// unwind — this is a backstop against waiting forever, not a normal path.
+const STOP_CONFIRM_TIMEOUT_MS = 10_000;
+
+// Delay before the post-stop transcript resync. The harness flushes the killed
+// turn's partial output and interrupt marker as it unwinds (~1s in practice),
+// which lands after the terminal event the settle path refetches on.
+const STOP_RESYNC_DELAY_MS = 2_500;
+
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -185,6 +202,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [info, setInfo] = useState<NewChatInfo | null>(null);
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
   const [streaming, setStreaming] = useState(!!transitionInFlightMessage);
+  // Stop requested, waiting for the run to actually unwind server-side. The
+  // button stays in this state until the run's terminal event arrives (or the
+  // confirmation deadline passes), so it never claims a cancel it hasn't got.
+  const [stopping, setStopping] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const globalSessionActive = useIsSessionActive(id);
   const [networkError, setNetworkError] = useState<string | null>(null);
@@ -267,6 +288,27 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const planApprovedRef = useRef(false);
   const tempChatIdRef = useRef<string | null>(null);
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopConfirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearStopConfirmTimeout = useCallback(() => {
+    if (stopConfirmTimeoutRef.current) {
+      clearTimeout(stopConfirmTimeoutRef.current);
+      stopConfirmTimeoutRef.current = null;
+    }
+  }, []);
+  const stopResyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearStopResyncTimeout = useCallback(() => {
+    if (stopResyncTimeoutRef.current) {
+      clearTimeout(stopResyncTimeoutRef.current);
+      stopResyncTimeoutRef.current = null;
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      clearStopConfirmTimeout();
+      clearStopResyncTimeout();
+    },
+    [clearStopConfirmTimeout, clearStopResyncTimeout],
+  );
   const inFlightMessageRef = useRef<string | null>(inFlightMessage);
   inFlightMessageRef.current = inFlightMessage;
   // Clear in-flight image URLs when in-flight message is cleared, and revoke object URLs
@@ -290,6 +332,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // in the registry means the session was replaced and the tab should
   // reconnect to follow the new run.
   const connectedSessionStartedAtRef = useRef<number | undefined>(undefined);
+  // Set while a stopped run is still being reported as active. The registry
+  // poll lags the stop by up to a second, and reconnecting to a run we just
+  // cancelled puts the UI straight back into "responding" — the stop looks
+  // like it bounced. Cleared as soon as the registry reports the chat
+  // inactive (or the user sends again), so real sessions still auto-connect.
+  const suppressReconnectAfterStopRef = useRef(false);
   // Debounce timer for coalescing rapid message_update refetches
   const messageRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -782,7 +830,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   const spentStr = spent !== null ? ` (spent $${spent.toFixed(2)})` : "";
                   reasonMsg = `Agent reached the maximum budget limit of ${capStr}${spentStr}. Raise it in Settings → API.`;
                 } else if (event.reason === "aborted") {
-                  reasonMsg = "Session was interrupted.";
+                  reasonMsg = INTERRUPTED_MESSAGE;
                 }
 
                 setStreaming(false);
@@ -791,6 +839,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // currentModel/currentEffort, so drop the staged values.
                 setPendingModel(null);
                 setPendingEffort(null);
+                // A new chat's run can end (stopped, or failed) before
+                // chat_created ever arrived — there's no chat id to refetch,
+                // and nothing persisted to show.
+                if (!streamChatId) {
+                  setInFlightMessage(null);
+                  return;
+                }
                 // Refetch complete chat data and messages
                 getChat(streamChatId!).then((chatData) => {
                   if (currentIdRef.current !== streamChatId) return;
@@ -969,6 +1024,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     if (!id || !globalSessionActive) return;
     sessionWasActiveRef.current = true;
+    // Don't reattach to a run the user just stopped (see the ref's note).
+    if (suppressReconnectAfterStopRef.current) return;
     // Use abortRef (not streaming state) to detect an active connection.
     // After new-chat navigation, streaming may be stale-true while there is
     // no actual SSE connection (abortRef is null), so checking streaming here
@@ -1011,6 +1068,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       setInFlightMessage(null);
       sessionWasActiveRef.current = false;
       streamCompletedRef.current = false;
+      // The registry has caught up with the stop — stop suppressing
+      // auto-connect, so the next session on this chat is followed normally.
+      suppressReconnectAfterStopRef.current = false;
       // Abort any hanging SSE connection — the session is over
       if (abortRef.current) {
         abortRef.current.abort();
@@ -1103,6 +1163,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     tempChatIdRef.current = null;
     sessionWasActiveRef.current = false;
     streamCompletedRef.current = false;
+    suppressReconnectAfterStopRef.current = false;
 
     // Abort any existing SSE stream from a previous chat
     if (abortRef.current) {
@@ -1160,6 +1221,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     tempChatIdRef.current = null;
     sessionWasActiveRef.current = false;
     streamCompletedRef.current = false;
+    suppressReconnectAfterStopRef.current = false;
 
     // Clear only the inFlightMessage from router state so back/forward navigation
     // doesn't re-apply it. Preserve other state values (e.g. agentSystemPrompt, agentAlias).
@@ -1522,6 +1584,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
       setNetworkError(null); // Clear any previous network errors
       streamCompletedRef.current = false; // Reset so new message can stream
+      suppressReconnectAfterStopRef.current = false; // A new run supersedes any stop we're still settling
 
       // If there's already a streaming connection, stop it first
       if (abortRef.current) {
@@ -1555,7 +1618,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             }
           }
 
-          const requestBody: any = { folder, prompt, defaultPermissions: chatPermissions || defaultPermissions, maxTurns: getMaxTurns() };
+          // Temp session key so the run is stoppable during the window before
+          // chat_created arrives — until then there's no chat id to address,
+          // and aborting this fetch alone would leave the run alive on the
+          // server with no way to reach it.
+          const clientTrackingId = `new-${crypto.randomUUID()}`;
+          tempChatIdRef.current = clientTrackingId;
+
+          const requestBody: any = {
+            folder,
+            prompt,
+            defaultPermissions: chatPermissions || defaultPermissions,
+            maxTurns: getMaxTurns(),
+            clientTrackingId,
+          };
           if (imageIds.length > 0) {
             requestBody.imageIds = imageIds;
           }
@@ -1823,15 +1899,121 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     [id, connectToStream, pendingAction, handleSend],
   );
 
-  const handleStop = useCallback(() => {
-    abortRef.current?.abort();
-    if (id) {
-      fetch(`/api/chats/${id}/stop`, { method: "POST", credentials: "include" });
+  /**
+   * Refetch the persisted transcript for a stopped run, without touching
+   * run state. Only a chat that exists server-side can be refetched — a
+   * brand-new chat stopped during startup is still keyed by its temp tracking
+   * id, which no record answers to.
+   */
+  const resyncStoppedTranscript = useCallback(
+    (options?: { interrupted?: boolean }) => {
+      const chatId = id || (tempChatIdRef.current?.startsWith("new-") ? null : tempChatIdRef.current);
+      if (!chatId) {
+        setInFlightMessage(null);
+        return;
+      }
+      // Refetch rather than keep the partially-streamed view: the server
+      // persisted whatever the run produced before it died, including the
+      // synthetic "interrupted" tool results.
+      getChat(chatId)
+        .then((chatData) => {
+          if (currentIdRef.current !== chatId) return;
+          setChat(chatData);
+        })
+        .catch(() => {});
+      getMessages(chatId)
+        .then((msgs) => {
+          if (currentIdRef.current !== chatId) return;
+          const msgArray = Array.isArray(msgs) ? msgs : [];
+          setMessages(options?.interrupted ? [...msgArray, { role: "system", type: "system", content: INTERRUPTED_MESSAGE }] : msgArray);
+        })
+        .catch(() => {})
+        .finally(() => setInFlightMessage(null));
+    },
+    [id],
+  );
+
+  /**
+   * Tear down the local view of a run that is no longer live server-side, and
+   * resync the transcript. Used when there's no stream to carry the run's
+   * terminal event to us: the session had already ended, we're not connected
+   * (page was refreshed), or the confirmation deadline passed.
+   */
+  const finishStopLocally = useCallback(
+    (options?: { interrupted?: boolean }) => {
+      clearStopConfirmTimeout();
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setStopping(false);
+      setStreaming(false);
+      setPendingAction(null);
+      resyncStoppedTranscript(options);
+    },
+    [clearStopConfirmTimeout, resyncStoppedTranscript],
+  );
+
+  const handleStop = useCallback(async () => {
+    // A chat still being created is addressable by the temp tracking id we
+    // generated for it (sent to /new/message as clientTrackingId).
+    const chatId = id || tempChatIdRef.current;
+    if (!chatId) {
+      finishStopLocally();
+      return;
     }
-    setStreaming(false);
-    setInFlightMessage(null); // Clear in-flight message when stopping
-    setPendingAction(null);
-  }, [id]);
+
+    setStopping(true);
+    // Hold off auto-reconnect until the registry admits the run is gone —
+    // otherwise the poll's stale "active" (or a CLI-watcher session spawned
+    // from the killed run's log file) drags the UI back into "responding".
+    suppressReconnectAfterStopRef.current = true;
+    let stopped: boolean;
+    try {
+      // Deliberately does NOT close the SSE first: the stream is how the
+      // server tells us the run actually finished unwinding, and it carries
+      // the final transcript state with it. Killing it here is what made the
+      // old stop look instant while the run kept going.
+      ({ stopped } = await stopChat(chatId));
+    } catch {
+      setStopping(false);
+      setNetworkError("Failed to stop the session — it may still be running.");
+      return;
+    }
+
+    // Nothing was running server-side: our view was stale, so just resync.
+    if (!stopped) {
+      finishStopLocally();
+      return;
+    }
+
+    // The harness writes the turn's partial output and its "[Request
+    // interrupted by user]" marker as it dies — about a second after the abort,
+    // i.e. AFTER the terminal event that triggers the settle refetch below. One
+    // delayed resync picks that up, instead of leaving the killed turn's
+    // response blank until the user reloads.
+    clearStopResyncTimeout();
+    stopResyncTimeoutRef.current = setTimeout(() => resyncStoppedTranscript({ interrupted: true }), STOP_RESYNC_DELAY_MS);
+
+    // Cancelled. Without a live stream (page refreshed, inactivity timeout)
+    // no terminal event can reach us, so settle now.
+    if (!abortRef.current) {
+      finishStopLocally({ interrupted: true });
+      return;
+    }
+
+    // Otherwise wait for message_complete (reason: "aborted"), with a deadline
+    // so a run whose unwind never lands can't pin the UI in "Stopping…".
+    clearStopConfirmTimeout();
+    stopConfirmTimeoutRef.current = setTimeout(() => finishStopLocally({ interrupted: true }), STOP_CONFIRM_TIMEOUT_MS);
+  }, [id, finishStopLocally, clearStopConfirmTimeout, clearStopResyncTimeout, resyncStoppedTranscript]);
+
+  // Any end-of-run event (complete, error, abort confirmation) clears the
+  // pending-stop state — it's tied to a run being live.
+  useEffect(() => {
+    if (!streaming) {
+      setStopping(false);
+      clearStopConfirmTimeout();
+    }
+  }, [streaming, clearStopConfirmTimeout]);
 
   // The stop button should be active whenever the frontend is streaming OR the
   // server reports an active web session for this chat.  This covers cases where
@@ -1839,7 +2021,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // timeout fired — the server-side session is still running and can be aborted
   // via the /stop API regardless of frontend connection state.
   // CLI sessions are excluded because the server doesn't control their execution.
-  const canStop = streaming || globalSessionActive?.type === "web";
+  const canStop = (streaming || globalSessionActive?.type === "web") && !stopping;
 
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
@@ -2401,13 +2583,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           </div>
         )}
 
-        {/* Stop button - always in top bar */}
+        {/* Stop button - always in top bar. Three states: idle (nothing to
+            stop), armed, and stopping (cancel sent, waiting for the run to
+            actually end server-side). */}
         <button
           onClick={handleStop}
           disabled={!canStop}
           style={{
-            background: canStop ? "var(--danger)" : "var(--border)",
-            color: canStop ? "var(--text-on-accent)" : "var(--text-secondary)",
+            background: stopping ? "var(--bg-secondary)" : canStop ? "var(--danger)" : "var(--border)",
+            color: stopping ? "var(--danger)" : canStop ? "var(--text-on-accent)" : "var(--text-secondary)",
             padding: "8px",
             borderRadius: 6,
             border: "none",
@@ -2415,11 +2599,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            opacity: canStop ? 1 : 0.5,
+            opacity: canStop || stopping ? 1 : 0.5,
           }}
-          title={canStop ? "Stop generation" : "No active generation"}
+          title={stopping ? "Stopping — cancelling the request" : canStop ? "Stop generation" : "No active generation"}
         >
-          <Square size={14} />
+          {stopping ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Square size={14} />}
         </button>
 
         {/* Mobile: toggle button for secondary action bar */}
