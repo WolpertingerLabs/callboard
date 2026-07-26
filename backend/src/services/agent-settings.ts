@@ -129,11 +129,7 @@ export function detectClaudeCodeOpenRouterEnv(): boolean {
  * The given `settings` is migrated defensively so callers holding a
  * legacy-shaped object (only `openRouterModelAliases`) still resolve correctly.
  */
-export function resolveModelAlias(
-  value: string | undefined,
-  provider: HarnessProvider,
-  settings?: AgentSettings,
-): string | undefined {
+export function resolveModelAlias(value: string | undefined, provider: HarnessProvider, settings?: AgentSettings): string | undefined {
   if (!value) return value;
   const aliases = migrateModelAliases(settings ?? loadSettings()).modelAliases;
   if (!aliases || aliases.length === 0) return value;
@@ -196,11 +192,12 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
   // ── Claude Code → OpenRouter endpoint routing ───────────────────
   // Point the native Claude Code harness at OpenRouter's Anthropic-compatible
   // gateway. Overrides the manual base-url/key/token fields above. The base URL
-  // is OpenRouter's `/api` (no `/v1`); the key rides as the Bearer auth token,
-  // and ANTHROPIC_API_KEY is forced empty so any inherited subscription key in
-  // process.env can't shadow the OpenRouter token.
+  // defaults to OpenRouter's `/api` (no `/v1`) but honors an explicit
+  // claudeCodeOpenRouterBaseUrl so users can target regional endpoints; the key
+  // rides as the Bearer auth token, and ANTHROPIC_API_KEY is forced empty so any
+  // inherited subscription key in process.env can't shadow the OpenRouter token.
   if (s.claudeCodeUseOpenRouter && s.claudeCodeOpenRouterApiKey?.trim()) {
-    env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
+    env.ANTHROPIC_BASE_URL = s.claudeCodeOpenRouterBaseUrl?.trim() || OPENROUTER_ANTHROPIC_BASE_URL;
     env.ANTHROPIC_AUTH_TOKEN = s.claudeCodeOpenRouterApiKey.trim();
     env.ANTHROPIC_API_KEY = "";
     // Role-model defaults. Through OpenRouter, Claude Code's built-in bare model

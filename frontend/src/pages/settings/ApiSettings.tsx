@@ -209,8 +209,11 @@ interface OpenRouterRoutingSectionProps {
   onToggle: (on: boolean) => void;
   apiKey: string;
   onApiKeyChange: (v: string) => void;
-  /** Hard-coded endpoint shown read-only when routing is on. */
+  /** Default endpoint used when the override below is blank — shown as placeholder. */
   endpoint: string;
+  /** Endpoint override (blank ⇒ use {@link endpoint}). Lets users pick a regional URL. */
+  baseUrl: string;
+  onBaseUrlChange: (v: string) => void;
   /** Env var the key is exposed as (ANTHROPIC_AUTH_TOKEN / OPENROUTER_API_KEY). */
   keyEnvLabel: string;
   /** Harness-specific caveats rendered under the key field when routing is on. */
@@ -221,11 +224,24 @@ interface OpenRouterRoutingSectionProps {
 
 /**
  * "Route through OpenRouter" toggle for a native harness. When on, the harness's
- * API endpoint is hard-coded to OpenRouter and authenticated with a dedicated
+ * API endpoint points at OpenRouter and is authenticated with a dedicated
  * OpenRouter key; the manual endpoint/auth fields above are hidden and the model
- * pickers switch to OpenRouter's catalog.
+ * pickers switch to OpenRouter's catalog. The endpoint defaults to OpenRouter's
+ * global URL but is overridable so users can target regional (US/EU) endpoints.
  */
-function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKeyChange, endpoint, keyEnvLabel, caveats, detected }: OpenRouterRoutingSectionProps) {
+function OpenRouterRoutingSection({
+  harness,
+  enabled,
+  onToggle,
+  apiKey,
+  onApiKeyChange,
+  endpoint,
+  baseUrl,
+  onBaseUrlChange,
+  keyEnvLabel,
+  caveats,
+  detected,
+}: OpenRouterRoutingSectionProps) {
   return (
     <div style={sectionStyle}>
       <div style={headerStyle}>
@@ -233,8 +249,8 @@ function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKey
         <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Route through OpenRouter</span>
       </div>
       <div style={subtitleStyle}>
-        Run the native {harness} harness but send its requests to OpenRouter, authenticated with an OpenRouter API key. The endpoint is fixed and the model
-        picker below switches to OpenRouter&apos;s catalog.
+        Run the native {harness} harness but send its requests to OpenRouter, authenticated with an OpenRouter API key. The model picker below switches to
+        OpenRouter&apos;s catalog.
       </div>
       {detected && (
         <div style={{ ...helpStyle, marginTop: 0, marginBottom: 12, color: "var(--accent)" }}>
@@ -248,10 +264,23 @@ function OpenRouterRoutingSection({ harness, enabled, onToggle, apiKey, onApiKey
       {enabled && (
         <>
           <div style={fieldWrap}>
-            <label style={labelStyle}>
-              Endpoint<span style={envLabelStyle}>fixed</span>
+            <label htmlFor={`${harness}-or-base-url`} style={labelStyle}>
+              Endpoint<span style={envLabelStyle}>optional</span>
             </label>
-            <input type="text" value={endpoint} readOnly disabled style={{ ...inputStyle, opacity: 0.7 }} />
+            <input
+              id={`${harness}-or-base-url`}
+              type="text"
+              value={baseUrl}
+              onChange={(e) => onBaseUrlChange(e.target.value)}
+              placeholder={endpoint}
+              autoComplete="off"
+              spellCheck={false}
+              style={inputStyle}
+            />
+            <div style={helpStyle}>
+              Leave blank for OpenRouter&apos;s default ({endpoint}). Override to target a regional endpoint (US/EU) or proxy — include the full path, e.g.{" "}
+              <code>{endpoint.replace("https://openrouter.ai", "https://eu.openrouter.ai")}</code>.
+            </div>
           </div>
           <div style={fieldWrap}>
             <label htmlFor={`${harness}-or-key`} style={labelStyle}>
@@ -282,7 +311,8 @@ function latestAnthropicRoleSlug(models: OpenRouterModelInfo[], role: "opus" | "
     if (!match) continue;
     const ver = match[1].split(".").map((n) => parseInt(n, 10));
     const isNewer =
-      !best || (() => {
+      !best ||
+      (() => {
         for (let i = 0; i < Math.max(ver.length, best.ver.length); i++) {
           const a = ver[i] ?? 0;
           const b = best.ver[i] ?? 0;
@@ -437,6 +467,7 @@ export default function ApiSettings() {
   // Claude Code → OpenRouter endpoint routing
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [claudeCodeOpenRouterApiKey, setClaudeCodeOpenRouterApiKey] = useState("");
+  const [claudeCodeOpenRouterBaseUrl, setClaudeCodeOpenRouterBaseUrl] = useState("");
   // OpenRouter (alternative provider) overrides.
   const [openRouterApiKey, setOpenRouterApiKey] = useState("");
   const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState("");
@@ -468,6 +499,7 @@ export default function ApiSettings() {
   // Codex → OpenRouter endpoint routing
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
   const [codexOpenRouterApiKey, setCodexOpenRouterApiKey] = useState("");
+  const [codexOpenRouterBaseUrl, setCodexOpenRouterBaseUrl] = useState("");
   // Collapse state for the bulky sections.
   const [showDefaults, setShowDefaults] = useState(false);
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
@@ -490,6 +522,7 @@ export default function ApiSettings() {
       // OpenRouter and the user hasn't explicitly saved a choice yet.
       setClaudeCodeUseOpenRouter(s.claudeCodeUseOpenRouter ?? Boolean(sys?.claudeCodeOpenRouterDetected));
       setClaudeCodeOpenRouterApiKey(s.claudeCodeOpenRouterApiKey ?? "");
+      setClaudeCodeOpenRouterBaseUrl(s.claudeCodeOpenRouterBaseUrl ?? "");
       setOpenRouterApiKey(s.openRouterApiKey ?? "");
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
       setOpenRouterModel(s.openRouterModel ?? "");
@@ -506,6 +539,7 @@ export default function ApiSettings() {
       setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
       setCodexUseOpenRouter(s.codexUseOpenRouter ?? Boolean(sys?.codexOpenRouterDetected));
       setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
+      setCodexOpenRouterBaseUrl(s.codexOpenRouterBaseUrl ?? "");
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
@@ -572,6 +606,7 @@ export default function ApiSettings() {
         subagentModel,
         claudeCodeUseOpenRouter,
         claudeCodeOpenRouterApiKey,
+        claudeCodeOpenRouterBaseUrl,
         openRouterApiKey,
         openRouterBaseUrl,
         openRouterModel,
@@ -605,6 +640,7 @@ export default function ApiSettings() {
         codexSandboxMode,
         codexUseOpenRouter,
         codexOpenRouterApiKey,
+        codexOpenRouterBaseUrl,
       });
       setSettings(updated);
       // Re-sync the OR tool/param state from the saved value.
@@ -699,12 +735,14 @@ export default function ApiSettings() {
             onToggle={setClaudeCodeUseOpenRouter}
             apiKey={claudeCodeOpenRouterApiKey}
             onApiKeyChange={setClaudeCodeOpenRouterApiKey}
+            baseUrl={claudeCodeOpenRouterBaseUrl}
+            onBaseUrlChange={setClaudeCodeOpenRouterBaseUrl}
             detected={Boolean(systemInfo?.claudeCodeOpenRouterDetected)}
             endpoint="https://openrouter.ai/api"
             keyEnvLabel="ANTHROPIC_AUTH_TOKEN"
             caveats={
               <>
-                Sets <code>ANTHROPIC_BASE_URL=https://openrouter.ai/api</code> and forces <code>ANTHROPIC_API_KEY</code> empty. Claude Code is optimized for
+                Sets <code>ANTHROPIC_BASE_URL</code> to the endpoint above and forces <code>ANTHROPIC_API_KEY</code> empty. Claude Code is optimized for
                 Anthropic models — pick <code>anthropic/*</code> slugs below for best results. If you previously logged in to Anthropic directly, run{" "}
                 <code>/logout</code> in a chat to clear any cached session conflict.
               </>
@@ -713,78 +751,78 @@ export default function ApiSettings() {
 
           {/* API Endpoint — manual overrides are unused while routing through OpenRouter. */}
           {!claudeCodeUseOpenRouter && (
-          <div style={sectionStyle}>
-            <div style={headerStyle}>
-              <Globe size={16} style={{ color: "var(--accent)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
+            <div style={sectionStyle}>
+              <div style={headerStyle}>
+                <Globe size={16} style={{ color: "var(--accent)" }} />
+                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
+              </div>
+              <div style={subtitleStyle}>
+                Override the base URL used by the Claude Agent SDK. Useful for routing through a corporate proxy or LLM gateway. Leave empty to use the default
+                Anthropic API endpoint.
+              </div>
+              <div style={fieldWrap}>
+                <label htmlFor="apiBaseUrl" style={labelStyle}>
+                  Base URL<span style={envLabelStyle}>ANTHROPIC_BASE_URL</span>
+                </label>
+                <input
+                  id="apiBaseUrl"
+                  type="text"
+                  value={apiBaseUrl}
+                  onChange={(e) => setApiBaseUrl(e.target.value)}
+                  placeholder="https://api.anthropic.com"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={inputStyle}
+                />
+                <div style={helpStyle}>When set to a non-first-party host, MCP tool search is disabled by default.</div>
+              </div>
             </div>
-            <div style={subtitleStyle}>
-              Override the base URL used by the Claude Agent SDK. Useful for routing through a corporate proxy or LLM gateway. Leave empty to use the default
-              Anthropic API endpoint.
-            </div>
-            <div style={fieldWrap}>
-              <label htmlFor="apiBaseUrl" style={labelStyle}>
-                Base URL<span style={envLabelStyle}>ANTHROPIC_BASE_URL</span>
-              </label>
-              <input
-                id="apiBaseUrl"
-                type="text"
-                value={apiBaseUrl}
-                onChange={(e) => setApiBaseUrl(e.target.value)}
-                placeholder="https://api.anthropic.com"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
-              <div style={helpStyle}>When set to a non-first-party host, MCP tool search is disabled by default.</div>
-            </div>
-          </div>
           )}
 
           {/* Authentication — managed by OpenRouter while routing is on. */}
           {!claudeCodeUseOpenRouter && (
-          <div style={sectionStyle}>
-            <div style={headerStyle}>
-              <Key size={16} style={{ color: "var(--accent)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Authentication</span>
-            </div>
-            <div style={subtitleStyle}>
-              Claude Code normally authenticates through your Claude subscription. Set an API key or auth token here to override that — for example, to use a
-              different account or a gateway that requires a bearer token.
-            </div>
-
-            {/* Current source (view-only) */}
-            <div style={{ marginBottom: 14 }}>
-              <div style={rowStyle}>
-                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current token source</span>
-                <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{account?.tokenSource || "—"}</span>
+            <div style={sectionStyle}>
+              <div style={headerStyle}>
+                <Key size={16} style={{ color: "var(--accent)" }} />
+                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Authentication</span>
               </div>
-              <div style={rowStyle}>
-                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current API key source</span>
-                <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.apiKeySource, 4)}</span>
+              <div style={subtitleStyle}>
+                Claude Code normally authenticates through your Claude subscription. Set an API key or auth token here to override that — for example, to use a
+                different account or a gateway that requires a bearer token.
               </div>
-              <div style={rowStyle}>
-                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Account</span>
-                <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.email, 4) || "—"}</span>
+
+              {/* Current source (view-only) */}
+              <div style={{ marginBottom: 14 }}>
+                <div style={rowStyle}>
+                  <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current token source</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{account?.tokenSource || "—"}</span>
+                </div>
+                <div style={rowStyle}>
+                  <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current API key source</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.apiKeySource, 4)}</span>
+                </div>
+                <div style={rowStyle}>
+                  <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Account</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.email, 4) || "—"}</span>
+                </div>
+              </div>
+
+              <div style={fieldWrap}>
+                <label htmlFor="apiKey" style={labelStyle}>
+                  API Key<span style={envLabelStyle}>ANTHROPIC_API_KEY</span>
+                </label>
+                <SecretField id="apiKey" value={apiKey} onChange={setApiKey} placeholder="sk-ant-..." />
+                <div style={helpStyle}>Sent as the X-Api-Key header. Takes precedence over your subscription login.</div>
+              </div>
+
+              <div style={fieldWrap}>
+                <label htmlFor="authToken" style={labelStyle}>
+                  Auth Token<span style={envLabelStyle}>ANTHROPIC_AUTH_TOKEN</span>
+                </label>
+                <SecretField id="authToken" value={authToken} onChange={setAuthToken} placeholder="Bearer token value" />
+                <div style={helpStyle}>Sent as the Authorization: Bearer header. Use for gateways that require a bearer token.</div>
               </div>
             </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="apiKey" style={labelStyle}>
-                API Key<span style={envLabelStyle}>ANTHROPIC_API_KEY</span>
-              </label>
-              <SecretField id="apiKey" value={apiKey} onChange={setApiKey} placeholder="sk-ant-..." />
-              <div style={helpStyle}>Sent as the X-Api-Key header. Takes precedence over your subscription login.</div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="authToken" style={labelStyle}>
-                Auth Token<span style={envLabelStyle}>ANTHROPIC_AUTH_TOKEN</span>
-              </label>
-              <SecretField id="authToken" value={authToken} onChange={setAuthToken} placeholder="Bearer token value" />
-              <div style={helpStyle}>Sent as the Authorization: Bearer header. Use for gateways that require a bearer token.</div>
-            </div>
-          </div>
           )}
 
           {/* Models */}
@@ -1023,8 +1061,8 @@ export default function ApiSettings() {
             <div style={fieldWrap}>
               <label style={labelStyle}>Model Aliases</label>
               <div style={{ ...helpStyle, marginTop: 0 }}>
-                Model aliases now live in their own <strong>Settings → Model Aliases</strong> tab and work across all three harnesses (Claude Code,
-                OpenRouter, Codex), not just OpenRouter. Any aliases you had here were carried over automatically.
+                Model aliases now live in their own <strong>Settings → Model Aliases</strong> tab and work across all three harnesses (Claude Code, OpenRouter,
+                Codex), not just OpenRouter. Any aliases you had here were carried over automatically.
               </div>
             </div>
 
@@ -1252,6 +1290,8 @@ export default function ApiSettings() {
             onToggle={setCodexUseOpenRouter}
             apiKey={codexOpenRouterApiKey}
             onApiKeyChange={setCodexOpenRouterApiKey}
+            baseUrl={codexOpenRouterBaseUrl}
+            onBaseUrlChange={setCodexOpenRouterBaseUrl}
             detected={Boolean(systemInfo?.codexOpenRouterDetected)}
             endpoint="https://openrouter.ai/api/v1"
             keyEnvLabel="OPENROUTER_API_KEY"
@@ -1265,118 +1305,118 @@ export default function ApiSettings() {
 
           {/* Codex — auth mode (managed by OpenRouter while routing is on). */}
           {!codexUseOpenRouter && (
-          <div style={sectionStyle}>
-            <div style={headerStyle}>
-              <Terminal size={16} style={{ color: "var(--accent)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenAI Codex</span>
-            </div>
-            <div style={subtitleStyle}>
-              Run chats on OpenAI Codex. Authenticate with your ChatGPT subscription (recommended on a personal machine — personal use only) or a raw OpenAI API
-              key.
-            </div>
+            <div style={sectionStyle}>
+              <div style={headerStyle}>
+                <Terminal size={16} style={{ color: "var(--accent)" }} />
+                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenAI Codex</span>
+              </div>
+              <div style={subtitleStyle}>
+                Run chats on OpenAI Codex. Authenticate with your ChatGPT subscription (recommended on a personal machine — personal use only) or a raw OpenAI
+                API key.
+              </div>
 
-            {/* Auth-mode toggle */}
-            <div style={fieldWrap}>
-              <label style={labelStyle}>Authentication mode</label>
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                {[
-                  { mode: "subscription" as const, label: "Subscription (ChatGPT login)" },
-                  { mode: "api-key" as const, label: "API key" },
-                ].map(({ mode, label }) => (
+              {/* Auth-mode toggle */}
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Authentication mode</label>
+                <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                  {[
+                    { mode: "subscription" as const, label: "Subscription (ChatGPT login)" },
+                    { mode: "api-key" as const, label: "API key" },
+                  ].map(({ mode, label }) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setCodexAuthMode(mode)}
+                      style={{
+                        flex: 1,
+                        padding: "8px 12px",
+                        fontSize: 13,
+                        fontWeight: 500,
+                        borderRadius: 6,
+                        border: codexAuthMode === mode ? "1px solid var(--accent)" : "1px solid var(--border)",
+                        background: codexAuthMode === mode ? "var(--accent)" : "var(--surface)",
+                        color: codexAuthMode === mode ? "var(--text-on-accent)" : "var(--text)",
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {codexAuthMode === "subscription" ? (
+                <>
+                  {/* Auth status from /system-info (no key field in this mode). */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={rowStyle}>
+                      <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Codex auth status</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 12, color: systemInfo?.codexConfigured ? "var(--text)" : "var(--text-muted)" }}>
+                        {systemInfo?.codexAuthSource === "auth.json"
+                          ? "Logged in (auth.json found)"
+                          : systemInfo?.codexAuthSource === "config.toml"
+                            ? "Configured via config.toml"
+                            : systemInfo?.codexConfigured
+                              ? "Configured"
+                              : "Not configured"}
+                      </span>
+                    </div>
+                  </div>
+                  {!systemInfo?.codexConfigured && (
+                    <div style={{ ...helpStyle, marginTop: 0, marginBottom: 14 }}>
+                      Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account (credentials stored in{" "}
+                      <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code>), or declare a <code style={{ fontSize: 11 }}>model_provider</code> in{" "}
+                      <code style={{ fontSize: 11 }}>$CODEX_HOME/config.toml</code>. After configuring, click refresh below.
+                    </div>
+                  )}
                   <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setCodexAuthMode(mode)}
+                    onClick={handleRefresh}
+                    title="Re-check login status"
                     style={{
-                      flex: 1,
-                      padding: "8px 12px",
-                      fontSize: 13,
-                      fontWeight: 500,
+                      background: "var(--surface)",
+                      color: "var(--text-muted)",
+                      padding: "6px 12px",
                       borderRadius: 6,
-                      border: codexAuthMode === mode ? "1px solid var(--accent)" : "1px solid var(--border)",
-                      background: codexAuthMode === mode ? "var(--accent)" : "var(--surface)",
-                      color: codexAuthMode === mode ? "var(--text-on-accent)" : "var(--text)",
+                      border: "1px solid var(--border)",
                       cursor: "pointer",
-                      transition: "all 0.15s",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 12,
                     }}
                   >
-                    {label}
+                    <RefreshCw size={14} /> Re-check status
                   </button>
-                ))}
-              </div>
+                </>
+              ) : (
+                <>
+                  <div style={fieldWrap}>
+                    <label htmlFor="codexApiKey" style={labelStyle}>
+                      API Key<span style={envLabelStyle}>OPENAI_API_KEY</span>
+                    </label>
+                    <SecretField id="codexApiKey" value={codexApiKey} onChange={setCodexApiKey} placeholder="sk-..." />
+                    <div style={helpStyle}>Billed to your OpenAI API account rather than your ChatGPT subscription.</div>
+                  </div>
+                  <div style={fieldWrap}>
+                    <label htmlFor="codexBaseUrl" style={labelStyle}>
+                      Base URL<span style={envLabelStyle}>OPENAI_BASE_URL</span>
+                    </label>
+                    <input
+                      id="codexBaseUrl"
+                      type="text"
+                      value={codexBaseUrl}
+                      onChange={(e) => setCodexBaseUrl(e.target.value)}
+                      placeholder="https://api.openai.com/v1"
+                      autoComplete="off"
+                      spellCheck={false}
+                      style={inputStyle}
+                    />
+                    <div style={helpStyle}>Optional. Override the OpenAI API endpoint (proxies / gateways).</div>
+                  </div>
+                </>
+              )}
             </div>
-
-            {codexAuthMode === "subscription" ? (
-              <>
-                {/* Auth status from /system-info (no key field in this mode). */}
-                <div style={{ marginBottom: 14 }}>
-                  <div style={rowStyle}>
-                    <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Codex auth status</span>
-                    <span style={{ fontFamily: "monospace", fontSize: 12, color: systemInfo?.codexConfigured ? "var(--text)" : "var(--text-muted)" }}>
-                      {systemInfo?.codexAuthSource === "auth.json"
-                        ? "Logged in (auth.json found)"
-                        : systemInfo?.codexAuthSource === "config.toml"
-                          ? "Configured via config.toml"
-                          : systemInfo?.codexConfigured
-                            ? "Configured"
-                            : "Not configured"}
-                    </span>
-                  </div>
-                </div>
-                {!systemInfo?.codexConfigured && (
-                  <div style={{ ...helpStyle, marginTop: 0, marginBottom: 14 }}>
-                    Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account (credentials stored in{" "}
-                    <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code>), or declare a <code style={{ fontSize: 11 }}>model_provider</code> in{" "}
-                    <code style={{ fontSize: 11 }}>$CODEX_HOME/config.toml</code>. After configuring, click refresh below.
-                  </div>
-                )}
-                <button
-                  onClick={handleRefresh}
-                  title="Re-check login status"
-                  style={{
-                    background: "var(--surface)",
-                    color: "var(--text-muted)",
-                    padding: "6px 12px",
-                    borderRadius: 6,
-                    border: "1px solid var(--border)",
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 12,
-                  }}
-                >
-                  <RefreshCw size={14} /> Re-check status
-                </button>
-              </>
-            ) : (
-              <>
-                <div style={fieldWrap}>
-                  <label htmlFor="codexApiKey" style={labelStyle}>
-                    API Key<span style={envLabelStyle}>OPENAI_API_KEY</span>
-                  </label>
-                  <SecretField id="codexApiKey" value={codexApiKey} onChange={setCodexApiKey} placeholder="sk-..." />
-                  <div style={helpStyle}>Billed to your OpenAI API account rather than your ChatGPT subscription.</div>
-                </div>
-                <div style={fieldWrap}>
-                  <label htmlFor="codexBaseUrl" style={labelStyle}>
-                    Base URL<span style={envLabelStyle}>OPENAI_BASE_URL</span>
-                  </label>
-                  <input
-                    id="codexBaseUrl"
-                    type="text"
-                    value={codexBaseUrl}
-                    onChange={(e) => setCodexBaseUrl(e.target.value)}
-                    placeholder="https://api.openai.com/v1"
-                    autoComplete="off"
-                    spellCheck={false}
-                    style={inputStyle}
-                  />
-                  <div style={helpStyle}>Optional. Override the OpenAI API endpoint (proxies / gateways).</div>
-                </div>
-              </>
-            )}
-          </div>
           )}
 
           {/* Codex — model + sandbox */}
@@ -1392,7 +1432,13 @@ export default function ApiSettings() {
                 Default Model
               </label>
               {codexUseOpenRouter ? (
-                <OpenRouterModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} priorityPrefix="openai/" placeholder="openai/gpt-5.5-codex" />
+                <OpenRouterModelSelector
+                  id="codexModel"
+                  value={codexModel}
+                  onChange={setCodexModel}
+                  priorityPrefix="openai/"
+                  placeholder="openai/gpt-5.5-codex"
+                />
               ) : (
                 <CodexModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} placeholder="gpt-5.5" />
               )}

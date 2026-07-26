@@ -67,9 +67,7 @@ describe("translateCodexOptions — core option mapping", () => {
   it("model resolves from codex.model, falling back to options.model", () => {
     expect(translateCodexOptions({ model: "gpt-5.1-codex" }).threadOptions.model).toBe("gpt-5.1-codex");
     // codex.model wins over a top-level options.model
-    expect(
-      translateCodexOptions({ model: "gpt-5.1-codex", codex: { model: "gpt-5.5" } }).threadOptions.model,
-    ).toBe("gpt-5.5");
+    expect(translateCodexOptions({ model: "gpt-5.1-codex", codex: { model: "gpt-5.5" } }).threadOptions.model).toBe("gpt-5.5");
     expect(translateCodexOptions({}).threadOptions.model).toBeUndefined();
   });
 });
@@ -102,6 +100,54 @@ describe("translateCodexOptions — subscription vs api-key construction", () =>
   it("api-key mode without a key set leaves apiKey undefined", () => {
     const { codexOpts } = translateCodexOptions({ codex: { authMode: "api-key" } });
     expect(codexOpts.apiKey).toBeUndefined();
+  });
+});
+
+describe("translateCodexOptions — OpenRouter endpoint routing", () => {
+  // The injected provider block, narrowed from the loose config bag.
+  const orProvider = (config: unknown) => (config as { model_providers?: { openrouter?: Record<string, string> } } | undefined)?.model_providers?.openrouter;
+
+  it("injects the openrouter provider block at the default base_url", () => {
+    const { codexOpts } = translateCodexOptions({ codex: { useOpenRouter: true } });
+    expect(codexOpts.config?.model_provider).toBe("openrouter");
+    expect(orProvider(codexOpts.config)).toEqual({
+      name: "OpenRouter",
+      base_url: "https://openrouter.ai/api/v1",
+      env_key: "OPENROUTER_API_KEY",
+      wire_api: "responses",
+    });
+  });
+
+  it("honors an explicit openRouterBaseUrl override (regional endpoint)", () => {
+    const { codexOpts } = translateCodexOptions({
+      codex: { useOpenRouter: true, openRouterBaseUrl: "https://eu.openrouter.ai/api/v1" },
+    });
+    expect(orProvider(codexOpts.config)?.base_url).toBe("https://eu.openrouter.ai/api/v1");
+  });
+
+  it("trims the override and falls back to the default when it is blank", () => {
+    const { codexOpts: trimmed } = translateCodexOptions({
+      codex: { useOpenRouter: true, openRouterBaseUrl: "  https://eu.openrouter.ai/api/v1  " },
+    });
+    expect(orProvider(trimmed.config)?.base_url).toBe("https://eu.openrouter.ai/api/v1");
+
+    const { codexOpts: blank } = translateCodexOptions({ codex: { useOpenRouter: true, openRouterBaseUrl: "   " } });
+    expect(orProvider(blank.config)?.base_url).toBe("https://openrouter.ai/api/v1");
+  });
+
+  it("OpenRouter routing wins over api-key mode — no apiKey/baseUrl on CodexOptions", () => {
+    const { codexOpts } = translateCodexOptions({
+      codex: { useOpenRouter: true, authMode: "api-key", apiKey: "sk-openai", baseUrl: "https://proxy.local/v1" },
+    });
+    expect(codexOpts.config?.model_provider).toBe("openrouter");
+    expect(codexOpts.apiKey).toBeUndefined();
+    expect(codexOpts.baseUrl).toBeUndefined();
+  });
+
+  it("ignores openRouterBaseUrl when routing is off", () => {
+    const { codexOpts } = translateCodexOptions({ codex: { openRouterBaseUrl: "https://eu.openrouter.ai/api/v1" } });
+    expect(codexOpts.config?.model_provider).toBeUndefined();
+    expect(codexOpts.config?.model_providers).toBeUndefined();
   });
 });
 
@@ -142,9 +188,7 @@ describe("resolveCodexInstructions", () => {
   });
 
   it("preset object uses the append; loses the named preset content", () => {
-    expect(
-      resolveCodexInstructions({ type: "preset", preset: "claude_code", append: "extra rules" }),
-    ).toBe("extra rules");
+    expect(resolveCodexInstructions({ type: "preset", preset: "claude_code", append: "extra rules" })).toBe("extra rules");
   });
 
   it("preset object with no append → undefined", () => {
@@ -163,9 +207,7 @@ describe("translateCodexOptions — systemPrompt → temp model_instructions_fil
     expect(instructionsFilePath).toBeTruthy();
     expect(existsSync(instructionsFilePath!)).toBe(true);
     expect(readFileSync(instructionsFilePath!, "utf-8")).toBe("follow the rules");
-    expect((codexOpts.config as { model_instructions_file?: string }).model_instructions_file).toBe(
-      instructionsFilePath,
-    );
+    expect((codexOpts.config as { model_instructions_file?: string }).model_instructions_file).toBe(instructionsFilePath);
   });
 
   it("preset append is what lands in the file", () => {
@@ -235,9 +277,10 @@ describe("resolveSandboxAndApproval", () => {
 
   it("explicit sandbox overrides the permission-derived tier", () => {
     // permissions alone would yield read-only, but the user forced workspace-write.
-    expect(
-      resolveSandboxAndApproval({ sandboxMode: "workspace-write", permissions: perms() }),
-    ).toEqual({ sandboxMode: "workspace-write", approvalPolicy: "on-request" });
+    expect(resolveSandboxAndApproval({ sandboxMode: "workspace-write", permissions: perms() })).toEqual({
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+    });
   });
 
   it("an 'ask' pins approval to on-request even when the explicit tier is danger-full-access", () => {

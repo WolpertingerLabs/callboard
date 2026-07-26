@@ -1371,6 +1371,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     queryOpts.options.codex = {
       authMode,
       ...(useOpenRouter && { useOpenRouter: true }),
+      ...(useOpenRouter && agentSettings.codexOpenRouterBaseUrl?.trim() && { openRouterBaseUrl: agentSettings.codexOpenRouterBaseUrl.trim() }),
       ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
       ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
       ...(requestedModel && { model: requestedModel }),
@@ -1383,6 +1384,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         `model=${requestedModel ?? "(default)"}, effort=${chatEffort ?? "(default)"}, ` +
         `sandbox=${agentSettings.codexSandboxMode ?? "(permission-derived)"}, ` +
         `codexHome=${agentSettings.codexHome?.trim() || "~/.codex"}` +
+        `${useOpenRouter ? `, orBaseUrl=${agentSettings.codexOpenRouterBaseUrl?.trim() || "(default)"}` : ""}` +
         `${useOpenRouter && agentSettings.codexOpenRouterApiKey ? `, orKeyTail=…${agentSettings.codexOpenRouterApiKey.trim().slice(-4)}` : ""}` +
         `${!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
     );

@@ -34,16 +34,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalMode, CodexOptions, ModelReasoningEffort, SandboxMode, ThreadOptions } from "@openai/codex-sdk";
 import type { DefaultPermissions, EffortLevel } from "shared/types/index.js";
-import {
-  defaultApprovalForSandbox,
-  hasAnyAsk,
-  mapPermissionsToCodex,
-} from "./permissionAdapter.js";
-import {
-  isCodexToolServerHandle,
-  type CodexMcpServerConfig,
-  type CodexToolServerHandle,
-} from "./toolAdapter.js";
+import { defaultApprovalForSandbox, hasAnyAsk, mapPermissionsToCodex } from "./permissionAdapter.js";
+import { isCodexToolServerHandle, type CodexMcpServerConfig, type CodexToolServerHandle } from "./toolAdapter.js";
+import { OPENROUTER_CODEX_BASE_URL } from "../../../services/agent-settings.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("codex-adapter");
@@ -69,6 +62,13 @@ export interface CodexOptionsExtras {
    * in via OPENROUTER_API_KEY (the block's env_key), set by getApiEnvOverrides.
    */
   useOpenRouter?: boolean;
+  /**
+   * Endpoint override for {@link useOpenRouter} mode — becomes the injected
+   * `[model_providers.openrouter]` block's `base_url`. Omitted/blank ⇒
+   * {@link OPENROUTER_CODEX_BASE_URL}. Distinct from {@link baseUrl}, which only
+   * applies in api-key mode.
+   */
+  openRouterBaseUrl?: string;
   /** Default model, e.g. "gpt-5.5". Overrides a top-level `options.model`. */
   model?: string;
   /**
@@ -169,10 +169,7 @@ export interface CodexTranslatedOptions {
  *     Codex forwards only a bearer token (via env var), not arbitrary headers,
  *     so custom `headers` are dropped with a warning rather than silently lost.
  */
-export function externalToCodexMcpConfig(
-  name: string,
-  value: Record<string, unknown>,
-): CodexMcpServerConfig | null {
+export function externalToCodexMcpConfig(name: string, value: Record<string, unknown>): CodexMcpServerConfig | null {
   if (typeof value.command === "string") {
     const cfg: CodexMcpServerConfig = {
       command: value.command,
@@ -252,9 +249,7 @@ export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServe
  * implicit content (Codex has no Claude preset prompts) — only the `append`
  * carries over; an append-less preset yields no file.
  */
-export function resolveCodexInstructions(
-  systemPrompt: ClaudeShapedOptions["systemPrompt"],
-): string | undefined {
+export function resolveCodexInstructions(systemPrompt: ClaudeShapedOptions["systemPrompt"]): string | undefined {
   if (typeof systemPrompt === "string") return systemPrompt.length > 0 ? systemPrompt : undefined;
   if (systemPrompt && typeof systemPrompt === "object") {
     const append = systemPrompt.append ?? "";
@@ -287,9 +282,7 @@ export function writeInstructionsFile(instructions: string): string {
  * }`, carrying `CODEX_HOME`), so we forward it whole. Returns `undefined` when
  * no env was supplied, letting the SDK fall back to inheriting `process.env`.
  */
-export function buildCodexEnv(
-  optionsEnv: ClaudeShapedOptions["env"],
-): Record<string, string> | undefined {
+export function buildCodexEnv(optionsEnv: ClaudeShapedOptions["env"]): Record<string, string> | undefined {
   if (!optionsEnv) return undefined;
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(optionsEnv)) {
@@ -317,9 +310,7 @@ export function resolveSandboxAndApproval(extras: CodexOptionsExtras): {
     if (!explicit) return mapped;
     // Explicit tier overrides the sandbox; approval follows the explicit tier
     // unless an "ask" pins it to on-request.
-    const approvalPolicy = hasAnyAsk(permissions)
-      ? "on-request"
-      : defaultApprovalForSandbox(explicit);
+    const approvalPolicy = hasAnyAsk(permissions) ? "on-request" : defaultApprovalForSandbox(explicit);
     return { sandboxMode: explicit, approvalPolicy };
   }
 
@@ -373,7 +364,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // Inject a custom config.toml model provider so the native Codex harness
   // talks to OpenRouter. wire_api MUST be "responses" (Codex dropped the legacy
   // "chat" value); the key is read from OPENROUTER_API_KEY (set by
-  // getApiEnvOverrides). Wins over api-key mode below.
+  // getApiEnvOverrides). The base_url honors an explicit override (regional
+  // endpoints) and otherwise falls back to the global default. Wins over api-key
+  // mode below.
   if (extras.useOpenRouter) {
     codexOpts.config = {
       ...codexOpts.config,
@@ -381,7 +374,7 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
       model_providers: {
         openrouter: {
           name: "OpenRouter",
-          base_url: "https://openrouter.ai/api/v1",
+          base_url: extras.openRouterBaseUrl?.trim() || OPENROUTER_CODEX_BASE_URL,
           env_key: "OPENROUTER_API_KEY",
           wire_api: "responses",
         },
@@ -417,8 +410,7 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   const { sandboxMode, approvalPolicy } = resolveSandboxAndApproval(extras);
   // `none` isn't a Codex effort tier (it only governs summary visibility above);
   // every other EffortLevel maps 1:1 onto Codex's ModelReasoningEffort.
-  const modelReasoningEffort =
-    reasoningEffort && reasoningEffort !== "none" ? (reasoningEffort as ModelReasoningEffort) : undefined;
+  const modelReasoningEffort = reasoningEffort && reasoningEffort !== "none" ? (reasoningEffort as ModelReasoningEffort) : undefined;
   const threadOptions: ThreadOptions = {
     skipGitRepoCheck: true,
     ...(cwd && { workingDirectory: cwd }),
