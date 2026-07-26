@@ -84,6 +84,40 @@ rather than the model's own calls, and the results are point-in-time.
 Dropped: `thinking` (provider-specific signatures / encrypted payloads),
 `system` (callboard plumbing), and subagent messages (`teamName` set).
 
+## Images
+
+Images attached to **user** messages are carried natively — resolved from
+callboard's image store to base64 in `handoff.ts`, then wrapped by each writer
+in its own shape (Claude a `source` object, Codex and OpenRouter a data URI).
+All three round-trip back into image ids on read, so they still render.
+
+Two limits, both stated in the preamble when they bite:
+
+- **Assistant-side images can't be carried.** Images the agent *read* (a
+  screenshot opened with `Read`) land on a tool result, which folds into an
+  assistant turn — and no harness accepts image blocks on assistant output.
+  The flattened text notes how many were left behind.
+- **Caps: 12 images / 6 MB.** Unlike text, an image is carried whole or not at
+  all, and each costs a four-figure token count on *every* subsequent turn.
+  Images are taken in conversation order so early references keep resolving.
+
+For OpenRouter the transcript's `text` field carries multimodal prompts as a
+JSON-encoded block array — the encoding `logTranscriptUser` writes and
+`unwrapUserText` decodes. A raw string there would lose the image on read-back.
+
+## Model selection
+
+A handoff can't inherit the source chat's model: `claude-opus-5` means nothing
+to Codex, and effort scales don't transfer either. So the picker opens a
+confirmation modal carrying a model field (the target harness's own selector),
+without which every switch would silently land on the target's global default.
+
+`metadata.model` is honored by all three harnesses — `stream.ts` persists it
+for any provider and each config block reads it. (`sendMessage`'s *new-chat*
+block guards model to openrouter/claude-code, but that guard doesn't apply to
+this route, which writes metadata itself.) Effort stays guarded to the two
+reasoning-capable harnesses.
+
 ## Verification
 
 Each writer was driven end-to-end against the real engine, seeding a history
@@ -99,6 +133,11 @@ the resumed session to recall it without tools:
 In all three the model correctly reported that *another* harness ran the
 command, confirming the preamble does its job.
 
+The image path was verified the same way, seeding a solid-red PNG on a user
+turn (its colour stated nowhere in the text) and asking the resumed session to
+name it: both Codex and Claude Code answered "Red", so the pixels genuinely
+crossed the handoff.
+
 ## Known limits
 
 - Seeded history is uncached on the target, so the first turn re-reads the whole
@@ -106,4 +145,4 @@ command, confirming the preamble does its job.
 - The Codex rollout format is undocumented and version-gated
   (`EXPECTED_CODEX_CLI_VERSION`); the writer carries ongoing drift risk the
   other two don't.
-- Images referenced by `imageIds` are not carried across a handoff.
+- Images on the assistant side (tool results) are not carried; see Images above.

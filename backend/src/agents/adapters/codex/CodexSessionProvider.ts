@@ -343,9 +343,14 @@ export class CodexSessionProvider implements SessionProvider {
         payload: {
           type: "message",
           role: turn.role,
-          // Codex distinguishes input vs output text blocks by role; using the
-          // wrong one leaves the message unparsed on read-back.
-          content: [{ type: turn.role === "user" ? "input_text" : "output_text", text: turn.text }],
+          content: [
+            // Codex distinguishes input vs output text blocks by role; using
+            // the wrong one leaves the message unparsed on read-back.
+            { type: turn.role === "user" ? "input_text" : "output_text", text: turn.text },
+            // Codex takes image input as a data URI, which its own parser
+            // (and callboard's) reads back into an image id.
+            ...(turn.images ?? []).map((img) => ({ type: "input_image", image_url: `data:${img.mimeType};base64,${img.base64}` })),
+          ],
         },
       });
     }

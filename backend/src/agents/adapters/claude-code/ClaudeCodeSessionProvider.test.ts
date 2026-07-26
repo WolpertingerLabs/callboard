@@ -229,3 +229,28 @@ describe("ClaudeCodeSessionProvider.seedSession", () => {
     expect(provider.seedSession([], { folder: "/repo", newSessionId: "seeded-4" })).toBeNull();
   });
 });
+
+describe("ClaudeCodeSessionProvider.seedSession images", () => {
+  const PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+  it("writes images as base64 source blocks alongside the text", () => {
+    const seeded = provider.seedSession([{ role: "user", text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }], {
+      folder: "/repo",
+      newSessionId: "seeded-img",
+    })!;
+    const line = JSON.parse(readFileSync(seeded.logPath, "utf-8").trim().split("\n")[0]!);
+    expect(line.message.content).toEqual([
+      { type: "text", text: "look" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } },
+    ]);
+  });
+
+  it("keeps plain text turns as a plain string", () => {
+    // The shape the SDK itself writes for a typed prompt — no reason to make
+    // every image-free handoff a block array.
+    const seeded = provider.seedSession([{ role: "user", text: "no images" }], { folder: "/repo", newSessionId: "seeded-plain" })!;
+    const line = JSON.parse(readFileSync(seeded.logPath, "utf-8").trim().split("\n")[0]!);
+    expect(line.message.content).toBe("no images");
+  });
+});

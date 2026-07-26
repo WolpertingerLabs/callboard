@@ -436,10 +436,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
         sessionId: newSessionId,
         version: "1.0.0",
         type: turn.role,
-        message:
-          turn.role === "user"
-            ? { role: "user", content: turn.text }
-            : { role: "assistant", content: [{ type: "text", text: turn.text }] },
+        message: turn.role === "user" ? { role: "user", content: userContent(turn) } : { role: "assistant", content: [{ type: "text", text: turn.text }] },
         uuid,
         timestamp: turn.timestamp || new Date().toISOString(),
       };
@@ -476,4 +473,21 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
       }
     }
   }
+}
+
+/**
+ * Content for a seeded user message. A plain string when there is nothing but
+ * text (the shape the SDK itself writes for a typed prompt), or a block array
+ * when images ride along — Claude takes image bytes inline as a base64
+ * `source`, so the handoff's raw base64 goes straight in.
+ */
+function userContent(turn: HandoffTurn): unknown {
+  if (!turn.images?.length) return turn.text;
+  return [
+    ...(turn.text ? [{ type: "text", text: turn.text }] : []),
+    ...turn.images.map((img) => ({
+      type: "image",
+      source: { type: "base64", media_type: img.mimeType, data: img.base64 },
+    })),
+  ];
 }

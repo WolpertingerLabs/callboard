@@ -221,12 +221,19 @@ describe("POST /api/chats/:id/fork model and effort", () => {
   });
 
   it("accepts a model and effort for the new harness", async () => {
+    // Codex honors metadata.model too (its config block prefers the per-chat
+    // override over the global codexModel default), so it must not be dropped.
     setParent({});
     const res = await fork({ provider: "codex", model: "gpt-5.6", effort: "high" });
     expect(res.meta.effort).toBe("high");
-    // model is meaningful to openrouter and claude-code only — codex takes its
-    // model through its own config path, so the guard drops it here.
-    expect(res.meta).not.toHaveProperty("model");
+    expect(res.meta.model).toBe("gpt-5.6");
+  });
+
+  it("drops effort when the target harness has no reasoning control", async () => {
+    setParent({});
+    const res = await fork({ provider: "claude-code", model: "opus", effort: "high" });
+    expect(res.meta.model).toBe("opus");
+    expect(res.meta).not.toHaveProperty("effort");
   });
 
   it("keeps model and effort on a same-harness fork", async () => {

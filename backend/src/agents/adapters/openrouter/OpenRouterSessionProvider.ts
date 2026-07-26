@@ -284,7 +284,7 @@ export class OpenRouterSessionProvider implements SessionProvider {
     // an `output_text` block for assistant turns.
     const messages = turns.map((turn) =>
       turn.role === "user"
-        ? { role: "user", content: turn.text }
+        ? { role: "user", content: turn.images?.length ? userBlocks(turn) : turn.text }
         : {
             type: "message",
             role: "assistant",
@@ -296,11 +296,17 @@ export class OpenRouterSessionProvider implements SessionProvider {
 
     const transcript = [
       { v: 1, sessionId: opts.newSessionId, ts: nowIso, kind: "session_start", cwd: opts.folder },
-      ...turns.map((turn) =>
-        turn.role === "user"
-          ? { v: 1, sessionId: opts.newSessionId, ts: turn.timestamp || nowIso, kind: "user", text: turn.text }
-          : { v: 1, sessionId: opts.newSessionId, ts: turn.timestamp || nowIso, kind: "assistant", text: turn.text },
-      ),
+      ...turns.map((turn) => ({
+        v: 1,
+        sessionId: opts.newSessionId,
+        ts: turn.timestamp || nowIso,
+        kind: turn.role,
+        // The transcript's `text` field carries multimodal user prompts as a
+        // JSON-encoded block array — the same encoding logTranscriptUser
+        // writes and readOpenRouterTranscript's unwrapUserText decodes back
+        // into image ids. Plain text stays a plain string.
+        text: turn.role === "user" && turn.images?.length ? JSON.stringify(userBlocks(turn)) : turn.text,
+      })),
     ];
 
     try {
@@ -442,4 +448,16 @@ export class OpenRouterSessionProvider implements SessionProvider {
       // logsRoot disappeared between calls — no-op.
     }
   }
+}
+
+/**
+ * OR Responses-API content blocks for a seeded user turn carrying images.
+ * Shared by state.json (structural) and transcript.jsonl (JSON-encoded into
+ * the `text` field) so the two can never disagree about what was attached.
+ */
+function userBlocks(turn: HandoffTurn): unknown[] {
+  return [
+    ...(turn.text ? [{ type: "input_text", text: turn.text }] : []),
+    ...(turn.images ?? []).map((img) => ({ type: "input_image", image_url: `data:${img.mimeType};base64,${img.base64}` })),
+  ];
 }

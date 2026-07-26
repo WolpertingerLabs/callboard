@@ -259,3 +259,37 @@ describe("seedSession", () => {
     expect(provider.seedSession([], { folder: "/repo", newSessionId: SEED_ID })).toBeNull();
   });
 });
+
+describe("seedSession images", () => {
+  const SEED_ID = "019f9fa2-0d7b-72b6-bb47-e215c05d31f9";
+  // 1x1 transparent PNG.
+  const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+  it("writes user images as data-URI input_image blocks", () => {
+    const provider = new CodexSessionProvider();
+    const seeded = provider.seedSession([{ role: "user", text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }], {
+      folder: "/repo",
+      newSessionId: SEED_ID,
+    })!;
+
+    const lines = readFileSync(seeded.logPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const content = lines[1].payload.content;
+    expect(content[0]).toEqual({ type: "input_text", text: "look" });
+    expect(content[1].type).toBe("input_image");
+    expect(content[1].image_url).toBe(`data:image/png;base64,${PNG_B64}`);
+  });
+
+  it("round-trips images back into image ids", () => {
+    const provider = new CodexSessionProvider();
+    provider.seedSession([{ role: "user", text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }], {
+      folder: "/repo",
+      newSessionId: SEED_ID,
+    });
+
+    const parsed = provider.parseSessionMessages([SEED_ID]);
+    expect(parsed[0]!.imageIds).toHaveLength(1);
+  });
+});

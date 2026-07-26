@@ -753,10 +753,14 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // than writing it (an explicit value there is redundant, and resolving an
     // absent provider already lands on claude-code).
     ...(targetKind !== "claude-code" && { provider: targetKind }),
-    // Same guards sendMessage applies: effort is meaningful only to the two
-    // reasoning-capable harnesses, model to openrouter and claude-code.
+    // Effort is meaningful only to the two reasoning-capable harnesses.
     ...(effort && (targetKind === "openrouter" || targetKind === "codex") && { effort }),
-    ...(model && (targetKind === "openrouter" || targetKind === "claude-code") && { model }),
+    // Model is honored by all three: `stream.ts` persists `metadata.model`
+    // for any provider, and each harness's config block reads it (Codex's
+    // per-chat override wins over the global codexModel default). Note
+    // sendMessage's *new-chat* block guards model to openrouter/claude-code —
+    // that guard doesn't apply here, since this route writes metadata itself.
+    ...(model && { model }),
     // Model routing is an OpenRouter-only feature keyed to OR rank ids —
     // carry it only when the target is still OpenRouter.
     ...(meta.modelRouting && targetKind === "openrouter" && { modelRouting: true }),

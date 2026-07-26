@@ -834,3 +834,56 @@ describe("seedSession", () => {
     expect(provider.seedSession([], { folder: "/repo", newSessionId: SEED_ID })).toBeNull();
   });
 });
+
+describe("seedSession images", () => {
+  const SEED_ID = "seeded-images";
+  const PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const turnsWithImage = [{ role: "user" as const, text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }];
+
+  it("writes images as input_image blocks in state.json", async () => {
+    await pointSettingsAtTmp();
+    new OpenRouterSessionProvider().seedSession(turnsWithImage, { folder: "/repo", newSessionId: SEED_ID });
+
+    const state = JSON.parse(readFileSync(join(TMP_LOGS, SEED_ID, "state.json"), "utf-8"));
+    expect(state.messages[0].content).toEqual([
+      { type: "input_text", text: "look" },
+      { type: "input_image", image_url: `data:image/png;base64,${PNG_B64}` },
+    ]);
+  });
+
+  it("JSON-encodes multimodal blocks into the transcript's text field", async () => {
+    // That encoding is what logTranscriptUser writes and what unwrapUserText
+    // decodes — a raw string here would lose the image on read-back.
+    await pointSettingsAtTmp();
+    new OpenRouterSessionProvider().seedSession(turnsWithImage, { folder: "/repo", newSessionId: SEED_ID });
+
+    const userRecord = readFileSync(join(TMP_LOGS, SEED_ID, "transcript.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .find((r) => r.kind === "user");
+    expect(JSON.parse(userRecord.text)).toEqual([
+      { type: "input_text", text: "look" },
+      { type: "input_image", image_url: `data:image/png;base64,${PNG_B64}` },
+    ]);
+  });
+
+  it("round-trips images back into image ids", async () => {
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    provider.seedSession(turnsWithImage, { folder: "/repo", newSessionId: SEED_ID });
+
+    const parsed = provider.parseSessionMessages([SEED_ID]);
+    expect(parsed[0]!.content).toBe("look");
+    expect(parsed[0]!.imageIds).toHaveLength(1);
+  });
+
+  it("keeps plain text turns as plain strings", async () => {
+    await pointSettingsAtTmp();
+    new OpenRouterSessionProvider().seedSession([{ role: "user", text: "no images here" }], { folder: "/repo", newSessionId: SEED_ID });
+
+    const state = JSON.parse(readFileSync(join(TMP_LOGS, SEED_ID, "state.json"), "utf-8"));
+    expect(state.messages[0]).toEqual({ role: "user", content: "no images here" });
+  });
+});
