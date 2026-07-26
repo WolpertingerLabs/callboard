@@ -337,6 +337,25 @@ export async function getPending(id: string): Promise<any | null> {
   return data.pending;
 }
 
+/**
+ * Cancel the run behind a chat. The server aborts the session AND terminates
+ * the underlying provider request; the run's own SSE stream then delivers a
+ * final `message_complete` with reason "aborted" as it unwinds.
+ *
+ * `id` may be a chat id or, for a chat still being created, the
+ * clientTrackingId sent with the first message.
+ *
+ * Returns `stopped: false` when the server had nothing to cancel (the run
+ * already ended, or it's a CLI session the server doesn't control). Throws on
+ * transport/HTTP failure so callers can surface "it may still be running"
+ * rather than silently pretending the stop landed.
+ */
+export async function stopChat(id: string): Promise<{ stopped: boolean }> {
+  const res = await fetch(`${BASE}/chats/${encodeURIComponent(id)}/stop`, { method: "POST", credentials: "include" });
+  if (!res.ok) throw new Error(`Stop failed (${res.status})`);
+  return res.json();
+}
+
 export async function respondToChat(
   id: string,
   allow: boolean,

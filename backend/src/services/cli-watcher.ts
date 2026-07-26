@@ -13,6 +13,9 @@ const SCAN_INTERVAL_MS = 5_000;
 /** How long a session can be idle (no file growth) before it's considered stopped (ms) */
 const INACTIVITY_THRESHOLD_MS = 30_000;
 
+/** How long after a web session ends its log's trailing writes are ignored (ms). */
+const POST_WEB_SESSION_GRACE_MS = 15_000;
+
 /**
  * Maximum number of recent chats to scan for CLI activity.
  * CLI sessions will appear in recent chats, so we don't need to scan the
@@ -29,6 +32,17 @@ interface TrackedSession {
 }
 
 const trackedSessions = new Map<string, TrackedSession>();
+
+/**
+ * chatId → when its web session ended. A web run that was stopped mid-turn
+ * keeps writing for a moment as the harness unwinds, and that trailing growth
+ * is indistinguishable from CLI activity by size alone — which is how stopping
+ * a chat could resurrect it as a phantom "cli" session seconds later, putting
+ * the UI back into "responding" after the user had cancelled it. Growth inside
+ * the grace window below is attributed to the run that just ended.
+ */
+const recentlyEndedWebSessions = new Map<string, number>();
+
 let scanTimer: ReturnType<typeof setTimeout> | null = null;
 let registryListener: ((event: any) => void) | null = null;
 let scanning = false;
@@ -129,8 +143,12 @@ async function scan(): Promise<void> {
           tracked.lastGrowthTime = now;
 
           if (!sessionRegistry.has(chat.id)) {
-            // Check for completion before registering
-            if (!(await hasCompletionMarker(logPath))) {
+            const webEndedAt = recentlyEndedWebSessions.get(chat.id);
+            const isWebUnwind = webEndedAt !== undefined && now - webEndedAt < POST_WEB_SESSION_GRACE_MS;
+            // Check for completion before registering. An aborted run leaves
+            // no completion marker, so the grace check above is what keeps a
+            // just-stopped web run from coming back as a CLI session.
+            if (!isWebUnwind && !(await hasCompletionMarker(logPath))) {
               sessionRegistry.register(chat.id, { type: "cli" });
             }
           }
@@ -154,6 +172,11 @@ async function scan(): Promise<void> {
           lastGrowthTime: stats.mtime.getTime(),
         });
       }
+    }
+
+    // Expire grace entries so the map doesn't grow with every ended session.
+    for (const [chatId, endedAt] of recentlyEndedWebSessions) {
+      if (now - endedAt >= POST_WEB_SESSION_GRACE_MS) recentlyEndedWebSessions.delete(chatId);
     }
 
     // Clean up tracked sessions whose chats were deleted. Use getChat() for
@@ -204,6 +227,10 @@ export function initCliWatcher(): void {
     if (event.event !== "session_stopped" || event.type !== "web") return;
 
     const chatId = event.chatId;
+    // Opens the grace window even when the chat record or log can't be
+    // resolved right now (e.g. a new chat stopped before its first write).
+    recentlyEndedWebSessions.set(chatId, Date.now());
+
     const chat = chatFileService.getChat(chatId);
     if (!chat?.session_id) return;
 
@@ -257,6 +284,7 @@ export function shutdownCliWatcher(): void {
     }
   }
   trackedSessions.clear();
+  recentlyEndedWebSessions.clear();
 
   log.info("CLI watcher stopped");
 }

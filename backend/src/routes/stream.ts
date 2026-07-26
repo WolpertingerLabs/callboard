@@ -55,6 +55,7 @@ streamRouter.post("/new/message", async (req, res) => {
             cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
             createCard: { type: "boolean", description: "Create a new open card and attach the chat to it. Ignored when cardId resolves to an existing open card. The card title follows the chat's auto-generated title." },
             cardCategory: { type: "string", description: "Optional category for the auto-created card (used with createCard; max 64 chars). The board groups open cards by category." },
+            clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match 'new-<alphanumeric/_/->', max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
             branchConfig: {
               type: "object",
               properties: {
@@ -94,6 +95,7 @@ streamRouter.post("/new/message", async (req, res) => {
     cardCategory,
     modelRouting,
     modelRoutingRankId,
+    clientTrackingId,
   } = req.body;
   log.debug(
     `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
@@ -178,6 +180,12 @@ streamRouter.post("/new/message", async (req, res) => {
 
     const safeCardId: string | undefined = typeof cardId === "string" && cardId && getCard(cardId)?.lifecycle === "open" ? cardId : undefined;
 
+    // Temp session key the client can address /stop with before chat_created
+    // arrives. Namespaced to "new-" so a caller can't claim (and then stop) the
+    // registry slot of a real chat id.
+    const safeClientTrackingId: string | undefined =
+      typeof clientTrackingId === "string" && clientTrackingId.length <= 80 && /^new-[A-Za-z0-9_-]+$/.test(clientTrackingId) ? clientTrackingId : undefined;
+
     const emitter = await sendMessage({
       prompt,
       folder: effectiveFolder,
@@ -192,6 +200,7 @@ streamRouter.post("/new/message", async (req, res) => {
       ...(safeModel && { model: safeModel }),
       ...(safeModelRouting && { modelRouting: true }),
       ...(safeModelRoutingRankId && { modelRoutingRankId: safeModelRoutingRankId }),
+      ...(safeClientTrackingId && { clientTrackingId: safeClientTrackingId }),
       // Boolean-validated at the route boundary; anything else is dropped
       // (same outcome as omitting — the default behavior).
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),
@@ -639,12 +648,17 @@ streamRouter.get("/:id/status", (req, res) => {
 });
 
 // Stop execution
-streamRouter.post("/:id/stop", (_req, res) => {
+streamRouter.post("/:id/stop", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Stop execution'
-  // #swagger.description = 'Abort the currently running Claude session for this chat.'
-  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
-  /* #swagger.responses[200] = { description: "Whether the session was stopped" } */
-  const stopped = stopSession(_req.params.id);
+  // #swagger.description = 'Cancel the running session for this chat: aborts the run and terminates the underlying provider request (subprocess / in-flight API call), not just the SSE stream. The run emits a final message_complete with reason "aborted" on its stream as it unwinds. Accepts a chat id or, for a chat still being created, the clientTrackingId passed to /new/message.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID (or a new chat\'s clientTrackingId)' } */
+  /* #swagger.responses[200] = { description: "{ stopped: true } when a live web session was cancelled; { stopped: false } when there was nothing to stop (already finished, or a CLI session the server does not control)" } */
+  const chatId = req.params.id;
+  const stopped = stopSession(chatId);
+  // Worth an info line: this is a deliberate user cancellation, and the run's
+  // own "ended: aborted" log lands right after it.
+  if (stopped) log.info(`Session ${chatId} cancelled by user`);
+  else log.debug(`POST /${chatId}/stop — no stoppable web session`);
   res.json({ stopped });
 });
