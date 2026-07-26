@@ -3,7 +3,7 @@
  * tree (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`) laid down in a
  * tmpdir.
  */
-import { mkdirSync, rmSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -200,5 +200,96 @@ describe("findSubagentFiles", () => {
   it("always returns [] — Codex has no subagent rollouts", () => {
     writeRollout(UUID_A);
     expect(new CodexSessionProvider().findSubagentFiles(UUID_A)).toEqual([]);
+  });
+});
+
+describe("seedSession", () => {
+  const SEED_ID = "019f9fa2-0d7b-72b6-bb47-e215c05d31f9";
+  const turns = [
+    { role: "user" as const, text: "carried question" },
+    { role: "assistant" as const, text: "carried answer" },
+  ];
+
+  it("writes a rollout the discovery walk can find again", () => {
+    const provider = new CodexSessionProvider();
+    const seeded = provider.seedSession(turns, { folder: "/repo", newSessionId: SEED_ID });
+
+    expect(seeded).not.toBeNull();
+    expect(existsSync(seeded!.logPath)).toBe(true);
+    // Must land in the dated tree with the thread id trailing the filename —
+    // that is the only way findRollout locates it (and how the CLI's own
+    // `resume <id>` does, verified against codex-cli 0.144.6).
+    expect(seeded!.logPath).toMatch(/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-.*-019f9fa2-0d7b-72b6-bb47-e215c05d31f9\.jsonl$/);
+
+    const resolved = provider.resolveSession(SEED_ID);
+    expect(resolved?.logPath).toBe(seeded!.logPath);
+    expect(resolved?.folder).toBe("/repo");
+  });
+
+  it("round-trips through the provider's own parser", () => {
+    const provider = new CodexSessionProvider();
+    provider.seedSession(turns, { folder: "/repo", newSessionId: SEED_ID });
+
+    const parsed = provider.parseSessionMessages([SEED_ID]);
+    expect(parsed.map((m) => [m.role, m.type, m.content])).toEqual([
+      ["user", "text", "carried question"],
+      ["assistant", "text", "carried answer"],
+    ]);
+  });
+
+  it("opens the rollout with a session_meta line carrying the id and cwd", () => {
+    const provider = new CodexSessionProvider();
+    const seeded = provider.seedSession(turns, { folder: "/repo", newSessionId: SEED_ID })!;
+    const first = JSON.parse(readFileSync(seeded.logPath, "utf-8").split("\n")[0]!);
+
+    expect(first.type).toBe("session_meta");
+    expect(first.payload.id).toBe(SEED_ID);
+    expect(first.payload.cwd).toBe("/repo");
+  });
+
+  it("refuses a non-UUID thread id", () => {
+    // A non-UUID id would write a file the rollout-filename regex can never
+    // match, stranding the session where nothing could find it.
+    const provider = new CodexSessionProvider();
+    expect(provider.seedSession(turns, { folder: "/repo", newSessionId: "not-a-uuid" })).toBeNull();
+  });
+
+  it("returns null for an empty turn list", () => {
+    const provider = new CodexSessionProvider();
+    expect(provider.seedSession([], { folder: "/repo", newSessionId: SEED_ID })).toBeNull();
+  });
+});
+
+describe("seedSession images", () => {
+  const SEED_ID = "019f9fa2-0d7b-72b6-bb47-e215c05d31f9";
+  // 1x1 transparent PNG.
+  const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+  it("writes user images as data-URI input_image blocks", () => {
+    const provider = new CodexSessionProvider();
+    const seeded = provider.seedSession([{ role: "user", text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }], {
+      folder: "/repo",
+      newSessionId: SEED_ID,
+    })!;
+
+    const lines = readFileSync(seeded.logPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const content = lines[1].payload.content;
+    expect(content[0]).toEqual({ type: "input_text", text: "look" });
+    expect(content[1].type).toBe("input_image");
+    expect(content[1].image_url).toBe(`data:image/png;base64,${PNG_B64}`);
+  });
+
+  it("round-trips images back into image ids", () => {
+    const provider = new CodexSessionProvider();
+    provider.seedSession([{ role: "user", text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }], {
+      folder: "/repo",
+      newSessionId: SEED_ID,
+    });
+
+    const parsed = provider.parseSessionMessages([SEED_ID]);
+    expect(parsed[0]!.imageIds).toHaveLength(1);
   });
 });

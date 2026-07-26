@@ -23,7 +23,15 @@ import type {
   SessionSearchResponse,
 } from "../../ports/SessionProvider.js";
 import { readJsonlFile, getFirstUserMessage, parseMessages, parseSubagentMessages, buildSubagentMap } from "./sessionParser.js";
-import { CLAUDE_PROJECTS_DIR, getIgnoredProjectDirPrefixes, isIgnoredProjectDir, listClaudeProjectDirs, projectDirToFolder } from "../../../utils/paths.js";
+import type { HandoffTurn } from "../../handoff.js";
+import {
+  CLAUDE_PROJECTS_DIR,
+  folderToProjectDir,
+  getIgnoredProjectDirPrefixes,
+  isIgnoredProjectDir,
+  listClaudeProjectDirs,
+  projectDirToFolder,
+} from "../../../utils/paths.js";
 import { searchChats } from "../../../utils/chat-search.js";
 import { resolveWorktreeToMainRepoCached } from "../../../utils/git.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -388,6 +396,64 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
     return { logPath: destPath };
   }
 
+  // ── Seeding (cross-harness handoff) ─────────────────────────────────
+
+  /**
+   * Write a fresh session JSONL whose history is `turns`, so the SDK can
+   * resume it as an ordinary session. Same mechanism {@link forkSession}
+   * relies on — the SDK reads `<projectDir>/<sessionId>.jsonl` and does not
+   * care whether the CLI or callboard wrote it — but built from neutral turns
+   * rather than copied raw lines, so it works for history that originated in
+   * another harness.
+   *
+   * The project directory is derived from `folder` via the SDK's own
+   * (unambiguous) forward encoding, and created when absent: a handoff into a
+   * folder Claude Code has never run in is the normal case, not an error.
+   */
+  seedSession(turns: HandoffTurn[], opts: { folder: string; newSessionId: string }): { logPath: string } | null {
+    if (turns.length === 0) return null;
+    const { folder, newSessionId } = opts;
+
+    const destDir = join(CLAUDE_PROJECTS_DIR, folderToProjectDir(folder));
+    try {
+      mkdirSync(destDir, { recursive: true });
+    } catch (error) {
+      log.error(`Failed to create project dir for seeded session: ${error}`);
+      return null;
+    }
+
+    // Each turn becomes one JSONL line in the SDK's own shape. `parentUuid`
+    // chains the lines: the SDK walks that chain to reconstruct the thread, so
+    // a flat list with null parents would resume as a single orphaned message.
+    let prevUuid: string | null = null;
+    const lines = turns.map((turn) => {
+      const uuid = randomUUID();
+      const line = {
+        parentUuid: prevUuid,
+        isSidechain: false,
+        userType: "external",
+        cwd: folder,
+        sessionId: newSessionId,
+        version: "1.0.0",
+        type: turn.role,
+        message: turn.role === "user" ? { role: "user", content: userContent(turn) } : { role: "assistant", content: [{ type: "text", text: turn.text }] },
+        uuid,
+        timestamp: turn.timestamp || new Date().toISOString(),
+      };
+      prevUuid = uuid;
+      return line;
+    });
+
+    const logPath = join(destDir, `${newSessionId}.jsonl`);
+    try {
+      writeFileSync(logPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    } catch (error) {
+      log.error(`Failed to write seeded session ${logPath}: ${error}`);
+      return null;
+    }
+    return { logPath };
+  }
+
   // ── Deletion ────────────────────────────────────────────────────────
 
   deleteSessionFiles(sessionId: string): void {
@@ -407,4 +473,21 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
       }
     }
   }
+}
+
+/**
+ * Content for a seeded user message. A plain string when there is nothing but
+ * text (the shape the SDK itself writes for a typed prompt), or a block array
+ * when images ride along — Claude takes image bytes inline as a base64
+ * `source`, so the handoff's raw base64 goes straight in.
+ */
+function userContent(turn: HandoffTurn): unknown {
+  if (!turn.images?.length) return turn.text;
+  return [
+    ...(turn.text ? [{ type: "text", text: turn.text }] : []),
+    ...turn.images.map((img) => ({
+      type: "image",
+      source: { type: "base64", media_type: img.mimeType, data: img.base64 },
+    })),
+  ];
 }

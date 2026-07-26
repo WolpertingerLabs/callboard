@@ -2,7 +2,7 @@
  * Integration tests for the OR SessionProvider against a fixture log tree
  * laid down in a tmpdir.
  */
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -759,5 +759,131 @@ describe("OpenRouterSessionProvider — per-cycle response metadata", () => {
     const messages = provider.parseSessionMessages(["sess_no_geo"]);
     const assistant = messages.find((m) => m.role === "assistant")!;
     expect(assistant.inferenceGeo).toBeUndefined();
+  });
+});
+
+describe("seedSession", () => {
+  const SEED_ID = "seeded-session";
+  const turns = [
+    { role: "user" as const, text: "carried question" },
+    { role: "assistant" as const, text: "carried answer" },
+  ];
+
+  it("writes state.json with a local message history and no response chain", async () => {
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    const seeded = provider.seedSession(turns, { folder: "/repo", newSessionId: SEED_ID });
+    expect(seeded).not.toBeNull();
+
+    const state = JSON.parse(readFileSync(join(TMP_LOGS, SEED_ID, "state.json"), "utf-8"));
+    expect(state.id).toBe(SEED_ID);
+    // previousResponseId is OpenRouter's server-side prefix cache. A seeded
+    // history has no such prefix on the server, so claiming one would splice
+    // this conversation onto a stale (or nonexistent) chain.
+    expect(state).not.toHaveProperty("previousResponseId");
+    expect(state.messages[0]).toEqual({ role: "user", content: "carried question" });
+    expect(state.messages[1].role).toBe("assistant");
+    expect(state.messages[1].content).toEqual([{ type: "output_text", text: "carried answer", annotations: [] }]);
+  });
+
+  it("writes a transcript so the carried history survives the next turn", async () => {
+    // parseSessionMessages PREFERS transcript.jsonl and the harness appends to
+    // it on the next reply — seeding state.json alone would show the history
+    // until the new session answered once, then lose it.
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    provider.seedSession(turns, { folder: "/repo", newSessionId: SEED_ID });
+
+    const records = readFileSync(join(TMP_LOGS, SEED_ID, "transcript.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(records[0].kind).toBe("session_start");
+    expect(records.map((r) => r.kind)).toEqual(["session_start", "user", "assistant"]);
+    expect(records.every((r) => r.v === 1 && r.sessionId === SEED_ID)).toBe(true);
+  });
+
+  it("round-trips through the provider's own parser", async () => {
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    provider.seedSession(turns, { folder: "/repo", newSessionId: SEED_ID });
+
+    const parsed = provider.parseSessionMessages([SEED_ID]);
+    expect(parsed.map((m) => [m.role, m.type, m.content])).toEqual([
+      ["user", "text", "carried question"],
+      ["assistant", "text", "carried answer"],
+    ]);
+  });
+
+  it("records the working folder so discovery resolves it", async () => {
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    provider.seedSession(turns, { folder: "/repo", newSessionId: SEED_ID });
+    expect(provider.resolveSession(SEED_ID)?.folder).toBe("/repo");
+  });
+
+  it("refuses a path-traversing session id", async () => {
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    expect(provider.seedSession(turns, { folder: "/repo", newSessionId: "../escape" })).toBeNull();
+  });
+
+  it("returns null for an empty turn list", async () => {
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    expect(provider.seedSession([], { folder: "/repo", newSessionId: SEED_ID })).toBeNull();
+  });
+});
+
+describe("seedSession images", () => {
+  const SEED_ID = "seeded-images";
+  const PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const turnsWithImage = [{ role: "user" as const, text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }];
+
+  it("writes images as input_image blocks in state.json", async () => {
+    await pointSettingsAtTmp();
+    new OpenRouterSessionProvider().seedSession(turnsWithImage, { folder: "/repo", newSessionId: SEED_ID });
+
+    const state = JSON.parse(readFileSync(join(TMP_LOGS, SEED_ID, "state.json"), "utf-8"));
+    expect(state.messages[0].content).toEqual([
+      { type: "input_text", text: "look" },
+      { type: "input_image", image_url: `data:image/png;base64,${PNG_B64}` },
+    ]);
+  });
+
+  it("JSON-encodes multimodal blocks into the transcript's text field", async () => {
+    // That encoding is what logTranscriptUser writes and what unwrapUserText
+    // decodes — a raw string here would lose the image on read-back.
+    await pointSettingsAtTmp();
+    new OpenRouterSessionProvider().seedSession(turnsWithImage, { folder: "/repo", newSessionId: SEED_ID });
+
+    const userRecord = readFileSync(join(TMP_LOGS, SEED_ID, "transcript.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .find((r) => r.kind === "user");
+    expect(JSON.parse(userRecord.text)).toEqual([
+      { type: "input_text", text: "look" },
+      { type: "input_image", image_url: `data:image/png;base64,${PNG_B64}` },
+    ]);
+  });
+
+  it("round-trips images back into image ids", async () => {
+    await pointSettingsAtTmp();
+    const provider = new OpenRouterSessionProvider();
+    provider.seedSession(turnsWithImage, { folder: "/repo", newSessionId: SEED_ID });
+
+    const parsed = provider.parseSessionMessages([SEED_ID]);
+    expect(parsed[0]!.content).toBe("look");
+    expect(parsed[0]!.imageIds).toHaveLength(1);
+  });
+
+  it("keeps plain text turns as plain strings", async () => {
+    await pointSettingsAtTmp();
+    new OpenRouterSessionProvider().seedSession([{ role: "user", text: "no images here" }], { folder: "/repo", newSessionId: SEED_ID });
+
+    const state = JSON.parse(readFileSync(join(TMP_LOGS, SEED_ID, "state.json"), "utf-8"));
+    expect(state.messages[0]).toEqual({ role: "user", content: "no images here" });
   });
 });

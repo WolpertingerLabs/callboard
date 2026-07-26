@@ -11,7 +11,7 @@ import { ClaudeCodeSessionProvider } from "./ClaudeCodeSessionProvider.js";
 // The provider resolves session logs via CLAUDE_PROJECTS_DIR and
 // listClaudeProjectDirs at call time. Point both at a tmpdir set in
 // beforeEach via a hoisted holder (mock factories run before beforeEach).
-const h = vi.hoisted(() => ({ projectsDir: "" }));
+const h = vi.hoisted(() => ({ projectsDir: "", projectDirs: ["proj"] }));
 
 vi.mock("../../../utils/paths.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../utils/paths.js")>();
@@ -20,7 +20,9 @@ vi.mock("../../../utils/paths.js", async (importOriginal) => {
     get CLAUDE_PROJECTS_DIR() {
       return h.projectsDir;
     },
-    listClaudeProjectDirs: () => ["proj"],
+    // Read through the holder so a test can widen the search to a directory
+    // seedSession created (the fork suite only ever needs the fixture "proj").
+    listClaudeProjectDirs: () => h.projectDirs,
   };
 });
 
@@ -33,6 +35,7 @@ beforeEach(() => {
   PROJ_DIR = join(TMP, "proj");
   mkdirSync(PROJ_DIR, { recursive: true });
   h.projectsDir = TMP;
+  h.projectDirs = ["proj"];
 });
 
 afterEach(() => {
@@ -178,5 +181,76 @@ describe("forkSession", () => {
     expect(forked).not.toBeNull();
     const copiedSubagent = join(PROJ_DIR, "new-id", "subagents", "agent-abc123.jsonl");
     expect(existsSync(copiedSubagent)).toBe(true);
+  });
+});
+
+describe("ClaudeCodeSessionProvider.seedSession", () => {
+  const turns = [
+    { role: "user" as const, text: "carried question", timestamp: "2026-01-01T10:00:00.000Z" },
+    { role: "assistant" as const, text: "carried answer", timestamp: "2026-01-01T10:00:05.000Z" },
+  ];
+
+  it("writes a resumable session log under the folder's project dir", () => {
+    const seeded = provider.seedSession(turns, { folder: "/repo", newSessionId: "seeded-1" });
+    expect(seeded).not.toBeNull();
+    // "/repo" encodes to "-repo" via the SDK's own path encoding.
+    expect(seeded!.logPath).toBe(join(TMP, "-repo", "seeded-1.jsonl"));
+    expect(existsSync(seeded!.logPath)).toBe(true);
+  });
+
+  it("chains lines by parentUuid so the SDK reconstructs one thread", () => {
+    const seeded = provider.seedSession(turns, { folder: "/repo", newSessionId: "seeded-2" })!;
+    const lines = readFileSync(seeded.logPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0].parentUuid).toBeNull();
+    expect(lines[1].parentUuid).toBe(lines[0].uuid);
+    expect(lines.every((l: any) => l.sessionId === "seeded-2")).toBe(true);
+    expect(lines[0].type).toBe("user");
+    expect(lines[1].type).toBe("assistant");
+    expect(lines[1].message.content).toEqual([{ type: "text", text: "carried answer" }]);
+  });
+
+  it("round-trips through the provider's own parser", () => {
+    provider.seedSession(turns, { folder: "/repo", newSessionId: "seeded-3" });
+    h.projectDirs = ["proj", "-repo"];
+
+    const parsed = provider.parseSessionMessages(["seeded-3"]);
+    expect(parsed.map((m) => [m.role, m.type, m.content])).toEqual([
+      ["user", "text", "carried question"],
+      ["assistant", "text", "carried answer"],
+    ]);
+  });
+
+  it("returns null for an empty turn list", () => {
+    expect(provider.seedSession([], { folder: "/repo", newSessionId: "seeded-4" })).toBeNull();
+  });
+});
+
+describe("ClaudeCodeSessionProvider.seedSession images", () => {
+  const PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+  it("writes images as base64 source blocks alongside the text", () => {
+    const seeded = provider.seedSession([{ role: "user", text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }], {
+      folder: "/repo",
+      newSessionId: "seeded-img",
+    })!;
+    const line = JSON.parse(readFileSync(seeded.logPath, "utf-8").trim().split("\n")[0]!);
+    expect(line.message.content).toEqual([
+      { type: "text", text: "look" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } },
+    ]);
+  });
+
+  it("keeps plain text turns as a plain string", () => {
+    // The shape the SDK itself writes for a typed prompt — no reason to make
+    // every image-free handoff a block array.
+    const seeded = provider.seedSession([{ role: "user", text: "no images" }], { folder: "/repo", newSessionId: "seeded-plain" })!;
+    const line = JSON.parse(readFileSync(seeded.logPath, "utf-8").trim().split("\n")[0]!);
+    expect(line.message.content).toBe("no images");
   });
 });

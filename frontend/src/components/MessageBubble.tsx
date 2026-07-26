@@ -1,6 +1,6 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef, type CSSProperties } from "react";
 import { Check, Copy, GitFork, RotateCw, Square, X } from "lucide-react";
-import type { ParsedMessage } from "../api";
+import type { ForkProvider, ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
@@ -155,34 +155,115 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function ForkButton({ onFork }: { onFork: () => void }) {
+/** The harnesses a conversation can be forked into, in menu order. */
+const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
+  { kind: "claude-code", label: "Claude Code" },
+  { kind: "codex", label: "Codex" },
+  { kind: "openrouter", label: "OpenRouter" },
+];
+
+/**
+ * Fork affordance: forks in place on click, or opens a harness picker so the
+ * conversation can be continued on a different engine.
+ *
+ * The same-harness entry is listed first and separately because it is the
+ * higher-fidelity path — the backend copies the native session log rather than
+ * replaying a flattened transcript.
+ */
+function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvider) => void; currentProvider: ForkProvider }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Dismiss on any outside click. Without this the menu survives scrolling
+  // away from the message it belongs to and floats over unrelated bubbles.
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const choose = (provider?: ForkProvider) => {
+    setOpen(false);
+    onFork(provider);
+  };
+
   return (
-    <button
-      className="fork-btn"
-      onClick={(e) => {
-        e.stopPropagation();
-        onFork();
-      }}
-      title="Fork conversation from here"
-      style={{
-        position: "absolute",
-        top: 6,
-        right: 36,
-        padding: 4,
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 6,
-        cursor: "pointer",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1,
-      }}
-    >
-      <GitFork size={14} style={{ color: "var(--text-muted)" }} />
-    </button>
+    <div ref={wrapRef} style={{ position: "absolute", top: 6, right: 36, zIndex: 2 }}>
+      <button
+        className="fork-btn"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        title="Fork conversation from here"
+        style={{
+          padding: 4,
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <GitFork size={14} style={{ color: "var(--text-muted)" }} />
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            minWidth: 210,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            boxShadow: "var(--shadow-md)",
+            overflow: "hidden",
+          }}
+        >
+          <button onClick={() => choose()} style={forkMenuItemStyle}>
+            Fork here
+          </button>
+          <div style={{ height: 1, background: "var(--border)" }} />
+          <div
+            style={{
+              padding: "6px 10px 2px",
+              fontSize: 10,
+              textTransform: "uppercase",
+              letterSpacing: 0.4,
+              color: "var(--text-muted)",
+            }}
+          >
+            Continue in
+          </div>
+          {FORK_TARGETS.filter((t) => t.kind !== currentProvider).map((t) => (
+            <button key={t.kind} onClick={() => choose(t.kind)} style={forkMenuItemStyle}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
+
+const forkMenuItemStyle: CSSProperties = {
+  display: "block",
+  width: "100%",
+  textAlign: "left",
+  padding: "7px 10px",
+  background: "transparent",
+  border: "none",
+  color: "var(--text)",
+  fontSize: 13,
+  cursor: "pointer",
+};
 
 export function TodoList({ items }: { items: TodoItem[] }) {
   const completedCount = items.filter((t) => t.status === "completed").length;
@@ -361,8 +442,14 @@ export function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
 interface Props {
   message: ParsedMessage;
   teamColorMap?: Map<string, number>;
-  /** When set, shows a hover button that forks the conversation at this message. */
-  onFork?: () => void;
+  /**
+   * When set, shows a hover button that forks the conversation at this
+   * message. Called with no argument to fork within the current harness, or
+   * with a target harness to hand the conversation over to another engine.
+   */
+  onFork?: (provider?: ForkProvider) => void;
+  /** The harness this chat runs on — omitted from the "continue in" choices. */
+  forkCurrentProvider?: ForkProvider;
 }
 
 /** Format a millisecond delta as a human-readable duration */
@@ -504,7 +591,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   );
 }
 
-export default function MessageBubble({ message, teamColorMap, onFork }: Props) {
+export default function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code" }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -760,7 +847,7 @@ export default function MessageBubble({ message, teamColorMap, onFork }: Props) 
         }}
       >
         <CopyButton text={message.content} />
-        {onFork && <ForkButton onFork={onFork} />}
+        {onFork && <ForkButton onFork={onFork} currentProvider={forkCurrentProvider} />}
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>

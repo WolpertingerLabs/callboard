@@ -24,9 +24,10 @@
  * @see plans/codex-spike-findings.md §5 (rollout format)
  */
 import { createRequire } from "node:module";
-import { existsSync, readdirSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import type { HandoffTurn } from "../../handoff.js";
 import type {
   DiscoverResult,
   ResolvedSession,
@@ -285,6 +286,85 @@ export class CodexSessionProvider implements SessionProvider {
     return { chats: matches.slice(0, limit), total };
   }
 
+  // ── Seeding (cross-harness handoff) ─────────────────────────────────
+
+  /**
+   * Write a fresh rollout whose transcript is `turns`, so `resumeThread(id)`
+   * picks it up as an ordinary thread.
+   *
+   * Verified against codex-cli 0.144.6: the CLI locates a thread by **scanning
+   * the dated tree** for a filename ending in the thread id, and rehydrates
+   * whatever `response_item` lines it finds. No row in `$CODEX_HOME/state_*.sqlite`
+   * is required — that index backs the CLI's own history UI, not resume — so a
+   * hand-written rollout resumes with full prior context.
+   *
+   * `newSessionId` must be a canonical UUID: it becomes the thread id, and the
+   * filename regex the discovery walk uses anchors on that shape. A non-UUID id
+   * would write a file that {@link findRollout} could never find again.
+   */
+  seedSession(turns: HandoffTurn[], opts: { folder: string; newSessionId: string }): { logPath: string } | null {
+    if (turns.length === 0) return null;
+    const { folder, newSessionId } = opts;
+    if (!isValidThreadId(newSessionId)) {
+      log.warn(`Refused seedSession for non-UUID thread id "${newSessionId}"`);
+      return null;
+    }
+
+    const now = new Date();
+    const iso = now.toISOString();
+    // Filename encodes the timestamp with `:` → `-` (and the fractional
+    // seconds dropped), matching what the CLI writes; the dated directory must
+    // agree with it or discovery's three-level walk won't reach the file.
+    const stamp = iso.slice(0, 19).replace(/:/g, "-");
+    const dir = join(resolveCodexSessionsRoot(), String(now.getUTCFullYear()), pad2(now.getUTCMonth() + 1), pad2(now.getUTCDate()));
+    const logPath = join(dir, `rollout-${stamp}-${newSessionId}.jsonl`);
+
+    const lines: unknown[] = [
+      {
+        timestamp: iso,
+        type: "session_meta",
+        payload: {
+          id: newSessionId,
+          timestamp: iso,
+          cwd: folder,
+          originator: "callboard_handoff",
+          cli_version: EXPECTED_CODEX_CLI_VERSION,
+          source: "exec",
+          thread_source: "user",
+          model_provider: "openai",
+        },
+      },
+    ];
+
+    for (const turn of turns) {
+      lines.push({
+        timestamp: turn.timestamp || iso,
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: turn.role,
+          content: [
+            // Codex distinguishes input vs output text blocks by role; using
+            // the wrong one leaves the message unparsed on read-back.
+            { type: turn.role === "user" ? "input_text" : "output_text", text: turn.text },
+            // Codex takes image input as a data URI, which its own parser
+            // (and callboard's) reads back into an image id.
+            ...(turn.images ?? []).map((img) => ({ type: "input_image", image_url: `data:${img.mimeType};base64,${img.base64}` })),
+          ],
+        },
+      });
+    }
+
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(logPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    } catch (err) {
+      log.error(`Failed to write seeded Codex rollout ${logPath}: ${(err as Error).message}`);
+      return null;
+    }
+    return { logPath };
+  }
+
   // ── Deletion ────────────────────────────────────────────────────────
 
   deleteSessionFiles(sessionId: string): void {
@@ -300,6 +380,10 @@ export class CodexSessionProvider implements SessionProvider {
       log.warn(`Failed to remove Codex rollout ${entry.filePath}: ${(err as Error).message}`);
     }
   }
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
 }
 
 function isDir(path: string): boolean {

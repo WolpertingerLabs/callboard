@@ -46,6 +46,7 @@ import {
   assignChatToCard,
   type CardSummary,
   type Chat as ChatType,
+  type ForkProvider,
   type ParsedMessage,
   type Plugin,
   type NewChatInfo,
@@ -67,6 +68,7 @@ import ConfirmModal from "../components/ConfirmModal";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
+import ForkHandoffModal from "../components/ForkHandoffModal";
 import CardPicker from "../components/board/CardPicker";
 import BranchSelector from "../components/BranchSelector";
 import CardAssociationSelector, { type CardAssociationConfig } from "../components/CardAssociationSelector";
@@ -504,12 +506,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // up to and including that message into a new chat, which we navigate to.
   // No agent run is started — the user sends the next message from there.
   const forkingRef = useRef(false);
-  const handleFork = useCallback(
-    async (timestamp: string) => {
+  const runFork = useCallback(
+    async (timestamp: string, opts?: { provider?: ForkProvider; model?: string }) => {
       if (!id || forkingRef.current) return;
       forkingRef.current = true;
       try {
-        const newChat = await forkChat(id, timestamp);
+        const newChat = await forkChat(id, timestamp, opts);
         onChatListRefresh?.();
         navigate(`/chat/${newChat.id}`);
       } catch (err) {
@@ -520,6 +522,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       }
     },
     [id, navigate, onChatListRefresh],
+  );
+
+  // A harness switch needs a confirmation step: it can't inherit the source
+  // chat's model (per-harness ids), so without one every handoff would
+  // silently land on the target's global default. A same-harness fork has
+  // nothing to ask about and runs straight away.
+  const [pendingHandoff, setPendingHandoff] = useState<{ timestamp: string; provider: ForkProvider } | null>(null);
+  const handleFork = useCallback(
+    (timestamp: string, provider?: ForkProvider) => {
+      if (provider) {
+        setPendingHandoff({ timestamp, provider });
+        return;
+      }
+      void runFork(timestamp);
+    },
+    [runFork],
   );
 
   // Current per-chat model (from metadata). Empty string = no override,
@@ -3145,14 +3163,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     );
                   }
                   // Forkable: persisted conversational text messages on the
-                  // main timeline. Subagent messages, OpenRouter chats
-                  // (response-chained state can't be truncated), and Codex
-                  // chats (on-disk rollout sessions aren't fork-wired) are excluded.
+                  // main timeline. Subagent messages are excluded — they
+                  // aren't a point in the main thread to branch from. Every
+                  // harness can be forked now: same-harness forks copy the
+                  // native session log where the provider supports it, and a
+                  // cross-harness fork seeds the target from the parsed
+                  // history.
                   const msgTimestamp = item.message.timestamp;
-                  const canFork = chatProvider === "claude-code" && item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
+                  const canFork = item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
-                      <MessageBubble message={item.message} teamColorMap={teamColorMap} onFork={canFork ? () => handleFork(msgTimestamp!) : undefined} />
+                      <MessageBubble
+                        message={item.message}
+                        teamColorMap={teamColorMap}
+                        onFork={canFork ? (provider) => handleFork(msgTimestamp!, provider) : undefined}
+                        forkCurrentProvider={chatProvider}
+                      />
                     </div>
                   );
                 })}
@@ -3476,6 +3502,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         chatId={id}
         permissions={effectivePermissions}
         onPermissionsChange={setChatPermissions}
+      />
+
+      <ForkHandoffModal
+        // Keyed on the target so each opening gets a fresh model field.
+        key={pendingHandoff?.provider ?? "none"}
+        target={pendingHandoff?.provider ?? null}
+        from={chatProvider}
+        onCancel={() => setPendingHandoff(null)}
+        onConfirm={({ model }) => {
+          const handoff = pendingHandoff;
+          setPendingHandoff(null);
+          if (handoff) void runFork(handoff.timestamp, { provider: handoff.provider, ...(model && { model }) });
+        }}
       />
 
       <ConfirmModal
