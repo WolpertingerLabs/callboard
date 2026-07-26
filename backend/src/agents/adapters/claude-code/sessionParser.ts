@@ -14,6 +14,36 @@ import { readFileSync } from "fs";
 import type { ParsedMessage } from "shared/types/index.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
 
+// ── CLI plumbing filters ────────────────────────────────────────────
+
+/**
+ * Text the CLI injects, verbatim, as the model's reply to its own resume
+ * nudge. Dropped only when it directly follows a hidden `isMeta` prompt, so a
+ * turn where the model actually continued the work is never lost. A survey of
+ * 1529 local session logs found the nudge 52 times and this exact reply
+ * following it in all 52.
+ */
+const META_PROMPT_ACK = "No response requested.";
+
+/**
+ * The CLI's interruption records, written as `user` messages. Matched exactly
+ * — assistant prose about something being "interrupted" must stay untouched.
+ */
+const INTERRUPT_MARKERS: ReadonlySet<string> = new Set(["[Request interrupted by user]", "[Request interrupted by user for tool use]"]);
+
+/** Flatten JSONL message content (string or block array) to its plain text. */
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((b: any) => (b?.type === "text" ? (b.text ?? "") : "")).join("");
+}
+
+/** True when the entry is a text-only turn whose whole text is `expected`. */
+function isTextOnlySaying(content: unknown, expected: string): boolean {
+  if (Array.isArray(content) && !content.every((b: any) => b?.type === "text")) return false;
+  return contentText(content).trim() === expected;
+}
+
 // ── Raw JSONL reading ───────────────────────────────────────────────
 
 /**
@@ -150,6 +180,11 @@ export function buildSubagentMap(rawMessages: any[]): Map<string, string> {
 export function parseMessages(rawMessages: any[]): ParsedMessage[] {
   const result: ParsedMessage[] = [];
   let currentSessionId: string | null = null;
+  // Set when an `isMeta` prompt was just dropped, so the canned reply the CLI
+  // draws out of the model can be dropped with it. Survives the non-message
+  // entries (attachment / last-prompt / queue-operation) that sit between
+  // them, and is cleared by the first real message either way.
+  let afterMetaPrompt = false;
 
   for (const msg of rawMessages) {
     // Detect session boundary — inject a "Conversation was cleared" marker
@@ -166,6 +201,18 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
 
     // Skip internal metadata lines
     if (msg.type === "summary" || msg.type === "queue-operation") continue;
+
+    // Drop CLI plumbing the user never wrote. `isMeta` marks entries the CLI
+    // injects itself: the "Continue from where you left off." nudge it adds
+    // when resuming an interrupted session, slash-command argument blocks,
+    // skill preambles, image-dimension notes. They arrive with role "user",
+    // so rendering them puts words in the user's mouth — most visibly when a
+    // follow-up message interrupts a running turn, which sandwiches two of
+    // them between the two messages the user actually sent.
+    if (msg.isMeta) {
+      afterMetaPrompt = true;
+      continue;
+    }
 
     // Emit system messages (e.g. compact_boundary) as visible markers
     if (msg.type === "system" && msg.subtype === "compact_boundary") {
@@ -187,6 +234,28 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
     const timestamp = msg.timestamp;
     const teamName = msg.teamName;
     if (!content) continue;
+
+    // The model's canned acknowledgment of a nudge we just hid. Anything else
+    // it produced — including a genuine continuation — falls through and is
+    // rendered normally.
+    if (afterMetaPrompt) {
+      afterMetaPrompt = false;
+      if (role === "assistant" && isTextOnlySaying(content, META_PROMPT_ACK)) continue;
+    }
+
+    // An interruption is a fact about the run, not something the user said.
+    // Rendered as a boundary marker (same treatment as compact/clear) instead
+    // of a user bubble complete with copy and fork-from-here affordances.
+    if (role === "user" && INTERRUPT_MARKERS.has(contentText(content).trim())) {
+      result.push({
+        role: "system",
+        type: "system",
+        content: "Interrupted by user",
+        subtype: "interrupted",
+        timestamp,
+      });
+      continue;
+    }
 
     // Extract per-entry metadata (shared across all content blocks from this JSONL line)
     const model = msg.message?.model;

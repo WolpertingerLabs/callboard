@@ -55,6 +55,7 @@ import {
   type McpToolsResponse,
 } from "../api";
 import { useIsSessionActive } from "../contexts/SessionContext";
+import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "../utils/inFlightMessages";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
 import ChatTreeIndicator from "../components/ChatTreeIndicator";
@@ -147,6 +148,50 @@ const STOP_CONFIRM_TIMEOUT_MS = 10_000;
 // which lands after the terminal event the settle path refetches on.
 const STOP_RESYNC_DELAY_MS = 2_500;
 
+/**
+ * Optimistic user bubbles, styled like a sent message but dimmed and without
+ * the copy/fork affordances a persisted message gets. Rendered in both the
+ * empty-chat and populated-transcript branches.
+ */
+function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
+  return (
+    <>
+      {messages.map((message) => (
+        <div key={message.key} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "6px 0" }}>
+          <div
+            style={{
+              maxWidth: "85%",
+              padding: "10px 14px",
+              borderRadius: "var(--radius)",
+              background: "var(--user-bg)",
+              border: "1px solid transparent",
+              fontSize: 14,
+              lineHeight: 1.5,
+              wordBreak: "break-word",
+              opacity: 0.9,
+            }}
+          >
+            {message.text}
+            {message.imageUrls.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                {message.imageUrls.map((url) => (
+                  <img
+                    key={url}
+                    src={url}
+                    alt="Attached image"
+                    style={{ maxHeight: 200, maxWidth: 300, borderRadius: 8, objectFit: "cover", border: "1px solid var(--border)" }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, textAlign: "right" }}>Sent</div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -187,12 +232,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const newChatModelRouting = (location.state as any)?.modelRouting as boolean | undefined;
   const newChatModelRoutingRankId = (location.state as any)?.modelRoutingRankId as string | undefined;
 
-  // When navigating from /chat/new → /chat/:id, the in-flight message is passed
-  // via router state so it survives the component remount.
-  // Read once and store in a ref so it's consumed exactly once per mount and
-  // doesn't become stale if the effect re-runs on id changes.
-  const transitionInFlightMessageRef = useRef((location.state as any)?.inFlightMessage as string | undefined);
-  const transitionInFlightMessage = transitionInFlightMessageRef.current;
+  // When navigating from /chat/new → /chat/:id, the in-flight messages are
+  // passed via router state so they survive the component remount.
+  // Read once and store in a ref so they're consumed exactly once per mount and
+  // don't become stale if the effect re-runs on id changes. A history entry
+  // written before this was a list still holds a bare string.
+  const transitionInFlightMessagesRef = useRef(toInFlightList((location.state as any)?.inFlightMessage));
+  const transitionInFlightMessages = transitionInFlightMessagesRef.current;
 
   // Draft loaded from staging in chat list
   const routerDraftRef = useRef((location.state as any)?.draft as { id: string; user_message: string } | undefined);
@@ -201,7 +247,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [chat, setChat] = useState<ChatType | null>(null);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
-  const [streaming, setStreaming] = useState(!!transitionInFlightMessage);
+  const [streaming, setStreaming] = useState(transitionInFlightMessages.length > 0);
   // Stop requested, waiting for the run to actually unwind server-side. The
   // button stays in this state until the run's terminal event arrives (or the
   // confirmation deadline passes), so it never claims a cancel it hasn't got.
@@ -211,8 +257,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [draftMessage, setDraftMessage] = useState("");
-  const [inFlightMessage, setInFlightMessage] = useState<string | null>(transitionInFlightMessage ?? null);
-  const [inFlightImageUrls, setInFlightImageUrls] = useState<string[]>([]);
+  // Optimistically-rendered user messages, oldest first. A list rather than a
+  // single slot: sending again while a run is going is supported (it
+  // supersedes the running turn), and each message must stay on screen until
+  // the refetched transcript accounts for it.
+  const [inFlightMessages, setInFlightMessages] = useState<InFlightMessage[]>(transitionInFlightMessages);
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [activePluginIds, setActivePluginIds] = useState<string[]>([]);
@@ -309,15 +358,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     },
     [clearStopConfirmTimeout, clearStopResyncTimeout],
   );
-  const inFlightMessageRef = useRef<string | null>(inFlightMessage);
-  inFlightMessageRef.current = inFlightMessage;
-  // Clear in-flight image URLs when in-flight message is cleared, and revoke object URLs
-  useEffect(() => {
-    if (!inFlightMessage && inFlightImageUrls.length > 0) {
-      inFlightImageUrls.forEach((url) => URL.revokeObjectURL(url));
-      setInFlightImageUrls([]);
-    }
-  }, [inFlightMessage, inFlightImageUrls]);
+  const inFlightMessagesRef = useRef<InFlightMessage[]>(inFlightMessages);
+  inFlightMessagesRef.current = inFlightMessages;
+  /**
+   * Drop every optimistic bubble and release its image previews. For resets
+   * where nothing pending is worth keeping — switching chats, unmount, and the
+   * error paths where the send never landed. Reads the current list through a
+   * ref to keep a stable identity for the SSE callbacks.
+   */
+  const clearInFlightMessages = useCallback(() => {
+    for (const m of inFlightMessagesRef.current) m.imageUrls.forEach((url) => URL.revokeObjectURL(url));
+    setInFlightMessages([]);
+  }, []);
+
+  /**
+   * Retire the optimistic bubbles a freshly-fetched transcript now accounts
+   * for, keeping the rest.
+   *
+   * A blanket clear is wrong at the end of a run: one run's terminal event
+   * routinely arrives *after* the user has sent the message that superseded
+   * it, and dropping everything takes that newer message off screen until its
+   * own turn is persisted. Keeping it means a sent message is always visible
+   * somewhere — as a bubble until the server can render it from the
+   * transcript.
+   */
+  const settleInFlightMessages = useCallback((fetched: ParsedMessage[]) => {
+    setInFlightMessages((prev) => {
+      const keep = settleInFlight(prev, fetched);
+      if (keep === prev) return prev;
+      for (const m of prev) if (!keep.includes(m)) m.imageUrls.forEach((url) => URL.revokeObjectURL(url));
+      return keep;
+    });
+  }, []);
   // Track whether globalSessionActive was ever truthy for the current chat.
   // Used by the safety net to distinguish "session ended" from "session never started".
   const sessionWasActiveRef = useRef(false);
@@ -663,21 +735,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return items;
   }, [messages]);
 
-  // Determine if the in-flight message is already present in the fetched messages list.
-  // This prevents showing the user's message twice (once as in-flight, once in the list).
-  const inFlightAlreadyInMessages = useMemo(() => {
-    if (!inFlightMessage || messages.length === 0) return false;
-    // Check if the last user message in the list matches the in-flight text
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") {
-        return messages[i].content?.trim() === inFlightMessage.trim();
-      }
-    }
-    return false;
-  }, [inFlightMessage, messages]);
-
-  // Show the in-flight bubble only when it's set AND not yet in the messages list
-  const showInFlightMessage = inFlightMessage && !inFlightAlreadyInMessages;
+  // Optimistic bubbles the fetched transcript hasn't accounted for yet.
+  const visibleInFlightMessages = useMemo(() => visibleInFlight(inFlightMessages, messages), [inFlightMessages, messages]);
 
   // Keep navigate and onChatListRefresh in refs to avoid readSSE dependency churn
   const navigateRef = useRef(navigate);
@@ -700,7 +759,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     clearStreamingTimeout();
     streamingTimeoutRef.current = setTimeout(() => {
       setStreaming(false);
-      setInFlightMessage(null);
+      clearInFlightMessages();
       if (abortRef.current) {
         abortRef.current.abort();
         abortRef.current = null;
@@ -754,21 +813,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               if (event.type === "chat_created" && event.chatId) {
                 tempChatIdRef.current = event.chatId;
                 // Update currentIdRef so the finally blocks in readSSE and
-                // handleSend skip their state resets (streaming/inFlightMessage).
+                // handleSend skip their state resets (streaming/in-flight).
                 // Without this, the finally guards pass and clear the state
                 // before the navigated component can pick it up from router state.
                 currentIdRef.current = event.chatId;
                 // Detach the abort controller so handleSend's finally block
                 // (which checks abortRef.current === controller) also skips cleanup.
                 abortRef.current = null;
-                // Navigate to the real chat URL, passing the in-flight message
-                // via router state so it survives the component remount. Also
+                // Navigate to the real chat URL, passing the in-flight messages
+                // via router state so they survive the component remount. Also
                 // forward the provider so the header badge doesn't blink off
                 // between this navigate and the chat-metadata fetch on the
-                // /chat/:id route.
+                // /chat/:id route. Image previews are dropped: their object
+                // URLs belong to this document's blobs and the refetched
+                // transcript carries the stored images instead.
                 navigateRef.current(`/chat/${event.chatId}`, {
                   replace: true,
-                  state: { inFlightMessage: inFlightMessageRef.current, ...(newChatProvider && { provider: newChatProvider }) },
+                  state: {
+                    inFlightMessage: inFlightMessagesRef.current.map((m) => m.text),
+                    ...(newChatProvider && { provider: newChatProvider }),
+                  },
                 });
                 // Refresh chat list to show the new chat
                 onChatListRefreshRef.current?.();
@@ -843,7 +907,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // chat_created ever arrived — there's no chat id to refetch,
                 // and nothing persisted to show.
                 if (!streamChatId) {
-                  setInFlightMessage(null);
+                  clearInFlightMessages();
                   return;
                 }
                 // Refetch complete chat data and messages
@@ -854,13 +918,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 getMessages(streamChatId!).then((msgs) => {
                   if (currentIdRef.current !== streamChatId) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
-                  if (reasonMsg) {
+                  // The abort notice is redundant once the harness's own
+                  // marker is in the transcript; other reasons have no
+                  // persisted equivalent and are always appended.
+                  const redundant = reasonMsg === INTERRUPTED_MESSAGE && endsWithInterruptMarker(msgArray);
+                  if (reasonMsg && !redundant) {
                     setMessages([...msgArray, { role: "system", type: "system", content: reasonMsg }]);
                   } else {
                     setMessages(msgArray);
                   }
-                  // Clear in-flight after messages arrive to avoid visual gap
-                  setInFlightMessage(null);
+                  // Retire optimistic bubbles only once the transcript shows
+                  // them — a message sent while this run was finishing has to
+                  // stay on screen until its own turn is persisted.
+                  settleInFlightMessages(msgArray);
                 });
                 // Refresh slash commands in case they were discovered during initialization
                 loadSlashCommands();
@@ -872,7 +942,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 planApprovedRef.current = false;
                 setCompacting(false);
                 setStreaming(false);
-                setInFlightMessage(null);
+                clearInFlightMessages();
                 // Refetch messages to show any partial content, then add error.
                 // OpenRouter sessions persist the failure on the session
                 // record (transcript session_end → session_error system
@@ -945,8 +1015,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   messageRefetchTimerRef.current = null;
                   getMessages(streamChatId!).then((msgs) => {
                     if (currentIdRef.current !== streamChatId) return;
-                    setMessages(Array.isArray(msgs) ? msgs : []);
-                    setInFlightMessage(null);
+                    const msgArray = Array.isArray(msgs) ? msgs : [];
+                    setMessages(msgArray);
+                    settleInFlightMessages(msgArray);
                   });
                 }, 250);
 
@@ -979,10 +1050,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           clearTimeout(messageRefetchTimerRef.current);
           messageRefetchTimerRef.current = null;
         }
-        // Only update state if still on the same chat
+        // Only update state if still on the same chat. Optimistic bubbles are
+        // deliberately left alone: the stream ending says nothing about a
+        // message sent moments ago, whose own run is just starting. The
+        // refetch paths settle them, and the error paths clear them.
         if (currentIdRef.current === streamChatId) {
           setStreaming(false);
-          setInFlightMessage(null);
         }
       }
     },
@@ -1065,7 +1138,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     if (!globalSessionActive && sessionWasActiveRef.current) {
       setStreaming(false);
-      setInFlightMessage(null);
+      // Pending bubbles survive on purpose: the registry reads inactive for a
+      // beat between one run ending and the replacement registering, and
+      // clearing here would take the message that caused the replacement off
+      // screen. The refetch paths settle them against the real transcript.
       sessionWasActiveRef.current = false;
       streamCompletedRef.current = false;
       // The registry has caught up with the stop — stop suppressing
@@ -1152,7 +1228,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // Reset state from any previous existing chat — prevents stale streaming/error state
     // from carrying over when navigating from an active chat to a new chat
     setStreaming(false);
-    setInFlightMessage(null);
+    clearInFlightMessages();
     setPendingAction(null);
     setNetworkError(null);
     setChat(null);
@@ -1194,20 +1270,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     if (!id) return;
 
     // Detect if this is a new-chat → existing-chat transition.
-    // When navigating from /chat/new → /chat/:id, the in-flight message is passed
-    // via router state (transitionInFlightMessage). We also check tempChatIdRef for
-    // same-component transitions (though those are rare with separate routes).
-    const isNewChatTransition = !!transitionInFlightMessage || tempChatIdRef.current === id;
+    // When navigating from /chat/new → /chat/:id, the in-flight messages are
+    // passed via router state (transitionInFlightMessages). We also check
+    // tempChatIdRef for same-component transitions (though those are rare with
+    // separate routes).
+    const isNewChatTransition = transitionInFlightMessages.length > 0 || tempChatIdRef.current === id;
 
     // Track the current chat ID for staleness detection in closures
     currentIdRef.current = id;
 
     // Reset state for new chat — prevents old chat's streaming/error state
     // from being visible while new chat data loads.
-    // Skip resetting inFlightMessage and streaming during new-chat transitions.
+    // Skip resetting the in-flight messages and streaming during new-chat transitions.
     if (!isNewChatTransition) {
       setStreaming(false);
-      setInFlightMessage(null);
+      clearInFlightMessages();
     }
     setPendingAction(null);
     setNetworkError(null);
@@ -1225,8 +1302,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
     // Clear only the inFlightMessage from router state so back/forward navigation
     // doesn't re-apply it. Preserve other state values (e.g. agentSystemPrompt, agentAlias).
-    if (transitionInFlightMessage) {
-      transitionInFlightMessageRef.current = undefined; // Consume once
+    if (transitionInFlightMessages.length > 0) {
+      transitionInFlightMessagesRef.current = []; // Consume once
       const { inFlightMessage: _, ...rest } = (location.state ?? {}) as Record<string, unknown>;
       navigate(location.pathname + location.search, { replace: true, state: Object.keys(rest).length > 0 ? rest : undefined });
     }
@@ -1574,14 +1651,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // message and the response, even if they had scrolled up
       suppressRelatchRef.current = false;
       setAutoScroll(true);
-      // Set in-flight message to show user's message immediately
-      setInFlightMessage(prompt);
-      // Create object URLs for image previews in the in-flight bubble
-      if (images && images.length > 0) {
-        setInFlightImageUrls(images.map((f) => URL.createObjectURL(f)));
-      } else {
-        setInFlightImageUrls([]);
-      }
+      // Show the user's message immediately, appended to any earlier ones the
+      // transcript hasn't caught up with — sending again mid-run must not
+      // erase the message that started the run.
+      setInFlightMessages((prev) => [
+        ...prev,
+        { key: nextInFlightKey(), text: prompt, imageUrls: images?.length ? images.map((f) => URL.createObjectURL(f)) : [] },
+      ]);
       setNetworkError(null); // Clear any previous network errors
       streamCompletedRef.current = false; // Reset so new message can stream
       suppressReconnectAfterStopRef.current = false; // A new run supersedes any stop we're still settling
@@ -1775,7 +1851,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               message: errorData.message || "There are uncommitted changes that would be affected by this branch switch.",
             });
             setStreaming(false);
-            setInFlightMessage(null);
+            clearInFlightMessages();
             return;
           }
 
@@ -1788,13 +1864,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               message: errorData.message || "The branch has changed since your last message.",
             });
             setStreaming(false);
-            setInFlightMessage(null);
+            clearInFlightMessages();
             return;
           }
 
           setNetworkError(errorData.error || "Failed to send message");
           setStreaming(false);
-          setInFlightMessage(null);
+          clearInFlightMessages();
           return;
         }
 
@@ -1803,13 +1879,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (err.name !== "AbortError") {
           setNetworkError("network error");
           setStreaming(false);
-          setInFlightMessage(null); // Clear in-flight message on error
+          clearInFlightMessages(); // Drop optimistic bubbles on error
         }
       } finally {
         // Only stop streaming if this is still the current request
         if (abortRef.current === controller) {
           setStreaming(false);
-          setInFlightMessage(null); // Clear in-flight message when done
+          clearInFlightMessages(); // Drop optimistic bubbles when done
           abortRef.current = null;
         }
       }
@@ -1909,7 +1985,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     (options?: { interrupted?: boolean }) => {
       const chatId = id || (tempChatIdRef.current?.startsWith("new-") ? null : tempChatIdRef.current);
       if (!chatId) {
-        setInFlightMessage(null);
+        clearInFlightMessages();
         return;
       }
       // Refetch rather than keep the partially-streamed view: the server
@@ -1925,10 +2001,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         .then((msgs) => {
           if (currentIdRef.current !== chatId) return;
           const msgArray = Array.isArray(msgs) ? msgs : [];
-          setMessages(options?.interrupted ? [...msgArray, { role: "system", type: "system", content: INTERRUPTED_MESSAGE }] : msgArray);
+          // Skipped when the harness already wrote its own marker — see
+          // endsWithInterruptMarker.
+          const needsNotice = options?.interrupted && !endsWithInterruptMarker(msgArray);
+          setMessages(needsNotice ? [...msgArray, { role: "system", type: "system", content: INTERRUPTED_MESSAGE }] : msgArray);
         })
         .catch(() => {})
-        .finally(() => setInFlightMessage(null));
+        .finally(() => clearInFlightMessages());
     },
     [id],
   );
@@ -3005,60 +3084,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </div>
                 )}
 
-                {showInFlightMessage && (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "flex-end",
-                      margin: "6px 0",
-                    }}
-                  >
-                    <div
-                      style={{
-                        maxWidth: "85%",
-                        padding: "10px 14px",
-                        borderRadius: "var(--radius)",
-                        background: "var(--user-bg)",
-                        border: "1px solid transparent",
-                        fontSize: 14,
-                        lineHeight: 1.5,
-                        wordBreak: "break-word",
-                        opacity: 0.9,
-                      }}
-                    >
-                      {inFlightMessage}
-                      {inFlightImageUrls.length > 0 && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                          {inFlightImageUrls.map((url, i) => (
-                            <img
-                              key={i}
-                              src={url}
-                              alt="Attached image"
-                              style={{
-                                maxHeight: 200,
-                                maxWidth: 300,
-                                borderRadius: 8,
-                                objectFit: "cover",
-                                border: "1px solid var(--border)",
-                              }}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: "var(--text-muted)",
-                        marginTop: 4,
-                        textAlign: "right",
-                      }}
-                    >
-                      Sent
-                    </div>
-                  </div>
-                )}
+                <InFlightBubbles messages={visibleInFlightMessages} />
 
                 {streaming && (
                   <div
@@ -3127,60 +3153,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     </div>
                   );
                 })}
-                {showInFlightMessage && (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "flex-end",
-                      margin: "6px 0",
-                    }}
-                  >
-                    <div
-                      style={{
-                        maxWidth: "85%",
-                        padding: "10px 14px",
-                        borderRadius: "var(--radius)",
-                        background: "var(--user-bg)",
-                        border: "1px solid transparent",
-                        fontSize: 14,
-                        lineHeight: 1.5,
-                        wordBreak: "break-word",
-                        opacity: 0.9,
-                      }}
-                    >
-                      {inFlightMessage}
-                      {inFlightImageUrls.length > 0 && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                          {inFlightImageUrls.map((url, i) => (
-                            <img
-                              key={i}
-                              src={url}
-                              alt="Attached image"
-                              style={{
-                                maxHeight: 200,
-                                maxWidth: 300,
-                                borderRadius: 8,
-                                objectFit: "cover",
-                                border: "1px solid var(--border)",
-                              }}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: "var(--text-muted)",
-                        marginTop: 4,
-                        textAlign: "right" as const,
-                      }}
-                    >
-                      Sent
-                    </div>
-                  </div>
-                )}
+                <InFlightBubbles messages={visibleInFlightMessages} />
                 {networkError && (
                   <div
                     style={{
