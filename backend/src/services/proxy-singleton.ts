@@ -161,6 +161,7 @@ export function getConfiguredAliases(): string[] {
 export function resetClient(alias: string): void {
   clientCache.delete(alias);
   failedAliases.delete(alias);
+  routeCache.delete(alias);
   log.info(`Reset proxy client cache for alias "${alias}"`);
 }
 
@@ -168,7 +169,86 @@ export function resetClient(alias: string): void {
 export function resetAllClients(): void {
   clientCache.clear();
   failedAliases.clear();
+  routeCache.clear();
   log.info("Reset all proxy client caches");
+}
+
+// ── Route listing cache ─────────────────────────────────────────────
+//
+// `list_routes` is read on every message of every session (to build the
+// system-prompt connections listing) and on every dashboard poll. Hitting the
+// daemon each time is what drives the 429s that then blank the listing, so
+// results are cached per alias and concurrent fetches are coalesced.
+
+interface RouteCacheEntry {
+  routes: unknown[];
+  fetchedAt: number;
+}
+
+const routeCache = new Map<string, RouteCacheEntry>();
+const routeFetches = new Map<string, Promise<unknown[]>>();
+const ROUTE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+export interface ProxyRoutesResult {
+  routes: unknown[];
+  /** False when no ProxyClient exists for the alias (missing/unusable keys). */
+  configured: boolean;
+  /** True when the live fetch failed and a previous listing was served instead. */
+  stale: boolean;
+  /** Set when the live fetch failed, even if stale routes were returned. */
+  error?: string;
+}
+
+/**
+ * Read the caller's available routes (connections), cached with a short TTL.
+ *
+ * On a failed refresh this falls back to the last known-good listing rather
+ * than reporting zero connections — a transient daemon hiccup should never be
+ * indistinguishable from "this caller has no services".
+ */
+export async function fetchProxyRoutes(alias: string): Promise<ProxyRoutesResult> {
+  const cached = routeCache.get(alias);
+  if (cached && Date.now() - cached.fetchedAt < ROUTE_CACHE_TTL_MS) {
+    return { routes: cached.routes, configured: true, stale: false };
+  }
+
+  const client = getProxy(alias);
+  if (!client) {
+    return { routes: [], configured: false, stale: false };
+  }
+
+  let inflight = routeFetches.get(alias);
+  if (!inflight) {
+    inflight = (async () => {
+      try {
+        const result = await client.callTool("list_routes");
+        return Array.isArray(result) ? result : [];
+      } finally {
+        routeFetches.delete(alias);
+      }
+    })();
+    routeFetches.set(alias, inflight);
+  }
+
+  try {
+    const routes = await inflight;
+    routeCache.set(alias, { routes, fetchedAt: Date.now() });
+    return { routes, configured: true, stale: false };
+  } catch (err: any) {
+    const message = err?.message || String(err);
+    if (cached) {
+      log.warn(`list_routes failed for "${alias}" (${message}) — serving cached listing`);
+      return { routes: cached.routes, configured: true, stale: true, error: message };
+    }
+    log.warn(`list_routes failed for "${alias}" (${message}) — no cached listing available`);
+    return { routes: [], configured: true, stale: false, error: message };
+  }
+}
+
+/** Drop cached route listings (all aliases, or just one). */
+export function invalidateRouteCache(alias?: string): void {
+  if (alias) routeCache.delete(alias);
+  else routeCache.clear();
 }
 
 /**

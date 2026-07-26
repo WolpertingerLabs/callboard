@@ -12,7 +12,7 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { getProxy, isProxyConfigured } from "../services/proxy-singleton.js";
+import { getProxy, isProxyConfigured, fetchProxyRoutes } from "../services/proxy-singleton.js";
 import { getAllEvents, getEvents, listEventSources } from "../services/event-log.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -29,20 +29,22 @@ proxyRouter.get("/routes", async (req: Request, res: Response): Promise<void> =>
     return;
   }
 
-  const client = getProxy(alias);
-  if (!client) {
+  // Shares the short-TTL cache used to build the agent system prompt, so
+  // dashboard polling doesn't add load to the daemon's rate limiter.
+  const { routes, configured, stale, error } = await fetchProxyRoutes(alias);
+
+  if (!configured) {
     res.json({ routes: [], configured: false });
     return;
   }
 
-  try {
-    const result = await client.callTool("list_routes");
-    const routes = Array.isArray(result) ? result : [];
-    res.json({ routes, configured: true });
-  } catch (err: any) {
-    log.warn(`Failed to fetch proxy routes for alias "${alias}": ${err.message}`);
+  if (error && routes.length === 0) {
+    log.warn(`Failed to fetch proxy routes for alias "${alias}": ${error}`);
     res.status(502).json({ error: "Failed to reach drawlatch daemon", routes: [], configured: true });
+    return;
   }
+
+  res.json({ routes, configured: true, ...(stale && { stale: true }) });
 });
 
 /** GET /api/proxy/ingestors?alias=X — list ingestor statuses (event sources) */

@@ -33,7 +33,7 @@ import {
   STREAM_CLOSED_TOOL_FAILURE_THRESHOLD,
 } from "./stream-recovery.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
-import { getProxy, ensureCallerEnrolled } from "./proxy-singleton.js";
+import { ensureCallerEnrolled, fetchProxyRoutes } from "./proxy-singleton.js";
 import {
   getAgentSettings,
   getActiveMcpConfigDir,
@@ -72,30 +72,47 @@ function resolveProviderKind(value: unknown): AgentProviderKind {
 
 /**
  * Build a system prompt section listing available MCP proxy connections.
- * Returns empty string if no connections are found.
+ *
+ * Returns empty string only when the caller has no proxy client at all. If the
+ * listing can't be fetched, this still emits the header telling the agent the
+ * proxy exists and that it must check `list_routes` — otherwise a transient
+ * daemon failure leaves the agent silently believing no services are connected,
+ * and it never thinks to look.
  */
 async function buildProxyConnectionsPrompt(proxyKeyAlias: string): Promise<string> {
-  // Read the caller's available connections straight from the drawlatch daemon
-  // over the protocol (list_routes) — identical for local and remote.
-  const proxy = getProxy(proxyKeyAlias);
-  if (!proxy) return "";
+  // Read the caller's available connections from the drawlatch daemon via a
+  // short-TTL cache (list_routes) — identical for local and remote.
+  const { routes, configured, stale, error } = await fetchProxyRoutes(proxyKeyAlias);
+  if (!configured) return "";
 
-  let connections: Array<{ alias: string; name: string; description?: string; docsUrl?: string }> = [];
-  try {
-    const result = (await proxy.callTool("list_routes")) as any[];
-    const routes = Array.isArray(result) ? result : [];
-    connections = routes.map((r) => ({
-      alias: r.alias ?? r.name ?? "",
-      name: r.name ?? r.alias ?? "",
-      ...(r.description && { description: r.description }),
-      ...(r.docsUrl && { docsUrl: r.docsUrl }),
-    }));
-  } catch (err: any) {
-    log.warn(`Failed to list connections for proxy prompt (alias=${proxyKeyAlias}): ${err.message}`);
-    return "";
+  const connections = (routes as any[]).map((r) => ({
+    alias: r.alias ?? r.name ?? "",
+    name: r.name ?? r.alias ?? "",
+    ...(r.description && { description: r.description }),
+    ...(r.docsUrl && { docsUrl: r.docsUrl }),
+  }));
+
+  const header = [
+    "# Available API Connections",
+    "",
+    "You have authenticated access to external services through the MCP proxy tools",
+    "(`mcp__mcp-proxy__*`). The proxy injects credentials on your behalf, so you never need",
+    "API keys. Check here before assuming a service is unreachable, and prefer these tools",
+    "over generic web requests or asking the user to act on your behalf.",
+    "",
+  ];
+
+  if (connections.length === 0) {
+    return [
+      ...header,
+      error
+        ? `The connection listing could not be retrieved just now (${error}). Do not conclude that`
+        : "No connections are currently listed for you. Before concluding a service is unavailable,",
+      error
+        ? "no services are connected — call `mcp__mcp-proxy__list_routes` yourself to find out."
+        : "call `mcp__mcp-proxy__list_routes` to confirm.",
+    ].join("\n");
   }
-
-  if (connections.length === 0) return "";
 
   const lines = connections.map((c) => {
     let line = `- **${c.name}** (\`${c.alias}\`)`;
@@ -105,12 +122,12 @@ async function buildProxyConnectionsPrompt(proxyKeyAlias: string): Promise<strin
   });
 
   return [
-    "# Available API Connections",
-    "",
-    "The following API connections are available through the MCP proxy tools (`mcp__mcp-proxy__*`).",
-    "Use `list_routes` for detailed endpoint information, or `secure_request` to make API calls.",
-    "",
+    ...header,
     ...lines,
+    "",
+    stale
+      ? "This listing is cached and may be out of date — call `list_routes` to refresh it."
+      : "Use `list_routes` for detailed endpoint information, or `secure_request` to make API calls.",
   ].join("\n");
 }
 
