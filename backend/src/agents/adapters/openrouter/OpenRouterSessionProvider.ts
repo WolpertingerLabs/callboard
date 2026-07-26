@@ -26,9 +26,11 @@
  *
  * @see plans/openrouter-adapter.md §7
  */
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join, resolve, sep } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import type { HandoffTurn } from "../../handoff.js";
 import type {
   DiscoverResult,
   ResolvedSession,
@@ -243,6 +245,80 @@ export class OpenRouterSessionProvider implements SessionProvider {
     }
 
     return all;
+  }
+
+  // ── Seeding (cross-harness handoff) ─────────────────────────────────
+
+  /**
+   * Write a fresh OR session directory whose history is `turns`.
+   *
+   * `ConversationState.messages` is the harness's **full local history** —
+   * `previousResponseId` is only OpenRouter's server-side prefix-cache hint.
+   * The harness's own compaction and prune paths rewrite `messages` wholesale
+   * and then delete `previousResponseId`, and the next turn resumes fine, so a
+   * hand-written `messages` array with no response id is a state the harness
+   * already knows how to pick up.
+   *
+   * Three files are written, and all three matter:
+   *  - `state.json`      — what the harness resumes from.
+   *  - `session.json`    — what discovery and folder resolution read.
+   *  - `transcript.jsonl` — what the UI renders. **Not optional:**
+   *    {@link parseSessionMessages} *prefers* the transcript and only falls
+   *    back to state.json when the file is absent, and the harness appends to
+   *    it on the next turn. Seeding without one would make the carried history
+   *    vanish from the chat as soon as the new session replied once.
+   */
+  seedSession(turns: HandoffTurn[], opts: { folder: string; newSessionId: string }): { logPath: string } | null {
+    if (turns.length === 0) return null;
+    const safe = this.safeSessionDir(opts.newSessionId);
+    if (!safe) {
+      log.warn(`Refused seedSession for unsafe sessionId="${opts.newSessionId}"`);
+      return null;
+    }
+    const { sessionDir } = safe;
+    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+
+    // Responses-API item shapes, matching what the harness itself persists:
+    // a plain `{role, content}` for user input, and a full `message` item with
+    // an `output_text` block for assistant turns.
+    const messages = turns.map((turn) =>
+      turn.role === "user"
+        ? { role: "user", content: turn.text }
+        : {
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            id: `msg_seed_${randomUUID()}`,
+            content: [{ type: "output_text", text: turn.text, annotations: [] }],
+          },
+    );
+
+    const transcript = [
+      { v: 1, sessionId: opts.newSessionId, ts: nowIso, kind: "session_start", cwd: opts.folder },
+      ...turns.map((turn) =>
+        turn.role === "user"
+          ? { v: 1, sessionId: opts.newSessionId, ts: turn.timestamp || nowIso, kind: "user", text: turn.text }
+          : { v: 1, sessionId: opts.newSessionId, ts: turn.timestamp || nowIso, kind: "assistant", text: turn.text },
+      ),
+    ];
+
+    try {
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(
+        join(sessionDir, "session.json"),
+        JSON.stringify({ sessionId: opts.newSessionId, startedAt: nowIso, cwd: opts.folder }, null, 2),
+      );
+      writeFileSync(
+        join(sessionDir, "state.json"),
+        JSON.stringify({ id: opts.newSessionId, messages, status: "complete", createdAt: nowMs, updatedAt: nowMs }, null, 2),
+      );
+      writeFileSync(join(sessionDir, "transcript.jsonl"), transcript.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    } catch (err) {
+      log.error(`Failed to write seeded OR session ${sessionDir}: ${(err as Error).message}`);
+      return null;
+    }
+    return { logPath: join(sessionDir, "session.json") };
   }
 
   // ── Preview ─────────────────────────────────────────────────────────

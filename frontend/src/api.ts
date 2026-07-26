@@ -298,16 +298,24 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
   return res.json();
 }
 
+/** The harnesses a chat can run on, and so can be forked into. */
+export type ForkProvider = "claude-code" | "codex" | "openrouter";
+
 /**
  * Fork a chat at a message: creates a new chat whose history is a copy of
  * this one up to and including the message at `timestamp`. The forked chat
  * is not auto-started — the user sends the next message themselves.
+ *
+ * Passing `provider` hands the conversation to a different harness: the
+ * history is translated into that harness's native session format, with tool
+ * calls flattened to text summaries. Omitting it forks within the chat's own
+ * harness, which preserves the session log verbatim.
  */
-export async function forkChat(id: string, timestamp: string): Promise<Chat> {
+export async function forkChat(id: string, timestamp: string, opts?: { provider?: ForkProvider; model?: string }): Promise<Chat> {
   const res = await fetch(`${BASE}/chats/${id}/fork`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ timestamp }),
+    body: JSON.stringify({ timestamp, ...(opts?.provider && { provider: opts.provider }), ...(opts?.model && { model: opts.model }) }),
   });
   await assertOk(res, "Failed to fork chat");
   return res.json();

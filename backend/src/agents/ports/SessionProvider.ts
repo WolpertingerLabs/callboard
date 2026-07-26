@@ -14,6 +14,7 @@
  */
 import type { ParsedMessage } from "shared/types/index.js";
 import type { AgentProviderKind } from "./AgentProvider.js";
+import type { HandoffTurn } from "../handoff.js";
 
 // ── Discovery types ─────────────────────────────────────────────────
 
@@ -162,4 +163,30 @@ export interface SessionProvider {
    * missing or no entries fall at/before the cutoff.
    */
   forkSession?(sessionIds: string[], cutoffTimestamp: string, newSessionId: string): { logPath: string } | null;
+
+  /**
+   * Write a NEW native session for this provider whose history is `turns`,
+   * so the provider's engine can resume it as if it had produced that
+   * conversation itself.
+   *
+   * This is the write half of a cross-harness handoff: the caller reads a
+   * chat's history through the *source* provider's
+   * {@link SessionProvider.parseSessionMessages}, flattens it with
+   * `buildHandoffTurns`, and hands the result to the *target* provider here.
+   * Because the intermediate is neutral, each provider implements one writer
+   * rather than one translator per source harness.
+   *
+   * Distinct from {@link SessionProvider.forkSession}, which copies a session's
+   * raw native log within the SAME provider and so preserves full fidelity
+   * (real tool_use blocks, reasoning, ids). `seedSession` accepts only
+   * conversational turns — callers should prefer `forkSession` when the source
+   * and target providers match.
+   *
+   * Optional — a provider whose engine cannot resume hand-written state simply
+   * doesn't implement it, and the fork route rejects handoffs targeting it.
+   *
+   * Returns the new session's log path, or null when `turns` is empty or the
+   * session could not be written.
+   */
+  seedSession?(turns: HandoffTurn[], opts: { folder: string; newSessionId: string }): { logPath: string } | null;
 }

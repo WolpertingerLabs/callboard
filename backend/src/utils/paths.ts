@@ -420,6 +420,20 @@ function isDirectory(p: string): boolean {
 }
 
 /**
+ * Encode a folder path into the SDK's project-directory name — the forward
+ * direction of {@link projectDirToFolder}, and the exact transform the Claude
+ * Agent SDK applies when it decides where a session's JSONL lives.
+ *
+ * Lossy by nature (`/`, `.`, `_` and spaces all collapse to `-`), which is why
+ * the inverse needs a filesystem-probing heuristic. Encoding is unambiguous
+ * though, so writers that need to place a file for a known cwd can use this
+ * directly.
+ */
+export function folderToProjectDir(folder: string): string {
+  return folder.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+/**
  * Convert a project directory name back to a folder path.
  * The SDK encodes paths by replacing ALL non-alphanumeric chars with -, so
  * "-home-cybil-my-app" is ambiguous (could be /home/cybil/my-app or

@@ -12,6 +12,8 @@ import { getCard } from "../services/card-store.js";
 import { setChatCardMembership } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
+import { isRoutableProvider, type RoutableProviderKind } from "../agents/ports/AgentProvider.js";
+import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { createLogger } from "../utils/logger.js";
 import type { FolderSummary } from "shared/types/index.js";
 // Chat-list response cache lives in a standalone module so services can
@@ -633,7 +635,7 @@ chatsRouter.post("/", (req, res) => {
 chatsRouter.post("/:id/fork", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Fork a chat'
-  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the card membership of the original chat.'
+  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the card membership of the original chat. Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -643,7 +645,10 @@ chatsRouter.post("/:id/fork", (req, res) => {
           type: "object",
           required: ["timestamp"],
           properties: {
-            timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" }
+            timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
+            provider: { type: "string", enum: ["claude-code", "openrouter", "codex"], description: "Target harness. Omit to fork within the chat's current harness (higher fidelity)." },
+            model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
+            effort: { type: "string", description: "Reasoning effort for the new chat (openrouter / codex only)." }
           }
         }
       }
@@ -665,11 +670,23 @@ chatsRouter.post("/:id/fork", (req, res) => {
     meta = JSON.parse(chat.metadata || "{}");
   } catch {}
 
-  const providerKind = meta.provider || "claude-code";
+  const providerKind: RoutableProviderKind = isRoutableProvider(meta.provider) ? meta.provider : "claude-code";
   const provider = getSessionProviders().find((p) => p.kind === providerKind);
-  if (!provider?.forkSession) {
+  if (!provider) {
     return res.status(400).json({ error: "Forking is not supported for this chat's provider" });
   }
+
+  // Target harness. Omitted (the common case) means "same harness", which
+  // keeps the high-fidelity same-provider fork path below.
+  if (req.body.provider !== undefined && !isRoutableProvider(req.body.provider)) {
+    return res.status(400).json({ error: `Unknown target provider "${req.body.provider}"` });
+  }
+  const targetKind: RoutableProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
+  const targetProvider = getSessionProviders().find((p) => p.kind === targetKind);
+  if (!targetProvider) {
+    return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });
+  }
+  const isHandoff = targetKind !== providerKind;
 
   const sessionIds: string[] = meta.session_ids || [];
   if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
@@ -677,9 +694,23 @@ chatsRouter.post("/:id/fork", (req, res) => {
   const newSessionId = randomUUID();
   let forked: { logPath: string } | null = null;
   try {
-    forked = provider.forkSession(sessionIds, timestamp, newSessionId);
+    if (!isHandoff && provider.forkSession) {
+      // Same harness: copy the native session log. Preserves everything the
+      // engine wrote — real tool_use blocks, reasoning, ids — which the
+      // neutral turn projection below necessarily drops.
+      forked = provider.forkSession(sessionIds, timestamp, newSessionId);
+    } else if (targetProvider.seedSession) {
+      // Cross-harness (or a same-harness provider with no native fork): read
+      // the history through the SOURCE provider's parser, then write it into
+      // the TARGET's native format as conversational turns.
+      const history = truncateAtCutoff(provider.parseSessionMessages(sessionIds), timestamp);
+      const turns = buildHandoffTurns(history, providerKind, targetKind);
+      forked = turns.length > 0 ? targetProvider.seedSession(turns, { folder: chat.folder, newSessionId }) : null;
+    } else {
+      return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });
+    }
   } catch (error) {
-    log.error(`Failed to fork session: ${error}`);
+    log.error(`Failed to fork session (${providerKind} → ${targetKind}): ${error}`);
   }
   if (!forked) {
     return res.status(400).json({ error: "Could not fork: no messages found at or before the fork point" });
@@ -693,15 +724,43 @@ chatsRouter.post("/:id/fork", (req, res) => {
   }
   baseTitle = baseTitle ? baseTitle.replace(/\s+/g, " ").trim() : null;
 
+  // Model / effort for the new chat. A handoff cannot inherit the source's:
+  // model ids and effort scales are per-harness ("claude-opus-5" means
+  // nothing to Codex), so on a switch they come from the request or are left
+  // unset for the target's defaults. Same-harness forks inherit as before.
+  const requestedModel = typeof req.body.model === "string" && req.body.model.trim() ? req.body.model.trim() : undefined;
+  const requestedEffort = typeof req.body.effort === "string" && req.body.effort.trim() ? req.body.effort.trim() : undefined;
+  const model = requestedModel ?? (isHandoff ? undefined : meta.model);
+  const effort = requestedEffort ?? (isHandoff ? undefined : meta.effort);
+
   const forkMeta = {
     session_ids: [newSessionId],
-    title: baseTitle ? `Fork: ${baseTitle}` : "Fork",
+    title: baseTitle
+      ? isHandoff
+        ? `→ ${providerLabel(targetKind)}: ${baseTitle}`
+        : `Fork: ${baseTitle}`
+      : isHandoff
+        ? `→ ${providerLabel(targetKind)}`
+        : "Fork",
     // Legacy parent pointer (kept for compat) plus the parentage-tree
     // fields — the fork becomes a child of the original in the chat tree.
     forkedFrom: chat.id,
     parentChatId: chat.id,
     rootChatId: meta.rootChatId || chat.id,
-    chatRole: "fork",
+    chatRole: isHandoff ? "engine-switch" : "fork",
+    // Pin the target harness for the new chat's lifetime, mirroring
+    // sendMessage's convention of omitting the "claude-code" default rather
+    // than writing it (an explicit value there is redundant, and resolving an
+    // absent provider already lands on claude-code).
+    ...(targetKind !== "claude-code" && { provider: targetKind }),
+    // Same guards sendMessage applies: effort is meaningful only to the two
+    // reasoning-capable harnesses, model to openrouter and claude-code.
+    ...(effort && (targetKind === "openrouter" || targetKind === "codex") && { effort }),
+    ...(model && (targetKind === "openrouter" || targetKind === "claude-code") && { model }),
+    // Model routing is an OpenRouter-only feature keyed to OR rank ids —
+    // carry it only when the target is still OpenRouter.
+    ...(meta.modelRouting && targetKind === "openrouter" && { modelRouting: true }),
+    ...(meta.modelRouting && targetKind === "openrouter" && meta.modelRoutingRankId && { modelRoutingRankId: meta.modelRoutingRankId }),
     // A fork stays on the original's card. Unassign merges `cardId: null`,
     // so a string check (not key presence) decides whether to inherit.
     ...(typeof meta.cardId === "string" && meta.cardId && { cardId: meta.cardId }),

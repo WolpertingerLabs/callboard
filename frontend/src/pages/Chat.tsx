@@ -46,6 +46,7 @@ import {
   assignChatToCard,
   type CardSummary,
   type Chat as ChatType,
+  type ForkProvider,
   type ParsedMessage,
   type Plugin,
   type NewChatInfo,
@@ -505,11 +506,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // No agent run is started — the user sends the next message from there.
   const forkingRef = useRef(false);
   const handleFork = useCallback(
-    async (timestamp: string) => {
+    async (timestamp: string, provider?: ForkProvider) => {
       if (!id || forkingRef.current) return;
       forkingRef.current = true;
       try {
-        const newChat = await forkChat(id, timestamp);
+        const newChat = await forkChat(id, timestamp, provider ? { provider } : undefined);
         onChatListRefresh?.();
         navigate(`/chat/${newChat.id}`);
       } catch (err) {
@@ -3145,14 +3146,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     );
                   }
                   // Forkable: persisted conversational text messages on the
-                  // main timeline. Subagent messages, OpenRouter chats
-                  // (response-chained state can't be truncated), and Codex
-                  // chats (on-disk rollout sessions aren't fork-wired) are excluded.
+                  // main timeline. Subagent messages are excluded — they
+                  // aren't a point in the main thread to branch from. Every
+                  // harness can be forked now: same-harness forks copy the
+                  // native session log where the provider supports it, and a
+                  // cross-harness fork seeds the target from the parsed
+                  // history.
                   const msgTimestamp = item.message.timestamp;
-                  const canFork = chatProvider === "claude-code" && item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
+                  const canFork = item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
-                      <MessageBubble message={item.message} teamColorMap={teamColorMap} onFork={canFork ? () => handleFork(msgTimestamp!) : undefined} />
+                      <MessageBubble
+                        message={item.message}
+                        teamColorMap={teamColorMap}
+                        onFork={canFork ? (provider) => handleFork(msgTimestamp!, provider) : undefined}
+                        forkCurrentProvider={chatProvider}
+                      />
                     </div>
                   );
                 })}
