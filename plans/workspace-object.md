@@ -151,6 +151,62 @@ The cleanliness check is ours to add, not borrowed — we should never silently 
 and "the branch is merged" is not the same as "the directory is clean". Refusing to remove a
 dirty worktree and surfacing it is strictly better than a `--force`.
 
+> **Removal is quarantine, not deletion — architect ruling, 2026-07-27.** Supersedes the
+> `git worktree remove` design above and the ignored-file allowlist I proposed before it.
+>
+> **What I got wrong.** Ignored files are invisible to `git status --porcelain` but are deleted
+> by `git worktree remove` — a `.env` or local sqlite goes with the directory. I proposed
+> refusing on ignored entries outside an allowlist of regenerables. Review implemented that
+> proposal exactly and measured it against all 44 worktrees on this machine: **it refuses
+> 44 of 44.** The feature would never remove anything. Causes, each sufficient alone:
+> `.env` exists in every worktree with 34 distinct contents (it is per-worktree state, and it
+> is precisely the file you must protect — so it can never be allowlisted); top-level
+> collapsing turns `backend/node_modules/` into `backend`, a tracked source directory; and my
+> claimed mechanism was backwards — **`--ignored=traditional` collapses, `--ignored=matching`
+> expands**, one line per file for extension-based ignores.
+>
+> The deeper error: a refuse-by-default policy over ignored files is *unsatisfiable* on real
+> repositories, and an unsatisfiable safety gate creates pressure to widen the allowlist or
+> add `--force` later. That is how this phase's guarantees get dismantled.
+>
+> **The mechanism instead:**
+> ```
+> mv <worktree> ~/.callboard/trash/<workspaceId>-<timestamp>/   # content intact, incl. ignored
+> git worktree prune                                            # unregisters; admin dir + token go
+> # restore: git worktree add <path> <branch>
+> ```
+> Make removal **reversible** and the ignored-file question stops needing a policy at all. It
+> also covers the unknown-unknowns an allowlist cannot enumerate — per-worktree reflogs,
+> `refs/worktree/*`, detached-HEAD commits — and it sidesteps git's partial-destruction
+> behaviour, where a failed `git worktree remove` has already deleted tracked files and the
+> admin dir before exiting non-zero.
+>
+> The cleanliness gate stays. Refusing to quarantine work-in-progress is still right; the
+> difference is that a mistake is now recoverable rather than terminal. Add a retention sweep,
+> and require the trash directory to be on the same filesystem so the move is a real atomic
+> rename rather than a copy-and-delete.
+
+> **Implementation notes, 2026-07-27.** Two things the ruling above did not anticipate, both
+> measured rather than reasoned:
+>
+> - **Submodules survive the `mv` and die on the `prune`.** A submodule initialised inside a
+>   worktree keeps its object database in the worktree's admin dir
+>   (`<repo>/.git/worktrees/<slug>/modules/<path>`), which `git worktree prune` deletes. A
+>   commit made in that submodule was verified to become unreachable while its working files
+>   sat intact in the trash — and the superproject can be perfectly clean at that moment. So
+>   `has-submodules` is a blocker under quarantine too, not an inherited one. It fires on 0 of
+>   the 44 worktrees here, so unlike the allowlist it is a gate that can actually be satisfied.
+> - **`git worktree prune` can fail silently.** With a read-only admin dir it prints
+>   `error: failed to delete ...` and still exits 0, leaving the worktree registered after its
+>   directory has moved. The archive therefore re-inspects (directory, registration, admin dir,
+>   token) after acting and reports `disposition: "partial"` rather than trusting an exit code.
+>
+> Restore, verified end to end: `git worktree add <path> <branch>` recreates the tracked
+> checkout at the original path, then the untracked/ignored files are copied back out of the
+> trash entry. Each entry carries a `.callboard-trash.json` manifest holding that recipe, the
+> original path and the quarantine timestamp — the sweep reads its age from there, never from
+> the directory's mtime, which `rename(2)` does not update.
+
 This is also the hook for auto-cleanup on merge later; paseo has an `auto-archive-on-merge`
 module. Out of scope for v1, but the ref-count is the thing that makes it possible.
 

@@ -39,7 +39,10 @@ export type {
   WorkspaceRemovalBlocker,
   WorkspaceRemovalReason,
   WorkspaceRemovability,
+  WorkspaceIgnoredPreview,
   WorkspaceWithRemovability,
+  WorktreeDisposition,
+  WorktreeInspection,
   ArchiveWorkspaceResult,
 } from "./workspace.js";
 

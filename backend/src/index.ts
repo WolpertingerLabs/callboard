@@ -62,6 +62,7 @@ import { workspacesRouter } from "./routes/workspaces.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { installProcessGuards } from "./utils/process-guards.js";
+import { sweepTrash } from "./utils/worktree-trash.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initJobRunner, shutdownJobRunner } from "./services/job-runner.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
@@ -589,6 +590,17 @@ app.listen(PORT, () => {
     initCliWatcher();
   } catch (err: any) {
     log.error(`CLI watcher init failed: ${err.message}`);
+  }
+
+  // Age out quarantined worktrees (~/.callboard/trash) past the retention
+  // window. Archiving sweeps too; this bounds the trash on a server that
+  // archives rarely. Conservative by construction — see utils/worktree-trash.ts.
+  try {
+    const swept = sweepTrash();
+    if (swept.removed.length > 0) log.info(`Trash sweep removed ${swept.removed.length} expired quarantined worktree(s)`);
+    for (const error of swept.errors) log.warn(`Trash sweep: ${error}`);
+  } catch (err: any) {
+    log.error(`Trash sweep failed: ${err.message}`);
   }
 
   // Start the drawlatch daemon based on configured mode, then initialize event

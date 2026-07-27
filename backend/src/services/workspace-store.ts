@@ -77,8 +77,17 @@ function defaultName(cwd: string): string {
 // ── CRUD ────────────────────────────────────────────────────────────
 
 export function createWorkspace(payload: WorkspacePayload): Workspace {
-  const cwd = (payload.cwd ?? "").trim();
-  if (!cwd) throw new Error("Workspace cwd is required");
+  const rawCwd = (payload.cwd ?? "").trim();
+  if (!rawCwd) throw new Error("Workspace cwd is required");
+  // Resolve at the boundary, once. A relative `cwd` (start_chat_session passes
+  // `folder` through without an absoluteness check) would otherwise be read
+  // against two different bases later: `existsSync`/`checkWorktreeClean`
+  // resolve it against the backend process cwd, while a `git -C <repo>` call
+  // resolves it against the main checkout. The gate and the action have to name
+  // the same directory, so the record stores the resolved form and everything
+  // downstream reads that.
+  const cwd = resolve(rawCwd);
+  const repoPath = payload.repoPath ? resolve(payload.repoPath) : undefined;
   if (payload.isolation !== "local" && payload.isolation !== "worktree") {
     throw new Error(`Workspace isolation must be "local" or "worktree" (got ${JSON.stringify(payload.isolation)})`);
   }
@@ -100,7 +109,7 @@ export function createWorkspace(payload: WorkspacePayload): Workspace {
     id: `ws-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
     name: name.slice(0, WORKSPACE_NAME_MAX),
     cwd,
-    ...(payload.repoPath && { repoPath: payload.repoPath }),
+    ...(repoPath && { repoPath }),
     isolation: payload.isolation,
     ...(payload.worktree && {
       worktree: {
@@ -167,9 +176,14 @@ export function listWorkspaces(filter?: { status?: Workspace["status"] }): Works
  * bug (see plans/workspace-object.md). This is also what Phase 2's ref-count
  * will be built on: an owned worktree is only removable once no active
  * workspace references its directory.
+ *
+ * Compares resolved paths rather than strings. Records written before
+ * {@link createWorkspace} started resolving `cwd` may hold a relative or
+ * `..`-laden spelling of the same directory, and a missed match here means a
+ * second record for a directory that already has one.
  */
 export function listWorkspacesByCwd(cwd: string): Workspace[] {
-  return listWorkspaces({ status: "active" }).filter((w) => w.cwd === cwd);
+  return listWorkspaces({ status: "active" }).filter((w) => samePath(w.cwd, cwd));
 }
 
 export function renameWorkspace(id: string, name: string): Workspace | null {

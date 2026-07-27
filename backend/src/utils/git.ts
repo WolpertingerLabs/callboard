@@ -546,10 +546,12 @@ export interface WorktreeCleanliness {
  * The refs are fed through stdin rather than argv — a repository with
  * thousands of refs would otherwise risk E2BIG.
  *
- * KNOWN GAP, deliberate: `--porcelain` does not report **ignored** files, and
- * `git worktree remove` deletes them. A gitignored `.env` or a `node_modules`
- * in the worktree goes with it. Counting them would refuse essentially every
- * worktree of a JS project, so this does not — see the phase report.
+ * **Ignored files are deliberately not counted here.** `--porcelain` does not
+ * report them, and counting them would refuse essentially every worktree of a
+ * JS project (measured: 44 of 44 on the author's machine). They do not need a
+ * gate, because removal is a move into the trash rather than a delete and they
+ * ride along intact — see utils/worktree-trash.ts. {@link listIgnoredEntries}
+ * surfaces them for display, never for a decision.
  */
 export function checkWorktreeClean(directory: string): WorktreeCleanliness {
   const failed = (error: string): WorktreeCleanliness => ({
@@ -614,41 +616,101 @@ export function checkWorktreeClean(directory: string): WorktreeCleanliness {
 }
 
 /**
- * The exact argv used to remove a worktree.
+ * Ignored entries in a worktree, for display only.
  *
- * Exported for one reason: so a test can assert that it never grows a `-f` or
- * `--force`. Callboard removes a worktree only after {@link checkWorktreeClean}
- * has passed, and git's own (weaker) refusal is the last line of defence
- * behind that — forcing would throw away exactly the safety this phase exists
- * to add.
+ * `--ignored=traditional` collapses whole ignored directories to a single
+ * entry (`backend/node_modules/`), which is what makes this cheap enough to
+ * call at all — `--ignored=matching` **expands**, one line per file, and a
+ * `node_modules` would produce tens of thousands. The collapsed form is also
+ * the more legible summary of "what would move to the trash".
+ *
+ * NEVER a gate. Ignored files are why removal is a move rather than a delete
+ * (utils/worktree-trash.ts); a policy that refused on them was measured to
+ * refuse 44 worktrees out of 44. This exists so a caller can *see* what travels
+ * with the directory, not so anything can decide on it.
  */
-export function worktreeRemoveArgs(worktreePath: string): string[] {
-  return ["worktree", "remove", worktreePath];
+export interface IgnoredEntries {
+  /** Collapsed paths, relative to the worktree. Capped — see `truncated`. */
+  entries: string[];
+  /** True when there were more than {@link IGNORED_ENTRY_LIMIT}. */
+  truncated: boolean;
+  /** Set when git failed. Informational output, so this is never fatal. */
+  error?: string;
 }
 
-export type RemoveWorktreeResult = { ok: true } | { ok: false; error: string };
+const IGNORED_ENTRY_LIMIT = 100;
+
+export function listIgnoredEntries(directory: string): IgnoredEntries {
+  if (!directory || !existsSync(directory)) {
+    return { entries: [], truncated: false, error: `Directory does not exist: ${directory}` };
+  }
+  try {
+    const out = gitOutput(directory, ["status", "--porcelain", "--ignored=traditional"]);
+    const all = out
+      .split("\n")
+      .filter((line) => line.startsWith("!! "))
+      .map((line) => line.slice(3).replace(/^"(.*)"$/, "$1"));
+    return { entries: all.slice(0, IGNORED_ENTRY_LIMIT), truncated: all.length > IGNORED_ENTRY_LIMIT };
+  } catch (err: any) {
+    return { entries: [], truncated: false, error: `git status --ignored failed: ${err?.message ?? err}` };
+  }
+}
 
 /**
- * `git worktree remove` — never forced.
+ * Does this worktree involve submodules?
  *
- * Run from the main checkout, which is where the worktree's admin dir lives;
- * git removes both the directory and the admin dir (taking our identity token
- * with it). The branch is NOT deleted, and that is intentional: any commit on
- * it survives the removal.
+ * Two independent signals, either of which is enough:
+ *
+ *  - `.gitmodules` in the working tree — the repository declares submodules,
+ *    whether or not this worktree has initialised them;
+ *  - `modules/` inside the worktree's git admin dir — where git puts the
+ *    **object database** of every submodule initialised *in this worktree*.
+ *
+ * The second is the one that matters, and it is why quarantining a worktree
+ * with submodules is unsafe even though `mv` itself is indifferent to them:
+ * `git worktree prune` deletes the admin dir, and with it those object
+ * databases. Measured — a commit made inside a worktree's submodule lives
+ * *only* in `<mainRepo>/.git/worktrees/<slug>/modules/<path>`; after the
+ * quarantine + prune the submodule's working files survive in the trash but its
+ * history is unreachable. (`git worktree remove` refuses on submodules outright
+ * for the same family of reasons: "fatal: working trees containing submodules
+ * cannot be moved or removed".)
  */
-export function removeWorktree(mainRepoPath: string, worktreePath: string): RemoveWorktreeResult {
+export function worktreeContainsSubmodules(worktreePath: string, adminDir?: string): boolean {
+  if (existsSync(join(worktreePath, ".gitmodules"))) return true;
+  if (adminDir && existsSync(join(adminDir, "modules"))) return true;
+  return false;
+}
+
+export type PruneWorktreesResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * `git worktree prune` — unregister worktrees whose directories are gone.
+ *
+ * Run after a worktree has been moved into the trash: it drops the registration
+ * and deletes the admin dir (taking our identity token with it). Metadata only
+ * — prune never touches a directory that still exists, and the branch survives.
+ */
+export function pruneWorktrees(mainRepoPath: string): PruneWorktreesResult {
   if (!existsSync(mainRepoPath)) return { ok: false, error: `Main repo does not exist: ${mainRepoPath}` };
   try {
-    execFileSync("git", worktreeRemoveArgs(worktreePath), {
-      cwd: mainRepoPath,
-      stdio: "pipe",
-      timeout: 30000,
-    });
+    execFileSync("git", ["worktree", "prune"], { cwd: mainRepoPath, stdio: "pipe", timeout: 30000 });
     return { ok: true };
   } catch (err: any) {
     const stderr = typeof err?.stderr === "string" ? err.stderr : err?.stderr?.toString?.() ?? "";
     return { ok: false, error: (stderr || err?.message || String(err)).trim() };
   }
+}
+
+/**
+ * Is `worktreePath` still registered as a worktree of `mainRepoPath`?
+ *
+ * Asks git rather than the filesystem, because the question after a failed
+ * removal is precisely whether git's bookkeeping and the directory still agree.
+ */
+export function isRegisteredWorktree(mainRepoPath: string, worktreePath: string): boolean {
+  const target = resolve(worktreePath);
+  return getGitWorktrees(mainRepoPath).some((wt) => resolve(wt.path) === target);
 }
 
 // ── Branch resolution ────────────────────────────────────────────────

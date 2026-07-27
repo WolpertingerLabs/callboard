@@ -38,12 +38,12 @@ workspacesRouter.get("/", (req, res) => {
   }
 });
 
-// Archive a workspace: cascade to its chats, then remove the worktree if — and
-// only if — it is owned, token-verified, unreferenced and clean.
+// Archive a workspace: cascade to its chats, then quarantine the worktree if —
+// and only if — it is owned, token-verified, unreferenced, idle and clean.
 workspacesRouter.post("/:id/archive", async (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'Archive a workspace'
-  // #swagger.description = 'Interrupt and archive the chats of the workspace, mark the workspace archived, and remove its git worktree only when Callboard created it, its identity token verifies, no other active workspace shares the directory, and the worktree is clean (no uncommitted changes, no untracked files, no commits that exist nowhere else). A worktree is never force-removed; refusals are returned as blockers.'
+  // #swagger.description = 'Interrupt and archive the chats of the workspace, mark the workspace archived, and quarantine its git worktree only when Callboard created it, its identity token verifies, no other active workspace shares the directory, no session is running in it, it has no submodules, and it is clean (no uncommitted changes, no untracked files, no commits that exist nowhere else). Quarantine moves the directory to ~/.callboard/trash (ignored files included, nothing deleted) and prunes the worktree registration; restore with "git worktree add <path> <branch>" plus copying back untracked files. A worktree is never force-removed; refusals are returned as blockers.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Workspace ID' } */
   /* #swagger.responses[200] = { description: "Archive result, including whether the worktree was removed and why not" } */
   /* #swagger.responses[404] = { description: "Workspace not found" } */

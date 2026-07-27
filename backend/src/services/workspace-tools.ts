@@ -32,9 +32,11 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
     defineTool(
       "list_workspaces",
       "List Callboard workspaces — the persisted record of where work happens (a directory, and for a git worktree the branch and the " +
-        "intent that created it). Each entry carries a removability verdict: whether archiving it would remove its worktree, and every " +
-        "reason it would not (not created by Callboard, still referenced by another workspace, uncommitted changes, untracked files, " +
-        "commits that exist on no other branch or remote). Use this before archive_workspace to see what will actually happen.",
+        "intent that created it). Each entry carries a removability verdict: whether archiving it would quarantine its worktree, and " +
+        "every reason it would not (not created by Callboard, still referenced by another workspace, a session still running in it, " +
+        "submodules, uncommitted changes, untracked files, commits that exist on no other branch or remote). For a removable one, " +
+        "`removability.ignored` previews the gitignored entries that would move with it. Use this before archive_workspace to see what " +
+        "will actually happen.",
       {
         status: z.enum(["active", "archived", "all"]).optional().describe('Filter by status. Default: "active".'),
       },
@@ -52,11 +54,15 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
 
     defineTool(
       "archive_workspace",
-      "Archive a workspace: interrupt and archive its chats, mark the workspace archived, and remove its git worktree — but only when " +
-        "Callboard created that worktree, its identity token still verifies, no other active workspace shares the directory, and it is " +
-        "clean (no uncommitted changes, no untracked files, no commits reachable from no other ref). A worktree is never force-removed " +
-        "and a local (non-worktree) directory is never removed at all; when a gate refuses, the directory is kept and the reasons are " +
-        "returned as `worktree.blockers`. Archiving is not deleting: chat records and their logs stay.",
+      "Archive a workspace: interrupt and archive its chats, mark the workspace archived, and quarantine its git worktree — but only " +
+        "when Callboard created that worktree, its identity token still verifies, no other active workspace shares the directory, no " +
+        "session is running in it, it has no submodules, and it is clean (no uncommitted changes, no untracked files, no commits " +
+        "reachable from no other ref). Quarantine MOVES the directory to ~/.callboard/trash rather than deleting it — gitignored files " +
+        "(.env, local databases) travel with it intact, and it can be restored with `git worktree add <path> <branch>` plus copying " +
+        "those files back. `worktree.disposition` is \"quarantined\", \"kept\" (nothing was touched) or \"partial\" (acted on and now " +
+        "inconsistent — `worktree.state` says what was found). A worktree is never force-removed and a local (non-worktree) directory " +
+        "is never removed at all; when a gate refuses, the reasons come back as `worktree.blockers`. Archiving is not deleting: chat " +
+        "records and their logs stay.",
       {
         workspaceId: z.string().describe("Workspace id (opaque — from list_workspaces; never a path)"),
       },
