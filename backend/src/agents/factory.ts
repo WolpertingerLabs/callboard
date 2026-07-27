@@ -23,28 +23,46 @@ import { OpenRouterAdapter } from "./adapters/openrouter/OpenRouterAdapter.js";
 import { OpenRouterSessionProvider } from "./adapters/openrouter/OpenRouterSessionProvider.js";
 import { CodexAdapter } from "./adapters/codex/CodexAdapter.js";
 import { CodexSessionProvider } from "./adapters/codex/CodexSessionProvider.js";
+import { AcpAdapter } from "./adapters/acp/AcpAdapter.js";
+import { AcpSessionProvider } from "./adapters/acp/AcpSessionProvider.js";
 
 // ── Agent Provider (execution) ──────────────────────────────────────
 
-const _providers = new Map<AgentProviderKind, AgentProvider>();
+const _providers = new Map<string, AgentProvider>();
+
+/**
+ * Cache key for the provider registry.
+ *
+ * For every 1:1 adapter this is just the kind, preserving the historical
+ * one-instance-per-kind semantics. `"acp"` is the exception: one kind covers
+ * many vendors, and each configured ACP provider needs its own adapter instance
+ * (it holds the vendor's id), so the key widens to `kind + ":" + providerId`.
+ */
+function providerCacheKey(kind: AgentProviderKind, providerId?: string): string {
+  return kind === "acp" ? `acp:${providerId ?? ""}` : kind;
+}
 
 /**
  * Lazily construct the adapter for the requested provider kind.
- * Returns the same instance for repeated calls with the same kind.
+ * Returns the same instance for repeated calls with the same kind
+ * (and, for `"acp"`, the same `providerId`).
  *
  * Omitting `kind` is equivalent to passing `"claude-code"` — the
  * historical default, preserved so existing callers continue to work
  * without modification.
+ *
+ * `providerId` is required for `"acp"` and ignored for every other kind.
  */
-export function getAgentProvider(kind: AgentProviderKind = "claude-code"): AgentProvider {
-  const existing = _providers.get(kind);
+export function getAgentProvider(kind: AgentProviderKind = "claude-code", providerId?: string): AgentProvider {
+  const key = providerCacheKey(kind, providerId);
+  const existing = _providers.get(key);
   if (existing) return existing;
-  const provider = constructProvider(kind);
-  _providers.set(kind, provider);
+  const provider = constructProvider(kind, providerId);
+  _providers.set(key, provider);
   return provider;
 }
 
-function constructProvider(kind: AgentProviderKind): AgentProvider {
+function constructProvider(kind: AgentProviderKind, providerId?: string): AgentProvider {
   switch (kind) {
     case "claude-code":
       return new ClaudeCodeAdapter();
@@ -52,6 +70,11 @@ function constructProvider(kind: AgentProviderKind): AgentProvider {
       return new OpenRouterAdapter();
     case "codex":
       return new CodexAdapter();
+    case "acp":
+      if (!providerId) {
+        throw new Error('ACP adapter requires a providerId (e.g. getAgentProvider("acp", "gemini")); "acp" alone does not identify a vendor');
+      }
+      return new AcpAdapter(providerId);
     case "mock":
       throw new Error(
         "Mock adapter must be injected via setAgentProviderForTesting(); no implicit construction",
@@ -78,21 +101,27 @@ function constructProvider(kind: AgentProviderKind): AgentProvider {
  *   even when a test happens to inject under multiple kinds.
  * - `setAgentProviderForTesting(null, kind)` — clear one specific slot.
  *
+ * `providerId` pairs with `kind: "acp"` and selects the vendor slot, matching
+ * {@link getAgentProvider}. It must be passed for ACP injection to be visible:
+ * production looks up `acp:<providerId>`, so injecting under a bare `"acp"`
+ * would silently miss.
+ *
  * Not intended for production use — kept intentionally undocumented in
  * user-facing places.
  */
 export function setAgentProviderForTesting(
   provider: AgentProvider | null,
   kind?: AgentProviderKind,
+  providerId?: string,
 ): void {
   if (provider === null) {
     if (kind === undefined) {
       _providers.clear();
     } else {
-      _providers.delete(kind);
+      _providers.delete(providerCacheKey(kind, providerId));
     }
   } else {
-    _providers.set(kind ?? "claude-code", provider);
+    _providers.set(providerCacheKey(kind ?? "claude-code", providerId), provider);
   }
 }
 
@@ -113,6 +142,11 @@ export function getSessionProviders(): readonly SessionProvider[] {
       new ClaudeCodeSessionProvider(),
       new OpenRouterSessionProvider(),
       new CodexSessionProvider(),
+      // One session provider for every ACP vendor: the transcript is
+      // callboard-owned and its layout is vendor-independent, so a single
+      // reader covers the whole family (unlike the adapters, which are per
+      // provider id because each spawns a different binary).
+      new AcpSessionProvider(),
     ];
   }
   return _sessionProviders;

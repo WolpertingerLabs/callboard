@@ -48,17 +48,29 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * Discriminator used for compile-time branching when a caller genuinely needs
  * adapter-specific behaviour (per the plan's Decision 3). New adapters extend
  * this union.
+ *
+ * **`"acp"` is deliberately one kind covering many vendors.** Every other member
+ * is 1:1 with an engine, but the Agent Client Protocol is a wire format that
+ * Copilot, Cursor, Kiro, Gemini and others all speak. Adding a member per vendor
+ * would mean a union edit plus a new `constructProvider` case for each one —
+ * exactly the per-vendor cost the ACP adapter exists to remove — so the vendor
+ * travels in a separate `providerId` (see {@link AcpAdapter}) and the union
+ * stays closed at one entry for the whole family.
  */
-export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "mock";
+export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "mock";
 
 /**
  * The provider kinds `sendMessage` knows how to route a real chat through — the
- * three user-selectable harnesses. Excludes `"mock"` (test-only, never a chat's
+ * user-selectable harnesses. Excludes `"mock"` (test-only, never a chat's
  * persisted provider). This is the single source of truth: route handlers and
  * the chat service narrow free-form `provider` values against it via
  * {@link isRoutableProvider} instead of keeping their own copies.
+ *
+ * Note that `"acp"` alone does not fully identify a chat's engine — the paired
+ * `acpProviderId` in chat metadata selects the vendor. Routing only needs to
+ * know which adapter to construct, which `"acp"` answers.
  */
-export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex"] as const;
+export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex", "acp"] as const;
 
 /** A provider kind that backs a real chat (i.e. not the test-only `"mock"`). */
 export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];

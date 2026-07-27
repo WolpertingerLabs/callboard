@@ -5,6 +5,7 @@ import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
+import { categorizeAcpToolName } from "../agents/adapters/acp/permissionAdapter.js";
 import { EventEmitter } from "events";
 import { execFile } from "child_process";
 import { resolve, isAbsolute } from "path";
@@ -817,6 +818,16 @@ interface SendMessageOptions {
    */
   provider?: AgentProviderKind;
   /**
+   * Which ACP vendor runs this chat, paired with `provider: "acp"`. Ignored for
+   * every other provider. Only honored for new chats — existing ACP chats route
+   * by the `acpProviderId` already in their metadata.
+   *
+   * Must name a built-in preset in `adapters/acp/vendors.ts` (Phase 2 adds more;
+   * Phase 3 lets users define their own). An unknown id fails at send time with
+   * an explicit error rather than spawning something arbitrary.
+   */
+  acpProviderId?: string;
+  /**
    * Reasoning-effort level. Honored for new chats on the reasoning-capable
    * providers — `provider: "openrouter"` (→ OR `reasoning.effort`) and
    * `provider: "codex"` (→ Codex `modelReasoningEffort`) — written into chat
@@ -1015,6 +1026,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // unknown strings would log a warn on every message in the chat,
       // and "claude-code" is the default so writing it is redundant.
       ...(isRoutableProvider(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
+      // Pin the ACP vendor alongside the kind. `provider: "acp"` alone does not
+      // say WHICH ACP agent runs the chat, so without this a follow-up message
+      // could not reconstruct the adapter. Only meaningful when paired with
+      // provider "acp".
+      ...(opts.provider === "acp" && opts.acpProviderId && { acpProviderId: opts.acpProviderId }),
       // Pin reasoning-effort alongside the provider. Meaningful for the two
       // reasoning-capable providers — openrouter (→ OR `reasoning.effort`) and
       // codex (→ Codex `modelReasoningEffort`); their config blocks below pull it
@@ -1071,7 +1087,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // `provider: "garbage"` would otherwise hit the factory's exhaustiveness
   // throw and 500 the user's chat permanently.
   const providerKind = resolveProviderKind(initialMetadata.provider);
-  const agentProvider = getAgentProvider(providerKind);
+  // `"acp"` is one kind covering many vendors, so the adapter is selected by the
+  // paired `acpProviderId` too — the factory memoizes ACP instances per provider
+  // id. Ignored for every other kind.
+  const acpProviderId = typeof initialMetadata.acpProviderId === "string" ? initialMetadata.acpProviderId : undefined;
+  const agentProvider = getAgentProvider(providerKind, acpProviderId);
 
   // ── Explicit completion ("Ralph loop") setup ──
   // Job steps already report through complete_job_step and the runner's
@@ -1141,9 +1161,21 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     return initialMetadata.defaultPermissions ?? null;
   };
 
-  // Policy: Claude-specific tool-name → category map, neutral allow/deny/ask
+  // Policy: provider-specific tool-name → category map, neutral allow/deny/ask
   // decision over the user's default-permission settings.
-  const toolPermissionPolicy = new ToolPermissionPolicy(categorizeClaudeTool, getDefaultPermissions);
+  //
+  // ACP needs its own categorizer here, and the reason is a correctness trap
+  // rather than tidiness. The ACP adapter has already evaluated policy (using
+  // ACP's structured `ToolKind`, which is a better signal than any name map) and
+  // only calls `canUseTool` for tools that resolved to "ask" — i.e. precisely
+  // when it wants the USER prompted. But `buildCanUseTool` re-evaluates the
+  // policy before prompting, and `categorizeClaudeTool` defaults every name it
+  // does not recognize to `fileWrite`. So an ACP `execute` tool under
+  // `{codeExecution: "ask", fileWrite: "allow"}` would be silently auto-allowed
+  // by that second pass — running a command the user asked to be consulted
+  // about. Pairing the ACP name map with the ACP adapter keeps both passes
+  // agreeing on what a tool is.
+  const toolPermissionPolicy = new ToolPermissionPolicy(providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool, getDefaultPermissions);
 
   // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)
   const plugins = buildPluginOptions(folder, activePlugins);
@@ -1551,6 +1583,23 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         `${useOpenRouter && agentSettings.codexOpenRouterApiKey ? `, orKeyTail=…${agentSettings.codexOpenRouterApiKey.trim().slice(-4)}` : ""}` +
         `${!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
     );
+  }
+
+  // For ACP chats, surface the provider id and the permission defaults the ACP
+  // adapter needs. Unlike Codex — which must collapse permissions onto a sandbox
+  // tier chosen at thread start — ACP gates per call, so the defaults are only
+  // the FIRST half of the decision: the adapter consults them, and anything
+  // resolving to "ask" escalates through the `canUseTool` already on
+  // `queryOpts.options` (the same callback Claude Code uses). No model or effort
+  // knob is set here: ACP 1.3.0 exposes models only as a post-session config
+  // option and has no reasoning-effort concept at all, so there is nothing
+  // honest to pass. See the adapter's `supportedModels` doc-comment.
+  if (providerKind === "acp") {
+    queryOpts.options.acp = {
+      ...(acpProviderId && { providerId: acpProviderId }),
+      permissions: getDefaultPermissions(),
+    };
+    log.info(`ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}`);
   }
 
   log.debug(
