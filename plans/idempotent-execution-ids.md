@@ -83,16 +83,36 @@ Three problems:
 ### The key
 
 ```ts
-/** Deterministic identity of one attempt at one step of one run. */
-type ExecutionKey = string;  // `${runId}:${stepId}:${attempt}` (+ `:${branchId}` for parallel)
+/** Deterministic identity of one spawn attempt at one step of one run. */
+type ExecutionKey = string;  // `${runId}:${stepId}:${n}` (+ `:${branchId}` for parallel)
 
-function executionKey(runId: string, stepId: string, attempt: number, branchId?: string): ExecutionKey {
-  return branchId ? `${runId}:${stepId}:${attempt}:${branchId}` : `${runId}:${stepId}:${attempt}`;
+function executionKey(runId: string, stepId: string, n: number, branchId?: string): ExecutionKey {
+  return branchId ? `${runId}:${stepId}:${n}:${branchId}` : `${runId}:${stepId}:${n}`;
 }
 ```
 
 Human-readable on purpose — it shows up in logs and makes crash forensics trivial. Not
 hashed; there is no adversary and no length problem.
+
+> **Corrected 2026-07-27 (architect ruling).** The third segment was originally specified as
+> `attempt`. **That is wrong and would have shipped the bug it was meant to fix.**
+> `enterStep` (`job-runner.ts:496`) unconditionally sets `attempt: 1` on every entry, so a
+> step re-entered via an `onFailure` target or a backward jump produces `attempt: 1` twice —
+> two distinct spawns colliding on one identity, exactly the case the headline test exists to
+> catch. Redefining `attempt` to increment across re-entries is also unavailable: it doubles
+> as the retry budget (`attempt < step.retry.attempts`), so a loop re-entry would silently
+> consume retries.
+>
+> `n` is therefore a **monotonic per-`(run, stepId)` spawn counter** (`JobRun.executionCounts`),
+> incremented on every attempt start — first entry, retry, and loop re-entry alike. It is
+> written in the same `saveRun` as the intent, so it survives restart. With no loops it equals
+> `attempt`. `activeStep.attempt` semantics are untouched.
+>
+> This supersedes Open Question 2 below, which turned out to be load-bearing rather than
+> optional. A crash between minting and the intent write is benign: nothing was spawned, so
+> re-minting the same ordinal is correct. Recovery of a key that resolves to nothing re-enters
+> the step and mints a *fresh* ordinal rather than reusing the abandoned one, which keeps
+> "one key, at most one spawn" strictly true.
 
 ### Write intent before spawning
 
@@ -201,6 +221,7 @@ have none:
 
 1. Should the execution key be exposed in the run API / jobs UI? Useful for debugging;
    trivially cheap; slight surface-area cost.
-2. Do we want `attempt` to increment on backward jumps (`onFailure` targets), or is that a
-   separate counter? Today `attempt` semantics around jumps are worth pinning down before
-   they become part of an identity.
+2. ~~Do we want `attempt` to increment on backward jumps, or is that a separate counter?~~
+   **Resolved 2026-07-27 — separate counter.** See the correction under "The key". This was
+   not optional: `attempt` cannot carry identity. Left here because the question being asked
+   at spec time is what caught it at implementation time.
