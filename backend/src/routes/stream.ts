@@ -15,6 +15,7 @@ import { beginSSE, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
 import { getCard } from "../services/card-store.js";
+import { captureWorktreeWorkspace } from "../services/workspace-store.js";
 
 const log = createLogger("stream");
 
@@ -110,6 +111,7 @@ streamRouter.post("/new/message", async (req, res) => {
 
   // Resolve effective folder based on branch configuration
   let effectiveFolder = folder;
+  let workspaceId: string | undefined;
   if (branchConfig) {
     let { newBranch } = branchConfig;
     const { baseBranch, useWorktree, autoCreateBranch } = branchConfig;
@@ -148,6 +150,10 @@ streamRouter.post("/new/message", async (req, res) => {
     }
 
     effectiveFolder = branchResult.folder;
+    // Record why the worktree exists while we still know. Nothing reads this
+    // yet (see plans/workspace-object.md, Phase 1) and it never throws, so a
+    // failure here leaves the chat exactly as it was before.
+    workspaceId = captureWorktreeWorkspace(branchResult);
   }
 
   try {
@@ -201,6 +207,7 @@ streamRouter.post("/new/message", async (req, res) => {
       ...(safeModelRouting && { modelRouting: true }),
       ...(safeModelRoutingRankId && { modelRoutingRankId: safeModelRoutingRankId }),
       ...(safeClientTrackingId && { clientTrackingId: safeClientTrackingId }),
+      ...(workspaceId && { workspaceId }),
       // Boolean-validated at the route boundary; anything else is dropped
       // (same outcome as omitting — the default behavior).
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),

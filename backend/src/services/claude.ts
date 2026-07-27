@@ -836,6 +836,14 @@ interface SendMessageOptions {
    * under the same id, and irrelevant for existing chats (they key by chatId).
    */
   clientTrackingId?: string;
+  /**
+   * Workspace this chat runs in — stamped as `Chat.workspaceId` on the new
+   * chat record. Only honored for new chats (existing chats keep whatever
+   * their record already has). Opaque: never parsed back into a path. Set by
+   * the chat-start entry points when branch resolution produced a worktree;
+   * absent for every other chat, and nothing may depend on its presence.
+   */
+  workspaceId?: string;
 }
 
 /** Default number of times a requiring session is nudged to continue before giving up. */
@@ -1654,6 +1662,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                 try {
                   chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
                     metadata: JSON.stringify(meta),
+                    // Additive linkage — `folder` above stays the truth for
+                    // log paths (plans/workspace-object.md).
+                    ...(opts.workspaceId && { workspaceId: opts.workspaceId }),
                   });
                 } catch (err) {
                   // Keep the card-exists-iff-chat-exists invariant: the chat

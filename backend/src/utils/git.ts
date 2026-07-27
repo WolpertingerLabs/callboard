@@ -331,19 +331,23 @@ function sanitizeBranchForPath(branch: string): string {
   return branch.replace(/\//g, "-");
 }
 
+export interface EnsuredWorktree {
+  /** The absolute path to the worktree directory. */
+  path: string;
+  /**
+   * True only when this call ran `git worktree add`. False when an existing
+   * directory or an existing checkout of the branch was reused — we can't
+   * claim ownership of something we merely found.
+   */
+  created: boolean;
+}
+
 /**
- * Create or reuse a git worktree as a sibling directory of the repo.
- * Worktree path: [repo-parent]/[repo-name].[sanitized-branch]
- *
- * If the worktree already exists at the expected path, returns the path without creating.
- *
- * @param repoDir - The original repository directory
- * @param branch - Branch name to checkout in the worktree
- * @param createBranch - If true and branch doesn't exist, create it from baseBranch
- * @param baseBranch - Base branch for new branch creation
- * @returns The absolute path to the worktree directory
+ * {@link ensureWorktree}, but reporting whether the worktree was created here
+ * or reused. Callers that persist worktree provenance need the distinction;
+ * everyone else wants the path and can use the wrapper below.
  */
-export function ensureWorktree(repoDir: string, branch: string, createBranch: boolean, baseBranch?: string): string {
+export function ensureWorktreeDetailed(repoDir: string, branch: string, createBranch: boolean, baseBranch?: string): EnsuredWorktree {
   validateGitRef(branch);
   if (baseBranch) validateGitRef(baseBranch);
 
@@ -354,7 +358,7 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
 
   // If worktree directory already exists, reuse it
   if (existsSync(worktreePath)) {
-    return worktreePath;
+    return { path: worktreePath, created: false };
   }
 
   // If the branch is already checked out in another worktree (including the
@@ -363,7 +367,7 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
   const worktrees = getGitWorktrees(repoDir);
   const existing = worktrees.find((wt) => wt.branch === branch);
   if (existing) {
-    return existing.path;
+    return { path: existing.path, created: false };
   }
 
   // Create the worktree
@@ -384,7 +388,23 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
     });
   }
 
-  return worktreePath;
+  return { path: worktreePath, created: true };
+}
+
+/**
+ * Create or reuse a git worktree as a sibling directory of the repo.
+ * Worktree path: [repo-parent]/[repo-name].[sanitized-branch]
+ *
+ * If the worktree already exists at the expected path, returns the path without creating.
+ *
+ * @param repoDir - The original repository directory
+ * @param branch - Branch name to checkout in the worktree
+ * @param createBranch - If true and branch doesn't exist, create it from baseBranch
+ * @param baseBranch - Base branch for new branch creation
+ * @returns The absolute path to the worktree directory
+ */
+export function ensureWorktree(repoDir: string, branch: string, createBranch: boolean, baseBranch?: string): string {
+  return ensureWorktreeDetailed(repoDir, branch, createBranch, baseBranch).path;
 }
 
 /**
@@ -468,8 +488,31 @@ export interface ResolveBranchOptions {
   forceBranchChange?: boolean;
 }
 
+/**
+ * What a `useWorktree` resolution actually did — the *intent* behind the
+ * worktree, which git itself can't tell us afterwards. Reported so the caller
+ * can persist it as a Workspace (plans/workspace-object.md); resolveBranch
+ * stays a pure git util and writes nothing itself.
+ *
+ * Only populated for the worktree branch of resolveBranch. A plain branch
+ * switch that happens to land in an existing worktree (switchBranch's
+ * already-checked-out-elsewhere path) is not a worktree Callboard was asked
+ * to make, and is deliberately not reported here.
+ */
+export interface ResolvedWorktree {
+  /** The main checkout the worktree belongs to (resolveBranch's input folder). */
+  repoPath: string;
+  /** True only when this call ran `git worktree add`. */
+  created: boolean;
+  /** "branch-off" when a new branch was created for it, else "checkout-branch". */
+  mode: "branch-off" | "checkout-branch";
+  branch: string;
+  /** Base the new branch came from ("branch-off" only; absent means HEAD). */
+  baseBranch?: string;
+}
+
 export type ResolveBranchResult =
-  | { ok: true; folder: string }
+  | { ok: true; folder: string; worktree?: ResolvedWorktree }
   | { ok: false; error: "uncommitted_changes"; message: string; currentBranch: string; targetBranch: string };
 
 /**
@@ -509,8 +552,18 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
 
   // Worktree path
   if (targetBranch && useWorktree) {
-    const worktreeFolder = ensureWorktree(folder, targetBranch, !!newBranch, baseBranch);
-    return { ok: true, folder: worktreeFolder };
+    const ensured = ensureWorktreeDetailed(folder, targetBranch, !!newBranch, baseBranch);
+    return {
+      ok: true,
+      folder: ensured.path,
+      worktree: {
+        repoPath: folder,
+        created: ensured.created,
+        mode: newBranch ? "branch-off" : "checkout-branch",
+        branch: targetBranch,
+        ...(newBranch && baseBranch && { baseBranch }),
+      },
+    };
   }
 
   // Create new branch in-place

@@ -164,6 +164,9 @@ export class ChatFileService {
         session_id: sessionId,
         session_log_path: null,
         metadata: updates.metadata || "{}",
+        // Optional workspace linkage. `folder` above is unaffected and stays
+        // the truth for log paths — see plans/workspace-object.md.
+        ...(updates.workspaceId && { workspaceId: updates.workspaceId }),
         created_at: updates.created_at || now,
         updated_at: updates.updated_at || now,
       };
