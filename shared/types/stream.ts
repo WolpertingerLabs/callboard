@@ -1,3 +1,57 @@
+/**
+ * The client/server wire.
+ *
+ * `StreamEvent` is a **published interface**, not an internal type. A callboard
+ * browser tab can be running a bundle built weeks before the daemon it is
+ * talking to — nobody hard-reloads a self-hosted tool on deploy — so an edit
+ * here is an API change against clients already in the wild, and the rules
+ * below are the terms of that contract. They are authoritative; the
+ * "Wire compatibility" section in `.claude/CLAUDE.md` is a pointer back here.
+ *
+ * ## Append-only rules
+ *
+ * 1. **Fields are added, never removed, never renamed.**
+ * 2. **Optional never becomes required.**
+ * 3. **New `type` / enum values are gated behind a capability** —
+ *    `session.supports(CLIENT_CAPS.someCapability)`, from
+ *    `shared/types/protocol.ts`.
+ * 4. **The semantics of an existing field never change.** New meaning → new
+ *    field. Redefining a field is a rename that the compiler can't see and the
+ *    snapshot test below can't catch, which makes it the most expensive break
+ *    on this list.
+ * 5. **Treat any edit to this file like an API change** — including the
+ *    frontend consumers, which are the clients that predate your change.
+ *
+ * ## Why fields are free and enum values are not
+ *
+ * The asymmetry is what keeps these rules cheap to follow, and most changes
+ * land on the free side:
+ *
+ * - **Adding an optional field needs no gate.** An old client ignores keys it
+ *   doesn't know about. `costUsd` could ship to everyone tomorrow and the worst
+ *   an old tab does is not render it.
+ * - **Adding an enum value does need one.** An old client hits its `switch`
+ *   default and *drops the event entirely* — the failure is silent and total,
+ *   not partial. `budget`, `nudge`, and `auto_recovery` were all added this
+ *   way; they worked because everyone happened to reload, not because the
+ *   protocol allowed it.
+ *
+ * So: reach for a new optional field first. Only add a `type` value when the
+ * event genuinely has no older equivalent, and gate it when you do.
+ *
+ * ## Enforcement
+ *
+ * `stream.test.ts` freezes a description of this file (and of `protocol.ts`)
+ * into the committed `wire-surface.snapshot.json`. Removing a field, renaming
+ * one, making an optional field required, changing a field's type, or adding a
+ * `type` value all fail that test until the snapshot is regenerated — which
+ * puts the wire change in the diff, in front of a reviewer, on purpose. Doc
+ * comments are not part of the snapshot, so this block is free to grow.
+ *
+ * The capability mechanism itself (`protocol.ts`, `StreamSession`) is installed
+ * and inert: it records what each client understands, but no emit site consults
+ * it yet. See `plans/wire-capability-negotiation.md`.
+ */
 export interface StreamEvent {
   type:
     | "text"
