@@ -327,6 +327,7 @@ export function getRun(runId: string): JobRun | null {
 export function saveRun(run: JobRun): void {
   run.updatedAt = new Date().toISOString();
   atomicWrite(join(runsDir, `${run.runId}.json`), JSON.stringify(run, null, 2));
+  if (executionKeyIndex) indexRunKey(executionKeyIndex, run);
 }
 
 /** Parent linkage for runs spawned by a "job" step. */
@@ -336,7 +337,7 @@ export interface RunParentLink {
   depth: number;
 }
 
-export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink, cardId?: string): JobRun {
+export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink, cardId?: string, executionKey?: ExecutionKey): JobRun {
   const now = new Date().toISOString();
   const run: JobRun = {
     runId: `run-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
@@ -351,10 +352,72 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>, pa
     history: [],
     ...(parent && { parentRunId: parent.parentRunId, parentStepId: parent.parentStepId, depth: parent.depth }),
     ...(cardId && { cardId }),
+    ...(executionKey && { executionKey }),
     createdAt: now,
     updatedAt: now,
   };
   saveRun(run);
+  return run;
+}
+
+// ── Execution keys ──────────────────────────────────────────────────
+//
+// The deterministic identity of one attempt at one step of one run, written
+// to disk before that attempt spawns anything. Recovery after a crash is then
+// an exact lookup ("was this spawn already made?") instead of an inference
+// over whatever is lying on disk. Human-readable on purpose — the key shows up
+// in run files, chat metadata and logs, which makes crash forensics trivial.
+
+export type ExecutionKey = string;
+
+/**
+ * `runId:stepId:n` (+ `:branchId` for a parallel branch), where `n` is the
+ * run's monotonic per-step spawn counter — see JobRun.executionCounts. `n` is
+ * NOT the retry attempt number: a step re-entered by a loop starts a fresh
+ * attempt with the same `attempt` value, so keying on `attempt` alone would
+ * hand two different attempts the same identity.
+ */
+export function executionKey(runId: string, stepId: string, n: number, branchId?: string): ExecutionKey {
+  return branchId ? `${runId}:${stepId}:${n}:${branchId}` : `${runId}:${stepId}:${n}`;
+}
+
+/**
+ * ExecutionKey → runId. Built from the boot pass that already reads every run
+ * file (listResumableRuns) and maintained on every write. Deliberately
+ * in-memory and never persisted: an on-disk index would be a second write path
+ * that can tear independently of the run files it describes.
+ */
+let executionKeyIndex: Map<ExecutionKey, string> | null = null;
+
+function indexRunKey(index: Map<ExecutionKey, string>, run: JobRun): void {
+  if (run.executionKey) index.set(run.executionKey, run.runId);
+}
+
+function ensureExecutionKeyIndex(): Map<ExecutionKey, string> {
+  if (executionKeyIndex) return executionKeyIndex;
+  const index = new Map<ExecutionKey, string>();
+  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
+    try {
+      indexRunKey(index, JSON.parse(readFileSync(join(runsDir, file), "utf8")));
+    } catch (err: any) {
+      log.error(`Failed to read job run ${file}: ${err.message}`);
+    }
+  }
+  executionKeyIndex = index;
+  return index;
+}
+
+/** The run spawned under `key`, or null if that spawn never landed. */
+export function findRunByExecutionKey(key: ExecutionKey): JobRun | null {
+  const index = ensureExecutionKeyIndex();
+  const runId = index.get(key);
+  if (!runId) return null;
+  const run = getRun(runId);
+  // Run files are the source of truth — drop entries they no longer back.
+  if (!run || run.executionKey !== key) {
+    index.delete(key);
+    return null;
+  }
   return run;
 }
 
@@ -421,7 +484,9 @@ export function assignCardToRunTree(runId: string, cardId: string): { runIds: st
 export function deleteRun(runId: string): boolean {
   const filepath = join(runsDir, `${runId}.json`);
   if (!existsSync(filepath)) return false;
+  const run = getRun(runId);
   unlinkSync(filepath);
+  if (run?.executionKey) executionKeyIndex?.delete(run.executionKey);
   return true;
 }
 
@@ -429,6 +494,12 @@ export function deleteRun(runId: string): boolean {
  * Newest child run spawned by a given parent step, excluding already-harvested
  * ones. Restart-only path: lets a parent that crashed between spawning a child
  * and persisting the linkage adopt the orphan instead of spawning a duplicate.
+ *
+ * LEGACY — superseded by findRunByExecutionKey(). Only reached for runs
+ * persisted before execution keys existed (no activeStep.executionKey); the
+ * key it scans on, (parentRunId, parentStepId), cannot tell two attempts at
+ * the same step apart. Delete this and its full-directory read one release on,
+ * once no such runs can still be in flight.
  */
 export function findChildRun(parentRunId: string, parentStepId: string, exclude: ReadonlySet<string>): JobRun | null {
   let newest: JobRun | null = null;
@@ -444,17 +515,25 @@ export function findChildRun(parentRunId: string, parentStepId: string, exclude:
   return newest;
 }
 
-/** All runs in a non-terminal status — what the runner resumes on boot. */
+/**
+ * All runs in a non-terminal status — what the runner resumes on boot. This
+ * pass reads every run file anyway, so it doubles as the build of the
+ * execution-key index (terminal runs included: a child that finished during
+ * downtime still has to be findable by the parent adopting it).
+ */
 export function listResumableRuns(): JobRun[] {
   const runs: JobRun[] = [];
+  const index = new Map<ExecutionKey, string>();
   for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
     try {
       const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
+      indexRunKey(index, run);
       if (!TERMINAL_JOB_RUN_STATUSES.has(run.status)) runs.push(run);
     } catch (err: any) {
       log.error(`Failed to read job run ${file}: ${err.message}`);
     }
   }
+  executionKeyIndex = index;
   return runs;
 }
 

@@ -272,6 +272,8 @@ export interface JobRunActiveBranch {
   startedAt: string;
   endedAt?: string;
   chatId?: string;
+  /** Execution key of this branch's spawn, written before the session starts. */
+  executionKey?: string;
   pendingResult?: JobStepResult;
   outputs?: Record<string, unknown>;
   detail?: string;
@@ -281,6 +283,13 @@ export interface JobRunActiveStep {
   stepId: string;
   attempt: number;
   chatId?: string;
+  /**
+   * Deterministic identity of this step attempt's spawn (`runId:stepId:n`),
+   * written to disk *before* the session/child run is spawned. Restart
+   * recovery looks the spawn up by this key instead of guessing. Absent on
+   * runs persisted before execution keys existed.
+   */
+  executionKey?: string;
   /** Child run spawned by a "job" step — the run this step is waiting on. */
   childRunId?: string;
   startedAt: string;
@@ -309,6 +318,12 @@ export interface JobRun {
   nextWakeAt?: string;
   /** Loop-back counter per gate step id. */
   loopCounts: Record<string, number>;
+  /**
+   * Monotonic per-step spawn counter, minted into execution keys. Bumped on
+   * every attempt at a step (first entry, retry, loop re-entry) so two
+   * attempts at the same step never share an identity.
+   */
+  executionCounts?: Record<string, number>;
   sessionsSpawned: number;
   history: JobRunHistoryEntry[];
   /** Declared run-level outputs, resolved when the run succeeds. */
@@ -317,6 +332,12 @@ export interface JobRun {
   parentRunId?: string;
   /** The parent's "job" step id that spawned this run. */
   parentStepId?: string;
+  /**
+   * Execution key of the spawn that created this run — the parent step
+   * attempt's identity. Set for runs spawned by a "job" step; absent for
+   * top-level runs and for runs created before execution keys existed.
+   */
+  executionKey?: string;
   /** Sub-job nesting depth (0 for top-level runs). Bounded by MAX_JOB_DEPTH. */
   depth?: number;
   /** Card (ticket) this run belongs to — step chats inherit it into metadata.cardId. */

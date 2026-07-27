@@ -905,6 +905,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(opts.jobContext && {
         jobRunId: opts.jobContext.runId,
         jobStepId: opts.jobContext.stepId,
+        // Identity of the spawn that created this chat. The runner writes the
+        // same key onto the run before spawning, so a crash between chat
+        // creation and the chatId hitting the run file is recoverable.
+        ...(opts.jobContext.executionKey && { jobExecutionKey: opts.jobContext.executionKey }),
         ...(opts.jobContext.cardId && { cardId: opts.jobContext.cardId }),
       }),
       // Attach the chat to a card (ticket) when spawned on one.

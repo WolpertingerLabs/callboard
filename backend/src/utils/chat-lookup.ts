@@ -97,6 +97,28 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
 }
 
 /**
+ * Chat id of the step session spawned under a job execution key, or null if
+ * that session never got as far as creating its chat record.
+ *
+ * Restart-only path for the job runner: a step chat is stamped with its
+ * execution key at creation, so a run that died before persisting the chatId
+ * can find its own session instead of abandoning it (or spawning a second
+ * one). Scans chat records — acceptable on a recovery path, and never hit
+ * during normal operation.
+ */
+export function findChatIdByJobExecutionKey(executionKey: string): string | null {
+  for (const chat of chatFileService.getAllChats()) {
+    try {
+      const meta = JSON.parse(chat.metadata || "{}");
+      if (meta.jobExecutionKey === executionKey) return chat.id;
+    } catch {
+      // Unparseable metadata — not the chat we are looking for.
+    }
+  }
+  return null;
+}
+
+/**
  * Lightweight chat lookup for status checks — skips git info for performance.
  * Used by stream.ts for session status checks.
  */
