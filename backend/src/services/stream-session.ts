@@ -59,11 +59,28 @@ export class StreamSession {
   /** Protocol version the client declared; {@link LEGACY_PROTOCOL_VERSION} when absent or unparseable. */
   readonly protocolVersion: number;
 
+  /**
+   * Whether the client sent a handshake at all — i.e. either handshake header
+   * was present with a non-blank value.
+   *
+   * Distinct from `protocolVersion >= 2`, and the reason this field exists.
+   * Caps are parsed independently of the version, so a client that sends only
+   * `X-Callboard-Caps` is recorded at protocol 1 with a non-empty cap set: it
+   * *did* handshake, but a version check would call it legacy. Ask this, not
+   * the version, when the question is "does this client know the mechanism?".
+   *
+   * Nothing branches on it in Phase 1. It is recorded now so that the first
+   * code to ask has a correct answer available rather than reaching for the
+   * version number that looks like it means this.
+   */
+  readonly handshook: boolean;
+
   private readonly caps: ReadonlySet<string>;
 
-  constructor(protocolVersion: number, caps: Iterable<string> = []) {
+  constructor(protocolVersion: number, caps: Iterable<string> = [], handshook = false) {
     this.protocolVersion = protocolVersion;
     this.caps = new Set(caps);
+    this.handshook = handshook;
   }
 
   /**
@@ -92,9 +109,18 @@ function headerValue(raw: string | string[] | undefined): string | undefined {
  * empty, "abc", "2.5", "-1" — is treated as a legacy client rather than
  * rejected. A malformed handshake must never be worse for the user than no
  * handshake.
+ *
+ * Duplicates are the interesting case. A header-appending proxy or CDN in front
+ * of the daemon makes Node deliver `X-Callboard-Protocol: 2` twice as the single
+ * string `"2, 2"`, which is not an integer — so a strict parse would silently
+ * record a *modern* client as legacy, and that misclassification becomes live
+ * the moment `minProtocolVersion` is enforced. Unlike the caps list, a
+ * comma-join is not a meaningful merge for a scalar, so take one segment: the
+ * first, which is the value the client itself set (anything appended downstream
+ * describes the proxy, not the browser).
  */
 function parseProtocolVersion(raw: string | string[] | undefined): number {
-  const value = headerValue(raw)?.trim();
+  const value = headerValue(raw)?.split(",")[0].trim();
   if (!value || !/^\d+$/.test(value)) return LEGACY_PROTOCOL_VERSION;
   const parsed = Number.parseInt(value, 10);
   return Number.isSafeInteger(parsed) && parsed >= LEGACY_PROTOCOL_VERSION ? parsed : LEGACY_PROTOCOL_VERSION;
@@ -133,7 +159,13 @@ export function createStreamSession(req: { headers: IncomingHttpHeaders }): Stre
   const headers = req.headers;
   // Node lowercases incoming header names; the exported constants carry the
   // canonical mixed case a client sends.
-  return new StreamSession(parseProtocolVersion(headers[PROTOCOL_HEADER.toLowerCase()]), parseCapabilities(headers[CAPS_HEADER.toLowerCase()]));
+  const rawProtocol = headers[PROTOCOL_HEADER.toLowerCase()];
+  const rawCaps = headers[CAPS_HEADER.toLowerCase()];
+  // "Sent something" rather than "sent something we could parse": a client with
+  // a garbled version header still knows the mechanism exists, and degrading it
+  // to protocol 1 is a parse decision, not evidence about the client.
+  const handshook = Boolean(headerValue(rawProtocol)?.trim()) || Boolean(headerValue(rawCaps)?.trim());
+  return new StreamSession(parseProtocolVersion(rawProtocol), parseCapabilities(rawCaps), handshook);
 }
 
 // Package root — resolved from backend/dist/services/ (or backend/src/services/

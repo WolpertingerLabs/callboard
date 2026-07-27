@@ -72,12 +72,26 @@ export const CLIENT_CAP_VALUES: readonly ClientCapability[] = Object.values(CLIE
  * where the browser bundle and the daemon can legitimately be different
  * versions (an old daemon behind a freshly built bundle).
  *
- * Today this build emits all three: `toolSource` is attached by the OpenRouter
- * adapter, `budget` events are forwarded by the SSE handlers, and
- * `plan_review` is forwarded as a pending request. Features and caps therefore
- * carry the same three strings — they are separate lists because they answer
- * different questions and will diverge as soon as one side gains something the
- * other doesn't need to know about.
+ * Today this build produces all three, but not all three over the same
+ * transport — and only the middle one crosses the SSE wire this handshake is
+ * attached to:
+ *
+ * - `tool_source` — produced by the OpenRouter adapter, but it reaches the UI
+ *   over **REST**: both SSE handlers collapse `tool_use`/`tool_result` into a
+ *   bare `{type:"message_update"}` with no payload, and the field is read off
+ *   the persisted transcript by `GET /messages`.
+ * - `budget_events` — forwarded over SSE with its payload, by both handlers.
+ * - `plan_review` — forwarded over SSE as a pending request, and also served
+ *   over REST by `getPending` when a tab resumes.
+ *
+ * A REST request has no `StreamSession`, so a per-connection `supports()` call
+ * can only gate `budget_events` as things stand. That is a Phase 4
+ * prerequisite, not a Phase 1 defect (nothing is gated yet) — see section 4b of
+ * `plans/wire-capability-negotiation.md`.
+ *
+ * Features and caps carry the same three strings today. They are separate lists
+ * because they answer different questions and will diverge as soon as one side
+ * gains something the other doesn't need to know about.
  */
 export const SERVER_FEATURES: readonly string[] = [...CLIENT_CAP_VALUES];
 

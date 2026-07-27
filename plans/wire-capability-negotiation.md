@@ -169,6 +169,38 @@ This is a compile-time-only change on the server (the JSON on the wire is identi
 is a real change for the frontend, which currently reads fields off a wide optional bag.
 Sequence it after the handshake lands, and do it as its own PR so the diff is reviewable.
 
+### 4b. The SSE-only seam — **Phase 4 prerequisite, found 2026-07-27**
+
+This plan assumed the versioned wire is the SSE stream. It is not, and the gap is load-bearing.
+
+Adversarial review of the Phase 1 implementation established that both SSE handlers collapse
+`tool_use`/`tool_result` into a bare `{type: "message_update"}` with **no payload**.
+`toolSource` reaches the UI over **REST** — `GET /messages` → `MessageBubble.tsx` reading the
+persisted transcript — and a REST request has no `StreamSession`. `plan_review` has a weaker
+version of the same problem: it also arrives via `getPending` on tab resume, another
+sessionless path.
+
+**Of the three seed capabilities, only `budget_events` is gateable by a per-SSE-connection
+session.** A `session.supports(CLIENT_CAPS.toolSource)` call at an SSE emit site would gate
+nothing, because no SSE emit site carries the field.
+
+This does not affect Phase 1, which is inert by construction. It must be resolved **before
+Phase 4** gates anything for real. Three ways out, in rough order of preference:
+
+1. **Extend the handshake to REST responses.** Phase 1 deliberately skipped this — `api.ts`
+   has ~100 hand-rolled `fetch` calls and no shared wrapper, so it looked like a large diff
+   for no Phase-1 benefit. That reasoning was sound then and is wrong now: REST is where the
+   gateable content actually lives. A shared fetch wrapper is the real prerequisite, and it
+   is worth doing on its own merits.
+2. **Gate at the persistence layer**, so a capability decides what gets written into the
+   transcript rather than what gets streamed. Changes the model from "negotiate per
+   connection" to "negotiate per client", which may be more honest anyway.
+3. **Re-seed the capabilities** with values that genuinely cross the SSE wire. Cheapest, and
+   the least useful — it makes the mechanism self-consistent by shrinking it to the surface
+   that happens to work.
+
+Option 1 is the one that makes the mechanism cover its actual surface. Decide before Phase 4.
+
 ### 5. RPC/route namespacing (lower priority)
 
 Paseo's dotted convention exists because they have hundreds of RPCs. Callboard has ~30 route

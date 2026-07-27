@@ -78,6 +78,63 @@ describe("createStreamSession — protocol version parsing", () => {
   it("falls back to protocol 1 on an unsafe integer", () => {
     expect(createStreamSession(req({ "x-callboard-protocol": "9".repeat(30) })).protocolVersion).toBe(1);
   });
+
+  it("does not downgrade a modern client whose version header a proxy duplicated", () => {
+    // Node joins repeated headers into one comma-separated string, so a
+    // header-appending proxy or CDN turns "2" into "2, 2". Rejecting that
+    // whole value would record a current client as legacy — silently today,
+    // and as a refused connection once minProtocolVersion is enforced.
+    expect(createStreamSession(req({ "x-callboard-protocol": "2, 2" })).protocolVersion).toBe(2);
+    expect(createStreamSession(req({ "x-callboard-protocol": ["2", "2"] })).protocolVersion).toBe(2);
+  });
+
+  it("takes the client's own segment, not a value appended after it", () => {
+    // The client originates this header, so the leftmost segment is the one
+    // describing the browser; anything appended downstream describes a proxy.
+    expect(createStreamSession(req({ "x-callboard-protocol": "3,99" })).protocolVersion).toBe(3);
+  });
+
+  it("still falls back to protocol 1 when the client's own segment is junk", () => {
+    expect(createStreamSession(req({ "x-callboard-protocol": "abc,2" })).protocolVersion).toBe(1);
+  });
+});
+
+describe("createStreamSession — handshook", () => {
+  it("is false for a client that sent no handshake headers", () => {
+    expect(createStreamSession(req({})).handshook).toBe(false);
+    expect(createStreamSession(req({ accept: "text/event-stream" })).handshook).toBe(false);
+  });
+
+  it("is true for a current client", () => {
+    expect(createStreamSession(req(currentClientHeaders())).handshook).toBe(true);
+  });
+
+  it("is true for caps without a version — the case a version check gets wrong", () => {
+    // Caps are parsed independently of the version, so this client is recorded
+    // at protocol 1 with a non-empty cap set. `protocolVersion >= 2` — the
+    // natural way to write "did this client handshake?" — would call it legacy.
+    const session = createStreamSession(req({ "x-callboard-caps": "budget_events" }));
+
+    expect(session.protocolVersion).toBe(1);
+    expect(session.handshook).toBe(true);
+  });
+
+  it("is true for a version without caps", () => {
+    expect(createStreamSession(req({ "x-callboard-protocol": "2" })).handshook).toBe(true);
+  });
+
+  it("is true for a garbled version — the client knows the mechanism either way", () => {
+    // Degrading an unparseable version to 1 is a parse decision. It is not
+    // evidence that the client predates the handshake.
+    const session = createStreamSession(req({ "x-callboard-protocol": "abc" }));
+
+    expect(session.protocolVersion).toBe(1);
+    expect(session.handshook).toBe(true);
+  });
+
+  it("is false for headers present but blank", () => {
+    expect(createStreamSession(req({ "x-callboard-protocol": "", "x-callboard-caps": "  " })).handshook).toBe(false);
+  });
 });
 
 describe("createStreamSession — capability parsing", () => {
@@ -158,8 +215,9 @@ describe("StreamSession.supports", () => {
     expect(session.supports("typo_at_an_emit_site")).toBe(false);
   });
 
-  it("defaults to an empty cap set", () => {
+  it("defaults to an empty cap set and to not-handshook", () => {
     expect(new StreamSession(1).capabilities).toEqual([]);
+    expect(new StreamSession(1).handshook).toBe(false);
   });
 
   it("does not expose its internal set for mutation", () => {

@@ -93,20 +93,45 @@ function parseAsFrontend(chunks: string[]): Record<string, unknown>[] {
 }
 
 /** A representative run: some updates, a permission prompt, a budget beacon, then done. */
+const CANONICAL_RUN: StreamEvent[] = [
+  { type: "text", content: "hello" },
+  { type: "tool_use", content: "", toolName: "Read", toolSource: "local" },
+  { type: "permission_request", content: "", toolName: "Bash" } as StreamEvent,
+  { type: "budget", content: "", costUsd: 0.25, maxBudgetUsd: 5 },
+  { type: "compacting", content: "" },
+  { type: "done", content: "", reason: "max_turns", costUsd: 0.5, maxBudgetUsd: 5, objectiveComplete: true },
+];
+
+/**
+ * The exact bytes {@link CANONICAL_RUN} must produce, hand-written.
+ *
+ * Deliberately *not* derived from `createSSEHandler`: comparing the handshake
+ * path against a second run of the same current code proves only that
+ * `beginSSE` prepends one frame, and stays green through any change that
+ * regresses both paths together. (Proven: dropping `costUsd` from the `budget`
+ * branch of `sse.ts` left every test in this file passing.) These literals are
+ * the regression net — a payload that changes shape must be changed here too,
+ * which puts the wire change in the diff where a reviewer sees it.
+ *
+ * Key order is pinned along with content because this file's claim is
+ * byte-identity for a client that never reloads. Reordering keys is a
+ * deliberate wire edit, not an incidental one.
+ */
+const EXPECTED_RUN_CHUNKS: string[] = [
+  `data: {"type":"message_update"}\n\n`,
+  `data: {"type":"message_update"}\n\n`,
+  `data: {"type":"permission_request","content":"","toolName":"Bash"}\n\n`,
+  `data: {"type":"budget","costUsd":0.25,"maxBudgetUsd":5}\n\n`,
+  `data: {"type":"compacting"}\n\n`,
+  `data: {"type":"message_complete","reason":"max_turns","costUsd":0.5,"maxBudgetUsd":5,"objectiveComplete":true}\n\n`,
+];
+
 function replayCanonicalRun(res: Response): void {
   const emitter = new EventEmitter();
   const onEvent = createSSEHandler(res, emitter);
   emitter.on("event", onEvent);
 
-  const events: StreamEvent[] = [
-    { type: "text", content: "hello" },
-    { type: "tool_use", content: "", toolName: "Read", toolSource: "local" },
-    { type: "permission_request", content: "", toolName: "Bash" } as StreamEvent,
-    { type: "budget", content: "", costUsd: 0.25, maxBudgetUsd: 5 },
-    { type: "compacting", content: "" },
-    { type: "done", content: "", reason: "max_turns", costUsd: 0.5, maxBudgetUsd: 5, objectiveComplete: true },
-  ];
-  for (const event of events) emitter.emit("event", event);
+  for (const event of CANONICAL_RUN) emitter.emit("event", event);
 }
 
 describe("beginSSE", () => {
@@ -171,6 +196,27 @@ describe("beginSSE", () => {
 });
 
 describe("legacy client (no handshake) is unaffected", () => {
+  it("writes the exact frame bytes a pre-handshake client already parsed", () => {
+    const f = fakeResponse();
+
+    beginSSE(fakeRequest(), f.res);
+    replayCanonicalRun(f.res);
+
+    // Pinned against hand-written literals, not against another run of the
+    // code under test — see EXPECTED_RUN_CHUNKS.
+    expect(f.chunks.slice(1)).toEqual(EXPECTED_RUN_CHUNKS);
+  });
+
+  it("writes those same frames with no handshake frame at all when beginSSE is not used", () => {
+    // The pre-change server: createSSEHandler alone, no leading frame. Pins the
+    // claim that beginSSE is the *only* source of the extra frame.
+    const f = fakeResponse();
+
+    replayCanonicalRun(f.res);
+
+    expect(f.chunks).toEqual(EXPECTED_RUN_CHUNKS);
+  });
+
   it("receives byte-identical event frames — server_info is the only addition", () => {
     const legacy = fakeResponse();
     const baseline = fakeResponse();
@@ -182,6 +228,9 @@ describe("legacy client (no handshake) is unaffected", () => {
     // Baseline: what the server wrote before this change — no leading frame.
     replayCanonicalRun(baseline.res);
 
+    // Proves beginSSE prepends exactly one frame and touches nothing else.
+    // Frame *content* is pinned by the two tests above; this one is about
+    // position and count.
     expect(legacy.chunks.slice(1)).toEqual(baseline.chunks);
     expect(legacy.chunks[0]).toContain("server_info");
     expect(legacy.ended).toBe(baseline.ended);
