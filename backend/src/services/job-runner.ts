@@ -40,6 +40,8 @@ import {
   getRun,
   saveRun,
   createRun,
+  executionKey,
+  findRunByExecutionKey,
   findChildRun,
   listResumableRuns,
   validateJobDefinition,
@@ -57,7 +59,7 @@ import { registerEphemeralEventListener, unregisterEphemeralEventListener } from
 import { getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
 import { compileSystemPrompt } from "./claude-compiler.js";
 import { getSessionProviders } from "../agents/factory.js";
-import { findChat } from "../utils/chat-lookup.js";
+import { findChat, findChatIdByJobExecutionKey } from "../utils/chat-lookup.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("job-runner");
@@ -68,6 +70,8 @@ export interface JobContext {
   runId: string;
   stepId: string;
   branchId?: string;
+  /** Identity of the spawn this session belongs to — stamped into chat metadata. */
+  executionKey?: string;
   /** Advisory sessions (approval notifiers) never advance the run. */
   advisory?: boolean;
   /** Card (ticket) the run belongs to — stamped into step-chat metadata.cardId. */
@@ -163,17 +167,79 @@ function resumeRunAfterRestart(run: JobRun): void {
       // handleStepSessionEnd reads the transcript for unstructured output.
       const parallelBranches = run.activeStep?.parallel?.branches;
       if (parallelBranches) {
+        const parallelStepId = run.activeStep!.stepId;
         let unrecoverable = false;
         for (const branch of Object.values(parallelBranches)) {
-          if ((branch.status === "running" || branch.status === "starting") && !branch.chatId) unrecoverable = true;
-          if (branch.chatId && (branch.status === "running" || branch.status === "starting")) {
-            log.info(`Run ${run.runId}: harvesting parallel branch ${branch.branchId} session ${branch.chatId} that ended during downtime`);
-            void enqueueRun(run.runId, () => handleStepSessionEnd(run.runId, run.activeStep!.stepId, branch.chatId!, branch.branchId)).catch((err) => {
-              log.error(`Restart harvest failed for run ${run.runId}: ${err.message}`);
-            });
+          if (branch.status !== "running" && branch.status !== "starting") continue;
+          // No chatId: the crash landed between this branch's intent write and
+          // its session. Its key says whether a session was ever created —
+          // adopt it if so, otherwise spawn the branch that never started.
+          if (!branch.chatId) {
+            if (!isKeyedRun(run) || !branch.executionKey) {
+              unrecoverable = true; // pre-execution-key branch, no key to look up
+              continue;
+            }
+            const recovered = findChatIdByJobExecutionKey(branch.executionKey);
+            if (!recovered) {
+              // The key never produced a session — this branch is simply
+              // unstarted, so start it now rather than failing the step.
+              //
+              // It re-spawns under the SAME key rather than minting a fresh
+              // ordinal: branch keys are derived from the step's ordinal via
+              // branchExecutionKey, so re-keying one branch would desynchronise
+              // it from its siblings. The invariant is "a key names at most one
+              // materialised session", and we have just proved none exists —
+              // see plans/idempotent-execution-ids.md.
+              const branchDef = (findStep(run, parallelStepId) as ParallelJobStep | undefined)?.branches.find((b) => b.id === branch.branchId);
+              if (!branchDef) {
+                // Dropping this silently would leave the branch "starting"
+                // forever: parallel steps arm no wake timer and have no
+                // timeout, so nothing would ever resolve the step again.
+                const detail = `branch "${branch.branchId}" is no longer defined in parallel step "${parallelStepId}" — cannot restart it`;
+                log.error(`Run ${run.runId}: ${detail}`);
+                branch.status = "failed";
+                branch.endedAt = new Date().toISOString();
+                branch.detail = detail;
+                appendHistory(run, {
+                  stepId: parallelStepId,
+                  branchId: branch.branchId,
+                  stepType: "agent",
+                  attempt: branch.attempt,
+                  startedAt: branch.startedAt,
+                  endedAt: branch.endedAt,
+                  result: "error",
+                  detail,
+                });
+                continue;
+              }
+              log.info(`Run ${run.runId}: parallel branch ${branch.branchId} never spawned (${branch.executionKey}) — starting it`);
+              void spawnParallelBranch(run.runId, parallelStepId, branchDef);
+              continue;
+            }
+            log.info(`Run ${run.runId}: adopting parallel branch ${branch.branchId} session ${recovered} by execution key ${branch.executionKey}`);
+            branch.chatId = recovered;
+            branch.status = "running";
+            saveRun(run);
           }
+          log.info(`Run ${run.runId}: harvesting parallel branch ${branch.branchId} session ${branch.chatId} that ended during downtime`);
+          void enqueueRun(run.runId, () => handleStepSessionEnd(run.runId, parallelStepId, branch.chatId!, branch.branchId)).catch((err) => {
+            log.error(`Restart harvest failed for run ${run.runId}: ${err.message}`);
+          });
         }
-        if (unrecoverable) failRun(run, `Parallel step "${run.activeStep?.stepId}" could not recover one or more branch sessions after restart`);
+        if (unrecoverable) {
+          failRun(run, `Parallel step "${parallelStepId}" could not recover one or more branch sessions after restart`);
+        } else {
+          // Every branch may already be terminal with the step still
+          // unresolved: handleParallelBranchSessionEnd persists the branch
+          // result and only then awaits resolveParallelIfReady, so a crash in
+          // between leaves nothing for the loop above to harvest and nothing
+          // to resolve the step. Parallel steps arm no wake timer and have no
+          // timeout, so without this the run hangs forever. A no-op while any
+          // branch is still live.
+          void enqueueRun(run.runId, () => resolveParallelIfReady(run.runId, parallelStepId)).catch((err) => {
+            log.error(`Restart parallel resolve failed for run ${run.runId}: ${err.message}`);
+          });
+        }
       } else if (run.activeStep?.chatId) {
         const chatId = run.activeStep.chatId;
         log.info(`Run ${run.runId}: harvesting step session ${chatId} that ended during downtime`);
@@ -184,9 +250,11 @@ function resumeRunAfterRestart(run: JobRun): void {
         // Died between entering the step and the session/child spawning. For a
         // job step, first look for a child spawned in the crash window before
         // the waiting_child linkage was persisted — adopt it rather than
-        // spawning a duplicate.
+        // spawning a duplicate. Session steps get the same treatment via their
+        // execution key: the chat may exist even though its id never landed.
         const step = findStep(run, run.currentStepId);
         if (step?.type === "job" && adoptOrphanChildRun(run, step)) break;
+        if (adoptOrphanStepSession(run)) break;
         enterStep(run, run.currentStepId, 0);
       } else {
         // Never entered the first step.
@@ -203,6 +271,26 @@ function resumeRunAfterRestart(run: JobRun): void {
       // rather than wait for a notification that may have fired mid-downtime.
       const childRunId = run.activeStep?.childRunId;
       const child = childRunId ? getRun(childRunId) : null;
+      // No linkage on a keyed run: the crash landed inside the window the key
+      // exists to close. Either the key resolves to a child (adopt it) or
+      // nothing was spawned (re-enter the step, spawning exactly once).
+      if (!childRunId && isKeyedRun(run) && run.currentStepId) {
+        const step = findStep(run, run.currentStepId);
+        if (step?.type === "job") {
+          if (!adoptOrphanChildRun(run, step)) {
+            // "Resolved to nothing" is not quite "was never spawned": a child
+            // whose run file was deleted or corrupted looks identical from
+            // here, and re-entering spawns a replacement alongside it.
+            // findRunByExecutionKey logs a warning when it can tell.
+            log.info(
+              `Run ${run.runId}: job step "${step.id}" has no child for ${run.activeStep?.executionKey ?? "its (unwritten) execution key"} — re-entering the step to spawn one`,
+            );
+            run.status = "running";
+            enterStep(run, step.id, 0);
+          }
+          break;
+        }
+      }
       if (!childRunId || !child) {
         failRun(run, `Job step "${run.currentStepId}" lost its child run${childRunId ? ` ${childRunId}` : ""} — cannot resume`);
       } else if (TERMINAL_JOB_RUN_STATUSES.has(child.status)) {
@@ -229,7 +317,26 @@ function resumeRunAfterRestart(run: JobRun): void {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-export function spawnJobRun(jobId: string, inputs: Record<string, string>, parent?: RunParentLink, opts?: { cardId?: string }): JobRun {
+/**
+ * Spawn a run of `jobId`. Idempotent when given an `executionKey`: a spawn
+ * that already landed under that key resolves to the run it created rather
+ * than a second one, which is what makes retrying a spawn safe.
+ */
+export function spawnJobRun(jobId: string, inputs: Record<string, string>, parent?: RunParentLink, opts?: { cardId?: string; executionKey?: string }): JobRun {
+  if (opts?.executionKey) {
+    // The terminal check is deliberate, and deliberately NOT shared with
+    // findRunByExecutionKey, which returns terminal runs. The two callers want
+    // opposite things from the same key: adoption must see a terminal child so
+    // a run that completed but was never harvested can still be harvested,
+    // while a spawn must not hand its caller back a finished run as though it
+    // were the live one it just asked for.
+    const existing = findRunByExecutionKey(opts.executionKey);
+    if (existing && !TERMINAL_JOB_RUN_STATUSES.has(existing.status)) {
+      log.info(`Spawn for execution key ${opts.executionKey} already exists — returning run ${existing.runId}`);
+      return existing;
+    }
+  }
+
   const job = getJob(jobId);
   if (!job) throw new Error(`Job "${jobId}" not found`);
 
@@ -249,7 +356,7 @@ export function spawnJobRun(jobId: string, inputs: Record<string, string>, paren
     if (value !== undefined) resolved[def.key] = value;
   }
 
-  const run = createRun(job, resolved, parent, opts?.cardId);
+  const run = createRun(job, resolved, parent, opts?.cardId, opts?.executionKey);
   log.info(`Spawned run ${run.runId} of job "${jobId}" (version ${job.version})${parent ? ` as child of ${parent.parentRunId}` : ""}`);
   enterStep(run, job.steps[0].id, 0);
   return getRun(run.runId) ?? run;
@@ -364,6 +471,51 @@ export function retryRunStep(runId: string): JobRun {
   log.info(`Run ${runId}: retrying step "${run.currentStepId}"`);
   enterStep(run, run.currentStepId, 0);
   return mustGetRun(runId);
+}
+
+// ── Execution keys ──────────────────────────────────────────────────
+//
+// Every spawn a step makes — a step session, a parallel branch session, a
+// child run — is identified by a key minted and persisted BEFORE the spawn
+// happens, so restart recovery is an exact lookup instead of a guess over
+// whatever is lying on disk. See the ordering comment in startSubJobStep.
+
+/**
+ * Mint the next execution key for an attempt at `stepId`, bumping the run's
+ * per-step counter. Retries and loop re-entries each get their own identity,
+ * which `activeStep.attempt` alone cannot give (it resets to 1 on re-entry).
+ * The caller must saveRun() the mutated run before spawning anything.
+ */
+function nextExecutionKey(run: JobRun, stepId: string): string {
+  const counts = (run.executionCounts ??= {});
+  counts[stepId] = (counts[stepId] ?? 0) + 1;
+  return executionKey(run.runId, stepId, counts[stepId]);
+}
+
+/**
+ * Per-branch key of one parallel step attempt: every branch shares the step's
+ * ordinal and is disambiguated by its branch id (same shape as
+ * executionKey(runId, stepId, n, branchId)).
+ */
+function branchExecutionKey(stepExecutionKey: string, branchId: string): string {
+  return `${stepExecutionKey}:${branchId}`;
+}
+
+/**
+ * Whether this run mints execution keys — i.e. whether recovery may trust
+ * keyed lookup, or has to fall back to the pre-execution-key heuristics.
+ *
+ * The discriminator is deliberately run-level rather than "does this step
+ * attempt carry a key". A modern run can be killed between enterStep's saveRun
+ * and the intent write, leaving an activeStep with no key; keying the choice
+ * off activeStep would send that run down the legacy scan, whose
+ * (parentRunId, parentStepId) key cannot tell two attempts at the same step
+ * apart — so a step on its second attempt would adopt the first attempt's
+ * child. `executionCounts` is written by createRun for every run this release
+ * creates, and is absent only on runs persisted before keys existed.
+ */
+function isKeyedRun(run: JobRun): boolean {
+  return run.executionCounts !== undefined;
 }
 
 // ── Step machine ────────────────────────────────────────────────────
@@ -561,9 +713,30 @@ function startSubJobStep(run: JobRun, step: SubJobStep, syncDepth: number): void
     }
   }
 
+  // ORDERING IS LOAD-BEARING — do not spawn before this write lands.
+  //
+  // The intent (which step attempt is about to spawn, under which execution
+  // key) must be durable BEFORE anything is spawned. That is the entire
+  // recovery argument: a crash anywhere after this point leaves a key on disk
+  // that either resolves to a child run (adopt it) or does not (spawn it),
+  // with no third possibility and no guessing. Reordering this to spawn first
+  // silently reopens the window where a child exists that no parent knows
+  // about — and, once a step can be retried, the window where the wrong
+  // child gets adopted into the wrong attempt.
+  const key = nextExecutionKey(run, step.id);
+  run.activeStep = { stepId: step.id, attempt: 1, startedAt: new Date().toISOString(), executionKey: key };
+  run.status = "waiting_child";
+  if (timeoutAt) run.nextWakeAt = timeoutAt;
+  saveRun(run);
+
   let child: JobRun;
   try {
-    child = spawnJobRun(step.jobId, childInputs, { parentRunId: run.runId, parentStepId: step.id, depth: depth + 1 }, { cardId: run.cardId });
+    child = spawnJobRun(
+      step.jobId,
+      childInputs,
+      { parentRunId: run.runId, parentStepId: step.id, depth: depth + 1 },
+      { cardId: run.cardId, executionKey: key },
+    );
   } catch (err: any) {
     failSubJobStep(run, step, `Job step "${step.id}" failed to spawn child job "${step.jobId}": ${err.message}`, syncDepth);
     return;
@@ -571,14 +744,13 @@ function startSubJobStep(run: JobRun, step: SubJobStep, syncDepth: number): void
 
   // Persist the linkage synchronously: if the child already finished inside
   // spawnJobRun (e.g. a gate-only job), its parent notification is queued as
-  // a microtask and must find childRunId set when it runs.
-  run.activeStep = { stepId: step.id, attempt: 1, startedAt: new Date().toISOString(), childRunId: child.runId };
-  run.status = "waiting_child";
-  if (timeoutAt) run.nextWakeAt = timeoutAt;
+  // a microtask and must find childRunId set when it runs. Losing THIS write
+  // is recoverable — the key above resolves to the child on restart.
+  run.activeStep.childRunId = child.runId;
   saveRun(run);
   notifyRunUpdated(run);
   armWakeTimer(run);
-  log.info(`Run ${run.runId}: job step "${step.id}" waiting on child run ${child.runId} ("${step.jobId}")`);
+  log.info(`Run ${run.runId}: job step "${step.id}" waiting on child run ${child.runId} ("${step.jobId}") [${key}]`);
 }
 
 /** Record a job-step failure in history, then route it via the given target with loop bounding. */
@@ -679,17 +851,30 @@ async function handleChildRunEnd(parentRunId: string, childRunId: string): Promi
 
 /**
  * Restart-only: re-link a child run that was spawned before the parent's
- * waiting_child state hit disk. Returns false when no unharvested child of
- * this step exists (caller re-enters the step instead).
+ * waiting_child linkage hit disk. Returns false when this step attempt has no
+ * child on disk (caller re-enters the step instead).
+ *
+ * On a keyed run this is an exact lookup — the child either was spawned under
+ * this attempt's key or was not, and no key at all means the crash landed
+ * before the intent write, so no spawn was made. Only runs persisted before
+ * execution keys existed fall back to the legacy scan, which keys on
+ * (parentRunId, parentStepId) and so cannot tell one attempt from another.
+ * See isKeyedRun for why that choice is run-level rather than per-attempt.
  */
 function adoptOrphanChildRun(run: JobRun, step: SubJobStep): boolean {
-  const harvested = new Set(run.history.filter((h) => h.stepId === step.id && h.childRunId).map((h) => h.childRunId!));
-  const orphan = findChildRun(run.runId, step.id, harvested);
+  const key = run.activeStep?.executionKey;
+  let orphan: JobRun | null;
+  if (isKeyedRun(run)) {
+    orphan = key ? findRunByExecutionKey(key) : null;
+  } else {
+    const harvested = new Set(run.history.filter((h) => h.stepId === step.id && h.childRunId).map((h) => h.childRunId!));
+    orphan = findChildRun(run.runId, step.id, harvested);
+  }
   if (!orphan) return false;
 
-  log.info(`Run ${run.runId}: adopting orphaned child run ${orphan.runId} for job step "${step.id}" after restart`);
+  log.info(`Run ${run.runId}: adopting orphaned child run ${orphan.runId} for job step "${step.id}"${key ? ` [${key}]` : " (legacy scan)"} after restart`);
   const startedAt = run.activeStep?.startedAt ?? new Date().toISOString();
-  run.activeStep = { stepId: step.id, attempt: run.activeStep?.attempt ?? 1, startedAt, childRunId: orphan.runId };
+  run.activeStep = { stepId: step.id, attempt: run.activeStep?.attempt ?? 1, startedAt, ...(key && { executionKey: key }), childRunId: orphan.runId };
   run.status = "waiting_child";
   if (step.timeoutHours) run.nextWakeAt = new Date(new Date(startedAt).getTime() + step.timeoutHours * 3_600_000).toISOString();
   saveRun(run);
@@ -702,6 +887,30 @@ function adoptOrphanChildRun(run: JobRun, step: SubJobStep): boolean {
   } else {
     armWakeTimer(run);
   }
+  return true;
+}
+
+/**
+ * Restart-only: re-link a step session that was created before its chatId hit
+ * the run file. Without a key there is nothing to look up and the caller
+ * re-enters the step — spawning a second session while the first one's work is
+ * stranded on disk. Returns false when this attempt's key produced no session.
+ */
+function adoptOrphanStepSession(run: JobRun): boolean {
+  const key = run.activeStep?.executionKey;
+  if (!key || run.activeStep?.chatId) return false;
+  const chatId = findChatIdByJobExecutionKey(key);
+  if (!chatId) return false;
+
+  log.info(`Run ${run.runId}: adopting orphaned step session ${chatId} for step "${run.activeStep!.stepId}" [${key}] after restart`);
+  run.activeStep!.chatId = chatId;
+  saveRun(run);
+  notifyRunUpdated(run);
+  // The session died with the process — harvest it like any other step
+  // session that ended during downtime.
+  void enqueueRun(run.runId, () => handleStepSessionEnd(run.runId, run.activeStep!.stepId, chatId)).catch((err) => {
+    log.error(`Adopted-session harvest failed for run ${run.runId}: ${err.message}`);
+  });
   return true;
 }
 
@@ -733,7 +942,10 @@ async function startAgentAttempt(runId: string, stepId: string, attempt: number)
       : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`) +
     (run.title ? "" : ` This run has no title yet — call the set_job_run_title tool early with a short title specific to this run.`);
 
-  run.activeStep = { stepId, attempt, startedAt: new Date().toISOString() };
+  // Intent before spawn — see the ordering note in startSubJobStep. The key
+  // is stamped into the session's chat metadata, so a crash before the chatId
+  // lands on the run can still find the session.
+  run.activeStep = { stepId, attempt, startedAt: new Date().toISOString(), executionKey: nextExecutionKey(run, stepId) };
   run.status = "running";
   delete run.nextWakeAt;
   saveRun(run);
@@ -761,7 +973,7 @@ async function startPollAttempt(runId: string, stepId: string, attempt: number):
     `(the condition is met) or "not_yet" (check again later).` +
     (step.outputs?.length ? ` When done, include an "outputs" object containing: ${step.outputs.join(", ")}.` : "");
 
-  run.activeStep = { stepId, attempt, startedAt: new Date().toISOString() };
+  run.activeStep = { stepId, attempt, startedAt: new Date().toISOString(), executionKey: nextExecutionKey(run, stepId) };
   run.status = "running";
   delete run.nextWakeAt;
   saveRun(run);
@@ -783,6 +995,10 @@ async function startNotifySession(runId: string, stepId: string): Promise<void> 
     failRun(run, `Notify step "${stepId}": ${err.message}`);
     return;
   }
+
+  // Notify steps keep the activeStep enterStep wrote; only the key is added.
+  run.activeStep!.executionKey = nextExecutionKey(run, stepId);
+  saveRun(run);
 
   const prompt = [
     `Deliver this notification from job "${run.jobName}" (run ${run.runId}) to the user:`,
@@ -825,6 +1041,16 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   const step = opts.step;
   const sessionFields = step && step.type !== "notify" ? step : undefined;
   const defaults = run.definition.defaults ?? {};
+
+  // Read the key back off the persisted run rather than taking it from the
+  // caller: what goes into the chat metadata is then exactly what recovery
+  // will look for. Advisory sessions have none — they never advance a run,
+  // so there is nothing to recover.
+  const stepExecutionKey = opts.advisory
+    ? undefined
+    : opts.branchId
+      ? run.activeStep?.parallel?.branches[opts.branchId]?.executionKey
+      : run.activeStep?.executionKey;
 
   const maxSessions = run.definition.limits?.maxTotalSessions ?? DEFAULT_MAX_TOTAL_SESSIONS;
   if (run.sessionsSpawned >= maxSessions) {
@@ -878,6 +1104,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     jobContext: {
       runId,
       stepId,
+      ...(stepExecutionKey && { executionKey: stepExecutionKey }),
       ...(opts.branchId && { branchId: opts.branchId }),
       ...(opts.advisory && { advisory: true }),
       ...(run.cardId && { cardId: run.cardId }),
@@ -907,14 +1134,33 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   const fresh = mustGetRun(runId);
   fresh.sessionsSpawned += 1;
   if (!opts.advisory) {
-    if (fresh.activeStep?.stepId !== stepId) {
+    // Staleness guard. The run can move on while sendMessage is in flight — a
+    // race branch wins and the step routes onward, and that route can lead
+    // straight back into this same step. Step id is NOT attempt identity: a
+    // step that re-entered itself has the same stepId and the same branch ids,
+    // so comparing on it would write this session into the *next* attempt's
+    // record — orphaning the session that attempt really spawned (never
+    // harvested, so an "all" step hangs forever) and harvesting this one's
+    // output as that attempt's result. Compare the execution key this spawn
+    // was made under against the key the record carries now; key equality
+    // implies step-id equality, since the key embeds stepId.
+    const branchRecord = opts.branchId ? fresh.activeStep?.parallel?.branches[opts.branchId] : undefined;
+    const currentKey = opts.branchId ? branchRecord?.executionKey : fresh.activeStep?.executionKey;
+    // Pre-execution-key runs have no key to compare, so they keep the old
+    // (weaker) step-id check.
+    const belongsToThisAttempt = stepExecutionKey ? currentKey === stepExecutionKey : fresh.activeStep?.stepId === stepId;
+
+    if (!belongsToThisAttempt) {
+      log.info(
+        `Run ${runId}: session ${chatId} for step "${stepId}"${opts.branchId ? ` branch "${opts.branchId}"` : ""} belongs to a superseded attempt (${stepExecutionKey ?? stepId}) — stopping it`,
+      );
       chatToStep.delete(chatId);
       deps().stopSession(chatId);
-    } else if (opts.branchId && fresh.activeStep.parallel?.branches[opts.branchId]) {
-      fresh.activeStep.parallel.branches[opts.branchId].chatId = chatId;
-      fresh.activeStep.parallel.branches[opts.branchId].status = "running";
+    } else if (branchRecord) {
+      branchRecord.chatId = chatId;
+      branchRecord.status = "running";
     } else {
-      fresh.activeStep.chatId = chatId;
+      fresh.activeStep!.chatId = chatId;
     }
   }
   saveRun(fresh);
@@ -943,14 +1189,24 @@ async function startParallelStep(runId: string, stepId: string): Promise<void> {
     return;
   }
 
+  // Intent before spawn — every branch's execution key is on disk before the
+  // first session starts, so a crash mid-fan-out is reconcilable branch by
+  // branch (see the ordering note in startSubJobStep).
   const startedAt = new Date().toISOString();
+  const stepKey = nextExecutionKey(run, stepId);
   run.activeStep = {
     stepId,
     attempt: 1,
     startedAt,
+    executionKey: stepKey,
     parallel: {
       mode: step.mode,
-      branches: Object.fromEntries(step.branches.map((branch) => [branch.id, { branchId: branch.id, status: "starting" as const, attempt: 1, startedAt }])),
+      branches: Object.fromEntries(
+        step.branches.map((branch) => [
+          branch.id,
+          { branchId: branch.id, status: "starting" as const, attempt: 1, startedAt, executionKey: branchExecutionKey(stepKey, branch.id) },
+        ]),
+      ),
     },
   };
   run.status = "running";
@@ -958,29 +1214,34 @@ async function startParallelStep(runId: string, stepId: string): Promise<void> {
   saveRun(run);
   notifyRunUpdated(run);
 
-  await Promise.all(
-    step.branches.map(async (branch) => {
-      let prompt: string;
-      try {
-        prompt = interpolate(branch.prompt, buildRunContext(mustGetRun(runId)));
-      } catch (err: any) {
-        markParallelBranchSpawnFailure(runId, stepId, branch.id, `template failed: ${err.message}`);
-        return;
-      }
-      const instructions =
-        (branch.outputs?.length
-          ? `\n\nWhen you are done, you MUST call the complete_job_step tool with an "outputs" object containing: ${branch.outputs.join(", ")}.`
-          : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`) +
-        ` You are branch "${branch.id}" of parallel step "${stepId}".` +
-        (mustGetRun(runId).title ? "" : ` This run has no title yet — call the set_job_run_title tool early with a short title specific to this run.`);
-      try {
-        await spawnStepSession(runId, stepId, prompt + instructions, { step: branch, branchId: branch.id });
-      } catch (err: any) {
-        markParallelBranchSpawnFailure(runId, stepId, branch.id, `spawn failed: ${err.message}`);
-      }
-    }),
-  );
+  await Promise.all(step.branches.map((branch) => spawnParallelBranch(runId, stepId, branch)));
   await enqueueRun(runId, () => resolveParallelIfReady(runId, stepId));
+}
+
+/**
+ * Start one branch session of an already-persisted parallel step. Split out of
+ * startParallelStep so restart recovery can spawn just the branches whose
+ * execution keys never produced a session.
+ */
+async function spawnParallelBranch(runId: string, stepId: string, branch: ParallelAgentBranch): Promise<void> {
+  let prompt: string;
+  try {
+    prompt = interpolate(branch.prompt, buildRunContext(mustGetRun(runId)));
+  } catch (err: any) {
+    markParallelBranchSpawnFailure(runId, stepId, branch.id, `template failed: ${err.message}`);
+    return;
+  }
+  const instructions =
+    (branch.outputs?.length
+      ? `\n\nWhen you are done, you MUST call the complete_job_step tool with an "outputs" object containing: ${branch.outputs.join(", ")}.`
+      : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`) +
+    ` You are branch "${branch.id}" of parallel step "${stepId}".` +
+    (mustGetRun(runId).title ? "" : ` This run has no title yet — call the set_job_run_title tool early with a short title specific to this run.`);
+  try {
+    await spawnStepSession(runId, stepId, prompt + instructions, { step: branch, branchId: branch.id });
+  } catch (err: any) {
+    markParallelBranchSpawnFailure(runId, stepId, branch.id, `spawn failed: ${err.message}`);
+  }
 }
 
 function markParallelBranchSpawnFailure(runId: string, stepId: string, branchId: string, detail: string): void {
@@ -1198,8 +1459,18 @@ async function resolveParallelIfReady(runId: string, stepId: string): Promise<vo
   const terminal = branchList.filter((b) => isBranchTerminal(b.status));
 
   if (step.mode === "race") {
-    const winner = completed[0];
-    if (winner && !run.activeStep.parallel.winnerBranchId) {
+    // A winnerBranchId already on the record does NOT mean the step resolved:
+    // it is set in memory here and then persisted by the first loser's
+    // appendHistory, several writes before enterStep runs. A crash in that gap
+    // comes back with a winner recorded, every branch terminal, and the step
+    // still sitting on activeStep — and neither leg below used to fire
+    // (`!winnerBranchId` is false, `completed.length === 0` is false), so the
+    // run hung. Resume from the recorded winner instead; the block re-runs
+    // harmlessly because already-cancelled losers are skipped and the step's
+    // own history entry is appended at most once.
+    const recordedWinnerId = run.activeStep.parallel.winnerBranchId;
+    const winner = recordedWinnerId ? branchList.find((b) => b.branchId === recordedWinnerId) : completed[0];
+    if (winner) {
       run.activeStep.parallel.winnerBranchId = winner.branchId;
       const now = new Date().toISOString();
       for (const loser of branchList) {
@@ -1225,15 +1496,19 @@ async function resolveParallelIfReady(runId: string, stepId: string): Promise<vo
         });
       }
       const outputs = { _winner: winner.branchId, _winnerOutputs: winner.outputs ?? {}, [winner.branchId]: winner.outputs ?? {} };
-      appendHistory(run, {
-        stepId,
-        stepType: "parallel",
-        attempt: run.activeStep.attempt,
-        startedAt: run.activeStep.startedAt,
-        endedAt: now,
-        result: "completed",
-        outputs,
-      });
+      // The crash could equally have landed between this append and the
+      // enterStep below, in which case the entry is already on disk.
+      if (!hasParallelStepEntry(run, stepId)) {
+        appendHistory(run, {
+          stepId,
+          stepType: "parallel",
+          attempt: run.activeStep.attempt,
+          startedAt: run.activeStep.startedAt,
+          endedAt: now,
+          result: "completed",
+          outputs,
+        });
+      }
       enterStep(run, resolveNext(run, step), 0);
       return;
     }
@@ -1301,6 +1576,17 @@ function routeParallelFailure(run: JobRun, step: ParallelJobStep, message: strin
 
 function isBranchTerminal(status: string): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/**
+ * Whether this parallel step attempt already wrote its summary history entry.
+ * `activeStep.startedAt` identifies the attempt: it is stamped fresh on every
+ * entry, so a loop re-entry of the same step does not match the previous one's
+ * entry. Only consulted on the resume-a-half-resolved-race path.
+ */
+function hasParallelStepEntry(run: JobRun, stepId: string): boolean {
+  const startedAt = run.activeStep?.startedAt;
+  return run.history.some((h) => h.stepId === stepId && h.stepType === "parallel" && !h.branchId && h.startedAt === startedAt);
 }
 
 function scheduleRetry(run: JobRun, step: AgentJobStep, failedAttempt: number, reason: string): void {

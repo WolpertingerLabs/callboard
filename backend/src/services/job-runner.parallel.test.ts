@@ -412,7 +412,11 @@ describe("parallel — restart recovery (item 9)", () => {
     expect(parent?.outputs).toMatchObject({ a: { r: "A" }, b: { r: "B" } });
   });
 
-  it("fails the parent step when a branch session cannot be recovered", async () => {
+  // Branches persisted with an execution key recover by key instead (adopted
+  // if the session exists, re-spawned if it never started) — see
+  // job-runner.execution-key.test.ts. Only runs from before execution keys
+  // existed can still reach the unrecoverable path.
+  it("fails the parent step when a legacy branch session (no execution key) cannot be recovered", async () => {
     const steps = [
       {
         id: "checks",
@@ -426,9 +430,11 @@ describe("parallel — restart recovery (item 9)", () => {
     ];
     const runId = await spawnParallel(steps, ["a", "b"], "checks");
 
-    // Corrupt one branch's recorded chatId so restart can't recover it.
+    // Corrupt one branch's recorded chatId so restart can't recover it, and
+    // strip its execution key so it looks like a pre-execution-key run.
     const run = store.getRun(runId)!;
     delete run.activeStep!.parallel!.branches.a.chatId;
+    delete run.activeStep!.parallel!.branches.a.executionKey;
     store.saveRun(run);
 
     await load(dataDir);
