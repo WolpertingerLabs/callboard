@@ -104,6 +104,32 @@ data: {"protocolVersion":2,"minProtocolVersion":1,"features":["parallel_steps","
 things this build doesn't support. That matters for a self-hosted tool where the browser
 bundle and the daemon can legitimately be different versions.
 
+> **Three implementation deviations, all approved 2026-07-27.** Each is a correction to this
+> document, not a compromise against it.
+>
+> 1. **`CLIENT_CAPS` lives in `shared/types/protocol.ts`, not in the backend session module.**
+>    The client must advertise byte-identical strings; a duplicated cap name that drifts is
+>    precisely the failure this whole mechanism exists to prevent. The backend module
+>    re-exports it, so the `session.supports(CLIENT_CAPS.x)` import path in this doc still
+>    holds. Better than what was specified.
+> 2. **`features` ships as the same three strings as `CLIENT_CAPS`, not the illustrative
+>    `["parallel_steps","acp_providers"]` above.** Those example strings named nothing a
+>    client could actually gate on. Mirroring is not laziness here — it is factually true
+>    (this daemon does emit `tool_source`, budget events, and plan reviews) and it serves the
+>    exact version-skew case this section describes: a bundle talking to an older daemon can
+>    ask "does this daemon emit budget events?" and hide the spend indicator if not.
+> 3. **The `server_info` frame carries both an `event: server_info` name *and* a
+>    `type: "server_info"` field.** The example above shows only the named SSE event, which
+>    was written without checking how the client dispatches. `readSSE` keeps only
+>    `data:`-prefixed lines and routes on `type`, so a named-only frame would be unroutable
+>    by any client built the way the current one is. The implementation is right and this
+>    example is wrong.
+>
+> Also settled: `minProtocolVersion` is published but **not enforced** — Phase 1 rejects
+> nobody, since rejecting would itself be a behavior change. Caps sent without a version
+> header are honored at protocol 1. A 64-cap ceiling per connection is defensive hygiene at
+> the route boundary.
+
 ### 2. `supports()` at the serialization boundary
 
 One object per connection, one question at every emit site:
