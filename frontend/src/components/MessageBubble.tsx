@@ -191,9 +191,13 @@ function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvi
   };
 
   return (
-    <div ref={wrapRef} style={{ position: "absolute", top: 6, right: 36, zIndex: 2 }}>
+    // The hover-reveal class lives on this wrapper, not the button: index.css
+    // matches it as a DIRECT child of .msg-bubble, and the button sits one
+    // level deeper now that it shares a positioning context with the menu.
+    // `is-open` keeps the affordance visible while the menu is open, so the
+    // menu doesn't vanish when the pointer leaves the bubble to reach it.
+    <div ref={wrapRef} className={`fork-affordance${open ? " is-open" : ""}`} style={{ position: "absolute", top: 6, right: 36, zIndex: 2 }}>
       <button
-        className="fork-btn"
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);

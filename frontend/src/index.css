@@ -656,14 +656,18 @@ pre {
 }
 
 .msg-bubble > .copy-btn,
-.msg-bubble > .fork-btn {
+.msg-bubble > .fork-affordance {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
 }
 
+/* `.is-open` holds the fork menu visible once opened — otherwise moving the
+   pointer off the bubble to reach the menu would fade it out from under the
+   cursor. */
 .msg-bubble:hover > .copy-btn,
-.msg-bubble:hover > .fork-btn {
+.msg-bubble:hover > .fork-affordance,
+.msg-bubble > .fork-affordance.is-open {
   opacity: 1;
   pointer-events: auto;
 }
