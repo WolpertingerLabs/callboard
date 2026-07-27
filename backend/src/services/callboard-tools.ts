@@ -32,6 +32,7 @@ import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
+import { buildWorkspaceTools } from "./workspace-tools.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -1527,6 +1528,12 @@ export function buildCallboardToolsSpec(
       // Global (not per-chat). `model: "<alias>"` resolves to a different
       // concrete model per provider at session start (resolveModelAlias).
       ...buildModelAliasTools(),
+
+      // ── Workspaces: where work happens, and its lifecycle ───────────
+      // Global. archive_workspace is the only path in Callboard that removes
+      // a directory, and it removes only worktrees Callboard created, that
+      // still prove it, that nothing else references, and that are clean.
+      ...buildWorkspaceTools(),
     ],
   };
 }

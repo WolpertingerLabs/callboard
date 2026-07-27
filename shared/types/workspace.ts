@@ -68,3 +68,157 @@ export interface WorkspacePayload {
   isolation: WorkspaceIsolation;
   worktree?: WorkspaceWorktree;
 }
+
+// ── Removability (Phase 2) ──────────────────────────────────────────
+//
+// Whether a workspace's worktree may be removed, and — far more useful — why
+// not. Every automatic removal is gated on this, and a caller that asked for
+// an archive gets the blockers back so a refusal is legible rather than
+// silent.
+//
+// "Removed" throughout this section means **quarantined**: moved to
+// ~/.callboard/trash/ and unregistered with `git worktree prune`, never
+// deleted. See utils/worktree-trash.ts for why, and for how to restore one.
+
+/**
+ * Why a worktree was NOT removed. Ordered from "never was a candidate" to
+ * "would have destroyed work".
+ */
+export type WorkspaceRemovalBlocker =
+  /** Not a worktree at all. A directory the user works in is never removed. */
+  | "not-a-worktree"
+  /** `worktree.owned` is false — Callboard did not create it. */
+  | "not-owned"
+  /** A worktree record with no `repoPath`; there is no repo to run removal from. */
+  | "no-repo-path"
+  /** The directory is already gone. Nothing to remove. */
+  | "cwd-missing"
+  /** The directory is no longer a worktree of the recorded repo. */
+  | "not-a-worktree-on-disk"
+  /**
+   * No identity token. Every record written before Phase 2, and every worktree
+   * the user recreated by hand. Reads as "not ours" and stays.
+   */
+  | "token-missing"
+  /** A token naming a different workspace. */
+  | "token-mismatch"
+  /** Another active workspace still references this directory (ref-count > 0). */
+  | "shared-cwd"
+  /**
+   * The worktree involves submodules. `mv` does not mind them, but the
+   * `git worktree prune` that follows deletes the worktree's admin dir — and a
+   * submodule initialised in a worktree keeps its **object database** there, so
+   * pruning destroys submodule history that quarantine cannot give back.
+   */
+  | "has-submodules"
+  /** Staged or unstaged modifications to tracked files. */
+  | "uncommitted-changes"
+  /** Untracked files in the working tree. */
+  | "untracked-files"
+  /** Commits reachable from HEAD and from no other ref. */
+  | "unpushed-commits"
+  /**
+   * An agent session is still live in this directory, or one refused to stop
+   * within the teardown timeout. Moving a directory out from under a running
+   * subprocess is how a removal ends up half-done.
+   */
+  | "session-still-running"
+  /** A git command failed, so cleanliness could not be established. Refuse. */
+  | "git-check-failed"
+  /** The trash directory is on another filesystem, so the move is not atomic. */
+  | "quarantine-cross-device"
+  /** Every check passed but the quarantine itself failed. Nothing was moved. */
+  | "quarantine-failed";
+
+export interface WorkspaceRemovalReason {
+  code: WorkspaceRemovalBlocker;
+  /** Human-readable detail — safe to surface directly. */
+  detail: string;
+}
+
+/**
+ * Gitignored entries that would travel into the trash with the directory.
+ * Informational only — never a blocker (see utils/worktree-trash.ts).
+ */
+export interface WorkspaceIgnoredPreview {
+  /** Collapsed paths relative to the worktree, capped. */
+  entries: string[];
+  truncated: boolean;
+  /** Set when git could not be asked. Still not a blocker. */
+  error?: string;
+}
+
+export interface WorkspaceRemovability {
+  /** True only when every gate passed. Never inferred from an empty list. */
+  removable: boolean;
+  /** All blockers, not just the first — a caller should see every reason. */
+  blockers: WorkspaceRemovalReason[];
+  /**
+   * What would move to the trash alongside the tracked files. Only computed
+   * when `removable` is true: for a workspace that is staying put there is
+   * nothing to preview, and the listing pays a git subprocess per entry.
+   */
+  ignored?: WorkspaceIgnoredPreview;
+}
+
+/** A workspace plus the removability verdict for its directory. */
+export interface WorkspaceWithRemovability extends Workspace {
+  removability: WorkspaceRemovability;
+}
+
+/**
+ * What happened to the directory.
+ *
+ * `partial` is the honest answer to a failed removal, and it exists because the
+ * previous design lied about one: `git worktree remove` can delete tracked
+ * files, delete the admin dir and unregister the worktree and *still* exit
+ * non-zero, which was reported as "kept". A record in that state can never be
+ * cleaned up — the directory exists, it is no longer a worktree, and the
+ * identity token that proved ownership is gone.
+ */
+export type WorktreeDisposition =
+  /** Moved to the trash and unregistered. Restorable. */
+  | "quarantined"
+  /** Untouched: a gate refused, or there was no worktree to act on. */
+  | "kept"
+  /** Acted on and now in an inconsistent state. `state` says what was found. */
+  | "partial";
+
+/** What the directory looked like on re-inspection after a failed removal. */
+export interface WorktreeInspection {
+  cwdExists: boolean;
+  /** Still listed by `git worktree list` in the recorded main repo. */
+  registeredWorktree: boolean;
+  /** The git admin dir (`<repo>/.git/worktrees/<slug>`) still resolves. */
+  adminDirExists: boolean;
+  /** The Callboard identity token is still readable there. */
+  tokenPresent: boolean;
+}
+
+/** Result of the lifecycle archive (cascade + ref-counted worktree quarantine). */
+export interface ArchiveWorkspaceResult {
+  workspace: Workspace;
+  /** Chats that belonged to the workspace, and whether a live session was stopped. */
+  chats: Array<{ chatId: string; interrupted: boolean }>;
+  worktree: {
+    /**
+     * True when the directory was moved into the trash. That includes a
+     * `partial` outcome where the move landed but git's bookkeeping did not —
+     * `disposition` is the field to branch on, this one only says whether the
+     * directory is still where it was.
+     */
+    removed: boolean;
+    /** Which of the three outcomes this was. */
+    disposition: WorktreeDisposition;
+    /** The directory that was (or was not) quarantined. */
+    path: string;
+    /** Where it went. Only set when `disposition === "quarantined"`. */
+    trashPath?: string;
+    /** Empty only when `removed` is true. */
+    blockers: WorkspaceRemovalReason[];
+    /** What was found on re-inspection. Only set when `disposition === "partial"`. */
+    state?: WorktreeInspection;
+    /** Ignored entries that moved with it. Only set when quarantined. */
+    ignored?: WorkspaceIgnoredPreview;
+  };
+}

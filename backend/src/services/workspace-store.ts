@@ -8,10 +8,10 @@
  * observable. Same flat-file pattern as the job and card stores — no new
  * storage tech, no index: the directory is small and every query is a scan.
  *
- * Phase 1 of plans/workspace-object.md is write-only groundwork. Records are
- * created when a chat starts in a worktree; nothing reads them to make a
- * decision yet, and archiving marks status ONLY — no cascade to chats, no
- * directory removal. That is Phase 2, and it is deliberately not here.
+ * This module stays a store. {@link archiveWorkspace} here marks status and
+ * nothing else — the Phase 2 lifecycle (cascade to chats, cleanliness check,
+ * `git worktree remove`) lives in workspace-service.ts, which composes this
+ * with git and the chat store. Nothing in here deletes a directory.
  *
  * The one thing this module *does* read its own records for is revalidation:
  * a record is adopted only while it still describes the directory on disk
@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { Workspace, WorkspacePayload, WorktreeMode } from "shared";
 import type { ResolveBranchResult } from "../utils/git.js";
 import { resolveWorktreeToMainRepo } from "../utils/git.js";
+import { verifyWorktreeToken, writeWorktreeToken } from "../utils/worktree-token.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -76,8 +77,17 @@ function defaultName(cwd: string): string {
 // ── CRUD ────────────────────────────────────────────────────────────
 
 export function createWorkspace(payload: WorkspacePayload): Workspace {
-  const cwd = (payload.cwd ?? "").trim();
-  if (!cwd) throw new Error("Workspace cwd is required");
+  const rawCwd = (payload.cwd ?? "").trim();
+  if (!rawCwd) throw new Error("Workspace cwd is required");
+  // Resolve at the boundary, once. A relative `cwd` (start_chat_session passes
+  // `folder` through without an absoluteness check) would otherwise be read
+  // against two different bases later: `existsSync`/`checkWorktreeClean`
+  // resolve it against the backend process cwd, while a `git -C <repo>` call
+  // resolves it against the main checkout. The gate and the action have to name
+  // the same directory, so the record stores the resolved form and everything
+  // downstream reads that.
+  const cwd = resolve(rawCwd);
+  const repoPath = payload.repoPath ? resolve(payload.repoPath) : undefined;
   if (payload.isolation !== "local" && payload.isolation !== "worktree") {
     throw new Error(`Workspace isolation must be "local" or "worktree" (got ${JSON.stringify(payload.isolation)})`);
   }
@@ -99,7 +109,7 @@ export function createWorkspace(payload: WorkspacePayload): Workspace {
     id: `ws-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
     name: name.slice(0, WORKSPACE_NAME_MAX),
     cwd,
-    ...(payload.repoPath && { repoPath: payload.repoPath }),
+    ...(repoPath && { repoPath }),
     isolation: payload.isolation,
     ...(payload.worktree && {
       worktree: {
@@ -166,9 +176,14 @@ export function listWorkspaces(filter?: { status?: Workspace["status"] }): Works
  * bug (see plans/workspace-object.md). This is also what Phase 2's ref-count
  * will be built on: an owned worktree is only removable once no active
  * workspace references its directory.
+ *
+ * Compares resolved paths rather than strings. Records written before
+ * {@link createWorkspace} started resolving `cwd` may hold a relative or
+ * `..`-laden spelling of the same directory, and a missed match here means a
+ * second record for a directory that already has one.
  */
 export function listWorkspacesByCwd(cwd: string): Workspace[] {
-  return listWorkspaces({ status: "active" }).filter((w) => w.cwd === cwd);
+  return listWorkspaces({ status: "active" }).filter((w) => samePath(w.cwd, cwd));
 }
 
 export function renameWorkspace(id: string, name: string): Workspace | null {
@@ -183,7 +198,8 @@ export function renameWorkspace(id: string, name: string): Workspace | null {
 
 /**
  * Mark a workspace archived. Status only — deliberately no cascade to the
- * workspace's chats and no directory removal, both of which are Phase 2.
+ * workspace's chats and no directory removal. Both of those are the lifecycle
+ * archive in workspace-service.ts, which calls this as its bookkeeping step.
  * Idempotent: re-archiving keeps the original `archivedAt`.
  */
 export function archiveWorkspace(id: string): Workspace | null {
@@ -255,9 +271,20 @@ function samePath(a: string, b: string): boolean {
  *
  * Pure filesystem reads (no `git` subprocess), so it is cheap enough for the
  * chat-start path.
+ *
+ * Phase 2 adds the half the filesystem alone cannot answer. A worktree the
+ * *user* recreated at the same path, on the same branch, of the same repo
+ * satisfies every check below — it is byte-for-byte what the record describes.
+ * An **owned** record therefore has to prove it as well, via the identity
+ * token in the worktree's git admin dir, which only a worktree we created
+ * carries. An unowned record has no token by definition and is unaffected:
+ * it can never be adopted into ownership anyway.
  */
 function worktreeRecordMatchesDisk(workspace: Workspace): boolean {
   if (!existsSync(workspace.cwd)) return false;
+  if (workspace.worktree?.owned && verifyWorktreeToken(workspace.cwd, workspace.id) !== "verified") {
+    return false;
+  }
   // Degenerate case: ensureWorktree hands back the *main* checkout when the
   // branch is already checked out there, so cwd === repoPath and the
   // directory is not a worktree of anything. Existence of the repo is all
@@ -305,7 +332,7 @@ export function recordWorktreeWorkspace(intent: WorktreeIntent): Workspace {
     archiveWorkspace(stale.id);
   }
 
-  return createWorkspace({
+  const workspace = createWorkspace({
     cwd: intent.cwd,
     repoPath: intent.repoPath,
     isolation: "worktree",
@@ -317,6 +344,20 @@ export function recordWorktreeWorkspace(intent: WorktreeIntent): Workspace {
       ...(typeof intent.prNumber === "number" && { prNumber: intent.prNumber }),
     },
   });
+
+  // Stamp the worktree we just made with this record's id. Only for one we
+  // created: the token is the claim "Callboard made this directory", and
+  // writing it over a directory we merely found would be a lie of exactly the
+  // kind `owned` exists to prevent.
+  //
+  // A failed write is not an error. The record keeps `owned: true` (it is
+  // true), and the missing token simply makes the worktree unremovable — the
+  // safe direction, and the same state every pre-Phase-2 record is in.
+  if (intent.created && !writeWorktreeToken(intent.cwd, workspace.id)) {
+    log.warn(`Workspace ${workspace.id} has no identity token — its worktree will never be removed automatically`);
+  }
+
+  return workspace;
 }
 
 /**

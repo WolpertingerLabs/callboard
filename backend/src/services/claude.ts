@@ -480,6 +480,88 @@ export function stopSession(chatId: string): boolean {
   return false;
 }
 
+/** How long {@link stopSessionAndWait} waits for a run to actually unwind. */
+export const SESSION_TEARDOWN_TIMEOUT_MS = 15000;
+
+export type SessionStopOutcome =
+  /** Nothing was running. */
+  | "not-running"
+  /** The run emitted its terminal event (or dropped out of the registry). */
+  | "stopped"
+  /** A CLI session: the server does not own that process and cannot stop it. */
+  | "unstoppable"
+  /** Asked to stop and it did not, within the timeout. Still alive. */
+  | "timeout";
+
+/**
+ * {@link stopSession}, but waiting for the run to actually be over.
+ *
+ * `stopSession` is fire-and-forget by design: it aborts, fires `closeQuery()`
+ * un-awaited, drops the registry entry and returns, so the UI reads inactive
+ * immediately. That is right for a user pressing Stop and wrong for a caller
+ * that is about to move the directory the agent is working in — the subprocess
+ * can still be alive, mid-tool-call, with its cwd inside that directory.
+ *
+ * So this one keeps the registry entry until the run's own unwind emits the
+ * terminal `done`/`error` event (or the entry disappears, which is the same
+ * news arriving by a different route), and reports `"timeout"` rather than
+ * pretending. Callers that are about to touch the filesystem must refuse on
+ * anything but `"stopped"` / `"not-running"`.
+ *
+ * On timeout nothing is cleaned up: the run is genuinely still there, and
+ * unregistering it would only hide that from the UI.
+ */
+export async function stopSessionAndWait(chatId: string, timeoutMs: number = SESSION_TEARDOWN_TIMEOUT_MS): Promise<SessionStopOutcome> {
+  const info = sessionRegistry.get(chatId);
+  if (!info) return "not-running";
+  // CLI sessions carry no abort controller: the server did not spawn them.
+  if (!info.abortController || !info.emitter) return "unstoppable";
+
+  const { abortController, emitter, closeQuery } = info;
+
+  const exited = new Promise<boolean>((resolvePromise) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      emitter.off("event", onEvent);
+      clearInterval(poll);
+      clearTimeout(timer);
+      resolvePromise(value);
+    };
+    const onEvent = (event: any) => {
+      if (event?.type === "done" || event?.type === "error") finish(true);
+    };
+    emitter.on("event", onEvent);
+    // Backstop for the narrow window where the run emitted `done` between our
+    // registry read and our listener attaching: its `finally` then drops the
+    // entry, and that is equally conclusive.
+    const poll = setInterval(() => {
+      if (sessionRegistry.get(chatId)?.emitter !== emitter) finish(true);
+    }, 100);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+  });
+
+  abortController.abort();
+  void closeQuery?.().catch((err: any) => {
+    log.debug(`stopSessionAndWait: closing query for ${chatId} threw: ${err?.message ?? err}`);
+  });
+
+  const exitedInTime = await exited;
+  if (!exitedInTime) {
+    log.warn(`stopSessionAndWait: ${chatId} did not unwind within ${timeoutMs}ms — leaving it registered`);
+    return "timeout";
+  }
+
+  // Same cleanup stopSession does, and only for our own entry: a replacement
+  // session may already have taken the slot while we waited.
+  if (sessionRegistry.get(chatId)?.emitter === emitter) {
+    sessionRegistry.unregister(chatId);
+    pendingRequests.delete(chatId);
+  }
+  return "stopped";
+}
+
 /**
  * Build the SDK prompt from text and optional images.
  * Returns either a plain string or an AsyncIterable<SDKUserMessage> for multimodal content.
