@@ -774,7 +774,12 @@ chatsRouter.post("/:id/fork", (req, res) => {
   };
 
   try {
-    const newChat = chatFileService.createChat(chat.folder, newSessionId, JSON.stringify(forkMeta));
+    // The fork runs in the original's folder, so it belongs to the original's
+    // workspace too. `workspaceId` is a top-level Chat field, not metadata, so
+    // it is inherited here rather than in forkMeta above — without it a fork
+    // of a worktree chat would be missing from the set Phase 2's archive
+    // cascade interrupts when that directory is removed underneath it.
+    const newChat = chatFileService.createChat(chat.folder, newSessionId, JSON.stringify(forkMeta), chat.workspaceId);
     clearChatListCache();
     res.status(201).json(newChat);
   } catch (error: any) {

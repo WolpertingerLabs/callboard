@@ -84,13 +84,18 @@ describe("resolveBranch worktree intent", () => {
   });
 
   it("reports no worktree for an in-place branch switch that lands in one", () => {
-    // `feat/new` already has a worktree from the suite above, so switchBranch
-    // returns that path. The user did not ask for isolation, and Callboard did
-    // not create anything — deliberately not reported as worktree intent.
-    const result = resolveBranch({ folder: repoDir, baseBranch: "feat/new" });
+    // Stand up the worktree here rather than leaning on one an earlier test
+    // left behind — this must hold under `.only` and under any test order.
+    const inPlacePath = join(tmpRoot, "repo.feat-inplace");
+    git(["worktree", "add", "-q", "-b", "feat/inplace", inPlacePath, "main"], repoDir);
+
+    // The branch already lives in a worktree, so switchBranch returns that
+    // path. The user did not ask for isolation, and Callboard did not create
+    // anything — deliberately not reported as worktree intent.
+    const result = resolveBranch({ folder: repoDir, baseBranch: "feat/inplace" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.folder).toBe(join(tmpRoot, "repo.feat-new"));
+    expect(result.folder).toBe(inPlacePath);
     expect(result.worktree).toBeUndefined();
   });
 });

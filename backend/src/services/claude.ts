@@ -838,10 +838,11 @@ interface SendMessageOptions {
   clientTrackingId?: string;
   /**
    * Workspace this chat runs in — stamped as `Chat.workspaceId` on the new
-   * chat record. Only honored for new chats (existing chats keep whatever
-   * their record already has). Opaque: never parsed back into a path. Set by
-   * the chat-start entry points when branch resolution produced a worktree;
-   * absent for every other chat, and nothing may depend on its presence.
+   * chat record. Only honored for new chats; `upsertChat` enforces that an
+   * existing chat keeps whatever linkage its record already has. Opaque:
+   * never parsed back into a path. Set by the chat-start entry points when
+   * branch resolution produced a worktree; absent for every other chat, and
+   * nothing may depend on its presence.
    */
   workspaceId?: string;
 }
@@ -1757,6 +1758,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                 initialMetadata.session_ids = ids;
                 chatFileService.upsertChat(trackingId, folder, sessionId, {
                   metadata: JSON.stringify(meta),
+                  // Only reaches the record when this upsert *recreates* a
+                  // deleted one (upsertChat ignores it for an existing chat) —
+                  // without it the recreated chat would silently lose its
+                  // workspace linkage mid-run.
+                  ...(opts.workspaceId && { workspaceId: opts.workspaceId }),
                 });
               }
               break;

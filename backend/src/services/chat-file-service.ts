@@ -81,7 +81,12 @@ export class ChatFileService {
   }
 
   // Create a new chat (requires session_id)
-  createChat(folder: string, sessionId: string, metadata: string = "{}"): Chat {
+  //
+  // `workspaceId` links the chat to the Workspace it runs in. Pass it whenever
+  // the new chat inherits a folder that already belongs to one (a fork), so it
+  // lands in the same set Phase 2's archive cascade acts on — see
+  // plans/workspace-object.md.
+  createChat(folder: string, sessionId: string, metadata: string = "{}", workspaceId?: string): Chat {
     log.debug(`createChat — folder=${folder}, sessionId=${sessionId}`);
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -92,6 +97,7 @@ export class ChatFileService {
       session_id: sessionId,
       session_log_path: null,
       metadata,
+      ...(workspaceId && { workspaceId }),
       created_at: now,
       updated_at: now,
     };
@@ -137,11 +143,19 @@ export class ChatFileService {
     const existingChat = this.getChat(id);
 
     if (existingChat) {
-      // Update existing
+      // Update existing.
+      //
+      // Workspace linkage is write-once here: an existing chat keeps whatever
+      // its record already has. Re-pointing a live chat at a different
+      // workspace would silently move it out of the set Phase 2's archive
+      // cascade interrupts, while its session keeps running in the old
+      // directory. Backfill/relink is updateChat's job, not upsert's.
+      const safeUpdates = { ...updates };
+      delete safeUpdates.workspaceId;
       const oldSessionId = existingChat.session_id;
       const updatedChat = {
         ...existingChat,
-        ...updates,
+        ...safeUpdates,
         session_id: sessionId || existingChat.session_id,
         updated_at: new Date().toISOString(),
       };

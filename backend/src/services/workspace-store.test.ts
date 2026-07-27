@@ -6,12 +6,18 @@
  * top-level dynamic import) — each test file gets its own throwaway data dir.
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readdirSync, existsSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-store-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
+
+// Imported dynamically alongside the store: a static import is hoisted above
+// the env assignment, and anything that reads CALLBOARD_DATA_DIR at module
+// load would resolve the real data dir instead of this throwaway one.
+const { resolveBranch } = await import("../utils/git.js");
 
 const {
   createWorkspace,
@@ -28,13 +34,32 @@ const {
 
 const workspacesDir = join(tmpRoot, "workspaces");
 
+// Real git fixtures. Revalidation is a claim about the filesystem, so the
+// tests that exercise it use actual worktrees rather than invented paths.
+const gitRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-git-"));
+const repoDir = join(gitRoot, "repo");
+
+function git(args: string[], cwd: string): void {
+  execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", ...args], { cwd, stdio: "pipe" });
+}
+
+execFileSync("git", ["init", "-q", "-b", "main", repoDir], { stdio: "pipe" });
+git(["commit", "-q", "--allow-empty", "-m", "init"], repoDir);
+
+/** The path ensureWorktree would pick for a branch — `/` sanitized to `-`. */
+function worktreePathFor(branch: string): string {
+  return join(gitRoot, `repo.${branch.replace(/\//g, "-")}`);
+}
+
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
+  rmSync(gitRoot, { recursive: true, force: true });
 });
 
 beforeEach(() => {
-  for (const file of readdirSync(workspacesDir).filter((f) => f.endsWith(".json"))) {
-    rmSync(join(workspacesDir, file), { force: true });
+  // Everything, not just `*.json` — the atomicity tests plant `.tmp` files.
+  for (const file of readdirSync(workspacesDir)) {
+    rmSync(join(workspacesDir, file), { force: true, recursive: true });
   }
 });
 
@@ -129,8 +154,27 @@ describe("listWorkspaces", () => {
 
   it("skips unreadable records instead of failing the whole listing", () => {
     const good = createWorkspace({ cwd: "/tmp/good", isolation: "local" });
+    const alsoGood = createWorkspace({ cwd: "/tmp/also-good", isolation: "local" });
     writeFileSync(join(workspacesDir, "ws-broken.json"), "{not json");
+    // One corrupt file costs exactly itself — every readable record is still
+    // listed, and listing does not throw.
+    expect(listWorkspaces().map((w) => w.id).sort()).toEqual([good.id, alsoGood.id].sort());
+  });
+
+  it("never lists a partially-written record", () => {
+    // Writes go to `<id>.json.tmp` and are renamed into place, so a write
+    // interrupted midway leaves a `.tmp` file that no reader picks up. If the
+    // listing matched on `.json` anywhere in the name this would surface a
+    // half-written (or, here, entirely invalid) record.
+    const good = createWorkspace({ cwd: "/tmp/good", isolation: "local" });
+    writeFileSync(join(workspacesDir, "ws-partial-abc.json.tmp"), '{"id":"ws-partial-abc","cwd":"/tmp/p","stat');
     expect(listWorkspaces().map((w) => w.id)).toEqual([good.id]);
+    expect(getWorkspace("ws-partial-abc")).toBeNull();
+  });
+
+  it("leaves no temp file behind after a successful write", () => {
+    createWorkspace({ cwd: "/tmp/a", isolation: "local" });
+    expect(readdirSync(workspacesDir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
   it("returns every active workspace sharing a cwd", () => {
@@ -229,22 +273,13 @@ describe("recordWorktreeWorkspace", () => {
   });
 
   it("adopts the existing record for a cwd rather than downgrading its ownership", () => {
-    const first = recordWorktreeWorkspace({
-      cwd: "/home/dev/repo.feat-x",
-      repoPath: "/home/dev/repo",
-      created: true,
-      mode: "branch-off",
-      branch: "feat/x",
-    });
+    const cwd = worktreePathFor("feat/adopt");
+    if (!existsSync(cwd)) git(["worktree", "add", "-q", "-b", "feat/adopt", cwd, "main"], repoDir);
+
+    const first = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: true, mode: "branch-off", branch: "feat/adopt" });
     // A second chat on the same worktree reuses the directory, so `created` is
     // false — but the workspace already knows we made it.
-    const second = recordWorktreeWorkspace({
-      cwd: "/home/dev/repo.feat-x",
-      repoPath: "/home/dev/repo",
-      created: false,
-      mode: "checkout-branch",
-      branch: "feat/x",
-    });
+    const second = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: false, mode: "checkout-branch", branch: "feat/adopt" });
     expect(second.id).toBe(first.id);
     expect(second.worktree?.owned).toBe(true);
     expect(second.worktree?.mode).toBe("branch-off");
@@ -252,23 +287,129 @@ describe("recordWorktreeWorkspace", () => {
   });
 
   it("does not adopt an archived record", () => {
-    const first = recordWorktreeWorkspace({
-      cwd: "/home/dev/repo.feat-x",
-      repoPath: "/home/dev/repo",
-      created: true,
-      mode: "branch-off",
-      branch: "feat/x",
-    });
+    const cwd = worktreePathFor("feat/archived");
+    if (!existsSync(cwd)) git(["worktree", "add", "-q", "-b", "feat/archived", cwd, "main"], repoDir);
+
+    const first = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: true, mode: "branch-off", branch: "feat/archived" });
     archiveWorkspace(first.id);
-    const second = recordWorktreeWorkspace({
-      cwd: "/home/dev/repo.feat-x",
-      repoPath: "/home/dev/repo",
-      created: false,
-      mode: "checkout-branch",
-      branch: "feat/x",
-    });
+    const second = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: false, mode: "checkout-branch", branch: "feat/archived" });
     expect(second.id).not.toBe(first.id);
     expect(listWorkspaces()).toHaveLength(2);
+  });
+
+  it("does not adopt a local workspace on the same directory", () => {
+    // Phase 3's adopt-on-open will create `local` records for directories the
+    // user merely opens. One of those holds no worktree provenance at all, so
+    // adopting it would drop this resolution's `owned` on the floor.
+    const cwd = worktreePathFor("feat/localfirst");
+    if (!existsSync(cwd)) git(["worktree", "add", "-q", "-b", "feat/localfirst", cwd, "main"], repoDir);
+
+    const local = createWorkspace({ cwd, isolation: "local" });
+    const ws = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: true, mode: "branch-off", branch: "feat/localfirst" });
+
+    expect(ws.id).not.toBe(local.id);
+    expect(ws.isolation).toBe("worktree");
+    expect(ws.worktree?.owned).toBe(true);
+    // The local record still describes the same directory as a plain folder —
+    // it is not stale, so it is left active.
+    expect(getWorkspace(local.id)?.status).toBe("active");
+  });
+});
+
+describe("recordWorktreeWorkspace revalidation", () => {
+  it("does not adopt across a gap in existence — removed, then recreated by hand", () => {
+    // The reproduced sequence. Callboard makes the worktree and records it as
+    // owned; the user removes it behind our back; the user puts their own
+    // directory at the same path; a new chat asks for the same worktree.
+    // Adopting here would hand `owned: true` to a directory we never made,
+    // and Phase 2 removes clean owned worktrees.
+    const cwd = worktreePathFor("feat/gap");
+
+    const firstId = captureWorktreeWorkspace(
+      resolveBranch({ folder: repoDir, newBranch: "feat/gap", baseBranch: "main", useWorktree: true }),
+    );
+    expect(getWorkspace(firstId!)?.cwd).toBe(cwd);
+    expect(getWorkspace(firstId!)?.worktree?.owned).toBe(true);
+
+    git(["worktree", "remove", cwd], repoDir);
+    expect(existsSync(cwd)).toBe(false);
+    // Nothing archives workspaces in Phase 1 — the record is still active and
+    // still claims to own a directory that is gone.
+    expect(getWorkspace(firstId!)?.status).toBe("active");
+
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, "notes.md"), "the user's own directory\n");
+
+    // New chat, same request. ensureWorktree sees the directory and reuses it,
+    // so `created` is false.
+    const resolved = resolveBranch({ folder: repoDir, baseBranch: "feat/gap", useWorktree: true });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.folder).toBe(cwd);
+    expect(resolved.worktree?.created).toBe(false);
+
+    const secondId = captureWorktreeWorkspace(resolved);
+    expect(secondId).not.toBe(firstId);
+    expect(getWorkspace(secondId!)?.worktree?.owned).toBe(false);
+    expect(getWorkspace(firstId!)?.status).toBe("archived");
+    // Exactly one active record for the directory, and it is the honest one.
+    expect(listWorkspacesByCwd(cwd).map((w) => w.id)).toEqual([secondId]);
+
+    rmSync(cwd, { recursive: true, force: true });
+    git(["worktree", "prune"], repoDir);
+  });
+
+  it("archives a record whose directory is simply gone, rather than adopting it", () => {
+    // Existence is the first half of the predicate, pinned on its own. Driven
+    // through recordWorktreeWorkspace directly because resolveBranch would
+    // recreate the directory before the record is ever consulted — and when
+    // *Callboard* is the one that recreates it, re-owning is correct (see the
+    // "still adopts when the record matches a live worktree" case).
+    const cwd = worktreePathFor("feat/vanished");
+    git(["worktree", "add", "-q", "-b", "feat/vanished", cwd, "main"], repoDir);
+    const first = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: true, mode: "branch-off", branch: "feat/vanished" });
+    expect(first.worktree?.owned).toBe(true);
+
+    git(["worktree", "remove", cwd], repoDir);
+    expect(existsSync(cwd)).toBe(false);
+
+    const second = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: true, mode: "branch-off", branch: "feat/vanished" });
+    expect(second.id).not.toBe(first.id);
+    expect(getWorkspace(first.id)?.status).toBe("archived");
+    expect(listWorkspacesByCwd(cwd).map((w) => w.id)).toEqual([second.id]);
+  });
+
+  it("does not adopt a record pointing at a worktree of a different repo", () => {
+    const cwd = worktreePathFor("feat/otherrepo");
+    if (!existsSync(cwd)) git(["worktree", "add", "-q", "-b", "feat/otherrepo", cwd, "main"], repoDir);
+
+    // The record claims this directory is a worktree of some other checkout.
+    const stale = createWorkspace({
+      cwd,
+      repoPath: join(gitRoot, "some-other-repo"),
+      isolation: "worktree",
+      worktree: { owned: true, mode: "branch-off", branch: "feat/otherrepo" },
+    });
+
+    const ws = recordWorktreeWorkspace({ cwd, repoPath: repoDir, created: false, mode: "checkout-branch", branch: "feat/otherrepo" });
+    expect(ws.id).not.toBe(stale.id);
+    expect(ws.worktree?.owned).toBe(false);
+    expect(getWorkspace(stale.id)?.status).toBe("archived");
+  });
+
+  it("still adopts when the record matches a live worktree", () => {
+    // The revalidation must not cost us the property it is bolted onto:
+    // a genuine reuse still preserves `owned`.
+    const cwd = worktreePathFor("feat/live");
+    const firstId = captureWorktreeWorkspace(
+      resolveBranch({ folder: repoDir, newBranch: "feat/live", baseBranch: "main", useWorktree: true }),
+    );
+    const secondId = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "feat/live", useWorktree: true }));
+    expect(secondId).toBe(firstId);
+    expect(getWorkspace(firstId!)?.worktree?.owned).toBe(true);
+    expect(listWorkspacesByCwd(cwd)).toHaveLength(1);
+
+    git(["worktree", "remove", cwd], repoDir);
   });
 });
 

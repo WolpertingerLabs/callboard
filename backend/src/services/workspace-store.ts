@@ -12,12 +12,18 @@
  * created when a chat starts in a worktree; nothing reads them to make a
  * decision yet, and archiving marks status ONLY — no cascade to chats, no
  * directory removal. That is Phase 2, and it is deliberately not here.
+ *
+ * The one thing this module *does* read its own records for is revalidation:
+ * a record is adopted only while it still describes the directory on disk
+ * (see {@link recordWorktreeWorkspace}). Nothing is immortal — records the
+ * filesystem has outgrown are archived rather than handed forward.
  */
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, renameSync, rmSync } from "fs";
-import { join, basename } from "path";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, renameSync, rmSync, realpathSync } from "fs";
+import { join, basename, resolve } from "path";
 import { randomUUID } from "node:crypto";
 import type { Workspace, WorkspacePayload, WorktreeMode } from "shared";
 import type { ResolveBranchResult } from "../utils/git.js";
+import { resolveWorktreeToMainRepo } from "../utils/git.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -25,7 +31,16 @@ const log = createLogger("workspace-store");
 
 const workspacesDir = join(DATA_DIR, "workspaces");
 
-if (!existsSync(workspacesDir)) mkdirSync(workspacesDir, { recursive: true });
+// Non-fatal on purpose. This is the one mkdir in the store that actually runs
+// on upgrade, and the rest of the module degrades to logged failures rather
+// than throwing — a full disk must not stop the server from starting. Reads
+// tolerate the missing directory; writes fail loudly to their (catching)
+// callers.
+try {
+  if (!existsSync(workspacesDir)) mkdirSync(workspacesDir, { recursive: true });
+} catch (err: any) {
+  log.error(`Failed to create ${workspacesDir}: ${err.message} — workspace records will not persist`);
+}
 
 export const WORKSPACE_NAME_MAX = 200;
 
@@ -120,7 +135,18 @@ export function getWorkspace(id: string): Workspace | null {
  */
 export function listWorkspaces(filter?: { status?: Workspace["status"] }): Workspace[] {
   const workspaces: Workspace[] = [];
-  for (const file of readdirSync(workspacesDir).filter((f) => f.endsWith(".json"))) {
+  let files: string[];
+  try {
+    // Only fully-written records are named `*.json` — an interrupted
+    // atomicWrite leaves `*.json.tmp`, which this never picks up.
+    files = readdirSync(workspacesDir).filter((f) => f.endsWith(".json"));
+  } catch (err: any) {
+    // The directory could not be created at import (see above) or vanished
+    // underneath us. An empty registry is the honest answer, not a throw.
+    log.error(`Failed to list ${workspacesDir}: ${err.message}`);
+    return [];
+  }
+  for (const file of files) {
     try {
       const workspace: Workspace = JSON.parse(readFileSync(join(workspacesDir, file), "utf8"));
       if (filter?.status && workspace.status !== filter.status) continue;
@@ -207,6 +233,42 @@ export interface WorktreeIntent {
   prNumber?: number;
 }
 
+/** Compare two paths, tolerating `..`/`.` segments and symlinked parents. */
+function samePath(a: string, b: string): boolean {
+  if (resolve(a) === resolve(b)) return true;
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Does this record still describe the directory that is actually on disk?
+ *
+ * Nothing archives workspaces on its own, so records outlive the directories
+ * they point at: `git worktree remove` leaves the record `active`, and a
+ * directory the user then recreates at the same path is a *different*
+ * directory that the record still claims to own. Adopting across that gap is
+ * how `owned: true` ends up on a worktree Callboard never made — precisely
+ * what `owned` exists to prevent.
+ *
+ * Pure filesystem reads (no `git` subprocess), so it is cheap enough for the
+ * chat-start path.
+ */
+function worktreeRecordMatchesDisk(workspace: Workspace): boolean {
+  if (!existsSync(workspace.cwd)) return false;
+  // Degenerate case: ensureWorktree hands back the *main* checkout when the
+  // branch is already checked out there, so cwd === repoPath and the
+  // directory is not a worktree of anything. Existence of the repo is all
+  // there is to verify (and such a record is never `owned`).
+  if (!workspace.repoPath || samePath(workspace.repoPath, workspace.cwd)) {
+    return existsSync(join(workspace.cwd, ".git"));
+  }
+  const resolution = resolveWorktreeToMainRepo(workspace.cwd);
+  return resolution.isWorktree && samePath(resolution.mainRepoPath, workspace.repoPath);
+}
+
 /**
  * Adopt-or-create the workspace for a worktree Callboard just resolved.
  *
@@ -216,10 +278,32 @@ export interface WorktreeIntent {
  * downgrade an owned worktree to unowned. Only when there is no record does
  * `created` decide ownership — which means a worktree that predates this
  * entity is recorded as unowned, the safe direction.
+ *
+ * Two things bound that adoption:
+ *
+ * - **Isolation.** Only a `worktree` record can be adopted. A `local`
+ *   workspace on the same path (Phase 3's adopt-on-open will create those)
+ *   describes the directory as a plain folder and holds no worktree
+ *   provenance at all — adopting it would drop this resolution's `owned` on
+ *   the floor rather than preserve it.
+ * - **Reality.** The record must still describe the directory on disk
+ *   ({@link worktreeRecordMatchesDisk}). A record that no longer does is
+ *   archived, not adopted, and the directory is recorded afresh with `owned`
+ *   decided by `created` as normal.
  */
 export function recordWorktreeWorkspace(intent: WorktreeIntent): Workspace {
-  const existing = listWorkspacesByCwd(intent.cwd)[0];
-  if (existing) return existing;
+  const candidates = listWorkspacesByCwd(intent.cwd).filter((w) => w.isolation === "worktree");
+  const live = candidates.find(worktreeRecordMatchesDisk);
+  if (live) return live;
+
+  // Nothing active on this path still describes reality. Archive the stale
+  // records first: leaving them active would leave Phase 2's ref-count (and
+  // its removal gate) reading provenance for a directory that no longer
+  // exists, or for one that somebody else put there.
+  for (const stale of candidates) {
+    log.info(`Archiving stale workspace ${stale.id} — ${stale.cwd} no longer matches its record`);
+    archiveWorkspace(stale.id);
+  }
 
   return createWorkspace({
     cwd: intent.cwd,
