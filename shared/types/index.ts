@@ -40,6 +40,18 @@ export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from 
 
 export type { StreamEvent } from "./stream.js";
 
+export type { ClientCapability, ServerInfoEvent } from "./protocol.js";
+export {
+  PROTOCOL_VERSION,
+  MIN_PROTOCOL_VERSION,
+  PROTOCOL_HEADER,
+  CAPS_HEADER,
+  CLIENT_CAPS,
+  CLIENT_CAP_VALUES,
+  SERVER_FEATURES,
+  handshakeHeaders,
+} from "./protocol.js";
+
 export type { SlashCommand } from "./slashCommand.js";
 
 export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";

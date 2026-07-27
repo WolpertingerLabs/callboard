@@ -44,6 +44,7 @@ import {
   listCards,
   createCard,
   assignChatToCard,
+  handshakeHeaders,
   type CardSummary,
   type Chat as ChatType,
   type ForkProvider,
@@ -1092,6 +1093,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     abortRef.current = controller;
     try {
       const res = await fetch(`/api/chats/${id}/stream`, {
+        // Advertise what this bundle understands; the server answers with a
+        // server_info frame. Both sides tolerate the other side not playing.
+        headers: handshakeHeaders(),
         credentials: "include",
         signal: controller.signal,
       });
@@ -1793,7 +1797,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
           res = await fetch("/api/chats/new/message", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...handshakeHeaders() },
             credentials: "include",
             body: JSON.stringify(requestBody),
             signal: controller.signal,
@@ -1846,7 +1850,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
           res = await fetch(`/api/chats/${id}/message`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...handshakeHeaders() },
             credentials: "include",
             body: JSON.stringify(body),
             signal: controller.signal,

@@ -11,7 +11,7 @@ import { getGitInfo, resolveBranch } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
-import { writeSSEHeaders, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
+import { beginSSE, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
 import { getCard } from "../services/card-store.js";
@@ -31,7 +31,7 @@ export const streamRouter = Router();
 streamRouter.post("/new/message", async (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Create new chat with first message'
-  // #swagger.description = 'Starts a new Claude session in the given folder and streams the response via SSE. Optionally creates a git worktree or branch. Returns a chat_created event followed by message_update events.'
+  // #swagger.description = 'Starts a new Claude session in the given folder and streams the response via SSE. Optionally creates a git worktree or branch. Returns a chat_created event followed by message_update events. Clients may advertise their wire capabilities with the optional X-Callboard-Protocol / X-Callboard-Caps headers; omitting them is always safe.'
   /* #swagger.requestBody = {
     required: true,
     content: {
@@ -71,7 +71,7 @@ streamRouter.post("/new/message", async (req, res) => {
       }
     }
   } */
-  /* #swagger.responses[200] = { description: "SSE stream with chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
+  /* #swagger.responses[200] = { description: "SSE stream opening with a server_info frame, then chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
   /* #swagger.responses[409] = { description: "Uncommitted changes block branch switch. Set forceBranchChange to override." } */
   const {
@@ -226,7 +226,10 @@ streamRouter.post("/new/message", async (req, res) => {
         }),
     });
 
-    writeSSEHeaders(res);
+    // Opens the stream and answers the client's capability handshake with a
+    // server_info frame. The returned session isn't consulted yet — every
+    // event below still emits unconditionally (see stream-session.ts).
+    beginSSE(req, res);
 
     // Custom handler for new chat — needs to intercept chat_created event
     const onEvent = (event: StreamEvent) => {
@@ -290,7 +293,7 @@ streamRouter.post("/new/message", async (req, res) => {
 streamRouter.post("/:id/message", async (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Send message to existing chat'
-  // #swagger.description = 'Sends a user message to an existing chat session and streams the response via SSE.'
+  // #swagger.description = 'Sends a user message to an existing chat session and streams the response via SSE. Clients may advertise their wire capabilities with the optional X-Callboard-Protocol / X-Callboard-Caps headers; omitting them is always safe.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -313,7 +316,7 @@ streamRouter.post("/:id/message", async (req, res) => {
       }
     }
   } */
-  /* #swagger.responses[200] = { description: "SSE stream with message_update, permission_request, message_complete, and message_error events" } */
+  /* #swagger.responses[200] = { description: "SSE stream opening with a server_info frame, then message_update, permission_request, message_complete, and message_error events" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
   const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
@@ -385,7 +388,7 @@ streamRouter.post("/:id/message", async (req, res) => {
       ...(typeof requireExplicitCompletion === "boolean" && { requireExplicitCompletion }),
     });
 
-    writeSSEHeaders(res);
+    beginSSE(req, res);
 
     const onEvent = createSSEHandler(res, emitter);
     emitter.on("event", onEvent);
@@ -403,13 +406,13 @@ streamRouter.post("/:id/message", async (req, res) => {
 streamRouter.get("/:id/stream", (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Connect to active stream'
-  // #swagger.description = 'SSE endpoint to receive real-time updates from an active web or CLI session. For CLI sessions, watches the JSONL log file for changes.'
+  // #swagger.description = 'SSE endpoint to receive real-time updates from an active web or CLI session. For CLI sessions, watches the JSONL log file for changes. Clients may advertise their wire capabilities with the optional X-Callboard-Protocol / X-Callboard-Caps headers; omitting them is always safe.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
-  /* #swagger.responses[200] = { description: "SSE stream with message_update, message_complete, and message_error events" } */
+  /* #swagger.responses[200] = { description: "SSE stream opening with a server_info frame, then message_update, message_complete, and message_error events" } */
   const chatId = req.params.id;
   const session = getActiveSession(chatId);
 
-  writeSSEHeaders(res);
+  beginSSE(req, res);
 
   // If there's an active web session, connect to it
   if (session) {
