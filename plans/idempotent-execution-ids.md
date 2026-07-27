@@ -110,9 +110,39 @@ hashed; there is no adversary and no length problem.
 >
 > This supersedes Open Question 2 below, which turned out to be load-bearing rather than
 > optional. A crash between minting and the intent write is benign: nothing was spawned, so
-> re-minting the same ordinal is correct. Recovery of a key that resolves to nothing re-enters
-> the step and mints a *fresh* ordinal rather than reusing the abandoned one, which keeps
-> "one key, at most one spawn" strictly true.
+> re-minting the same ordinal is correct. What happens when recovery finds a key that resolves
+> to nothing is the subject of the next section.
+
+### The invariant
+
+Stated originally as *"one key, at most one spawn."* **That is too strong, and it is not what
+the design needs.** Taken literally it forbids a recovery path from ever re-spawning under a
+key it already wrote — which would force parallel-branch recovery to re-key a single branch,
+breaking the derivation its siblings depend on (below). The invariant that is both true and
+sufficient is:
+
+> **A key names at most one *materialised* session. Recovery may re-spawn under an existing key,
+> but only after proving that none exists.**
+
+"Proving none exists" is exactly the lookup that already gates every recovery path —
+`findRunByExecutionKey` for child runs, `findChatIdByJobExecutionKey` for step and branch
+sessions. A key that resolves to nothing named nothing, so re-using it cannot collide with
+anything.
+
+The two recovery paths then differ, and the difference is mechanical rather than a matter of
+taste:
+
+- **Agent, poll, notify and sub-job steps mint a fresh ordinal.** Not because reuse would be
+  unsafe, but because recovery for those re-enters *the whole step*, and entering a step is
+  what mints. The fresh ordinal is a consequence of the recovery mechanism, not a rule about
+  keys.
+- **Parallel branches re-spawn under the existing branch key.** A branch key is derived from
+  its step's ordinal — `branchExecutionKey(stepKey, branchId)` = `${stepKey}:${branchId}` — so
+  re-keying one branch would desynchronise it from its siblings and break that derivation.
+  Re-entering the whole step to re-key them together is not available either: it would discard
+  the sibling branches' already-completed results. Reuse has a second benefit — the key on disk
+  still describes the spawn being retried, so a second crash in the same window is recoverable
+  on exactly the same terms as the first.
 
 ### Write intent before spawning
 
@@ -160,6 +190,14 @@ This is the change that actually removes a failure mode users can hit, as oppose
 optimizing one they rarely do. Chat metadata is already a free-form JSON string
 (`Chat.metadata`), so this needs no schema migration on the chat side.
 
+**It narrows the agent-step window; it does not close it.** The chat record that carries the
+key is only written when the provider reports its session id (`claude.ts:1655`, inside the
+stream loop), so a crash between process start and that first event still leaves a session
+that no key can find. What changes is the outcome: recovery re-enters the step and spawns a
+replacement instead of calling `failRun` on the whole run. That is a strict improvement — a
+duplicate session rather than a dead run — but it is not exactly-once, which is an explicit
+non-goal below.
+
 ### Idempotent spawn
 
 `spawnJobRun` accepts an optional `executionKey`. If a run with that key already exists in a
@@ -175,8 +213,15 @@ isn't.
 have none:
 
 - Recovery tries key lookup first.
-- If `activeStep.executionKey` is absent, fall back to the existing `findChildRun` path
-  **for one release**, then delete it.
+- Runs created before this change fall back to the existing `findChildRun` path **for one
+  release**, then it is deleted.
+- The keyed/legacy discriminator is **run-level** (`JobRun.executionCounts !== undefined`,
+  written by `createRun` from run birth), *not* "does this step attempt carry a key". A modern
+  run killed between `enterStep`'s `saveRun` and the intent write has an `activeStep` with no
+  key; treating that as legacy would send it down a scan that keys only on
+  `(parentRunId, parentStepId)` and so cannot tell one attempt at a step from another —
+  precisely the mis-adoption this plan exists to prevent, reintroduced on the exact window the
+  key was added to close.
 - No data migration, no rewrite of historical runs.
 
 ---
@@ -204,8 +249,11 @@ have none:
   single-process and stays that way here.
 - Idempotency for anything outside the job runner (cron spawns, event triggers). Same
   pattern would apply, but each is its own scope.
-- Exactly-once *side effects* inside a step. This gives exactly-once **spawn**; an agent
-  that already pushed a commit before the crash still pushed it.
+- Exactly-once *side effects* inside a step. An agent that already pushed a commit before the
+  crash still pushed it. Nor is the **spawn** itself exactly-once in every case: it is for
+  sub-job steps, where the child run record and its key are written together, but a session
+  whose provider never reported a session id leaves no record to find and is re-spawned (see
+  "Extend to agent steps and parallel branches").
 
 ## Risks
 

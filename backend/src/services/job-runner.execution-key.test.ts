@@ -40,6 +40,24 @@ let activeSessions: Set<string>;
 let chatCounter: number;
 let jobCounter: number;
 
+/** Every jobContext the runner handed to sendMessage, with the chat it got. */
+interface SentSession {
+  chatId: string;
+  runId: string;
+  stepId: string;
+  branchId?: string;
+  executionKey?: string;
+}
+let sentSessions: SentSession[];
+
+/**
+ * Optional per-test gate on session startup: return a promise and that
+ * session's chat_created is withheld until it resolves. That is how the window
+ * between a session being spawned and its chatId being persisted — the one the
+ * staleness guard has to survive — is held open on demand.
+ */
+let holdSession: ((ctx: SentSession) => Promise<void> | undefined) | null;
+
 async function load(dir: string): Promise<void> {
   process.env.CALLBOARD_DATA_DIR = dir;
   vi.resetModules();
@@ -49,13 +67,18 @@ async function load(dir: string): Promise<void> {
   runner = await import("./job-runner.js");
 
   activeSessions = new Set();
+  sentSessions = [];
 
   runner.setJobRunnerDeps({
-    sendMessage: async () => {
+    sendMessage: async (params) => {
       const chatId = `chat-${++chatCounter}`;
+      const sent: SentSession = { chatId, ...(params.jobContext as Omit<SentSession, "chatId">) };
+      sentSessions.push(sent);
       activeSessions.add(chatId);
       const emitter = new EventEmitter();
-      setImmediate(() => emitter.emit("event", { type: "chat_created", chatId }));
+      const held = holdSession?.(sent);
+      if (held) void held.then(() => emitter.emit("event", { type: "chat_created", chatId }));
+      else setImmediate(() => emitter.emit("event", { type: "chat_created", chatId }));
       return emitter;
     },
     stopSession: (chatId: string) => activeSessions.delete(chatId),
@@ -125,6 +148,7 @@ beforeEach(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "callboard-runner-"));
   chatCounter = 0;
   jobCounter = 0;
+  holdSession = null;
   await load(dataDir);
 });
 
@@ -165,6 +189,60 @@ describe("execution keys — minting", () => {
     expect(parent.activeStep!.attempt).toBe(1);
     expect(parent.activeStep!.executionKey).toBe(`${parentRunId}:sub:2`);
     expect(store.getRun(parent.activeStep!.childRunId!)!.executionKey).toBe(`${parentRunId}:sub:2`);
+  });
+});
+
+// ── Key plumbing into the session ───────────────────────────────────────
+//
+// Everything agent-step recovery does rests on the key reaching sendMessage in
+// the jobContext, since that is what claude.ts stamps into the chat record
+// (jobExecutionKey) for findChatIdByJobExecutionKey to find later. The rest of
+// this file simulates the chat record by hand, so without these two the wiring
+// itself is untested.
+
+describe("execution keys — reach the session that carries them", () => {
+  it("passes the step's key to sendMessage in the jobContext", async () => {
+    const jobId = makeJob({ steps: [{ id: "work", type: "agent", prompt: "Do it" }] });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => !!store.getRun(runId)?.activeStep?.chatId);
+
+    expect(sentSessions).toHaveLength(1);
+    expect(sentSessions[0]).toMatchObject({ runId, stepId: "work", executionKey: `${runId}:work:1` });
+    expect(sentSessions[0].executionKey).toBe(store.getRun(runId)!.activeStep!.executionKey);
+    expect(sentSessions[0].branchId).toBeUndefined();
+  });
+
+  it("passes each parallel branch's own key — read from the branch record, not the step's", async () => {
+    const jobId = makeJob({
+      steps: [
+        {
+          id: "checks",
+          type: "parallel",
+          mode: "all",
+          branches: [
+            { id: "a", type: "agent", prompt: "a" },
+            { id: "b", type: "agent", prompt: "b" },
+          ],
+        },
+      ],
+    });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => Object.values(store.getRun(runId)!.activeStep!.parallel!.branches).every((b) => !!b.chatId));
+
+    const branches = store.getRun(runId)!.activeStep!.parallel!.branches;
+    for (const branchId of ["a", "b"]) {
+      const sent = sentSessions.find((s) => s.branchId === branchId);
+      expect(sent).toMatchObject({ runId, stepId: "checks", executionKey: `${runId}:checks:1:${branchId}` });
+      expect(sent!.executionKey).toBe(branches[branchId].executionKey);
+    }
+  });
+
+  it("gives an advisory notifier no key at all — it never advances a run, so there is nothing to recover", async () => {
+    const jobId = makeJob({ steps: [{ id: "sign", type: "approval", message: "ok?" }] });
+    runner.spawnJobRun(jobId, {});
+    await flush(() => sentSessions.length > 0);
+
+    expect(sentSessions[0].executionKey).toBeUndefined();
   });
 });
 
@@ -369,6 +447,235 @@ describe("execution keys — parallel branches", () => {
     expect(history.find((h) => h.branchId === "c")?.chatId).toBe(chatC);
     expect(history.find((h) => h.stepType === "parallel")?.outputs).toMatchObject({ a: { r: "A" }, b: { r: "B" }, c: { r: "C" } });
   });
+
+  // The test above never exercises the adoption leg: its branches either kept
+  // their chatId (harvested directly) or had no session at all (re-spawned).
+  it("adopts a branch session by execution key when only the branch's chatId was lost", async () => {
+    const jobId = makeJob({
+      steps: [
+        {
+          id: "checks",
+          type: "parallel",
+          mode: "all",
+          branches: [
+            { id: "a", type: "agent", prompt: "a", outputs: ["r"] },
+            { id: "b", type: "agent", prompt: "b", outputs: ["r"] },
+          ],
+        },
+      ],
+    });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => Object.values(store.getRun(runId)!.activeStep!.parallel!.branches).every((b) => !!b.chatId));
+
+    const branches = store.getRun(runId)!.activeStep!.parallel!.branches;
+    const chatA = branches.a.chatId!;
+    const keyB = branches.b.executionKey!;
+    store.recordStepResult(runId, "checks", { outputs: { r: "A" } }, "a");
+    store.recordStepResult(runId, "checks", { outputs: { r: "B" } }, "b");
+
+    // b's session did get created — the chat record claude.ts writes carries
+    // its execution key — but the branch's chatId never reached the run file.
+    chats.upsertChat("branch-orphan", dataDir, "branch-orphan", {
+      metadata: JSON.stringify({ jobRunId: runId, jobStepId: "checks", branchId: "b", jobExecutionKey: keyB }),
+    });
+    const run = store.getRun(runId)!;
+    delete run.activeStep!.parallel!.branches.b.chatId;
+    store.saveRun(run);
+
+    await load(dataDir);
+    await flush(() => store.getRun(runId)!.status === "succeeded");
+
+    const history = store.getRun(runId)!.history;
+    expect(history.find((h) => h.branchId === "a")?.chatId).toBe(chatA);
+    expect(history.find((h) => h.branchId === "b")?.chatId).toBe("branch-orphan"); // adopted, not re-spawned
+    expect(history.find((h) => h.stepType === "parallel")?.outputs).toMatchObject({ a: { r: "A" }, b: { r: "B" } });
+    expect(store.getRun(runId)!.sessionsSpawned).toBe(2);
+  });
+
+  it("fails a branch that has to be restarted but is no longer in the definition", async () => {
+    const jobId = makeJob({
+      steps: [
+        {
+          id: "checks",
+          type: "parallel",
+          mode: "all",
+          branches: [
+            { id: "a", type: "agent", prompt: "a", outputs: ["r"] },
+            { id: "b", type: "agent", prompt: "b", outputs: ["r"] },
+          ],
+        },
+      ],
+    });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => Object.values(store.getRun(runId)!.activeStep!.parallel!.branches).every((b) => !!b.chatId));
+    store.recordStepResult(runId, "checks", { outputs: { r: "A" } }, "a");
+
+    // b never got as far as a session, and its definition is gone from the
+    // run's frozen copy — the shape a hand-edited run file or a bad migration
+    // leaves behind. Skipping it silently would strand the branch "starting"
+    // forever, with no wake timer and no timeout to notice.
+    const run = store.getRun(runId)!;
+    delete run.activeStep!.parallel!.branches.b.chatId;
+    const parallelStep = run.definition.steps[0] as { branches: Array<{ id: string }> };
+    parallelStep.branches = parallelStep.branches.filter((b) => b.id !== "b");
+    store.saveRun(run);
+
+    await load(dataDir);
+    await flush(() => store.getRun(runId)!.status === "failed");
+
+    const entry = store.getRun(runId)!.history.find((h) => h.branchId === "b");
+    expect(entry?.result).toBe("error");
+    expect(entry?.detail).toContain("no longer defined");
+  });
+});
+
+// ── Parallel steps left unresolved by a crash ───────────────────────────
+//
+// A parallel step arms no wake timer and has no timeout, so anything that
+// leaves it on activeStep with nothing left to resolve it hangs the run
+// permanently. Both fixtures below are states a hard kill can leave on disk.
+
+describe("execution keys — a parallel step whose branches all ended in the crash window", () => {
+  it("resolves on restart instead of hanging with every branch terminal", async () => {
+    const jobId = makeJob({
+      steps: [
+        {
+          id: "checks",
+          type: "parallel",
+          mode: "all",
+          branches: [
+            { id: "a", type: "agent", prompt: "a", outputs: ["r"] },
+            { id: "b", type: "agent", prompt: "b", outputs: ["r"] },
+          ],
+        },
+        { id: "after", type: "agent", prompt: "After" },
+      ],
+    });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => Object.values(store.getRun(runId)!.activeStep!.parallel!.branches).every((b) => !!b.chatId));
+
+    // handleParallelBranchSessionEnd persists the branch result and only then
+    // awaits resolveParallelIfReady — so a kill in that gap on the last branch
+    // leaves every branch terminal and the step unresolved. Nothing in the
+    // restart loop looks at terminal branches.
+    const run = store.getRun(runId)!;
+    const endedAt = new Date().toISOString();
+    for (const branchId of ["a", "b"]) {
+      const branch = run.activeStep!.parallel!.branches[branchId];
+      branch.status = "completed";
+      branch.endedAt = endedAt;
+      branch.outputs = { r: branchId.toUpperCase() };
+    }
+    store.saveRun(run);
+
+    await load(dataDir);
+    await flush(() => store.getRun(runId)!.currentStepId === "after");
+
+    expect(store.getRun(runId)!.history.find((h) => h.stepType === "parallel")?.outputs).toMatchObject({ a: { r: "A" }, b: { r: "B" } });
+  });
+
+  it("resolves a race step killed after its winner was recorded but before it routed on", async () => {
+    const jobId = makeJob({
+      steps: [
+        {
+          id: "checks",
+          type: "parallel",
+          mode: "race",
+          branches: [
+            { id: "a", type: "agent", prompt: "a", outputs: ["r"] },
+            { id: "b", type: "agent", prompt: "b", outputs: ["r"] },
+          ],
+        },
+        { id: "after", type: "agent", prompt: "After" },
+      ],
+    });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => Object.values(store.getRun(runId)!.activeStep!.parallel!.branches).every((b) => !!b.chatId));
+
+    // The race path sets winnerBranchId in memory and then persists it as a
+    // side effect of each loser's appendHistory, well before enterStep runs.
+    // Killed in there, restart finds a winner recorded, every branch terminal
+    // and the step still unresolved — a state in which neither leg of the race
+    // path used to fire.
+    const run = store.getRun(runId)!;
+    const parallel = run.activeStep!.parallel!;
+    const endedAt = new Date().toISOString();
+    parallel.branches.a.status = "completed";
+    parallel.branches.a.endedAt = endedAt;
+    parallel.branches.a.outputs = { r: "A" };
+    parallel.branches.b.status = "cancelled";
+    parallel.branches.b.endedAt = endedAt;
+    parallel.branches.b.detail = `superseded by winning branch "a"`;
+    parallel.winnerBranchId = "a";
+    store.saveRun(run);
+
+    await load(dataDir);
+    await flush(() => store.getRun(runId)!.currentStepId === "after");
+
+    const entry = store.getRun(runId)!.history.find((h) => h.stepType === "parallel");
+    expect(entry?.result).toBe("completed");
+    expect(entry?.outputs).toMatchObject({ _winner: "a", a: { r: "A" } });
+    // Exactly one summary entry — the resume is idempotent against a kill that
+    // landed after the entry was appended instead of before it.
+    expect(store.getRun(runId)!.history.filter((h) => h.stepType === "parallel")).toHaveLength(1);
+  });
+});
+
+// ── Staleness of an in-flight spawn ─────────────────────────────────────
+
+describe("execution keys — a session that lands after its attempt was superseded", () => {
+  it("does not let a re-entered step adopt the previous attempt's in-flight branch session", async () => {
+    // A race step that routes back into itself: branch "a" wins, the step
+    // re-enters, and the branch ids of the new attempt are the same as the old
+    // one's — so a step-id comparison cannot tell the two attempts apart.
+    const jobId = makeJob({
+      steps: [
+        {
+          id: "checks",
+          type: "parallel",
+          mode: "race",
+          branches: [
+            { id: "a", type: "agent", prompt: "a", outputs: ["r"] },
+            { id: "b", type: "agent", prompt: "b", outputs: ["r"] },
+          ],
+        },
+        { id: "again", type: "gate", condition: { all: [{ ref: "run.id", op: "exists" }] }, onPass: "checks", onFail: "end", maxLoops: 3 },
+      ],
+    });
+
+    // Hold branch b's FIRST session inside sendMessage, so its chat_created
+    // arrives only after the step has moved on and come back.
+    let releaseFirstB: (() => void) | undefined;
+    holdSession = (ctx) => {
+      if (ctx.branchId !== "b" || releaseFirstB) return undefined;
+      return new Promise<void>((resolve) => {
+        releaseFirstB = resolve;
+      });
+    };
+
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => !!store.getRun(runId)!.activeStep!.parallel!.branches.a.chatId && !!releaseFirstB);
+    const staleChatB = sentSessions.find((s) => s.branchId === "b")!.chatId;
+    expect(store.getRun(runId)!.activeStep!.parallel!.branches.b.chatId).toBeUndefined();
+
+    // a wins the race → b is cancelled → the gate routes straight back into
+    // "checks", which mints attempt 2 and spawns both branches again.
+    endBranch(runId, "checks", "a", { outputs: { r: "A" } });
+    await flush(() => store.getRun(runId)!.activeStep?.parallel?.branches.b.executionKey === `${runId}:checks:2:b`);
+    await flush(() => !!store.getRun(runId)!.activeStep!.parallel!.branches.b.chatId);
+    const attempt2ChatB = store.getRun(runId)!.activeStep!.parallel!.branches.b.chatId!;
+    expect(attempt2ChatB).not.toBe(staleChatB);
+
+    // Only now does attempt 1's branch-b session finish starting.
+    releaseFirstB!();
+    await flush(() => !activeSessions.has(staleChatB) || store.getRun(runId)!.activeStep!.parallel!.branches.b.chatId === staleChatB);
+
+    // The stale session was stopped, not written over attempt 2's branch — an
+    // "all" step whose real session got orphaned this way never resolves, and
+    // the stale session's output would have been harvested as attempt 2's.
+    expect(store.getRun(runId)!.activeStep!.parallel!.branches.b.chatId).toBe(attempt2ChatB);
+    expect(activeSessions.has(staleChatB)).toBe(false);
+  });
 });
 
 // ── Agent step sessions ─────────────────────────────────────────────────
@@ -456,7 +763,12 @@ describe("execution keys — idempotent spawnJobRun", () => {
 // ── Migration ───────────────────────────────────────────────────────────
 
 describe("execution keys — runs persisted before they existed", () => {
-  it("falls back to the legacy child scan when the step attempt has no key", async () => {
+  // The discriminator is JobRun.executionCounts, not activeStep.executionKey:
+  // a modern run can legitimately have an activeStep with no key (see the
+  // enterStep-to-intent-write test below), and sending that run down the
+  // legacy scan is exactly the mis-adoption keys exist to prevent. So this
+  // fixture has to strip executionCounts to be a genuine legacy run.
+  it("falls back to the legacy child scan for a run persisted without executionCounts", async () => {
     const childId = makeChildJob();
     const parentId = makeJob({
       steps: [
@@ -478,11 +790,69 @@ describe("execution keys — runs persisted before they existed", () => {
     delete parent.executionCounts;
     parent.activeStep = { stepId: "sub", attempt: 1, startedAt: parent.activeStep!.startedAt };
     store.saveRun(parent);
+    expect(store.getRun(parentRunId)!.executionCounts).toBeUndefined();
 
     await load(dataDir);
     await flush(() => store.getRun(parentRunId)!.currentStepId === "after");
 
     expect(store.getRun(parentRunId)!.history.find((h) => h.stepId === "sub")?.childRunId).toBe(childRunId);
     expect(childrenOf(parentRunId)).toEqual([childRunId]);
+  });
+
+  it("marks a run as keyed from birth, before it has minted a single key", async () => {
+    // An approval step mints nothing (its notifier is advisory), so this run
+    // reaches disk with the marker present and empty. Were executionCounts
+    // created lazily at the first mint instead, a run killed anywhere before
+    // that mint would read as legacy — which is the very window the key
+    // exists to close.
+    const jobId = makeJob({ steps: [{ id: "sign", type: "approval", message: "ok?", notify: false }] });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+
+    await flush(() => store.getRun(runId)!.status === "waiting_approval");
+    const run = store.getRun(runId)!;
+    expect(run.executionCounts).toEqual({});
+    expect(run.activeStep!.executionKey).toBeUndefined();
+  });
+});
+
+// ── The enterStep-to-intent-write window ────────────────────────────────
+
+describe("execution keys — a keyed run killed before its key was written", () => {
+  it("re-enters the step rather than falling back to the legacy scan", async () => {
+    const childId = makeChildJob();
+    const parentId = makeJob({
+      steps: [
+        { id: "sub", type: "job", jobId: childId, outputs: ["result"], onFailure: "sub", maxLoops: 2 },
+        { id: "after", type: "agent", prompt: "After" },
+      ],
+    });
+    const { parentRunId, childRunId: attempt1Child } = await spawnParentAndChild(parentId);
+    store.recordStepResult(attempt1Child, "work", { outputs: { result: "from attempt 1" } });
+
+    // Two kills again: attempt 1's child was spawned but its linkage never
+    // landed (so it is not in history either), and the run was then killed on
+    // its way into attempt 2 — after enterStep's saveRun, before
+    // startSubJobStep's intent write. The activeStep therefore has no key at
+    // all, even though this is a run that mints them.
+    const parent = store.getRun(parentRunId)!;
+    parent.status = "running";
+    parent.currentStepId = "sub";
+    parent.activeStep = { stepId: "sub", attempt: 1, startedAt: new Date().toISOString() };
+    parent.loopCounts = { sub: 1 };
+    store.saveRun(parent);
+    expect(store.getRun(parentRunId)!.executionCounts).toEqual({ sub: 1 });
+
+    // The legacy scan, if it were reached, would hand attempt 2 the stale
+    // attempt-1 child and attribute its outputs to attempt 2.
+    expect(store.findChildRun(parentRunId, "sub", new Set())?.runId).toBe(attempt1Child);
+
+    await load(dataDir);
+    await flush(() => !!store.getRun(parentRunId)!.activeStep?.childRunId);
+
+    const recovered = store.getRun(parentRunId)!;
+    expect(recovered.activeStep!.childRunId).not.toBe(attempt1Child);
+    expect(recovered.activeStep!.executionKey).toBe(`${parentRunId}:sub:2`); // a fresh ordinal, not the abandoned one
+    expect(recovered.history.some((h) => h.childRunId === attempt1Child)).toBe(false);
+    expect(childrenOf(parentRunId)).toHaveLength(2);
   });
 });

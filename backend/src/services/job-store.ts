@@ -348,6 +348,12 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>, pa
     status: "running",
     currentStepId: null,
     loopCounts: {},
+    // Present-but-empty from the moment the run exists: its presence is what
+    // marks a run as one that mints execution keys (see isKeyedRun in the
+    // runner). Creating it lazily at the first mint would leave a run killed
+    // before that mint indistinguishable from a pre-execution-key run —
+    // precisely the window keys exist to close.
+    executionCounts: {},
     sessionsSpawned: 0,
     history: [],
     ...(parent && { parentRunId: parent.parentRunId, parentStepId: parent.parentStepId, depth: parent.depth }),
@@ -407,7 +413,13 @@ function ensureExecutionKeyIndex(): Map<ExecutionKey, string> {
   return index;
 }
 
-/** The run spawned under `key`, or null if that spawn never landed. */
+/**
+ * The run spawned under `key`, or null if that spawn never landed.
+ *
+ * NOTE: deliberately returns terminal runs too, unlike spawnJobRun's dedupe —
+ * see the comment there. Adoption has to be able to see a child that finished
+ * during downtime but was never harvested.
+ */
 export function findRunByExecutionKey(key: ExecutionKey): JobRun | null {
   const index = ensureExecutionKeyIndex();
   const runId = index.get(key);
@@ -416,6 +428,14 @@ export function findRunByExecutionKey(key: ExecutionKey): JobRun | null {
   // Run files are the source of truth — drop entries they no longer back.
   if (!run || run.executionKey !== key) {
     index.delete(key);
+    // A key that WAS spawned but whose run file is gone or unreadable is not
+    // the same thing as a key that never spawned, and the caller cannot tell
+    // them apart from the null alone — it will re-enter the step and spawn a
+    // replacement. Say so here so the duplicate is diagnosable. (A file that
+    // was already unparseable when the index was built never made it in, so
+    // that case still looks like "never spawned"; nothing on disk can
+    // distinguish it.)
+    log.warn(`Execution key ${key} was indexed to run ${runId}, which no longer backs it — treating the spawn as never made`);
     return null;
   }
   return run;
@@ -496,10 +516,11 @@ export function deleteRun(runId: string): boolean {
  * and persisting the linkage adopt the orphan instead of spawning a duplicate.
  *
  * LEGACY — superseded by findRunByExecutionKey(). Only reached for runs
- * persisted before execution keys existed (no activeStep.executionKey); the
- * key it scans on, (parentRunId, parentStepId), cannot tell two attempts at
- * the same step apart. Delete this and its full-directory read one release on,
- * once no such runs can still be in flight.
+ * persisted before execution keys existed (no JobRun.executionCounts — the
+ * discriminator is run-level, see isKeyedRun in the runner); the key it scans
+ * on, (parentRunId, parentStepId), cannot tell two attempts at the same step
+ * apart. Delete this and its full-directory read one release on, once no such
+ * runs can still be in flight.
  */
 export function findChildRun(parentRunId: string, parentStepId: string, exclude: ReadonlySet<string>): JobRun | null {
   let newest: JobRun | null = null;
