@@ -140,6 +140,15 @@ export type {
 
 export { CARD_CATEGORY_MAX } from "shared/types/index.js";
 
+/**
+ * Capability handshake headers (`X-Callboard-Protocol` / `X-Callboard-Caps`).
+ * Re-exported here so callers that hand-roll a `fetch` — the SSE streams in
+ * Chat.tsx, which need the raw response body — can spread them in without
+ * reaching into `shared/` directly. Omitting them is always safe: the server
+ * treats a headerless client as protocol 1 with no capabilities.
+ */
+export { handshakeHeaders } from "shared/types/index.js";
+
 const BASE = "/api";
 
 /** Shared error handler: throws with the server's error message or a fallback. */

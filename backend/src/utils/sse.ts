@@ -1,6 +1,7 @@
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import type { EventEmitter } from "events";
 import type { StreamEvent } from "../services/claude.js";
+import { buildServerInfo, createStreamSession, type StreamSession } from "../services/stream-session.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("sse");
@@ -23,6 +24,29 @@ export function writeSSEHeaders(res: Response): void {
 export function sendSSE(res: Response, data: Record<string, unknown>): void {
   log.debug(`SSE send: type=${data.type}`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+/**
+ * Open an SSE stream: write the headers, answer the client's handshake with a
+ * `server_info` frame, and return the {@link StreamSession} describing what
+ * that client understands.
+ *
+ * `server_info` is always the first frame, for every client. A client built
+ * before the handshake existed dispatches stream frames on their `type` field
+ * and has no branch for "server_info", so it falls through and ignores the
+ * frame — which is why this is safe to send unconditionally rather than only to
+ * clients that asked.
+ *
+ * The frame carries both an SSE `event:` name (per the plan) and a `type` field
+ * (how every other frame on this wire is dispatched).
+ */
+export function beginSSE(req: Request, res: Response): StreamSession {
+  writeSSEHeaders(res);
+  const session = createStreamSession(req);
+  const info = buildServerInfo();
+  log.debug(`SSE handshake: client protocol=${session.protocolVersion}, caps=[${session.capabilities.join(",")}]`);
+  res.write(`event: server_info\ndata: ${JSON.stringify(info)}\n\n`);
+  return session;
 }
 
 /**
