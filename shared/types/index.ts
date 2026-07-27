@@ -30,6 +30,8 @@ export type {
 } from "./card.js";
 export { CARD_CATEGORY_MAX } from "./card.js";
 
+export type { Workspace, WorkspacePayload, WorkspaceIsolation, WorkspaceWorktree, WorktreeMode } from "./workspace.js";
+
 export type { ParsedMessage } from "./message.js";
 
 export type { StoredImage, ImageUploadResult } from "./image.js";

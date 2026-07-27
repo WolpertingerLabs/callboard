@@ -28,6 +28,7 @@ import { buildChatTree, getParentChatId } from "./chat-lineage.js";
 import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CARD_CATEGORY_MAX } from "./card-store.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
+import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
@@ -810,6 +811,9 @@ export function buildCallboardToolsSpec(
             }
 
             const effectiveFolder = branchResult.folder;
+            // Record why the worktree exists while we still know — same single
+            // write path the /new/message route uses (plans/workspace-object.md).
+            const workspaceId = captureWorktreeWorkspace(branchResult);
 
             // Resolve the calling chat for parentage linking. getChatId can
             // return a temp tracking id (`new-<ts>`) for a still-registering
@@ -842,6 +846,7 @@ export function buildCallboardToolsSpec(
               ...(providerModel.modelRoutingRankId && { modelRoutingRankId: providerModel.modelRoutingRankId }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
               ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
+              ...(workspaceId && { workspaceId }),
             });
 
             // Listen for chat_created to get the chatId

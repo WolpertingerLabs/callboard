@@ -7,6 +7,16 @@ export interface Chat {
   folder: string;
   /** Resolved main repo path for display/grouping (equals folder when not a worktree). */
   displayFolder?: string;
+  /**
+   * The {@link Workspace} this chat runs in, when one was recorded.
+   *
+   * OPAQUE — never parse it back into a path. `folder`/`displayFolder` above
+   * stay the truth for log paths, and most chats (everything predating the
+   * entity, and every non-worktree chat) have no workspaceId at all, so
+   * nothing may depend on its presence. Where a read could consult either,
+   * the workspace wins when present and the path fields are the fallback.
+   */
+  workspaceId?: string;
   session_id: string;
   session_log_path: string | null;
   metadata: string;

@@ -17,8 +17,15 @@ let parentChat: any;
 vi.mock("../utils/chat-lookup.js", () => ({ findChat: () => parentChat }));
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
-    // Echoes the composed metadata back so the test can assert on it.
-    createChat: (folder: string, sessionId: string, metadata: string) => ({ id: "fork-chat", folder, session_id: sessionId, metadata }),
+    // Echoes the composed metadata back so the test can assert on it, plus the
+    // top-level workspaceId argument (which is a Chat field, not metadata).
+    createChat: (folder: string, sessionId: string, metadata: string, workspaceId?: string) => ({
+      id: "fork-chat",
+      folder,
+      session_id: sessionId,
+      metadata,
+      ...(workspaceId && { workspaceId }),
+    }),
   },
 }));
 /** Calls recorded by the stub providers, so tests can assert which path ran. */
@@ -73,8 +80,8 @@ const { chatsRouter } = await import("./chats.js");
 const forkHandler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/fork" && layer.route.methods.post)
   .route.stack[0].handle as (req: Request, res: Response) => void;
 
-/** Invoke POST /:id/fork and resolve with the status code and the fork's parsed metadata. */
-function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta: any }> {
+/** Invoke POST /:id/fork and resolve with the status code, the fork's parsed metadata, and the raw record. */
+function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta: any; chat: any }> {
   calls.forkSession = [];
   calls.seedSession = [];
   return new Promise((resolve) => {
@@ -85,7 +92,7 @@ function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta:
         return this;
       },
       json(payload: any) {
-        resolve({ code: this.statusCode, meta: payload.metadata ? JSON.parse(payload.metadata) : payload });
+        resolve({ code: this.statusCode, meta: payload.metadata ? JSON.parse(payload.metadata) : payload, chat: payload });
         return this;
       },
     };
@@ -96,14 +103,18 @@ function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta:
   });
 }
 
-/** Build a parent chat whose metadata is `meta` merged over the defaults. */
-function setParent(meta: Record<string, unknown>) {
+/**
+ * Build a parent chat whose metadata is `meta` merged over the defaults.
+ * `fields` sets top-level Chat columns (e.g. workspaceId, which is not metadata).
+ */
+function setParent(meta: Record<string, unknown>, fields: Record<string, unknown> = {}) {
   parentChat = {
     id: "parent-chat",
     folder: "/repo",
     session_id: "session-1",
     session_log_path: "/tmp/parent.jsonl",
     metadata: JSON.stringify({ session_ids: ["session-1"], title: "Parent", ...meta }),
+    ...fields,
   };
 }
 
@@ -129,6 +140,33 @@ describe("POST /api/chats/:id/fork metadata", () => {
     setParent({ cardId: null });
     const res = await fork();
     expect(res.meta).not.toHaveProperty("cardId");
+  });
+
+  it("carries the parent's workspace onto the fork", async () => {
+    // The fork runs in the parent's folder, so it belongs to the parent's
+    // workspace. Without the linkage it would be absent from the set Phase 2's
+    // archive cascade interrupts, and would keep running in a directory being
+    // removed underneath it. workspaceId is a top-level Chat field, so it is
+    // NOT in the metadata blob the rest of this suite asserts on.
+    setParent({}, { workspaceId: "ws-abc123" });
+    const res = await fork();
+    expect(res.code).toBe(201);
+    expect(res.chat.workspaceId).toBe("ws-abc123");
+    expect(res.meta).not.toHaveProperty("workspaceId");
+  });
+
+  it("carries the workspace across a harness handoff too", async () => {
+    // The directory does not change on a handoff — only the engine does.
+    setParent({}, { workspaceId: "ws-abc123" });
+    const res = await fork({ provider: "codex" });
+    expect(res.code).toBe(201);
+    expect(res.chat.workspaceId).toBe("ws-abc123");
+  });
+
+  it("omits workspaceId when the parent has none", async () => {
+    setParent({});
+    const res = await fork();
+    expect(res.chat).not.toHaveProperty("workspaceId");
   });
 });
 
