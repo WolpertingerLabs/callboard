@@ -129,6 +129,22 @@ export function getGitInfo(directory: string): GitInfo {
 export interface WorktreeResolution {
   mainRepoPath: string;
   isWorktree: boolean;
+  /**
+   * The worktree's git **admin directory** — `<mainRepo>/.git/worktrees/<slug>`
+   * exactly as the worktree's own `.git` file names it. Only set when
+   * `isWorktree`.
+   *
+   * The slug is NOT derivable: git names it after the worktree *directory*, so
+   * a worktree at `repo.feat-x` on branch `feat/x` lands in
+   * `.git/worktrees/repo.feat-x`, and a collision gets a numeric suffix. It has
+   * to be read from the `.git` file, which is why it is surfaced here rather
+   * than reconstructed by callers.
+   *
+   * Git owns this directory: it is untracked by definition and destroyed when
+   * the worktree is removed. That is what makes it the right place for the
+   * workspace identity token (see utils/worktree-token.ts).
+   */
+  adminDir?: string;
 }
 
 /**
@@ -183,7 +199,7 @@ export function resolveWorktreeToMainRepo(folder: string): WorktreeResolution {
 
       const mainRepoPath = dirname(dotGitDir);
       if (existsSync(mainRepoPath)) {
-        return { mainRepoPath, isWorktree: true };
+        return { mainRepoPath, isWorktree: true, adminDir: resolvedGitdir };
       }
     }
   } catch {
@@ -200,6 +216,11 @@ const WORKTREE_CACHE_TTL = 300000; // 5 minutes
 /**
  * Cached wrapper around resolveWorktreeToMainRepo.
  * Safe to call per-session in hot paths like paginated chat discovery.
+ *
+ * NOT safe for anything that decides whether a directory may be deleted: the
+ * entry can be up to {@link WORKTREE_CACHE_TTL} out of date, and a worktree
+ * removed and recreated inside that window would answer with the *old*
+ * `adminDir`. Removal paths call {@link resolveWorktreeToMainRepo} directly.
  */
 export function resolveWorktreeToMainRepoCached(folder: string): WorktreeResolution {
   const cached = worktreeResolutionCache.get(folder);
@@ -470,6 +491,163 @@ export function hasUncommittedChanges(directory: string): boolean {
     return output.trim().length > 0;
   } catch {
     return false; // If git status fails, don't block the user
+  }
+}
+
+// ── Worktree removal ─────────────────────────────────────────────────
+//
+// Everything below decides whether a directory is destroyed, so it inverts the
+// convention the rest of this file uses: a git command that fails is reported
+// as an error and read as "not clean", never swallowed into a permissive
+// default. `hasUncommittedChanges` above returns false when git fails because
+// it only gates a branch switch; here that would mean deleting work.
+
+/** Run git and return stdout, or throw with a useful message. */
+function gitOutput(directory: string, args: string[], input?: string): string {
+  return execFileSync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+    stdio: "pipe",
+    timeout: 10000,
+    ...(input !== undefined && { input }),
+  });
+}
+
+export interface WorktreeCleanliness {
+  /** True only when all three checks passed and no git command failed. */
+  clean: boolean;
+  /** Staged or unstaged modifications to tracked files. */
+  uncommittedChanges: boolean;
+  /** Untracked files (ignored files are NOT counted — see the note below). */
+  untrackedFiles: boolean;
+  /** Commits reachable from HEAD and from no other ref in the repository. */
+  unpushedCommits: boolean;
+  /** Set when a git command failed; `clean` is then always false. */
+  error?: string;
+}
+
+/**
+ * Is this worktree safe to delete?
+ *
+ * Three independent refusals, any one of which keeps the directory:
+ *
+ * 1. **Uncommitted changes** and 2. **untracked files** — `git status
+ *    --porcelain`, splitting `??` entries out from everything else so the
+ *    caller can say which one it refused on.
+ * 3. **Unpushed commits** — deliberately stricter than git's own check, which
+ *    only looks at the working tree. A commit reachable from HEAD and from no
+ *    other ref exists in exactly one place, and that is the case we must not
+ *    destroy. Computed as `rev-list --count HEAD --not <every ref except the
+ *    one HEAD is on>`: zero means every commit here is also reachable from a
+ *    remote-tracking branch, another local branch or a tag. This covers the
+ *    no-upstream case (a `worktree add -b` branch that was never pushed)
+ *    without needing an upstream to be configured.
+ *
+ * The refs are fed through stdin rather than argv — a repository with
+ * thousands of refs would otherwise risk E2BIG.
+ *
+ * KNOWN GAP, deliberate: `--porcelain` does not report **ignored** files, and
+ * `git worktree remove` deletes them. A gitignored `.env` or a `node_modules`
+ * in the worktree goes with it. Counting them would refuse essentially every
+ * worktree of a JS project, so this does not — see the phase report.
+ */
+export function checkWorktreeClean(directory: string): WorktreeCleanliness {
+  const failed = (error: string): WorktreeCleanliness => ({
+    clean: false,
+    uncommittedChanges: false,
+    untrackedFiles: false,
+    unpushedCommits: false,
+    error,
+  });
+
+  if (!directory || !existsSync(directory)) {
+    return failed(`Directory does not exist: ${directory}`);
+  }
+
+  let statusOut: string;
+  try {
+    statusOut = gitOutput(directory, ["status", "--porcelain"]);
+  } catch (err: any) {
+    return failed(`git status failed: ${err?.message ?? err}`);
+  }
+  const statusLines = statusOut.split("\n").filter((line) => line.trim().length > 0);
+  const untrackedFiles = statusLines.some((line) => line.startsWith("??"));
+  const uncommittedChanges = statusLines.some((line) => !line.startsWith("??"));
+
+  let refs: string[];
+  try {
+    refs = gitOutput(directory, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"])
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch (err: any) {
+    return failed(`git for-each-ref failed: ${err?.message ?? err}`);
+  }
+
+  // The ref HEAD is on, so it can be excluded from the "somewhere else" set.
+  // Fails on a detached HEAD, where there is no such ref and nothing to
+  // exclude — the stricter reading, which is the right one here.
+  let headRef = "";
+  try {
+    headRef = gitOutput(directory, ["symbolic-ref", "-q", "HEAD"]).trim();
+  } catch {
+    headRef = "";
+  }
+
+  const elsewhere = refs.filter((ref) => ref !== headRef);
+  let unpushedCommits: boolean;
+  try {
+    const revs = ["HEAD", ...elsewhere.map((ref) => `^${ref}`)].join("\n") + "\n";
+    const count = Number.parseInt(gitOutput(directory, ["rev-list", "--count", "--stdin"], revs).trim(), 10);
+    if (!Number.isFinite(count)) return failed(`git rev-list returned an unparseable count`);
+    unpushedCommits = count > 0;
+  } catch (err: any) {
+    return failed(`git rev-list failed: ${err?.message ?? err}`);
+  }
+
+  return {
+    clean: !uncommittedChanges && !untrackedFiles && !unpushedCommits,
+    uncommittedChanges,
+    untrackedFiles,
+    unpushedCommits,
+  };
+}
+
+/**
+ * The exact argv used to remove a worktree.
+ *
+ * Exported for one reason: so a test can assert that it never grows a `-f` or
+ * `--force`. Callboard removes a worktree only after {@link checkWorktreeClean}
+ * has passed, and git's own (weaker) refusal is the last line of defence
+ * behind that — forcing would throw away exactly the safety this phase exists
+ * to add.
+ */
+export function worktreeRemoveArgs(worktreePath: string): string[] {
+  return ["worktree", "remove", worktreePath];
+}
+
+export type RemoveWorktreeResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * `git worktree remove` — never forced.
+ *
+ * Run from the main checkout, which is where the worktree's admin dir lives;
+ * git removes both the directory and the admin dir (taking our identity token
+ * with it). The branch is NOT deleted, and that is intentional: any commit on
+ * it survives the removal.
+ */
+export function removeWorktree(mainRepoPath: string, worktreePath: string): RemoveWorktreeResult {
+  if (!existsSync(mainRepoPath)) return { ok: false, error: `Main repo does not exist: ${mainRepoPath}` };
+  try {
+    execFileSync("git", worktreeRemoveArgs(worktreePath), {
+      cwd: mainRepoPath,
+      stdio: "pipe",
+      timeout: 30000,
+    });
+    return { ok: true };
+  } catch (err: any) {
+    const stderr = typeof err?.stderr === "string" ? err.stderr : err?.stderr?.toString?.() ?? "";
+    return { ok: false, error: (stderr || err?.message || String(err)).trim() };
   }
 }
 

@@ -68,3 +68,78 @@ export interface WorkspacePayload {
   isolation: WorkspaceIsolation;
   worktree?: WorkspaceWorktree;
 }
+
+// ── Removability (Phase 2) ──────────────────────────────────────────
+//
+// Whether a workspace's worktree may be removed, and — far more useful — why
+// not. Every automatic removal is gated on this, and a caller that asked for
+// an archive gets the blockers back so a refusal is legible rather than
+// silent.
+
+/**
+ * Why a worktree was NOT removed. Ordered from "never was a candidate" to
+ * "would have destroyed work".
+ */
+export type WorkspaceRemovalBlocker =
+  /** Not a worktree at all. A directory the user works in is never removed. */
+  | "not-a-worktree"
+  /** `worktree.owned` is false — Callboard did not create it. */
+  | "not-owned"
+  /** A worktree record with no `repoPath`; there is no repo to run removal from. */
+  | "no-repo-path"
+  /** The directory is already gone. Nothing to remove. */
+  | "cwd-missing"
+  /** The directory is no longer a worktree of the recorded repo. */
+  | "not-a-worktree-on-disk"
+  /**
+   * No identity token. Every record written before Phase 2, and every worktree
+   * the user recreated by hand. Reads as "not ours" and stays.
+   */
+  | "token-missing"
+  /** A token naming a different workspace. */
+  | "token-mismatch"
+  /** Another active workspace still references this directory (ref-count > 0). */
+  | "shared-cwd"
+  /** Staged or unstaged modifications to tracked files. */
+  | "uncommitted-changes"
+  /** Untracked files in the working tree. */
+  | "untracked-files"
+  /** Commits reachable from HEAD and from no other ref. */
+  | "unpushed-commits"
+  /** A git command failed, so cleanliness could not be established. Refuse. */
+  | "git-check-failed"
+  /** Every check passed but `git worktree remove` itself refused. */
+  | "git-remove-failed";
+
+export interface WorkspaceRemovalReason {
+  code: WorkspaceRemovalBlocker;
+  /** Human-readable detail — safe to surface directly. */
+  detail: string;
+}
+
+export interface WorkspaceRemovability {
+  /** True only when every gate passed. Never inferred from an empty list. */
+  removable: boolean;
+  /** All blockers, not just the first — a caller should see every reason. */
+  blockers: WorkspaceRemovalReason[];
+}
+
+/** A workspace plus the removability verdict for its directory. */
+export interface WorkspaceWithRemovability extends Workspace {
+  removability: WorkspaceRemovability;
+}
+
+/** Result of the lifecycle archive (cascade + ref-counted worktree removal). */
+export interface ArchiveWorkspaceResult {
+  workspace: Workspace;
+  /** Chats that belonged to the workspace, and whether a live session was stopped. */
+  chats: Array<{ chatId: string; interrupted: boolean }>;
+  worktree: {
+    /** True only when `git worktree remove` ran and succeeded. */
+    removed: boolean;
+    /** The directory that was (or was not) removed. */
+    path: string;
+    /** Empty only when `removed` is true. */
+    blockers: WorkspaceRemovalReason[];
+  };
+}

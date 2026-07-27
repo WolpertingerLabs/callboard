@@ -58,6 +58,7 @@ import { codexRouter } from "./routes/codex.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
+import { workspacesRouter } from "./routes/workspaces.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { installProcessGuards } from "./utils/process-guards.js";
@@ -216,6 +217,7 @@ app.use("/api/codex", codexRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/cards", cardsRouter);
 app.use("/api/api-keys", apiKeysRouter);
+app.use("/api/workspaces", workspacesRouter);
 
 // Instance name endpoints (requires auth)
 import { getInstanceName, saveInstanceName, generateInstanceName } from "./utils/paths.js";
