@@ -1,0 +1,158 @@
+{
+  "note": "Generated description of callboard's wire type surface. Committed on purpose: a change here means the client/server wire changed. See the append-only rules at the top of shared/types/stream.ts, and stream.test.ts for how this is built and checked.",
+  "types": {
+    "stream.ts": {
+      "exports": [
+        "StreamEvent"
+      ],
+      "interfaces": {
+        "StreamEvent": {
+          "chat": {
+            "optional": true,
+            "type": "any"
+          },
+          "chatId": {
+            "optional": true,
+            "type": "string"
+          },
+          "content": {
+            "optional": false,
+            "type": "string"
+          },
+          "costUsd": {
+            "optional": true,
+            "type": "number"
+          },
+          "input": {
+            "optional": true,
+            "type": "Record<string, unknown>"
+          },
+          "maxBudgetUsd": {
+            "optional": true,
+            "type": "number"
+          },
+          "objectiveComplete": {
+            "optional": true,
+            "type": "boolean"
+          },
+          "questions": {
+            "optional": true,
+            "type": "unknown[]"
+          },
+          "reason": {
+            "optional": true,
+            "type": "string"
+          },
+          "suggestions": {
+            "optional": true,
+            "type": "unknown[]"
+          },
+          "toolName": {
+            "optional": true,
+            "type": "string"
+          },
+          "toolSource": {
+            "optional": true,
+            "type": [
+              "local",
+              "openrouter_server"
+            ]
+          },
+          "type": {
+            "optional": false,
+            "type": [
+              "auto_recovery",
+              "budget",
+              "chat_created",
+              "cleared",
+              "compacting",
+              "done",
+              "error",
+              "nudge",
+              "permission_request",
+              "plan_review",
+              "text",
+              "thinking",
+              "tool_result",
+              "tool_use",
+              "user_question"
+            ]
+          }
+        }
+      },
+      "typeAliases": {}
+    },
+    "protocol.ts": {
+      "exports": [
+        "CAPS_HEADER",
+        "CLIENT_CAPS",
+        "CLIENT_CAP_VALUES",
+        "ClientCapability",
+        "MIN_PROTOCOL_VERSION",
+        "PROTOCOL_HEADER",
+        "PROTOCOL_VERSION",
+        "SERVER_FEATURES",
+        "ServerInfoEvent",
+        "handshakeHeaders"
+      ],
+      "interfaces": {
+        "ServerInfoEvent": {
+          "features": {
+            "optional": false,
+            "type": "string[]"
+          },
+          "minProtocolVersion": {
+            "optional": false,
+            "type": "number"
+          },
+          "protocolVersion": {
+            "optional": false,
+            "type": "number"
+          },
+          "serverVersion": {
+            "optional": false,
+            "type": "string"
+          },
+          "type": {
+            "optional": false,
+            "type": [
+              "server_info"
+            ]
+          }
+        }
+      },
+      "typeAliases": {
+        "ClientCapability": "(typeof CLIENT_CAPS)[keyof typeof CLIENT_CAPS]"
+      }
+    }
+  },
+  "constants": {
+    "protocol.ts": {
+      "CAPS_HEADER": "X-Callboard-Caps",
+      "CLIENT_CAP_VALUES": [
+        "tool_source",
+        "budget_events",
+        "plan_review"
+      ],
+      "CLIENT_CAPS": {
+        "toolSource": "tool_source",
+        "budgetEvents": "budget_events",
+        "planReview": "plan_review"
+      },
+      "handshakeHeaders": {
+        "(returns)": {
+          "X-Callboard-Protocol": "2",
+          "X-Callboard-Caps": "tool_source,budget_events,plan_review"
+        }
+      },
+      "MIN_PROTOCOL_VERSION": 1,
+      "PROTOCOL_HEADER": "X-Callboard-Protocol",
+      "PROTOCOL_VERSION": 2,
+      "SERVER_FEATURES": [
+        "tool_source",
+        "budget_events",
+        "plan_review"
+      ]
+    }
+  }
+}

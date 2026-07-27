@@ -21,6 +21,19 @@
 - `npm run lint:all` - lint all files in the project
 - `npm run lint:all:fix` - lint and fix all files in the project
 
+## Wire compatibility
+
+`shared/types/stream.ts` is a published interface, not an internal type — a browser tab can be running a bundle older than the daemon it is talking to. The authoritative rules and their reasoning are the doc-comment block at the top of that file. The short version:
+
+- Fields are added, never removed, never renamed.
+- Optional never becomes required.
+- New `type`/enum values are gated behind a capability — `session.supports(CLIENT_CAPS.someCapability)`, from `shared/types/protocol.ts`.
+- The semantics of an existing field never change. New meaning → new field.
+
+The asymmetry that keeps this cheap: **adding an optional field needs no gate** (old clients ignore keys they don't know), but **adding an enum value does** (an old client hits its `switch` default and drops the event entirely). Most changes are the former — reach for a new optional field first.
+
+Enforced by `shared/types/stream.test.ts` against the committed `wire-surface.snapshot.json`. A failure there means the wire surface changed; read the rules before regenerating the snapshot.
+
 ## Theming System
 
 The frontend uses CSS custom properties (variables) for all colors, shadows, and visual tokens. Every color in the UI must reference a CSS variable — never hardcode hex, rgb, or rgba values in components.
