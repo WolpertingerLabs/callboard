@@ -183,7 +183,56 @@ One asymmetry: callboard's `categorizeClaudeTool` is keyed on Claude SDK tool na
 
 Option A — branch on `kind` in the policy factory, single-file change in `claude.ts`.
 
+> **Resolved, 2026-07-28 — shipped as a registry, and the asymmetry above was live in production.**
+>
+> This section described the gap correctly and it was never closed; the ACP work (#284) then added a
+> `providerKind === "acp" ? … : categorizeClaudeTool` ternary, whose `else` branch left OpenRouter on
+> Claude's map. Because that map's unknown default is `return "fileWrite"`, **every OR tool name
+> categorized as `fileWrite`** — not just the server tools. The production log carries 641
+> `tool=bash, category=fileWrite, decision=allow` lines: OR's shell tool gated on the `fileWrite`
+> axis and auto-allowed under the common `{fileWrite: "allow", codeExecution: "ask"}` policy. That is
+> a `codeExecution` bypass, and it was the largest real exposure here.
+>
+> Shipped as `agents/permissions/categorizers.ts`: a `Record<AgentProviderKind, ToolCategorizer>`
+> rather than Option A's `categorizeTool(toolName, kind)`. Same idea, one property added — a new
+> provider kind with no entry is a **compile error**, so no future kind can silently inherit another
+> provider's map the way OR inherited Claude's. Each adapter owns its categorizer
+> (`adapters/openrouter/permissionAdapter.ts` is new); `codex` gets an explicit gate-everything entry
+> because it has no per-call hook at all.
+>
+> **OpenRouter has ONE pass, not two.** Unlike ACP there is no adapter-side resolve path: the harness
+> wraps each client tool's `execute` with the single `canUseTool` callboard supplies
+> (`wrapToolWithPermission` in the harness's `agent.ts`). Rule 1 of the two-pass ruling is therefore
+> satisfied trivially — there is no second pass to disagree with.
+>
+> **Unknown-tool default: `codeExecution`, deliberately NOT `null`.** `decidePermission(null, …)`
+> returns `"ask"` *without consulting the user's settings at all*, so a `null` default prompts even
+> under an all-`"allow"` policy. Every unattended entry point — job steps (`job-runner.ts`), deployed
+> agents (`agent-executor.ts`, `agent-tools.ts`), `start_chat_session` — hardcodes all four axes to
+> `"allow"` precisely so it needs no human, and `AgentJobStep` has no `timeoutHours`: the
+> `canUseTool` promise resolves only via `respondToPermission` or an abort, so an unanswered prompt
+> hangs the run indefinitely. `codeExecution` is strictly more conservative than the old `fileWrite`
+> default while still reaching a definite decision under every policy. Tools with no honest axis
+> (`datetime`, `task_create`, `ask_user_question`, `tool_search`/`tool_load`) map to `fileRead` — the
+> weakest real gate — for the same reason.
+
 **Server-side tools caveat:** OR's `web_search`, `web_fetch`, `datetime` execute on OpenRouter's backend and **cannot be gated by canUseTool**. Document in the OR adapter README. Callboard's web-access permission category becomes "include or omit" for these specifically. Workaround: when `webAccess: "deny"`, register OR with a custom `tools: allTools({...}).filter(t => !ORServerSideToolNames.has(t.name))`.
+
+> **Still open, 2026-07-28 — and confirmed against the harness source.** The caveat is exact. The
+> harness's own agent loop says so: *"server-side tools (datetime/web_search/web_fetch) are injected
+> via OR SDK hooks and execute on OpenRouter's servers — they bypass this wrapper, so canUseTool only
+> ever sees client tools."* They are pushed into the request `tools` array by a
+> `beforeCreateRequest` hook (`createServerToolsHooks`) and come back as `openrouter:*` **output
+> items**, never as tool calls. So `webAccess: "deny"` does **not** stop OR web search today.
+>
+> `categorizeOpenRouterTool` maps them (`web_search`/`web_fetch` → `webAccess`, `datetime` →
+> `fileRead`) as defence in depth and a statement of intent, but that mapping is **unreachable** and
+> is not a gate. The real fix is the workaround above, moved one layer out: `optionsAdapter` already
+> translates `serverTools` and already sets `orOpts.serverTools = []` for `bareToolset`, so gating
+> injection on the `webAccess` policy is a small change in that same block. Not done here — it is a
+> behavioural change to what the model is offered, not a categorizer fix, and it needs a call on
+> whether `webAccess: "ask"` (as opposed to `"deny"`) should also withhold them, given there is no
+> per-call prompt to escalate to.
 
 ### Tool exposure (`toolAdapter.ts`)
 
