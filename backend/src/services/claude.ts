@@ -4,8 +4,7 @@ import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.j
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter/optionsAdapter.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
-import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
-import { categorizeAcpToolName } from "../agents/adapters/acp/permissionAdapter.js";
+import { getToolCategorizer } from "../agents/permissions/categorizers.js";
 import { EventEmitter } from "events";
 import { execFile } from "child_process";
 import { resolve, isAbsolute } from "path";
@@ -1173,22 +1172,28 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // Policy: provider-specific tool-name → category map, neutral allow/deny/ask
   // decision over the user's default-permission settings.
   //
-  // ACP needs its own categorizer here, and the reason is a correctness trap
-  // rather than tidiness. The ACP adapter has already evaluated policy and only
-  // calls `canUseTool` for tools that resolved to "ask" — i.e. precisely when it
-  // wants the USER prompted. But this is a SECOND pass: `buildCanUseTool`
-  // re-decides from scratch, and if it reaches a category the user set to
-  // `allow`, the tool runs with no prompt at all. `categorizeClaudeTool` would
-  // send every ACP name it does not recognize to `fileWrite`, so an ACP tool
-  // under `{codeExecution: "ask", fileWrite: "allow"}` would be silently
-  // auto-allowed here.
+  // The categorizer comes from a per-provider registry rather than a conditional,
+  // and that is a correctness requirement rather than tidiness. This used to be
+  // `providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool`,
+  // whose `else` branch is not a neutral default but a *real provider's map*:
+  // every non-ACP kind inherited Claude Code's PascalCase table. OpenRouter's
+  // tool names are all snake_case, so they matched nothing and fell through
+  // `categorizeClaudeTool`'s `return "fileWrite"` — including `bash`, which
+  // meant OR's shell tool was gated on the `fileWrite` axis and auto-allowed
+  // under the common `{fileWrite: "allow", codeExecution: "ask"}` policy.
   //
-  // Using the same function is necessary but NOT sufficient — the two passes
-  // must also see the same input. That is enforced on the adapter side: it
-  // categorizes the exact string it passes as `toolName` and never consults
-  // ACP's `ToolKind`, which this pass cannot see. See "The two-pass rule" in
-  // adapters/acp/permissionAdapter.ts.
-  const toolPermissionPolicy = new ToolPermissionPolicy(providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool, getDefaultPermissions);
+  // `TOOL_CATEGORIZERS` is a `Record<AgentProviderKind, …>`, so a new provider
+  // kind with no categorizer is a compile error instead of a silent adoption of
+  // whichever map happened to be the fallback.
+  //
+  // For adapters that ALSO evaluate policy on their own side (ACP does; see
+  // "The two-pass rule" in adapters/acp/permissionAdapter.ts), routing both
+  // passes through this registry is what makes them run the identical function.
+  // Same function is necessary but not sufficient — the two passes must also see
+  // the same input, which the ACP adapter enforces by categorizing the exact
+  // string it passes as `toolName` and never consulting ACP's `ToolKind`, which
+  // this pass cannot see.
+  const toolPermissionPolicy = new ToolPermissionPolicy(getToolCategorizer(providerKind), getDefaultPermissions);
 
   // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)
   const plugins = buildPluginOptions(folder, activePlugins);
