@@ -158,7 +158,11 @@ describe("listWorkspaces", () => {
     writeFileSync(join(workspacesDir, "ws-broken.json"), "{not json");
     // One corrupt file costs exactly itself — every readable record is still
     // listed, and listing does not throw.
-    expect(listWorkspaces().map((w) => w.id).sort()).toEqual([good.id, alsoGood.id].sort());
+    expect(
+      listWorkspaces()
+        .map((w) => w.id)
+        .sort(),
+    ).toEqual([good.id, alsoGood.id].sort());
   });
 
   it("never lists a partially-written record", () => {
@@ -182,7 +186,11 @@ describe("listWorkspaces", () => {
     const b = createWorkspace({ cwd: "/tmp/shared", isolation: "local" });
     createWorkspace({ cwd: "/tmp/other", isolation: "local" });
 
-    expect(listWorkspacesByCwd("/tmp/shared").map((w) => w.id).sort()).toEqual([a.id, b.id].sort());
+    expect(
+      listWorkspacesByCwd("/tmp/shared")
+        .map((w) => w.id)
+        .sort(),
+    ).toEqual([a.id, b.id].sort());
 
     archiveWorkspace(a.id);
     expect(listWorkspacesByCwd("/tmp/shared").map((w) => w.id)).toEqual([b.id]);
@@ -325,9 +333,7 @@ describe("recordWorktreeWorkspace revalidation", () => {
     // and Phase 2 removes clean owned worktrees.
     const cwd = worktreePathFor("feat/gap");
 
-    const firstId = captureWorktreeWorkspace(
-      resolveBranch({ folder: repoDir, newBranch: "feat/gap", baseBranch: "main", useWorktree: true }),
-    );
+    const firstId = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, newBranch: "feat/gap", baseBranch: "main", useWorktree: true }));
     expect(getWorkspace(firstId!)?.cwd).toBe(cwd);
     expect(getWorkspace(firstId!)?.worktree?.owned).toBe(true);
 
@@ -401,9 +407,7 @@ describe("recordWorktreeWorkspace revalidation", () => {
     // The revalidation must not cost us the property it is bolted onto:
     // a genuine reuse still preserves `owned`.
     const cwd = worktreePathFor("feat/live");
-    const firstId = captureWorktreeWorkspace(
-      resolveBranch({ folder: repoDir, newBranch: "feat/live", baseBranch: "main", useWorktree: true }),
-    );
+    const firstId = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, newBranch: "feat/live", baseBranch: "main", useWorktree: true }));
     const secondId = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "feat/live", useWorktree: true }));
     expect(secondId).toBe(firstId);
     expect(getWorkspace(firstId!)?.worktree?.owned).toBe(true);
@@ -418,7 +422,7 @@ describe("captureWorktreeWorkspace", () => {
     const id = captureWorktreeWorkspace({
       ok: true,
       folder: "/home/dev/repo.feat-x",
-      worktree: { repoPath: "/home/dev/repo", created: true, mode: "branch-off", branch: "feat/x", baseBranch: "main" },
+      worktree: { repoPath: "/home/dev/repo", created: true, isMainCheckout: false, mode: "branch-off", branch: "feat/x", baseBranch: "main" },
     });
     expect(id).toMatch(/^ws-/);
     const ws = getWorkspace(id!);
@@ -445,9 +449,73 @@ describe("captureWorktreeWorkspace", () => {
       ok: true,
       folder: "/home/dev/repo.bad",
       // An empty branch fails createWorkspace's validation.
-      worktree: { repoPath: "/home/dev/repo", created: true, mode: "branch-off", branch: "" },
+      worktree: { repoPath: "/home/dev/repo", created: true, isMainCheckout: false, mode: "branch-off", branch: "" },
     });
     expect(id).toBeUndefined();
     expect(listWorkspaces()).toHaveLength(0);
+  });
+});
+
+describe("captureWorktreeWorkspace on the main checkout", () => {
+  // `ensureWorktreeDetailed` hands back the main checkout when the requested
+  // branch is already checked out there ("including the main one", git.ts).
+  // Nothing was created and nothing is isolated, so the record must not claim
+  // worktree isolation — that is what produced the live record describing
+  // /home/cybil/callboard as a worktree of itself.
+
+  it("records local isolation, not a worktree, for a branch already checked out in the main repo", () => {
+    const resolved = resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    // The resolution really did land on the main checkout, and says so.
+    expect(resolved.folder).toBe(repoDir);
+    expect(resolved.worktree?.isMainCheckout).toBe(true);
+    expect(resolved.worktree?.created).toBe(false);
+
+    const id = captureWorktreeWorkspace(resolved);
+    const ws = getWorkspace(id!);
+    expect(ws?.cwd).toBe(repoDir);
+    expect(ws?.isolation).toBe("local");
+    expect(ws?.worktree).toBeUndefined();
+    // No repoPath either: a local record has no main checkout above it, and
+    // `repoPath === cwd` was the other half of the self-misdescription.
+    expect(ws?.repoPath).toBeUndefined();
+  });
+
+  it("reuses the local record rather than stacking one per chat", () => {
+    const first = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
+    const second = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
+    expect(second).toBe(first);
+    expect(listWorkspacesByCwd(repoDir)).toHaveLength(1);
+  });
+
+  it("leaves a genuine worktree resolution recording worktree isolation", () => {
+    // The fix must not cost the case it is not about.
+    const cwd = worktreePathFor("feat/genuine");
+    const id = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, newBranch: "feat/genuine", baseBranch: "main", useWorktree: true }));
+    const ws = getWorkspace(id!);
+    expect(ws?.cwd).toBe(cwd);
+    expect(ws?.isolation).toBe("worktree");
+    expect(ws?.worktree?.owned).toBe(true);
+    expect(ws?.repoPath).toBe(repoDir);
+
+    git(["worktree", "remove", cwd], repoDir);
+  });
+
+  it("does not adopt a legacy worktree record that describes the main checkout", () => {
+    // Records already on disk are not migrated (the read path guards them), so
+    // the legacy record stays exactly as it is — and the new chat is stamped
+    // with an honest record rather than the old claim.
+    const legacy = createWorkspace({
+      cwd: repoDir,
+      repoPath: repoDir,
+      isolation: "worktree",
+      worktree: { owned: false, mode: "checkout-branch", branch: "main" },
+    });
+
+    const id = captureWorktreeWorkspace(resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true }));
+    expect(id).not.toBe(legacy.id);
+    expect(getWorkspace(id!)?.isolation).toBe("local");
+    expect(getWorkspace(legacy.id)?.status).toBe("active");
   });
 });

@@ -281,6 +281,37 @@ small — but adopting the rule before we accumulate that state is the entire po
 
 ---
 
+> **Registry hygiene rulings — architect, 2026-07-28.** Settled while fixing the two defects
+> Phase 3 surfaced (#289 follow-up).
+>
+> **A record's `isolation` is never a claim about the filesystem.** `ensureWorktreeDetailed`
+> returns the *main checkout* when the branch is already checked out there, so the write path
+> was recording `isolation: "worktree"` for a directory that is not one. It now answers "is
+> this the main checkout?" from git's own listing and records `local`. Legacy records are not
+> migrated — the read path guards them.
+>
+> Confirmed while fixing it: **`owned: true` cannot be written at a main-checkout resolution**,
+> by three independent mechanisms. That defect was only ever a misdescription, never a removal
+> hazard.
+>
+> **A missing directory is reported, never acted on — and the state is computed on read, never
+> stored.** A stored `missing` flag is a filesystem claim frozen at write time: stale the
+> moment a volume remounts or a worktree is restored from the trash, and *precisely* the input
+> that would later justify a destructive sweep. `present | missing | not-a-worktree` is derived
+> per read.
+>
+> No narrower auto-archive condition survives scrutiny. The obvious candidate — "missing *and*
+> git no longer lists it" — requires `git worktree prune` to have run, and prune is the
+> repo-global operation that unregisters absent-volume worktrees in the first place. The
+> condition is contaminated by the very hazard it is meant to exclude.
+>
+> **Phase 4's list view is per-directory, not per-record.** This follows Phase 3, where rows
+> key on `cwd` because keying on the stamp splits one folder into two rows. It also resolves a
+> consequence of the fix above: a `useWorktree` chat on the main repo now writes a `local`
+> record alongside the legacy `worktree` one, so `/home/cybil/callboard` legitimately has two
+> active records. Per-directory renders that as one row with a count, as Phase 3 already does.
+> Per-record detail belongs in a drill-down, never as a top-level row.
+
 ## Phases
 
 **Phase 1 — entity + registry, additive only.** `Workspace` type, flat-file store, CRUD

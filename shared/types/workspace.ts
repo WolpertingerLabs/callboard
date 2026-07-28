@@ -161,9 +161,69 @@ export interface WorkspaceRemovability {
   ignored?: WorkspaceIgnoredPreview;
 }
 
-/** A workspace plus the removability verdict for its directory. */
+// ── Directory state ─────────────────────────────────────────────────
+//
+// Nothing reaps workspace records. `recordWorktreeWorkspace` archives a stale
+// one only when a new record is written for the same path, so a worktree
+// removed outside Callboard (`wt merge`, `git worktree remove`) leaves its
+// record `active` forever: 7 of 10 on the author's machine point at
+// directories that are gone.
+//
+// The fix is NOT to archive them automatically, and the reason is the same one
+// that governs adoption: **absence of a directory is evidence, not proof.** An
+// unmounted volume is indistinguishable from a deleted worktree, and the
+// record is the only thing that remembers a worktree existed at all — archiving
+// it on a `stat` that failed for an unrelated reason throws away the provenance
+// that would let it be cleaned up later. So the state is *observed and
+// reported*; acting on it is a user's decision, exactly as with adoption.
+
+/**
+ * What a record's directory looks like right now.
+ *
+ * **Computed on every read, never stored.** A stored flag is a claim about the
+ * filesystem frozen at write time — it would go stale the moment a volume is
+ * remounted, a worktree is restored from the trash, or a directory is recreated
+ * by hand, and a stale "missing" is exactly the thing that would justify a
+ * destructive cleanup that should never have run.
+ */
+export type WorkspaceDirectoryState =
+  /** The directory exists, and still is what the record says it is. */
+  | "present"
+  /**
+   * Nothing at `cwd`. Evidence, not proof — see above. Surface it so a user can
+   * archive the record; never archive it on this basis alone.
+   */
+  | "missing"
+  /**
+   * The directory exists but is no longer a git worktree of the recorded
+   * `repoPath` — pruned, converted to a plain directory, or recreated by hand.
+   * Distinct from "missing": there is a directory here, and it may hold work.
+   * Nothing here is Callboard's to remove either (Phase 2 blocks on
+   * `not-a-worktree-on-disk`), so this is also report-only.
+   *
+   * Only reachable for a record that actually claims its `cwd` is a worktree —
+   * i.e. `isolation: "worktree"` with a `repoPath` naming a *different*
+   * directory. A `local` record describes a plain folder and is `present`
+   * whenever it exists.
+   */
+  | "not-a-worktree";
+
+/** A directory state with the sentence that explains it. */
+export interface WorkspaceDirectory {
+  state: WorkspaceDirectoryState;
+  /** Human-readable, always set — safe to surface directly. */
+  detail: string;
+}
+
+/** A workspace plus the freshly observed state of its directory. */
 export interface WorkspaceWithRemovability extends Workspace {
   removability: WorkspaceRemovability;
+  /**
+   * Observed at read time, never persisted. A `missing` or `not-a-worktree`
+   * entry is something to *offer* a user ("this record points at a directory
+   * that no longer exists — archive it?"), never something to act on.
+   */
+  directory: WorkspaceDirectory;
 }
 
 /**

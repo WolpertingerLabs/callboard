@@ -373,6 +373,16 @@ export interface EnsuredWorktree {
    * claim ownership of something we merely found.
    */
   created: boolean;
+  /**
+   * True when `path` is a **main checkout**, not a worktree of one.
+   *
+   * Asking for a worktree of a branch that is already checked out in the main
+   * repo hands back the main repo itself (see below) — no worktree was made and
+   * nothing is isolated. A caller that records provenance must not describe
+   * that directory as a worktree: it is the main checkout, and it is never
+   * Callboard's to remove.
+   */
+  isMainCheckout: boolean;
 }
 
 /**
@@ -391,7 +401,12 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
 
   // If worktree directory already exists, reuse it
   if (existsSync(worktreePath)) {
-    return { path: worktreePath, created: false };
+    // The derived path is a sibling named after the branch, so it being a main
+    // checkout takes a deliberately odd layout (a repo at `<x>.<branch>` next
+    // to a worktree at `<x>`) — but it costs one lstat to answer rather than
+    // assume. `.git` a directory is a main checkout; a *file* is a linked
+    // worktree — the same test workspace-adoption.ts refuses "main-checkout" on.
+    return { path: worktreePath, created: false, isMainCheckout: hasGitDirectory(worktreePath) };
   }
 
   // If the branch is already checked out in another worktree (including the
@@ -400,7 +415,10 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
   const worktrees = getGitWorktrees(repoDir);
   const existing = worktrees.find((wt) => wt.branch === branch);
   if (existing) {
-    return { path: existing.path, created: false };
+    // "including the main one" is the case that produced self-misdescribing
+    // workspace records: git's own listing says whether this is the main
+    // checkout, so the caller never has to infer it from the path.
+    return { path: existing.path, created: false, isMainCheckout: existing.isMainWorktree };
   }
 
   // Create the worktree
@@ -421,7 +439,20 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
     });
   }
 
-  return { path: worktreePath, created: true };
+  // We just ran `git worktree add`, so this is a linked worktree by construction.
+  return { path: worktreePath, created: true, isMainCheckout: false };
+}
+
+/**
+ * Does `path` hold a `.git` **directory** — i.e. is it a main checkout rather
+ * than a linked worktree, whose `.git` is a file? Pure filesystem, no `git`.
+ */
+function hasGitDirectory(path: string): boolean {
+  try {
+    return lstatSync(join(path, ".git")).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -708,7 +739,7 @@ export function pruneWorktrees(mainRepoPath: string): PruneWorktreesResult {
     execFileSync("git", ["worktree", "prune"], { cwd: mainRepoPath, stdio: "pipe", timeout: 30000 });
     return { ok: true };
   } catch (err: any) {
-    const stderr = typeof err?.stderr === "string" ? err.stderr : err?.stderr?.toString?.() ?? "";
+    const stderr = typeof err?.stderr === "string" ? err.stderr : (err?.stderr?.toString?.() ?? "");
     return { ok: false, error: (stderr || err?.message || String(err)).trim() };
   }
 }
@@ -755,6 +786,17 @@ export interface ResolvedWorktree {
   repoPath: string;
   /** True only when this call ran `git worktree add`. */
   created: boolean;
+  /**
+   * True when the resolution landed on the **main checkout** instead of a
+   * worktree — the branch was already checked out there, so
+   * {@link ensureWorktreeDetailed} handed that directory back and made nothing.
+   *
+   * The worktree was *asked for*; it does not exist. A record written from this
+   * resolution must say `isolation: "local"`, because there is no isolation:
+   * `cwd` is the repository itself. Writing "worktree" here is what produced
+   * records claiming the main repo was a worktree of itself.
+   */
+  isMainCheckout: boolean;
   /** "branch-off" when a new branch was created for it, else "checkout-branch". */
   mode: "branch-off" | "checkout-branch";
   branch: string;
@@ -810,6 +852,7 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
       worktree: {
         repoPath: folder,
         created: ensured.created,
+        isMainCheckout: ensured.isMainCheckout,
         mode: newBranch ? "branch-off" : "checkout-branch",
         branch: targetBranch,
         ...(newBranch && baseBranch && { baseBranch }),

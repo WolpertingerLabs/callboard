@@ -43,7 +43,12 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
         "every reason it would not (not created by Callboard, still referenced by another workspace, a session still running in it, " +
         "submodules, uncommitted changes, untracked files, commits that exist on no other branch or remote). For a removable one, " +
         "`removability.ignored` previews the gitignored entries that would move with it. Use this before archive_workspace to see what " +
-        "will actually happen.",
+        "will actually happen. " +
+        "Each entry also carries `directory`, observed fresh on every call: `present`, `missing` (nothing at that path) or " +
+        "`not-a-worktree` (the directory is there but is no longer a git worktree of the recorded repo). Records outlive their " +
+        "directories — nothing reaps them — so `missing` is common and is NOT a reason to archive on your own initiative: a directory " +
+        "that is absent is not proof the work is gone (an unmounted volume looks identical). Report what you see and let the user " +
+        "decide; archive_workspace is theirs to ask for.",
       {
         status: z.enum(["active", "archived", "all"]).optional().describe('Filter by status. Default: "active".'),
       },

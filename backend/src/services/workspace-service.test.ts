@@ -33,7 +33,7 @@ const { checkWorktreeClean } = await import("../utils/git.js");
 const { WORKTREE_TOKEN_FILE, readWorktreeToken, worktreeTokenPath } = await import("../utils/worktree-token.js");
 const { TRASH_MANIFEST_FILE } = await import("../utils/worktree-trash.js");
 const { createWorkspace, getWorkspace, listWorkspaces, recordWorktreeWorkspace } = await import("./workspace-store.js");
-const { archiveWorkspace, evaluateWorktreeRemoval, listWorkspacesWithRemovability } = await import("./workspace-service.js");
+const { archiveWorkspace, describeWorkspaceDirectory, evaluateWorktreeRemoval, listWorkspacesWithRemovability } = await import("./workspace-service.js");
 const { chatFileService } = await import("./chat-file-service.js");
 const { sessionRegistry } = await import("./session-registry.js");
 
@@ -740,5 +740,126 @@ describe("listWorkspacesWithRemovability", () => {
 
     git(["worktree", "remove", cwd], repoDir);
     git(["worktree", "remove", join(gitRoot, "repo.ctx-solo")], repoDir);
+  });
+});
+
+// ── Stale records ───────────────────────────────────────────────────
+//
+// Nothing reaps workspace records, so they outlive their directories: on the
+// author's machine 7 of 10 active records point at worktrees `wt merge` removed
+// outside Callboard. The state is *observed*, and that is where it stops — a
+// directory that is absent is evidence, not proof (an unmounted volume is
+// indistinguishable from a deleted one), so every test here is a claim about
+// something NOT happening to the record.
+
+describe("describeWorkspaceDirectory", () => {
+  it("reports present for a live worktree, and for a local directory", () => {
+    const { workspace, cwd } = ownedWorktree("dir/present");
+    expect(describeWorkspaceDirectory(workspace).state).toBe("present");
+
+    const local = createWorkspace({ cwd: repoDir, isolation: "local" });
+    expect(describeWorkspaceDirectory(local).state).toBe("present");
+
+    git(["worktree", "remove", cwd], repoDir);
+  });
+
+  it("reports missing without archiving the record or pruning the worktree", () => {
+    // The unmounted-volume shape, and it is deliberately the *same* fixture as
+    // "the user deleted it": the directory is gone while git still has the
+    // worktree registered. Nothing here can tell those apart, which is the
+    // whole reason nothing here acts.
+    const { workspace, cwd } = ownedWorktree("dir/vanished");
+    rmSync(cwd, { recursive: true, force: true });
+
+    const directory = describeWorkspaceDirectory(workspace);
+    expect(directory.state).toBe("missing");
+    expect(directory.detail).toContain(cwd);
+
+    // The record is untouched: still active, still holding the provenance that
+    // is the only record the worktree ever existed.
+    expect(getWorkspace(workspace.id)!.status).toBe("active");
+    // And git's registration is untouched too — `git worktree prune` is
+    // repo-global and would unregister every worktree whose volume is merely
+    // absent. Observing a state never runs it.
+    expect(git(["worktree", "list"], repoDir)).toContain(cwd);
+
+    git(["worktree", "prune"], repoDir);
+  });
+
+  it("reports not-a-worktree for a directory that exists but is no longer one", () => {
+    // Distinct from missing: there is a directory here and it may hold work.
+    const { workspace, cwd } = ownedWorktree("dir/detached");
+    rmSync(cwd, { recursive: true, force: true });
+    git(["worktree", "prune"], repoDir);
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, "notes.md"), "someone else's directory\n");
+
+    const directory = describeWorkspaceDirectory(workspace);
+    expect(directory.state).toBe("not-a-worktree");
+    expect(getWorkspace(workspace.id)!.status).toBe("active");
+    // Report-only, and Phase 2 refuses to act on it as well.
+    expect(blockerCodes(evaluateWorktreeRemoval(workspace).blockers)).toContain("not-a-worktree-on-disk");
+    expect(existsSync(join(cwd, "notes.md"))).toBe(true);
+
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("does not call a legacy main-checkout record not-a-worktree", () => {
+    // The records the old write path produced: isolation "worktree" with
+    // repoPath equal to cwd. They make no worktree claim about the directory
+    // (Phase 3's `recordSaysWorktree`), so the honest state is just "present" —
+    // flagging the main repo as a broken worktree would be a new wrong answer
+    // in place of the old one.
+    const legacy = createWorkspace({
+      cwd: repoDir,
+      repoPath: repoDir,
+      isolation: "worktree",
+      worktree: { owned: false, mode: "checkout-branch", branch: "main" },
+    });
+    expect(describeWorkspaceDirectory(legacy).state).toBe("present");
+  });
+
+  it("surfaces stale records through the listing and archives none of them", () => {
+    // The live shape: several records, most of them pointing at nothing.
+    const stale = ["stale/one", "stale/two", "stale/three"].map((branch) => {
+      const { workspace, cwd } = ownedWorktree(branch);
+      rmSync(cwd, { recursive: true, force: true });
+      return workspace;
+    });
+    const { workspace: alive, cwd: aliveCwd } = ownedWorktree("stale/alive");
+
+    const listed = new Map(listWorkspacesWithRemovability({ status: "active" }).map((w) => [w.id, w]));
+    for (const workspace of stale) {
+      expect(listed.get(workspace.id)!.directory.state).toBe("missing");
+      // Reported, never actioned: no archive, and the removal gate refuses
+      // separately for the same reason.
+      expect(getWorkspace(workspace.id)!.status).toBe("active");
+      expect(blockerCodes(listed.get(workspace.id)!.removability.blockers)).toContain("cwd-missing");
+      expect(listed.get(workspace.id)!.removability.removable).toBe(false);
+    }
+    expect(listed.get(alive.id)!.directory.state).toBe("present");
+    expect(trashEntries()).toEqual([]);
+    expect(listWorkspaces({ status: "active" })).toHaveLength(4);
+
+    git(["worktree", "remove", aliveCwd], repoDir);
+    git(["worktree", "prune"], repoDir);
+  });
+
+  it("refuses to touch anything when a record with a missing directory is archived", async () => {
+    // Archiving is explicit, so it is allowed to mark the record — but the
+    // directory is absent, and "absent" is never a licence to act. The gate
+    // must refuse rather than, say, pruning to tidy up.
+    const { workspace, cwd } = ownedWorktree("stale/archived");
+    rmSync(cwd, { recursive: true, force: true });
+
+    const result = await archiveWorkspace(workspace.id);
+    expect(result!.worktree.removed).toBe(false);
+    expect(result!.worktree.disposition).toBe("kept");
+    expect(blockerCodes(result!.worktree.blockers)).toContain("cwd-missing");
+    expect(trashEntries()).toEqual([]);
+    // Still registered — nothing pruned it on our way past.
+    expect(git(["worktree", "list"], repoDir)).toContain(cwd);
+
+    git(["worktree", "prune"], repoDir);
   });
 });
