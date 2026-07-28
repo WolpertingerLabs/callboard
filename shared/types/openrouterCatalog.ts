@@ -426,6 +426,133 @@ export const OR_SAMPLING_PARAMS: readonly ParamFieldSpec[] = [
   { key: "maxTokens", label: "Max tokens", type: "integer", min: 1, supportedParamKey: "max_tokens" },
 ];
 
+/**
+ * A MODEL-SLUG VARIANT — the `:suffix` form OpenRouter accepts on a model id,
+ * e.g. `openai/gpt-oss-20b:free:online`.
+ *
+ * This is a THIRD activation route onto the same `webAccess` axis as
+ * {@link ServerToolSpec.webAccess} and {@link PluginSpec.webAccess}, and the
+ * least visible of the three: it rides the model string itself, so it reaches
+ * OpenRouter without touching `serverTools` or `modelParams` at all. Exactly one
+ * variant is web access — `:online`, which OpenRouter documents as "a shortcut
+ * for using the `web` plugin … exactly equivalent to" sending that plugin. Every
+ * other variant is routing or model identity.
+ *
+ * That asymmetry is the whole reason this is a catalog and not a regex. A
+ * blanket "strip any `:suffix`" would silently change which provider serves the
+ * request (`:nitro`, `:floor`, `:exacto`) or which model does (`:free`,
+ * `:extended`, `:thinking`) — a routing and billing change made in the name of a
+ * web-access policy. The gate strips ONLY entries marked `webAccess: true`; see
+ * `applyModelSlugPolicy` in
+ * `backend/src/agents/adapters/openrouter/serverToolPolicy.ts`.
+ */
+export interface ModelVariantSpec {
+  /** The suffix WITHOUT its leading colon, lowercase — e.g. "online", "free". */
+  suffix: string;
+  /**
+   * `static` variants name a distinct model and are enumerated per-model by
+   * OpenRouter's models API; `dynamic` variants work on every model and change
+   * how the request is routed or used.
+   */
+  kind: "static" | "dynamic";
+  /** What OpenRouter says this variant does. */
+  description: string;
+  /**
+   * Does this variant put the open internet within the model's reach?
+   *
+   * True for `:online` alone. Unlike the server-tool and plugin catalogs, an
+   * UNKNOWN suffix is NOT treated as web access: the gate's action here is to
+   * rewrite the model id, and rewriting an unrecognized variant away would
+   * change routing or pricing on a slug the user chose deliberately. So unknown
+   * variants pass through untouched and are logged instead — see the
+   * fail-closed-vs-fail-cheap note on `applyModelSlugPolicy`.
+   */
+  webAccess: boolean;
+  /** Deprecated by OpenRouter (still honored — `:online` is deprecated and still works). */
+  deprecated?: boolean;
+}
+
+/**
+ * OpenRouter's model-slug variant vocabulary, verbatim from the FAQ's "What are
+ * model variants?" section (re-verified 2026-07). Variants chain, and the docs'
+ * own example chains a static one with a dynamic one:
+ * `openai/gpt-oss-20b:free:online`.
+ *
+ * @see https://openrouter.ai/docs/faq
+ * @see https://openrouter.ai/docs/guides/routing/model-variants/online
+ */
+export const OR_MODEL_VARIANTS: readonly ModelVariantSpec[] = [
+  {
+    suffix: "online",
+    kind: "dynamic",
+    description: "Runs a web query and attaches the results to the prompt, on every request.",
+    // THE one web-access variant. OpenRouter: ":online is a shortcut for using
+    // the `web` plugin, and is exactly equivalent to" sending `plugins: [{ id:
+    // "web" }]` — i.e. the same channel #288 already gates, reached by a
+    // different spelling. Critically, it is ONLY the plugin: the docs are
+    // explicit that it does not change which model serves the request, which is
+    // what makes stripping it a safe degradation rather than a silent model
+    // switch. Deprecated in favor of the `openrouter:web_search` server tool,
+    // and OpenRouter tells users they "can safely remove the `:online` suffix" —
+    // deprecated is not inert, it still works today.
+    webAccess: true,
+    deprecated: true,
+  },
+  {
+    suffix: "free",
+    kind: "static",
+    description: "The always-free copy of the model, with low rate limits.",
+    // Model identity, not reach. Strip it and the request silently moves to the
+    // PAID copy of the same model — the exact regression this catalog exists to
+    // prevent.
+    webAccess: false,
+  },
+  {
+    suffix: "extended",
+    kind: "static",
+    description: "The longer-context copy of the model.",
+    // Model identity. Stripping changes the context window the run was chosen for.
+    webAccess: false,
+  },
+  {
+    suffix: "thinking",
+    kind: "static",
+    description: "The copy of the model that reasons by default.",
+    // Model identity. Stripping turns reasoning off.
+    webAccess: false,
+  },
+  {
+    suffix: "nitro",
+    kind: "dynamic",
+    description: "Sorts providers by throughput rather than the default sort.",
+    // Provider selection only. Adds no tools; whatever the chosen provider can
+    // reach still comes from the request's own tools array, which the
+    // server-tool gate governs. Stripping changes latency and price.
+    webAccess: false,
+  },
+  {
+    suffix: "floor",
+    kind: "dynamic",
+    description: "Sorts providers by price, cheapest first.",
+    // Provider selection only, same argument as :nitro — and stripping it is
+    // directly a bill increase.
+    webAccess: false,
+  },
+  {
+    suffix: "exacto",
+    kind: "dynamic",
+    description: "Sorts providers by quality-first signals tuned for tool-calling reliability.",
+    // Provider selection only. "Tool-calling reliability" is about how well the
+    // provider emits tool calls, not about which tools exist.
+    webAccess: false,
+  },
+];
+
+/** Fast lookup for {@link OR_MODEL_VARIANTS}, keyed by lowercase suffix (no colon). */
+export const OR_MODEL_VARIANT_BY_SUFFIX: ReadonlyMap<string, ModelVariantSpec> = new Map(
+  OR_MODEL_VARIANTS.map((v) => [v.suffix, v]),
+);
+
 // ── Persisted config shapes (referenced by AgentSettings) ────────────────────
 
 /**

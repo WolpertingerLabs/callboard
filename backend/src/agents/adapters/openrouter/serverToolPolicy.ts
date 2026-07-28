@@ -1,6 +1,8 @@
 /**
- * The `webAccess` gate for the two OpenRouter channels `canUseTool` cannot see:
- * SERVER TOOLS (`orOpts.serverTools`) and PLUGINS (`orOpts.modelParams.plugins`).
+ * The `webAccess` gate for the three OpenRouter channels `canUseTool` cannot
+ * see: SERVER TOOLS (`orOpts.serverTools`), PLUGINS
+ * (`orOpts.modelParams.plugins`) and the MODEL SLUG itself (`orOpts.model`,
+ * via its `:online` variant).
  *
  * ## Why a separate gate exists at all
  *
@@ -84,10 +86,28 @@
  *    steering users off the `web` plugin. So an ungated web plugin searches on
  *    every turn with no model decision involved at all.
  *
+ * ## The model slug, and why it is the same plugin wearing a different hat
+ *
+ * OpenRouter documents web activation a third way: append `:online` to the model
+ * id. It is not a separate feature — the docs call it "a shortcut for using the
+ * `web` plugin … exactly equivalent to" sending that plugin — so a chat whose
+ * model is `anthropic/claude-sonnet-4:online` gets precisely what
+ * {@link applyPluginPolicy} exists to withhold, by a route that never touches
+ * `modelParams` and so was invisible to it. {@link applyModelSlugPolicy} closes
+ * that, on the same two-sided rule.
+ *
+ * The one thing it does NOT share with its siblings is their fail-closed default
+ * for unknown entries, and deliberately — see that function's doc-comment.
+ *
  * @see plans/openrouter-adapter.md:186 (where this fix was proposed)
  * @see ./permissionAdapter.ts ("What is NOT gated here")
  */
-import { OR_PLUGIN_BY_ID, OR_SERVER_TOOLS, OR_SERVER_TOOL_BY_TYPE } from "shared/types/index.js";
+import {
+  OR_MODEL_VARIANT_BY_SUFFIX,
+  OR_PLUGIN_BY_ID,
+  OR_SERVER_TOOLS,
+  OR_SERVER_TOOL_BY_TYPE,
+} from "shared/types/index.js";
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 
 /**
@@ -250,6 +270,121 @@ export function applyPluginPolicy(
   // still names something the user can find.
   const { kept, withheld } = partitionByWebAccess(configured, (p) => String(p.id), pluginNeedsWebAccess);
   return { plugins: kept, withheld };
+}
+
+/** Outcome of the model-slug gate: what to send, and what the policy rewrote. */
+export interface ModelSlugPolicyResult {
+  /**
+   * The value for `orOpts.model` — the input unchanged unless a web-access
+   * variant was stripped. `undefined` in, `undefined` out (the caller then omits
+   * the option and the harness uses its own default).
+   */
+  model: string | undefined;
+  /**
+   * Variants the policy removed, in the spelling the caller used (so a log line
+   * can quote `:ONLINE` back rather than a normalized form). Empty when the slug
+   * passed through untouched.
+   */
+  stripped: string[];
+  /**
+   * Variants present on the slug that are absent from {@link OR_MODEL_VARIANTS}.
+   * Forwarded untouched — reported, not acted on. See the fail-closed note below.
+   */
+  unknown: string[];
+}
+
+/**
+ * Narrow a model slug by the `webAccess` policy: remove the variants that are
+ * themselves web access (`:online`, and only `:online`), leave everything else
+ * exactly as written.
+ *
+ * Same two-sided rule as its siblings — `"allow"` passes the slug through
+ * verbatim; `"ask"`, `"deny"` and no-policy-at-all all strip. `"ask"` strips for
+ * the reason given in the module doc-comment: the model id is fixed when the
+ * request body is assembled, and there is no per-call moment at which a prompt
+ * could be raised.
+ *
+ * ## Why stripping, and not rejecting
+ *
+ * Because it degrades to a working request rather than a broken run, and it can
+ * do that honestly: OpenRouter's own docs are explicit that `:online` does not
+ * change which model serves the request — it only attaches web results — and
+ * that callers who no longer want it "can safely remove the `:online` suffix".
+ * So `X:online` → `X` is the same model with the web plugin dropped, which is
+ * exactly the shape of a withheld server tool. It matters that models arrive
+ * PROGRAMMATICALLY here (agents via `start_chat_session`, job steps, routed
+ * chats, alias targets), so the caller that wrote `:online` is often not the
+ * person who set the policy; failing the run would turn one party's policy into
+ * the other party's outage.
+ *
+ * ## Why an unknown variant is NOT treated as web access
+ *
+ * This is the one place the three gates deliberately diverge. An unknown server
+ * tool or plugin id answers "needs web access" and is dropped, because dropping
+ * one costs at most a missing capability. Here the action is a REWRITE of the
+ * model id, and every other variant OpenRouter ships changes routing, pricing or
+ * model identity: `:free` is the free copy of the model, `:extended` the
+ * long-context copy, `:thinking` the reasoning one, and `:nitro`/`:floor`/
+ * `:exacto` re-sort providers by speed, price and tool-calling reliability. A
+ * blanket strip would quietly move a `:free` run onto the paid model and a
+ * `:floor` run onto a pricier provider — a billing change made in the name of a
+ * web-access policy, and one nobody would think to look for.
+ *
+ * So unknown suffixes pass through and are RETURNED rather than swallowed: the
+ * caller logs them, which is what makes a variant OpenRouter ships after this
+ * catalog was written show up as a line to read instead of as silence. The
+ * residual exposure is bounded and named — a future web-carrying variant we have
+ * not catalogued — where the plugin/server-tool gates' residual exposure was a
+ * missing tool. Neither default is free; this is the cheaper one to be wrong
+ * about, and the visible one.
+ *
+ * Matching is case-insensitive and tolerant of stray whitespace around a
+ * segment, which is leniency in the DETECTION direction only: it can strip a
+ * spelling OpenRouter would have rejected outright, never miss one it accepts.
+ *
+ * Pure and total: no I/O, no logging, safe to call from anywhere.
+ */
+export function applyModelSlugPolicy(
+  model: string | undefined,
+  permissions: DefaultPermissions | null | undefined,
+): ModelSlugPolicyResult {
+  if (!model) return { model, stripped: [], unknown: [] };
+  // `author/slug` first, then zero or more `:variant` segments — the docs chain
+  // them (`openai/gpt-oss-20b:free:online`), so this is a split, not a suffix
+  // test. A base slug never contains a colon.
+  const [base, ...variants] = model.split(":");
+  if (variants.length === 0) return { model, stripped: [], unknown: [] };
+
+  const unknown = variants.filter((v) => !OR_MODEL_VARIANT_BY_SUFFIX.has(normalizeVariant(v)));
+  if (webAccessPermitted(permissions)) {
+    // Permitted: byte-for-byte what the caller asked for, `:online` included.
+    return { model, stripped: [], unknown };
+  }
+
+  const stripped: string[] = [];
+  const kept: string[] = [];
+  for (const variant of variants) {
+    // `?? false` — the inverse of the sibling gates' `?? true`, and the whole
+    // subject of the doc-comment above: an uncatalogued variant is kept.
+    if (OR_MODEL_VARIANT_BY_SUFFIX.get(normalizeVariant(variant))?.webAccess ?? false) {
+      stripped.push(variant);
+    } else {
+      kept.push(variant);
+    }
+  }
+  if (stripped.length === 0) return { model, stripped: [], unknown };
+  // Rebuilt from the ORIGINAL segments, so a kept variant keeps its own
+  // spelling; only the web-access ones are removed.
+  const rewritten = [base, ...kept].join(":");
+  // A slug that was ONLY variants (`":online"`) leaves nothing behind. It was
+  // never a valid model id, but "" is a worse thing to hand a caller than the
+  // absent-model signal every call site already understands.
+  return { model: rewritten === "" ? undefined : rewritten, stripped, unknown };
+}
+
+/** Fold a slug variant to its catalog key: trimmed and lowercased. */
+function normalizeVariant(variant: string): string {
+  return variant.trim().toLowerCase();
 }
 
 /**
