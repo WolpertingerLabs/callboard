@@ -48,6 +48,7 @@ function workspace(over: Partial<WorkspaceWithRemovability> = {}): WorkspaceWith
     createdAt: "2026-07-20T00:00:00.000Z",
     directory: { state: "present", detail: "still a worktree" },
     diskUsage: { bytes: 5_368_709_120 },
+    chatCount: 3,
     removability: { removable: true, blockers: [], ignored: { entries: [".env"], truncated: false } },
     ...over,
   };
@@ -189,6 +190,62 @@ describe("the workspaces tab", () => {
     expect(screen.getByText(/does not exist\. Callboard has not touched it\./)).toBeTruthy();
   });
 
+  /**
+   * The confirmation's chat sentence, driven by the real caller.
+   *
+   * `chatCount` was an optional prop that **no caller passed**, so the sentence
+   * was dead in production while ArchiveWorkspaceConfirm's own test — which
+   * supplied the number by hand — stayed green. That is a test proving a
+   * behaviour the shipped UI did not have. This one goes through the component
+   * that actually renders the confirmation, so it cannot pass unless the wiring
+   * is there.
+   */
+  it("tells the user how many chats the archive will interrupt", async () => {
+    listWorkspaces.mockResolvedValue({ workspaces: [workspace({ chatCount: 4 })] });
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    click(screen.getByText(/Archive & trash…/).closest("button"));
+
+    expect(await screen.findByText(/4 chats in this workspace will be interrupted and archived/)).toBeTruthy();
+  });
+
+  /**
+   * The record-only path said "This marks the workspace record archived and
+   * nothing else." It kills every live session linked to the workspace: the
+   * interrupt-and-stamp happens before the removability gate is even
+   * evaluated, so it runs on exactly this path too.
+   */
+  it("does not pretend the record-only archive leaves running chats alone", async () => {
+    listWorkspaces.mockResolvedValue({ workspaces: [blocked] });
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-dirty");
+    click(screen.getByText("Archive record…").closest("button"));
+
+    expect(await screen.findByText(/3 chats linked to this workspace are interrupted and archived first/)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("archived and nothing else");
+  });
+
+  /**
+   * Archiving ends by running the retention sweep, which permanently deletes
+   * every past-retention trash entry — including entries from workspaces the
+   * user never touched. It was logged and never surfaced.
+   */
+  it("reports what the retention sweep deleted on the way out", async () => {
+    archiveWorkspace.mockResolvedValue({
+      workspace: workspace(),
+      chats: [],
+      worktree: { removed: true, disposition: "quarantined", path: "/home/cybil/callboard.feat-clean", trashPath: "/trash/ws-clean-2026", blockers: [] },
+      trashSweep: { removed: ["ws-old-2026-01-01", "ws-older-2025-12-01"] },
+    });
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    click(screen.getByText(/Archive & trash…/).closest("button"));
+    click((await screen.findByText("Archive and move to trash")).closest("button"));
+
+    expect(await screen.findByText(/permanently deleted 2 trash entries/)).toBeTruthy();
+    expect(screen.getByText(/ws-old-2026-01-01, ws-older-2025-12-01/)).toBeTruthy();
+  });
+
   it("asks for sizes, since that is the number the cleanup is about", async () => {
     open();
     await screen.findByText("/home/cybil/callboard.feat-clean");
@@ -325,5 +382,70 @@ describe("the trash tab", () => {
     // The confirmation's own button, not the row's — the row's is behind the overlay.
     click(screen.getAllByRole("button", { name: "Restore" }).at(-1));
     await waitFor(() => expect(restoreTrashEntry).toHaveBeenCalledWith("ws-1-2026"));
+  });
+
+  async function restoreOnce(result: Record<string, unknown>) {
+    listTrash.mockResolvedValue({
+      root: "/home/cybil/.callboard/trash",
+      retentionDays: 30,
+      entries: [
+        {
+          entry: "ws-1-2026",
+          originalPath: "/home/cybil/callboard.feat-old",
+          branch: "feat/old",
+          quarantinedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+          restore: [],
+          restorable: true,
+        },
+      ],
+    });
+    restoreTrashEntry.mockResolvedValue({ entry: "ws-1-2026", originalPath: "/home/cybil/callboard.feat-old", trashRetained: true, ...result });
+    open();
+    click(screen.getByText("Trash"));
+    click((await screen.findByText("Restore")).closest("button"));
+    click(screen.getAllByRole("button", { name: "Restore" }).at(-1));
+    await waitFor(() => expect(restoreTrashEntry).toHaveBeenCalled());
+  }
+
+  /**
+   * `skippedEntries` came back from the API and nothing rendered it. Even shown
+   * raw it reads as "git already had those" rather than as anything a user
+   * could act on, so the count is stated in terms of what actually happened:
+   * git wrote those paths, and they were left exactly as it wrote them.
+   */
+  it("states what the restore left alone, not just what it copied", async () => {
+    await restoreOnce({ ok: true, copiedEntries: 12, skippedEntries: ["backend/server.js"], skippedCount: 431, branchOutcome: "branch" });
+    expect(await screen.findByText(/12 files that git does not track were copied back/)).toBeTruthy();
+    expect(screen.getByText(/431 paths already existed and were left exactly as git checked it out/)).toBeTruthy();
+  });
+
+  /**
+   * The paths a restore could NOT bring back are the only part a user can act
+   * on — the originals are still in the trash entry, and the sweep will take
+   * them. Collapsing this to "the restore failed" is how they get lost.
+   */
+  it("names the paths that were not restored and says where they still are", async () => {
+    await restoreOnce({
+      ok: false,
+      copiedEntries: 2,
+      failedEntries: [{ path: "node_modules/locked", error: "could not be read (EACCES)" }],
+      failedCount: 1,
+      failure: { code: "copy-failed", detail: "1 path(s) could not be copied and are still only in the trash." },
+    });
+    expect(await screen.findByText(/node_modules\/locked \(could not be read \(EACCES\)\)/)).toBeTruthy();
+    expect(screen.getByText(/Copy them out by hand before the retention sweep takes it/)).toBeTruthy();
+  });
+
+  /**
+   * A restore that had to detach because the branch moved is not the same
+   * outcome as one that followed the branch, and the difference is which
+   * commit is now checked out. Saying so is the visible half of the manifest
+   * recording a SHA at all.
+   */
+  it("says when it had to detach because the branch no longer points at that commit", async () => {
+    await restoreOnce({ ok: true, copiedEntries: 1, branchOutcome: "detached", restoredCommit: "d72a6f21cafe0000000000000000000000000000" });
+    expect(await screen.findByText(/recreated detached at d72a6f21/)).toBeTruthy();
+    expect(screen.getByText(/Nothing followed the branch name to a different tree/)).toBeTruthy();
   });
 });

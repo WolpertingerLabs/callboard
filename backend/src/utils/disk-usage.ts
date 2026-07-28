@@ -22,6 +22,19 @@ import type { WorktreeDiskUsage } from "shared/types/index.js";
 export const DISK_USAGE_TIMEOUT_MS = 15000;
 
 /**
+ * Total wall-clock budget for measuring disk usage across ONE listing.
+ *
+ * The per-directory timeout above is not a bound on a listing: `execFileSync`
+ * blocks the event loop, so N entries with nothing but a per-entry ceiling is
+ * N × {@link DISK_USAGE_TIMEOUT_MS} of frozen daemon — no HTTP served, no SSE
+ * flushed, no timer fired. Every listing that measures more than one directory
+ * therefore shares one budget, and entries past it report a labelled skip in
+ * their own `diskUsage.error` plus a summary note on the listing. Nothing is
+ * silently truncated.
+ */
+export const DISK_USAGE_BUDGET_MS = 120000;
+
+/**
  * How long a measurement is reused.
  *
  * The listings that show sizes are *polled* — the sidebar refreshes every
@@ -63,6 +76,60 @@ export function directoryDiskUsageCached(directory: string, now: number = Date.n
 /** Drop everything memoised. For tests, and for a caller that just moved a directory. */
 export function clearDiskUsageCache(): void {
   cache.clear();
+}
+
+/**
+ * One listing's share of `du`, with a spend limit.
+ *
+ * Every listing that measures more than one directory takes one of these and
+ * measures through it. A skip is *reported*, never silent: the entry gets an
+ * error string saying why it has no number, and {@link DiskUsageBudget.note}
+ * gives the listing a sentence to surface.
+ */
+export interface DiskUsageBudget {
+  /** Measure `directory`, or return a labelled skip once the budget is spent. */
+  measure(directory: string): WorktreeDiskUsage;
+  /** How many measurements were skipped for want of budget. */
+  readonly skipped: number;
+  /** A sentence for the listing to surface, or undefined when nothing was skipped. */
+  note(measured?: number): string | undefined;
+}
+
+export function newDiskUsageBudget(opts?: {
+  budgetMs?: number;
+  /**
+   * Whether to go through the five-minute memo. True for the polled listings
+   * (sidebar, workspaces, trash); discovery measures uncached because a scan is
+   * user-initiated and expected to be current.
+   */
+  cached?: boolean;
+  now?: () => number;
+}): DiskUsageBudget {
+  const budgetMs = opts?.budgetMs ?? DISK_USAGE_BUDGET_MS;
+  const now = opts?.now ?? Date.now;
+  const startedAt = now();
+  let skipped = 0;
+
+  return {
+    measure(directory: string): WorktreeDiskUsage {
+      if (now() - startedAt >= budgetMs) {
+        skipped++;
+        return { error: `not measured — the ${budgetMs}ms disk-usage budget for this listing was exhausted` };
+      }
+      return opts?.cached === false ? directoryDiskUsage(directory) : directoryDiskUsageCached(directory);
+    },
+    get skipped() {
+      return skipped;
+    },
+    note(measured?: number): string | undefined {
+      if (skipped === 0) return undefined;
+      const of = measured === undefined ? "" : ` of ${measured}`;
+      return (
+        `Disk usage was not measured for ${skipped}${of} entr${skipped === 1 ? "y" : "ies"}: the ${budgetMs}ms budget for this listing ran out. ` +
+        `Re-run for the rest, or measure them with "du -sh".`
+      );
+    },
+  };
 }
 
 /**

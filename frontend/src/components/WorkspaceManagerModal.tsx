@@ -34,6 +34,7 @@ import {
   listWorkspaces,
   restoreTrashEntry,
   type TrashEntryView,
+  type TrashRestoreResult,
   type UnmanagedWorktree,
   type UnmanagedWorktreeListing,
   type WorkspaceWithRemovability,
@@ -111,6 +112,47 @@ function daysUntil(iso: string, now: number): number {
   return Math.floor((Date.parse(iso) - now) / 86_400_000);
 }
 
+/** `1 file` / `4 files`. */
+function plural(count: number, one: string, many = `${one}s`): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/**
+ * What a restore actually did, in the terms a user can check.
+ *
+ * The copy count on its own is the reading that hid a data-loss bug: a restore
+ * that skipped every tracked directory reported "2 entries copied" and `ok`,
+ * while the `.env` files underneath them stayed in the trash for the sweep. So
+ * the skips are stated too, and — because a skip is only harmless when git
+ * wrote the *same* commit back — so is which commit that was.
+ */
+function describeRestore(entry: TrashEntryView, result: TrashRestoreResult): string {
+  const parts = [`${plural(result.copiedEntries ?? 0, "file")} that git does not track ${result.copiedEntries === 1 ? "was" : "were"} copied back.`];
+  if (result.skippedCount) {
+    parts.push(`${plural(result.skippedCount, "path")} already existed and ${result.skippedCount === 1 ? "was" : "were"} left exactly as git checked it out.`);
+  }
+  const branch = entry.branch ?? "the branch";
+  if (result.branchOutcome === "detached" && result.restoredCommit) {
+    parts.push(
+      `Note: ${branch} no longer points at the commit this was quarantined at, so the checkout was recreated detached at ${result.restoredCommit.slice(0, 8)} — ` +
+        `the commit you actually had. Nothing followed the branch name to a different tree.`,
+    );
+  } else if (result.branchOutcome === "branch-recreated" && result.restoredCommit) {
+    parts.push(`${branch} had been deleted; it was recreated at ${result.restoredCommit.slice(0, 8)}, the commit this was quarantined at.`);
+  } else if (result.branchOutcome === "branch-unverified") {
+    parts.push(`This entry was quarantined before Callboard recorded commits, so it was restored by branch name — check that HEAD is where you expect.`);
+  }
+  return parts.join(" ");
+}
+
+/** The paths a restore could not bring back. Empty string when there were none. */
+function describeUnrestored(result: TrashRestoreResult): string {
+  if (!result.failedCount) return "";
+  const listed = (result.failedEntries ?? []).map((f) => `${f.path} (${f.error})`).join("; ");
+  const more = result.failedCount > (result.failedEntries?.length ?? 0) ? `, and ${result.failedCount - (result.failedEntries?.length ?? 0)} more` : "";
+  return `Not restored — still only in the trash entry: ${listed}${more}. Copy them out by hand before the retention sweep takes it.`;
+}
+
 export default function WorkspaceManagerModal({ onClose, repoCandidates, onChanged }: Props) {
   const [tab, setTab] = useState<Tab>("managed");
   const [error, setError] = useState<string | null>(null);
@@ -122,10 +164,15 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
   const [archiveTarget, setArchiveTarget] = useState<WorkspaceWithRemovability | null>(null);
   const [recordOnlyTarget, setRecordOnlyTarget] = useState<WorkspaceWithRemovability | null>(null);
 
+  const [workspacesNote, setWorkspacesNote] = useState<string | undefined>(undefined);
+
   const loadWorkspaces = useCallback(async () => {
     try {
-      const { workspaces: list } = await listWorkspaces("active", true);
-      setWorkspaces(list);
+      const listing = await listWorkspaces("active", true);
+      setWorkspaces(listing.workspaces);
+      // The listing's `du` budget ran out. Saying so is the difference between
+      // "these are small" and "these were never measured".
+      setWorkspacesNote(listing.diskUsageNote);
     } catch (err: any) {
       setError(err.message || "Failed to load workspaces");
     }
@@ -157,6 +204,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
   // ── Trash ─────────────────────────────────────────────────────────
   const [trash, setTrash] = useState<TrashEntryView[] | null>(null);
   const [retentionDays, setRetentionDays] = useState(30);
+  const [trashNote, setTrashNote] = useState<string | undefined>(undefined);
   const [restoreTarget, setRestoreTarget] = useState<TrashEntryView | null>(null);
   const now = useMemo(() => Date.now(), [trash]);
 
@@ -165,6 +213,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       const listing = await listTrash();
       setTrash(listing.entries);
       setRetentionDays(listing.retentionDays);
+      setTrashNote(listing.diskUsageNote);
     } catch (err: any) {
       setError(err.message || "Failed to load the trash");
     }
@@ -187,8 +236,16 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
     try {
       const result = await archiveWorkspace(workspace.id);
       const { disposition, trashPath, blockers } = result.worktree;
+      // The archive runs the retention sweep, which is the one thing in this
+      // whole flow that deletes. What it took is reported here rather than left
+      // in a log file the user will never open.
+      const swept = result.trashSweep?.removed ?? [];
+      const sweepNote =
+        swept.length > 0
+          ? ` The retention sweep also permanently deleted ${swept.length} trash entr${swept.length === 1 ? "y" : "ies"} past the ${retentionDays}-day window: ${swept.join(", ")}.`
+          : "";
       if (disposition === "quarantined") {
-        setNotice(`Archived “${workspace.name}”. Its worktree is in ${trashPath} and can be restored from the Trash tab.`);
+        setNotice(`Archived “${workspace.name}”. Its worktree is in ${trashPath} and can be restored from the Trash tab.${sweepNote}`);
       } else if (disposition === "partial") {
         setError(
           `Archived “${workspace.name}”, but the removal did not complete cleanly. The directory was moved to ${trashPath ?? "the trash"} and git's ` +
@@ -198,7 +255,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
         setNotice(
           `Archived the record for “${workspace.name}”. The directory was left exactly where it is${
             blockers.length > 0 ? `: ${blockers.map((b) => b.detail).join(" ")}` : "."
-          }`,
+          }${sweepNote}`,
         );
       }
       setWorkspaces(null);
@@ -213,8 +270,13 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
     }
   };
 
-  const runAdoption = async () => {
-    const paths = [...selected];
+  /**
+   * `paths` comes from the confirmation, which is the screen that rendered
+   * them. Reading `selected` here instead would post a set the user may never
+   * have seen — today those agree, but only because a rescan happens to clear
+   * the selection.
+   */
+  const runAdoption = async (paths: string[]) => {
     setBusy(true);
     setError(null);
     try {
@@ -242,9 +304,12 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
     try {
       const result = await restoreTrashEntry(entry.entry);
       if (result.ok) {
-        setNotice(`Restored ${result.originalPath}. ${result.copiedEntries ?? 0} untracked or ignored entries were copied back; the trash copy was kept.`);
+        setNotice(`Restored ${result.originalPath}. ${describeRestore(entry, result)} The trash copy was kept.`);
       } else {
-        setError(result.failure?.detail ?? "The restore did not run. Nothing was changed.");
+        // A restore that copied some of the tree and could not copy the rest is
+        // a failure *with contents*, and the paths it could not bring back are
+        // the only part a user can act on. Never collapse it to the sentence.
+        setError([result.failure?.detail ?? "The restore did not run. Nothing was changed.", describeUnrestored(result)].filter(Boolean).join(" "));
       }
       setTrash(null);
       onChanged?.();
@@ -372,6 +437,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
                 Directories Callboard holds a workspace record for
                 {totalManagedBytes > 0 && <> · {formatDiskUsage({ bytes: totalManagedBytes })} in total</>}. A worktree is only ever moved to the trash when
                 every gate passes; where one does not, the reason is shown instead of the action.
+                {workspacesNote && <span style={{ display: "block", marginTop: 4 }}>{workspacesNote}</span>}
               </p>
               {workspaces === null ? (
                 <Loading />
@@ -446,7 +512,9 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
             <>
               <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
                 Quarantined worktrees. Nothing here has been deleted — the retention sweep removes an entry {retentionDays} days after it arrived, and that is
-                the only place Callboard deletes anything on its own. Restoring copies the contents back out and keeps the trash copy.
+                the only place Callboard deletes anything on its own — and archiving a workspace runs it, so a click over on the Workspaces tab can empty an
+                expired entry from here. Restoring copies the contents back out and keeps the trash copy.
+                {trashNote && <span style={{ display: "block", marginTop: 4 }}>{trashNote}</span>}
               </p>
               {trash === null ? (
                 <Loading />
@@ -483,7 +551,16 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
 
       {/* Confirmations. Every mutation on this surface passes through one. */}
       {archiveTarget && (
-        <ArchiveWorkspaceConfirm workspace={archiveTarget} busy={busy} onCancel={() => setArchiveTarget(null)} onConfirm={() => runArchive(archiveTarget)} />
+        <ArchiveWorkspaceConfirm
+          workspace={archiveTarget}
+          // The count the backend already computed. Passing it is not a nicety:
+          // the archive interrupts and archives every one of these chats before
+          // it even evaluates the worktree.
+          chatCount={archiveTarget.chatCount ?? 0}
+          busy={busy}
+          onCancel={() => setArchiveTarget(null)}
+          onConfirm={() => runArchive(archiveTarget)}
+        />
       )}
       {recordOnlyTarget && (
         <ConfirmModal
@@ -491,9 +568,19 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
           onClose={() => setRecordOnlyTarget(null)}
           onConfirm={() => runArchive(recordOnlyTarget)}
           title={`Archive the record for “${recordOnlyTarget.name}”?`}
+          /*
+            "…and nothing else" was false. Archiving interrupts every chat
+            linked to the workspace and stamps it archived *before* the
+            removability gate runs, so it happens on this path too — the
+            directory is what stays untouched, not the sessions.
+          */
           message={
-            `This marks the workspace record archived and nothing else. The directory at ${recordOnlyTarget.cwd} is not moved, not deleted and not ` +
-            `modified — Callboard will not touch it, because ${recordOnlyTarget.removability.blockers.map((b) => b.detail).join(" ")}`
+            `This marks the workspace record archived. The directory at ${recordOnlyTarget.cwd} is not moved, not deleted and not modified — Callboard will ` +
+            `not touch it, because ${recordOnlyTarget.removability.blockers.map((b) => b.detail).join(" ")}` +
+            (recordOnlyTarget.chatCount
+              ? ` It is not inert, though: ${recordOnlyTarget.chatCount} chat${recordOnlyTarget.chatCount === 1 ? "" : "s"} linked to this workspace ` +
+                `${recordOnlyTarget.chatCount === 1 ? "is" : "are"} interrupted and archived first. Their logs are kept.`
+              : "")
           }
           confirmText="Archive the record"
           confirmStyle="danger"
@@ -509,8 +596,9 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
           onConfirm={() => runRestore(restoreTarget)}
           title="Restore this worktree?"
           message={
-            `Callboard will recreate the checkout at ${restoreTarget.originalPath} from branch ${restoreTarget.branch} and copy back everything git ` +
-            `does not track. The quarantined copy stays in the trash, so this cannot lose anything.`
+            `Callboard will recreate the checkout at ${restoreTarget.originalPath} at the commit it was quarantined at — ${restoreTarget.branch} if that ` +
+            `branch still points there, and the commit itself if it does not — and copy back everything git does not track. The quarantined copy stays in ` +
+            `the trash, so this cannot lose anything.`
           }
           confirmText="Restore"
         />

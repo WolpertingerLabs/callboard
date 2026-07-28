@@ -85,7 +85,12 @@ describe("a row that is not what it looks like", () => {
         workspaces: [makeRecord({ directory: { state: "missing", detail: "gone" } })],
       }),
     );
-    expect(screen.getByText(/does not exist\. Callboard has not touched it\./)).toBeTruthy();
+    // Short in the row, in full on hover: the backend's sentence wrapped to
+    // five lines in a ~330px column, and seven stale records — the real number
+    // on this machine — turned most of the sidebar into the same paragraph.
+    expect(screen.getByText(/Directory is gone — nothing was deleted/)).toBeTruthy();
+    expect(screen.getByTitle(/does not exist\. Callboard has not touched it\./)).toBeTruthy();
+    expect(screen.queryByText(/does not exist\. Callboard has not touched it\./)).toBeNull();
     const button = screen.getByTitle("The directory no longer exists") as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     button.click();
@@ -100,12 +105,13 @@ describe("a row that is not what it looks like", () => {
         workspaces: [makeRecord({ directory: { state: "not-a-worktree", detail: "pruned" } })],
       }),
     );
-    expect(screen.getByText(/no longer a git worktree/)).toBeTruthy();
+    expect(screen.getByText(/No longer a git worktree — contents untouched/)).toBeTruthy();
+    expect(screen.getByTitle(/exists but is no longer a git worktree — it may have been pruned\./)).toBeTruthy();
   });
 
   it("leaves a healthy row unadorned", () => {
     renderRow(makeFolder({ workspaces: [makeRecord()] }));
-    expect(screen.queryByText(/does not exist|no longer a git worktree/)).toBeNull();
+    expect(screen.queryByText(/does not exist|no longer a git worktree/i)).toBeNull();
     expect(screen.queryByText("not owned")).toBeNull();
     expect(screen.queryByText("unmanaged")).toBeNull();
   });

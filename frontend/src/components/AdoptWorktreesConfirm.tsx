@@ -27,10 +27,20 @@ interface Props {
   worktrees: UnmanagedWorktree[];
   busy?: boolean;
   onCancel: () => void;
-  onConfirm: () => void;
+  /**
+   * Handed the paths **this screen rendered**, never a set held elsewhere.
+   *
+   * The caller used to post its own selection while this component rendered the
+   * intersection of that selection with the current listing. The two agreed —
+   * a rescan clears the selection — but agreeing by coincidence is not the
+   * property a confirmation needs. What the user read is what goes out, because
+   * it is the same array.
+   */
+  onConfirm: (paths: string[]) => void;
 }
 
 export default function AdoptWorktreesConfirm({ worktrees, busy, onCancel, onConfirm }: Props) {
+  const paths = worktrees.map((worktree) => worktree.path);
   return (
     <ModalOverlay style={{ zIndex: 1100 }}>
       <div
@@ -109,7 +119,7 @@ export default function AdoptWorktreesConfirm({ worktrees, busy, onCancel, onCon
           </button>
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm(paths)}
             disabled={busy}
             style={{
               padding: "8px 16px",

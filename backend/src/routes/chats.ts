@@ -18,7 +18,7 @@ import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 import { describeWorkspaceDirectory } from "../services/workspace-service.js";
-import { directoryDiskUsageCached } from "../utils/disk-usage.js";
+import { newDiskUsageBudget } from "../utils/disk-usage.js";
 // Chat-list response cache lives in a standalone module so services can
 // invalidate it without closing an import cycle back through this route.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
@@ -166,6 +166,11 @@ chatsRouter.get("/folders", (req, res) => {
     const maxAgeDays = parseInt(req.query.maxAgeDays as string, 10) || 5;
     const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
     const includeDiskUsage = req.query.includeDiskUsage === "true";
+    // One budget across the listing, not one timeout per row: `du` is
+    // synchronous, so an unbounded listing is an unbounded freeze. What it did
+    // not get to is reported rather than silently absent — `diskUsageNote` has
+    // been in FolderListResponse since Phase 4a and this is what sets it.
+    const budget = newDiskUsageBudget();
 
     // Fetch all sessions (large limit to get everything within range)
     const { sessions } = discoverSessionsPaginated(9999, 0);
@@ -186,10 +191,11 @@ chatsRouter.get("/folders", (req, res) => {
       gitInfo: (folder) => getCachedGitInfo(folder),
       describeDirectory: (workspace) => describeWorkspaceDirectory(workspace),
       // Absent unless asked for — that absence *is* the opt-in.
-      ...(includeDiskUsage && { diskUsage: (folder: string) => directoryDiskUsageCached(folder) }),
+      ...(includeDiskUsage && { diskUsage: (folder: string) => budget.measure(folder) }),
     });
 
-    res.json({ folders });
+    const diskUsageNote = budget.note(folders.length);
+    res.json({ folders, ...(diskUsageNote && { diskUsageNote }) });
   } catch (err: any) {
     log.error(`Error listing folders: ${err}`);
     res.status(500).json({ error: "Failed to list folders", details: err.message });

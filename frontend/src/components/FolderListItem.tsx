@@ -29,14 +29,19 @@ interface Props {
 function cleanupNote(folder: FolderSummary): { text: string; title: string; tone: "warn" | "muted" } | null {
   if (folder.directoryState === "missing") {
     return {
-      text: "directory is gone",
+      // Short on purpose. The backend writes a five-line sentence and this
+      // column is ~330px wide, so rendering it verbatim turned a 50px row into
+      // 180px — and seven stale records turned most of the sidebar into the
+      // same paragraph seven times. The row has to survive being seen that
+      // often; the full sentence is one hover (and one tab) away.
+      text: "Directory is gone — nothing was deleted. Archive the record in Manage worktrees.",
       title: folder.directoryDetail ?? "The directory this workspace record points at no longer exists.",
       tone: "warn",
     };
   }
   if (folder.directoryState === "not-a-worktree") {
     return {
-      text: "no longer a worktree",
+      text: "No longer a git worktree — contents untouched. See Manage worktrees.",
       title: folder.directoryDetail ?? "This directory exists but is no longer a git worktree of the recorded repository.",
       tone: "warn",
     };
@@ -216,19 +221,24 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
         </div>
 
         {/*
-          The directory-state sentence, in full.
+          The directory-state band: scannable, not verbatim.
 
           A row whose directory is gone or is no longer a worktree must not look
-          normal — that is the whole reason it is listed at all. The backend
-          writes these sentences and they are surfaced verbatim: they explain
-          what Callboard did *not* do (nothing) and what the user can do about
-          it, which a two-word badge cannot.
+          normal — that is the whole reason it is listed at all. But this is a
+          ~330px column, and the backend's full sentence wrapped to five lines
+          here: one row grew from ~50px to ~180px, and seven stale records
+          (which is the real number on this machine) filled the sidebar with
+          near-identical boilerplate. A warning nobody can skim is a warning
+          nobody reads. The short line says the state, that nothing was
+          deleted, and where to act; the full sentence is the tooltip, and the
+          management view has room for it in full.
         */}
         {note && note.tone === "warn" && (
           <div
+            title={note.title}
             style={{
               display: "flex",
-              alignItems: "flex-start",
+              alignItems: "center",
               gap: 4,
               fontSize: 11,
               lineHeight: 1.35,
@@ -239,8 +249,8 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
               color: "var(--warning)",
             }}
           >
-            <AlertTriangle size={11} style={{ flexShrink: 0, marginTop: 2 }} />
-            <span>{note.title}</span>
+            <AlertTriangle size={11} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{note.text}</span>
           </div>
         )}
         {folder.chatStatus && (

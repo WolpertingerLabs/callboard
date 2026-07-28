@@ -57,9 +57,11 @@ export type {
   WorkspaceAdoptionOutcome,
   AdoptWorktreesResult,
   FolderWorkspaceRecord,
+  WorkspaceListResponse,
   TrashEntryView,
   TrashListing,
   TrashRestoreFailure,
+  TrashRestoreBranchOutcome,
   TrashRestoreResult,
 } from "./workspace.js";
 

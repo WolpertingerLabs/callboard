@@ -78,6 +78,19 @@ describe("the click itself", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * A confirmation submits the list it showed. The caller used to post its own
+   * selection while this screen rendered the intersection of that selection
+   * with the current listing; they agreed only because a rescan happens to
+   * clear the selection, and "agrees by coincidence" is not a property a
+   * confirmation may rely on.
+   */
+  it("hands back exactly the paths it rendered", () => {
+    const { onConfirm } = renderConfirm([makeWorktree({ path: "/home/cybil/a" }), makeWorktree({ path: "/home/cybil/b" })]);
+    (screen.getByText("Adopt these 2").closest("button") as HTMLButtonElement).click();
+    expect(onConfirm).toHaveBeenCalledWith(["/home/cybil/a", "/home/cybil/b"]);
+  });
+
   it("cannot be double-fired while adoption is running", () => {
     const { onConfirm } = renderConfirm([makeWorktree()], true);
     const button = screen.getByText("Adopting…").closest("button") as HTMLButtonElement;

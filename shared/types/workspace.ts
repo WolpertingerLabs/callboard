@@ -233,6 +233,24 @@ export interface WorkspaceWithRemovability extends Workspace {
    * workspaces" is not a number anyone acts on, and "9.4 GB" is.
    */
   diskUsage?: WorktreeDiskUsage;
+  /**
+   * Chats linked to this workspace by `workspaceId`.
+   *
+   * Archiving interrupts every one of them and stamps it archived — before the
+   * removability gate runs, so it happens even when the directory is left
+   * exactly where it is. A confirmation that does not state this number is
+   * describing a gentler action than the button performs, which is why the
+   * count travels with the record rather than being an optional extra a caller
+   * may forget to fetch.
+   */
+  chatCount?: number;
+}
+
+/** `GET /api/workspaces`. */
+export interface WorkspaceListResponse {
+  workspaces: WorkspaceWithRemovability[];
+  /** Set when the disk-usage budget ran out before every workspace was measured. */
+  diskUsageNote?: string;
 }
 
 /**
@@ -307,6 +325,21 @@ export interface ArchiveWorkspaceResult {
     state?: WorktreeInspection;
     /** Ignored entries that moved with it. Only set when quarantined. */
     ignored?: WorkspaceIgnoredPreview;
+  };
+  /**
+   * What the retention sweep deleted on the way out, when it deleted anything.
+   *
+   * A successful quarantine runs {@link sweepTrash}, which permanently removes
+   * **every** past-retention trash entry — not just this workspace's. That is
+   * the one deletion in the whole archive path, so it is returned rather than
+   * only logged: a caller whose confirmation said "nothing is deleted" needs to
+   * be able to tell the user what in fact was.
+   */
+  trashSweep?: {
+    /** Trash entry names that were deleted. */
+    removed: string[];
+    /** Entries the sweep tried and failed to delete. */
+    errors?: string[];
   };
 }
 
@@ -537,6 +570,8 @@ export interface TrashListing {
   /** {@link TRASH_RETENTION_MS} in days, so a UI need not restate it. */
   retentionDays: number;
   entries: TrashEntryView[];
+  /** Set when the disk-usage budget ran out before every entry was measured. */
+  diskUsageNote?: string;
 }
 
 export type TrashRestoreFailure =
@@ -553,6 +588,20 @@ export type TrashRestoreFailure =
   /** The checkout was recreated but copying the untracked files back failed. */
   | "copy-failed";
 
+/** How the recreated checkout ended up on the commit the entry was quarantined at. */
+export type TrashRestoreBranchOutcome =
+  /** The branch still pointed at the recorded commit; it was checked out. */
+  | "branch"
+  /** The branch was gone. It was recreated, at the recorded commit. */
+  | "branch-recreated"
+  /**
+   * The branch now points somewhere else, so the recorded commit was checked
+   * out detached rather than following the name to a different tree.
+   */
+  | "detached"
+  /** The entry predates {@link TrashManifest.headSha}: restored by name alone. */
+  | "branch-unverified";
+
 /**
  * Result of restoring one trash entry.
  *
@@ -560,15 +609,42 @@ export type TrashRestoreFailure =
  * **copies** the untracked and ignored files back and leaves the quarantined
  * directory alone, so a restore that goes wrong loses nothing. The entry ages
  * out through the normal sweep.
+ *
+ * The counts below are not decoration. A restore that reported only what it
+ * copied could drop a whole subtree and still read as a success, which is
+ * precisely the bug this shape exists to make impossible to hide: everything
+ * the copy did *not* bring back is returned, counted, and has to be rendered.
  */
 export interface TrashRestoreResult {
   ok: boolean;
   entry: string;
   originalPath?: string;
-  /** Top-level entries copied back out of the trash. */
+  /** Files and symlinks copied back out of the trash, at any depth. */
   copiedEntries?: number;
-  /** Paths that already existed in the recreated checkout and were left alone. */
+  /**
+   * Paths (relative to the worktree root) left alone because git had already
+   * written them. Capped for size — {@link skippedCount} is the true total.
+   *
+   * These are expected and benign: git checks the tracked files out at the
+   * recorded commit and they win. Directories are never skipped wholesale — the
+   * copy descends into a collision and only a *leaf* is ever left alone.
+   */
   skippedEntries?: string[];
+  /** Total skipped, including any beyond the cap on {@link skippedEntries}. */
+  skippedCount?: number;
+  /**
+   * Paths that could NOT be copied back — unreadable, unwritable, or of a type
+   * that cannot be reproduced. **These were not restored**; they are still in
+   * the trash entry and nothing else will put them back. Capped, like the
+   * skips; {@link failedCount} is the total.
+   */
+  failedEntries?: Array<{ path: string; error: string }>;
+  /** Total failures, including any beyond the cap on {@link failedEntries}. */
+  failedCount?: number;
+  /** The commit the checkout was recreated at, when the manifest recorded one. */
+  restoredCommit?: string;
+  /** How the branch was handled. @see TrashRestoreBranchOutcome */
+  branchOutcome?: TrashRestoreBranchOutcome;
   trashRetained: true;
   failure?: { code: TrashRestoreFailure; detail: string };
 }

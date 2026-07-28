@@ -57,10 +57,11 @@ import {
   isRegisteredWorktree,
   listIgnoredEntries,
   pruneWorktrees,
+  resolveCommit,
   resolveWorktreeToMainRepo,
   worktreeContainsSubmodules,
 } from "../utils/git.js";
-import { directoryDiskUsageCached } from "../utils/disk-usage.js";
+import { clearDiskUsageCache, newDiskUsageBudget, type DiskUsageBudget } from "../utils/disk-usage.js";
 import { readWorktreeToken, verifyWorktreeToken } from "../utils/worktree-token.js";
 import { quarantineDirectory, sweepTrash } from "../utils/worktree-trash.js";
 import { chatFileService } from "./chat-file-service.js";
@@ -108,10 +109,31 @@ interface RemovalContext {
   cleanliness: Map<string, WorktreeCleanliness>;
   /** Directories that a live agent session is running in. Lazy — usually empty. */
   liveSessionFolders: string[] | null;
+  /** Chats per workspace id, from one pass over the chat store. Lazy. */
+  chatCounts: Map<string, number> | null;
 }
 
 function newRemovalContext(): RemovalContext {
-  return { activeWorkspaces: listWorkspaces({ status: "active" }), cleanliness: new Map(), liveSessionFolders: null };
+  return { activeWorkspaces: listWorkspaces({ status: "active" }), cleanliness: new Map(), liveSessionFolders: null, chatCounts: null };
+}
+
+/**
+ * How many chats each workspace owns, from a single pass over the chat store.
+ *
+ * Per-workspace {@link chatsForWorkspace} reads every chat, so a listing that
+ * called it per record would be quadratic. Counted here rather than left to the
+ * UI because the archive confirmation has to state the number — an archive
+ * interrupts and stamps every linked chat, and a confirmation that omits that
+ * is describing a different action than the one the button performs.
+ */
+function chatCounts(ctx: RemovalContext): Map<string, number> {
+  if (ctx.chatCounts) return ctx.chatCounts;
+  const counts = new Map<string, number>();
+  for (const chat of chatFileService.getAllChats()) {
+    if (chat.workspaceId) counts.set(chat.workspaceId, (counts.get(chat.workspaceId) ?? 0) + 1);
+  }
+  ctx.chatCounts = counts;
+  return counts;
 }
 
 /**
@@ -348,19 +370,30 @@ export function listWorkspacesWithRemovability(
    * wants the removal verdict should not pay for it. Measurements are memoised
    * for five minutes, so a management view that re-polls costs nothing.
    */
-  opts?: { includeDiskUsage?: boolean },
+  opts?: {
+    includeDiskUsage?: boolean;
+    /**
+     * The listing's `du` budget. A caller passes one in when it wants to read
+     * {@link DiskUsageBudget.note} afterwards; when it does not, one is created
+     * here anyway — `execFileSync` blocks the event loop, so there must be no
+     * path through this function that measures N directories unbounded.
+     */
+    budget?: DiskUsageBudget;
+  },
 ): WorkspaceWithRemovability[] {
   const ctx = newRemovalContext();
+  const budget = opts?.includeDiskUsage ? (opts.budget ?? newDiskUsageBudget()) : undefined;
   return listWorkspaces(filter).map((workspace) => {
     const directory = describeWorkspaceDirectory(workspace);
     return {
       ...workspace,
       removability: evaluateWorktreeRemoval(workspace, ctx),
       directory,
+      chatCount: chatCounts(ctx).get(workspace.id) ?? 0,
       // Nothing to measure when the directory is gone — and `du` on a missing
       // path returns an error string, which reads as a failure rather than as
       // the "there is nothing here" that `directory.state` already says.
-      ...(opts?.includeDiskUsage && directory.state !== "missing" && { diskUsage: directoryDiskUsageCached(workspace.cwd) }),
+      ...(budget && directory.state !== "missing" && { diskUsage: budget.measure(workspace.cwd) }),
     };
   });
 }
@@ -507,9 +540,17 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
   // before the move, while the directory is still there to ask about.
   const ignored: WorkspaceIgnoredPreview | undefined = removability.ignored;
 
+  // The commit, read while the checkout is still there to ask. Restoring by
+  // branch name alone is how a restore can come back at a different commit and
+  // still report success — see TrashManifest.headSha.
+  const headSha = resolveCommit(cwd, "HEAD");
+  if (!headSha) {
+    log.warn(`Could not resolve HEAD for ${cwd} before quarantine — its trash entry will have to be restored by branch name`);
+  }
+
   const quarantine = quarantineDirectory(cwd, {
     entryPrefix: workspace.id,
-    manifest: { workspaceId: workspace.id, originalPath: cwd, repoPath, branch: workspace.worktree?.branch },
+    manifest: { workspaceId: workspace.id, originalPath: cwd, repoPath, branch: workspace.worktree?.branch, ...(headSha && { headSha }) },
   });
 
   if (!quarantine.ok) {
@@ -559,15 +600,31 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
   result.worktree.disposition = "quarantined";
   log.info(`Quarantined worktree ${cwd} → ${quarantine.trashPath} for archived workspace ${workspace.id}`);
 
+  // The directory just moved, so every memoised `du` for it — and for anything
+  // the sweep is about to delete — now describes a path that is not there. Five
+  // minutes of a sidebar showing a size against a gone directory is exactly the
+  // stale reading this cache's TTL was never meant to cover.
+  clearDiskUsageCache();
+
   // Age-out anything that has been in the trash past the retention window.
   // Here rather than only at startup so a long-running server keeps the trash
   // bounded, and after the move so a failure to sweep can never affect it.
+  //
+  // **This deletes, and it deletes entries this archive knows nothing about.**
+  // Every past-retention entry goes, including ones belonging to other
+  // workspaces the user may have been about to restore. It is therefore
+  // reported rather than only logged: a click whose confirmation says "nothing
+  // is deleted" must not be the click that silently emptied someone's trash.
   try {
     const swept = sweepTrash();
     if (swept.removed.length > 0) log.info(`Trash sweep removed ${swept.removed.length} expired entr(ies)`);
     for (const error of swept.errors) log.warn(`Trash sweep: ${error}`);
+    if (swept.removed.length > 0 || swept.errors.length > 0) {
+      result.trashSweep = { removed: swept.removed, ...(swept.errors.length > 0 && { errors: swept.errors }) };
+    }
   } catch (err: any) {
     log.warn(`Trash sweep failed: ${err.message}`);
+    result.trashSweep = { removed: [], errors: [err.message] };
   }
 
   return result;

@@ -67,6 +67,7 @@ import type {
   CardListResponse,
   CardResponse,
   WorkspaceWithRemovability,
+  WorkspaceListResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
   WorkspaceRefusalReason,
@@ -155,6 +156,7 @@ export type {
   CardListResponse,
   CardResponse,
   WorkspaceWithRemovability,
+  WorkspaceListResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
   WorkspaceRefusalReason,
@@ -1694,7 +1696,7 @@ export function retryJobStep(runId: string): Promise<JobRun> {
 // adopt-everything and no archive-many — the backend does not offer them and
 // the UI must not synthesise them out of a loop.
 
-export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<{ workspaces: WorkspaceWithRemovability[] }> {
+export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceListResponse> {
   const params = new URLSearchParams();
   if (status) params.append("status", status);
   if (includeDiskUsage) params.append("includeDiskUsage", "true");

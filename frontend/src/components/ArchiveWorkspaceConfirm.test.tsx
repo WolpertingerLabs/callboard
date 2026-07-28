@@ -41,7 +41,7 @@ function makeWorkspace(over: Partial<WorkspaceWithRemovability> = {}): Workspace
 function renderConfirm(workspace = makeWorkspace(), props: Partial<React.ComponentProps<typeof ArchiveWorkspaceConfirm>> = {}) {
   const onConfirm = vi.fn();
   const onCancel = vi.fn();
-  render(<ArchiveWorkspaceConfirm workspace={workspace} onConfirm={onConfirm} onCancel={onCancel} {...props} />);
+  render(<ArchiveWorkspaceConfirm workspace={workspace} chatCount={0} onConfirm={onConfirm} onCancel={onCancel} {...props} />);
   return { onConfirm, onCancel };
 }
 
@@ -88,6 +88,13 @@ describe("what will actually move", () => {
     expect(screen.getByText("Git reports no ignored entries in this worktree.")).toBeTruthy();
   });
 
+  /**
+   * `chatCount` is a REQUIRED prop, and that is the whole fix here. It used to
+   * be optional, no caller passed it, and this test — which supplies the number
+   * by hand — went green against a shipped UI that never rendered the sentence.
+   * A unit test cannot prove a caller passes something; the type does, and
+   * WorkspaceManagerModal.test.tsx proves the number is the real one.
+   */
   it("warns that chats will be interrupted", () => {
     renderConfirm(makeWorkspace(), { chatCount: 4 });
     expect(screen.getByText(/4 chats in this workspace will be interrupted/)).toBeTruthy();
@@ -99,8 +106,21 @@ describe("what will actually move", () => {
    */
   it("says the move is reversible and how", () => {
     renderConfirm();
-    expect(screen.getByText(/Nothing is deleted/)).toBeTruthy();
+    expect(screen.getByText(/Nothing in this directory is deleted/)).toBeTruthy();
     expect(screen.getByText(/restore it from the Trash tab/)).toBeTruthy();
+  });
+
+  /**
+   * The copy used to say "Nothing is deleted." full stop, while the same click
+   * ran the retention sweep — which permanently removes every past-retention
+   * trash entry, including ones belonging to workspaces the user has nothing to
+   * do with and may have been about to restore.
+   */
+  it("does not claim the click deletes nothing, because it runs the retention sweep", () => {
+    renderConfirm();
+    expect(screen.getByText(/archiving runs the retention sweep/)).toBeTruthy();
+    expect(screen.getByText(/from any workspace, not just this one/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/Nothing is deleted\./);
   });
 });
 

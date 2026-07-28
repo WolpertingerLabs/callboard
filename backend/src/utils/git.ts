@@ -745,6 +745,36 @@ export function pruneWorktrees(mainRepoPath: string): PruneWorktreesResult {
 }
 
 /**
+ * The commit a revision names, or undefined when it names nothing.
+ *
+ * Used by quarantine and restore to talk about **commits** rather than branch
+ * names. A branch name is a moving target: a branch deleted while its directory
+ * sat in the trash makes `git worktree add <path> <branch>` fall back to DWIM
+ * against a remote, which silently checks out a different commit and reports
+ * success. Recording the SHA and resolving it back is what makes a restore
+ * verifiable rather than merely plausible.
+ *
+ * Pass a fully qualified ref (`refs/heads/x`) when the answer must not DWIM —
+ * `rev-parse --verify refs/heads/x` fails when the *local* branch is gone,
+ * which is exactly the case that needs catching.
+ */
+export function resolveCommit(directory: string, rev: string): string | undefined {
+  if (!existsSync(directory)) return undefined;
+  try {
+    const out = execFileSync("git", ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    const sha = out.trim();
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Is `worktreePath` still registered as a worktree of `mainRepoPath`?
  *
  * Asks git rather than the filesystem, because the question after a failed

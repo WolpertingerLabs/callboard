@@ -21,8 +21,17 @@ import ModalOverlay from "./ModalOverlay";
 
 interface Props {
   workspace: WorkspaceWithRemovability;
-  /** Chats that will be interrupted and archived along with it. */
-  chatCount?: number;
+  /**
+   * Chats that will be interrupted and archived along with it.
+   *
+   * **Required, and deliberately so.** This was optional, no caller passed it,
+   * and the sentence it gates was therefore dead in production while its own
+   * unit test — which passed a number in by hand — stayed green. An archive
+   * interrupts every linked chat, so a confirmation that can be constructed
+   * without knowing how many is a confirmation that can lie by omission; the
+   * type is now what stops that, not a reviewer.
+   */
+  chatCount: number;
   busy?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -82,7 +91,7 @@ export default function ArchiveWorkspaceConfirm({ workspace, chatCount, busy, on
             )}
           </div>
 
-          {chatCount !== undefined && chatCount > 0 && (
+          {chatCount > 0 && (
             <div style={{ fontSize: 13, color: "var(--text)" }}>
               {chatCount} chat{chatCount === 1 ? "" : "s"} in this workspace will be interrupted and archived. Their logs are not moved or deleted.
             </div>
@@ -132,8 +141,20 @@ export default function ArchiveWorkspaceConfirm({ workspace, chatCount, busy, on
             is, which is also the thing that makes the trash tab worth having.
           */}
           <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            Nothing is deleted. The directory is moved in one atomic rename and the worktree is unregistered; you can restore it from the Trash tab, and the
-            retention sweep only deletes it after 30 days.
+            Nothing in this directory is deleted. It is moved in one atomic rename and the worktree is unregistered; you can restore it from the Trash tab, and
+            the retention sweep only deletes it after 30 days.
+          </div>
+
+          {/*
+            The sweep. `archiveWorkspace` ends by running it, so this click also
+            permanently deletes every trash entry already past its 30 days —
+            including entries belonging to workspaces that have nothing to do
+            with this one. The previous copy said "Nothing is deleted", full
+            stop, which was false about precisely the irreversible half.
+          */}
+          <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+            One thing this click <em>does</em> delete: archiving runs the retention sweep, so any quarantined worktree already older than 30 days — from any
+            workspace, not just this one — is permanently removed. Check the Trash tab first if something in there still matters.
           </div>
         </div>
 
