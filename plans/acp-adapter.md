@@ -174,6 +174,17 @@ vocabulary and is the closest precedent.
 > 1. **Both passes must run the identical function over the identical input.** If pass 2
 >    cannot see a field, pass 1 must not use it to decide. Better information that only one
 >    pass has is worse than no information, because it manufactures disagreement.
+>
+>    The user's permission settings are input too, and *identical* covers **when** they are
+>    read. `ToolPermissionPolicy` (pass 2) holds a live `getDefaultPermissions` accessor and
+>    re-reads chat metadata on every call; the ACP adapter originally received a
+>    `DefaultPermissions` **value** resolved once at send time. A user who tightened a policy
+>    mid-turn would have pass 1 auto-allow on the stale snapshot and never escalate — and pass
+>    2, the pass that reads the fresh value, is only reached when pass 1 says "ask". Adapters
+>    therefore take the **getter**, never the value: `AcpRunOptions.getPermissions`,
+>    `AcpPermissionContext.getPermissions`. Codex is the deliberate exception — it has no
+>    per-call hook at all, so its permissions collapse onto a sandbox tier fixed at thread
+>    start; with only one pass there is nothing to disagree with.
 > 2. **Ambiguity resolves to the *most* restrictive matching category, not the least.** The
 >    original ordering checked least-privileged first on the reasoning that an ambiguous name
 >    "never silently widens its own gate". That is backwards: resolving `search_and_run` to
@@ -183,6 +194,16 @@ vocabulary and is the closest precedent.
 >    fallback was `title` — a human sentence. ``Run `rm -rf` to clear the search index``
 >    tokenizes to `search` → `fileRead`. When no reliable tool name exists, categorize to the
 >    most restrictive category; do not parse the sentence.
+>
+> **Known limit of rule 3 — accepted, not a bug.** `isToolIdentifier` separates names from
+> prose by shape, so a *one-word* `title` ("Search", "Delete") is indistinguishable from a
+> real tool name and is tokenized as one. This is not a bypass: both passes receive that same
+> label from `acpToolLabel` and reach the same category, so nothing is silently auto-allowed
+> that the second pass would have caught. Closing it would mean categorizing the two cases
+> differently, which requires a signal only pass 1 has — rule 1 forbids exactly that — or
+> changing the string `canUseTool` shows the user. The blast radius is one word of a
+> human-authored title landing on its literal category rather than `codeExecution`; the cost
+> of "fixing" it is reopening the defect class the whole ruling exists to close.
 >
 > Separately, and inherent to the protocol: **nothing on the client side compels an ACP agent
 > to ask.** `session/request_permission` is sent at the agent's discretion, and there is no

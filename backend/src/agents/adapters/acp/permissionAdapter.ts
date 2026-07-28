@@ -53,6 +53,12 @@
  *     `canUseTool`, which categorizes it with the same function again. `kind` is
  *     used for logging only. Better information that only one pass has is worse
  *     than no information: it manufactures disagreement.
+ *
+ *     The policy settings are input too, and "identical" includes *when* they
+ *     are read. Both passes therefore hold a live accessor —
+ *     {@link AcpPermissionContext.getPermissions} here, `ToolPermissionPolicy`'s
+ *     own `getDefaultPermissions` there — so a policy tightened mid-turn binds
+ *     on the very next tool call rather than after the turn ends.
  *  2. **Ambiguity resolves to the most restrictive matching category** — see
  *     {@link CATEGORY_TOKENS}.
  *  3. **Never categorize from prose** — see {@link isToolIdentifier}.
@@ -239,8 +245,18 @@ export type CanUseToolFn = (
 ) => Promise<{ behavior: "allow" | "deny"; updatedInput?: Record<string, unknown>; message?: string }>;
 
 export interface AcpPermissionContext {
-  /** The user's four-axis defaults; absent ⇒ every category resolves to "ask". */
-  permissions?: DefaultPermissions | null;
+  /**
+   * Live accessor for the user's four-axis defaults; absent (or returning null)
+   * ⇒ every category resolves to "ask".
+   *
+   * A **getter**, not a value, and that is rule 1 applied to the other half of
+   * the input. `ToolPermissionPolicy` — pass 2 — already holds a live accessor
+   * and re-reads storage on every call. If pass 1 were handed a snapshot taken
+   * at send time, a user who tightened a policy mid-turn would have pass 1
+   * auto-allow on the stale value and never escalate, so pass 2's fresh read
+   * would never happen. Same function, same input, at the same moment.
+   */
+  getPermissions?: () => DefaultPermissions | null;
   /** callboard's per-call prompt path. Absent ⇒ "ask" degrades to deny. */
   canUseTool?: CanUseToolFn;
   /** Aborted when the run is cancelled, so a pending prompt resolves. */
@@ -282,7 +298,8 @@ export async function resolveAcpPermission(request: RequestPermissionRequest, ct
   // `canUseTool` below, so the second pass cannot reach a different answer.
   const label = acpToolLabel(toolCall);
   const category = categorizeAcpToolName(label);
-  const decision = decidePermission(category, ctx.permissions ?? null);
+  // Read at decision time, never at send time — see `getPermissions` above.
+  const decision = decidePermission(category, ctx.getPermissions?.() ?? null);
   // `kind` is reported, never consulted. A vendor whose structured kind
   // disagrees with its own tool name is worth knowing about before Phase 2
   // onboards it, and this line is where that shows up.

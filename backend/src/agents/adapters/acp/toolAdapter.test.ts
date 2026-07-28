@@ -111,7 +111,7 @@ describe("anyOf in tool schemas (the OpenRouter failure mode)", () => {
           cwd: process.cwd(),
           // Exactly how services/claude.ts passes tool servers to a provider.
           mcpServers: { "acp-test-tools": handle },
-          acp: { preset: acpTestAgentPreset("mcp"), permissions: null },
+          acp: { preset: acpTestAgentPreset("mcp"), getPermissions: () => null },
         },
       });
 

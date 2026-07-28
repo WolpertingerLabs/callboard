@@ -65,8 +65,16 @@ export interface AcpRunOptions {
    * and how tests point the adapter at a local test-double binary.
    */
   preset?: AcpVendorPreset;
-  /** callboard's four-axis permission defaults. */
-  permissions?: DefaultPermissions | null;
+  /**
+   * Live accessor for callboard's four-axis permission defaults.
+   *
+   * A getter, not a value: `services/claude.ts` re-reads chat metadata on every
+   * call so a mid-turn policy change takes effect immediately, and the second
+   * permission pass (`ToolPermissionPolicy`) already holds the same accessor.
+   * Snapshotting it here would give the two passes different inputs — the exact
+   * asymmetry rule 1 of the two-pass rule forbids. See ./permissionAdapter.ts.
+   */
+  getPermissions?: () => DefaultPermissions | null;
   /** Extra environment for the spawned agent. */
   env?: Record<string, string | undefined>;
 }
@@ -104,7 +112,7 @@ export class AcpAdapter implements AgentProvider {
       cwd,
       prompt: req.prompt,
       ...(resumeSessionId && { resumeSessionId }),
-      ...(acp.permissions !== undefined && { permissions: acp.permissions }),
+      ...(acp.getPermissions && { getPermissions: acp.getPermissions }),
       ...(canUseTool && { canUseTool }),
       ...(externalSignal && { externalSignal }),
       ...(acp.env && { env: acp.env }),

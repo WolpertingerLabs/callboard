@@ -53,8 +53,12 @@ export interface AcpQueryParams {
   prompt: string | AsyncIterable<unknown>;
   /** Session to re-attach to, when this is a follow-up message. */
   resumeSessionId?: string;
-  /** callboard's four-axis defaults, forwarded to the permission adapter. */
-  permissions?: DefaultPermissions | null;
+  /**
+   * Live accessor for callboard's four-axis defaults, forwarded to the
+   * permission adapter. A getter rather than a value so the policy is read at
+   * each tool call — see `getPermissions` in ./permissionAdapter.ts.
+   */
+  getPermissions?: () => DefaultPermissions | null;
   /** callboard's per-call prompt path, used when policy says "ask". */
   canUseTool?: CanUseToolFn;
   /** callboard's run-level abort signal. */
@@ -113,7 +117,7 @@ export class AcpAgentQuery implements AgentQuery {
         cwd,
         ...(this.params.env ? { env: this.params.env } : {}),
         permissionContext: {
-          permissions: this.params.permissions ?? null,
+          ...(this.params.getPermissions ? { getPermissions: this.params.getPermissions } : {}),
           ...(this.params.canUseTool ? { canUseTool: this.params.canUseTool } : {}),
           signal: this.abortController.signal,
         },

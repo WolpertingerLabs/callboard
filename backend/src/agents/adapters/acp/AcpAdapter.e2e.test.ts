@@ -49,6 +49,8 @@ afterEach(() => {
 interface RunOptions {
   prompt?: string;
   permissions?: DefaultPermissions | null;
+  /** A live policy accessor, for turns that change permissions mid-flight. Wins over `permissions`. */
+  getPermissions?: () => DefaultPermissions | null;
   canUseTool?: (toolName: string, input: Record<string, unknown>) => Promise<{ behavior: "allow" | "deny" }>;
   resume?: string;
   abortController?: AbortController;
@@ -68,7 +70,7 @@ async function run(scenario: FakeAcpScenario, opts: RunOptions = {}): Promise<Ag
       ...(opts.abortController ? { abortController: opts.abortController } : {}),
       ...(opts.canUseTool ? { canUseTool: opts.canUseTool } : {}),
       ...(opts.mcpServers ? { mcpServers: opts.mcpServers } : {}),
-      acp: { preset: acpTestAgentPreset(scenario, opts.preset ?? {}), permissions: opts.permissions ?? null },
+      acp: { preset: acpTestAgentPreset(scenario, opts.preset ?? {}), getPermissions: opts.getPermissions ?? (() => opts.permissions ?? null) },
     },
   });
 
@@ -239,6 +241,53 @@ describe("AcpAdapter permission mapping over the wire", () => {
     },
     TEST_TIMEOUT,
   );
+
+  it(
+    "honours a policy tightened after the turn started, rather than a snapshot from send time",
+    async () => {
+      // The user opens Settings mid-turn and moves codeExecution from "allow"
+      // to "ask". `services/claude.ts` hands the adapter the live
+      // `getDefaultPermissions` accessor precisely so this lands: if the value
+      // were resolved once at send time, this turn would auto-allow on the
+      // stale "allow" and canUseTool — the second pass, and the only one that
+      // prompts — would never run.
+      let live: DefaultPermissions = allowAll;
+      const asked: string[] = [];
+
+      const adapter = new AcpAdapter("test-double");
+      const query = adapter.query({
+        prompt: "hello",
+        options: {
+          cwd: process.cwd(),
+          canUseTool: async (toolName: string) => {
+            asked.push(toolName);
+            return { behavior: "deny" as const };
+          },
+          acp: { preset: acpTestAgentPreset("permission"), getPermissions: () => live },
+        },
+      });
+
+      const events: AgentEvent[] = [];
+      try {
+        for await (const event of query) {
+          // session_started is emitted before the prompt is sent to the agent,
+          // so the tightening is strictly after send and strictly before the
+          // tool call — the window the snapshot used to swallow.
+          if (event.type === "session_started") live = askExec;
+          events.push(event);
+        }
+      } finally {
+        await query.close();
+      }
+
+      // Escalated to the prompt path with the new policy…
+      expect(asked).toEqual(["run_command"]);
+      // …and the denial reached the agent over the wire.
+      expect(textOf(events)).toContain("permission:reject-once");
+      expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", callId: "call-danger", isError: true }));
+    },
+    TEST_TIMEOUT,
+  );
 });
 
 describe("AcpAdapter cancellation and teardown", () => {
@@ -248,7 +297,7 @@ describe("AcpAdapter cancellation and teardown", () => {
       const adapter = new AcpAdapter("test-double");
       const query = adapter.query({
         prompt: "go",
-        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("slow"), permissions: allowAll } },
+        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("slow"), getPermissions: () => allowAll } },
       });
 
       const events: AgentEvent[] = [];
@@ -293,7 +342,7 @@ describe("AcpAdapter cancellation and teardown", () => {
       const adapter = new AcpAdapter("test-double");
       const query = adapter.query({
         prompt: "go",
-        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("slow"), permissions: allowAll } },
+        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("slow"), getPermissions: () => allowAll } },
       });
 
       const pumping = (async () => {
@@ -319,7 +368,7 @@ describe("AcpAdapter cancellation and teardown", () => {
       const adapter = new AcpAdapter("test-double");
       const query = adapter.query({
         prompt: "go",
-        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("slow"), permissions: allowAll } },
+        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("slow"), getPermissions: () => allowAll } },
       });
       // Never iterated — iterate()'s finally will never run, so close() must do
       // the reaping itself.
@@ -358,7 +407,7 @@ describe("AcpAdapter handshake failures leave no process behind", () => {
         prompt: "go",
         // No short timeout here: the abort must be what ends this, not the
         // deadline. A 45s ceiling would outlast the test.
-        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("wedge-init"), permissions: allowAll } },
+        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("wedge-init"), getPermissions: () => allowAll } },
       });
 
       const pumping = (async () => {
@@ -485,7 +534,7 @@ async function collect(
 ): Promise<AgentEvent[]> {
   const query = adapter.query({
     prompt: opts.prompt,
-    options: { cwd: process.cwd(), ...(opts.resume ? { resume: opts.resume } : {}), acp: { preset, permissions: allowAll } },
+    options: { cwd: process.cwd(), ...(opts.resume ? { resume: opts.resume } : {}), acp: { preset, getPermissions: () => allowAll } },
   });
   const events: AgentEvent[] = [];
   try {

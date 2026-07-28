@@ -1610,7 +1610,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   if (providerKind === "acp") {
     queryOpts.options.acp = {
       ...(acpProviderId && { providerId: acpProviderId }),
-      permissions: getDefaultPermissions(),
+      // The accessor, not its value. `toolPermissionPolicy` above holds this
+      // same function and calls it per tool call; handing the adapter a
+      // snapshot taken here would let pass 1 auto-allow on a policy the user
+      // has since tightened, and pass 2 — the one that would have caught it —
+      // is only reached when pass 1 says "ask". Two passes, one input, one
+      // moment of reading it.
+      getPermissions: getDefaultPermissions,
     };
     log.info(`ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}`);
   }

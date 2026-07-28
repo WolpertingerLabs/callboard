@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PermissionOption, RequestPermissionRequest } from "@agentclientprotocol/sdk";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { acpToolLabel, categorizeAcpToolKind, categorizeAcpToolName, resolveAcpPermission, selectPermissionOption } from "./permissionAdapter.js";
-import { ToolPermissionPolicy } from "../../permissions/ToolPermissionPolicy.js";
+import { decidePermission, ToolPermissionPolicy } from "../../permissions/ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../claude-code/permissionAdapter.js";
 
 const ALLOW_ONCE: PermissionOption = { optionId: "a1", name: "Allow once", kind: "allow_once" };
@@ -187,7 +187,7 @@ describe("the two-pass rule", () => {
     });
 
     const req = request({ toolCall: { toolCallId: "c1", title: "A tool", name, kind, rawInput: {} } as never });
-    const res = await resolveAcpPermission(req, { permissions: readAllowed, canUseTool, signal: new AbortController().signal });
+    const res = await resolveAcpPermission(req, { getPermissions: () => readAllowed, canUseTool, signal: new AbortController().signal });
 
     // Pass 1 escalated…
     expect(canUseTool).toHaveBeenCalled();
@@ -208,6 +208,50 @@ describe("the two-pass rule", () => {
       }
     }
   });
+
+  // The categorizer is only half the input. The other half is the policy, and
+  // "identical input" includes *when* it is read: pass 2's ToolPermissionPolicy
+  // holds a live accessor and re-reads storage per call, so pass 1 must too. A
+  // snapshot taken at send time lets pass 1 auto-allow on a policy the user has
+  // since tightened — and pass 2, the pass that would have caught it, is only
+  // reached when pass 1 says "ask".
+  it("reads the policy at decision time, so a mid-turn tightening binds on the very next call", async () => {
+    // One live cell standing in for chat metadata on disk, which is what
+    // `getDefaultPermissions` in services/claude.ts re-reads on every call.
+    let live: DefaultPermissions = perms(); // everything allowed
+    const canUseTool = vi.fn().mockResolvedValue({ behavior: "deny" });
+    const ctx = { getPermissions: () => live, canUseTool, signal: new AbortController().signal };
+
+    // Before: codeExecution is "allow", so the tool runs unprompted.
+    expect(await resolveAcpPermission(request(), ctx)).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
+    expect(canUseTool).not.toHaveBeenCalled();
+
+    // The user tightens the policy mid-turn.
+    live = perms({ codeExecution: "ask" });
+
+    // After: the very next call escalates instead of auto-allowing on the
+    // stale value.
+    expect(await resolveAcpPermission(request(), ctx)).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
+    expect(canUseTool).toHaveBeenCalledWith("run_command", { command: "ls" }, { signal: ctx.signal });
+  });
+
+  it("cannot disagree with pass 2 about the policy, because both read the same accessor", () => {
+    // The structural mirror of the categorizer test above, for the policy
+    // input. Both passes are handed the same getter, so at every instant they
+    // see the same four axes — there is no window in which one is stale.
+    let live: DefaultPermissions = perms();
+    const getPermissions = () => live;
+    const pass2 = new ToolPermissionPolicy(categorizeAcpToolName, getPermissions);
+
+    for (const next of [perms(), askExec, readAllowed, perms({ codeExecution: "deny" })]) {
+      live = next;
+      for (const name of ["run_command", "search_replace", "web_search", "read_file", "unknown_tool"]) {
+        // Pass 1, as resolveAcpPermission performs it.
+        const pass1 = decidePermission(categorizeAcpToolName(name), getPermissions() ?? null);
+        expect(pass2.decide(name).decision).toBe(pass1);
+      }
+    }
+  });
 });
 
 describe("resolveAcpPermission", () => {
@@ -215,28 +259,28 @@ describe("resolveAcpPermission", () => {
 
   it("auto-allows without prompting when policy allows", async () => {
     const canUseTool = vi.fn();
-    const res = await resolveAcpPermission(request(), { permissions: perms(), canUseTool, signal });
+    const res = await resolveAcpPermission(request(), { getPermissions: () => perms(), canUseTool, signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
   it("auto-rejects without prompting when policy denies", async () => {
     const canUseTool = vi.fn();
-    const res = await resolveAcpPermission(request(), { permissions: perms({ codeExecution: "deny" }), canUseTool, signal });
+    const res = await resolveAcpPermission(request(), { getPermissions: () => perms({ codeExecution: "deny" }), canUseTool, signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
   it('escalates "ask" to canUseTool with the tool name and raw input', async () => {
     const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
-    const res = await resolveAcpPermission(request(), { permissions: perms({ codeExecution: "ask" }), canUseTool, signal });
+    const res = await resolveAcpPermission(request(), { getPermissions: () => perms({ codeExecution: "ask" }), canUseTool, signal });
     expect(canUseTool).toHaveBeenCalledWith("run_command", { command: "ls" }, { signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
   });
 
   it("treats absent permissions as ask", async () => {
     const canUseTool = vi.fn().mockResolvedValue({ behavior: "deny" });
-    const res = await resolveAcpPermission(request(), { permissions: null, canUseTool, signal });
+    const res = await resolveAcpPermission(request(), { getPermissions: () => null, canUseTool, signal });
     expect(canUseTool).toHaveBeenCalled();
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
   });
@@ -244,30 +288,30 @@ describe("resolveAcpPermission", () => {
   it('rejects an "ask" when nothing can surface a prompt', async () => {
     // e.g. a quick-completion run. There is no one to ask, so refusing is the
     // only safe reading.
-    const res = await resolveAcpPermission(request(), { permissions: perms({ codeExecution: "ask" }), signal });
+    const res = await resolveAcpPermission(request(), { getPermissions: () => perms({ codeExecution: "ask" }), signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
   });
 
   it("rejects when canUseTool throws instead of propagating the error", async () => {
     const canUseTool = vi.fn().mockRejectedValue(new Error("emitter gone"));
-    const res = await resolveAcpPermission(request(), { permissions: perms({ codeExecution: "ask" }), canUseTool, signal });
+    const res = await resolveAcpPermission(request(), { getPermissions: () => perms({ codeExecution: "ask" }), canUseTool, signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
   });
 
   it("answers cancelled when the agent offers no options at all", async () => {
-    const res = await resolveAcpPermission(request({ options: [] }), { permissions: perms(), signal });
+    const res = await resolveAcpPermission(request({ options: [] }), { getPermissions: () => perms(), signal });
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
   it("answers cancelled when no offered option matches the decision", async () => {
     // Policy says deny, but the agent only offered allow. Selecting it would
     // invert callboard's decision.
-    const res = await resolveAcpPermission(request({ options: [ALLOW_ONCE] }), { permissions: perms({ codeExecution: "deny" }), signal });
+    const res = await resolveAcpPermission(request({ options: [ALLOW_ONCE] }), { getPermissions: () => perms({ codeExecution: "deny" }), signal });
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
   it("filters out malformed options before deciding", async () => {
-    const res = await resolveAcpPermission(request({ options: [null, { name: "no id" }, ALLOW_ONCE] as never }), { permissions: perms(), signal });
+    const res = await resolveAcpPermission(request({ options: [null, { name: "no id" }, ALLOW_ONCE] as never }), { getPermissions: () => perms(), signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
   });
 
@@ -277,7 +321,7 @@ describe("resolveAcpPermission", () => {
       controller.abort();
       return { behavior: "allow" as const };
     });
-    const res = await resolveAcpPermission(request(), { permissions: perms({ codeExecution: "ask" }), canUseTool, signal: controller.signal });
+    const res = await resolveAcpPermission(request(), { getPermissions: () => perms({ codeExecution: "ask" }), canUseTool, signal: controller.signal });
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
@@ -287,12 +331,12 @@ describe("resolveAcpPermission", () => {
     // would recreate the disagreement. Prose gets the strictest gate instead —
     // codeExecution: "deny" ⇒ reject.
     const req = request({ toolCall: { toolCallId: "c1", title: "rm -rf /", kind: "read" } as never });
-    const res = await resolveAcpPermission(req, { permissions: perms({ fileRead: "allow", codeExecution: "deny" }), signal });
+    const res = await resolveAcpPermission(req, { getPermissions: () => perms({ fileRead: "allow", codeExecution: "deny" }), signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
   });
 
   it("survives a request with no toolCall at all", async () => {
-    const res = await resolveAcpPermission(request({ toolCall: undefined as never }), { permissions: perms(), signal });
+    const res = await resolveAcpPermission(request({ toolCall: undefined as never }), { getPermissions: () => perms(), signal });
     // No metadata ⇒ strictest gate ⇒ still allowed under these all-allow perms.
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
   });
