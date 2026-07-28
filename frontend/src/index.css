@@ -43,6 +43,9 @@
   --danger-border: rgba(220, 53, 69, 0.4);
   --warning-bg: rgba(210, 153, 34, 0.15);
   --success-bg: rgba(63, 185, 80, 0.1);
+  /* Tint of --badge-info, at the same opacity as its siblings above. Paired
+     with --badge-info as text (McpToolsPanel's "proxy" category badge). */
+  --info-bg: rgba(88, 166, 255, 0.1);
 
   /* Overlays & shadows */
   --overlay-bg: rgba(0, 0, 0, 0.5);
@@ -65,6 +68,7 @@
   --toggle-knob: #ffffff;
   --status-active: #10b981;
   --status-triggered: #f59e0b;
+  --status-green: #22c55e;
   --badge-info: #58a6ff;
   --badge-info-bg: rgba(88, 166, 255, 0.15);
   --badge-trigger: #a78bfa;
@@ -112,9 +116,12 @@
   --chatlist-badge-session-text: var(--text-on-accent);
   --chatlist-badge-status-bg: color-mix(in srgb, var(--text-muted) 15%, transparent);
   --chatlist-badge-status-text: var(--text-muted);
-  --chatlist-summon-bg: color-mix(in srgb, var(--warning) 18%, transparent);
+  /* 12%, not 18%: these badges paint a colour on a tint of itself, which caps
+     contrast no matter how dark the text goes. 18% pinned the urgent badge at
+     4.3:1 (dark) / 4.2:1 (light); 12% clears 4.5:1 in both. */
+  --chatlist-summon-bg: color-mix(in srgb, var(--warning) 12%, transparent);
   --chatlist-summon-text: var(--warning);
-  --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 18%, transparent);
+  --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 12%, transparent);
   --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
   --chatlist-bookmark-icon: var(--accent);
@@ -151,18 +158,29 @@
   --surface: #f8fafc;
   --border: #e2e8f0;
   --text: #1e293b;
-  --text-muted: #64748b;
+  /* #64748b was 4.20:1 on --bg-sidebar bare and 3.56:1 once a badge tint sat
+     under it (DraftListItem's target chip) — no tint opacity reaches 4.5:1
+     from there, so the text colour is the only lever. Kept equal to
+     --text-secondary, as both themes have always had them equal. */
+  --text-muted: #556070;
   --accent: #7c6aef;
   --accent-hover: #9484f0;
   --user-bg: #e0e7ff;
   --assistant-bg: #f8fafc;
   --code-bg: #f1f5f9;
-  --danger: #ef4444;
+  /* --danger and --warning are read as *text* on their own tint backgrounds
+     (--danger-bg / --warning-bg) far more often than they are used as fills.
+     The mid-ramp values they used to hold (#ef4444 / #ca8a04) bottomed out
+     around 3.1:1 and 2.3:1 there — below AA even before the tint darkened the
+     backdrop. Dropping each to the 700/800 step of its own ramp clears 4.5:1
+     everywhere they are painted and also fixes white-on-solid (the delete
+     button, the over-budget pill), which the lighter values failed too. */
+  --danger: #b91c1c;
   --error: #cf222e;
   --success: #16a34a;
-  --warning: #ca8a04;
+  --warning: #854d0e;
   --bg-secondary: #f0f4f8;
-  --text-secondary: #64748b;
+  --text-secondary: #556070;
   --border-light: #e2e8f0;
 
   /* Text on colored backgrounds */
@@ -172,10 +190,15 @@
   /* Semantic tint backgrounds */
   --accent-bg: rgba(124, 106, 239, 0.08);
   --accent-light: rgba(124, 106, 239, 0.08);
-  --danger-bg: rgba(239, 68, 68, 0.08);
-  --danger-border: rgba(239, 68, 68, 0.3);
-  --warning-bg: rgba(202, 138, 4, 0.12);
+  /* Tints re-mixed from the new --danger / --warning so the wash still reads as
+     the same hue as the text sitting on it. */
+  --danger-bg: rgba(185, 28, 28, 0.08);
+  --danger-border: rgba(185, 28, 28, 0.3);
+  --warning-bg: rgba(133, 77, 14, 0.1);
   --success-bg: rgba(22, 163, 106, 0.08);
+  /* Tint of --badge-info, at the same opacity as its siblings above. Paired
+     with --badge-info as text (McpToolsPanel's "proxy" category badge). */
+  --info-bg: rgba(37, 99, 235, 0.08);
 
   /* Overlays & shadows */
   --overlay-bg: rgba(0, 0, 0, 0.3);
@@ -197,7 +220,17 @@
   /* UI elements */
   --toggle-knob: #ffffff;
   --status-active: #10b981;
-  --status-triggered: #f59e0b;
+  /* Same story as --warning: painted as a colour on a 15% tint of itself (the
+     triggered badge in ChatListItem/FolderListItem, the "consolidation" filter
+     pill in Activity), where amber-500 bottomed out at 1.71:1 — the worst
+     pairing in the palette. Tint opacity is not the lever here: 12% only
+     reaches 1.75:1, so the colour has to move. amber-700 still misses at
+     3.64:1; amber-800 clears at 4.99:1 and keeps the badge's own hue rather
+     than collapsing it onto --warning's yellow-800. */
+  --status-triggered: #92400e;
+  /* Light needs a much darker green than dark does: #22c55e is only 2.0:1 on
+     --bg-sidebar, well under the 3:1 WCAG asks of a non-text status indicator. */
+  --status-green: #15803d;
   --badge-info: #2563eb;
   --badge-info-bg: rgba(37, 99, 235, 0.1);
   --badge-trigger: #7c3aed;
@@ -245,9 +278,12 @@
   --chatlist-badge-session-text: var(--text-on-accent);
   --chatlist-badge-status-bg: color-mix(in srgb, var(--text-muted) 15%, transparent);
   --chatlist-badge-status-text: var(--text-muted);
-  --chatlist-summon-bg: color-mix(in srgb, var(--warning) 18%, transparent);
+  /* 12%, not 18%: these badges paint a colour on a tint of itself, which caps
+     contrast no matter how dark the text goes. 18% pinned the urgent badge at
+     4.3:1 (dark) / 4.2:1 (light); 12% clears 4.5:1 in both. */
+  --chatlist-summon-bg: color-mix(in srgb, var(--warning) 12%, transparent);
   --chatlist-summon-text: var(--warning);
-  --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 18%, transparent);
+  --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 12%, transparent);
   --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
   --chatlist-bookmark-icon: var(--accent);
