@@ -1,7 +1,7 @@
 import { execSync, execFileSync } from "child_process";
 import { existsSync, statSync, lstatSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, basename, resolve, extname, relative } from "path";
-import type { DiffFileEntry, DiffFileType } from "shared/types/index.js";
+import type { DiffFileEntry, DiffFileType, WorkspaceCleanliness } from "shared/types/index.js";
 
 /**
  * Validate a string as a safe git ref name.
@@ -513,18 +513,17 @@ function gitOutput(directory: string, args: string[], input?: string): string {
   });
 }
 
-export interface WorktreeCleanliness {
-  /** True only when all three checks passed and no git command failed. */
-  clean: boolean;
-  /** Staged or unstaged modifications to tracked files. */
-  uncommittedChanges: boolean;
-  /** Untracked files (ignored files are NOT counted — see the note below). */
-  untrackedFiles: boolean;
-  /** Commits reachable from HEAD and from no other ref in the repository. */
-  unpushedCommits: boolean;
-  /** Set when a git command failed; `clean` is then always false. */
-  error?: string;
-}
+/**
+ * The verdict {@link checkWorktreeClean} returns.
+ *
+ * Defined in shared/types/workspace.ts as `WorkspaceCleanliness` and aliased
+ * here: the API surface returns this shape verbatim (adoption discovery reports
+ * it per candidate), and two hand-maintained copies of a safety-relevant type
+ * are exactly the kind of thing that drifts. Fields: staged/unstaged
+ * modifications, untracked files (ignored files are NOT counted — see below),
+ * and commits reachable from HEAD and nowhere else.
+ */
+export type WorktreeCleanliness = WorkspaceCleanliness;
 
 /**
  * Is this worktree safe to delete?

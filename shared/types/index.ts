@@ -44,6 +44,16 @@ export type {
   WorktreeDisposition,
   WorktreeInspection,
   ArchiveWorkspaceResult,
+  WorkspaceCleanliness,
+  WorktreeNamingConvention,
+  WorktreeNamingGuess,
+  WorktreeDiskUsage,
+  WorkspaceAdoptionRefusal,
+  WorkspaceRefusalReason,
+  UnmanagedWorktree,
+  UnmanagedWorktreeListing,
+  WorkspaceAdoptionOutcome,
+  AdoptWorktreesResult,
 } from "./workspace.js";
 
 export type { ParsedMessage } from "./message.js";

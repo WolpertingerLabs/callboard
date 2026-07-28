@@ -124,6 +124,61 @@ codebase already uses, no new storage tech.
 folder the user pointed us at is never touched. Same distinction paseo draws, and the same
 one that makes automatic cleanup safe to ship.
 
+> **Ownership on reuse — architect ruling, 2026-07-27.** `ensureWorktree` reuses an existing
+> directory far more often than it creates one, and the spec did not say what `owned` should
+> be then. Phase 1 resolves it conservatively: an existing *active* workspace for that `cwd`
+> is adopted outright (so reuse can never downgrade `owned`), and only when no record exists
+> does "did we just create it?" decide. **Never infer ownership.**
+>
+> The consequence is deliberate and needs stating: every worktree predating this entity
+> records as `owned: false` and is therefore permanently unremovable by Phase 2. As of
+> 2026-07-27 that is **41 leaked worktrees** in this repo alone (`git worktree list`) — the
+> entire existing backlog, which Phase 2 will not touch.
+>
+> That is the right default and it stays. The backlog gets its own route: an
+> **explicit, user-initiated adoption** step — "these N worktrees match callboard's creation
+> pattern and have no unmerged work; adopt them for management?" — rather than silent
+> inference. Offering is safe; guessing is not. The cleanliness check applies to adopted
+> worktrees exactly as it does to owned ones.
+
+> **Phase 2b — adoption, implemented 2026-07-28.** The ruling above, shipped. One distinction
+> governs the whole of it:
+>
+> > **Pattern-matching may only ever be used to *offer*. It must never be used to *act*.**
+>
+> Callboard has used at least two naming conventions (`callboard-wt-chatcards` then
+> `callboard.feat-…`), and the current one derives the directory from the branch name — so a
+> renamed branch leaves a worktree Callboard really did create looking unfamiliar, and a user
+> can produce either shape by hand in one command. The heuristic is wrong in both directions,
+> which is why it lives in `utils/worktree-naming.ts`, is consumed only by the read-only
+> `services/workspace-discovery.ts`, and is *not imported at all* by
+> `services/workspace-adoption.ts` — the module that writes `owned: true`.
+>
+> - **Discovery** (`GET /api/workspaces/unmanaged`, `list_unmanaged_worktrees`) enumerates
+>   registered worktrees with no active record and reports, per candidate: path, branch, disk
+>   usage (`du -sk`; the motivating number), cleanliness from Phase 2's own
+>   `checkWorktreeClean`, Phase 2's ignored-entry preview, the adoption refusal it would hit,
+>   and the naming guess, labelled as one. It writes nothing.
+> - **Adoption** (`POST /api/workspaces/adopt`, `adopt_worktrees`) takes **paths the caller
+>   named**. There is no adopt-all and no filter: an agent lists, chooses, and names. It
+>   deletes nothing and quarantines nothing — it writes the identity token and creates the
+>   record, and removal stays a separate action behind every Phase 2 gate.
+> - **`owned: true` now has exactly two writers**, and that is the invariant to defend:
+>   `recordWorktreeWorkspace` ("this call ran `git worktree add`") and `adoptWorktrees`
+>   ("a caller named this path"). A third would quietly redefine what the removal gate means.
+> - **A record never outlives a failed token write.** The token's content *is* the record id,
+>   so it cannot literally be written first; instead the record is created, the token written
+>   and read back through the same verification the removal gate uses, and the record deleted
+>   again on any failure. A record without a token looks managed and can never be cleaned up —
+>   the worst outcome this phase could produce.
+> - **Dirty worktrees are adopted, not refused.** Cleanliness gates *removal*, which Phase 2
+>   already handles; refusing to manage work-in-progress would just leave it in the
+>   unmanageable backlog forever. The state is reported (the `removability` verdict comes back
+>   with the adoption) and Phase 2 still declines to touch it.
+> - **Detached HEAD is refused** — not in the spec's refusal list, but a record requires a
+>   branch and so does the quarantine's restore recipe (`git worktree add <path> <branch>`).
+>   Inventing one from a sha would produce a record that cannot be restored from.
+
 ### Chat linkage
 
 `Chat` gains `workspaceId?: string`. `folder`/`displayFolder` **stay** — they remain the
@@ -237,6 +292,11 @@ groundwork and should be boring.
 **Phase 2 — worktree lifecycle.** `owned` tracking, ref-counted archive, cleanliness check,
 `git worktree remove`. This is the phase that fixes the leak, and it is the one with real
 user value. Ship it close behind Phase 1.
+
+**Phase 2b — adoption of the existing backlog.** Discovery of worktrees with no record
+(read-only) and an explicit, path-named adoption that writes the identity token and an
+`owned: true` record. No UI. See the ruling above for why pattern-matching only ever
+offers.
 
 **Phase 3 — reads move to the workspace.** `FolderSummary` becomes a projection over
 *workspaces* rather than over chats. `isWorktree`/`repoPath` come from the record instead of
