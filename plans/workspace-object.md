@@ -312,6 +312,48 @@ small — but adopting the rule before we accumulate that state is the entire po
 > active records. Per-directory renders that as one row with a count, as Phase 3 already does.
 > Per-record detail belongs in a drill-down, never as a top-level row.
 
+> **Phase 4b — create, rename, and what the row is called. Implemented 2026-07-28.**
+>
+> - **`create_workspace` writes `local` records only, and refuses a worktree directory.**
+>   The store's `createWorkspace` accepts a worktree block with an `owned` field, so a
+>   creation endpoint is exactly where the third writer of `owned: true` appears. The
+>   exposed surface therefore offers no `isolation`, no worktree block and no ownership
+>   flag: a record it writes has no `worktree` at all, so `owned` is not a field on it.
+>   **`owned: true` still has exactly two writers.**
+>
+>   The quieter hole is the one that decided the `is-a-worktree` refusal. A plain record on
+>   an unmanaged worktree is adoption without adoption's gates — no identity token, no
+>   registration check, no branch — *and* it is destructive of the option to do it properly,
+>   because adoption refuses `already-managed` for any directory with an active record. One
+>   call would move a worktree out of the backlog into a state nothing can ever clean up.
+>   Everything else (main checkout, plain clone, agent workspace) is a fine local workspace,
+>   and a second record on a directory that already has one is reported, not refused.
+>
+> - **Rename is a label on a record. Nothing on disk moves.** `cwd`, `repoPath` and
+>   `worktree.branch` are what every path-producing caller reads — the quarantine's
+>   `rename(2)`, the restore recipe, the token's admin dir, `git -C`. Asserted against a
+>   real worktree rather than argued. Names are refused when empty, over 200 characters, or
+>   carrying control or bidi characters (a newline splits a log line; U+202E rewrites how
+>   the row's neighbours render). Names Callboard *derives* — a directory basename, which
+>   may legally contain a newline — are cleaned instead, since refusing there would fail the
+>   chat being started rather than the name being typed.
+>
+> - **`displayName` comes from the record when exactly one active record claims the
+>   directory**, which is the same condition under which `workspaceId` is unambiguous. That
+>   correspondence is the rule: *the row may show a record's name exactly when the row
+>   unambiguously is that record.* A directory with two records keeps its own last path
+>   segment — the row is per-directory, so a row displaying one of two distinct names would
+>   be labelled with a record the user is not acting on, and "most recent" would be worse
+>   still, changing the label under them when a chat starts in the folder. Both names travel
+>   on the row for the drill-down to render. Unrenamed records hold the basename anyway, so
+>   this changes what is on screen only where somebody chose a name.
+>
+> - **The multi-workspace case is a drill-down, never a row split** (the Phase 4a ruling).
+>   The row's record-count chip opens the management view filtered to that directory, which
+>   states that it is filtered and offers the way back. That is the one thing the row
+>   genuinely cannot say — which of two records an action would land on — so it hands off to
+>   the place that lists both by name, each with its own rename.
+
 ## Phases
 
 **Phase 1 — entity + registry, additive only.** `Workspace` type, flat-file store, CRUD

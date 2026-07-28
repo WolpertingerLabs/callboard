@@ -23,21 +23,27 @@
  *   tedium is the point.
  * - **The naming heuristic only ever offers.** It is rendered as a labelled
  *   guess next to a candidate and is never read by anything that decides.
+ *
+ * Phase 4b adds rename, and it is per record rather than per directory for the
+ * same reason the archive is: the name belongs to a record, and a directory may
+ * hold several. It moves nothing on disk — see the note on the rename control.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Ban, FolderGit2, HardDrive, Loader2, RotateCcw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Ban, Check, FolderGit2, HardDrive, Loader2, Pencil, RotateCcw, X } from "lucide-react";
 import {
   adoptWorktrees,
   archiveWorkspace,
   listTrash,
   listUnmanagedWorktrees,
   listWorkspaces,
+  renameWorkspace,
   restoreTrashEntry,
   type TrashEntryView,
   type TrashRestoreResult,
   type UnmanagedWorktree,
   type UnmanagedWorktreeListing,
   type WorkspaceWithRemovability,
+  WORKSPACE_NAME_MAX,
 } from "../api";
 import { blockerLabel, formatDiskUsage, isFixedByAdoption } from "../utils/workspaceFormat";
 import AdoptWorktreesConfirm from "./AdoptWorktreesConfirm";
@@ -59,6 +65,16 @@ interface Props {
   repoCandidates: string[];
   /** Called after anything mutates, so the list behind the modal catches up. */
   onChanged?: () => void;
+  /**
+   * Open on this directory — the drill-down a sidebar row links to.
+   *
+   * A filter, not a different view: the same Workspaces tab, narrowed to one
+   * `cwd`, with a visible way back to all of them. That is what makes the row's
+   * "2 workspaces" chip answer its own question — the row cannot say *which*
+   * record you would be acting on (it is per-directory and there are two), so
+   * it hands off to the place that lists both by name.
+   */
+  focusCwd?: string;
 }
 
 const TABS: { id: Tab; label: string }[] = [
@@ -153,8 +169,14 @@ function describeUnrestored(result: TrashRestoreResult): string {
   return `Not restored — still only in the trash entry: ${listed}${more}. Copy them out by hand before the retention sweep takes it.`;
 }
 
-export default function WorkspaceManagerModal({ onClose, repoCandidates, onChanged }: Props) {
+export default function WorkspaceManagerModal({ onClose, repoCandidates, onChanged, focusCwd }: Props) {
   const [tab, setTab] = useState<Tab>("managed");
+  /**
+   * The directory the caller drilled into, until the user clears it. Held in
+   * state rather than read from the prop so "show all" works without the parent
+   * having to know a modal is filtered.
+   */
+  const [focused, setFocused] = useState<string | undefined>(focusCwd);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -298,6 +320,34 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
     }
   };
 
+  /**
+   * Rename one record. The only mutation on this surface with no confirmation,
+   * and deliberately: it changes a label on a record, moves nothing, deletes
+   * nothing, and is undone by typing the old name back.
+   *
+   * Returns whether it landed, so the inline editor closes on success and stays
+   * open — with the text still in it — on a rejected name.
+   */
+  const runRename = async (workspace: WorkspaceWithRemovability, name: string): Promise<boolean> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const renamed = await renameWorkspace(workspace.id, name);
+      // Patch in place rather than refetching: the listing costs a removability
+      // evaluation per record (several git subprocesses each) and not one of
+      // those verdicts can have changed because of a rename.
+      setWorkspaces((current) => current?.map((w) => (w.id === renamed.id ? { ...w, name: renamed.name } : w)) ?? current);
+      setNotice(`Renamed to “${renamed.name}”. Nothing on disk moved — ${renamed.cwd} is exactly where it was.`);
+      onChanged?.();
+      return true;
+    } catch (err: any) {
+      setError(err.message || "Failed to rename workspace");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runRestore = async (entry: TrashEntryView) => {
     setBusy(true);
     setError(null);
@@ -332,6 +382,18 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
     }
     return [...groups.entries()];
   }, [workspaces]);
+
+  /**
+   * The drill-down. A trailing slash is the only spelling difference worth
+   * tolerating — records store a resolved path and so does the row that links
+   * here — and a focus that matches nothing renders as an explicit empty state
+   * with a way back, never as a silently empty list.
+   */
+  const visibleDirectories = useMemo(() => {
+    if (!focused) return byDirectory;
+    const target = focused.replace(/\/+$/, "");
+    return byDirectory.filter(([cwd]) => cwd.replace(/\/+$/, "") === target);
+  }, [byDirectory, focused]);
 
   const totalManagedBytes = useMemo(() => byDirectory.reduce((sum, [, records]) => sum + (records[0].diskUsage?.bytes ?? 0), 0), [byDirectory]);
 
@@ -439,13 +501,59 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
                 every gate passes; where one does not, the reason is shown instead of the action.
                 {workspacesNote && <span style={{ display: "block", marginTop: 4 }}>{workspacesNote}</span>}
               </p>
+              {/*
+                The drill-down banner. A filtered list that does not say it is
+                filtered is the same bug as a row that lies about which record
+                it acts on — the count and the way out are both stated.
+              */}
+              {focused && workspaces !== null && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    marginBottom: 12,
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-secondary)",
+                    fontSize: 12,
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <span style={{ ...monoStyle, minWidth: 0 }}>
+                    Showing {visibleDirectories.length} of {byDirectory.length} directories · {focused}
+                  </span>
+                  <button
+                    onClick={() => setFocused(undefined)}
+                    style={{ ...primaryButton(false), background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", flexShrink: 0 }}
+                  >
+                    Show all
+                  </button>
+                </div>
+              )}
               {workspaces === null ? (
                 <Loading />
-              ) : byDirectory.length === 0 ? (
-                <Empty text="No active workspace records. Anything Callboard created before this feature existed is in the Unmanaged tab." />
+              ) : visibleDirectories.length === 0 ? (
+                <Empty
+                  text={
+                    focused
+                      ? `No active workspace record for ${focused}. It may have been archived since the list was drawn — use “Show all” to see the rest.`
+                      : "No active workspace records. Anything Callboard created before this feature existed is in the Unmanaged tab."
+                  }
+                />
               ) : (
-                byDirectory.map(([cwd, records]) => (
-                  <DirectoryGroup key={cwd} cwd={cwd} records={records} busy={busy} onArchive={setArchiveTarget} onArchiveRecordOnly={setRecordOnlyTarget} />
+                visibleDirectories.map(([cwd, records]) => (
+                  <DirectoryGroup
+                    key={cwd}
+                    cwd={cwd}
+                    records={records}
+                    busy={busy}
+                    onArchive={setArchiveTarget}
+                    onArchiveRecordOnly={setRecordOnlyTarget}
+                    onRename={runRename}
+                  />
                 ))
               )}
             </>
@@ -636,16 +744,22 @@ function DirectoryGroup({
   busy,
   onArchive,
   onArchiveRecordOnly,
+  onRename,
 }: {
   cwd: string;
   records: WorkspaceWithRemovability[];
   busy: boolean;
   onArchive: (workspace: WorkspaceWithRemovability) => void;
   onArchiveRecordOnly: (workspace: WorkspaceWithRemovability) => void;
+  onRename: (workspace: WorkspaceWithRemovability, name: string) => Promise<boolean>;
 }) {
   const size = formatDiskUsage(records[0].diskUsage);
   const directory = records[0].directory;
-  const displayName = cwd.split("/").filter(Boolean).pop() || cwd;
+  // Same rule as the sidebar row (see `displayNameFor` in
+  // backend/src/services/folder-summaries.ts): a record's name identifies the
+  // group only when exactly one record claims the directory. Two records with
+  // two names get the directory's own segment here, and their names below.
+  const displayName = (records.length === 1 && records[0].name.trim()) || cwd.split("/").filter(Boolean).pop() || cwd;
 
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 12, marginBottom: 10, background: "var(--bg-secondary)" }}>
@@ -680,10 +794,111 @@ function DirectoryGroup({
 
       <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
         {records.map((record) => (
-          <RecordRow key={record.id} record={record} busy={busy} onArchive={onArchive} onArchiveRecordOnly={onArchiveRecordOnly} />
+          <RecordRow key={record.id} record={record} busy={busy} onArchive={onArchive} onArchiveRecordOnly={onArchiveRecordOnly} onRename={onRename} />
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * The record's name, and the pencil that changes it.
+ *
+ * **A rename moves nothing.** The name is a label on the record — not the
+ * directory, not the branch, not the worktree path, and nothing derives any of
+ * those from it. That sentence is on the control itself rather than only in
+ * this comment, because "rename" is a word that means *move* in a file manager
+ * and this is the one place a user could reasonably expect it to.
+ *
+ * No confirmation, for the same reason: it is undone by typing the old name
+ * back. Every other action on this surface has one because every other action
+ * touches a directory.
+ */
+function RecordName({
+  record,
+  busy,
+  onRename,
+}: {
+  record: WorkspaceWithRemovability;
+  busy: boolean;
+  onRename: (workspace: WorkspaceWithRemovability, name: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(record.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const start = () => {
+    setDraft(record.name);
+    setEditing(true);
+  };
+
+  const commit = async () => {
+    // An unchanged name is not a request; close without a round trip.
+    if (draft.trim() === record.name.trim()) return setEditing(false);
+    // Stays open on a refusal, with the text still in it — the error banner
+    // above says which rule the name broke.
+    if (await onRename(record, draft)) setEditing(false);
+  };
+
+  if (!editing) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+        <span style={{ fontSize: 12, color: "var(--text)" }}>{record.name}</span>
+        <button
+          onClick={start}
+          disabled={busy}
+          title="Rename this workspace. This changes a label only — the directory, the branch and the worktree are not touched."
+          style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: busy ? "not-allowed" : "pointer", padding: 2, display: "flex" }}
+        >
+          <Pencil size={11} />
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+      <input
+        ref={inputRef}
+        value={draft}
+        autoFocus
+        maxLength={WORKSPACE_NAME_MAX}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        aria-label={`Rename ${record.name}`}
+        style={{
+          fontSize: 12,
+          padding: "2px 6px",
+          borderRadius: 4,
+          border: "1px solid var(--border)",
+          background: "var(--bg)",
+          color: "var(--text)",
+          maxWidth: 240,
+        }}
+      />
+      <button
+        onClick={commit}
+        disabled={busy}
+        title="Save the new label. Nothing on disk moves."
+        style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: busy ? "not-allowed" : "pointer", padding: 2, display: "flex" }}
+      >
+        <Check size={12} />
+      </button>
+      <button
+        onClick={() => setEditing(false)}
+        title="Cancel"
+        style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 2, display: "flex" }}
+      >
+        <X size={12} />
+      </button>
+    </span>
   );
 }
 
@@ -692,11 +907,13 @@ function RecordRow({
   busy,
   onArchive,
   onArchiveRecordOnly,
+  onRename,
 }: {
   record: WorkspaceWithRemovability;
   busy: boolean;
   onArchive: (workspace: WorkspaceWithRemovability) => void;
   onArchiveRecordOnly: (workspace: WorkspaceWithRemovability) => void;
+  onRename: (workspace: WorkspaceWithRemovability, name: string) => Promise<boolean>;
 }) {
   const { removable, blockers } = record.removability;
   const adoptionWouldHelp = blockers.some((b) => isFixedByAdoption(b.code));
@@ -705,7 +922,7 @@ function RecordRow({
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "flex", gap: 12, alignItems: "flex-start" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, color: "var(--text)" }}>{record.name}</span>
+          <RecordName record={record} busy={busy} onRename={onRename} />
           {record.worktree?.branch && <span style={chipStyle()}>{record.worktree.branch}</span>}
           <span style={chipStyle()}>{record.isolation}</span>
           {record.worktree?.owned && <span style={chipStyle()}>owned by Callboard</span>}

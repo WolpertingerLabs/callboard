@@ -53,6 +53,11 @@ export default function FolderList({
   const [isLoading, setIsLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [showManager, setShowManager] = useState(false);
+  /**
+   * Directory the manager opens on, when it was opened from a row's chip.
+   * Undefined for the toolbar button, which means "all of them".
+   */
+  const [managerFocus, setManagerFocus] = useState<string | undefined>(undefined);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; folder: string }>({ isOpen: false, folder: "" });
   const now = useMemo(() => Date.now(), [folders]);
 
@@ -240,7 +245,10 @@ export default function FolderList({
         </button>
 
         <button
-          onClick={() => setShowManager(true)}
+          onClick={() => {
+            setManagerFocus(undefined);
+            setShowManager(true);
+          }}
           title="Adopt, archive and restore worktrees"
           style={{
             display: "flex",
@@ -278,6 +286,10 @@ export default function FolderList({
               onClick={() => navigate(`/chat/${folder.mostRecentChatId}`)}
               onNewChat={() => handleNewChat(folder)}
               now={now}
+              onManageWorkspaces={() => {
+                setManagerFocus(folder.folder);
+                setShowManager(true);
+              }}
             />
           ))
         )}
@@ -297,7 +309,17 @@ export default function FolderList({
         confirmText="Start new chat"
       />
 
-      {showManager && <WorkspaceManagerModal repoCandidates={repoCandidates} onClose={() => setShowManager(false)} onChanged={load} />}
+      {showManager && (
+        // Keyed on the focus so re-opening from a different row remounts with
+        // the new directory rather than keeping the first one's filter.
+        <WorkspaceManagerModal
+          key={managerFocus ?? "all"}
+          repoCandidates={repoCandidates}
+          focusCwd={managerFocus}
+          onClose={() => setShowManager(false)}
+          onChanged={load}
+        />
+      )}
     </div>
   );
 }

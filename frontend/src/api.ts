@@ -66,6 +66,7 @@ import type {
   CardMemberRun,
   CardListResponse,
   CardResponse,
+  Workspace,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
   WorkspaceRemovalBlocker,
@@ -155,6 +156,7 @@ export type {
   CardMemberRun,
   CardListResponse,
   CardResponse,
+  Workspace,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
   WorkspaceRemovalBlocker,
@@ -176,7 +178,7 @@ export type {
   TrashRestoreResult,
 };
 
-export { CARD_CATEGORY_MAX } from "shared/types/index.js";
+export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
 
 /**
  * Capability handshake headers (`X-Callboard-Protocol` / `X-Callboard-Caps`).
@@ -1729,6 +1731,25 @@ export async function adoptWorktrees(paths: string[]): Promise<AdoptWorktreesRes
   });
   await assertOk(res, "Failed to adopt worktrees");
   return res.json();
+}
+
+/**
+ * Rename one workspace record. **Nothing on disk moves.**
+ *
+ * The name is a label: no directory, branch or worktree path is derived from
+ * it anywhere. A rejected name (empty, over 200 characters, or carrying control
+ * or text-direction characters) comes back as a 400 whose message is the
+ * sentence to show — `assertOk` surfaces it.
+ */
+export async function renameWorkspace(id: string, name: string): Promise<Workspace> {
+  const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(id)}/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  await assertOk(res, "Failed to rename workspace");
+  const data = await res.json();
+  return data.workspace;
 }
 
 /** Archive one workspace, quarantining its worktree only if every gate passes. */

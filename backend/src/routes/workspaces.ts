@@ -12,15 +12,25 @@
  * adopts in one call, and adding one would put a naming heuristic in charge of
  * `owned`.
  *
- * Deliberately still not here: create, rename, delete.
+ * Phase 4b: create and rename. Both are narrower than their names suggest, and
+ * on purpose — `POST /` writes a **local** record and refuses a worktree
+ * directory outright (that is adoption's job, with adoption's gates), and
+ * rename touches nothing but the record's own JSON. See services/
+ * workspace-create.ts for why creation may not be allowed to reach `owned`.
  *
- * @see plans/workspace-object.md — Phases 2 and 2b
+ * Deliberately still not here: delete. A record is archived, never removed —
+ * `deleteWorkspace` in the store exists only to roll back a half-finished
+ * adoption, and exposing it would throw away the provenance that makes a stale
+ * record cleanable.
+ *
+ * @see plans/workspace-object.md — Phases 2, 2b and 4
  */
 import { Router } from "express";
 import { adoptWorktrees } from "../services/workspace-adoption.js";
+import { createLocalWorkspace } from "../services/workspace-create.js";
 import { listUnmanagedWorktrees } from "../services/workspace-discovery.js";
 import { archiveWorkspace, listWorkspacesWithRemovability } from "../services/workspace-service.js";
-import { getWorkspace } from "../services/workspace-store.js";
+import { getWorkspace, renameWorkspace } from "../services/workspace-store.js";
 import { listTrash, restoreTrashEntry } from "../services/workspace-trash.js";
 import { newDiskUsageBudget } from "../utils/disk-usage.js";
 import { createLogger } from "../utils/logger.js";
@@ -61,6 +71,68 @@ workspacesRouter.get("/", (req, res) => {
   } catch (err: any) {
     log.error(`Error listing workspaces: ${err.message}`);
     res.status(500).json({ error: "Failed to list workspaces", details: err.message });
+  }
+});
+
+// ── Create and rename (Phase 4b) ────────────────────────────────────
+
+// Create a LOCAL workspace record for an existing directory. It cannot produce
+// an owned worktree record: no isolation, no worktree block, no `owned` — and a
+// directory that is already a worktree is refused and sent to /adopt.
+workspacesRouter.post("/", (req, res) => {
+  // #swagger.tags = ['Workspaces']
+  // #swagger.summary = 'Create a workspace record for a directory'
+  // #swagger.description = 'Create a local workspace record for an existing directory: a named "where work happens" entry the sidebar and the workspace list can show. It creates NO worktree, runs no git command that writes, and can never mark a directory as owned by Callboard — records written here carry no worktree block at all, so the ownership flag that gates worktree removal does not exist on them. A directory that is already a git worktree is refused with `is-a-worktree`: bringing one under management is POST /adopt, which writes the identity token and verifies registration, and a plain record here would additionally make that worktree permanently unadoptable. A second record on a directory that already has one is allowed (several workspaces may share a cwd) and the existing ones come back as `sharedWith`.'
+  /* #swagger.parameters['body'] = { in: 'body', required: true, schema: { cwd: '/abs/path/to/directory', name: 'Optional label' } } */
+  /* #swagger.responses[201] = { description: "The created workspace record" } */
+  /* #swagger.responses[400] = { description: "Invalid body, or a refusal with its code and detail" } */
+  try {
+    const cwd = req.body?.cwd;
+    if (typeof cwd !== "string" || !cwd.trim()) {
+      return res.status(400).json({ error: "cwd must be a non-empty string — the absolute path of the directory work happens in" });
+    }
+    const name = req.body?.name;
+    if (name !== undefined && typeof name !== "string") {
+      return res.status(400).json({ error: "name must be a string when given" });
+    }
+    const result = createLocalWorkspace({ cwd, ...(name !== undefined && { name }) });
+    // A refusal is the answer, not a transport failure — but it is a 400 so a
+    // caller that only checks the status never mistakes it for a creation.
+    res.status(result.created ? 201 : 400).json(result);
+  } catch (err: any) {
+    log.error(`Error creating workspace: ${err.message}`);
+    res.status(500).json({ error: "Failed to create workspace", details: err.message });
+  }
+});
+
+// Rename a workspace. Record-only: nothing on disk moves.
+workspacesRouter.post("/:id/rename", (req, res) => {
+  // #swagger.tags = ['Workspaces']
+  // #swagger.summary = 'Rename a workspace'
+  // #swagger.description = 'Change a workspace record\'s label. NOTHING ON DISK MOVES: the name is not the directory, the branch or the worktree path, and no path is ever derived from it — cwd, repoPath and worktree.branch are what every path-producing operation reads. Names are rejected when empty, longer than 200 characters, or carrying control or text-direction characters, because they are rendered in lists and written to log lines. Archived workspaces can be renamed too.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Workspace ID' } */
+  /* #swagger.parameters['body'] = { in: 'body', required: true, schema: { name: 'New label' } } */
+  /* #swagger.responses[200] = { description: "The renamed workspace record" } */
+  /* #swagger.responses[400] = { description: "Invalid name" } */
+  /* #swagger.responses[404] = { description: "Workspace not found" } */
+  try {
+    const name = req.body?.name;
+    if (typeof name !== "string") {
+      return res.status(400).json({ error: "name must be a string" });
+    }
+    let workspace;
+    try {
+      workspace = renameWorkspace(req.params.id, name);
+    } catch (err: any) {
+      // The store throws on an unusable name and returns null on an unknown id;
+      // only the first is the caller's input being wrong.
+      return res.status(400).json({ error: err.message });
+    }
+    if (!workspace) return res.status(404).json({ error: "Workspace not found" });
+    res.json({ workspace });
+  } catch (err: any) {
+    log.error(`Error renaming workspace ${req.params.id}: ${err.message}`);
+    res.status(500).json({ error: "Failed to rename workspace", details: err.message });
   }
 });
 

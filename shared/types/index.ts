@@ -29,6 +29,7 @@ export type {
   CardResponse,
 } from "./card.js";
 export { CARD_CATEGORY_MAX } from "./card.js";
+export { WORKSPACE_NAME_MAX } from "./workspace.js";
 
 export type {
   Workspace,
@@ -58,6 +59,8 @@ export type {
   AdoptWorktreesResult,
   FolderWorkspaceRecord,
   WorkspaceListResponse,
+  WorkspaceCreationRefusal,
+  CreateWorkspaceResult,
   TrashEntryView,
   TrashListing,
   TrashRestoreFailure,
