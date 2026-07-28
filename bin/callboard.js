@@ -54,7 +54,9 @@ try {
       foreground: { type: "boolean", short: "f", default: false },
       port: { type: "string" },
       lines: { type: "string", short: "n", default: "50" },
+      // parseArgs has no `--no-` negation, so the off-switch is its own option.
       follow: { type: "boolean", default: true },
+      "no-follow": { type: "boolean", default: false },
       path: { type: "boolean", default: false },
     },
     strict: false,
@@ -304,7 +306,7 @@ async function cmdLogs() {
   }
 
   const lines = parseInt(values.lines, 10) || 50;
-  const follow = values.follow;
+  const follow = values["no-follow"] ? false : values.follow;
 
   const tailArgs = follow ? ["-n", String(lines), "-f", LOG_FILE] : ["-n", String(lines), LOG_FILE];
 
