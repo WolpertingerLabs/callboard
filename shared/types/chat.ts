@@ -71,7 +71,20 @@ export interface ChatListResponse {
 export interface FolderSummary {
   /** Actual folder path (worktrees stay separate) */
   folder: string;
-  /** Last path segment for display */
+  /**
+   * What to call this row.
+   *
+   * The {@link Workspace} record's `name` when **exactly one** active record
+   * claims the directory — the same condition under which {@link workspaceId}
+   * is unambiguous — and the directory's last path segment otherwise. A record
+   * that was never renamed holds the basename anyway, so the two agree for
+   * everything except a workspace somebody deliberately named.
+   *
+   * A directory with several records keeps the path segment on purpose: the row
+   * is per-directory, so showing one of two distinct names would label the row
+   * with a record the user is not acting on. Per-record names live in the
+   * drill-down.
+   */
   displayName: string;
   /**
    * The {@link Workspace} record claiming this directory, when exactly one

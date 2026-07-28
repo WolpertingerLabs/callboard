@@ -157,10 +157,10 @@ const sessions: DiscoveredSession[] = [
   session(agentWorkspace, "forge-old", 24 * 30),
 ];
 
-function build(opts: { diskUsage?: (folder: string) => { bytes?: number; error?: string } } = {}) {
+function build(opts: { diskUsage?: (folder: string) => { bytes?: number; error?: string }; records?: Workspace[] } = {}) {
   return buildFolderSummaries(sessions, {
     cutoff,
-    workspaces: buildWorkspaceIndex(records),
+    workspaces: buildWorkspaceIndex(opts.records ?? records),
     directoryExists: (folder) => existsSync(folder),
     chatMetadata: () => ({}),
     isOngoing: () => false,
@@ -184,6 +184,64 @@ const claimed = new Set(records.filter((r) => r.status === "active").map((r) => 
  * records pointing at removed directories visible enough to clean up.
  */
 const eligible = sessions.filter((s) => s.createdAt >= cutoff && (existsSync(s.folder) || claimed.has(s.folder)));
+
+/**
+ * Phase 4b: the row's name comes from the record — but only when the row and
+ * the record are the same thing.
+ *
+ * Phase 3 deliberately left `displayName` as the path segment: rename did not
+ * exist, so re-sourcing the field could only change behaviour without adding
+ * capability. Now that a record can carry a name somebody chose, the row shows
+ * it — under exactly the condition that makes `workspaceId` unambiguous, which
+ * is that one active record claims the directory.
+ */
+describe("what the row is called", () => {
+  const renamed = (id: string, name: string) => records.map((r) => (r.id === id ? { ...r, name } : r));
+
+  it("shows the record's name when exactly one record claims the directory", () => {
+    const rows = build({ records: renamed("ws-recorded", "Recorded work") });
+    expect(rows.find((f) => f.folder === wtRecorded)!.displayName).toBe("Recorded work");
+  });
+
+  it("shows the path segment when no record claims the directory", () => {
+    expect(build().find((f) => f.folder === wtBare)!.displayName).toBe(wtBare.split("/").pop());
+    expect(build().find((f) => f.folder === agentWorkspace)!.displayName).toBe("forge");
+  });
+
+  it("shows the path segment for a record that was never renamed — which is the same string", () => {
+    expect(build().find((f) => f.folder === wtRecorded)!.displayName).toBe(wtRecorded.split("/").pop());
+  });
+
+  /**
+   * The case rename makes newly meaningful, and the reason the rule is "exactly
+   * one" rather than "the first" or "the most recent".
+   *
+   * The row is per-directory (Phase 4a's ruling — keying on the record splits
+   * one folder into two identically-pathed rows), so a row labelled with one of
+   * two distinct names would be naming a record the user may not be acting on.
+   * It keeps the directory's own name, and both records travel on the row with
+   * their names intact for the drill-down to render.
+   */
+  it("falls back to the directory when two records claim it with different names", () => {
+    const twoRecords: Workspace[] = [
+      ...records,
+      record({ id: "ws-second", cwd: wtRecorded, isolation: "local", name: "A completely different name" }),
+    ];
+    const row = build({ records: twoRecords.map((r) => (r.id === "ws-recorded" ? { ...r, name: "Recorded work" } : r)) }).find((f) => f.folder === wtRecorded)!;
+
+    expect(row.displayName).toBe(wtRecorded.split("/").pop());
+    expect(row.workspaceId).toBeUndefined();
+    expect(row.workspaceCount).toBe(2);
+    // The names are not lost — they are one level down, which is where the row
+    // sends anyone who needs to tell the two apart.
+    expect(row.workspaces?.map((w) => w.name).sort()).toEqual(["A completely different name", "Recorded work"]);
+  });
+
+  it("falls back to the directory rather than rendering an empty title", () => {
+    const rows = build({ records: renamed("ws-recorded", "   ") });
+    expect(rows.find((f) => f.folder === wtRecorded)!.displayName).toBe(wtRecorded.split("/").pop());
+  });
+});
 
 describe("no chat disappears", () => {
   it("accounts for every eligible chat exactly once", () => {

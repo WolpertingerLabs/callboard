@@ -24,6 +24,7 @@ const adoptWorktrees = vi.fn();
 const archiveWorkspace = vi.fn();
 const listTrash = vi.fn();
 const restoreTrashEntry = vi.fn();
+const renameWorkspace = vi.fn();
 
 vi.mock("../api", () => ({
   listWorkspaces: (...args: any[]) => listWorkspaces(...args),
@@ -32,6 +33,8 @@ vi.mock("../api", () => ({
   archiveWorkspace: (...args: any[]) => archiveWorkspace(...args),
   listTrash: (...args: any[]) => listTrash(...args),
   restoreTrashEntry: (...args: any[]) => restoreTrashEntry(...args),
+  renameWorkspace: (...args: any[]) => renameWorkspace(...args),
+  WORKSPACE_NAME_MAX: 200,
 }));
 
 const WorkspaceManagerModal = (await import("./WorkspaceManagerModal")).default;
@@ -128,8 +131,8 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-function open() {
-  return render(<WorkspaceManagerModal onClose={vi.fn()} repoCandidates={["/home/cybil/callboard"]} />);
+function open(props: { focusCwd?: string } = {}) {
+  return render(<WorkspaceManagerModal onClose={vi.fn()} repoCandidates={["/home/cybil/callboard"]} {...props} />);
 }
 
 /**
@@ -251,6 +254,95 @@ describe("the workspaces tab", () => {
     await screen.findByText("/home/cybil/callboard.feat-clean");
     expect(listWorkspaces).toHaveBeenCalledWith("active", true);
     expect(screen.getAllByText("5.0 GB").length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Rename (Phase 4b). Per record, because the name belongs to a record and a
+ * directory may hold several — and record-only, because a name is a label and
+ * nothing derives a path from it.
+ */
+describe("renaming a workspace", () => {
+  /** The first record on the list — `workspace()`, the removable one. */
+  async function startRename(name = "callboard.feat-clean") {
+    open();
+    await screen.findByText(`/home/cybil/${name}`);
+    click(screen.getAllByTitle(/Rename this workspace/)[0]);
+    return screen.getByLabelText(`Rename ${name}`) as HTMLInputElement;
+  }
+
+  it("sends the new name and says that nothing on disk moved", async () => {
+    renameWorkspace.mockResolvedValue({ ...workspace(), name: "Clean one" });
+    const input = await startRename();
+    fireEvent.change(input, { target: { value: "Clean one" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(renameWorkspace).toHaveBeenCalledWith("ws-clean", "Clean one"));
+    expect(await screen.findByText(/Nothing on disk moved/)).toBeTruthy();
+    // Patched in place — a rename cannot have changed any removal verdict, and
+    // re-listing costs several git subprocesses per record.
+    expect(listWorkspaces).toHaveBeenCalledTimes(1);
+    // Both the record and the group heading it names, since one record claims
+    // this directory — the same rule the sidebar row follows.
+    expect(screen.getAllByText("Clean one")).toHaveLength(2);
+  });
+
+  /**
+   * The one mutation on this surface with no confirmation. That is deliberate —
+   * it is undone by typing the old name back — but it must therefore also be
+   * the one mutation that cannot touch a directory, so the control offers
+   * nothing but the name.
+   */
+  it("offers one rename per record, and opening the editor sends nothing", async () => {
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    // Three records on the list, three rename controls: the name belongs to a
+    // record, not to the directory group above it.
+    const controls = screen.getAllByTitle(/Rename this workspace/);
+    expect(controls).toHaveLength(3);
+    // …and each says what it will and will not do, on the control itself.
+    expect(screen.getAllByTitle(/the directory, the branch and the worktree are not touched/i)).toHaveLength(3);
+    click(controls[0]);
+    expect(renameWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("keeps the editor open with the rejected text when the server refuses a name", async () => {
+    renameWorkspace.mockRejectedValue(new Error("A workspace name may not contain control or text-direction characters (found U+000A at position 5)"));
+    const input = await startRename();
+    fireEvent.change(input, { target: { value: "bad name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText(/may not contain control or text-direction characters/)).toBeTruthy();
+    expect((screen.getByLabelText("Rename callboard.feat-clean") as HTMLInputElement).value).toBe("bad name");
+  });
+
+  it("sends nothing when the name did not change", async () => {
+    const input = await startRename();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(renameWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The drill-down a sidebar row links to. The row is per-directory and cannot
+ * say *which* record it would act on when there are two — this is where that is
+ * resolved, so it has to arrive filtered, say that it is filtered, and offer a
+ * way back.
+ */
+describe("opening on one directory", () => {
+  it("shows only that directory, says so, and can show the rest", async () => {
+    open({ focusCwd: "/home/cybil/callboard.feat-dirty" });
+    await screen.findByText("/home/cybil/callboard.feat-dirty");
+    expect(screen.queryByText("/home/cybil/callboard.feat-clean")).toBeNull();
+    expect(screen.getByText(/Showing 1 of 3 directories/)).toBeTruthy();
+
+    click(screen.getByText("Show all").closest("button"));
+    expect(await screen.findByText("/home/cybil/callboard.feat-clean")).toBeTruthy();
+  });
+
+  it("says the record is not there rather than showing an empty list", async () => {
+    open({ focusCwd: "/home/cybil/somewhere-else" });
+    expect(await screen.findByText(/No active workspace record for \/home\/cybil\/somewhere-else/)).toBeTruthy();
   });
 });
 

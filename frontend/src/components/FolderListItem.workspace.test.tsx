@@ -10,7 +10,7 @@
  * what made forty gigabytes invisible in the first place.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { FolderSummary, FolderWorkspaceRecord } from "../api";
 import FolderListItem from "./FolderListItem";
 
@@ -49,8 +49,11 @@ function makeFolder(overrides: Partial<FolderSummary> = {}): FolderSummary {
 
 const NOW = Date.parse("2026-07-28T11:05:00.000Z");
 
-function renderRow(folder: FolderSummary, onNewChat = vi.fn()) {
-  return { onNewChat, ...render(<FolderListItem folder={folder} onClick={vi.fn()} onNewChat={onNewChat} now={NOW} />) };
+function renderRow(folder: FolderSummary, onNewChat = vi.fn(), onManageWorkspaces?: () => void) {
+  return {
+    onNewChat,
+    ...render(<FolderListItem folder={folder} onClick={vi.fn()} onNewChat={onNewChat} now={NOW} onManageWorkspaces={onManageWorkspaces} />),
+  };
 }
 
 describe("size on disk", () => {
@@ -172,8 +175,51 @@ describe("several workspaces on one directory", () => {
     expect(screen.getAllByText("callboard")).toHaveLength(1);
   });
 
-  it("does not report a count for the ordinary one-record directory", () => {
-    renderRow(makeFolder({ workspaces: [makeRecord()] }));
-    expect(screen.queryByText(/\d+ workspaces/)).toBeNull();
+  /**
+   * Phase 4b: the chip is now the drill-down entry point, so it appears for one
+   * record too — and it is where the ambiguity of a multi-record row is
+   * resolved. The row's title is the directory's own name whenever two records
+   * claim it (the backend decides that; see `displayNameFor`), which means the
+   * row cannot say which record an action would land on. The chip goes to the
+   * place that lists them by name.
+   */
+  it("names one record and offers the drill-down for it", () => {
+    const onManage = vi.fn();
+    renderRow(makeFolder({ workspaces: [makeRecord()] }), vi.fn(), onManage);
+    const chip = screen.getByText("1 workspace");
+    expect(chip).toBeTruthy();
+    fireEvent.click(chip);
+    expect(onManage).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the drill-down from the count when several records share the directory", () => {
+    const onManage = vi.fn();
+    renderRow(
+      makeFolder({
+        folder: "/home/cybil/callboard",
+        displayName: "callboard",
+        workspaces: [makeRecord({ id: "ws-a", name: "Research" }), makeRecord({ id: "ws-b", name: "Writing" })],
+      }),
+      vi.fn(),
+      onManage,
+    );
+    fireEvent.click(screen.getByText("2 workspaces"));
+    expect(onManage).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The chip opens the drill-down; it must not also open the row's chat. A
+   * bubbled click would navigate away from the thing the user asked to inspect.
+   */
+  it("does not open the chat when the chip is clicked", () => {
+    const onClick = vi.fn();
+    render(<FolderListItem folder={makeFolder({ workspaces: [makeRecord()] })} onClick={onClick} onNewChat={vi.fn()} now={NOW} onManageWorkspaces={vi.fn()} />);
+    fireEvent.click(screen.getByText("1 workspace"));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("says nothing about workspaces on a directory with no record", () => {
+    renderRow(makeFolder());
+    expect(screen.queryByText(/\d+ workspaces?$/)).toBeNull();
   });
 });

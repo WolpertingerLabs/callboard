@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rename
 import { join, basename, resolve } from "path";
 import { randomUUID } from "node:crypto";
 import type { Workspace, WorkspacePayload, WorktreeMode } from "shared";
+import { WORKSPACE_NAME_MAX } from "shared";
 import type { ResolveBranchResult } from "../utils/git.js";
 import { resolveWorktreeToMainRepo } from "../utils/git.js";
 import { verifyWorktreeToken, writeWorktreeToken } from "../utils/worktree-token.js";
@@ -43,7 +44,72 @@ try {
   log.error(`Failed to create ${workspacesDir}: ${err.message} — workspace records will not persist`);
 }
 
-export const WORKSPACE_NAME_MAX = 200;
+// Re-exported so callers that already read the store's limits keep working;
+// the definition is in shared/types/workspace.ts because the rename control
+// enforces the same bound on its input.
+export { WORKSPACE_NAME_MAX };
+
+/**
+ * Characters a name may never carry.
+ *
+ * A workspace name is a **label on a record** and nothing else — it is not the
+ * directory, the branch or the worktree path, and nothing derives a path from
+ * it (see {@link renameWorkspace}). What it *is* is a string that reaches a
+ * sidebar row, a modal, an MCP tool result and a log line, so the two things
+ * that break those are refused at the boundary:
+ *
+ * - C0/C1 controls and DEL — a newline in a name splits a log line in two, and
+ *   the second half reads as a log entry nothing wrote.
+ * - Zero-width space and the bidi controls (LRM/RLM, the LRE…RLO embedding
+ *   block, the isolates) — U+202E in a name reverses the text that follows it
+ *   in the row, so a name can rewrite how its neighbours render.
+ *
+ * Deliberately NOT in the class: ZWJ (U+200D) and the variation selectors, so
+ * emoji sequences survive intact. They are hard to type and harmless to render.
+ */
+const FORBIDDEN_NAME_CLASS = "[\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]";
+const FORBIDDEN_NAME_CHAR = new RegExp(FORBIDDEN_NAME_CLASS, "u");
+const FORBIDDEN_NAME_CHARS = new RegExp(FORBIDDEN_NAME_CLASS, "gu");
+
+/**
+ * Why this name cannot be used, or null when it can. Safe to surface directly.
+ *
+ * Used by everything a *caller* names — the create and rename routes and their
+ * MCP tools — so a bad name comes back as a refusal with a reason rather than
+ * as a silently mangled record. {@link createWorkspace} itself stays lenient
+ * (see {@link coerceName}): it is on the chat-start path, where a name is
+ * derived rather than typed and must never be able to fail a chat.
+ */
+export function workspaceNameError(raw: string): string | null {
+  const name = (raw ?? "").trim();
+  if (!name) return "A workspace name is required";
+  // Code units, matching the bound `coerceName` slices at. A name near this
+  // length is already unreadable in every surface that renders it.
+  if (name.length > WORKSPACE_NAME_MAX) {
+    return `A workspace name is limited to ${WORKSPACE_NAME_MAX} characters (got ${name.length})`;
+  }
+  const found = FORBIDDEN_NAME_CHAR.exec(name);
+  if (found) {
+    const codePoint = found[0].codePointAt(0) ?? 0;
+    return (
+      `A workspace name may not contain control or text-direction characters (found U+${codePoint.toString(16).toUpperCase().padStart(4, "0")} ` +
+      `at position ${found.index}). Names are rendered in lists and written to logs.`
+    );
+  }
+  return null;
+}
+
+/**
+ * The same rules, applied instead of enforced. Never throws.
+ *
+ * For names Callboard derives rather than receives — the directory basename
+ * default below. A filename may legally contain a newline, so the derived name
+ * has to be cleaned rather than rejected: refusing here would fail the chat
+ * that is being started.
+ */
+function coerceName(raw: string): string {
+  return (raw ?? "").replace(FORBIDDEN_NAME_CHARS, "").trim().slice(0, WORKSPACE_NAME_MAX);
+}
 
 /**
  * Workspace ids we generate ({@link createWorkspace}). Enforced on every
@@ -103,11 +169,14 @@ export function createWorkspace(payload: WorkspacePayload): Workspace {
     throw new Error("Workspace worktree requires a branch");
   }
 
-  const name = (payload.name ?? "").trim() || defaultName(cwd);
+  // Cleaned, not validated: this is the chat-start path (see {@link coerceName}).
+  // Callers that take a name from a user or an agent validate it first with
+  // {@link workspaceNameError} so a bad one is a refusal rather than a mangling.
+  const name = coerceName(payload.name ?? "") || coerceName(defaultName(cwd)) || "workspace";
   const now = new Date().toISOString();
   const workspace: Workspace = {
     id: `ws-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
-    name: name.slice(0, WORKSPACE_NAME_MAX),
+    name,
     cwd,
     ...(repoPath && { repoPath }),
     isolation: payload.isolation,
@@ -186,13 +255,32 @@ export function listWorkspacesByCwd(cwd: string): Workspace[] {
   return listWorkspaces({ status: "active" }).filter((w) => samePath(w.cwd, cwd));
 }
 
+/**
+ * Rename a workspace. **Nothing on disk moves.**
+ *
+ * The name is a label on the record: it is not the directory, not the branch,
+ * not the worktree path, and nothing derives any of those from it. `cwd`,
+ * `repoPath` and `worktree.branch` are what every path-producing caller reads —
+ * the quarantine's `rename(2)`, the restore recipe, the identity token's admin
+ * dir, `git -C`. The only thing a rename touches is this record's JSON, which
+ * is why it needs no gate beyond the name being a usable string.
+ *
+ * Returns null when there is no such workspace; throws on an unusable name, so
+ * a caller that mistyped one hears about it rather than storing a mangled
+ * version. Archived workspaces rename too: the label is how a stale record is
+ * recognised later, and that is exactly when it is worth annotating.
+ */
 export function renameWorkspace(id: string, name: string): Workspace | null {
   const workspace = getWorkspace(id);
   if (!workspace) return null;
-  const trimmed = (name ?? "").trim();
-  if (!trimmed) throw new Error("Workspace name is required");
-  workspace.name = trimmed.slice(0, WORKSPACE_NAME_MAX);
+  const error = workspaceNameError(name);
+  if (error) throw new Error(error);
+  // The outgoing name is cleaned before it reaches the log line: it may predate
+  // these rules, and the log is one of the two places the rules exist to protect.
+  const previous = coerceName(workspace.name);
+  workspace.name = name.trim();
   saveWorkspace(workspace);
+  log.info(`Renamed workspace ${id}: "${previous}" → "${workspace.name}" (record only — ${workspace.cwd} is untouched)`);
   return workspace;
 }
 

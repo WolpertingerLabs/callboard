@@ -29,6 +29,7 @@ const {
   deleteWorkspace,
   recordWorktreeWorkspace,
   captureWorktreeWorkspace,
+  workspaceNameError,
   WORKSPACE_NAME_MAX,
 } = await import("./workspace-store.js");
 
@@ -209,6 +210,92 @@ describe("renameWorkspace", () => {
     expect(renameWorkspace("ws-nope", "x")).toBeNull();
     const ws = createWorkspace({ cwd: "/tmp/a", isolation: "local" });
     expect(() => renameWorkspace(ws.id, "   ")).toThrow(/name/i);
+  });
+
+  /**
+   * The property the whole feature rests on: a workspace name is a **label on a
+   * record**. Nothing derives a path from it, so a rename cannot move, rename
+   * or delete anything — asserted against a real worktree rather than argued,
+   * because "nothing downstream reads this" is exactly the kind of claim that
+   * quietly stops being true.
+   */
+  it("touches nothing on disk — not the directory, the branch or the worktree", () => {
+    const branch = "feat/rename-touches-nothing";
+    const worktreePath = worktreePathFor(branch);
+    git(["worktree", "add", "-q", "-b", branch, worktreePath, "main"], repoDir);
+
+    const ws = createWorkspace({
+      cwd: worktreePath,
+      repoPath: repoDir,
+      isolation: "worktree",
+      worktree: { owned: true, mode: "branch-off", branch },
+    });
+
+    renameWorkspace(ws.id, "Something else entirely");
+
+    const after = getWorkspace(ws.id)!;
+    expect(after.name).toBe("Something else entirely");
+    // The three fields anything path-producing actually reads are untouched…
+    expect(after.cwd).toBe(worktreePath);
+    expect(after.repoPath).toBe(repoDir);
+    expect(after.worktree?.branch).toBe(branch);
+    // …and so is the world.
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repoDir, encoding: "utf8" })).toContain(worktreePath);
+    expect(execFileSync("git", ["branch", "--list", branch], { cwd: repoDir, encoding: "utf8" }).trim()).toContain(branch);
+  });
+
+  it("renames an archived workspace — the label is how a stale record is recognised", () => {
+    const ws = createWorkspace({ cwd: "/tmp/a", isolation: "local" });
+    archiveWorkspace(ws.id);
+    expect(renameWorkspace(ws.id, "gone, keep for provenance")?.status).toBe("archived");
+    expect(getWorkspace(ws.id)?.name).toBe("gone, keep for provenance");
+  });
+});
+
+/**
+ * Names reach a sidebar row, a modal, an MCP result and a log line. Two classes
+ * of character break those, and both are refused where a *caller* supplies the
+ * name — while the derived default (a directory basename, which may legally
+ * contain a newline on Linux) is cleaned instead, because refusing there would
+ * fail the chat being started rather than the name being typed.
+ */
+describe("name rules", () => {
+  it("names the reason rather than returning a bare boolean", () => {
+    expect(workspaceNameError("perfectly fine")).toBeNull();
+    expect(workspaceNameError("   ")).toMatch(/required/i);
+    expect(workspaceNameError("x".repeat(WORKSPACE_NAME_MAX))).toBeNull();
+    expect(workspaceNameError("x".repeat(WORKSPACE_NAME_MAX + 1))).toMatch(/limited to 200/);
+  });
+
+  it("refuses control characters — one newline turns a log line into two", () => {
+    expect(workspaceNameError("first line\nfake log entry")).toMatch(/control or text-direction/);
+    expect(workspaceNameError("tab\there")).toMatch(/control or text-direction/);
+    expect(workspaceNameError("bell\u0007")).toMatch(/control or text-direction/);
+  });
+
+  it("refuses the bidi controls, which rewrite how the text around them renders", () => {
+    // U+202E flips everything after it: a row can be made to lie about its
+    // neighbours, not just about itself.
+    expect(workspaceNameError("safe\u202Eevil")).toMatch(/U\+202E/);
+    expect(workspaceNameError("\u200Bzero width")).toMatch(/control or text-direction/);
+  });
+
+  it("leaves emoji alone — including sequences that need a zero-width joiner", () => {
+    expect(workspaceNameError("🚢 shipping 👨‍👩‍👧")).toBeNull();
+  });
+
+  it("cleans, rather than rejects, a name Callboard derived itself", () => {
+    // A directory name may legally contain a newline. The chat-start path must
+    // not be able to fail on one.
+    const ws = createWorkspace({ cwd: "/tmp/we\nird", isolation: "local" });
+    expect(ws.name).toBe("weird");
+    expect(ws.name).not.toContain("\n");
+  });
+
+  it("falls back to something renderable when a name cleans away to nothing", () => {
+    const ws = createWorkspace({ name: "\u200B\u202E", cwd: "/tmp/fallback", isolation: "local" });
+    expect(ws.name).toBe("fallback");
   });
 });
 

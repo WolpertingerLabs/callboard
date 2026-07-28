@@ -12,6 +12,15 @@
  * Never write both from different code paths.
  */
 
+/**
+ * Longest a workspace name may be.
+ *
+ * Shared because both ends enforce it: the store rejects longer names and the
+ * rename control caps its input, and a UI that let a user type past the limit
+ * would only be showing them a rejection they could have been spared.
+ */
+export const WORKSPACE_NAME_MAX = 200;
+
 /** Whether work happens in the checkout as-is, or in a git worktree of it. */
 export type WorkspaceIsolation = "local" | "worktree";
 
@@ -529,6 +538,68 @@ export interface FolderWorkspaceRecord {
   createdAt: string;
   /** Freshly observed, never stored. @see WorkspaceDirectoryState */
   directory: WorkspaceDirectory;
+}
+
+// ── Creation (Phase 4b) ─────────────────────────────────────────────
+//
+// The exposed `create_workspace` writes **local records only**, and the reason
+// is the invariant Phase 2b spent a whole phase defending:
+//
+//   **`owned: true` has exactly two writers.** `recordWorktreeWorkspace` ("this
+//   call ran git worktree add") and `adoptWorktrees` ("a caller named this
+//   path"). A third would redefine what the removal gate guarantees.
+//
+// A creation route is the obvious place a third one appears — it accepts a
+// `worktree` block, and the store's `createWorkspace` will happily write
+// `owned: true` from one. So the exposed surface never offers the field, never
+// offers `isolation`, and never writes a worktree block at all: a record it
+// produces has no `worktree`, so `owned` does not exist on it.
+//
+// The second hole is quieter. Creating a record for a directory that is already
+// a git worktree would be *adoption without adoption's gates* — no identity
+// token, no registration check, no branch — and it would make that worktree
+// permanently unadoptable, because adoption refuses `already-managed` on any
+// directory with an active record. A worktree could be pushed out of the
+// backlog into a state where nothing can ever clean it up. So a linked worktree
+// is refused here and sent to adopt_worktrees, which is the path with the gates.
+
+/** Why a workspace record was not created. */
+export type WorkspaceCreationRefusal =
+  /** Empty, over-long, or carrying control/bidi characters. */
+  | "invalid-name"
+  /** No `cwd` given. */
+  | "cwd-required"
+  /** Nothing at that path. A record for a directory that is not there is born `missing`. */
+  | "cwd-missing"
+  /** The path exists but is a file, a socket, something that is not a directory. */
+  | "not-a-directory"
+  /**
+   * The directory is a linked git worktree. Adoption's job, and only adoption's:
+   * it writes the identity token and checks registration, and a plain record
+   * here would make the worktree unadoptable forever (`already-managed`).
+   */
+  | "is-a-worktree"
+  /** The record itself could not be written. */
+  | "record-write-failed";
+
+/** Result of creating one workspace record. */
+export interface CreateWorkspaceResult {
+  created: boolean;
+  /** The record. Only when `created`. */
+  workspace?: Workspace;
+  /** Why not. Only when `!created`. */
+  refusal?: { code: WorkspaceCreationRefusal; detail: string };
+  /**
+   * Other active records that already claimed this directory.
+   *
+   * Not a refusal — several workspaces on one `cwd` is a supported state and is
+   * the point of having a create call at all ("two pieces of work in the same
+   * checkout"). It is reported because it is also how a caller creates a
+   * duplicate by accident, and because a directory with more than one record
+   * stops showing a record's name in the sidebar row: identity is only
+   * unambiguous when exactly one record claims the directory.
+   */
+  sharedWith?: Array<{ id: string; name: string }>;
 }
 
 // ── Trash visibility ────────────────────────────────────────────────

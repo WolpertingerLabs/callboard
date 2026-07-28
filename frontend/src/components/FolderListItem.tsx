@@ -13,6 +13,16 @@ interface Props {
   onNewChat: () => void;
   /** Current time in ms, passed from parent to avoid impure render calls */
   now: number;
+  /**
+   * Open the per-record drill-down for this directory.
+   *
+   * The row is per-directory and stays that way — the count chip is the
+   * hand-off, not a hint that the row could have been split. It matters most
+   * exactly where the row is least specific: a directory with two records has
+   * two names and the row shows neither, so the chip is where you find out
+   * which is which. Optional, so a row can be rendered without a manager.
+   */
+  onManageWorkspaces?: () => void;
 }
 
 /**
@@ -78,7 +88,7 @@ function formatRelativeTime(isoDate: string, now: number): string {
   return `${days}d ago`;
 }
 
-export default function FolderListItem({ folder, isActive, onClick, onNewChat, now }: Props) {
+export default function FolderListItem({ folder, isActive, onClick, onNewChat, now, onManageWorkspaces }: Props) {
   const isStale = useMemo(() => now - new Date(folder.lastUpdatedAt).getTime() > TWELVE_HOURS_MS, [now, folder.lastUpdatedAt]);
   const isMissing = folder.directoryState === "missing";
   // There is nowhere to start a chat when the directory is gone. Better to say
@@ -364,14 +374,36 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
             </span>
           )}
           {/*
-            Several workspace records on one directory. Supported, not a bug —
-            and after the registry-hygiene fix a `useWorktree` chat on the main
-            checkout produces exactly this. The row stays one row and says how
-            many; the records themselves are a drill-down in Manage worktrees.
+            The workspace records on this directory, and the way into them.
+
+            Several records on one directory is supported, not a bug — after the
+            registry-hygiene fix a `useWorktree` chat on the main checkout
+            produces exactly this. The row stays one row and says how many.
+
+            Phase 4b makes the chip the drill-down entry point, because rename
+            gave the row something it genuinely cannot say. One record: the row
+            is titled with that record's name, so the chip is just a way to
+            reach it. Two records with two names: the row shows the directory's
+            own name and neither of theirs — deliberately, since a row that
+            named one of them would be labelling itself with a record the user
+            may not be acting on. The chip is where that ambiguity is resolved,
+            by listing every record with its name.
           */}
-          {recordCount > 1 && (
+          {recordCount > 0 && (
             <span
-              title={`${recordCount} workspace records share this directory. That is a supported state; open Manage worktrees to see them individually.`}
+              onClick={
+                onManageWorkspaces &&
+                ((e) => {
+                  e.stopPropagation();
+                  onManageWorkspaces();
+                })
+              }
+              title={
+                (recordCount === 1
+                  ? "One workspace record covers this directory — the row is named after it."
+                  : `${recordCount} workspace records share this directory, so the row shows the directory's own name rather than any one of theirs. That is a supported state.`) +
+                (onManageWorkspaces ? " Open the workspace details for this directory." : "")
+              }
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -382,10 +414,12 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
                 background: "var(--chatlist-badge-agent-bg)",
                 color: "var(--chatlist-item-time-text)",
                 flexShrink: 0,
+                cursor: onManageWorkspaces ? "pointer" : "default",
+                textDecoration: onManageWorkspaces ? "underline dotted" : "none",
               }}
             >
               <Layers size={10} style={{ flexShrink: 0 }} />
-              {recordCount} workspaces
+              {recordCount === 1 ? "1 workspace" : `${recordCount} workspaces`}
             </span>
           )}
           {note && note.tone === "muted" && (

@@ -83,6 +83,36 @@ export interface FolderSummaryDeps {
 }
 
 /**
+ * What the row is called.
+ *
+ * Phase 4b sources this from the workspace record — but only when **exactly
+ * one** active record claims the directory, which is the same condition
+ * `viewForDirectory` uses to report an unambiguous `workspaceId`. That is not a
+ * coincidence and it is the whole rule: the row may show a record's name
+ * exactly when the row unambiguously *is* that record.
+ *
+ * A directory with two records is the case rename makes newly interesting,
+ * because those two records can now have different names. The row keeps showing
+ * the directory's own last segment there, for one reason: the row is
+ * per-directory (the Phase 4a ruling — keying on the record splits one folder
+ * into two identically-pathed rows), so a row that displayed one of two
+ * distinct names would be labelled with a record the user is not acting on.
+ * Picking "the most recent" would make it worse, not better — the label would
+ * change under them when a chat starts in the folder. Whichever record they
+ * mean, they reach it through the drill-down, where every record is listed with
+ * its own name.
+ *
+ * The fallback is also the *common* path, not an edge case: records exist for
+ * ~0.1% of directories, and one that was never renamed holds the basename
+ * anyway, so this changes what is on screen only where somebody chose a name.
+ */
+function displayNameFor(folder: string, records: FolderWorkspaceRecord[]): string {
+  const basename = folder.split("/").pop() || folder;
+  if (records.length !== 1) return basename;
+  return records[0].name.trim() || basename;
+}
+
+/**
  * Worst state wins. A directory with two records — the shape the registry
  * hygiene fix made routine — reports the one a user needs to act on, and the
  * per-record detail stays available in `workspaces[]`.
@@ -158,12 +188,9 @@ export function buildFolderSummaries(sessions: DiscoveredSession[], deps: Folder
     const view = viewForDirectory(folder, deps.workspaces);
     const directory = worstDirectoryState(records);
 
-    // Extract folder display name (last path segment)
-    const displayName = folder.split("/").pop() || folder;
-
     folders.push({
       folder,
-      displayName,
+      displayName: displayNameFor(folder, records),
       ...(view.workspaceId && { workspaceId: view.workspaceId }),
       ...(view.workspaceCount && { workspaceCount: view.workspaceCount }),
       ...(view.repoPath && { repoPath: view.repoPath }),

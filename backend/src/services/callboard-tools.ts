@@ -1535,7 +1535,9 @@ export function buildCallboardToolsSpec(
       // still prove it, that nothing else references, and that are clean.
       // adopt_worktrees is the only way a worktree Callboard did not create
       // joins that set, and it acts on paths the caller names — never on a
-      // pattern, and never on a discovery of its own.
+      // pattern, and never on a discovery of its own. create_workspace, despite
+      // the name, is not a third way in: it writes local records only and
+      // refuses a worktree directory outright.
       ...buildWorkspaceTools(),
     ],
   };
