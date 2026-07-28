@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, ListTree, Loader2 } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
@@ -15,10 +15,18 @@ import ProviderBadge from "./ProviderBadge";
  * fetches the authoritative full tree from GET /api/chats/:id/tree (which
  * includes members outside the currently loaded page) and renders it
  * depth-indented.
+ *
+ * A fetched tree is a snapshot: a chat spawned into an already-expanded group
+ * (and every status change inside it) lands in the refreshed `chats` prop but
+ * not in the fetched tree. `refreshToken` — bumped by the parent on every
+ * chat-list refresh — is the signal to refetch the expanded groups so the
+ * sidebar doesn't need a page reload to show them.
  */
 
 interface Props {
   chats: Chat[];
+  /** Bumped whenever the parent replaces the chat list; invalidates fetched trees. */
+  refreshToken: number;
   activeChatId?: string;
   onChatClick: (chat: Chat) => void;
   onDelete: (chat: Chat) => void;
@@ -177,7 +185,17 @@ function TreeNodeRow({
   );
 }
 
-export default function ChatTreeList({ chats, activeChatId, onChatClick, onDelete, onToggleBookmark, onCreateCard, onAddToCard, sessionStatusFor }: Props) {
+export default function ChatTreeList({
+  chats,
+  refreshToken,
+  activeChatId,
+  onChatClick,
+  onDelete,
+  onToggleBookmark,
+  onCreateCard,
+  onAddToCard,
+  sessionStatusFor,
+}: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [trees, setTrees] = useState<Record<string, ChatTreeResponse>>({});
@@ -207,6 +225,53 @@ export default function ChatTreeList({ chats, activeChatId, onChatClick, onDelet
     }
     return result;
   }, [chats]);
+
+  // Read current expansion/rows from the refresh effect without making it a
+  // dependency — the effect must fire on refreshes, not on every expand click.
+  const expandedRef = useRef(expanded);
+  const rowsRef = useRef(rows);
+  // Declared before the refresh effect so the refs are current by the time it
+  // reads them in the same commit.
+  useEffect(() => {
+    expandedRef.current = expanded;
+    rowsRef.current = rows;
+  });
+
+  // The chat list refreshed: every cached tree is now potentially stale.
+  // Refetch the expanded ones in place (no spinner — the rows stay put and
+  // swap content), and drop the collapsed ones so re-expanding refetches
+  // instead of flashing a snapshot from minutes ago.
+  useEffect(() => {
+    if (refreshToken === 0) return; // initial render — nothing fetched yet
+    const expandedNow = expandedRef.current;
+    setTrees((prev) => {
+      const kept: Record<string, ChatTreeResponse> = {};
+      let dropped = false;
+      for (const [rootKey, tree] of Object.entries(prev)) {
+        if (expandedNow.has(rootKey)) kept[rootKey] = tree;
+        else dropped = true;
+      }
+      return dropped ? kept : prev;
+    });
+    if (expandedNow.size === 0) return;
+
+    let cancelled = false;
+    const representativeOf = new Map(rowsRef.current.map((row) => [row.rootKey, row.chat.id]));
+    for (const rootKey of expandedNow) {
+      const representativeChatId = representativeOf.get(rootKey);
+      if (!representativeChatId) continue; // group scrolled out of the loaded window
+      getChatTree(representativeChatId)
+        .then((tree) => {
+          if (!cancelled) setTrees((prev) => ({ ...prev, [rootKey]: tree }));
+        })
+        .catch(() => {
+          // Transient failure — the next refresh retries; keep showing the old tree.
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshToken]);
 
   const toggleExpand = useCallback(
     async (rootKey: string, representativeChatId: string) => {
