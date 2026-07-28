@@ -31,7 +31,7 @@ import {
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 import { formatLogFields } from "./logFields.js";
-import { applyServerToolPolicy } from "./serverToolPolicy.js";
+import { applyPluginPolicy, applyServerToolPolicy, type PluginWire } from "./serverToolPolicy.js";
 import { createLogger } from "../../../utils/logger.js";
 import type { DefaultPermissions, EffortLevel } from "shared/types/index.js";
 
@@ -82,9 +82,11 @@ export interface OpenRouterOptionsExtras {
   serverTools?: Array<{ type: string } & Record<string, unknown>>;
   /**
    * Live accessor for the chat's permission policy, threaded through so the
-   * `webAccess` axis can gate OR's SERVER tools. They execute on OpenRouter's
-   * servers and never reach `canUseTool`, so withholding them from the request
-   * body is the only enforcement available (see {@link applyServerToolPolicy}).
+   * `webAccess` axis can gate the two channels `canUseTool` never sees: OR's
+   * SERVER tools ({@link applyServerToolPolicy}) and its PLUGINS
+   * ({@link applyPluginPolicy}, carried by {@link modelParams}). Both execute on
+   * OpenRouter's servers, so withholding them from the request body is the only
+   * enforcement available.
    *
    * The accessor rather than a snapshot, for the reason the ACP adapter's
    * `getPermissions` gives: it is read at the last possible moment, so a policy
@@ -101,6 +103,13 @@ export interface OpenRouterOptionsExtras {
    * optional `plugins` array), as produced by `resolveModelParams`. Forwarded
    * to the harness's own `modelParams` option, which rides
    * `Partial<ResponsesRequest>`. Omit to send no extra params.
+   *
+   * The `plugins` array here is the user's INTENT, not the effective set — it is
+   * a second, independent route to OpenRouter's servers (`web` and `fusion` are
+   * web access), so {@link getPermissions} narrows it before it reaches the
+   * harness, exactly as it does {@link serverTools}. See
+   * {@link applyPluginPolicy}. The sampling knobs alongside it are pure
+   * generation parameters and pass through untouched.
    */
   modelParams?: Record<string, unknown>;
   /**
@@ -252,14 +261,57 @@ export function translateOptions(
   if (orConfig.baseUrl) orOpts.baseUrl = orConfig.baseUrl;
   if (orConfig.model) orOpts.model = orConfig.model;
   if (orConfig.effort) orOpts.effort = orConfig.effort;
+
+  /**
+   * Tell the user when the `webAccess` policy took something away, for either
+   * channel it governs. Silence would be indistinguishable from a broken
+   * feature: someone who set webAccess to "ask" and finds web search simply
+   * missing deserves to be told which axis removed it and what to set instead.
+   */
+  const reportWithheld = (kind: string, withheld: readonly string[]): void => {
+    if (withheld.length === 0) return;
+    const policy = orConfig.getPermissions?.()?.webAccess ?? "(no policy — treated as restrictive)";
+    const message =
+      `withheld ${withheld.length} OpenRouter ${kind}(s) — webAccess=${policy}: ${withheld.join(", ")}. ` +
+      `These execute on OpenRouter's servers and never reach the permission prompt, so they are ` +
+      `withheld from the request rather than asked about. Set webAccess to "allow" to enable them.`;
+    log.warn(message);
+    if (opts.stderr) opts.stderr(`[openrouter] ${message}`);
+  };
+
   // Forward configured OpenRouter generation params (sampling knobs + plugins).
   // claude.ts resolves the global default merged with any per-model override via
   // `resolveModelParams`; absence here leaves the harness on its own defaults.
   // The shared catalog hands us a validated camelCase bag (`Record`); the harness
   // types it as `Partial<ResponsesRequest>` (not re-exported from the package), so
   // cast through the harness option's own type to stay in lockstep with it.
+  //
+  // The `plugins` array inside this bag is a SECOND route to OpenRouter's
+  // servers, independent of `serverTools` below and invisible to it — and two
+  // catalog plugins are web access (`web`, `fusion`). Worse than a server tool
+  // on that axis, in fact: a plugin runs once per request whether the model
+  // asked for it or not. So the same `webAccess` gate applies here, and for the
+  // same reason — see ./serverToolPolicy.ts.
   if (orConfig.modelParams) {
-    orOpts.modelParams = orConfig.modelParams as OpenRouterAgentRunOptions["modelParams"];
+    const { plugins: rawPlugins, ...samplingParams } = orConfig.modelParams;
+    // A non-array `plugins` can only come from a hand-edited settings file; drop
+    // it rather than forwarding a shape the SDK's Zod schema would reject.
+    const { plugins, withheld: withheldPlugins } = applyPluginPolicy(
+      Array.isArray(rawPlugins) ? (rawPlugins as PluginWire[]) : undefined,
+      orConfig.getPermissions?.(),
+    );
+    // Reassembled rather than mutated — `orConfig.modelParams` is the caller's
+    // object (claude.ts hands over the resolved settings profile), and the key is
+    // dropped entirely when nothing survives, matching what `resolveModelParams`
+    // emits for a profile with no plugins at all.
+    const gatedParams: Record<string, unknown> = {
+      ...samplingParams,
+      ...(plugins.length > 0 && { plugins }),
+    };
+    if (Object.keys(gatedParams).length > 0) {
+      orOpts.modelParams = gatedParams as OpenRouterAgentRunOptions["modelParams"];
+    }
+    reportWithheld("plugin", withheldPlugins);
   }
   // Always-on auto prompt caching. OR honors this only for Anthropic Claude
   // models (the directive turns into a cache breakpoint on the last cacheable
@@ -290,17 +342,7 @@ export function translateOptions(
   } else {
     const { serverTools, withheld } = applyServerToolPolicy(orConfig.serverTools, orConfig.getPermissions?.());
     if (serverTools !== undefined) orOpts.serverTools = serverTools;
-    if (withheld.length > 0) {
-      // A user who set webAccess to "ask" and finds web search simply missing
-      // deserves to be told why, so name the policy and the tools it took.
-      const policy = orConfig.getPermissions?.()?.webAccess ?? "(no policy — treated as restrictive)";
-      const message =
-        `withheld ${withheld.length} OpenRouter server tool(s) — webAccess=${policy}: ${withheld.join(", ")}. ` +
-        `These execute on OpenRouter's servers and never reach the permission prompt, so they are ` +
-        `withheld from the request rather than asked about. Set webAccess to "allow" to enable them.`;
-      log.warn(message);
-      if (opts.stderr) opts.stderr(`[openrouter] ${message}`);
-    }
+    reportWithheld("server tool", withheld);
   }
   // Forward the user's configured spend cap. `Number.isFinite` excludes
   // NaN/Infinity that could sneak in from a malformed setting; the absence
@@ -427,12 +469,26 @@ export function translateOptions(
       `maxTurns=${orOpts.maxTurns ?? "(default)"}, persistSession=${orOpts.persistSession ?? "(default)"}, ` +
       `cwd=${cwd}, instructions=${orOpts.instructions ? `${orOpts.instructions.length}chars` : "(none)"}, ` +
       `serverTools=${orOpts.serverTools ? `[${orOpts.serverTools.map((t) => t.type).join(",")}]` : "(harness defaults)"}, ` +
+      // The EFFECTIVE plugin set, after the webAccess gate — anything the policy
+      // withheld is named in its own warn line above.
+      `plugins=${formatEffectivePlugins(orOpts.modelParams)}, ` +
       `tools=${orOpts.tools?.length ?? 0}, mcpServers=${orOpts.mcpServers?.length ?? 0}, ` +
       `allowedTools=${orOpts.allowedTools?.length ?? 0}, ` +
       `disallowedTools=${orOpts.disallowedTools?.length ?? 0}`,
   );
 
   return { orOpts, cwd };
+}
+
+/**
+ * Render the effective `modelParams.plugins` ids for the debug line. Reads off
+ * the assembled options rather than the config so it reports what will actually
+ * be sent, gate applied.
+ */
+function formatEffectivePlugins(modelParams: OpenRouterAgentRunOptions["modelParams"]): string {
+  const plugins = (modelParams as { plugins?: unknown } | undefined)?.plugins;
+  if (!Array.isArray(plugins) || plugins.length === 0) return "(none)";
+  return `[${plugins.map((p) => String((p as { id?: unknown }).id)).join(",")}]`;
 }
 
 /**

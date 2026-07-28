@@ -1,5 +1,6 @@
 /**
- * The `webAccess` gate for OpenRouter's SERVER tools.
+ * The `webAccess` gate for the two OpenRouter channels `canUseTool` cannot see:
+ * SERVER TOOLS (`orOpts.serverTools`) and PLUGINS (`orOpts.modelParams.plugins`).
  *
  * ## Why a separate gate exists at all
  *
@@ -62,10 +63,31 @@
  * lives with the rest of the OR catalog in `shared/types/openrouterCatalog.ts`
  * rather than being a second copy of a harness internal.
  *
+ * ## The plugins channel, and how it differs
+ *
+ * Plugins ride an entirely different route into the same request —
+ * `orOpts.modelParams.plugins` rather than `orOpts.serverTools` — so the
+ * server-tool gate above never saw them, and two catalog plugins are live web
+ * access: `web` (search injected into every response) and `fusion` (the same
+ * web-enabled panel as the fusion server tool). Both are governed here, by the
+ * same rule and the same fail-closed default; see {@link applyPluginPolicy}.
+ *
+ * Two asymmetries with server tools are worth knowing:
+ *
+ *  - **No default-injection problem.** `serverTools: undefined` means "inject
+ *    your defaults"; `plugins` absent simply means no plugins. So the
+ *    restrictive branch has nothing to materialize, and there is no analogue of
+ *    {@link ASSUMED_HARNESS_DEFAULTS} to keep in sync.
+ *  - **Plugins are strictly worse on this axis.** A server tool is *offered* to
+ *    the model, which may never call it. A plugin runs once per request whether
+ *    the model asked or not — OpenRouter draws that contrast itself when
+ *    steering users off the `web` plugin. So an ungated web plugin searches on
+ *    every turn with no model decision involved at all.
+ *
  * @see plans/openrouter-adapter.md:186 (where this fix was proposed)
  * @see ./permissionAdapter.ts ("What is NOT gated here")
  */
-import { OR_SERVER_TOOLS, OR_SERVER_TOOL_BY_TYPE } from "shared/types/index.js";
+import { OR_PLUGIN_BY_ID, OR_SERVER_TOOLS, OR_SERVER_TOOL_BY_TYPE } from "shared/types/index.js";
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 
 /**
@@ -104,6 +126,35 @@ export function serverToolNeedsWebAccess(type: string): boolean {
   return OR_SERVER_TOOL_BY_TYPE.get(type)?.webAccess ?? true;
 }
 
+/**
+ * Does this plugin put the open internet within reach?
+ *
+ * Unknown ids answer `true`, for the reason {@link serverToolNeedsWebAccess}
+ * gives: an id absent from the catalog's `OR_PLUGINS` is one OpenRouter shipped
+ * after it was last updated, and an unclassified entry is exactly where
+ * guessing "harmless" springs a leak. `validateParamProfile` rejects unknown
+ * plugin ids at the settings layer, so in practice this fires for a
+ * hand-edited `agent-settings.json` — which is the case that must fail closed.
+ */
+export function pluginNeedsWebAccess(id: string): boolean {
+  return OR_PLUGIN_BY_ID.get(id)?.webAccess ?? true;
+}
+
+/**
+ * Does the policy permit reaching the web?
+ *
+ * The single place the two-sided rule is decided, so the server-tool and plugin
+ * gates cannot drift apart. Only an explicit `"allow"` permits: `"ask"`,
+ * `"deny"`, and no policy at all are all restrictive. `"ask"` withholds because
+ * these channels are decided once, when the request body is assembled, and
+ * there is no per-call moment at which a prompt could be raised — see the
+ * two-sided rule in the module doc-comment.
+ */
+function webAccessPermitted(permissions: DefaultPermissions | null | undefined): boolean {
+  const webAccess: PermissionLevel | undefined = permissions?.webAccess;
+  return webAccess === "allow";
+}
+
 /** Outcome of the gate: what to send, and what the policy took away. */
 export interface ServerToolPolicyResult {
   /**
@@ -132,8 +183,7 @@ export function applyServerToolPolicy(
   configured: readonly ServerToolWire[] | undefined,
   permissions: DefaultPermissions | null | undefined,
 ): ServerToolPolicyResult {
-  const webAccess: PermissionLevel | undefined = permissions?.webAccess;
-  if (webAccess === "allow") {
+  if (webAccessPermitted(permissions)) {
     // Permitted: hand back exactly what was configured, `undefined` included,
     // so the harness's own defaults stay in force and this path is byte-for-byte
     // what shipped before the gate existed.
@@ -143,12 +193,81 @@ export function applyServerToolPolicy(
   // Restrictive ("ask", "deny", or no policy at all). The default path has to be
   // materialized to be filtered — `undefined` cannot express "defaults minus
   // web_search".
-  const base = configured ?? ASSUMED_HARNESS_DEFAULTS;
-  const serverTools: ServerToolWire[] = [];
-  const withheld: string[] = [];
-  for (const tool of base) {
-    if (serverToolNeedsWebAccess(tool.type)) withheld.push(tool.type);
-    else serverTools.push({ ...tool });
+  const { kept, withheld } = partitionByWebAccess(
+    configured ?? ASSUMED_HARNESS_DEFAULTS,
+    (tool) => tool.type,
+    serverToolNeedsWebAccess,
+  );
+  return { serverTools: kept, withheld };
+}
+
+/**
+ * One configured plugin in its wire shape — `{ id, ...camelCaseParams }`, as
+ * `resolveModelParams` puts them on `modelParams.plugins`.
+ */
+export type PluginWire = { id: string } & Record<string, unknown>;
+
+/** Outcome of the plugin gate: what to send, and what the policy took away. */
+export interface PluginPolicyResult {
+  /**
+   * The value for `modelParams.plugins`. Always an array (never `undefined`) —
+   * unlike `serverTools`, absence carries no "use your defaults" meaning here,
+   * so an empty result simply means no plugins and the caller drops the key.
+   */
+  plugins: PluginWire[];
+  /** Plugin ids withheld by the policy, for logging. Empty when nothing was removed. */
+  withheld: string[];
+}
+
+/**
+ * Narrow a configured plugin set by the `webAccess` policy.
+ *
+ * Same rule as {@link applyServerToolPolicy} and deliberately the same
+ * machinery: `"allow"` passes the set through untouched, everything else
+ * (`"ask"`, `"deny"`, no policy at all) drops every plugin that reaches the web,
+ * and an unrecognized plugin id counts as reaching the web. The gate only ever
+ * NARROWS — the user's configured set stays authoritative for intent, and no
+ * setting can re-enable a plugin the policy withholds.
+ *
+ * `configured` is `modelParams.plugins` or `undefined`/`[]` when none are set;
+ * unlike server tools there is no default-injection case to materialize, so
+ * "nothing configured" is just an empty result.
+ *
+ * Pure and total: no I/O, no logging, safe to call from anywhere.
+ */
+export function applyPluginPolicy(
+  configured: readonly PluginWire[] | undefined,
+  permissions: DefaultPermissions | null | undefined,
+): PluginPolicyResult {
+  if (!configured || configured.length === 0) return { plugins: [], withheld: [] };
+  if (webAccessPermitted(permissions)) {
+    // Permitted: exactly what was configured, copied so the caller cannot
+    // alias into the persisted settings object.
+    return { plugins: configured.map((p) => ({ ...p })), withheld: [] };
   }
-  return { serverTools, withheld };
+  // `String(...)` because a hand-edited settings file can put a non-string id
+  // here. It will not match the catalog, so it is withheld — and the log line
+  // still names something the user can find.
+  const { kept, withheld } = partitionByWebAccess(configured, (p) => String(p.id), pluginNeedsWebAccess);
+  return { plugins: kept, withheld };
+}
+
+/**
+ * Split a configured set into what a restrictive policy may keep and what it
+ * takes away. Shared by both gates so "narrow, never widen; copy, never alias;
+ * unknown fails closed" is implemented once rather than twice.
+ */
+function partitionByWebAccess<T extends object>(
+  base: readonly T[],
+  keyOf: (item: T) => string,
+  needsWebAccess: (key: string) => boolean,
+): { kept: T[]; withheld: string[] } {
+  const kept: T[] = [];
+  const withheld: string[] = [];
+  for (const item of base) {
+    const key = keyOf(item);
+    if (needsWebAccess(key)) withheld.push(key);
+    else kept.push({ ...item });
+  }
+  return { kept, withheld };
 }

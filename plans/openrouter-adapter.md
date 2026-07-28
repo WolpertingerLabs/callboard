@@ -264,11 +264,44 @@ Option A — branch on `kind` in the policy factory, single-file change in `clau
 > including `web_search`. Permitting any of them under `webAccess: "deny"` would be a side door onto
 > the same axis, so the catalog marks them `webAccess: true`.
 >
-> **Still open:** the `plugins` channel. `modelParams.plugins` reaches OpenRouter by an entirely
-> different route (`orOpts.modelParams`, not `orOpts.serverTools`) and passes no policy at all. The
-> deprecated `web` plugin *is* web search, and the `fusion` plugin runs the same panel as the fusion
-> server tool — web-enabled — once per request rather than on model demand. Gating that channel is a
-> separate change; it is not reachable from `serverToolPolicy`.
+> **The `plugins` channel is gated too, in this same change** (architect ruling, 2026-07-28 — it
+> belongs here rather than in a follow-up ticket, because without it `webAccess: "deny"` still did not
+> stop OpenRouter web access and the fix's own headline claim would have been false).
+> `modelParams.plugins` reaches OpenRouter by an entirely different route (`orOpts.modelParams`, not
+> `orOpts.serverTools`), so `applyServerToolPolicy` never saw it. Two catalog plugins are live web
+> access: the deprecated `web` plugin *is* web search, and the `fusion` plugin runs the same
+> web-enabled panel as the fusion server tool. `"openrouter/fusion"` was configured in the live
+> `agent-settings.json` at the time of the fix, so this was not hypothetical.
+>
+> **A plugin is the worse of the two channels**, which is why leaving it for later was the wrong call:
+> a server tool is *offered* to the model and may never be called, whereas a plugin runs once per
+> request regardless. OpenRouter draws exactly that contrast when steering users off the `web` plugin
+> — server tools "give the model control over when and how often to search, rather than always running
+> once per request". An ungated `web` plugin therefore searches on **every turn with no model decision
+> at all**.
+>
+> Same three rules, same machinery: `applyPluginPolicy` sits beside `applyServerToolPolicy` in
+> `serverToolPolicy.ts` and shares its `webAccessPermitted` predicate and `partitionByWebAccess`
+> filter, so "narrow never widen; unknown fails closed; `ask` withholds like `deny`" is implemented
+> once. One asymmetry: plugins have no default-injection problem — `serverTools: undefined` means
+> "inject your defaults", but `plugins` absent just means no plugins, so the restrictive branch has
+> nothing to materialize and there is no second `ASSUMED_HARNESS_DEFAULTS` to keep in sync.
+>
+> Classification is by documented reach, not by name (the `fusion`/`advisor`/`subagent` trap again).
+> `pareto-router` only selects which model serves the request; `response-healing` rewrites the model's
+> own malformed JSON; `context-compression` is mechanical middle-out truncation that *removes* context.
+> `file-parser` is the closest call and is `false`: it parses a PDF the request already carried and the
+> model cannot name a target for it. Its `mistral-ocr`/`cloudflare-ai` engines do hand the document to
+> a subprocessor, which is a real egress fact — but no third-party *content* returns to the context,
+> and "may my documents go to subprocessors" is a different axis than `webAccess`, one nothing in
+> callboard currently expresses.
+>
+> **Still open — the `:online` model-slug suffix.** OpenRouter documents `web` plugin activation two
+> ways: the plugin, and "appending `:online` to the model slug". Nothing in callboard inspects the
+> model string — `resolveSessionModel` passes `openRouterModel` / per-chat metadata through verbatim —
+> so a model configured as `anthropic/claude-sonnet-4:online` enables web search on every request with
+> no policy consulted. Not fixed here: it needs its own ruling on whether to reject the suffix at
+> validation, strip it under a restrictive policy, or treat it as the user overriding themselves.
 
 ### Tool exposure (`toolAdapter.ts`)
 

@@ -121,6 +121,32 @@ export interface PluginSpec {
   label: string;
   /** What it does. */
   description: string;
+  /**
+   * Does enabling this plugin put the open internet within reach?
+   *
+   * The same `webAccess` axis as {@link ServerToolSpec.webAccess}, and gated the
+   * same way and for the same reason — plugins ride `modelParams.plugins` into
+   * the request body and execute on OpenRouter's servers, so `canUseTool` never
+   * sees them either and withholding them from the request is the whole of the
+   * enforcement. See `applyPluginPolicy` in
+   * `backend/src/agents/adapters/openrouter/serverToolPolicy.ts`.
+   *
+   * Plugins are in one way WORSE than server tools on this axis: a server tool
+   * is offered to the model, which may decline to call it, whereas a plugin runs
+   * once per request whether the model asked or not. OpenRouter draws exactly
+   * that contrast when steering users off the `web` plugin — server tools "give
+   * the model control over when and how often to search, rather than always
+   * running once per request". So a web-carrying plugin under `webAccess: "deny"`
+   * would search on every single turn with no model decision involved at all.
+   *
+   * Classified by what the plugin reaches, not by what it is called: `fusion`
+   * sounds like model-to-model routing and is documented as running its panel
+   * with `openrouter:web_search`/`web_fetch` enabled. When a new plugin's reach
+   * is unclear, mark it `true` — the gate fails closed for plugins missing from
+   * this catalog entirely, and a known entry should not be a weaker default than
+   * an unknown one.
+   */
+  webAccess: boolean;
   /** Deprecated by OpenRouter (still works, but discouraged — e.g. the `web` plugin). */
   deprecated?: boolean;
   /** Hint about which model(s) the plugin is meaningful with (e.g. pareto-router ↔ openrouter/pareto-code). */
@@ -262,6 +288,14 @@ export const OR_PLUGINS: readonly PluginSpec[] = [
     id: "fusion",
     label: "Fusion",
     description: "Runs a panel of models in parallel, has a judge compare them, then synthesizes a final answer. Always runs once.",
+    // Web access by construction, no knob to turn it off — the same panel the
+    // fusion SERVER tool runs, and OpenRouter describes it in as many words:
+    // "The panel — a set of models — answers your prompt in parallel, each with
+    // `openrouter:web_search` and `openrouter:web_fetch` enabled."
+    // The plugin form is the worse of the two here: the server tool runs only
+    // when the model elects to call it, this runs once on every request.
+    // https://openrouter.ai/docs/guides/features/plugins/fusion
+    webAccess: true,
     params: [
       { key: "analysisModels", label: "Analysis models", type: "stringList", description: "1–8 panel model slugs." },
       { key: "model", label: "Judge model", type: "string", description: "Defaults to the first Quality-preset model." },
@@ -272,6 +306,11 @@ export const OR_PLUGINS: readonly PluginSpec[] = [
     id: "pareto-router",
     label: "Pareto router",
     description: "Sets the coding-quality tier for the Pareto code router.",
+    // Not web access: it only picks WHICH model serves the request ("Set a
+    // default coding quality tier for the Pareto code router"). It adds no
+    // tools, and whatever the routed-to model may reach still comes from the
+    // request's own `tools` array, which the server-tool gate governs.
+    webAccess: false,
     modelHint: "openrouter/pareto-code",
     params: [
       {
@@ -289,6 +328,14 @@ export const OR_PLUGINS: readonly PluginSpec[] = [
     id: "web",
     label: "Web search (plugin)",
     description: "Injects real-time web search results into the response. Deprecated in favor of the web_search server tool.",
+    // Web access, unconditionally and on every turn. This is the plugin
+    // OpenRouter steers users off precisely because it "always run[s] once per
+    // request" where the server tool "give[s] the model control over when and
+    // how often to search". Deprecated is not the same as inert: it still works,
+    // it is still selectable in Settings, and it needs no model decision to
+    // fire, which makes it the most permissive web route OpenRouter offers.
+    // https://openrouter.ai/docs/guides/features/plugins/web-search
+    webAccess: true,
     deprecated: true,
     params: [
       {
@@ -308,6 +355,22 @@ export const OR_PLUGINS: readonly PluginSpec[] = [
     id: "file-parser",
     label: "File parser (PDF)",
     description: "Parses uploaded PDFs with a selectable extraction engine.",
+    // Not web access, though it is the closest call in this list and deserves
+    // the reasoning written down. It parses a PDF the request already carried
+    // (base64 `file_data`), and it retrieves nothing from the open internet on
+    // the model's behalf — the model cannot name a target for it.
+    //
+    // It does involve a third party: the `mistral-ocr` engine sends the document
+    // to Mistral's OCR API (billed to the OpenRouter account, using OpenRouter's
+    // own Mistral key), and `cloudflare-ai` likewise. That is an egress fact
+    // worth knowing, but it is not the `webAccess` axis: the bytes were already
+    // bound for OpenRouter, and no third-party CONTENT comes back into the
+    // context. Same distinction `openrouter:datetime` turns on — egresses
+    // nothing the request did not already carry. If callboard ever wants to
+    // govern "may my documents be handed to subprocessors", that is a new axis,
+    // not this one.
+    // https://openrouter.ai/docs/guides/overview/multimodal/pdfs
+    webAccess: false,
     params: [
       {
         key: "engine",
@@ -323,12 +386,22 @@ export const OR_PLUGINS: readonly PluginSpec[] = [
     id: "response-healing",
     label: "Response healing",
     description: "Automatically repairs malformed JSON responses.",
+    // Not web access: it rewrites the model's own malformed output into valid
+    // JSON ("Automatically fix malformed JSON responses from LLMs"). Operates on
+    // the response already in hand; retrieves nothing.
+    webAccess: false,
     params: [],
   },
   {
     id: "context-compression",
     label: "Context compression",
     description: "Compresses prompts that exceed the context window via middle-out truncation.",
+    // Not web access: mechanical truncation of the prompt callboard already
+    // sent — it drops content from the middle (where models attend least)
+    // to fit the context window, and keeps half the messages from each end when
+    // the message limit is hit. It removes context rather than adding any.
+    // https://openrouter.ai/docs/guides/features/message-transforms
+    webAccess: false,
     params: [],
   },
 ];

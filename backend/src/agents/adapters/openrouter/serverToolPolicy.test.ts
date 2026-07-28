@@ -9,10 +9,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ASSUMED_HARNESS_DEFAULTS,
+  applyPluginPolicy,
   applyServerToolPolicy,
+  pluginNeedsWebAccess,
   serverToolNeedsWebAccess,
 } from "./serverToolPolicy.js";
-import { OR_SERVER_TOOLS } from "shared/types/index.js";
+import { OR_PLUGINS, OR_SERVER_TOOLS } from "shared/types/index.js";
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 
 const perms = (webAccess: PermissionLevel): DefaultPermissions => ({
@@ -102,6 +104,111 @@ describe("applyServerToolPolicy", () => {
   it("keeps an explicitly empty configured set empty under every policy", () => {
     for (const level of ["allow", "ask", "deny"] as const) {
       expect(applyServerToolPolicy([], perms(level))).toEqual({ serverTools: [], withheld: [] });
+    }
+  });
+});
+
+describe("pluginNeedsWebAccess", () => {
+  it("classifies every catalog plugin without falling through to the unknown default", () => {
+    // Same canary as the server-tool version: a new plugin landing with no
+    // `webAccess` decision would answer `true` via the `?? true` fallback —
+    // safe, but indistinguishable from a decision actually having been made.
+    for (const spec of OR_PLUGINS) {
+      expect(typeof spec.webAccess).toBe("boolean");
+      expect(pluginNeedsWebAccess(spec.id)).toBe(spec.webAccess);
+    }
+  });
+
+  it("holds the two web-carrying plugins to that classification by name", () => {
+    // Pinned explicitly, not just via the loop above: these are the two entries
+    // whose misclassification would silently reopen the channel, and `fusion` is
+    // the one whose name suggests it is only model-to-model routing.
+    expect(pluginNeedsWebAccess("web")).toBe(true);
+    expect(pluginNeedsWebAccess("fusion")).toBe(true);
+  });
+
+  it("answers true for a plugin it has never heard of", () => {
+    expect(pluginNeedsWebAccess("some-future-plugin")).toBe(true);
+    expect(pluginNeedsWebAccess("")).toBe(true);
+  });
+});
+
+describe("applyPluginPolicy", () => {
+  it("passes a configured set through untouched under allow", () => {
+    const configured = [{ id: "web", maxResults: 5 }, { id: "response-healing" }];
+    const { plugins, withheld } = applyPluginPolicy(configured, perms("allow"));
+    expect(plugins).toEqual(configured);
+    expect(withheld).toEqual([]);
+  });
+
+  it("copies rather than aliases the configured entries", () => {
+    // The caller's array is the resolved settings profile; the gate must not
+    // hand back a reference into it (nor into its member objects).
+    const configured = [{ id: "response-healing" }];
+    const { plugins } = applyPluginPolicy(configured, perms("allow"));
+    expect(plugins).not.toBe(configured);
+    expect(plugins[0]).not.toBe(configured[0]);
+  });
+
+  it.each(["ask", "deny"] as const)("withholds web and fusion under webAccess=%s", (level) => {
+    const { plugins, withheld } = applyPluginPolicy(
+      [{ id: "web" }, { id: "fusion" }, { id: "response-healing" }],
+      perms(level),
+    );
+    expect(plugins).toEqual([{ id: "response-healing" }]);
+    expect(withheld).toEqual(["web", "fusion"]);
+  });
+
+  it.each(["allow", "ask", "deny"] as const)("keeps every non-web plugin under webAccess=%s", (level) => {
+    const nonWeb = OR_PLUGINS.filter((p) => !p.webAccess).map((p) => ({ id: p.id }));
+    const { plugins, withheld } = applyPluginPolicy(nonWeb, perms(level));
+    expect(plugins).toEqual(nonWeb);
+    expect(withheld).toEqual([]);
+  });
+
+  it("only ever narrows — the result is always a subset of the input", () => {
+    const configured = OR_PLUGINS.map((p) => ({ id: p.id }));
+    for (const level of ["allow", "ask", "deny"] as const) {
+      const { plugins } = applyPluginPolicy(configured, perms(level));
+      const inputIds = new Set(configured.map((p) => p.id));
+      for (const plugin of plugins) expect(inputIds.has(plugin.id)).toBe(true);
+    }
+  });
+
+  it("withholds an unknown plugin under a restrictive policy", () => {
+    const { plugins, withheld } = applyPluginPolicy(
+      [{ id: "response-healing" }, { id: "some-future-plugin" }],
+      perms("deny"),
+    );
+    expect(plugins).toEqual([{ id: "response-healing" }]);
+    expect(withheld).toEqual(["some-future-plugin"]);
+  });
+
+  it("withholds an entry whose id is not even a string", () => {
+    // Only reachable via a hand-edited agent-settings.json, but the log line
+    // should name something rather than blank.
+    const { plugins, withheld } = applyPluginPolicy(
+      [{ id: 7 } as unknown as { id: string }],
+      perms("deny"),
+    );
+    expect(plugins).toEqual([]);
+    expect(withheld).toEqual(["7"]);
+  });
+
+  it("treats a missing policy as restrictive", () => {
+    for (const missing of [null, undefined]) {
+      const { plugins, withheld } = applyPluginPolicy([{ id: "web" }], missing);
+      expect(plugins).toEqual([]);
+      expect(withheld).toEqual(["web"]);
+    }
+  });
+
+  it("returns an empty set for no configured plugins under every policy", () => {
+    // Unlike `serverTools`, absence carries no "inject your defaults" meaning
+    // here — so there is nothing to materialize and nothing to withhold.
+    for (const level of ["allow", "ask", "deny"] as const) {
+      expect(applyPluginPolicy(undefined, perms(level))).toEqual({ plugins: [], withheld: [] });
+      expect(applyPluginPolicy([], perms(level))).toEqual({ plugins: [], withheld: [] });
     }
   });
 });

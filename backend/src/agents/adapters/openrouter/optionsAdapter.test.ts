@@ -792,3 +792,200 @@ describe("translateOptions — webAccess gating of OpenRouter server tools", () 
     expect(typesOf(translateOptions(options, "hi").orOpts.serverTools)).toEqual(["openrouter:datetime"]);
   });
 });
+
+describe("translateOptions — webAccess gating of OpenRouter plugins", () => {
+  /**
+   * `modelParams.plugins` reaches OpenRouter by a different route than
+   * `serverTools` — it rides `Partial<ResponsesRequest>` — so the server-tool
+   * gate never saw it. Two catalog plugins are live web access, and a plugin is
+   * the worse case of the two channels: it runs once per request whether the
+   * model asked or not, so an ungated `web` plugin searches on every turn with
+   * no model decision involved at all.
+   */
+  const translate = (webAccess: PermissionLevel, modelParams?: Record<string, unknown>) =>
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          ...(modelParams && { modelParams }),
+          getPermissions: () => withWebAccess(webAccess),
+        },
+      },
+      "hi",
+    ).orOpts;
+
+  const pluginIdsOf = (orOpts: { modelParams?: unknown }) => {
+    const plugins = (orOpts.modelParams as { plugins?: { id: string }[] } | undefined)?.plugins;
+    return plugins?.map((p) => p.id);
+  };
+
+  // ── The headline: the two web-carrying plugins.
+  it.each(["deny", "ask"] as const)("withholds the web plugin under webAccess=%s", (webAccess) => {
+    const orOpts = translate(webAccess, { plugins: [{ id: "web", maxResults: 5 }] });
+    // The key is dropped entirely, not sent empty — that is what
+    // `resolveModelParams` emits for a profile with no plugins.
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  it.each(["deny", "ask"] as const)("withholds the fusion plugin under webAccess=%s", (webAccess) => {
+    const orOpts = translate(webAccess, { plugins: [{ id: "fusion", maxToolCalls: 8 }] });
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  it("injects web and fusion under webAccess=allow, params intact", () => {
+    const plugins = [{ id: "web", maxResults: 5 }, { id: "fusion", maxToolCalls: 8 }];
+    const orOpts = translate("allow", { plugins });
+    expect(orOpts.modelParams).toEqual({ plugins });
+  });
+
+  // ── A plugin that reaches nothing survives every policy.
+  it.each(["allow", "ask", "deny"] as const)(
+    "keeps a non-web plugin under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess, { plugins: [{ id: "response-healing" }] });
+      expect(pluginIdsOf(orOpts)).toEqual(["response-healing"]);
+    },
+  );
+
+  // ── Intersected, never replaced. The user's setting stays authoritative for
+  // intent; the policy decides what they may have.
+  it.each(["deny", "ask"] as const)(
+    "intersects a configured plugin set rather than replacing it under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess, {
+        plugins: [
+          { id: "web" },
+          { id: "response-healing" },
+          { id: "fusion" },
+          { id: "context-compression" },
+        ],
+      });
+      expect(pluginIdsOf(orOpts)).toEqual(["response-healing", "context-compression"]);
+    },
+  );
+
+  it("does not let a user setting re-enable the web plugin under webAccess=deny", () => {
+    expect(pluginIdsOf(translate("deny", { plugins: [{ id: "web" }] }))).toBeUndefined();
+  });
+
+  // ── Fail closed on the unknown: a plugin OpenRouter ships after this catalog
+  // was last updated is withheld, not waved through.
+  it("withholds an unknown/new plugin under a restrictive policy", () => {
+    const orOpts = translate("deny", {
+      plugins: [{ id: "response-healing" }, { id: "some-future-plugin" }],
+    });
+    expect(pluginIdsOf(orOpts)).toEqual(["response-healing"]);
+  });
+
+  // ── Absent/null policy is restrictive, matching decidePermission's collapse
+  // of a missing policy to "ask".
+  it("treats an absent permission accessor as restrictive", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: { apiKey: "sk-or-test", modelParams: { plugins: [{ id: "web" }] } } },
+      "hi",
+    );
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  it("treats a null permission policy as restrictive", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          modelParams: { plugins: [{ id: "web" }] },
+          getPermissions: () => null,
+        },
+      },
+      "hi",
+    );
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  // ── Sampling knobs are generation parameters, not a channel to anything. The
+  // gate must not touch them, and must not lose them when it strips a plugin.
+  it("leaves sampling params untouched while withholding a web plugin", () => {
+    const orOpts = translate("deny", { temperature: 0.7, topP: 0.9, plugins: [{ id: "web" }] });
+    expect(orOpts.modelParams).toEqual({ temperature: 0.7, topP: 0.9 });
+  });
+
+  it.each(["allow", "ask", "deny"] as const)(
+    "forwards a plugin-free params bag verbatim under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess, { temperature: 0.7, seed: 42 });
+      expect(orOpts.modelParams).toEqual({ temperature: 0.7, seed: 42 });
+    },
+  );
+
+  it("omits modelParams entirely when the withheld plugin was all it carried", () => {
+    // Sending `{}` would be harmless but dishonest — it is not what a profile
+    // with nothing in it produces.
+    expect(translate("deny", { plugins: [{ id: "web" }] }).modelParams).toBeUndefined();
+  });
+
+  it("does not mutate the caller's modelParams object", () => {
+    // claude.ts hands over the resolved settings profile; the gate reassembles
+    // rather than deleting keys out of it.
+    const modelParams = { temperature: 0.7, plugins: [{ id: "web" }] };
+    translate("deny", modelParams);
+    expect(modelParams).toEqual({ temperature: 0.7, plugins: [{ id: "web" }] });
+  });
+
+  it("drops a malformed non-array plugins value instead of forwarding it", () => {
+    // Only reachable via a hand-edited settings file. The SDK's Zod schema would
+    // reject it anyway; dropping it keeps the failure legible.
+    const orOpts = translate("allow", { temperature: 0.7, plugins: "web" });
+    expect(orOpts.modelParams).toEqual({ temperature: 0.7 });
+  });
+
+  // ── Diagnostics: a user who set "ask" and finds web search missing must be
+  // able to see which axis took it and what to set instead.
+  it("reports withheld plugins through the stderr diagnostic channel", () => {
+    const lines: string[] = [];
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          modelParams: { plugins: [{ id: "web" }, { id: "fusion" }] },
+          getPermissions: () => withWebAccess("ask"),
+        },
+        stderr: (d: string) => lines.push(d),
+      },
+      "hi",
+    );
+    const notice = lines.find((l) => l.includes("plugin(s)"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("webAccess=ask");
+    expect(notice).toContain("web");
+    expect(notice).toContain("fusion");
+  });
+
+  it("says nothing when the policy withholds no plugin", () => {
+    const lines: string[] = [];
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          modelParams: { plugins: [{ id: "response-healing" }] },
+          getPermissions: () => allowAll,
+        },
+        stderr: (d: string) => lines.push(d),
+      },
+      "hi",
+    );
+    expect(lines.find((l) => l.includes("withheld"))).toBeUndefined();
+  });
+
+  it("reads the policy at request-assembly time, not when the options blob was built", () => {
+    let webAccess: PermissionLevel = "allow";
+    const options = {
+      openRouter: {
+        apiKey: "sk-or-test",
+        modelParams: { plugins: [{ id: "web" }] },
+        getPermissions: () => withWebAccess(webAccess),
+      },
+    };
+    expect(pluginIdsOf(translateOptions(options, "hi").orOpts)).toEqual(["web"]);
+    webAccess = "deny";
+    expect(pluginIdsOf(translateOptions(options, "hi").orOpts)).toBeUndefined();
+  });
+});

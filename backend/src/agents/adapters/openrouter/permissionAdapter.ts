@@ -55,11 +55,17 @@
  * of intent — they are not a gate.
  *
  * The gate that does work is `./serverToolPolicy.ts`, applied in
- * `optionsAdapter`'s `serverTools` translation: it withholds the web-carrying
- * server tools from the request body when `webAccess` is not "allow", which for
- * a tool that executes on someone else's servers is the whole of the
- * enforcement available. Nothing below changed when it shipped — this file
- * still describes only what `canUseTool` would see.
+ * `optionsAdapter`: it withholds the web-carrying entries from the request body
+ * when `webAccess` is not "allow", which for something that executes on someone
+ * else's servers is the whole of the enforcement available. It covers BOTH
+ * channels that never reach `canUseTool` — the `serverTools` array and the
+ * `plugins` array inside `modelParams` (the deprecated `web` plugin and the
+ * `fusion` plugin are web access too, and a plugin runs once per request whether
+ * the model asked or not).
+ *
+ * Nothing below changed when either shipped — this file still describes only
+ * what `canUseTool` would see, and plugins have no tool name to categorize at
+ * all, so they are not represented here even unreachably.
  *
  * @see plans/acp-adapter.md (Permissions — "The two-pass rule")
  * @see ../acp/permissionAdapter.ts (the reference implementation)
