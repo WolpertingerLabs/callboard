@@ -34,6 +34,22 @@ The asymmetry that keeps this cheap: **adding an optional field needs no gate** 
 
 Enforced by `shared/types/stream.test.ts` against the committed `wire-surface.snapshot.json`. A failure there means the wire surface changed; read the rules before regenerating the snapshot.
 
+## Workspace keying — `cwd` vs `workspaceId`
+
+A **workspace** (`shared/types/workspace.ts`, `~/.callboard/workspaces/`) is where work happens: a `cwd`, its git isolation, and its lifecycle. Several workspaces may share one `cwd`, and that is a supported state, not a bug. Everything cached, stored or keyed in this codebase belongs on exactly one side of a line, and which side is mechanical:
+
+- Anything the **directory** determines keys on `cwd` — git status, diff, file contents, branch list, worktree resolution, file-explorer listings. Two workspaces on one checkout seeing the same git state is *correct*.
+- Anything the **workspace** owns keys on `workspaceId` — drafts, view state, composer attachments, per-context UI, diff-mode overrides, expand/collapse state.
+
+**Do not collapse the two.** Re-keying a directory-backed query by workspace makes two views of one git tree disagree; re-keying owned state by path leaks it between workspaces on the same folder. The key *is* the boundary — there is no third rule to remember.
+
+Two corollaries that already bite:
+
+- `workspaceId` is **opaque**. Never parse it back into a path, and never assume a chat has one: workspace records are only written when a chat starts in a worktree, so the overwhelming majority of chats are path-only. Reads prefer the workspace when present and fall back to `folder`/`displayFolder` when absent.
+- **Listings of directories key on the directory.** The sidebar's `FolderSummary` is one row per `cwd` with the workspace record supplying identity, not one row per record — see `backend/src/services/workspace-views.ts`. Grouping a directory listing by `Chat.workspaceId` splits a folder's chats across identically-named rows for as long as any chat predates the entity, which is approximately all of them.
+
+Callboard has less workspace-owned client state than this rule anticipates. Adopting it *before* accumulating that state is the entire point.
+
 ## Theming System
 
 The frontend uses CSS custom properties (variables) for all colors, shadows, and visual tokens. Every color in the UI must reference a CSS variable — never hardcode hex, rgb, or rgba values in components.

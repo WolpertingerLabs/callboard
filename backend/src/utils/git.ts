@@ -221,6 +221,18 @@ const WORKTREE_CACHE_TTL = 300000; // 5 minutes
  * entry can be up to {@link WORKTREE_CACHE_TTL} out of date, and a worktree
  * removed and recreated inside that window would answer with the *old*
  * `adminDir`. Removal paths call {@link resolveWorktreeToMainRepo} directly.
+ *
+ * **Phase 3 kept this deliberately** (plans/workspace-object.md said the cache
+ * "can go"). It could not: workspace records exist for 0.13% of chats, and the
+ * remaining callers — chat-search, chat-lookup, ClaudeCodeSessionProvider —
+ * map a chat's `folder` to its main repo to find *session log directories*,
+ * which the registry cannot answer for a path-only chat. What did move is the
+ * sidebar's folder listing: `services/workspace-views.ts` answers from the
+ * workspace record when one claims the directory and only falls through to
+ * here when none does.
+ *
+ * Nothing about Phase 2's removal gate changed. It never used this wrapper,
+ * and `viewForDirectory` is a display read that is not reachable from it.
  */
 export function resolveWorktreeToMainRepoCached(folder: string): WorktreeResolution {
   const cached = worktreeResolutionCache.get(folder);

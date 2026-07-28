@@ -250,7 +250,7 @@ export interface WorktreeIntent {
 }
 
 /** Compare two paths, tolerating `..`/`.` segments and symlinked parents. */
-function samePath(a: string, b: string): boolean {
+export function samePath(a: string, b: string): boolean {
   if (resolve(a) === resolve(b)) return true;
   try {
     return realpathSync(a) === realpathSync(b);
