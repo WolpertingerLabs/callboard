@@ -66,6 +66,9 @@ export default function ChatList({
   // loadedCountRef, whose units depend on the layout). An in-flight "load
   // more" page from before the bump has a stale offset — drop it.
   const loadGenRef = useRef(0);
+  // Same signal as loadGenRef, but as state so the tree view can react to it:
+  // fetched subtrees are snapshots and go stale when the list refreshes.
+  const [listVersion, setListVersion] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
   const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
@@ -152,6 +155,7 @@ export default function ChatList({
       const includeLineage = treeLayout || undefined;
       const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, undefined, includeLineage);
       loadGenRef.current += 1;
+      setListVersion((v) => v + 1);
       setChats(response.chats);
       setHasMore(shouldFetchAll ? false : response.hasMore);
       if (!shouldFetchAll) loadedCountRef.current = response.windowRows;
@@ -160,6 +164,7 @@ export default function ChatList({
       if (response.stale) {
         const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false, includeLineage);
         loadGenRef.current += 1;
+        setListVersion((v) => v + 1);
         setChats(freshResponse.chats);
         setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
         if (!shouldFetchAll) loadedCountRef.current = freshResponse.windowRows;
@@ -634,6 +639,7 @@ export default function ChatList({
         {treeLayout ? (
           <ChatTreeList
             chats={filteredChats}
+            refreshToken={listVersion}
             activeChatId={activeChatId}
             onChatClick={handleChatClick}
             onDelete={handleDelete}
