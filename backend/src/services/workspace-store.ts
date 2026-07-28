@@ -345,6 +345,14 @@ export function recordWorktreeWorkspace(intent: WorktreeIntent): Workspace {
     },
   });
 
+  // ── One of exactly two places that can write `owned: true`. ──
+  // Here it means "this call ran git worktree add" (`intent.created`). The
+  // other is adoptWorktrees() in workspace-adoption.ts, where it means "a
+  // caller named this exact path". Nothing else may produce that value: the
+  // whole Phase 2 removal gate is built on it, and a third writer — an
+  // inference, a pattern match, a backfill — would quietly redefine what it
+  // guarantees.
+
   // Stamp the worktree we just made with this record's id. Only for one we
   // created: the token is the claim "Callboard made this directory", and
   // writing it over a directory we merely found would be a lie of exactly the

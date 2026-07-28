@@ -1533,6 +1533,9 @@ export function buildCallboardToolsSpec(
       // Global. archive_workspace is the only path in Callboard that removes
       // a directory, and it removes only worktrees Callboard created, that
       // still prove it, that nothing else references, and that are clean.
+      // adopt_worktrees is the only way a worktree Callboard did not create
+      // joins that set, and it acts on paths the caller names — never on a
+      // pattern, and never on a discovery of its own.
       ...buildWorkspaceTools(),
     ],
   };

@@ -167,6 +167,24 @@ export interface WorkspaceWithRemovability extends Workspace {
 }
 
 /**
+ * The three independent things that make a worktree unsafe to remove, plus the
+ * "a git command failed" case. Reported by `checkWorktreeClean` in
+ * backend/src/utils/git.ts, whose `WorktreeCleanliness` is an alias of this —
+ * one definition, so the shape a route returns and the shape the gate reads can
+ * never drift apart.
+ */
+export interface WorkspaceCleanliness {
+  /** True only when all three checks passed and no git command failed. */
+  clean: boolean;
+  uncommittedChanges: boolean;
+  untrackedFiles: boolean;
+  /** Commits reachable from HEAD and from no other ref in the repository. */
+  unpushedCommits: boolean;
+  /** Set when a git command failed; `clean` is then always false. */
+  error?: string;
+}
+
+/**
  * What happened to the directory.
  *
  * `partial` is the honest answer to a failed removal, and it exists because the
@@ -221,4 +239,151 @@ export interface ArchiveWorkspaceResult {
     /** Ignored entries that moved with it. Only set when quarantined. */
     ignored?: WorkspaceIgnoredPreview;
   };
+}
+
+// ── Adoption (Phase 2b) ─────────────────────────────────────────────
+//
+// Phase 1 never infers ownership, which is right and which leaves every
+// worktree that predates the entity `owned: false` and permanently untouchable
+// by Phase 2. Adoption is the way out, and it is deliberately narrow: a human
+// (or an agent acting on one's behalf) names specific paths, and only those are
+// marked `owned`.
+//
+// ONE RULE GOVERNS THIS WHOLE SECTION:
+//
+//   **Pattern-matching may only ever be used to OFFER. It never ACTS.**
+//
+// Callboard has used at least two worktree naming conventions, so a path
+// pattern is a guess about the past, not evidence. {@link WorktreeNamingGuess}
+// therefore appears on the *discovery* type only — never on an adoption input,
+// never on a workspace record, and nothing in the adoption path reads it.
+
+/**
+ * Which Callboard worktree naming convention a path looks like.
+ *
+ * A GUESS, always. `current` is the layout `ensureWorktree` produces today
+ * (`<repo-parent>/<repo-name>.<branch-with-slashes-hyphenated>`); `legacy` is
+ * the older `<repo-name>-wt-<suffix>` form. Neither proves Callboard created
+ * anything — a user can make either by hand, and Callboard may have made a
+ * worktree that matches neither (the path is derived from the branch name,
+ * which changes).
+ */
+export type WorktreeNamingConvention = "current" | "legacy" | "unrecognized";
+
+/**
+ * The naming heuristic's opinion about one path. **Presentation only.** It
+ * exists so a human deciding what to adopt can see "this looks like ours",
+ * and it must never reach a decision — see the section header above.
+ */
+export interface WorktreeNamingGuess {
+  convention: WorktreeNamingConvention;
+  /** `convention !== "unrecognized"`. Convenience for a UI, not a permission. */
+  matches: boolean;
+  /** Human-readable, and honest about being a guess. Safe to surface directly. */
+  detail: string;
+}
+
+/** Approximate on-disk size of a worktree. The number that motivates adoption. */
+export interface WorktreeDiskUsage {
+  /** Bytes, from `du -sk`. Absent when it could not be measured. */
+  bytes?: number;
+  /** Why there is no number: a `du` failure, a timeout, or a skipped budget. */
+  error?: string;
+}
+
+/**
+ * Why {@link UnmanagedWorktree} could not be adopted even if asked. Same codes
+ * the adoption call returns, so discovery can show the refusal *before* anyone
+ * tries. Cleanliness is deliberately not among them: a dirty worktree is
+ * adoptable (cleanliness gates removal, not management).
+ */
+export type WorkspaceAdoptionRefusal =
+  /** No git repository at the given repo path, or git could not be asked. */
+  | "not-a-git-repo"
+  /** The path is not in `git worktree list` for that repo. */
+  | "not-a-registered-worktree"
+  /** The main checkout (or a bare repo). Never adoptable, never removable. */
+  | "main-checkout"
+  /** An active workspace record already covers this directory. */
+  | "already-managed"
+  /**
+   * No git admin dir resolves for the path, so the identity token cannot be
+   * written. A record without a token could never be removed by Phase 2, so
+   * creating one would be a lie about being managed.
+   */
+  | "admin-dir-unresolvable"
+  /** Detached HEAD: git reports no branch, and a record requires one. */
+  | "detached-head"
+  /** The token write (or its read-back verification) failed. No record kept. */
+  | "token-write-failed"
+  /** The record itself could not be written. */
+  | "record-write-failed";
+
+/**
+ * A git worktree with no active workspace record — an adoption *candidate*.
+ *
+ * Everything here is read-only observation. Producing this list creates no
+ * record, writes no token and modifies nothing.
+ */
+export interface UnmanagedWorktree {
+  /** Absolute, resolved. This is what the caller passes back to adopt it. */
+  path: string;
+  /** Null on a detached HEAD, which is also why it would refuse adoption. */
+  branch: string | null;
+  /** The main checkout it is registered against. */
+  repoPath: string;
+  /** HEURISTIC. Display only — see the section header. */
+  naming: WorktreeNamingGuess;
+  /** From the same `checkWorktreeClean` that gates removal in Phase 2. */
+  cleanliness: WorkspaceCleanliness;
+  /** What would travel into the trash if this were ever archived. */
+  ignored: WorkspaceIgnoredPreview;
+  diskUsage: WorktreeDiskUsage;
+  /** True when {@link adoptionBlockers} is empty. */
+  adoptable: boolean;
+  adoptionBlockers: WorkspaceRefusalReason[];
+}
+
+/** A refusal code with the detail that explains it. */
+export interface WorkspaceRefusalReason {
+  code: WorkspaceAdoptionRefusal;
+  detail: string;
+}
+
+/** Result of a read-only discovery pass over one repository. */
+export interface UnmanagedWorktreeListing {
+  /** The main checkout every path below is a worktree of. */
+  repoPath: string;
+  /** Registered worktrees, including the main checkout. */
+  totalWorktrees: number;
+  /** How many of those already have an active workspace record. */
+  managedWorktrees: number;
+  /** The candidates: registered, not the main checkout, and unmanaged. */
+  worktrees: UnmanagedWorktree[];
+  /** Set when the disk-usage budget ran out before every entry was measured. */
+  diskUsageNote?: string;
+}
+
+/** What happened to one path in an adoption call. */
+export interface WorkspaceAdoptionOutcome {
+  /** The path as the caller gave it, resolved. */
+  path: string;
+  adopted: boolean;
+  /** The record that was created. Only when `adopted`. */
+  workspace?: Workspace;
+  /** Why not. Only when `!adopted`. */
+  refusal?: WorkspaceRefusalReason;
+  /**
+   * The Phase 2 verdict for the freshly adopted record — whether archiving it
+   * would now quarantine the worktree, and every reason it would not. Adoption
+   * never gates on this; it is reported so a caller can see, for instance, that
+   * the worktree it just adopted is dirty and therefore still unremovable.
+   */
+  removability?: WorkspaceRemovability;
+}
+
+export interface AdoptWorktreesResult {
+  outcomes: WorkspaceAdoptionOutcome[];
+  adopted: number;
+  refused: number;
 }
