@@ -48,20 +48,57 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * Discriminator used for compile-time branching when a caller genuinely needs
  * adapter-specific behaviour (per the plan's Decision 3). New adapters extend
  * this union.
+ *
+ * **`"acp"` is deliberately one kind covering many vendors.** Every other member
+ * is 1:1 with an engine, but the Agent Client Protocol is a wire format that
+ * Copilot, Cursor, Kiro, Gemini and others all speak. Adding a member per vendor
+ * would mean a union edit plus a new `constructProvider` case for each one —
+ * exactly the per-vendor cost the ACP adapter exists to remove — so the vendor
+ * travels in a separate `providerId` (see {@link AcpAdapter}) and the union
+ * stays closed at one entry for the whole family.
  */
-export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "mock";
+export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "mock";
 
 /**
- * The provider kinds `sendMessage` knows how to route a real chat through — the
- * three user-selectable harnesses. Excludes `"mock"` (test-only, never a chat's
- * persisted provider). This is the single source of truth: route handlers and
- * the chat service narrow free-form `provider` values against it via
- * {@link isRoutableProvider} instead of keeping their own copies.
+ * The provider kinds a **request** may ask for — the user-selectable harnesses.
+ * Excludes `"mock"` (test-only) and, for now, `"acp"` (see below).
+ *
+ * This is the external allowlist: route handlers narrow free-form `provider`
+ * values from request bodies against it via {@link isRoutableProvider} instead
+ * of keeping their own copies. Membership here is a promise that a user can
+ * *fully specify* a chat on this kind with the fields the routes accept.
+ *
+ * `"acp"` cannot make that promise yet, which is why it is absent. `"acp"` alone
+ * does not identify an engine — the paired `acpProviderId` does — and no route
+ * surfaces that field. Admitting `"acp"` here let `POST /api/chats/:id/fork`
+ * accept `{"provider":"acp"}` and stamp a chat with a kind that has no vendor,
+ * which is precisely the permanently-broken chat that `resolveProviderKind`'s
+ * warn-and-fallback exists to prevent. Phase 2 adds the picker and the
+ * `acpProviderId` plumbing, and re-adds `"acp"` here alongside them.
+ *
+ * Internally ACP is fully routable — see {@link INTERNAL_PROVIDER_KINDS}.
  */
 export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex"] as const;
 
-/** A provider kind that backs a real chat (i.e. not the test-only `"mock"`). */
+/** A provider kind a request may ask for (i.e. not test-only, and fully specifiable). */
 export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
+
+/**
+ * The provider kinds `sendMessage` will actually route and persist.
+ *
+ * A superset of {@link ROUTABLE_PROVIDER_KINDS}: everything a user may request,
+ * plus the kinds reachable only from inside the process — today just `"acp"`,
+ * via `SendMessageOptions.acpProviderId`. Still excludes `"mock"`, which is
+ * never a chat's persisted provider.
+ *
+ * The split is what lets a kind be *implemented* before it is *offered*. Use
+ * {@link isRoutableProvider} for anything that came from a request, and
+ * {@link isInternalProvider} for chat metadata and internal callers.
+ */
+export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS, "acp"] as const;
+
+/** A provider kind that can back a real chat, offered to users or not. */
+export type InternalProviderKind = (typeof INTERNAL_PROVIDER_KINDS)[number];
 
 /**
  * Type guard: narrows a free-form value (request body field, persisted metadata)
@@ -71,6 +108,11 @@ export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
  */
 export function isRoutableProvider(value: unknown): value is RoutableProviderKind {
   return typeof value === "string" && (ROUTABLE_PROVIDER_KINDS as readonly string[]).includes(value);
+}
+
+/** As {@link isRoutableProvider}, but also admits kinds with no user-facing surface yet. */
+export function isInternalProvider(value: unknown): value is InternalProviderKind {
+  return typeof value === "string" && (INTERNAL_PROVIDER_KINDS as readonly string[]).includes(value);
 }
 
 export interface AgentProvider {
