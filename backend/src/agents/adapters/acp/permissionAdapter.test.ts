@@ -10,7 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionOption, RequestPermissionRequest } from "@agentclientprotocol/sdk";
 import type { DefaultPermissions } from "shared/types/index.js";
-import { acpToolLabel, categorizeAcpTool, categorizeAcpToolKind, categorizeAcpToolName, resolveAcpPermission, selectPermissionOption } from "./permissionAdapter.js";
+import { acpToolLabel, categorizeAcpToolKind, categorizeAcpToolName, resolveAcpPermission, selectPermissionOption } from "./permissionAdapter.js";
 import { ToolPermissionPolicy } from "../../permissions/ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../claude-code/permissionAdapter.js";
 
@@ -36,7 +36,7 @@ function request(over: Partial<RequestPermissionRequest> = {}): RequestPermissio
   } as RequestPermissionRequest;
 }
 
-describe("categorizeAcpToolKind", () => {
+describe("categorizeAcpToolKind (logging only — never a gate)", () => {
   it("maps ACP's structured tool kinds onto callboard's four axes", () => {
     expect(categorizeAcpToolKind("read")).toBe("fileRead");
     expect(categorizeAcpToolKind("search")).toBe("fileRead");
@@ -55,43 +55,59 @@ describe("categorizeAcpToolKind", () => {
   });
 });
 
-describe("categorizeAcpTool", () => {
-  it("prefers the structured kind over the free-text name", () => {
-    // The name screams "execute", but ACP told us it only reads. The structured
-    // signal is vendor-neutral and wins.
-    expect(categorizeAcpTool("read", "run_bash_command")).toBe("fileRead");
+describe("categorizeAcpToolName", () => {
+  it("maps the obvious families", () => {
+    expect(categorizeAcpToolName("read_file")).toBe("fileRead");
+    expect(categorizeAcpToolName("write_file")).toBe("fileWrite");
+    expect(categorizeAcpToolName("execute_shell")).toBe("codeExecution");
+    expect(categorizeAcpToolName("web_fetch")).toBe("webAccess");
   });
 
-  it("falls back to name matching when kind is absent or `other`", () => {
-    expect(categorizeAcpTool(undefined, "read_file")).toBe("fileRead");
-    expect(categorizeAcpTool("other", "execute_shell")).toBe("codeExecution");
-    expect(categorizeAcpTool("other", "web_fetch")).toBe("webAccess");
-    expect(categorizeAcpTool(undefined, "write_file")).toBe("fileWrite");
+  it("resolves an ambiguous name to the MOST restrictive family it matches", () => {
+    // The polarity that shipped inverted. Each of these matched `fileRead`
+    // first — the axis users most often set to "allow" — so a run-capable or
+    // file-editing tool was gated as read-only. All three are real tool names.
+    expect(categorizeAcpToolName("search_and_run")).toBe("codeExecution");
+    expect(categorizeAcpToolName("search_replace")).toBe("fileWrite"); // Cursor
+    expect(categorizeAcpToolName("web_search")).toBe("webAccess"); // Cursor
+    expect(categorizeAcpToolName("list_and_delete")).toBe("fileWrite");
+    expect(categorizeAcpToolName("grep_and_exec")).toBe("codeExecution");
   });
 
   it("matches names across snake_case, camelCase and kebab-case", () => {
     // `_` is a word character, so a `\b`-based matcher silently fails on the
-    // dominant naming convention in this ecosystem and defaults everything to
-    // fileWrite. Tokenizing is what makes the fallback actually work.
+    // dominant naming convention in this ecosystem. Tokenizing is what makes
+    // name matching work at all.
     for (const name of ["read_file", "readFile", "read-file", "ReadFile"]) {
-      expect(categorizeAcpTool(undefined, name)).toBe("fileRead");
+      expect(categorizeAcpToolName(name)).toBe("fileRead");
     }
     for (const name of ["run_command", "runCommand", "run-command"]) {
-      expect(categorizeAcpTool(undefined, name)).toBe("codeExecution");
+      expect(categorizeAcpToolName(name)).toBe("codeExecution");
     }
   });
 
-  it("defaults an unrecognized tool to fileWrite, the conservative axis", () => {
-    // Mirrors categorizeClaudeTool: an under-reporting vendor must not obtain a
-    // weaker gate than it deserves.
-    expect(categorizeAcpTool(undefined, "frobnicate")).toBe("fileWrite");
-    expect(categorizeAcpTool(undefined, "")).toBe("fileWrite");
-    expect(categorizeAcpTool(undefined, null)).toBe("fileWrite");
+  it("accepts the identifier shapes real tools use", () => {
+    expect(categorizeAcpToolName("mcp__server__read_file")).toBe("fileRead");
+    expect(categorizeAcpToolName("fs.write")).toBe("fileWrite");
+    expect(categorizeAcpToolName("web-browse")).toBe("webAccess");
   });
 
-  it("keeps think/switch_mode ungoverned even when the name looks dangerous", () => {
-    expect(categorizeAcpTool("think", "delete_everything")).toBeNull();
-    expect(categorizeAcpTool("switch_mode", "run_shell")).toBeNull();
+  it("never reads words out of prose", () => {
+    // The title fallback is a human sentence, and `name` is optional on ACP's
+    // ToolCallUpdate — so this string is reachable. It tokenizes to `search`,
+    // which used to make it fileRead.
+    expect(categorizeAcpToolName("Run `rm -rf` to clear the search index")).toBe("codeExecution");
+    expect(categorizeAcpToolName("List the files in src/")).toBe("codeExecution");
+    expect(categorizeAcpToolName("Read README.md")).toBe("codeExecution");
+  });
+
+  it("gives anything it cannot identify the strictest gate", () => {
+    // One rule for "we don't know what this is", and it is codeExecution — the
+    // axis that subsumes the other three — not fileWrite.
+    expect(categorizeAcpToolName("frobnicate")).toBe("codeExecution");
+    expect(categorizeAcpToolName("unknown_tool")).toBe("codeExecution");
+    expect(categorizeAcpToolName("")).toBe("codeExecution");
+    expect(categorizeAcpToolName("   ")).toBe("codeExecution");
   });
 });
 
@@ -123,28 +139,74 @@ describe("acpToolLabel", () => {
   });
 });
 
-describe("the categorizer paired with ToolPermissionPolicy in claude.ts", () => {
-  // Regression guard for a two-pass hazard. The ACP adapter evaluates policy
-  // itself and only calls `canUseTool` when the answer is "ask" — but
-  // `buildCanUseTool` re-evaluates the policy before prompting. If that second
-  // pass used `categorizeClaudeTool`, an unrecognized ACP tool name would fall
-  // to its `fileWrite` default and be auto-allowed, running a command the user
-  // asked to be consulted about. Both passes must agree on what a tool is.
+describe("the two-pass rule", () => {
+  // callboard decides a tool's permission TWICE: once in resolveAcpPermission,
+  // and again in `buildCanUseTool` before it prompts. Pass 2 is reached only for
+  // tools pass 1 resolved to "ask" — so if pass 2 reaches a category the user
+  // set to "allow", the tool runs and nobody is asked.
+  //
+  // The shipped bypass: pass 1 read ACP's structured `ToolKind`; pass 2 gets a
+  // bare name string. `run_command` — the name every earlier test used — is a
+  // name where the two happen to agree, which is why nothing caught it. These
+  // tests use names where they DIVERGE.
   const askExec = perms({ codeExecution: "ask", fileWrite: "allow" });
 
-  it("routes an ACP execute tool to codeExecution, not the fileWrite default", () => {
-    const acpPolicy = new ToolPermissionPolicy(categorizeAcpToolName, () => askExec);
-    expect(acpPolicy.decide("run_command")).toEqual({ decision: "ask", category: "codeExecution" });
+  /** The second pass, exactly as buildCanUseTool performs it. */
+  function secondPass(perm: DefaultPermissions) {
+    const policy = new ToolPermissionPolicy(categorizeAcpToolName, () => perm);
+    return (toolName: string) => policy.decide(toolName);
+  }
+
+  it("routes an ACP execute tool to codeExecution, not the Claude map's fileWrite default", () => {
+    expect(secondPass(askExec)("run_command")).toEqual({ decision: "ask", category: "codeExecution" });
 
     // What would happen with the Claude map — the bug this pairing prevents.
     const claudePolicy = new ToolPermissionPolicy(categorizeClaudeTool, () => askExec);
     expect(claudePolicy.decide("run_command")).toEqual({ decision: "allow", category: "fileWrite" });
   });
 
-  it("keeps agreeing with the adapter's own decision for read tools", () => {
-    const readAsk = perms({ fileRead: "ask", fileWrite: "allow" });
-    const acpPolicy = new ToolPermissionPolicy(categorizeAcpToolName, () => readAsk);
-    expect(acpPolicy.decide("read_file")).toEqual({ decision: "ask", category: "fileRead" });
+  // The reproduced bypass, one case per row. Under these permissions every one
+  // of these executed with no prompt: pass 1 said codeExecution/webAccess/
+  // fileWrite ("ask"), pass 2 said fileRead ("allow").
+  const divergent = [
+    { kind: "execute", name: "search_and_run", expected: "codeExecution" },
+    { kind: "fetch", name: "web_search", expected: "webAccess" },
+    { kind: "edit", name: "search_replace", expected: "fileWrite" },
+  ] as const;
+  const readAllowed = perms({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask" });
+
+  it.each(divergent)("prompts for $name instead of silently executing it", async ({ kind, name, expected }) => {
+    const seen: string[] = [];
+    // Stands in for buildCanUseTool: re-decide, and only reach the user prompt
+    // when the second pass ALSO says "ask".
+    const canUseTool = vi.fn(async (toolName: string) => {
+      const { decision } = secondPass(readAllowed)(toolName);
+      if (decision !== "ask") return { behavior: decision === "allow" ? ("allow" as const) : ("deny" as const) };
+      seen.push(toolName);
+      return { behavior: "deny" as const };
+    });
+
+    const req = request({ toolCall: { toolCallId: "c1", title: "A tool", name, kind, rawInput: {} } as never });
+    const res = await resolveAcpPermission(req, { permissions: readAllowed, canUseTool, signal: new AbortController().signal });
+
+    // Pass 1 escalated…
+    expect(canUseTool).toHaveBeenCalled();
+    // …and pass 2 agreed it needed a human, so the user was actually asked.
+    expect(seen).toEqual([name]);
+    expect(secondPass(readAllowed)(name).category).toBe(expected);
+    // Answer honoured: the prompt above denied.
+    expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
+  });
+
+  it("agrees with itself on every category, because it is one function over one string", () => {
+    // The structural property, not a sample of it: whatever label the adapter
+    // categorized is the same label canUseTool receives, so the two passes
+    // cannot reach different answers by construction.
+    for (const perm of [askExec, readAllowed, perms()]) {
+      for (const name of ["run_command", "search_and_run", "web_search", "search_replace", "read_file", "Run `rm -rf` to clear the search index", "unknown_tool"]) {
+        expect(secondPass(perm)(name).category).toBe(categorizeAcpToolName(name));
+      }
+    }
   });
 });
 
@@ -219,16 +281,19 @@ describe("resolveAcpPermission", () => {
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
-  it("categorizes from the tool kind, not the scary-looking title", async () => {
-    // kind: "read" with fileRead allowed ⇒ allow, despite the title.
+  it("refuses to categorize a tool that has only a title", async () => {
+    // No `name`, so the label is a human sentence. ACP's `kind: "read"` is right
+    // there and is deliberately ignored: pass 2 cannot see it, and using it here
+    // would recreate the disagreement. Prose gets the strictest gate instead —
+    // codeExecution: "deny" ⇒ reject.
     const req = request({ toolCall: { toolCallId: "c1", title: "rm -rf /", kind: "read" } as never });
     const res = await resolveAcpPermission(req, { permissions: perms({ fileRead: "allow", codeExecution: "deny" }), signal });
-    expect(res).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
+    expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
   });
 
   it("survives a request with no toolCall at all", async () => {
     const res = await resolveAcpPermission(request({ toolCall: undefined as never }), { permissions: perms(), signal });
-    // No metadata ⇒ conservative fileWrite ⇒ allowed under these perms.
+    // No metadata ⇒ strictest gate ⇒ still allowed under these all-allow perms.
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
   });
 });

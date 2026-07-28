@@ -4,9 +4,11 @@
  * The e2e suite proves the mapping works against a live agent; these prove the
  * *edges* that a well-behaved agent never produces — the malformed and unknown
  * shapes the module promises to absorb. That promise is only partly reachable
- * over a live connection (the SDK's session-update router drops what its Zod
- * schemas reject before any handler runs — see `AcpAgentClient`), so testing the
- * translator directly is the only way to hold it to its contract.
+ * over a live connection (the SDK's session-update router `parse`s every
+ * notification before any handler runs, and *throws* on what its Zod schemas
+ * reject — swallowed upstream, so nothing reaches this module — see
+ * `AcpAgentClient`), so testing the translator directly is the only way to hold
+ * it to its contract.
  */
 import { describe, expect, it } from "vitest";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";

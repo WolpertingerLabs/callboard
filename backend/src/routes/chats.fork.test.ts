@@ -70,6 +70,20 @@ vi.mock("../agents/factory.js", () => ({
       parseSessionMessages: () => sourceMessages,
       getSessionPreview: () => "preview",
     },
+    {
+      // AcpSessionProvider IS registered in the real getSessionProviders(), so
+      // the route's `find(p => p.kind === targetKind)` guard succeeds for "acp".
+      // Stubbed here WITH a seedSession the real one does not have, on purpose:
+      // that makes the rejection below prove the routable allowlist is what
+      // stops an ACP fork, rather than a missing method that Phase 2 will add.
+      kind: "acp",
+      seedSession: (...args: unknown[]) => {
+        calls.seedSession.push(args);
+        return { logPath: "/tmp/seed-acp.jsonl" };
+      },
+      parseSessionMessages: () => sourceMessages,
+      getSessionPreview: () => "preview",
+    },
   ],
 }));
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false }));
@@ -228,6 +242,21 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     const res = await fork({ provider: "gpt-at-home" });
     expect(res.code).toBe(400);
     expect(res.meta.error).toContain("Unknown target provider");
+  });
+
+  it("rejects a fork into acp, which no request can fully specify", async () => {
+    // "acp" is one kind covering many vendors: the vendor lives in
+    // `acpProviderId`, and no route accepts that field. Forking into it would
+    // stamp a chat with a kind and no vendor — sendMessage cannot construct an
+    // adapter for that, so the chat would be permanently wedged. Keeping "acp"
+    // out of ROUTABLE_PROVIDER_KINDS is what turns that into a 400 at
+    // validation time, BEFORE anything is written.
+    setParent({});
+    const res = await fork({ provider: "acp" });
+    expect(res.code).toBe(400);
+    expect(res.meta.error).toContain("Unknown target provider");
+    // Rejected at the allowlist, not deep in the seeding path.
+    expect(calls.seedSession).toHaveLength(0);
   });
 
   it("rejects a target harness that cannot be seeded", async () => {

@@ -12,13 +12,10 @@
  *
  * Two translations happen here:
  *
- *  1. **ACP tool → permission category.** ACP gives us a `ToolKind` enum
- *     (`read` | `edit` | `execute` | `fetch` | …) alongside a free-text title.
- *     The enum is a *far* better categorization signal than tool-name matching
- *     (which is what `categorizeClaudeTool` must do, because the Claude SDK has
- *     no equivalent) — it is vendor-neutral by construction, so an ACP agent we
- *     have never seen still categorizes correctly. Name matching is only a
- *     fallback for agents that omit `kind`.
+ *  1. **ACP tool → permission category.** Done by {@link categorizeAcpToolName}
+ *     over the tool's *name*, and by nothing else — see "The two-pass rule"
+ *     below. ACP's structured `ToolKind` looks like a better signal and is not
+ *     usable as one: the second pass cannot see it.
  *
  *  2. **Decision → `PermissionOption`.** ACP does not accept a boolean; it sends
  *     a menu of `PermissionOption`s and wants one `optionId` back. The agent
@@ -32,7 +29,35 @@
  * list with no usable kind all resolve to a definite protocol answer — a hung
  * permission request would stall the agent's turn forever.
  *
- * @see plans/acp-adapter.md (Permissions)
+ * ## The two-pass rule
+ *
+ * callboard evaluates a tool's permission **twice**: here, and again inside
+ * `buildCanUseTool` before it prompts the user. Pass 2 is reached only for tools
+ * this pass resolved to "ask" — i.e. exactly the tools we want a human to see —
+ * and it re-decides from scratch. So if the two passes can disagree, and pass 2
+ * lands on a category the user set to `allow`, the tool runs and nobody is asked.
+ *
+ * That bypass shipped. Pass 1 categorized from ACP's `ToolKind`; pass 2 gets a
+ * bare `toolName: string` (the `ToolPermissionPolicy` port is shared by every
+ * adapter and takes nothing else), so `kind` was information only one pass had.
+ * Under `{fileRead: "allow", fileWrite: "ask", codeExecution: "ask"}`, Cursor's
+ * real `search_replace` tokenized to `search` → `fileRead` in pass 2 and edited
+ * files with no prompt.
+ *
+ * The three rules that follow — architect ruling, 2026-07-28 — are why this file
+ * looks the way it does:
+ *
+ *  1. **Both passes run the identical function over the identical input.**
+ *     {@link resolveAcpPermission} categorizes {@link acpToolLabel}'s output with
+ *     {@link categorizeAcpToolName}, and hands that *same string* to
+ *     `canUseTool`, which categorizes it with the same function again. `kind` is
+ *     used for logging only. Better information that only one pass has is worse
+ *     than no information: it manufactures disagreement.
+ *  2. **Ambiguity resolves to the most restrictive matching category** — see
+ *     {@link CATEGORY_TOKENS}.
+ *  3. **Never categorize from prose** — see {@link isToolIdentifier}.
+ *
+ * @see plans/acp-adapter.md (Permissions — "The two-pass rule")
  * @see ../codex/permissionAdapter.ts (the other foreign-vocabulary bridge)
  */
 import type { PermissionOption, PermissionOptionKind, RequestPermissionRequest, RequestPermissionResponse, ToolKind } from "@agentclientprotocol/sdk";
@@ -45,13 +70,14 @@ const log = createLogger("acp-permissions");
 /**
  * Map ACP's `ToolKind` onto a callboard permission category.
  *
- * `think` and `switch_mode` touch nothing the four axes govern, so they return
- * null ⇒ {@link decidePermission} treats them as "ask" only if there is no other
- * signal; callers pair this with the `null` → no-category path the policy
- * already handles.
+ * **This does not gate anything.** It exists so the diagnostic log can report
+ * what the structured `kind` would have said next to what the name says, which
+ * is how a vendor whose two signals disagree gets noticed during Phase 2
+ * onboarding. Wiring it back into the decision would re-open the bypass
+ * described at the top of this file — pass 2 has no `kind` to agree with.
  *
- * `other` is deliberately NOT mapped to a category here — see
- * {@link categorizeAcpTool}, which falls back to name matching for it.
+ * `think` and `switch_mode` touch nothing the four axes govern, and `other`
+ * carries no information at all, so all three return null.
  */
 export function categorizeAcpToolKind(kind: ToolKind | null | undefined): PermissionCategory | null {
   switch (kind) {
@@ -78,54 +104,109 @@ export function categorizeAcpToolKind(kind: ToolKind | null | undefined): Permis
 }
 
 /**
- * Best-effort category from a tool's free-text name/title, used only when the
- * agent omitted `kind` or sent `other`. Intentionally conservative: an
- * unrecognized name falls back to `fileWrite`, matching
- * {@link categorizeClaudeTool}'s "unknown tools are treated as the dangerous
- * case" rule, so a vendor that under-reports metadata cannot quietly obtain a
- * weaker gate than it deserves.
+ * The category anything unrecognizable resolves to.
+ *
+ * `codeExecution` is the top of the restrictiveness order below: a tool that can
+ * run code can do everything the other three axes describe, so it is the only
+ * safe answer when we do not know what a tool is.
+ */
+export const MOST_RESTRICTIVE_CATEGORY: PermissionCategory = "codeExecution";
+
+/**
+ * Token families, **most restrictive first**.
+ *
+ * A name matching more than one family resolves to the first listed. The order
+ * is the polarity that matters (rule 2): the original ran least-privileged first
+ * on the reasoning that an ambiguous name should "never silently widen its own
+ * gate", which is exactly backwards. Resolving `search_and_run` to `fileRead`
+ * treats a run-capable tool as read-only — *that* is the widening, and `fileRead`
+ * is the axis users most often set to `allow`.
+ *
+ * The order is by what a tool in that family can do, not by alphabet:
+ * `codeExecution` subsumes the rest, `fileWrite` mutates local state,
+ * `webAccess` moves data in and out of the machine, `fileRead` only observes.
+ */
+const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [
+  ["codeExecution", ["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn", "eval", "script", "process", "kill"]],
+  [
+    "fileWrite",
+    // `replace` earns its place the hard way: Cursor's `search_replace` is a
+    // real editing tool, and without this token it fell through to `fileRead`.
+    ["write", "edit", "create", "delete", "remove", "move", "rename", "patch", "apply", "mkdir", "replace", "insert", "append", "update", "modify", "save", "touch"],
+  ],
+  ["webAccess", ["fetch", "http", "https", "web", "browse", "url", "download", "upload", "curl", "request"]],
+  ["fileRead", ["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"]],
+];
+
+/**
+ * Does this string look like a *tool name*, as opposed to a sentence?
+ *
+ * Rule 3. `name` is optional on ACP's `ToolCallUpdate`, and {@link acpToolLabel}
+ * falls back to `title` — which is a human-readable description, not an
+ * identifier. `` Run `rm -rf` to clear the search index `` tokenizes to `search`
+ * and would categorize as `fileRead`. Prose must never be parsed for a gate, so
+ * anything that is not a single identifier-shaped token is categorized to
+ * {@link MOST_RESTRICTIVE_CATEGORY} and the words in it are never consulted.
+ *
+ * Deliberately strict — no spaces, no quotes, no punctuation beyond what real
+ * tool names use (`read_file`, `mcp__server__tool`, `fs.read`, `web-search`).
+ */
+export function isToolIdentifier(value: string): boolean {
+  return /^[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,63}$/.test(value);
+}
+
+/**
+ * Category for an ACP tool, from its name and nothing else.
+ *
+ * This is the **only** categorizer in the ACP path, and both permission passes
+ * call it on the same string — see "The two-pass rule" at the top of this file.
+ * Its input is whatever {@link acpToolLabel} produced, which is also what
+ * `canUseTool` receives.
+ *
+ * Three outcomes:
+ *  - a name matching a token family → that family, most restrictive first
+ *  - a name matching nothing        → {@link MOST_RESTRICTIVE_CATEGORY}
+ *  - anything that is not a name    → {@link MOST_RESTRICTIVE_CATEGORY}
+ *
+ * The last two collapsing into one answer is intentional. The predecessor
+ * defaulted unknown names to `fileWrite` on the grounds that unknown tools are
+ * "the dangerous case", but `fileWrite` is not the dangerous case —
+ * `codeExecution` is, and it is the axis that can produce the other three. One
+ * rule ("anything we cannot confidently identify gets the strictest gate") is
+ * also easier to keep true than two.
  */
 export function categorizeAcpToolName(name: string): PermissionCategory | null {
+  const label = name.trim();
+  if (!isToolIdentifier(label)) return MOST_RESTRICTIVE_CATEGORY;
+
   // Tokenize rather than using `\b` word boundaries. Tool names in this
   // ecosystem are overwhelmingly snake_case (`read_file`, `run_command`), and
   // `_` is a word character — so `/\bread\b/` does NOT match `read_file`, which
-  // would send every read tool to the conservative fileWrite default. Splitting
-  // on non-alphanumerics also handles camelCase and kebab-case for free.
+  // would send every read tool to the conservative default. Splitting on
+  // non-alphanumerics also handles camelCase and kebab-case for free.
   const tokens = new Set(
-    name
+    label
       .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .filter(Boolean),
   );
-  const hasAny = (words: readonly string[]): boolean => words.some((w) => tokens.has(w));
 
-  // Order matters: a name matching more than one family resolves to the first
-  // listed, and the list runs least-privileged first so an ambiguous name never
-  // silently widens its own gate.
-  if (hasAny(["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"])) return "fileRead";
-  if (hasAny(["write", "edit", "create", "delete", "remove", "move", "rename", "patch", "apply", "mkdir"])) return "fileWrite";
-  if (hasAny(["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn"])) return "codeExecution";
-  if (hasAny(["fetch", "http", "https", "web", "browse", "url", "download", "curl", "request"])) return "webAccess";
-  return "fileWrite";
+  for (const [category, words] of CATEGORY_TOKENS) {
+    if (words.some((w) => tokens.has(w))) return category;
+  }
+  return MOST_RESTRICTIVE_CATEGORY;
 }
 
 /**
- * Category for an ACP tool call. Prefers the structured `kind`; falls back to
- * the name/title only when `kind` is absent or `other`.
+ * The one string that identifies a tool call for both the gate and the prompt.
+ *
+ * `name` is ACP's actual tool identifier and is preferred; `title` is a human
+ * sentence and is only a display fallback — {@link categorizeAcpToolName} refuses
+ * to read words out of it. Whatever this returns is what `canUseTool` is called
+ * with, so the prompt the user sees and the string both passes categorize are
+ * guaranteed to be the same thing.
  */
-export function categorizeAcpTool(kind: ToolKind | null | undefined, name: string | null | undefined): PermissionCategory | null {
-  const fromKind = categorizeAcpToolKind(kind);
-  if (fromKind) return fromKind;
-  // `think` / `switch_mode` are explicitly "no axis applies" — don't let name
-  // matching drag them back into fileWrite.
-  if (kind === "think" || kind === "switch_mode") return null;
-  const label = (name ?? "").trim();
-  if (!label) return "fileWrite";
-  return categorizeAcpToolName(label);
-}
-
-/** Display name for a permission request: the experimental `name`, else the title. */
 export function acpToolLabel(toolCall: RequestPermissionRequest["toolCall"]): string {
   const name = typeof toolCall?.name === "string" ? toolCall.name.trim() : "";
   if (name) return name;
@@ -197,10 +278,19 @@ export async function resolveAcpPermission(request: RequestPermissionRequest, ct
   }
 
   const toolCall = request.toolCall ?? ({} as RequestPermissionRequest["toolCall"]);
+  // One label, one categorizer, one input — and the same label goes to
+  // `canUseTool` below, so the second pass cannot reach a different answer.
   const label = acpToolLabel(toolCall);
-  const category = categorizeAcpTool(toolCall.kind, toolCall.name ?? toolCall.title);
+  const category = categorizeAcpToolName(label);
   const decision = decidePermission(category, ctx.permissions ?? null);
-  log.info(`[PERM-DIAG] acp tool=${label}, kind=${toolCall.kind ?? "(none)"}, category=${category ?? "(none)"}, decision=${decision}`);
+  // `kind` is reported, never consulted. A vendor whose structured kind
+  // disagrees with its own tool name is worth knowing about before Phase 2
+  // onboards it, and this line is where that shows up.
+  const fromKind = categorizeAcpToolKind(toolCall.kind);
+  log.info(
+    `[PERM-DIAG] acp tool=${label}, category=${category ?? "(none)"}, decision=${decision}` +
+      `, kind=${toolCall.kind ?? "(none)"}${fromKind && fromKind !== category ? ` (kind would say ${fromKind} — NOT used)` : ""}`,
+  );
 
   if (decision !== "ask") {
     const option = selectPermissionOption(options, decision);

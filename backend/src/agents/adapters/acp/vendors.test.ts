@@ -9,7 +9,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { ACP_VENDOR_PRESETS, listAcpVendorIds, resolveAcpVendorPreset, type AcpVendorPreset } from "./vendors.js";
 import { AcpAdapter } from "./AcpAdapter.js";
 import { getAgentProvider, setAgentProviderForTesting } from "../../factory.js";
-import { isRoutableProvider, ROUTABLE_PROVIDER_KINDS } from "../../ports/AgentProvider.js";
+import { INTERNAL_PROVIDER_KINDS, isInternalProvider, isRoutableProvider, ROUTABLE_PROVIDER_KINDS } from "../../ports/AgentProvider.js";
 
 afterEach(() => {
   setAgentProviderForTesting(null);
@@ -33,7 +33,18 @@ describe("vendor presets", () => {
     // slash commands are discovered from `initialize` / `session/new`, so a
     // preset must never carry them. A new field here should be justified by
     // "the agent cannot tell us this".
-    const allowed = new Set(["id", "label", "command", "waitForInitialCommands", "initialCommandsWaitTimeoutMs", "clientCapabilityMeta", "env"]);
+    const allowed = new Set([
+      "id",
+      "label",
+      "command",
+      "waitForInitialCommands",
+      "initialCommandsWaitTimeoutMs",
+      // How long a CLI may take to answer its first request is not something it
+      // can tell us — it has not spoken yet.
+      "initializeTimeoutMs",
+      "clientCapabilityMeta",
+      "env",
+    ]);
     for (const preset of Object.values(ACP_VENDOR_PRESETS)) {
       for (const field of Object.keys(preset)) expect(allowed).toContain(field);
     }
@@ -53,12 +64,24 @@ describe("vendor presets", () => {
 });
 
 describe("the provider seam", () => {
-  it("routes 'acp' but keeps it out of the per-vendor union", () => {
-    expect(ROUTABLE_PROVIDER_KINDS).toContain("acp");
-    expect(isRoutableProvider("acp")).toBe(true);
+  it("routes 'acp' internally but does not offer it to requests", () => {
+    // Phase 1 has no user-facing surface for ACP: the vendor lives in
+    // `acpProviderId` and no route accepts that field, so a request naming
+    // "acp" could only ever produce a chat with a kind and no vendor. Routes
+    // narrow against the routable list, which therefore excludes it.
+    expect(ROUTABLE_PROVIDER_KINDS).not.toContain("acp");
+    expect(isRoutableProvider("acp")).toBe(false);
+    // sendMessage still routes and persists it, reached via
+    // SendMessageOptions.acpProviderId. Phase 2 adds the picker and moves "acp"
+    // back into the routable list alongside it.
+    expect(INTERNAL_PROVIDER_KINDS).toContain("acp");
+    expect(isInternalProvider("acp")).toBe(true);
     // The vendor is NOT a kind — that is the whole point.
     expect(isRoutableProvider("gemini")).toBe(false);
-    expect(isRoutableProvider("acp:gemini")).toBe(false);
+    expect(isInternalProvider("gemini")).toBe(false);
+    expect(isInternalProvider("acp:gemini")).toBe(false);
+    // "mock" is test-only and belongs to neither list.
+    expect(isInternalProvider("mock")).toBe(false);
   });
 
   it("memoizes one adapter instance per provider id, not per kind", () => {

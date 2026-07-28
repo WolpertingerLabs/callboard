@@ -53,6 +53,8 @@ interface RunOptions {
   resume?: string;
   abortController?: AbortController;
   mcpServers?: Record<string, unknown>;
+  /** Preset fields to override — e.g. a short `initializeTimeoutMs` for the wedge tests. */
+  preset?: Partial<import("./vendors.js").AcpVendorPreset>;
 }
 
 /** Drive one full turn against `scenario` and collect the normalized events. */
@@ -66,7 +68,7 @@ async function run(scenario: FakeAcpScenario, opts: RunOptions = {}): Promise<Ag
       ...(opts.abortController ? { abortController: opts.abortController } : {}),
       ...(opts.canUseTool ? { canUseTool: opts.canUseTool } : {}),
       ...(opts.mcpServers ? { mcpServers: opts.mcpServers } : {}),
-      acp: { preset: acpTestAgentPreset(scenario), permissions: opts.permissions ?? null },
+      acp: { preset: acpTestAgentPreset(scenario, opts.preset ?? {}), permissions: opts.permissions ?? null },
     },
   });
 
@@ -148,11 +150,13 @@ describe("AcpAdapter end-to-end against a conformant ACP agent", () => {
 
       // Documenting a real SDK behaviour rather than asserting our own: the
       // malformed updates do NOT arrive as `adapter_specific`. `ClientApp`
-      // installs a session-update router that Zod-parses every `session/update`
-      // before any handler runs and drops the ones that fail — so the adapter
-      // never sees them. Dropping is safe (that is what this test proves), but
-      // it means the escape hatch cannot cover updates the SDK pin rejects
-      // outright. See AcpAgentClient's registration comment.
+      // installs a session-update router that Zod-`parse`s every
+      // `session/update` before any handler runs; on a malformed one that parse
+      // THROWS, and the throw is swallowed upstream — the router returns
+      // `Handled.no`, so the adapter never sees the update but the connection
+      // stays healthy, which is what the assertions above prove. Either way the
+      // escape hatch cannot cover updates the SDK pin rejects outright. See
+      // AcpAgentClient's registration comment.
       expect(events.filter((e) => e.type === "adapter_specific")).toHaveLength(0);
     },
     TEST_TIMEOUT,
@@ -321,6 +325,66 @@ describe("AcpAdapter cancellation and teardown", () => {
       // the reaping itself.
       await query.close();
       await expect.poll(() => countFakeAgentProcesses("slow"), { timeout: 10_000 }).toBe(0);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+describe("AcpAdapter handshake failures leave no process behind", () => {
+  // Every other teardown test drives the `slow` scenario, which is a
+  // *cooperative* double: it completes `initialize` in milliseconds, so the
+  // client is fully constructed before anything is asked to stop. These two
+  // scenarios never get that far, which is where the leak lived — the child is
+  // spawned inside `AcpAgentClient.start()`, so until that resolved there was
+  // nothing for `reap()` to kill.
+
+  it(
+    "kills a CLI that spawns and then never answers initialize",
+    async () => {
+      // The worst shape of the three: nothing errors, nothing exits, and there
+      // is no deadline on `initialize` in the protocol or the SDK. Without a
+      // timeout the turn hangs forever AND the process survives.
+      await expect(run("wedge-init", { preset: { initializeTimeoutMs: 1500 } })).rejects.toThrow(/did not answer initialize/);
+      await expect.poll(() => countFakeAgentProcesses("wedge-init"), { timeout: 10_000 }).toBe(0);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "close() during a wedged handshake reaps the child instead of reporting a lie",
+    async () => {
+      const adapter = new AcpAdapter("test-double");
+      const query = adapter.query({
+        prompt: "go",
+        // No short timeout here: the abort must be what ends this, not the
+        // deadline. A 45s ceiling would outlast the test.
+        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("wedge-init"), permissions: allowAll } },
+      });
+
+      const pumping = (async () => {
+        for await (const _event of query) {
+          /* drain */
+        }
+      })();
+
+      // Long enough that the child is spawned and the handshake is in flight.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await query.close();
+      // close() previously resolved here while the agent kept running.
+      await expect.poll(() => countFakeAgentProcesses("wedge-init"), { timeout: 10_000 }).toBe(0);
+      await pumping;
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "surfaces an initialize rejection AND kills the child that refused",
+    async () => {
+      // The unauthenticated-vendor-CLI case: the CLI answers, but with a
+      // refusal, and stays alive. Retrying is the natural user response, so a
+      // leak here is one process per send.
+      await expect(run("reject-init")).rejects.toThrow();
+      await expect.poll(() => countFakeAgentProcesses("reject-init"), { timeout: 10_000 }).toBe(0);
     },
     TEST_TIMEOUT,
   );

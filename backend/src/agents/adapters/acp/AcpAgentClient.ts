@@ -66,7 +66,7 @@ import {
 import { sanitizeInheritedAgentEnv } from "../../agentEnvPolicy.js";
 import { createLogger } from "../../../utils/logger.js";
 import { DETACHED_SPAWN_OPTIONS, killProcessTree } from "../../../utils/tree-kill.js";
-import { DEFAULT_INITIAL_COMMANDS_WAIT_MS, type AcpVendorPreset } from "./vendors.js";
+import { DEFAULT_INITIAL_COMMANDS_WAIT_MS, DEFAULT_INITIALIZE_TIMEOUT_MS, type AcpVendorPreset } from "./vendors.js";
 import { resolveAcpPermission, type AcpPermissionContext } from "./permissionAdapter.js";
 
 const log = createLogger("acp-client");
@@ -159,6 +159,14 @@ export interface AcpClientStartOptions {
   env?: Record<string, string | undefined>;
   /** Permission wiring handed to {@link resolveAcpPermission}. */
   permissionContext: AcpPermissionContext;
+  /**
+   * The run's abort signal, wired into the `initialize` handshake.
+   *
+   * Without it, a cancelled run could not interrupt a handshake in progress:
+   * `initialize` has no deadline of its own on the wire, so a CLI that spawns
+   * and then goes quiet would hold the turn open indefinitely.
+   */
+  signal?: AbortSignal;
 }
 
 /** What a session attach (new / resume / load) produced. */
@@ -173,9 +181,19 @@ export interface AcpSessionHandle {
 /**
  * A live connection to one ACP agent process.
  *
- * Construct via {@link AcpAgentClient.start}, which does not return until the
- * `initialize` handshake has completed — so a constructed client always has real
- * agent capabilities, never placeholders.
+ * Two ways in, and the difference matters for leaks:
+ *
+ * - {@link AcpAgentClient.start} — spawn and handshake in one await. Convenient,
+ *   and safe on its own: a failed handshake kills the child before rethrowing.
+ * - {@link AcpAgentClient.create} + {@link connect} — the same work, split so a
+ *   caller can hold the instance *before* anything is spawned. That is what
+ *   {@link AcpAgentQuery} uses: it assigns `this.client` first, so the child is
+ *   reapable from the moment it exists rather than from the moment the handshake
+ *   finishes. An agent that spawns and then never answers `initialize` has no
+ *   "moment the handshake finishes".
+ *
+ * Either way, a client that has returned from `connect()` has real agent
+ * capabilities, never placeholders.
  */
 export class AcpAgentClient {
   private readonly updates = new UpdateQueue<AcpTurnMessage>();
@@ -196,11 +214,41 @@ export class AcpAgentClient {
 
   // ── Startup ─────────────────────────────────────────────────────────
 
+  /**
+   * An unstarted client. Spawns nothing; call {@link connect} to do that.
+   *
+   * Exists so a caller can take ownership of the client — and therefore of the
+   * process it is about to spawn — before the spawn happens.
+   */
+  static create(opts: AcpClientStartOptions): AcpAgentClient {
+    return new AcpAgentClient(opts);
+  }
+
   /** Spawn the agent, connect, and complete the `initialize` handshake. */
   static async start(opts: AcpClientStartOptions): Promise<AcpAgentClient> {
     const instance = new AcpAgentClient(opts);
-    await instance.spawnAndInitialize();
+    await instance.connect();
     return instance;
+  }
+
+  /**
+   * Spawn the agent process and complete the `initialize` handshake.
+   *
+   * On **any** failure — spawn error, handshake rejection, handshake timeout,
+   * abort — the process is killed before the error is rethrown. The alternative
+   * shipped once: an unauthenticated vendor CLI rejects `initialize`, the error
+   * surfaced correctly, and the child survived. Retrying is the natural user
+   * response to an auth error, so that leaked one agent process per attempt.
+   */
+  async connect(): Promise<void> {
+    try {
+      await this.spawnAndInitialize();
+    } catch (err) {
+      // close() is idempotent and kills the process tree; the owning query will
+      // call it again on its own teardown path and that is fine.
+      await this.close();
+      throw err;
+    }
   }
 
   private async spawnAndInitialize(): Promise<void> {
@@ -246,6 +294,19 @@ export class AcpAgentClient {
       if (text) log.warn(`[${preset.id} stderr] ${text}`);
     });
 
+    // close() may have run while spawn() was in flight, in which case it found
+    // `this.child` still null and had nothing to kill. Re-check now that there
+    // IS something: without this the process we just created would outlive the
+    // client that was already told to shut down. Deliberately placed AFTER the
+    // 'error' listener above — bailing out before it would leave an
+    // asynchronous ENOENT unhandled, which takes the daemon down.
+    if (this.closed || this.opts.signal?.aborted) {
+      log.info(`ACP agent "${preset.id}" was cancelled during spawn — killing pid ${child.pid ?? "?"}`);
+      await killProcessTree(child);
+      this.child = null;
+      throw new Error(`ACP agent "${preset.id}" start was cancelled`);
+    }
+
     const stream = ndJsonStream(Writable.toWeb(child.stdin) as WritableStream<Uint8Array>, Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>);
 
     this.connection = createClientApp({ name: "callboard" })
@@ -263,12 +324,16 @@ export class AcpAgentClient {
       //
       // What this does NOT do — verified, not assumed — is rescue an update
       // whose `sessionUpdate` discriminator is unknown to this SDK pin.
-      // `ClientApp` installs a session-update router in its constructor that
-      // Zod-parses every such notification before any handler runs and drops
-      // the message when parsing fails. There is no opt-out (the deprecated
-      // `ClientSideConnection` routes through the same builder), so those
-      // updates never reach this adapter at all. The connection survives — it
-      // is a drop, not a throw — but the data is gone. See the Phase 1 report.
+      // `ClientApp` installs a session-update router in its constructor, and
+      // that router's `handleMessage` runs `validate.zSessionNotification.parse`
+      // unguarded (`dist/acp.js`) before any handler of ours is reached. So an
+      // update this pin cannot parse does not arrive as `adapter_specific`; it
+      // THROWS inside the router, and the throw is swallowed upstream — the
+      // router returns `Handled.no`, valid notifications keep arriving, and the
+      // connection survives (the e2e "malformed" test proves all three). The
+      // observable result is that the data is gone, which is why the escape
+      // hatch cannot cover it. There is no opt-out; the deprecated
+      // `ClientSideConnection` routes through the same builder.
       .onNotification(
         methods.client.session.update,
         (params: unknown) => params as SessionNotification,
@@ -278,14 +343,7 @@ export class AcpAgentClient {
       )
       .connect(stream);
 
-    this.initializeResult = await this.connection.agent.request(methods.agent.initialize, {
-      protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {
-        ...BASE_CLIENT_CAPABILITIES,
-        ...(preset.clientCapabilityMeta ? { _meta: preset.clientCapabilityMeta } : {}),
-      },
-      clientInfo: CLIENT_INFO,
-    });
+    this.initializeResult = await this.initializeWithDeadline(preset);
 
     const negotiated = this.initializeResult.protocolVersion;
     if (negotiated !== PROTOCOL_VERSION) {
@@ -299,6 +357,63 @@ export class AcpAgentClient {
       `ACP agent "${preset.id}" initialized — agent=${this.agentInfo?.name ?? "(unnamed)"}@${this.agentInfo?.version ?? "?"}, ` +
         `caps=${JSON.stringify(this.agentCapabilities ?? {})}`,
     );
+  }
+
+  /**
+   * `initialize`, with the two escapes the bare request does not have.
+   *
+   * ACP puts no deadline on `initialize` and the SDK adds none, so a CLI that
+   * spawns and wedges leaves this promise pending forever — and with it the
+   * whole turn, while `close()` reports success and the child keeps running.
+   * Both escapes are therefore hard races rather than cooperative cancellation:
+   *
+   * - `cancellationSignal` IS passed, because sending `$/cancel_request` is the
+   *   protocol-correct thing to do — but the SDK is explicit that it only
+   *   settles when the peer eventually responds, which a wedged peer never does.
+   * - So the local race is what actually frees the caller. Losing the race is
+   *   safe here because the very next thing that happens is the process being
+   *   killed: an orphaned in-flight request has nothing left to talk to.
+   */
+  private async initializeWithDeadline(preset: AcpVendorPreset): Promise<InitializeResponse> {
+    const conn = this.requireConnection();
+    const timeoutMs = preset.initializeTimeoutMs ?? DEFAULT_INITIALIZE_TIMEOUT_MS;
+    const signal = this.opts.signal;
+
+    const request = conn.agent.request(
+      methods.agent.initialize,
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: {
+          ...BASE_CLIENT_CAPABILITIES,
+          ...(preset.clientCapabilityMeta ? { _meta: preset.clientCapabilityMeta } : {}),
+        },
+        clientInfo: CLIENT_INFO,
+      },
+      ...(signal ? [{ cancellationSignal: signal }] : []),
+    );
+
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      return await Promise.race([
+        request,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`ACP agent "${preset.id}" did not answer initialize within ${timeoutMs}ms`)), timeoutMs);
+          timer.unref?.();
+          if (!signal) return;
+          onAbort = () => reject(new Error(`ACP agent "${preset.id}" initialize was cancelled`));
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+      // The losing side of the race is still a live promise. Nothing awaits it,
+      // and the process is about to be killed, so swallow its eventual
+      // rejection rather than letting it surface as unhandled.
+      void request.catch(() => {});
+    }
   }
 
   private handleSessionUpdate(notification: SessionNotification): void {

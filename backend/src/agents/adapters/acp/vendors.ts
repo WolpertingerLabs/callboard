@@ -34,6 +34,17 @@ export interface AcpVendorPreset {
   /** Cap on the {@link waitForInitialCommands} wait. Defaults to {@link DEFAULT_INITIAL_COMMANDS_WAIT_MS}. */
   initialCommandsWaitTimeoutMs?: number;
   /**
+   * Cap on the `initialize` handshake. Defaults to
+   * {@link DEFAULT_INITIALIZE_TIMEOUT_MS}.
+   *
+   * A field rather than a constant because "how long may a CLI take to answer
+   * its first request" is genuinely per-vendor — a binary that JIT-compiles or
+   * checks for updates on startup is slow in a way the protocol cannot report.
+   * It is not something the agent could tell us (it has not spoken yet), which
+   * is what qualifies it for this file.
+   */
+  initializeTimeoutMs?: number;
+  /**
    * Extra vendor-specific keys merged into `clientCapabilities._meta` on
    * `initialize`. `_meta` is ACP's sanctioned extension point, so this stays
    * inside the protocol rather than bolting a side channel onto it.
@@ -45,6 +56,16 @@ export interface AcpVendorPreset {
 
 /** Default ceiling on the post-`session/new` wait for `available_commands_update`. */
 export const DEFAULT_INITIAL_COMMANDS_WAIT_MS = 2000;
+
+/**
+ * Default ceiling on the `initialize` handshake.
+ *
+ * Generous, because a cold vendor CLI can legitimately take seconds to boot, and
+ * a false timeout looks like an outage. Its job is not to be tight but to be
+ * *finite*: an agent that spawns and then never answers would otherwise wedge
+ * the turn forever, with `close()` reporting success while the child lives on.
+ */
+export const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
 
 /**
  * Built-in presets.

@@ -101,7 +101,14 @@ export class AcpAgentQuery implements AgentQuery {
       const blocks = await resolveAcpPrompt(this.params.prompt);
       if (this.isAborted()) return;
 
-      const client = await AcpAgentClient.start({
+      // Created, then assigned, then connected — in that order, and the order is
+      // the fix. `AcpAgentClient.start()` spawns the child *inside* the await,
+      // so assigning its result meant `this.client` stayed null for the whole
+      // spawn-and-handshake window and `reap()` had nothing to kill. An agent
+      // that never answers `initialize` never leaves that window: close() would
+      // report success while the child ran on. Owning the client first makes the
+      // process reapable from the moment it exists.
+      const client = AcpAgentClient.create({
         preset,
         cwd,
         ...(this.params.env ? { env: this.params.env } : {}),
@@ -110,8 +117,19 @@ export class AcpAgentQuery implements AgentQuery {
           ...(this.params.canUseTool ? { canUseTool: this.params.canUseTool } : {}),
           signal: this.abortController.signal,
         },
+        signal: this.abortController.signal,
       });
       this.client = client;
+      try {
+        await client.connect();
+      } catch (err) {
+        // A cancelled run ends quietly — the user asked for it, and reap() in
+        // the finally has already killed whatever was spawned. Anything else is
+        // a real failure (a missing binary, an unauthenticated CLI) and must
+        // reach the caller.
+        if (this.isAborted()) return;
+        throw err;
+      }
       if (this.isAborted()) return;
 
       const mcpServers: McpServer[] = (this.params.toolServerHandles ?? []).map((h) => h.toAcpMcpServer());
@@ -247,14 +265,16 @@ export class AcpAgentQuery implements AgentQuery {
    * run repeatedly — but deliberately NOT latched behind a "already reaped"
    * flag. That distinction is a real bug fix, not a style choice:
    *
-   * `close()` can fire while `AcpAgentClient.start()` is still spawning, i.e.
-   * when `this.client` is still null. A latching guard would mark the query
-   * reaped, `start()` would then resolve and assign a live child process, and
-   * `iterate()`'s finally would find the latch already set and skip the kill —
-   * leaking exactly the hung CLI this adapter promises never to leak.
+   * `close()` can fire while the client is still connecting. A latching guard
+   * would mark the query reaped, the connect would then finish and hand back a
+   * live child process, and `iterate()`'s finally would find the latch already
+   * set and skip the kill — leaking exactly the hung CLI this adapter promises
+   * never to leak.
    *
    * Nulling `this.client` instead gives idempotence *and* keeps a later call
-   * able to reap a client that only appeared afterwards.
+   * able to reap a client that only appeared afterwards. The other half of that
+   * guarantee lives in `AcpAgentClient.connect()`, which re-checks for a close
+   * that landed mid-spawn and kills the child it just created.
    */
   private async reap(): Promise<void> {
     const client = this.client;

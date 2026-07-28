@@ -91,31 +91,52 @@ export async function killProcessTree(child: ChildProcess | null | undefined, gr
     return;
   }
 
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve();
-    };
+  try {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      // Declared BEFORE `finish`, and with `let`, on purpose. A `const timer`
+      // below the early-exit path put `clearTimeout(timer)` in the temporal dead
+      // zone: the `!signalGroup(...)` branch called finish() before the
+      // declaration was evaluated, so this promise REJECTED with a
+      // ReferenceError instead of resolving. That path is reached whenever the
+      // group is already gone — most commonly when the child has just exited but
+      // Node has not delivered `exit` yet, so the guard above still passes — and
+      // it also covers EPERM. The rejection then propagated out of close()
+      // handlers and skipped whatever cleanup followed them.
+      // Explicitly initialized: `finish` reads this before the SIGKILL timer is
+      // armed, and that read is the whole point of hoisting it.
+      let timer: NodeJS.Timeout | undefined = undefined;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
 
-    child.once("exit", finish);
+      child.once("exit", finish);
 
-    if (!signalGroup(pid, "SIGTERM")) {
-      finish();
-      return;
-    }
+      if (!signalGroup(pid, "SIGTERM")) {
+        log.debug(`process group ${pid} could not be signalled (already exited, or not permitted) — nothing to wait for`);
+        finish();
+        return;
+      }
 
-    const timer = setTimeout(() => {
-      if (settled) return;
-      log.warn(`process group ${pid} ignored SIGTERM after ${graceMs}ms — sending SIGKILL`);
-      signalGroup(pid, "SIGKILL");
-      // Give the exit event one tick to land; resolve regardless so a
-      // pathological process can never wedge a caller's close().
-      setTimeout(finish, 100);
-    }, graceMs);
-    // Don't hold the event loop open purely to wait out a grace period.
-    timer.unref?.();
-  });
+      timer = setTimeout(() => {
+        if (settled) return;
+        log.warn(`process group ${pid} ignored SIGTERM after ${graceMs}ms — sending SIGKILL`);
+        signalGroup(pid, "SIGKILL");
+        // Give the exit event one tick to land; resolve regardless so a
+        // pathological process can never wedge a caller's close().
+        setTimeout(finish, 100);
+      }, graceMs);
+      // Don't hold the event loop open purely to wait out a grace period.
+      timer.unref?.();
+    });
+  } catch (err) {
+    // The doc-comment above promises every failure path is logged rather than
+    // thrown, and callers rely on it: this runs inside close() handlers whose
+    // remaining cleanup (closing sockets, removing temp dirs) must happen even
+    // when the kill itself went wrong.
+    log.warn(`killProcessTree for pid ${pid} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

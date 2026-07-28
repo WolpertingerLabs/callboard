@@ -56,6 +56,16 @@ export const SCENARIOS = [
   "mcp",
   /** Exits abruptly mid-turn, without answering `session/prompt`. */
   "crash",
+  /**
+   * Spawns, then never answers `initialize`. The uncooperative shape: the
+   * process is healthy and the pipe is open, so nothing times out on its own.
+   */
+  "wedge-init",
+  /**
+   * Rejects `initialize`. Stands in for an unauthenticated vendor CLI, which
+   * the plan names by risk — the process stays alive after refusing.
+   */
+  "reject-init",
 ] as const;
 
 export type FakeAcpScenario = (typeof SCENARIOS)[number];
@@ -320,12 +330,28 @@ async function handlePrompt(params: PromptRequest, cx: AgentContext): Promise<Pr
 
 const stream = ndJsonStream(Writable.toWeb(process.stdout) as WritableStream<Uint8Array>, Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>);
 
-createAgentApp({ name: "fake-acp-agent" })
-  .onRequest(methods.agent.initialize, () => ({
+/**
+ * The handshake, including the two ways it can fail to produce a client.
+ *
+ * Both failure scenarios keep the process alive afterwards, which is the point:
+ * a double that exited on its own would hide the leak instead of exposing it.
+ */
+function handleInitialize(): Promise<InitializeResponse> {
+  // Never settles. No timer, no exit — the agent simply never replies, and the
+  // client must impose its own deadline or wait forever.
+  if (scenario === "wedge-init") return new Promise<InitializeResponse>(() => {});
+  if (scenario === "reject-init") {
+    return Promise.reject(new Error("not authenticated: run `fake-agent login` first"));
+  }
+  return Promise.resolve({
     protocolVersion: PROTOCOL_VERSION,
     agentCapabilities: capabilitiesFor(scenario),
     agentInfo: { name: "fake-acp-agent", version: "1.0.0" },
-  }))
+  });
+}
+
+createAgentApp({ name: "fake-acp-agent" })
+  .onRequest(methods.agent.initialize, () => handleInitialize())
   .onRequest(methods.agent.session.new, (ctx) => {
     const sessionId = newSessionId();
     sessions.set(sessionId, { pending: null, prompts: [] });

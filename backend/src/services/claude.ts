@@ -1,5 +1,5 @@
 import { getAgentProvider } from "../agents/factory.js";
-import { isRoutableProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter/optionsAdapter.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
@@ -66,7 +66,10 @@ export type { StreamEvent };
  */
 function resolveProviderKind(value: unknown): AgentProviderKind {
   if (typeof value !== "string" || value === "") return "claude-code";
-  if (isRoutableProvider(value)) return value;
+  // Chat metadata, not a request body — so the internal list, which includes
+  // kinds that have no picker yet. A chat already pinned to one of those must
+  // keep routing there.
+  if (isInternalProvider(value)) return value;
   log.warn(`Unknown chat metadata provider="${value}" — falling back to "claude-code"`);
   return "claude-code";
 }
@@ -1025,7 +1028,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // chat. Only write a value that resolveProviderKind would route —
       // unknown strings would log a warn on every message in the chat,
       // and "claude-code" is the default so writing it is redundant.
-      ...(isRoutableProvider(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
+      //
+      // The guard is the INTERNAL allowlist, not the routable one: `"acp"` has
+      // no user-facing picker yet and is deliberately absent from what routes
+      // accept, but sendMessage reaches it directly via `acpProviderId` and must
+      // be able to pin it. Values arriving from a request were already narrowed
+      // against the routable list at the route boundary.
+      ...(isInternalProvider(opts.provider) && opts.provider !== "claude-code" && { provider: opts.provider }),
       // Pin the ACP vendor alongside the kind. `provider: "acp"` alone does not
       // say WHICH ACP agent runs the chat, so without this a follow-up message
       // could not reconstruct the adapter. Only meaningful when paired with
@@ -1165,16 +1174,20 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // decision over the user's default-permission settings.
   //
   // ACP needs its own categorizer here, and the reason is a correctness trap
-  // rather than tidiness. The ACP adapter has already evaluated policy (using
-  // ACP's structured `ToolKind`, which is a better signal than any name map) and
-  // only calls `canUseTool` for tools that resolved to "ask" — i.e. precisely
-  // when it wants the USER prompted. But `buildCanUseTool` re-evaluates the
-  // policy before prompting, and `categorizeClaudeTool` defaults every name it
-  // does not recognize to `fileWrite`. So an ACP `execute` tool under
-  // `{codeExecution: "ask", fileWrite: "allow"}` would be silently auto-allowed
-  // by that second pass — running a command the user asked to be consulted
-  // about. Pairing the ACP name map with the ACP adapter keeps both passes
-  // agreeing on what a tool is.
+  // rather than tidiness. The ACP adapter has already evaluated policy and only
+  // calls `canUseTool` for tools that resolved to "ask" — i.e. precisely when it
+  // wants the USER prompted. But this is a SECOND pass: `buildCanUseTool`
+  // re-decides from scratch, and if it reaches a category the user set to
+  // `allow`, the tool runs with no prompt at all. `categorizeClaudeTool` would
+  // send every ACP name it does not recognize to `fileWrite`, so an ACP tool
+  // under `{codeExecution: "ask", fileWrite: "allow"}` would be silently
+  // auto-allowed here.
+  //
+  // Using the same function is necessary but NOT sufficient — the two passes
+  // must also see the same input. That is enforced on the adapter side: it
+  // categorizes the exact string it passes as `toolName` and never consults
+  // ACP's `ToolKind`, which this pass cannot see. See "The two-pass rule" in
+  // adapters/acp/permissionAdapter.ts.
   const toolPermissionPolicy = new ToolPermissionPolicy(providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool, getDefaultPermissions);
 
   // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)
