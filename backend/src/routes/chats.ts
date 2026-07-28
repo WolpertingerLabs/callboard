@@ -17,6 +17,8 @@ import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/ha
 import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
+import { describeWorkspaceDirectory } from "../services/workspace-service.js";
+import { directoryDiskUsageCached } from "../utils/disk-usage.js";
 // Chat-list response cache lives in a standalone module so services can
 // invalidate it without closing an import cycle back through this route.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
@@ -157,11 +159,13 @@ chatsRouter.get("/search", (req, res) => {
 chatsRouter.get("/folders", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'List chats grouped by folder'
-  // #swagger.description = 'Returns folders with aggregated chat info, ordered by most recently created chat. Filters out folders that no longer exist on disk.'
+  // #swagger.description = 'Returns folders with aggregated chat info, ordered by most recently created chat. Folders that no longer exist on disk are filtered out, except when an active workspace record claims them — those are listed with directoryState "missing" so the stale record can be seen and archived. Each row also carries the active workspace records claiming the directory (id, name, isolation, owned, branch, directory state); it deliberately carries no removal verdict, which costs several git subprocesses per record — ask GET /api/workspaces for that.'
   /* #swagger.parameters['maxAgeDays'] = { in: 'query', type: 'integer', description: 'Maximum age in days (default: 5)' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass "true" to measure each listed directory with du -sk. Off by default: it is the slow part, and this endpoint is polled. Measurements are memoised for five minutes.' } */
   try {
     const maxAgeDays = parseInt(req.query.maxAgeDays as string, 10) || 5;
     const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+    const includeDiskUsage = req.query.includeDiskUsage === "true";
 
     // Fetch all sessions (large limit to get everything within range)
     const { sessions } = discoverSessionsPaginated(9999, 0);
@@ -180,6 +184,9 @@ chatsRouter.get("/folders", (req, res) => {
       isOngoing: (sessionId) => sessionRegistry.has(sessionId),
       isWaiting: (sessionId) => hasPendingRequest(sessionId),
       gitInfo: (folder) => getCachedGitInfo(folder),
+      describeDirectory: (workspace) => describeWorkspaceDirectory(workspace),
+      // Absent unless asked for — that absence *is* the opt-in.
+      ...(includeDiskUsage && { diskUsage: (folder: string) => directoryDiskUsageCached(folder) }),
     });
 
     res.json({ folders });

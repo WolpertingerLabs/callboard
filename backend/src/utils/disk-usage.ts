@@ -15,10 +15,55 @@
  */
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
+import { resolve } from "path";
 import type { WorktreeDiskUsage } from "shared/types/index.js";
 
 /** Per-directory ceiling. A cold `node_modules` on a slow disk is seconds. */
 export const DISK_USAGE_TIMEOUT_MS = 15000;
+
+/**
+ * How long a measurement is reused.
+ *
+ * The listings that show sizes are *polled* — the sidebar refreshes every
+ * fifteen seconds while a session is live — and a directory's size does not
+ * meaningfully change between two of those. Without this, turning sizes on
+ * would run `du` over every listed worktree four times a minute forever.
+ *
+ * Five minutes is chosen to be obviously stale-tolerant: the number is an
+ * order-of-magnitude prompt for "which of these is worth cleaning up", never an
+ * input to a decision about whether to delete something.
+ */
+export const DISK_USAGE_TTL_MS = 5 * 60 * 1000;
+
+interface CacheEntry {
+  measuredAt: number;
+  usage: WorktreeDiskUsage;
+}
+
+const cache = new Map<string, CacheEntry>();
+
+/**
+ * {@link directoryDiskUsage}, memoised per resolved directory for
+ * {@link DISK_USAGE_TTL_MS}.
+ *
+ * Failures are cached too, and deliberately: a `du` that timed out will time
+ * out again, and re-running it on every poll is precisely the cost this exists
+ * to avoid. The error travels with the entry, so a caller still sees why there
+ * is no number.
+ */
+export function directoryDiskUsageCached(directory: string, now: number = Date.now()): WorktreeDiskUsage {
+  const key = resolve(directory);
+  const hit = cache.get(key);
+  if (hit && now - hit.measuredAt < DISK_USAGE_TTL_MS) return hit.usage;
+  const usage = directoryDiskUsage(directory);
+  cache.set(key, { measuredAt: now, usage });
+  return usage;
+}
+
+/** Drop everything memoised. For tests, and for a caller that just moved a directory. */
+export function clearDiskUsageCache(): void {
+  cache.clear();
+}
 
 /**
  * Size of `directory` in bytes, or an explanation of why there is no number.

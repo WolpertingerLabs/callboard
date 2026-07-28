@@ -224,6 +224,15 @@ export interface WorkspaceWithRemovability extends Workspace {
    * that no longer exists — archive it?"), never something to act on.
    */
   directory: WorkspaceDirectory;
+  /**
+   * Approximate size on disk. **Opt-in** (`includeDiskUsage`), because `du -sk`
+   * over a worktree with a cold `node_modules` is seconds and this listing is
+   * otherwise cheap enough to poll. Absent when it was not requested.
+   *
+   * It is here for the same reason it is on {@link UnmanagedWorktree}: "10
+   * workspaces" is not a number anyone acts on, and "9.4 GB" is.
+   */
+  diskUsage?: WorktreeDiskUsage;
 }
 
 /**
@@ -446,4 +455,120 @@ export interface AdoptWorktreesResult {
   outcomes: WorkspaceAdoptionOutcome[];
   adopted: number;
   refused: number;
+}
+
+// ── The list view (Phase 4a) ────────────────────────────────────────
+//
+// One row per **directory**, never per record. Phase 3 keys the sidebar on
+// `cwd` because keying on the record splits one folder into two rows, and the
+// registry-hygiene fix made that concrete: a `useWorktree` chat on the main
+// checkout now writes a `local` record alongside a legacy `worktree` one, so
+// `/home/cybil/callboard` legitimately has two active records. The row reports
+// them as a list with a count; per-record detail is a drill-down.
+
+/**
+ * A workspace record as a directory *row* needs it.
+ *
+ * Deliberately NOT {@link WorkspaceWithRemovability}. The removal verdict runs
+ * `git status`, `git rev-list`, a submodule scan and a token read per record —
+ * fine for a user-initiated management view, far too much for a sidebar that
+ * re-polls every fifteen seconds. Everything here is a registry read plus an
+ * `lstat` of one `.git` entry.
+ *
+ * The row therefore says what it cheaply knows — this directory is gone, this
+ * one is no longer a worktree, Callboard does not own this one — and sends the
+ * user to the management view for the full gate. That split is why the sidebar
+ * can afford to carry cleanup information at all.
+ */
+export interface FolderWorkspaceRecord {
+  /** Opaque record id. Never parsed. */
+  id: string;
+  name: string;
+  isolation: WorkspaceIsolation;
+  /**
+   * `worktree.owned` — false for a local record and for every worktree that
+   * predates the entity. The single most common reason a directory cannot be
+   * cleaned up, and the thing adoption exists to change.
+   */
+  owned: boolean;
+  /** From `worktree.branch`; absent on a local record. */
+  branch?: string;
+  createdAt: string;
+  /** Freshly observed, never stored. @see WorkspaceDirectoryState */
+  directory: WorkspaceDirectory;
+}
+
+// ── Trash visibility ────────────────────────────────────────────────
+//
+// The retention sweep in utils/worktree-trash.ts is the one place Callboard
+// deletes user data without being asked, and until this there was no way to see
+// what was queued for it. Listing is read-only; restore copies out and leaves
+// the trash entry exactly where it was.
+
+/** One directory under ~/.callboard/trash, as a reader needs it. */
+export interface TrashEntryView {
+  /** Directory name under the trash root. This is what a restore names. */
+  entry: string;
+  /** Every field below is absent when the entry has no readable manifest. */
+  workspaceId?: string;
+  originalPath?: string;
+  repoPath?: string;
+  branch?: string;
+  quarantinedAt?: string;
+  /**
+   * When the sweep would delete this entry. Absent when it never would —
+   * an entry the sweep refuses to touch is kept forever, by design.
+   */
+  expiresAt?: string;
+  /** Why the sweep will never take it. Set exactly when `expiresAt` is not. */
+  sweepBlocked?: string;
+  /** Opt-in, like everywhere else `du` appears. */
+  diskUsage?: WorktreeDiskUsage;
+  /** The recipe from the manifest, so it survives without Callboard. */
+  restore: string[];
+  /** True when a restore would have somewhere to land and something to run. */
+  restorable: boolean;
+  /** Why not. Set exactly when `restorable` is false. */
+  restoreBlocker?: string;
+}
+
+export interface TrashListing {
+  root: string;
+  /** {@link TRASH_RETENTION_MS} in days, so a UI need not restate it. */
+  retentionDays: number;
+  entries: TrashEntryView[];
+}
+
+export type TrashRestoreFailure =
+  /** No such directory under the trash root. */
+  | "entry-not-found"
+  /** No readable `.callboard-trash.json`, so there is no recipe to run. */
+  | "no-manifest"
+  /** The manifest is missing the repo, branch or original path. */
+  | "incomplete-manifest"
+  /** Something already exists at the original path. Never overwritten. */
+  | "destination-occupied"
+  /** `git worktree add` refused — branch checked out elsewhere, say. */
+  | "worktree-add-failed"
+  /** The checkout was recreated but copying the untracked files back failed. */
+  | "copy-failed";
+
+/**
+ * Result of restoring one trash entry.
+ *
+ * `trashRetained` is always true and is stated rather than implied: a restore
+ * **copies** the untracked and ignored files back and leaves the quarantined
+ * directory alone, so a restore that goes wrong loses nothing. The entry ages
+ * out through the normal sweep.
+ */
+export interface TrashRestoreResult {
+  ok: boolean;
+  entry: string;
+  originalPath?: string;
+  /** Top-level entries copied back out of the trash. */
+  copiedEntries?: number;
+  /** Paths that already existed in the recreated checkout and were left alone. */
+  skippedEntries?: string[];
+  trashRetained: true;
+  failure?: { code: TrashRestoreFailure; detail: string };
 }

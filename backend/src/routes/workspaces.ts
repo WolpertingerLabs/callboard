@@ -21,6 +21,7 @@ import { adoptWorktrees } from "../services/workspace-adoption.js";
 import { listUnmanagedWorktrees } from "../services/workspace-discovery.js";
 import { archiveWorkspace, listWorkspacesWithRemovability } from "../services/workspace-service.js";
 import { getWorkspace } from "../services/workspace-store.js";
+import { listTrash, restoreTrashEntry } from "../services/workspace-trash.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("workspaces-route");
@@ -41,6 +42,7 @@ workspacesRouter.get("/", (req, res) => {
   // #swagger.summary = 'List workspaces'
   // #swagger.description = 'List workspaces with a removability verdict for each — whether its worktree can be removed, and every reason it cannot — plus `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Read-only: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
   /* #swagger.parameters['status'] = { in: 'query', type: 'string', description: 'Filter by status - active or archived. Omit for both.' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass "true" to measure each workspace with du -sk. Off by default: it is the slow part. Measurements are memoised for five minutes, and a workspace whose directory is missing is not measured.' } */
   /* #swagger.responses[200] = { description: "Workspaces with removability" } */
   /* #swagger.responses[400] = { description: "Invalid status filter" } */
   try {
@@ -48,7 +50,8 @@ workspacesRouter.get("/", (req, res) => {
     if (status && status !== "active" && status !== "archived") {
       return res.status(400).json({ error: 'status must be "active" or "archived"' });
     }
-    res.json({ workspaces: listWorkspacesWithRemovability(status ? { status } : undefined) });
+    const includeDiskUsage = req.query.includeDiskUsage === "true";
+    res.json({ workspaces: listWorkspacesWithRemovability(status ? { status } : undefined, { includeDiskUsage }) });
   } catch (err: any) {
     log.error(`Error listing workspaces: ${err.message}`);
     res.status(500).json({ error: "Failed to list workspaces", details: err.message });
@@ -126,5 +129,41 @@ workspacesRouter.post("/adopt", (req, res) => {
   } catch (err: any) {
     log.error(`Error adopting worktrees: ${err.message}`);
     res.status(500).json({ error: "Failed to adopt worktrees", details: err.message });
+  }
+});
+
+// ── Trash (Phase 4a) ────────────────────────────────────────────────
+//
+// The retention sweep is the one thing Callboard deletes without being asked.
+// These two make it inspectable and undoable.
+
+workspacesRouter.get("/trash", (req, res) => {
+  // #swagger.tags = ['Workspaces']
+  // #swagger.summary = 'List quarantined worktrees'
+  // #swagger.description = 'Read-only listing of ~/.callboard/trash: every quarantined worktree, where it came from, the branch and repository needed to restore it, when it was quarantined and when the 30-day retention sweep would delete it. Ages come from each entry\'s own manifest, exactly as the sweep reads them, never from directory mtime (rename does not update it). An entry the sweep will never take — no readable manifest, or no usable timestamp — reports `sweepBlocked` instead of an expiry, because unknowns are kept forever by design. Writes nothing and sweeps nothing.'
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass "true" to measure each entry with du -sk. Off by default.' } */
+  /* #swagger.responses[200] = { description: "Trash entries, soonest to expire first" } */
+  try {
+    res.json(listTrash({ includeDiskUsage: req.query.includeDiskUsage === "true" }));
+  } catch (err: any) {
+    log.error(`Error listing trash: ${err.message}`);
+    res.status(500).json({ error: "Failed to list trash", details: err.message });
+  }
+});
+
+workspacesRouter.post("/trash/:entry/restore", (req, res) => {
+  // #swagger.tags = ['Workspaces']
+  // #swagger.summary = 'Restore a quarantined worktree'
+  // #swagger.description = 'Recreate the checkout with the manifest\'s own recipe ("git worktree add <path> <branch>") and copy back everything git does not track — the .env, the local databases, the ignored build output that travelled into the trash with the directory. The trash entry is NOT deleted: a restore copies out and leaves the quarantined directory intact, so a restore that goes wrong loses nothing. Refuses outright if anything already exists at the original path; a directory that has come back is not written over. The copy never overwrites a file git just checked out — such names are skipped and reported.'
+  /* #swagger.parameters['entry'] = { in: 'path', required: true, type: 'string', description: 'Directory name under the trash root, as returned by GET /trash.' } */
+  /* #swagger.responses[200] = { description: "Restore outcome; ok:false carries a failure code and detail" } */
+  try {
+    const result = restoreTrashEntry(req.params.entry);
+    // A refusal is an outcome, not a transport error: the caller wants the code
+    // and the sentence, and every refusal leaves the trash entry intact.
+    res.status(result.ok ? 200 : 409).json(result);
+  } catch (err: any) {
+    log.error(`Error restoring trash entry ${req.params.entry}: ${err.message}`);
+    res.status(500).json({ error: "Failed to restore trash entry", details: err.message });
   }
 });

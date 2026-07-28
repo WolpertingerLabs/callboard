@@ -60,6 +60,7 @@ import {
   resolveWorktreeToMainRepo,
   worktreeContainsSubmodules,
 } from "../utils/git.js";
+import { directoryDiskUsageCached } from "../utils/disk-usage.js";
 import { readWorktreeToken, verifyWorktreeToken } from "../utils/worktree-token.js";
 import { quarantineDirectory, sweepTrash } from "../utils/worktree-trash.js";
 import { chatFileService } from "./chat-file-service.js";
@@ -339,13 +340,29 @@ export function describeWorkspaceDirectory(workspace: Workspace): WorkspaceDirec
  * directory. Both are read-only: listing workspaces writes nothing, archives
  * nothing and removes nothing, however stale a record turns out to be.
  */
-export function listWorkspacesWithRemovability(filter?: { status?: Workspace["status"] }): WorkspaceWithRemovability[] {
+export function listWorkspacesWithRemovability(
+  filter?: { status?: Workspace["status"] },
+  /**
+   * Disk usage is opt-in for the same reason it is on discovery: `du -sk` over
+   * a worktree with a cold `node_modules` is seconds, and a caller that only
+   * wants the removal verdict should not pay for it. Measurements are memoised
+   * for five minutes, so a management view that re-polls costs nothing.
+   */
+  opts?: { includeDiskUsage?: boolean },
+): WorkspaceWithRemovability[] {
   const ctx = newRemovalContext();
-  return listWorkspaces(filter).map((workspace) => ({
-    ...workspace,
-    removability: evaluateWorktreeRemoval(workspace, ctx),
-    directory: describeWorkspaceDirectory(workspace),
-  }));
+  return listWorkspaces(filter).map((workspace) => {
+    const directory = describeWorkspaceDirectory(workspace);
+    return {
+      ...workspace,
+      removability: evaluateWorktreeRemoval(workspace, ctx),
+      directory,
+      // Nothing to measure when the directory is gone — and `du` on a missing
+      // path returns an error string, which reads as a failure rather than as
+      // the "there is nothing here" that `directory.state` already says.
+      ...(opts?.includeDiskUsage && directory.state !== "missing" && { diskUsage: directoryDiskUsageCached(workspace.cwd) }),
+    };
+  });
 }
 
 /**
