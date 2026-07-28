@@ -946,6 +946,17 @@ interface SendMessageOptions {
 const DEFAULT_MAX_NUDGES = 3;
 
 /**
+ * Render the CONFIGURED OpenRouter plugin ids for the chat-config log line — the
+ * user's intent, before the `webAccess` gate runs. The effective set is logged by
+ * the OR adapter's `translateOptions`, which is where the narrowing happens.
+ */
+function formatConfiguredPlugins(modelParams: Record<string, unknown> | undefined): string {
+  const plugins = modelParams?.plugins;
+  if (!Array.isArray(plugins) || plugins.length === 0) return "(none)";
+  return `[${plugins.map((p) => String((p as { id?: unknown }).id)).join(",")}]`;
+}
+
+/**
  * Unified message sending function.
  * Handles both existing chats (provide chatId) and new chats (provide folder).
  * For new chats, creates the chat record when session_id arrives from the SDK
@@ -1494,9 +1505,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Server tools: map the persisted list to the harness's verbatim wire shape.
     // Left undefined when the setting is absent (harness injects its defaults);
     // an explicit empty array is preserved (disable all server tools).
+    //
+    // This is the user's INTENT only. OR's server tools execute on OpenRouter's
+    // servers and surface as `openrouter:*` output items rather than tool calls,
+    // so `canUseTool` never sees them and the categorizer's `webAccess` entries
+    // for web_search/web_fetch are unreachable. The `webAccess` axis is applied
+    // to this list in the OR adapter, via the `getPermissions` accessor below —
+    // see adapters/openrouter/serverToolPolicy.ts.
     const serverTools = agentSettings.openRouterServerTools?.map(serverToolToWire);
     // Generation params: merge the global default with the resolved model's
     // per-model override profile, then flatten to the harness's modelParams bag.
+    //
+    // Also INTENT only, on the same axis: the `plugins` array inside this bag is
+    // a second route to OpenRouter's servers that `canUseTool` never sees (`web`
+    // and `fusion` are web access, and a plugin runs once per request whether the
+    // model asked or not). The OR adapter narrows it via the same
+    // `getPermissions` accessor — see adapters/openrouter/serverToolPolicy.ts.
     const modelParams = resolveModelParams(
       agentSettings.openRouterModelParamsDefault,
       chatModel ? agentSettings.openRouterModelParamProfiles?.[chatModel] : undefined,
@@ -1513,12 +1537,24 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         }),
       ...(serverTools && { serverTools }),
       ...(modelParams && { modelParams }),
+      // The accessor, not its value — same reasoning as the ACP block below.
+      // It is read when the request body is assembled, so tightening webAccess
+      // mid-conversation takes effect on the next message rather than being
+      // frozen at whatever the policy was when this options blob was built.
+      getPermissions: getDefaultPermissions,
       appTitle: "callboard",
     };
     log.info(
       `OpenRouter chat config — trackingId=${trackingId}, model=${chatModel ?? "(default)"}` +
         `${requestedModel && requestedModel !== chatModel ? ` (alias "${requestedModel}")` : ""}, ` +
         `effort=${chatEffort ?? "(unset)"}, ` +
+        // Both webAccess-gated channels as CONFIGURED, alongside the axis that
+        // narrows them. The effective sets (and anything the policy withheld) are
+        // logged by the OR adapter's optionsAdapter, which is where the
+        // intersections happen.
+        `serverToolsConfigured=${serverTools ? `[${serverTools.map((t) => t.type).join(",")}]` : "(harness defaults)"}, ` +
+        `pluginsConfigured=${formatConfiguredPlugins(modelParams)}, ` +
+        `webAccess=${getDefaultPermissions()?.webAccess ?? "(none — treated as restrictive)"}, ` +
         `maxBudgetUsd=${queryOpts.options.openRouter.maxBudgetUsd ?? "(library default)"}, ` +
         `baseUrl=${queryOpts.options.openRouter.baseUrl ?? "(default)"}, ` +
         `logsRoot=${queryOpts.options.openRouter.logsRoot ?? "(default)"}, ` +

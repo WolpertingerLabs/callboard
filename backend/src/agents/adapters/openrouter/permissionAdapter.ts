@@ -52,9 +52,20 @@
  * They come back as `openrouter:*` output items, not tool calls, so no
  * `canUseTool` pass ever runs for them. The entries below are defence in depth
  * (correct the moment the harness routes them through the gate) and a statement
- * of intent — they are not a gate. Actually gating them means not *injecting*
- * them when `webAccess` is not "allow", which lives in `optionsAdapter`'s
- * `serverTools` translation, not here.
+ * of intent — they are not a gate.
+ *
+ * The gate that does work is `./serverToolPolicy.ts`, applied in
+ * `optionsAdapter`: it withholds the web-carrying entries from the request body
+ * when `webAccess` is not "allow", which for something that executes on someone
+ * else's servers is the whole of the enforcement available. It covers BOTH
+ * channels that never reach `canUseTool` — the `serverTools` array and the
+ * `plugins` array inside `modelParams` (the deprecated `web` plugin and the
+ * `fusion` plugin are web access too, and a plugin runs once per request whether
+ * the model asked or not).
+ *
+ * Nothing below changed when either shipped — this file still describes only
+ * what `canUseTool` would see, and plugins have no tool name to categorize at
+ * all, so they are not represented here even unreachably.
  *
  * @see plans/acp-adapter.md (Permissions — "The two-pass rule")
  * @see ../acp/permissionAdapter.ts (the reference implementation)

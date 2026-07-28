@@ -4,8 +4,19 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "@wolpertingerlabs/openrouter-agent-harness";
 import { extractPluginDirs, translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
+import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 
-const defaultExtras: OpenRouterOptionsExtras = { apiKey: "sk-or-test" };
+/** Permissive policy — the shape most chats run under (6676 of 6778 in production). */
+const allowAll: DefaultPermissions = {
+  fileRead: "allow",
+  fileWrite: "allow",
+  codeExecution: "allow",
+  webAccess: "allow",
+};
+
+const withWebAccess = (webAccess: PermissionLevel): DefaultPermissions => ({ ...allowAll, webAccess });
+
+const defaultExtras: OpenRouterOptionsExtras = { apiKey: "sk-or-test", getPermissions: () => allowAll };
 
 describe("translateOptions — required config", () => {
   it("throws when openRouter.apiKey is missing", () => {
@@ -116,17 +127,23 @@ describe("translateOptions — OR config passthrough", () => {
     expect(orOpts.cacheControl).toEqual({ type: "ephemeral" });
   });
 
-  it("leaves serverTools unset so the harness injects its DEFAULT_SERVER_TOOLS", () => {
-    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
+  it("leaves serverTools unset so the harness injects its DEFAULT_SERVER_TOOLS when webAccess allows", () => {
+    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test", getPermissions: () => allowAll } }, "hi");
     expect(orOpts.serverTools).toBeUndefined();
   });
 
-  it("forwards configured serverTools (including an empty array to disable all)", () => {
+  it("forwards configured serverTools (including an empty array to disable all) when webAccess allows", () => {
     const tools = [{ type: "openrouter:web_search", parameters: { max_results: 5 } }];
-    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test", serverTools: tools } }, "hi");
+    const { orOpts } = translateOptions(
+      { openRouter: { apiKey: "sk-or-test", serverTools: tools, getPermissions: () => allowAll } },
+      "hi",
+    );
     expect(orOpts.serverTools).toEqual(tools);
 
-    const { orOpts: empty } = translateOptions({ openRouter: { apiKey: "sk-or-test", serverTools: [] } }, "hi");
+    const { orOpts: empty } = translateOptions(
+      { openRouter: { apiKey: "sk-or-test", serverTools: [], getPermissions: () => allowAll } },
+      "hi",
+    );
     expect(empty.serverTools).toEqual([]);
   });
 
@@ -605,5 +622,370 @@ describe("translateOptions — prompt translation", () => {
     }
     // No image survived, so this collapses back to a plain string.
     expect(items).toEqual([{ content: "hi\n[image:image/heic]" }]);
+  });
+});
+
+describe("translateOptions — webAccess gating of OpenRouter server tools", () => {
+  const typesOf = (tools: readonly { type: string }[] | undefined) => tools?.map((t) => t.type);
+
+  const translate = (webAccess: PermissionLevel, serverTools?: OpenRouterOptionsExtras["serverTools"]) =>
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          ...(serverTools && { serverTools }),
+          getPermissions: () => withWebAccess(webAccess),
+        },
+      },
+      "hi",
+    ).orOpts;
+
+  // ── The default path: config undefined. This is the case that is live today
+  // and the one a fix is most likely to miss, because `undefined` reads like
+  // "nothing to filter" when it actually means "let the harness inject its
+  // DEFAULT_SERVER_TOOLS" — web_search and web_fetch included.
+  it.each(["deny", "ask"] as const)(
+    "strips web_search/web_fetch from the DEFAULT (unconfigured) set under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess);
+      // An explicit array, NOT undefined: leaving it unset would hand the
+      // harness's own defaults straight through and re-open the hole.
+      expect(orOpts.serverTools).toBeDefined();
+      expect(typesOf(orOpts.serverTools)).toEqual(["openrouter:datetime"]);
+    },
+  );
+
+  it("leaves the default set to the harness under webAccess=allow", () => {
+    expect(translate("allow").serverTools).toBeUndefined();
+  });
+
+  // ── datetime survives every policy. It returns a clock reading and egresses
+  // nothing the request did not already carry, so it is not on the webAccess
+  // axis at all.
+  it.each(["allow", "ask", "deny"] as const)("keeps datetime under webAccess=%s", (webAccess) => {
+    const orOpts = translate(webAccess, [{ type: "openrouter:datetime" }]);
+    expect(typesOf(orOpts.serverTools)).toEqual(["openrouter:datetime"]);
+  });
+
+  // ── A configured set is INTERSECTED, never replaced. The user setting stays
+  // authoritative for intent; the policy decides what they may have.
+  it.each(["deny", "ask"] as const)(
+    "intersects a configured set rather than replacing it under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess, [
+        { type: "openrouter:datetime" },
+        { type: "openrouter:web_search", parameters: { max_results: 5 } },
+        { type: "openrouter:web_fetch" },
+      ]);
+      expect(typesOf(orOpts.serverTools)).toEqual(["openrouter:datetime"]);
+    },
+  );
+
+  it("does not let a user setting re-enable web_search under webAccess=deny", () => {
+    const orOpts = translate("deny", [{ type: "openrouter:web_search" }]);
+    expect(orOpts.serverTools).toEqual([]);
+  });
+
+  it("preserves per-tool parameters on the tools that survive the gate", () => {
+    const orOpts = translate("allow", [{ type: "openrouter:web_search", parameters: { max_results: 5 } }]);
+    expect(orOpts.serverTools).toEqual([{ type: "openrouter:web_search", parameters: { max_results: 5 } }]);
+  });
+
+  // ── The nested-web-access tools. Each is documented as running its
+  // panel/advisor/worker with openrouter:web_search available, so allowing one
+  // under a restrictive policy would be a side door onto the same axis.
+  it.each([
+    ["openrouter:fusion"],
+    ["openrouter:advisor"],
+    ["openrouter:subagent"],
+  ])("withholds %s under webAccess=deny (it can nest web_search)", (type) => {
+    expect(translate("deny", [{ type }]).serverTools).toEqual([]);
+  });
+
+  it("keeps server tools that genuinely never reach the web under webAccess=deny", () => {
+    const orOpts = translate("deny", [
+      { type: "openrouter:image_generation" },
+      { type: "openrouter:apply_patch" },
+    ]);
+    expect(typesOf(orOpts.serverTools)).toEqual(["openrouter:image_generation", "openrouter:apply_patch"]);
+  });
+
+  // ── Fail-closed on the unknown. A tool OpenRouter ships after this catalog
+  // was last updated must be withheld, not waved through.
+  it("withholds an unknown/new server tool under a restrictive policy", () => {
+    const orOpts = translate("deny", [
+      { type: "openrouter:datetime" },
+      { type: "openrouter:some_future_tool" },
+    ]);
+    expect(typesOf(orOpts.serverTools)).toEqual(["openrouter:datetime"]);
+  });
+
+  // ── No policy at all is restrictive, matching decidePermission's collapse of
+  // a missing policy to "ask". A caller that forgets to wire getPermissions
+  // loses web search visibly instead of silently reopening the gap.
+  it("treats an absent permission accessor as restrictive", () => {
+    const { orOpts } = translateOptions({ openRouter: { apiKey: "sk-or-test" } }, "hi");
+    expect(typesOf(orOpts.serverTools)).toEqual(["openrouter:datetime"]);
+  });
+
+  it("treats a null permission policy as restrictive", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: { apiKey: "sk-or-test", getPermissions: () => null } },
+      "hi",
+    );
+    expect(typesOf(orOpts.serverTools)).toEqual(["openrouter:datetime"]);
+  });
+
+  // ── bareToolset still wins outright: [] is strictly narrower than anything
+  // the gate could produce, so it skips the intersection rather than joining it.
+  it.each(["allow", "ask", "deny"] as const)("bareToolset disables everything under webAccess=%s", (webAccess) => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          bareToolset: true,
+          serverTools: [{ type: "openrouter:web_search" }],
+          getPermissions: () => withWebAccess(webAccess),
+        },
+      },
+      "hi",
+    );
+    expect(orOpts.serverTools).toEqual([]);
+  });
+
+  it("reports withheld tools through the stderr diagnostic channel", () => {
+    const lines: string[] = [];
+    translateOptions(
+      {
+        openRouter: { apiKey: "sk-or-test", getPermissions: () => withWebAccess("ask") },
+        stderr: (d: string) => lines.push(d),
+      },
+      "hi",
+    );
+    const notice = lines.find((l) => l.includes("withheld"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("webAccess=ask");
+    expect(notice).toContain("openrouter:web_search");
+    expect(notice).toContain("openrouter:web_fetch");
+  });
+
+  it("says nothing when the policy withholds nothing", () => {
+    const lines: string[] = [];
+    translateOptions(
+      {
+        openRouter: { apiKey: "sk-or-test", getPermissions: () => allowAll },
+        stderr: (d: string) => lines.push(d),
+      },
+      "hi",
+    );
+    expect(lines.find((l) => l.includes("withheld"))).toBeUndefined();
+  });
+
+  it("reads the policy at request-assembly time, not when the options blob was built", () => {
+    // A mid-conversation tightening must apply to the next request. Holding the
+    // accessor rather than a snapshot is what makes that true.
+    let webAccess: PermissionLevel = "allow";
+    const options = { openRouter: { apiKey: "sk-or-test", getPermissions: () => withWebAccess(webAccess) } };
+
+    expect(translateOptions(options, "hi").orOpts.serverTools).toBeUndefined();
+    webAccess = "deny";
+    expect(typesOf(translateOptions(options, "hi").orOpts.serverTools)).toEqual(["openrouter:datetime"]);
+  });
+});
+
+describe("translateOptions — webAccess gating of OpenRouter plugins", () => {
+  /**
+   * `modelParams.plugins` reaches OpenRouter by a different route than
+   * `serverTools` — it rides `Partial<ResponsesRequest>` — so the server-tool
+   * gate never saw it. Two catalog plugins are live web access, and a plugin is
+   * the worse case of the two channels: it runs once per request whether the
+   * model asked or not, so an ungated `web` plugin searches on every turn with
+   * no model decision involved at all.
+   */
+  const translate = (webAccess: PermissionLevel, modelParams?: Record<string, unknown>) =>
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          ...(modelParams && { modelParams }),
+          getPermissions: () => withWebAccess(webAccess),
+        },
+      },
+      "hi",
+    ).orOpts;
+
+  const pluginIdsOf = (orOpts: { modelParams?: unknown }) => {
+    const plugins = (orOpts.modelParams as { plugins?: { id: string }[] } | undefined)?.plugins;
+    return plugins?.map((p) => p.id);
+  };
+
+  // ── The headline: the two web-carrying plugins.
+  it.each(["deny", "ask"] as const)("withholds the web plugin under webAccess=%s", (webAccess) => {
+    const orOpts = translate(webAccess, { plugins: [{ id: "web", maxResults: 5 }] });
+    // The key is dropped entirely, not sent empty — that is what
+    // `resolveModelParams` emits for a profile with no plugins.
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  it.each(["deny", "ask"] as const)("withholds the fusion plugin under webAccess=%s", (webAccess) => {
+    const orOpts = translate(webAccess, { plugins: [{ id: "fusion", maxToolCalls: 8 }] });
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  it("injects web and fusion under webAccess=allow, params intact", () => {
+    const plugins = [{ id: "web", maxResults: 5 }, { id: "fusion", maxToolCalls: 8 }];
+    const orOpts = translate("allow", { plugins });
+    expect(orOpts.modelParams).toEqual({ plugins });
+  });
+
+  // ── A plugin that reaches nothing survives every policy.
+  it.each(["allow", "ask", "deny"] as const)(
+    "keeps a non-web plugin under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess, { plugins: [{ id: "response-healing" }] });
+      expect(pluginIdsOf(orOpts)).toEqual(["response-healing"]);
+    },
+  );
+
+  // ── Intersected, never replaced. The user's setting stays authoritative for
+  // intent; the policy decides what they may have.
+  it.each(["deny", "ask"] as const)(
+    "intersects a configured plugin set rather than replacing it under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess, {
+        plugins: [
+          { id: "web" },
+          { id: "response-healing" },
+          { id: "fusion" },
+          { id: "context-compression" },
+        ],
+      });
+      expect(pluginIdsOf(orOpts)).toEqual(["response-healing", "context-compression"]);
+    },
+  );
+
+  it("does not let a user setting re-enable the web plugin under webAccess=deny", () => {
+    expect(pluginIdsOf(translate("deny", { plugins: [{ id: "web" }] }))).toBeUndefined();
+  });
+
+  // ── Fail closed on the unknown: a plugin OpenRouter ships after this catalog
+  // was last updated is withheld, not waved through.
+  it("withholds an unknown/new plugin under a restrictive policy", () => {
+    const orOpts = translate("deny", {
+      plugins: [{ id: "response-healing" }, { id: "some-future-plugin" }],
+    });
+    expect(pluginIdsOf(orOpts)).toEqual(["response-healing"]);
+  });
+
+  // ── Absent/null policy is restrictive, matching decidePermission's collapse
+  // of a missing policy to "ask".
+  it("treats an absent permission accessor as restrictive", () => {
+    const { orOpts } = translateOptions(
+      { openRouter: { apiKey: "sk-or-test", modelParams: { plugins: [{ id: "web" }] } } },
+      "hi",
+    );
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  it("treats a null permission policy as restrictive", () => {
+    const { orOpts } = translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          modelParams: { plugins: [{ id: "web" }] },
+          getPermissions: () => null,
+        },
+      },
+      "hi",
+    );
+    expect(pluginIdsOf(orOpts)).toBeUndefined();
+  });
+
+  // ── Sampling knobs are generation parameters, not a channel to anything. The
+  // gate must not touch them, and must not lose them when it strips a plugin.
+  it("leaves sampling params untouched while withholding a web plugin", () => {
+    const orOpts = translate("deny", { temperature: 0.7, topP: 0.9, plugins: [{ id: "web" }] });
+    expect(orOpts.modelParams).toEqual({ temperature: 0.7, topP: 0.9 });
+  });
+
+  it.each(["allow", "ask", "deny"] as const)(
+    "forwards a plugin-free params bag verbatim under webAccess=%s",
+    (webAccess) => {
+      const orOpts = translate(webAccess, { temperature: 0.7, seed: 42 });
+      expect(orOpts.modelParams).toEqual({ temperature: 0.7, seed: 42 });
+    },
+  );
+
+  it("omits modelParams entirely when the withheld plugin was all it carried", () => {
+    // Sending `{}` would be harmless but dishonest — it is not what a profile
+    // with nothing in it produces.
+    expect(translate("deny", { plugins: [{ id: "web" }] }).modelParams).toBeUndefined();
+  });
+
+  it("does not mutate the caller's modelParams object", () => {
+    // claude.ts hands over the resolved settings profile; the gate reassembles
+    // rather than deleting keys out of it.
+    const modelParams = { temperature: 0.7, plugins: [{ id: "web" }] };
+    translate("deny", modelParams);
+    expect(modelParams).toEqual({ temperature: 0.7, plugins: [{ id: "web" }] });
+  });
+
+  it("drops a malformed non-array plugins value instead of forwarding it", () => {
+    // Only reachable via a hand-edited settings file. The SDK's Zod schema would
+    // reject it anyway; dropping it keeps the failure legible.
+    const orOpts = translate("allow", { temperature: 0.7, plugins: "web" });
+    expect(orOpts.modelParams).toEqual({ temperature: 0.7 });
+  });
+
+  // ── Diagnostics: a user who set "ask" and finds web search missing must be
+  // able to see which axis took it and what to set instead.
+  it("reports withheld plugins through the stderr diagnostic channel", () => {
+    const lines: string[] = [];
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          modelParams: { plugins: [{ id: "web" }, { id: "fusion" }] },
+          getPermissions: () => withWebAccess("ask"),
+        },
+        stderr: (d: string) => lines.push(d),
+      },
+      "hi",
+    );
+    const notice = lines.find((l) => l.includes("plugin(s)"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("webAccess=ask");
+    expect(notice).toContain("web");
+    expect(notice).toContain("fusion");
+  });
+
+  it("says nothing when the policy withholds no plugin", () => {
+    const lines: string[] = [];
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          modelParams: { plugins: [{ id: "response-healing" }] },
+          getPermissions: () => allowAll,
+        },
+        stderr: (d: string) => lines.push(d),
+      },
+      "hi",
+    );
+    expect(lines.find((l) => l.includes("withheld"))).toBeUndefined();
+  });
+
+  it("reads the policy at request-assembly time, not when the options blob was built", () => {
+    let webAccess: PermissionLevel = "allow";
+    const options = {
+      openRouter: {
+        apiKey: "sk-or-test",
+        modelParams: { plugins: [{ id: "web" }] },
+        getPermissions: () => withWebAccess(webAccess),
+      },
+    };
+    expect(pluginIdsOf(translateOptions(options, "hi").orOpts)).toEqual(["web"]);
+    webAccess = "deny";
+    expect(pluginIdsOf(translateOptions(options, "hi").orOpts)).toBeUndefined();
   });
 });
