@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "@wolpertingerlabs/openrouter-agent-harness";
 import { extractPluginDirs, translateOptions, type OpenRouterOptionsExtras } from "./optionsAdapter.js";
+import { resolveSessionModel } from "../../../services/agent-settings.js";
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 
 /** Permissive policy — the shape most chats run under (6676 of 6778 in production). */
@@ -987,5 +988,149 @@ describe("translateOptions — webAccess gating of OpenRouter plugins", () => {
     expect(pluginIdsOf(translateOptions(options, "hi").orOpts)).toEqual(["web"]);
     webAccess = "deny";
     expect(pluginIdsOf(translateOptions(options, "hi").orOpts)).toBeUndefined();
+  });
+});
+
+describe("translateOptions — webAccess gating of the :online model-slug variant", () => {
+  /**
+   * The third route onto the same axis, and the one neither other gate could
+   * see: it rides the model string rather than `serverTools` or `modelParams`.
+   * OpenRouter calls `:online` "a shortcut for using the `web` plugin … exactly
+   * equivalent to" sending it, so an ungated `<model>:online` is precisely what
+   * the plugin gate exists to withhold, spelled differently.
+   */
+  const translate = (webAccess: PermissionLevel | null, model?: string, stderr?: (d: string) => void) =>
+    translateOptions(
+      {
+        openRouter: {
+          apiKey: "sk-or-test",
+          ...(model !== undefined && { model }),
+          // `null` here stands for a caller that wires no accessor at all.
+          ...(webAccess !== null && { getPermissions: () => withWebAccess(webAccess) }),
+        },
+        ...(stderr && { stderr }),
+      },
+      "hi",
+    ).orOpts;
+
+  // ── The headline.
+  it.each(["deny", "ask"] as const)("strips :online under webAccess=%s", (webAccess) => {
+    expect(translate(webAccess, "anthropic/claude-sonnet-4:online").model).toBe("anthropic/claude-sonnet-4");
+  });
+
+  it("preserves :online under webAccess=allow", () => {
+    expect(translate("allow", "anthropic/claude-sonnet-4:online").model).toBe(
+      "anthropic/claude-sonnet-4:online",
+    );
+  });
+
+  it("treats an absent permission accessor as restrictive", () => {
+    // Same collapse as the other two gates: a caller that forgets to wire
+    // `getPermissions` loses web access visibly rather than reopening the hole.
+    expect(translate(null, "anthropic/claude-sonnet-4:online").model).toBe("anthropic/claude-sonnet-4");
+  });
+
+  // ── The regression that would quietly cost money. Every other variant is
+  // routing, pricing or model identity — never web access.
+  it.each(["allow", "ask", "deny"] as const)(
+    "never touches :free/:extended/:thinking/:nitro/:floor/:exacto under webAccess=%s",
+    (webAccess) => {
+      for (const suffix of ["free", "extended", "thinking", "nitro", "floor", "exacto"]) {
+        const slug = `openai/gpt-oss-20b:${suffix}`;
+        expect(translate(webAccess, slug).model).toBe(slug);
+      }
+    },
+  );
+
+  it("removes only :online from a chained slug, leaving the paid/free choice alone", () => {
+    // OpenRouter's own chaining example is `openai/gpt-oss-20b:free:online`.
+    // Dropping `:free` along with `:online` would silently move the run onto the
+    // PAID copy of the model.
+    expect(translate("deny", "openai/gpt-oss-20b:free:online").model).toBe("openai/gpt-oss-20b:free");
+  });
+
+  it.each(["x/y:ONLINE", "x/y:Online", "x/y: online "])(
+    "matches the variant regardless of case or padding (%s)",
+    (slug) => {
+      expect(translate("deny", slug).model).toBe("x/y");
+    },
+  );
+
+  it("forwards a variant it does not recognize rather than rewriting the slug", () => {
+    // The deliberate divergence from the sibling gates' fail-closed default:
+    // the action here is a rewrite of the model id, so an uncatalogued variant
+    // is reported (see the log assertions below), never removed.
+    expect(translate("deny", "x/y:someFutureVariant").model).toBe("x/y:someFutureVariant");
+  });
+
+  it("leaves a plain slug untouched under every policy", () => {
+    for (const webAccess of ["allow", "ask", "deny"] as const) {
+      expect(translate(webAccess, "anthropic/claude-sonnet-4").model).toBe("anthropic/claude-sonnet-4");
+    }
+  });
+
+  it("omits the model entirely when the slug was nothing but :online", () => {
+    // Degenerate, but it must not send `model: ""`.
+    expect(translate("deny", ":online").model).toBeUndefined();
+  });
+
+  // ── Surfacing. A stripped suffix that nobody is told about is
+  // indistinguishable from a model that simply chose not to search.
+  it("names both slugs and the policy on stderr when it strips", () => {
+    const lines: string[] = [];
+    translate("deny", "anthropic/claude-sonnet-4:online", (d) => lines.push(d));
+    const line = lines.find((l) => l.includes("stripped"));
+    expect(line).toBeDefined();
+    expect(line).toContain(":online");
+    expect(line).toContain("anthropic/claude-sonnet-4:online");
+    expect(line).toContain("webAccess=deny");
+    // Says what to change, like the server-tool and plugin lines do.
+    expect(line).toContain('Set webAccess to "allow"');
+  });
+
+  it("says nothing when there was nothing to strip", () => {
+    const lines: string[] = [];
+    translate("deny", "openai/gpt-oss-20b:free", (d) => lines.push(d));
+    expect(lines.find((l) => l.includes("stripped"))).toBeUndefined();
+    translate("allow", "anthropic/claude-sonnet-4:online", (d) => lines.push(d));
+    expect(lines.find((l) => l.includes("stripped"))).toBeUndefined();
+  });
+
+  it("reads the policy at request-assembly time, not when the options blob was built", () => {
+    // Same live-accessor contract as the other two gates: tightening webAccess
+    // mid-conversation takes effect on the next message.
+    let webAccess: PermissionLevel = "allow";
+    const options = {
+      openRouter: {
+        apiKey: "sk-or-test",
+        model: "anthropic/claude-sonnet-4:online",
+        getPermissions: () => withWebAccess(webAccess),
+      },
+    };
+    expect(translateOptions(options, "hi").orOpts.model).toBe("anthropic/claude-sonnet-4:online");
+    webAccess = "deny";
+    expect(translateOptions(options, "hi").orOpts.model).toBe("anthropic/claude-sonnet-4");
+  });
+
+  // ── Provenance is irrelevant to the gate, which is the point: models arrive
+  // programmatically (agents via start_chat_session, job steps, routed chats,
+  // alias targets), so the caller that wrote `:online` is frequently not the
+  // person who set the policy.
+  it("gates an alias-resolved slug identically to a typed one", () => {
+    // claude.ts resolves cross-harness aliases BEFORE handing the slug over
+    // (`resolveSessionModel` → `openRouter.model`), so what arrives here is
+    // already a real slug — which is exactly why the gate sits after resolution.
+    // This is the value an alias whose openrouter target is `…:online` produces.
+    const fromAlias = resolveSessionModel("fast-web", undefined, "openrouter", {
+      modelAliases: [{ name: "fast-web", targets: { openrouter: "anthropic/claude-sonnet-4:online" } }],
+    } as unknown as Parameters<typeof resolveSessionModel>[3]);
+    expect(fromAlias).toBe("anthropic/claude-sonnet-4:online");
+    expect(translate("deny", fromAlias).model).toBe("anthropic/claude-sonnet-4");
+  });
+
+  it("gates a model pinned by a job step or start_chat_session identically", () => {
+    // Both land in chat metadata and reach the adapter through the same field;
+    // there is no per-origin branch, and there must not be one.
+    expect(translate("deny", "perplexity/sonar:online").model).toBe("perplexity/sonar");
   });
 });

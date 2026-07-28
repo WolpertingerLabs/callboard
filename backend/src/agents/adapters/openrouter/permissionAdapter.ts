@@ -57,11 +57,12 @@
  * The gate that does work is `./serverToolPolicy.ts`, applied in
  * `optionsAdapter`: it withholds the web-carrying entries from the request body
  * when `webAccess` is not "allow", which for something that executes on someone
- * else's servers is the whole of the enforcement available. It covers BOTH
- * channels that never reach `canUseTool` — the `serverTools` array and the
+ * else's servers is the whole of the enforcement available. It covers all THREE
+ * channels that never reach `canUseTool` — the `serverTools` array, the
  * `plugins` array inside `modelParams` (the deprecated `web` plugin and the
  * `fusion` plugin are web access too, and a plugin runs once per request whether
- * the model asked or not).
+ * the model asked or not), and the model slug's `:online` variant, which
+ * OpenRouter documents as a shortcut for that same `web` plugin.
  *
  * Nothing below changed when either shipped — this file still describes only
  * what `canUseTool` would see, and plugins have no tool name to categorize at

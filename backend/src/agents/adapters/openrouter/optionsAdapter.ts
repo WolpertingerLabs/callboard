@@ -31,7 +31,12 @@ import {
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 import { formatLogFields } from "./logFields.js";
-import { applyPluginPolicy, applyServerToolPolicy, type PluginWire } from "./serverToolPolicy.js";
+import {
+  applyModelSlugPolicy,
+  applyPluginPolicy,
+  applyServerToolPolicy,
+  type PluginWire,
+} from "./serverToolPolicy.js";
 import { createLogger } from "../../../utils/logger.js";
 import type { DefaultPermissions, EffortLevel } from "shared/types/index.js";
 
@@ -46,6 +51,16 @@ export type { EffortLevel };
 export interface OpenRouterOptionsExtras {
   apiKey: string;
   baseUrl?: string;
+  /**
+   * The OpenRouter model slug, already alias-resolved by claude.ts (this is a
+   * real slug, never a cross-harness alias name).
+   *
+   * The user's INTENT, like {@link serverTools} and {@link modelParams}: the slug
+   * may carry OpenRouter's `:online` variant, which is a shortcut for the `web`
+   * plugin and therefore the same `webAccess` axis, so {@link getPermissions}
+   * narrows it too — see {@link applyModelSlugPolicy}. Every other variant
+   * (`:free`, `:nitro`, …) passes through untouched.
+   */
   model?: string;
   logsRoot?: string;
   appTitle?: string;
@@ -82,11 +97,12 @@ export interface OpenRouterOptionsExtras {
   serverTools?: Array<{ type: string } & Record<string, unknown>>;
   /**
    * Live accessor for the chat's permission policy, threaded through so the
-   * `webAccess` axis can gate the two channels `canUseTool` never sees: OR's
-   * SERVER tools ({@link applyServerToolPolicy}) and its PLUGINS
-   * ({@link applyPluginPolicy}, carried by {@link modelParams}). Both execute on
-   * OpenRouter's servers, so withholding them from the request body is the only
-   * enforcement available.
+   * `webAccess` axis can gate the three channels `canUseTool` never sees: OR's
+   * SERVER tools ({@link applyServerToolPolicy}), its PLUGINS
+   * ({@link applyPluginPolicy}, carried by {@link modelParams}) and the `:online`
+   * MODEL variant ({@link applyModelSlugPolicy}, carried by {@link model}). All
+   * three execute on OpenRouter's servers, so keeping them out of the request
+   * body is the only enforcement available.
    *
    * The accessor rather than a snapshot, for the reason the ACP adapter's
    * `getPermissions` gives: it is read at the last possible moment, so a policy
@@ -259,8 +275,11 @@ export function translateOptions(
   };
 
   if (orConfig.baseUrl) orOpts.baseUrl = orConfig.baseUrl;
-  if (orConfig.model) orOpts.model = orConfig.model;
   if (orConfig.effort) orOpts.effort = orConfig.effort;
+
+  /** The `webAccess` value the gates are reading, rendered for a log line. */
+  const policyLabel = (): string =>
+    orConfig.getPermissions?.()?.webAccess ?? "(no policy — treated as restrictive)";
 
   /**
    * Tell the user when the `webAccess` policy took something away, for either
@@ -270,14 +289,47 @@ export function translateOptions(
    */
   const reportWithheld = (kind: string, withheld: readonly string[]): void => {
     if (withheld.length === 0) return;
-    const policy = orConfig.getPermissions?.()?.webAccess ?? "(no policy — treated as restrictive)";
     const message =
-      `withheld ${withheld.length} OpenRouter ${kind}(s) — webAccess=${policy}: ${withheld.join(", ")}. ` +
+      `withheld ${withheld.length} OpenRouter ${kind}(s) — webAccess=${policyLabel()}: ${withheld.join(", ")}. ` +
       `These execute on OpenRouter's servers and never reach the permission prompt, so they are ` +
       `withheld from the request rather than asked about. Set webAccess to "allow" to enable them.`;
     log.warn(message);
     if (opts.stderr) opts.stderr(`[openrouter] ${message}`);
   };
+
+  // The model slug is the THIRD route onto the `webAccess` axis, alongside the
+  // server-tool and plugin channels gated below: `<model>:online` is, in
+  // OpenRouter's own words, "a shortcut for using the `web` plugin … exactly
+  // equivalent to" sending it. It rides the model string, so neither of the
+  // other two gates could see it. Only `:online` is stripped — every other
+  // variant OpenRouter ships changes routing, pricing or model identity. See
+  // ./serverToolPolicy.ts.
+  const modelPolicy = applyModelSlugPolicy(orConfig.model, orConfig.getPermissions?.());
+  if (modelPolicy.model) orOpts.model = modelPolicy.model;
+  if (modelPolicy.stripped.length > 0) {
+    // Named at the same volume as a withheld tool, and with both slugs in the
+    // line: someone who asked for `:online` and got a non-web model would
+    // otherwise have no way to tell that from the model simply not searching.
+    const message =
+      `stripped ${modelPolicy.stripped.map((v) => `:${v}`).join(", ")} from OpenRouter model ` +
+      `"${orConfig.model}" → "${modelPolicy.model ?? "(harness default)"}" — webAccess=${policyLabel()}. ` +
+      `The :online variant is OpenRouter's shortcut for the web plugin and runs on their servers, so ` +
+      `it never reaches the permission prompt and is removed rather than asked about. The model itself ` +
+      `is unchanged. Set webAccess to "allow" to keep it.`;
+    log.warn(message);
+    if (opts.stderr) opts.stderr(`[openrouter] ${message}`);
+  }
+  if (modelPolicy.unknown.length > 0) {
+    // Forwarded untouched, on purpose — rewriting a variant we do not recognize
+    // would change routing or billing. Logged so a variant OpenRouter shipped
+    // after our catalog was written surfaces as a line to read rather than as
+    // silence; if a future one turns out to reach the web, this is the record
+    // that says when it started appearing.
+    log.info(
+      `OpenRouter model "${orConfig.model}" carries variant(s) not in OR_MODEL_VARIANTS: ` +
+        `${modelPolicy.unknown.map((v) => `:${v}`).join(", ")} — forwarded unchanged.`,
+    );
+  }
 
   // Forward configured OpenRouter generation params (sampling knobs + plugins).
   // claude.ts resolves the global default merged with any per-model override via

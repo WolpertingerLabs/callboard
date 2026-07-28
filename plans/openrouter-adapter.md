@@ -296,12 +296,46 @@ Option A — branch on `kind` in the policy factory, single-file change in `clau
 > and "may my documents go to subprocessors" is a different axis than `webAccess`, one nothing in
 > callboard currently expresses.
 >
-> **Still open — the `:online` model-slug suffix.** OpenRouter documents `web` plugin activation two
-> ways: the plugin, and "appending `:online` to the model slug". Nothing in callboard inspects the
-> model string — `resolveSessionModel` passes `openRouterModel` / per-chat metadata through verbatim —
-> so a model configured as `anthropic/claude-sonnet-4:online` enables web search on every request with
-> no policy consulted. Not fixed here: it needs its own ruling on whether to reject the suffix at
-> validation, strip it under a restrictive policy, or treat it as the user overriding themselves.
+> **Closed — the `:online` model-slug suffix (third channel).** OpenRouter documents `web` plugin
+> activation two ways: the plugin, and "appending `:online` to the model slug". Nothing inspected the
+> model string — `resolveSessionModel` passed `openRouterModel` / per-chat metadata through verbatim —
+> so `anthropic/claude-sonnet-4:online` enabled web search on every request with no policy consulted.
+> `applyModelSlugPolicy` now narrows the slug in `translateOptions`, beside the other two gates and on
+> the same `webAccessPermitted` predicate: `allow` passes the slug through byte-for-byte, `ask`/`deny`/
+> no-policy strip `:online` and say so on stderr with both slugs and the policy named.
+>
+> The ruling is **strip, not reject**, and OpenRouter's own docs are what make it honest: `:online`
+> does not change which model serves the request — it is "a shortcut for using the `web` plugin …
+> exactly equivalent to" sending that plugin — and OR tells callers who no longer want it that they
+> "can safely remove the `:online` suffix". So `X:online` → `X` is the same model minus the plugin,
+> the same shape as a withheld server tool. Rejecting would turn a policy mismatch into a broken run,
+> and models arrive programmatically here (agents via `start_chat_session`, job steps, routed chats,
+> alias targets), so the caller that wrote `:online` is frequently not the person who set the policy.
+> The gate sits in the adapter rather than at `resolveSessionModel` because that is downstream of
+> alias resolution and of the routing classifier, and because it is the one place every OR run passes
+> through — including quick completions, which wire no permission accessor and so strip by default.
+>
+> **The one place this gate inverts its siblings' default: unknown suffixes are NOT stripped.** An
+> unknown server tool or plugin answers "needs web access" and is dropped, costing at most a
+> capability. Here the action is a *rewrite of the model id*, and every other variant OpenRouter ships
+> changes routing, pricing or model identity — `:free` is the free copy of the model, `:extended` the
+> long-context one, `:thinking` the reasoning one, `:nitro`/`:floor`/`:exacto` re-sort providers by
+> speed, price and tool-calling reliability. A blanket strip would move a `:free` run onto the paid
+> model in the name of a web-access policy. So the vocabulary is a catalog (`OR_MODEL_VARIANTS`, with
+> `webAccess` true for `:online` alone), unknown variants pass through, and they are logged so a
+> variant OR ships after the catalog was written surfaces as a line to read rather than as silence.
+> Variants chain (`openai/gpt-oss-20b:free:online` is OR's own example), so this is a `:`-split and
+> not a suffix test; matching is case- and whitespace-insensitive, which can only over-detect.
+>
+> **Still open — `:online` through the two BYO-gateway paths.** `claudeCodeUseOpenRouter` and
+> `codexUseOpenRouter` point the *native* Claude Code / Codex harnesses at OpenRouter's compatible
+> endpoints while still carrying OpenRouter slugs: `agentSettings.model` / `defaultOpusModel` /
+> `defaultSonnetModel` / `defaultHaikuModel` / `subagentModel` become `ANTHROPIC_*` env in
+> `getApiEnvOverrides`, and `codexModel` rides the Codex SDK's `[model_providers.openrouter]` config.
+> Neither passes through `translateOptions`, and `getApiEnvOverrides` is a pure settings function with
+> no permission accessor, so a `:online` slug configured in those fields is still ungated. Out of
+> scope here (another provider's gate, plus the plumbing to reach it), but named so it is not mistaken
+> for covered. Blast radius today: zero — no configured model in the live data carries the suffix.
 
 ### Tool exposure (`toolAdapter.ts`)
 
