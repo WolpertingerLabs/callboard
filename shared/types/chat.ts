@@ -1,5 +1,6 @@
 import type { SlashCommand } from "./slashCommand.js";
 import type { Plugin } from "./plugins.js";
+import type { FolderWorkspaceRecord, WorkspaceDirectoryState, WorktreeDiskUsage } from "./workspace.js";
 
 export interface Chat {
   id: string;
@@ -132,10 +133,36 @@ export interface FolderSummary {
   chatTitle?: string;
   /** Provider of the most recent chat ("openrouter"); absent means Claude Code. */
   mostRecentChatProvider?: string;
+  /**
+   * The active workspace records claiming this directory, cheapest-fields-only
+   * (Phase 4a). Absent when none do — most directories. Length is the count
+   * the row renders; the array is what a drill-down iterates.
+   *
+   * Carries no removal verdict on purpose: that costs several git subprocesses
+   * per record and this listing is polled. See {@link FolderWorkspaceRecord}.
+   */
+  workspaces?: FolderWorkspaceRecord[];
+  /**
+   * The worst directory state across {@link workspaces} — `missing` beats
+   * `not-a-worktree` beats `present`. Absent when no record claims the
+   * directory, which is also the only case in which the row is guaranteed to
+   * exist on disk.
+   */
+  directoryState?: WorkspaceDirectoryState;
+  /** Explains {@link directoryState}. Safe to surface directly. */
+  directoryDetail?: string;
+  /**
+   * Approximate size on disk. **Opt-in** — a listing only measures it when the
+   * caller passes `includeDiskUsage`, because `du` is the slow part and this
+   * endpoint backs a sidebar that re-polls.
+   */
+  diskUsage?: WorktreeDiskUsage;
 }
 
 export interface FolderListResponse {
   folders: FolderSummary[];
+  /** Set when the disk-usage budget ran out before every row was measured. */
+  diskUsageNote?: string;
 }
 
 // ── Chat parentage tree ─────────────────────────────────────────────

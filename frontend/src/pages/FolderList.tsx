@@ -1,13 +1,21 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeftOpen, HardDrive, FolderGit2 } from "lucide-react";
 import { listFolders, type FolderSummary } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
 import FolderListItem from "../components/FolderListItem";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
-import { getFolderMaxAgeDays, saveFolderMaxAgeDays, getDefaultPermissions, type SidebarViewMode } from "../utils/localStorage";
+import WorkspaceManagerModal from "../components/WorkspaceManagerModal";
+import {
+  getFolderMaxAgeDays,
+  saveFolderMaxAgeDays,
+  getFolderShowSizes,
+  saveFolderShowSizes,
+  getDefaultPermissions,
+  type SidebarViewMode,
+} from "../utils/localStorage";
 
 interface FolderListProps {
   activeChatId?: string;
@@ -41,21 +49,40 @@ export default function FolderList({
   const navigate = useNavigate();
   const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [maxAgeDays, setMaxAgeDays] = useState(() => getFolderMaxAgeDays());
+  const [showSizes, setShowSizes] = useState(() => getFolderShowSizes());
   const [isLoading, setIsLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
+  const [showManager, setShowManager] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; folder: string }>({ isOpen: false, folder: "" });
   const now = useMemo(() => Date.now(), [folders]);
 
   const load = useCallback(async () => {
     try {
-      const response = await listFolders(maxAgeDays);
+      const response = await listFolders(maxAgeDays, showSizes);
       setFolders(response.folders);
     } catch (err) {
       console.error("Failed to load folders:", err);
     } finally {
       setIsLoading(false);
     }
-  }, [maxAgeDays]);
+  }, [maxAgeDays, showSizes]);
+
+  /**
+   * Repositories the manager's unmanaged scan can be pointed at.
+   *
+   * Derived from what is already on screen — a worktree row names its main
+   * checkout, and a plain git row is one. Discovery is per-repository because
+   * `git worktree list` is, and a cleanup tool has no business walking the disk
+   * looking for repositories it was never told about.
+   */
+  const repoCandidates = useMemo(() => {
+    const repos = new Set<string>();
+    for (const folder of folders) {
+      if (folder.repoPath) repos.add(folder.repoPath);
+      else if (folder.isGitRepo && !folder.isWorktree && folder.directoryState !== "missing") repos.add(folder.folder);
+    }
+    return [...repos].sort();
+  }, [folders]);
 
   useEffect(() => {
     load();
@@ -89,6 +116,12 @@ export default function FolderList({
   const handleMaxAgeChange = (days: number) => {
     setMaxAgeDays(days);
     saveFolderMaxAgeDays(days);
+    setIsLoading(true);
+  };
+
+  const handleShowSizesChange = (value: boolean) => {
+    setShowSizes(value);
+    saveFolderShowSizes(value);
     setIsLoading(true);
   };
 
@@ -178,6 +211,54 @@ export default function FolderList({
             </option>
           ))}
         </select>
+
+        {/*
+          Sizes are opt-in and sticky. `du` is the slow part of this listing and
+          the listing is polled, so a user who wants the number turns it on once
+          and everybody else never pays for it. Server-side measurements are
+          memoised for five minutes, which is what makes the polling survivable
+          once it is on.
+        */}
+        <button
+          onClick={() => handleShowSizesChange(!showSizes)}
+          title={showSizes ? "Stop measuring directory sizes" : "Measure each directory with du (slower, cached for 5 minutes)"}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "3px 7px",
+            borderRadius: 4,
+            fontSize: 12,
+            background: showSizes ? "var(--accent)" : "var(--bg-secondary)",
+            color: showSizes ? "var(--text-on-accent)" : "var(--text-muted)",
+            border: showSizes ? "none" : "1px solid var(--border)",
+            cursor: "pointer",
+          }}
+        >
+          <HardDrive size={12} />
+          Sizes
+        </button>
+
+        <button
+          onClick={() => setShowManager(true)}
+          title="Adopt, archive and restore worktrees"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "3px 7px",
+            borderRadius: 4,
+            fontSize: 12,
+            marginLeft: "auto",
+            background: "var(--bg-secondary)",
+            color: "var(--text-muted)",
+            border: "1px solid var(--border)",
+            cursor: "pointer",
+          }}
+        >
+          <FolderGit2 size={12} />
+          Manage
+        </button>
       </div>
 
       {showNew && <NewChatPanel onClose={() => setShowNew(false)} />}
@@ -215,6 +296,8 @@ export default function FolderList({
         message="A chat in this folder is waiting for your input. Start a new chat anyway?"
         confirmText="Start new chat"
       />
+
+      {showManager && <WorkspaceManagerModal repoCandidates={repoCandidates} onClose={() => setShowManager(false)} onChanged={load} />}
     </div>
   );
 }

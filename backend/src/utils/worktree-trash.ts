@@ -73,8 +73,21 @@ export interface TrashManifest {
   originalPath: string;
   /** The main checkout it was a worktree of. */
   repoPath?: string;
-  /** The branch it had checked out. Needed to restore it. */
+  /** The branch it had checked out. The restore *recipe*, and what a human reads. */
   branch?: string;
+  /**
+   * The commit HEAD was on when it was quarantined. The restore *correctness*.
+   *
+   * A branch name is not enough to put a checkout back. Branches move, and a
+   * branch deleted while its directory sat in the trash makes
+   * `git worktree add <path> <branch>` DWIM against a remote — a different
+   * commit, checked out under the right name, reported as a successful restore
+   * with the untracked files copied on top. The cleanliness gate proves the
+   * commit exists somewhere; it proves nothing about where the *name* points
+   * thirty days later. Absent on entries quarantined before this was recorded,
+   * which restore handles by falling back to the branch and saying so.
+   */
+  headSha?: string;
   /** ISO timestamp. {@link sweepTrash} reads only this; never the entry name. */
   quarantinedAt: string;
   /** The restore recipe, spelled out so it does not depend on Callboard. */
@@ -114,6 +127,15 @@ function restoreRecipe(manifest: Omit<TrashManifest, "quarantinedAt" | "restore"
   const repo = manifest.repoPath ?? "<main-repo>";
   return [
     `git -C ${repo} worktree add ${manifest.originalPath} ${branch}`,
+    // The commit, spelled out next to the recipe: a reader running this by hand
+    // thirty days later needs to know that the branch may have moved, and what
+    // to check out if it has.
+    ...(manifest.headSha
+      ? [
+          `# HEAD was ${manifest.headSha} when this was quarantined. If ${branch} no longer exists or has moved,`,
+          `# use: git -C ${repo} worktree add -b ${branch} ${manifest.originalPath} ${manifest.headSha}`,
+        ]
+      : []),
     `# then copy anything git does not track (.env, local databases, node_modules)`,
     `# from this directory back into ${manifest.originalPath}`,
   ];

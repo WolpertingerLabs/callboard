@@ -1,6 +1,7 @@
 import { useMemo } from "react";
-import { GitBranch, Plus, Zap, Clock, Bell, Workflow, GitFork } from "lucide-react";
+import { GitBranch, Plus, Zap, Clock, Bell, Workflow, GitFork, HardDrive, AlertTriangle, Lock, Layers } from "lucide-react";
 import type { FolderSummary } from "../api";
+import { formatDiskUsage } from "../utils/workspaceFormat";
 import ProviderBadge from "./ProviderBadge";
 
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
@@ -12,6 +13,58 @@ interface Props {
   onNewChat: () => void;
   /** Current time in ms, passed from parent to avoid impure render calls */
   now: number;
+}
+
+/**
+ * The cheap half of "why can this not be cleaned up?".
+ *
+ * The full answer is a removal verdict that costs several git subprocesses per
+ * record, so the row does not have it — the management view does. What the row
+ * *does* have is the registry's own facts, and those cover the overwhelmingly
+ * common case: Callboard did not create this worktree, so it will never remove
+ * it, and adoption is the way out. On the author's machine that is 43 of 44
+ * directories. Saying it on the row is the difference between a sidebar that
+ * lists worktrees and one that explains them.
+ */
+function cleanupNote(folder: FolderSummary): { text: string; title: string; tone: "warn" | "muted" } | null {
+  if (folder.directoryState === "missing") {
+    return {
+      // Short on purpose. The backend writes a five-line sentence and this
+      // column is ~330px wide, so rendering it verbatim turned a 50px row into
+      // 180px — and seven stale records turned most of the sidebar into the
+      // same paragraph seven times. The row has to survive being seen that
+      // often; the full sentence is one hover (and one tab) away.
+      text: "Directory is gone — nothing was deleted. Archive the record in Manage worktrees.",
+      title: folder.directoryDetail ?? "The directory this workspace record points at no longer exists.",
+      tone: "warn",
+    };
+  }
+  if (folder.directoryState === "not-a-worktree") {
+    return {
+      text: "No longer a git worktree — contents untouched. See Manage worktrees.",
+      title: folder.directoryDetail ?? "This directory exists but is no longer a git worktree of the recorded repository.",
+      tone: "warn",
+    };
+  }
+  // Only worth saying about a worktree: a plain checkout is never Callboard's
+  // to remove and nobody expects it to be.
+  if (!folder.isWorktree) return null;
+  const records = folder.workspaces ?? [];
+  if (records.length === 0) {
+    return {
+      text: "unmanaged",
+      title: "Callboard has no workspace record for this worktree, so it cannot clean it up. Adopt it from Manage worktrees to change that.",
+      tone: "muted",
+    };
+  }
+  if (!records.some((r) => r.owned)) {
+    return {
+      text: "not owned",
+      title: "Callboard did not create this worktree, so it will never remove it. Adopt it from Manage worktrees to bring it under management.",
+      tone: "muted",
+    };
+  }
+  return null;
 }
 
 function formatRelativeTime(isoDate: string, now: number): string {
@@ -27,7 +80,13 @@ function formatRelativeTime(isoDate: string, now: number): string {
 
 export default function FolderListItem({ folder, isActive, onClick, onNewChat, now }: Props) {
   const isStale = useMemo(() => now - new Date(folder.lastUpdatedAt).getTime() > TWELVE_HOURS_MS, [now, folder.lastUpdatedAt]);
-  const newChatDisabled = folder.status === "ongoing";
+  const isMissing = folder.directoryState === "missing";
+  // There is nowhere to start a chat when the directory is gone. Better to say
+  // so than to let the button open a chat that cannot spawn a process.
+  const newChatDisabled = folder.status === "ongoing" || isMissing;
+  const note = useMemo(() => cleanupNote(folder), [folder]);
+  const size = formatDiskUsage(folder.diskUsage);
+  const recordCount = folder.workspaces?.length ?? 0;
 
   return (
     <div
@@ -154,10 +213,46 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
             whiteSpace: "nowrap",
             direction: "rtl",
             textAlign: "left",
+            // A path that is not there should not read like one that is.
+            textDecoration: isMissing ? "line-through" : "none",
           }}
         >
           {folder.folder}
         </div>
+
+        {/*
+          The directory-state band: scannable, not verbatim.
+
+          A row whose directory is gone or is no longer a worktree must not look
+          normal — that is the whole reason it is listed at all. But this is a
+          ~330px column, and the backend's full sentence wrapped to five lines
+          here: one row grew from ~50px to ~180px, and seven stale records
+          (which is the real number on this machine) filled the sidebar with
+          near-identical boilerplate. A warning nobody can skim is a warning
+          nobody reads. The short line says the state, that nothing was
+          deleted, and where to act; the full sentence is the tooltip, and the
+          management view has room for it in full.
+        */}
+        {note && note.tone === "warn" && (
+          <div
+            title={note.title}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              lineHeight: 1.35,
+              marginTop: 4,
+              padding: "3px 6px",
+              borderRadius: 4,
+              background: "var(--warning-bg)",
+              color: "var(--warning)",
+            }}
+          >
+            <AlertTriangle size={11} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{note.text}</span>
+          </div>
+        )}
         {folder.chatStatus && (
           <div
             title={folder.chatStatus}
@@ -241,6 +336,78 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
               worktree
             </span>
           )}
+          {/*
+            Size on disk. Opt-in — the parent only asks for it when the user
+            turns sizes on — so its absence here is "not measured", never zero.
+            It is the number the whole cleanup story is about: 43 directories is
+            not something anyone acts on, 40 GB is.
+          */}
+          {size && (
+            <span
+              title={
+                folder.diskUsage?.error ? `Disk usage: ${folder.diskUsage.error}` : `Approximately ${size} on disk (du -sk, measured at most every 5 minutes)`
+              }
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                padding: "0 5px",
+                borderRadius: 3,
+                background: "var(--chatlist-badge-agent-bg)",
+                color: "var(--chatlist-item-time-text)",
+                flexShrink: 0,
+              }}
+            >
+              <HardDrive size={10} style={{ flexShrink: 0 }} />
+              {size}
+            </span>
+          )}
+          {/*
+            Several workspace records on one directory. Supported, not a bug —
+            and after the registry-hygiene fix a `useWorktree` chat on the main
+            checkout produces exactly this. The row stays one row and says how
+            many; the records themselves are a drill-down in Manage worktrees.
+          */}
+          {recordCount > 1 && (
+            <span
+              title={`${recordCount} workspace records share this directory. That is a supported state; open Manage worktrees to see them individually.`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                padding: "0 5px",
+                borderRadius: 3,
+                background: "var(--chatlist-badge-agent-bg)",
+                color: "var(--chatlist-item-time-text)",
+                flexShrink: 0,
+              }}
+            >
+              <Layers size={10} style={{ flexShrink: 0 }} />
+              {recordCount} workspaces
+            </span>
+          )}
+          {note && note.tone === "muted" && (
+            <span
+              title={note.title}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                padding: "0 5px",
+                borderRadius: 3,
+                background: "var(--chatlist-badge-agent-bg)",
+                color: "var(--chatlist-item-time-text)",
+                flexShrink: 0,
+                opacity: 0.85,
+              }}
+            >
+              <Lock size={10} style={{ flexShrink: 0 }} />
+              {note.text}
+            </span>
+          )}
           <span style={{ opacity: 0.5 }}>({folder.chatCount})</span>
         </div>
       </div>
@@ -253,7 +420,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
             if (!newChatDisabled) onNewChat();
           }}
           disabled={newChatDisabled}
-          title={newChatDisabled ? "Chat in progress" : "New chat in this folder"}
+          title={isMissing ? "The directory no longer exists" : newChatDisabled ? "Chat in progress" : "New chat in this folder"}
           style={{
             background: newChatDisabled ? "var(--bg-secondary)" : "var(--accent)",
             color: newChatDisabled ? "var(--text-muted)" : "var(--text-on-accent)",

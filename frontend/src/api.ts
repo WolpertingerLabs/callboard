@@ -66,6 +66,25 @@ import type {
   CardMemberRun,
   CardListResponse,
   CardResponse,
+  WorkspaceWithRemovability,
+  WorkspaceListResponse,
+  WorkspaceRemovalBlocker,
+  WorkspaceCleanliness,
+  WorkspaceRefusalReason,
+  WorktreeNamingGuess,
+  WorkspaceRemovability,
+  WorkspaceRemovalReason,
+  WorkspaceIgnoredPreview,
+  WorkspaceDirectory,
+  FolderWorkspaceRecord,
+  UnmanagedWorktree,
+  UnmanagedWorktreeListing,
+  AdoptWorktreesResult,
+  ArchiveWorkspaceResult,
+  WorktreeDiskUsage,
+  TrashEntryView,
+  TrashListing,
+  TrashRestoreResult,
 } from "shared/types/index.js";
 
 export type {
@@ -136,6 +155,25 @@ export type {
   CardMemberRun,
   CardListResponse,
   CardResponse,
+  WorkspaceWithRemovability,
+  WorkspaceListResponse,
+  WorkspaceRemovalBlocker,
+  WorkspaceCleanliness,
+  WorkspaceRefusalReason,
+  WorktreeNamingGuess,
+  WorkspaceRemovability,
+  WorkspaceRemovalReason,
+  WorkspaceIgnoredPreview,
+  WorkspaceDirectory,
+  FolderWorkspaceRecord,
+  UnmanagedWorktree,
+  UnmanagedWorktreeListing,
+  AdoptWorktreesResult,
+  ArchiveWorkspaceResult,
+  WorktreeDiskUsage,
+  TrashEntryView,
+  TrashListing,
+  TrashRestoreResult,
 };
 
 export { CARD_CATEGORY_MAX } from "shared/types/index.js";
@@ -180,9 +218,11 @@ export async function listChats(
   return res.json();
 }
 
-export async function listFolders(maxAgeDays?: number): Promise<FolderListResponse> {
+export async function listFolders(maxAgeDays?: number, includeDiskUsage?: boolean): Promise<FolderListResponse> {
   const params = new URLSearchParams();
   if (maxAgeDays !== undefined) params.append("maxAgeDays", maxAgeDays.toString());
+  // Off unless asked: `du` is the slow part and this endpoint is polled.
+  if (includeDiskUsage) params.append("includeDiskUsage", "true");
   const res = await fetch(`${BASE}/chats/folders${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list folders");
   return res.json();
@@ -1645,4 +1685,77 @@ export function resumeJobRun(runId: string): Promise<JobRun> {
 
 export function retryJobStep(runId: string): Promise<JobRun> {
   return postJobRunAction(runId, "retry-step");
+}
+
+// ── Workspaces (plans/workspace-object.md, Phase 4a) ─────────────────
+//
+// The read/write split in these five is the safety property, not an accident of
+// naming: `listWorkspaces` and `listUnmanagedWorktrees` observe and write
+// nothing, `adoptWorktrees` acts only on paths the caller enumerated, and
+// `archiveWorkspace` acts on exactly one id. There is deliberately no
+// adopt-everything and no archive-many — the backend does not offer them and
+// the UI must not synthesise them out of a loop.
+
+export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceListResponse> {
+  const params = new URLSearchParams();
+  if (status) params.append("status", status);
+  if (includeDiskUsage) params.append("includeDiskUsage", "true");
+  const res = await fetch(`${BASE}/workspaces${params.toString() ? `?${params}` : ""}`);
+  await assertOk(res, "Failed to list workspaces");
+  return res.json();
+}
+
+/** Read-only discovery. Creates no record and writes nothing. */
+export async function listUnmanagedWorktrees(repoPath: string, includeDiskUsage = true): Promise<UnmanagedWorktreeListing> {
+  const params = new URLSearchParams({ repoPath });
+  if (!includeDiskUsage) params.append("includeDiskUsage", "false");
+  const res = await fetch(`${BASE}/workspaces/unmanaged?${params}`);
+  await assertOk(res, "Failed to list unmanaged worktrees");
+  return res.json();
+}
+
+/**
+ * Adopt the named worktrees. Paths only — never a filter, never a pattern.
+ *
+ * The backend cannot tell "a human chose this path" from "an agent generated
+ * it", which is Phase 2b's stated limitation; the confirmation step in front of
+ * this call is where that gap is closed, so nothing may call it without one.
+ */
+export async function adoptWorktrees(paths: string[]): Promise<AdoptWorktreesResult> {
+  const res = await fetch(`${BASE}/workspaces/adopt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+  await assertOk(res, "Failed to adopt worktrees");
+  return res.json();
+}
+
+/** Archive one workspace, quarantining its worktree only if every gate passes. */
+export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResult> {
+  const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(id)}/archive`, { method: "POST" });
+  await assertOk(res, "Failed to archive workspace");
+  return res.json();
+}
+
+export async function listTrash(includeDiskUsage = true): Promise<TrashListing> {
+  const params = new URLSearchParams();
+  if (includeDiskUsage) params.append("includeDiskUsage", "true");
+  const res = await fetch(`${BASE}/workspaces/trash${params.toString() ? `?${params}` : ""}`);
+  await assertOk(res, "Failed to list trash");
+  return res.json();
+}
+
+/**
+ * Restore a quarantined worktree.
+ *
+ * A refusal comes back as HTTP 409 with a `TrashRestoreResult` body rather than
+ * an error, because the refusal *is* the answer the caller wants — and every
+ * refusal leaves the trash entry intact.
+ */
+export async function restoreTrashEntry(entry: string): Promise<TrashRestoreResult> {
+  const res = await fetch(`${BASE}/workspaces/trash/${encodeURIComponent(entry)}/restore`, { method: "POST" });
+  if (res.status === 409) return res.json();
+  await assertOk(res, "Failed to restore trash entry");
+  return res.json();
 }

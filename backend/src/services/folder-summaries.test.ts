@@ -39,6 +39,7 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const { buildFolderSummaries } = await import("./folder-summaries.js");
 const { buildWorkspaceIndex } = await import("./workspace-views.js");
+const { describeWorkspaceDirectory } = await import("./workspace-service.js");
 
 // ── Fixture directories. Real git, because worktree-ness is a filesystem claim. ──
 const gitRoot = mkdtempSync(join(tmpdir(), "callboard-folder-summaries-git-"));
@@ -156,7 +157,7 @@ const sessions: DiscoveredSession[] = [
   session(agentWorkspace, "forge-old", 24 * 30),
 ];
 
-function build() {
+function build(opts: { diskUsage?: (folder: string) => { bytes?: number; error?: string } } = {}) {
   return buildFolderSummaries(sessions, {
     cutoff,
     workspaces: buildWorkspaceIndex(records),
@@ -165,18 +166,31 @@ function build() {
     isOngoing: () => false,
     isWaiting: () => false,
     gitInfo: (folder) => ({ isGitRepo: existsSync(join(folder, ".git")), branch: "main" }),
+    describeDirectory: (workspace) => describeWorkspaceDirectory(workspace),
+    ...(opts.diskUsage && { diskUsage: opts.diskUsage }),
   });
 }
 
-/** Sessions the sidebar is supposed to account for: in window, directory alive. */
-const eligible = sessions.filter((s) => s.createdAt >= cutoff && existsSync(s.folder));
+/** Directories an active record claims — the one exception to the exists rule. */
+const claimed = new Set(records.filter((r) => r.status === "active").map((r) => r.cwd));
+
+/**
+ * Sessions the sidebar is supposed to account for: in window, and either the
+ * directory is alive or an active workspace record claims it.
+ *
+ * The second clause is Phase 4a's one addition to Phase 3's row set. It is
+ * narrow on purpose — a record alone still never produces a row, so the
+ * registry cannot become the row source — and it is what makes the seven live
+ * records pointing at removed directories visible enough to clean up.
+ */
+const eligible = sessions.filter((s) => s.createdAt >= cutoff && (existsSync(s.folder) || claimed.has(s.folder)));
 
 describe("no chat disappears", () => {
   it("accounts for every eligible chat exactly once", () => {
     const folders = build();
     const total = folders.reduce((sum, f) => sum + f.chatCount, 0);
     expect(total).toBe(eligible.length);
-    expect(total).toBe(56); // 40 forge + 12 main + 2 recorded + 1 bare + 1 stale
+    expect(total).toBe(58); // 40 forge + 12 main + 2 recorded + 1 bare + 1 stale + 2 vanished-but-recorded
   });
 
   it("gives every eligible chat's folder a row", () => {
@@ -189,7 +203,7 @@ describe("no chat disappears", () => {
   it("emits one row per directory, never one per workspace record", () => {
     const folders = build();
     expect(folders).toHaveLength(new Set(eligible.map((s) => s.folder)).size);
-    expect(folders.map((f) => f.folder).sort()).toEqual([agentWorkspace, repoDir, wtBare, wtRecorded, wtStaleRecord].sort());
+    expect(folders.map((f) => f.folder).sort()).toEqual([agentWorkspace, repoDir, vanished, wtBare, wtRecorded, wtStaleRecord].sort());
   });
 
   /**
@@ -226,12 +240,101 @@ describe("no chat disappears", () => {
   });
 
   /**
-   * An active record for a removed directory must not conjure a row. Six of
-   * the nine real records are in exactly this state, so a workspace-first
-   * projection would have filled the sidebar with rows pointing nowhere.
+   * The rule Phase 3 wrote, kept exactly where it was aimed. A directory that
+   * is gone and that the registry does not claim stays invisible — 263 of 324
+   * real folders are in that state, they have never been listed, and they must
+   * not start being listed now.
+   *
+   * `wtBare`'s old chat is outside the window and `vanished` *is* claimed, so
+   * the fixture proves this with the archived-record directory: if `wtStale`
+   * were removed from disk its row would go, because `ws-archived` is not an
+   * active claim.
    */
-  it("does not resurrect a directory that is gone, even with an active record", () => {
-    expect(build().map((f) => f.folder)).not.toContain(vanished);
+  it("does not resurrect a directory that is gone and unclaimed", () => {
+    const unclaimedGone = join(gitRoot, "never-listed");
+    const rows = buildFolderSummaries([...sessions, session(unclaimedGone, "orphan-a", 1)], {
+      cutoff,
+      workspaces: buildWorkspaceIndex(records),
+      directoryExists: (folder) => existsSync(folder),
+      chatMetadata: () => ({}),
+      isOngoing: () => false,
+      isWaiting: () => false,
+      gitInfo: () => ({ isGitRepo: false }),
+      describeDirectory: (workspace) => describeWorkspaceDirectory(workspace),
+    });
+    expect(rows.map((f) => f.folder)).not.toContain(unclaimedGone);
+  });
+
+  /**
+   * Phase 4a's one deliberate addition. Seven of the ten real records point at
+   * directories that were removed outside Callboard, and a cleanup surface that
+   * hides them hides the exact thing it exists to clean up. The row is listed
+   * and it says plainly that the directory is gone — it does not look normal.
+   *
+   * The property Phase 3 was protecting survives: the record does not create
+   * the row, the chat does. `ws-vanished` would produce nothing without
+   * `vanished-a` and `vanished-b` being inside the age window.
+   */
+  it("lists a gone directory that an active record claims, and marks it missing", () => {
+    const row = build().find((f) => f.folder === vanished)!;
+    expect(row).toBeTruthy();
+    expect(row.directoryState).toBe("missing");
+    expect(row.directoryDetail).toContain("does not exist");
+    expect(row.chatCount).toBe(2);
+    // Nothing on disk to ask git about, but the record still remembers the
+    // branch a restore would need.
+    expect(row.isGitRepo).toBe(false);
+    expect(row.gitBranch).toBe("feat/vanished");
+  });
+});
+
+describe("what a row now knows about cleanup", () => {
+  it("carries the active records claiming a directory, with ownership", () => {
+    const row = build().find((f) => f.folder === wtRecorded)!;
+    expect(row.workspaces).toHaveLength(1);
+    expect(row.workspaces![0]).toMatchObject({ id: "ws-recorded", owned: true, isolation: "worktree", branch: "feat/recorded" });
+    expect(row.workspaces![0].directory.state).toBe("present");
+  });
+
+  it("reports a record Callboard does not own, which is why it cannot be cleaned up", () => {
+    const row = build().find((f) => f.folder === repoDir)!;
+    expect(row.workspaces![0]).toMatchObject({ id: "ws-mainrepo", owned: false });
+  });
+
+  it("leaves records off a directory no record claims", () => {
+    expect(build().find((f) => f.folder === wtBare)!.workspaces).toBeUndefined();
+    // An archived record is not a claim, so this one is record-less too.
+    expect(build().find((f) => f.folder === wtStaleRecord)!.workspaces).toBeUndefined();
+  });
+
+  it("reports no directory state for a directory the registry does not claim", () => {
+    const row = build().find((f) => f.folder === wtBare)!;
+    expect(row.directoryState).toBeUndefined();
+    expect(row.directoryDetail).toBeUndefined();
+  });
+
+  /**
+   * `du` is the slow part and this listing is polled every fifteen seconds, so
+   * the projection measures nothing unless a caller supplies the dependency.
+   * The absence of the dependency *is* the opt-in.
+   */
+  it("measures nothing unless a size dependency is supplied", () => {
+    for (const row of build()) expect(row.diskUsage).toBeUndefined();
+  });
+
+  it("measures each listed directory when one is", () => {
+    const measured: string[] = [];
+    const rows = build({
+      diskUsage: (folder) => {
+        measured.push(folder);
+        return { bytes: 4096 };
+      },
+    });
+    expect(rows.find((f) => f.folder === wtRecorded)!.diskUsage).toEqual({ bytes: 4096 });
+    // A directory that is gone has no size, and asking would put an error
+    // string in the row where `directoryState: "missing"` already says it.
+    expect(rows.find((f) => f.folder === vanished)!.diskUsage).toBeUndefined();
+    expect(measured).not.toContain(vanished);
   });
 });
 
@@ -279,11 +382,30 @@ describe("backward compatibility with the pre-Phase-3 projection", () => {
     return out.sort((a, b) => a.folder.localeCompare(b.folder));
   }
 
+  /**
+   * Phase 4a adds rows for gone directories an active record claims, so parity
+   * is asserted over everything else — which is every row the legacy grouping
+   * ever produced. The comparison is still exact: a row the legacy rule emitted
+   * must still exist, hold the same chats, and open the same chat. The added
+   * rows are pinned separately, by name, above.
+   */
   it("produces exactly the legacy rows, memberships and entry points", () => {
+    const legacy = legacyGrouping();
+    const legacyFolders = new Set(legacy.map((r) => r.folder));
     const now = build()
+      .filter((f) => legacyFolders.has(f.folder))
       .map((f) => ({ folder: f.folder, chatCount: f.chatCount, mostRecentChatId: f.mostRecentChatId }))
       .sort((a, b) => a.folder.localeCompare(b.folder));
-    expect(now).toEqual(legacyGrouping());
+    expect(now).toEqual(legacy);
+  });
+
+  it("adds nothing to the legacy row set but gone directories the registry claims", () => {
+    const legacyFolders = new Set(legacyGrouping().map((r) => r.folder));
+    for (const row of build()) {
+      if (legacyFolders.has(row.folder)) continue;
+      expect(existsSync(row.folder)).toBe(false);
+      expect(claimed.has(row.folder)).toBe(true);
+    }
   });
 
   it("keeps every pre-existing field populated", () => {

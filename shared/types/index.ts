@@ -56,6 +56,13 @@ export type {
   UnmanagedWorktreeListing,
   WorkspaceAdoptionOutcome,
   AdoptWorktreesResult,
+  FolderWorkspaceRecord,
+  WorkspaceListResponse,
+  TrashEntryView,
+  TrashListing,
+  TrashRestoreFailure,
+  TrashRestoreBranchOutcome,
+  TrashRestoreResult,
 } from "./workspace.js";
 
 export type { ParsedMessage } from "./message.js";

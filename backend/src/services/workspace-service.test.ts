@@ -32,6 +32,7 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 const { checkWorktreeClean } = await import("../utils/git.js");
 const { WORKTREE_TOKEN_FILE, readWorktreeToken, worktreeTokenPath } = await import("../utils/worktree-token.js");
 const { TRASH_MANIFEST_FILE } = await import("../utils/worktree-trash.js");
+const { directoryDiskUsageCached, newDiskUsageBudget } = await import("../utils/disk-usage.js");
 const { createWorkspace, getWorkspace, listWorkspaces, recordWorktreeWorkspace } = await import("./workspace-store.js");
 const { archiveWorkspace, describeWorkspaceDirectory, evaluateWorktreeRemoval, listWorkspacesWithRemovability } = await import("./workspace-service.js");
 const { chatFileService } = await import("./chat-file-service.js");
@@ -428,6 +429,83 @@ describe("archiveWorkspace quarantines what it may", () => {
     expect(result!.worktree.removed).toBe(true);
   });
 
+  /**
+   * A branch name is not a commit. Recording the SHA is what stops a restore
+   * thirty days later from resolving the *name* — against a remote, if the
+   * local branch is gone — and checking out a different tree under the right
+   * label. @see TrashManifest.headSha
+   */
+  it("records the commit HEAD was on, not just the branch name", async () => {
+    const { workspace, cwd } = ownedWorktree("manifest/sha");
+    const headSha = git(["rev-parse", "HEAD"], cwd).trim();
+
+    const result = await archiveWorkspace(workspace.id);
+    const manifest = JSON.parse(readFileSync(join(result!.worktree.trashPath!, TRASH_MANIFEST_FILE), "utf8"));
+
+    expect(manifest.headSha).toBe(headSha);
+    expect(manifest.branch).toBe("manifest/sha");
+    // The printed recipe carries it too, so a human restoring by hand without
+    // Callboard is told the branch may have moved and what to check out.
+    expect(manifest.restore.join("\n")).toContain(headSha);
+  });
+
+  /**
+   * The archive's own sweep. It is the only deletion in this whole path, it
+   * runs unprompted, and it takes entries belonging to *other* workspaces —
+   * ones the user may have been about to restore. Returning what it took is
+   * what lets a confirmation stop claiming "nothing is deleted".
+   */
+  it("reports what the retention sweep deleted on the way out", async () => {
+    const stale = join(trashDir, "ws-someone-elses-2026-01-01T00-00-00-000Z");
+    mkdirSync(stale, { recursive: true });
+    writeFileSync(
+      join(stale, TRASH_MANIFEST_FILE),
+      JSON.stringify({ workspaceId: "ws-someone-else", originalPath: "/gone", quarantinedAt: new Date(Date.now() - 400 * 86_400_000).toISOString(), restore: [] }),
+    );
+    const young = join(trashDir, "ws-recent-2026-07-01T00-00-00-000Z");
+    mkdirSync(young, { recursive: true });
+    writeFileSync(
+      join(young, TRASH_MANIFEST_FILE),
+      JSON.stringify({ workspaceId: "ws-recent", originalPath: "/also-gone", quarantinedAt: new Date().toISOString(), restore: [] }),
+    );
+
+    const { workspace } = ownedWorktree("sweep/reported");
+    const result = await archiveWorkspace(workspace.id);
+
+    expect(result!.trashSweep?.removed).toEqual(["ws-someone-elses-2026-01-01T00-00-00-000Z"]);
+    expect(existsSync(stale)).toBe(false);
+    // Everything inside the retention window is still there, including the
+    // entry this archive just created.
+    expect(existsSync(young)).toBe(true);
+    expect(existsSync(result!.worktree.trashPath!)).toBe(true);
+  });
+
+  /**
+   * The size cache has a five-minute TTL, which is fine for a directory that
+   * is merely sitting there and wrong for one this call just moved: the sidebar
+   * would go on showing 9.4 GB against a path that is gone. The archive is the
+   * caller `clearDiskUsageCache` was exported for.
+   */
+  it("drops memoised sizes for a directory it just moved", async () => {
+    const { workspace, cwd } = ownedWorktree("cache/moved");
+    // Warm the cache while the directory is still there.
+    expect(directoryDiskUsageCached(cwd).bytes).toBeGreaterThan(0);
+
+    await archiveWorkspace(workspace.id);
+
+    // Same path, same TTL window — but the measurement is taken again, and the
+    // directory is not there any more.
+    const after = directoryDiskUsageCached(cwd);
+    expect(after.bytes).toBeUndefined();
+    expect(after.error).toContain("does not exist");
+  });
+
+  it("says nothing about the sweep when the sweep took nothing", async () => {
+    const { workspace } = ownedWorktree("sweep/quiet");
+    const result = await archiveWorkspace(workspace.id);
+    expect(result!.trashSweep).toBeUndefined();
+  });
+
   it("returns null for an unknown workspace", async () => {
     expect(await archiveWorkspace("ws-nope")).toBeNull();
   });
@@ -718,6 +796,52 @@ describe("listWorkspacesWithRemovability", () => {
     rmSync(join(dirtyCwd, "wip.txt"));
     git(["worktree", "remove", dirtyCwd], repoDir);
     git(["worktree", "remove", join(gitRoot, "repo.list-clean")], repoDir);
+  });
+
+  /**
+   * The archive confirmation states how many chats it is about to interrupt,
+   * so the number has to come with the record. It cannot be derived in the UI:
+   * chats are linked by `workspaceId` and the sidebar's rows are keyed by
+   * directory, which is a different question.
+   */
+  it("counts the chats each workspace would take down with it", () => {
+    const { workspace, cwd } = ownedWorktree("list/chats");
+    const { workspace: quiet } = ownedWorktree("list/quiet");
+    chatFileService.createChat(cwd, "sess-a", "{}", workspace.id);
+    chatFileService.createChat(cwd, "sess-b", "{}", workspace.id);
+    // Same directory, different workspace: linkage is by id, never by folder.
+    chatFileService.createChat(cwd, "sess-other", "{}", "ws-not-this-one");
+    chatFileService.createChat(cwd, "sess-unlinked", "{}");
+
+    const byId = new Map(listWorkspacesWithRemovability({ status: "active" }).map((w) => [w.id, w]));
+    expect(byId.get(workspace.id)!.chatCount).toBe(2);
+    expect(byId.get(quiet.id)!.chatCount).toBe(0);
+
+    git(["worktree", "remove", cwd], repoDir);
+    git(["worktree", "remove", worktreePathFor("list/quiet")], repoDir);
+  });
+
+  /**
+   * The management view asks for sizes unconditionally, so this listing must
+   * not be able to spend N × the per-directory `du` timeout on a blocked event
+   * loop. The budget is the bound, and what it did not reach says so per entry
+   * rather than coming back as a suspiciously absent number.
+   */
+  it("bounds the disk-usage measurement across the whole listing", () => {
+    const { cwd } = ownedWorktree("list/budget");
+    const budget = newDiskUsageBudget({ budgetMs: 0 });
+
+    const listed = listWorkspacesWithRemovability({ status: "active" }, { includeDiskUsage: true, budget });
+
+    expect(listed.length).toBeGreaterThan(0);
+    for (const workspace of listed) {
+      if (workspace.directory.state === "missing") continue;
+      expect(workspace.diskUsage?.bytes).toBeUndefined();
+      expect(workspace.diskUsage?.error).toContain("budget");
+    }
+    expect(budget.note(listed.length)).toContain("budget");
+
+    git(["worktree", "remove", cwd], repoDir);
   });
 
   it("gives the same verdicts sharing one context as evaluating each alone", () => {

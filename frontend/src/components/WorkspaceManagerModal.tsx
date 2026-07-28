@@ -1,0 +1,873 @@
+/**
+ * Manage worktrees — the surface that makes 43 leaked directories a two-minute
+ * job instead of an agent-driven one.
+ *
+ * Three tabs, in the order a cleanup actually goes:
+ *
+ *  1. **Workspaces** — what Callboard has a record for, why each one can or
+ *     cannot be cleaned up, and the archive action.
+ *  2. **Unmanaged** — the backlog: worktrees with no record, which Phase 2 will
+ *     never touch, and the adoption that changes that.
+ *  3. **Trash** — what quarantine is holding, when the 30-day sweep takes it,
+ *     and restore.
+ *
+ * ## The rules this component is not allowed to bend
+ *
+ * - **One row per directory, never per record.** Several workspaces may share a
+ *   `cwd` and that is supported; after the registry-hygiene fix a `useWorktree`
+ *   chat on the main checkout produces exactly that. The directory is the
+ *   group; the records inside it are the drill-down.
+ * - **Nothing acts in bulk.** Archive is one workspace at a time, each behind
+ *   its own confirmation. Adoption takes only paths a person ticked, and there
+ *   is deliberately no select-all — see AdoptWorktreesConfirm for why the
+ *   tedium is the point.
+ * - **The naming heuristic only ever offers.** It is rendered as a labelled
+ *   guess next to a candidate and is never read by anything that decides.
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Ban, FolderGit2, HardDrive, Loader2, RotateCcw, X } from "lucide-react";
+import {
+  adoptWorktrees,
+  archiveWorkspace,
+  listTrash,
+  listUnmanagedWorktrees,
+  listWorkspaces,
+  restoreTrashEntry,
+  type TrashEntryView,
+  type TrashRestoreResult,
+  type UnmanagedWorktree,
+  type UnmanagedWorktreeListing,
+  type WorkspaceWithRemovability,
+} from "../api";
+import { blockerLabel, formatDiskUsage, isFixedByAdoption } from "../utils/workspaceFormat";
+import AdoptWorktreesConfirm from "./AdoptWorktreesConfirm";
+import ArchiveWorkspaceConfirm from "./ArchiveWorkspaceConfirm";
+import ConfirmModal from "./ConfirmModal";
+import ModalOverlay from "./ModalOverlay";
+
+type Tab = "managed" | "unmanaged" | "trash";
+
+interface Props {
+  onClose: () => void;
+  /**
+   * Repositories the unmanaged tab can be pointed at, derived by the caller
+   * from the directories it is already showing. Discovery is per-repository —
+   * `git worktree list` is — so there is no "everything everywhere" listing to
+   * offer, and inventing one by scanning the disk is not something a cleanup
+   * tool should do.
+   */
+  repoCandidates: string[];
+  /** Called after anything mutates, so the list behind the modal catches up. */
+  onChanged?: () => void;
+}
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "managed", label: "Workspaces" },
+  { id: "unmanaged", label: "Unmanaged worktrees" },
+  { id: "trash", label: "Trash" },
+];
+
+const monoStyle = { fontFamily: "var(--font-mono, monospace)", wordBreak: "break-all" as const };
+
+function chipStyle(tone: "neutral" | "warn" | "danger" = "neutral") {
+  return {
+    display: "inline-flex" as const,
+    alignItems: "center" as const,
+    gap: 4,
+    fontSize: 10,
+    padding: "1px 6px",
+    borderRadius: 3,
+    background: tone === "warn" ? "var(--warning-bg)" : tone === "danger" ? "var(--danger-bg)" : "var(--bg-secondary)",
+    color: tone === "warn" ? "var(--warning)" : tone === "danger" ? "var(--danger)" : "var(--text-muted)",
+    border: "1px solid var(--border)",
+  };
+}
+
+function primaryButton(disabled?: boolean) {
+  return {
+    padding: "6px 12px",
+    borderRadius: 6,
+    fontSize: 12,
+    background: disabled ? "var(--bg-secondary)" : "var(--accent)",
+    color: disabled ? "var(--text-muted)" : "var(--text-on-accent)",
+    border: disabled ? "1px solid var(--border)" : "none",
+    cursor: disabled ? "not-allowed" : "pointer",
+  };
+}
+
+function dangerButton() {
+  return {
+    padding: "6px 12px",
+    borderRadius: 6,
+    fontSize: 12,
+    background: "var(--danger)",
+    color: "var(--text-on-accent)",
+    border: "none",
+    cursor: "pointer" as const,
+  };
+}
+
+/** Days until an ISO timestamp, floored. Negative means it is already due. */
+function daysUntil(iso: string, now: number): number {
+  return Math.floor((Date.parse(iso) - now) / 86_400_000);
+}
+
+/** `1 file` / `4 files`. */
+function plural(count: number, one: string, many = `${one}s`): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/**
+ * What a restore actually did, in the terms a user can check.
+ *
+ * The copy count on its own is the reading that hid a data-loss bug: a restore
+ * that skipped every tracked directory reported "2 entries copied" and `ok`,
+ * while the `.env` files underneath them stayed in the trash for the sweep. So
+ * the skips are stated too, and — because a skip is only harmless when git
+ * wrote the *same* commit back — so is which commit that was.
+ */
+function describeRestore(entry: TrashEntryView, result: TrashRestoreResult): string {
+  const parts = [`${plural(result.copiedEntries ?? 0, "file")} that git does not track ${result.copiedEntries === 1 ? "was" : "were"} copied back.`];
+  if (result.skippedCount) {
+    parts.push(`${plural(result.skippedCount, "path")} already existed and ${result.skippedCount === 1 ? "was" : "were"} left exactly as git checked it out.`);
+  }
+  const branch = entry.branch ?? "the branch";
+  if (result.branchOutcome === "detached" && result.restoredCommit) {
+    parts.push(
+      `Note: ${branch} no longer points at the commit this was quarantined at, so the checkout was recreated detached at ${result.restoredCommit.slice(0, 8)} — ` +
+        `the commit you actually had. Nothing followed the branch name to a different tree.`,
+    );
+  } else if (result.branchOutcome === "branch-recreated" && result.restoredCommit) {
+    parts.push(`${branch} had been deleted; it was recreated at ${result.restoredCommit.slice(0, 8)}, the commit this was quarantined at.`);
+  } else if (result.branchOutcome === "branch-unverified") {
+    parts.push(`This entry was quarantined before Callboard recorded commits, so it was restored by branch name — check that HEAD is where you expect.`);
+  }
+  return parts.join(" ");
+}
+
+/** The paths a restore could not bring back. Empty string when there were none. */
+function describeUnrestored(result: TrashRestoreResult): string {
+  if (!result.failedCount) return "";
+  const listed = (result.failedEntries ?? []).map((f) => `${f.path} (${f.error})`).join("; ");
+  const more = result.failedCount > (result.failedEntries?.length ?? 0) ? `, and ${result.failedCount - (result.failedEntries?.length ?? 0)} more` : "";
+  return `Not restored — still only in the trash entry: ${listed}${more}. Copy them out by hand before the retention sweep takes it.`;
+}
+
+export default function WorkspaceManagerModal({ onClose, repoCandidates, onChanged }: Props) {
+  const [tab, setTab] = useState<Tab>("managed");
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // ── Managed workspaces ────────────────────────────────────────────
+  const [workspaces, setWorkspaces] = useState<WorkspaceWithRemovability[] | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<WorkspaceWithRemovability | null>(null);
+  const [recordOnlyTarget, setRecordOnlyTarget] = useState<WorkspaceWithRemovability | null>(null);
+
+  const [workspacesNote, setWorkspacesNote] = useState<string | undefined>(undefined);
+
+  const loadWorkspaces = useCallback(async () => {
+    try {
+      const listing = await listWorkspaces("active", true);
+      setWorkspaces(listing.workspaces);
+      // The listing's `du` budget ran out. Saying so is the difference between
+      // "these are small" and "these were never measured".
+      setWorkspacesNote(listing.diskUsageNote);
+    } catch (err: any) {
+      setError(err.message || "Failed to load workspaces");
+    }
+  }, []);
+
+  // ── Unmanaged worktrees ───────────────────────────────────────────
+  const [repoPath, setRepoPath] = useState(repoCandidates[0] ?? "");
+  const [unmanaged, setUnmanaged] = useState<UnmanagedWorktreeListing | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmingAdoption, setConfirmingAdoption] = useState(false);
+
+  const loadUnmanaged = useCallback(async (repo: string) => {
+    if (!repo) return;
+    setScanning(true);
+    setUnmanaged(null);
+    // A stale tick would carry a path from the previous repository into an
+    // adoption. Selections never survive a rescan.
+    setSelected(new Set());
+    try {
+      setUnmanaged(await listUnmanagedWorktrees(repo));
+    } catch (err: any) {
+      setError(err.message || "Failed to scan for unmanaged worktrees");
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  // ── Trash ─────────────────────────────────────────────────────────
+  const [trash, setTrash] = useState<TrashEntryView[] | null>(null);
+  const [retentionDays, setRetentionDays] = useState(30);
+  const [trashNote, setTrashNote] = useState<string | undefined>(undefined);
+  const [restoreTarget, setRestoreTarget] = useState<TrashEntryView | null>(null);
+  const now = useMemo(() => Date.now(), [trash]);
+
+  const loadTrash = useCallback(async () => {
+    try {
+      const listing = await listTrash();
+      setTrash(listing.entries);
+      setRetentionDays(listing.retentionDays);
+      setTrashNote(listing.diskUsageNote);
+    } catch (err: any) {
+      setError(err.message || "Failed to load the trash");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === "managed" && workspaces === null) loadWorkspaces();
+    if (tab === "trash" && trash === null) loadTrash();
+  }, [tab, workspaces, trash, loadWorkspaces, loadTrash]);
+
+  // ── Actions ───────────────────────────────────────────────────────
+
+  /**
+   * One workspace, one call. There is no loop over a selection here and there
+   * must never be: bulk archive is how 40 GB moves on a misclick.
+   */
+  const runArchive = async (workspace: WorkspaceWithRemovability) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await archiveWorkspace(workspace.id);
+      const { disposition, trashPath, blockers } = result.worktree;
+      // The archive runs the retention sweep, which is the one thing in this
+      // whole flow that deletes. What it took is reported here rather than left
+      // in a log file the user will never open.
+      const swept = result.trashSweep?.removed ?? [];
+      const sweepNote =
+        swept.length > 0
+          ? ` The retention sweep also permanently deleted ${swept.length} trash entr${swept.length === 1 ? "y" : "ies"} past the ${retentionDays}-day window: ${swept.join(", ")}.`
+          : "";
+      if (disposition === "quarantined") {
+        setNotice(`Archived “${workspace.name}”. Its worktree is in ${trashPath} and can be restored from the Trash tab.${sweepNote}`);
+      } else if (disposition === "partial") {
+        setError(
+          `Archived “${workspace.name}”, but the removal did not complete cleanly. The directory was moved to ${trashPath ?? "the trash"} and git's ` +
+            `bookkeeping did not follow — check "git worktree prune" in ${workspace.repoPath ?? "the repository"}.`,
+        );
+      } else {
+        setNotice(
+          `Archived the record for “${workspace.name}”. The directory was left exactly where it is${
+            blockers.length > 0 ? `: ${blockers.map((b) => b.detail).join(" ")}` : "."
+          }${sweepNote}`,
+        );
+      }
+      setWorkspaces(null);
+      setTrash(null);
+      onChanged?.();
+    } catch (err: any) {
+      setError(err.message || "Failed to archive workspace");
+    } finally {
+      setBusy(false);
+      setArchiveTarget(null);
+      setRecordOnlyTarget(null);
+    }
+  };
+
+  /**
+   * `paths` comes from the confirmation, which is the screen that rendered
+   * them. Reading `selected` here instead would post a set the user may never
+   * have seen — today those agree, but only because a rescan happens to clear
+   * the selection.
+   */
+  const runAdoption = async (paths: string[]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await adoptWorktrees(paths);
+      const refused = result.outcomes.filter((o) => !o.adopted);
+      setNotice(
+        `Adopted ${result.adopted} worktree${result.adopted === 1 ? "" : "s"}.` +
+          (refused.length > 0 ? ` ${refused.length} refused: ${refused.map((o) => `${o.path} (${o.refusal?.detail ?? "unknown reason"})`).join("; ")}` : ""),
+      );
+      setSelected(new Set());
+      setWorkspaces(null);
+      await loadUnmanaged(repoPath);
+      onChanged?.();
+    } catch (err: any) {
+      setError(err.message || "Failed to adopt worktrees");
+    } finally {
+      setBusy(false);
+      setConfirmingAdoption(false);
+    }
+  };
+
+  const runRestore = async (entry: TrashEntryView) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await restoreTrashEntry(entry.entry);
+      if (result.ok) {
+        setNotice(`Restored ${result.originalPath}. ${describeRestore(entry, result)} The trash copy was kept.`);
+      } else {
+        // A restore that copied some of the tree and could not copy the rest is
+        // a failure *with contents*, and the paths it could not bring back are
+        // the only part a user can act on. Never collapse it to the sentence.
+        setError([result.failure?.detail ?? "The restore did not run. Nothing was changed.", describeUnrestored(result)].filter(Boolean).join(" "));
+      }
+      setTrash(null);
+      onChanged?.();
+    } catch (err: any) {
+      setError(err.message || "Failed to restore");
+    } finally {
+      setBusy(false);
+      setRestoreTarget(null);
+    }
+  };
+
+  // ── Managed tab, grouped by directory ─────────────────────────────
+
+  const byDirectory = useMemo(() => {
+    const groups = new Map<string, WorkspaceWithRemovability[]>();
+    for (const workspace of workspaces ?? []) {
+      const bucket = groups.get(workspace.cwd);
+      if (bucket) bucket.push(workspace);
+      else groups.set(workspace.cwd, [workspace]);
+    }
+    return [...groups.entries()];
+  }, [workspaces]);
+
+  const totalManagedBytes = useMemo(() => byDirectory.reduce((sum, [, records]) => sum + (records[0].diskUsage?.bytes ?? 0), 0), [byDirectory]);
+
+  const selectedWorktrees = useMemo(() => (unmanaged?.worktrees ?? []).filter((w) => selected.has(w.path)), [unmanaged, selected]);
+
+  const unmanagedBytes = useMemo(() => (unmanaged?.worktrees ?? []).reduce((sum, w) => sum + (w.diskUsage.bytes ?? 0), 0), [unmanaged]);
+
+  const toggle = (path: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  return (
+    <ModalOverlay>
+      <div
+        style={{
+          background: "var(--bg)",
+          borderRadius: 8,
+          border: "1px solid var(--border)",
+          width: "94%",
+          maxWidth: 860,
+          height: "88vh",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        {/* Header */}
+        <div style={{ padding: "16px 20px 0", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h2 style={{ margin: 0, fontSize: 17, display: "flex", alignItems: "center", gap: 8 }}>
+              <FolderGit2 size={17} />
+              Manage worktrees
+            </h2>
+            <button
+              onClick={onClose}
+              title="Close"
+              style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex" }}
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
+            {TABS.map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                style={{
+                  padding: "8px 14px",
+                  fontSize: 13,
+                  background: "none",
+                  border: "none",
+                  borderBottom: tab === id ? "2px solid var(--accent)" : "2px solid transparent",
+                  color: tab === id ? "var(--text)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  fontWeight: tab === id ? 600 : 400,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Messages */}
+        {(error || notice) && (
+          <div
+            style={{
+              margin: "12px 20px 0",
+              padding: "8px 10px",
+              borderRadius: 6,
+              fontSize: 12,
+              lineHeight: 1.5,
+              background: error ? "var(--danger-bg)" : "var(--success-bg, var(--bg-secondary))",
+              color: error ? "var(--danger)" : "var(--text)",
+              border: "1px solid var(--border)",
+              display: "flex",
+              gap: 8,
+              alignItems: "flex-start",
+            }}
+          >
+            <span style={{ flex: 1 }}>{error ?? notice}</span>
+            <button
+              onClick={() => {
+                setError(null);
+                setNotice(null);
+              }}
+              style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, display: "flex" }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {/* Body */}
+        <div style={{ flex: 1, overflow: "auto", padding: "16px 20px" }}>
+          {tab === "managed" && (
+            <>
+              <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Directories Callboard holds a workspace record for
+                {totalManagedBytes > 0 && <> · {formatDiskUsage({ bytes: totalManagedBytes })} in total</>}. A worktree is only ever moved to the trash when
+                every gate passes; where one does not, the reason is shown instead of the action.
+                {workspacesNote && <span style={{ display: "block", marginTop: 4 }}>{workspacesNote}</span>}
+              </p>
+              {workspaces === null ? (
+                <Loading />
+              ) : byDirectory.length === 0 ? (
+                <Empty text="No active workspace records. Anything Callboard created before this feature existed is in the Unmanaged tab." />
+              ) : (
+                byDirectory.map(([cwd, records]) => (
+                  <DirectoryGroup key={cwd} cwd={cwd} records={records} busy={busy} onArchive={setArchiveTarget} onArchiveRecordOnly={setRecordOnlyTarget} />
+                ))
+              )}
+            </>
+          )}
+
+          {tab === "unmanaged" && (
+            <>
+              <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Git worktrees with no workspace record. Callboard will never remove these — it cannot prove it created them. Adopting one writes an ownership
+                token and a record; it does not delete, move or modify anything.
+              </p>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+                <select
+                  value={repoPath}
+                  onChange={(e) => setRepoPath(e.target.value)}
+                  style={{
+                    flex: 1,
+                    minWidth: 220,
+                    background: "var(--bg-secondary)",
+                    color: "var(--text)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 4,
+                    padding: "5px 8px",
+                    fontSize: 12,
+                  }}
+                >
+                  {repoCandidates.length === 0 && <option value="">No repository in the current list</option>}
+                  {repoCandidates.map((repo) => (
+                    <option key={repo} value={repo}>
+                      {repo}
+                    </option>
+                  ))}
+                </select>
+                <button onClick={() => loadUnmanaged(repoPath)} disabled={!repoPath || scanning} style={primaryButton(!repoPath || scanning)}>
+                  {scanning ? "Scanning…" : "Scan"}
+                </button>
+              </div>
+
+              {scanning ? (
+                <Loading />
+              ) : unmanaged === null ? (
+                <Empty text="Pick a repository and scan. Nothing is written by a scan." />
+              ) : unmanaged.worktrees.length === 0 ? (
+                <Empty
+                  text={`Every one of ${unmanaged.totalWorktrees} registered worktree${unmanaged.totalWorktrees === 1 ? "" : "s"} in this repository already has a record.`}
+                />
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+                    {unmanaged.worktrees.length} unmanaged of {unmanaged.totalWorktrees} registered
+                    {unmanagedBytes > 0 && <> · {formatDiskUsage({ bytes: unmanagedBytes })} on disk</>}
+                    {unmanaged.diskUsageNote && <div style={{ marginTop: 4 }}>{unmanaged.diskUsageNote}</div>}
+                  </div>
+                  {unmanaged.worktrees.map((worktree) => (
+                    <UnmanagedRow key={worktree.path} worktree={worktree} checked={selected.has(worktree.path)} onToggle={() => toggle(worktree.path)} />
+                  ))}
+                </>
+              )}
+            </>
+          )}
+
+          {tab === "trash" && (
+            <>
+              <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Quarantined worktrees. Nothing here has been deleted — the retention sweep removes an entry {retentionDays} days after it arrived, and that is
+                the only place Callboard deletes anything on its own — and archiving a workspace runs it, so a click over on the Workspaces tab can empty an
+                expired entry from here. Restoring copies the contents back out and keeps the trash copy.
+                {trashNote && <span style={{ display: "block", marginTop: 4 }}>{trashNote}</span>}
+              </p>
+              {trash === null ? (
+                <Loading />
+              ) : trash.length === 0 ? (
+                <Empty text="The trash is empty." />
+              ) : (
+                trash.map((entry) => <TrashRow key={entry.entry} entry={entry} now={now} busy={busy} onRestore={setRestoreTarget} />)
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer — only the unmanaged tab has a batched action, and it is gated */}
+        {tab === "unmanaged" && (
+          <div
+            style={{
+              padding: "12px 20px",
+              borderTop: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              {selected.size === 0 ? "Tick the worktrees you want Callboard to manage." : `${selected.size} selected`}
+            </span>
+            <button onClick={() => setConfirmingAdoption(true)} disabled={selected.size === 0 || busy} style={primaryButton(selected.size === 0 || busy)}>
+              Adopt selected…
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Confirmations. Every mutation on this surface passes through one. */}
+      {archiveTarget && (
+        <ArchiveWorkspaceConfirm
+          workspace={archiveTarget}
+          // The count the backend already computed. Passing it is not a nicety:
+          // the archive interrupts and archives every one of these chats before
+          // it even evaluates the worktree.
+          chatCount={archiveTarget.chatCount ?? 0}
+          busy={busy}
+          onCancel={() => setArchiveTarget(null)}
+          onConfirm={() => runArchive(archiveTarget)}
+        />
+      )}
+      {recordOnlyTarget && (
+        <ConfirmModal
+          isOpen
+          onClose={() => setRecordOnlyTarget(null)}
+          onConfirm={() => runArchive(recordOnlyTarget)}
+          title={`Archive the record for “${recordOnlyTarget.name}”?`}
+          /*
+            "…and nothing else" was false. Archiving interrupts every chat
+            linked to the workspace and stamps it archived *before* the
+            removability gate runs, so it happens on this path too — the
+            directory is what stays untouched, not the sessions.
+          */
+          message={
+            `This marks the workspace record archived. The directory at ${recordOnlyTarget.cwd} is not moved, not deleted and not modified — Callboard will ` +
+            `not touch it, because ${recordOnlyTarget.removability.blockers.map((b) => b.detail).join(" ")}` +
+            (recordOnlyTarget.chatCount
+              ? ` It is not inert, though: ${recordOnlyTarget.chatCount} chat${recordOnlyTarget.chatCount === 1 ? "" : "s"} linked to this workspace ` +
+                `${recordOnlyTarget.chatCount === 1 ? "is" : "are"} interrupted and archived first. Their logs are kept.`
+              : "")
+          }
+          confirmText="Archive the record"
+          confirmStyle="danger"
+        />
+      )}
+      {confirmingAdoption && (
+        <AdoptWorktreesConfirm worktrees={selectedWorktrees} busy={busy} onCancel={() => setConfirmingAdoption(false)} onConfirm={runAdoption} />
+      )}
+      {restoreTarget && (
+        <ConfirmModal
+          isOpen
+          onClose={() => setRestoreTarget(null)}
+          onConfirm={() => runRestore(restoreTarget)}
+          title="Restore this worktree?"
+          message={
+            `Callboard will recreate the checkout at ${restoreTarget.originalPath} at the commit it was quarantined at — ${restoreTarget.branch} if that ` +
+            `branch still points there, and the commit itself if it does not — and copy back everything git does not track. The quarantined copy stays in ` +
+            `the trash, so this cannot lose anything.`
+          }
+          confirmText="Restore"
+        />
+      )}
+    </ModalOverlay>
+  );
+}
+
+// ── Pieces ──────────────────────────────────────────────────────────
+
+function Loading() {
+  return (
+    <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+      <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+      Loading…
+    </div>
+  );
+}
+
+function Empty({ text }: { text: string }) {
+  return <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13, lineHeight: 1.5 }}>{text}</div>;
+}
+
+/**
+ * One directory, with every active record on it.
+ *
+ * The group is the row. When two records share a `cwd` neither is removable —
+ * the ref-count refuses until the last reference goes — and the `shared-cwd`
+ * blocker says exactly that, so the situation explains itself rather than
+ * needing special-casing here.
+ */
+function DirectoryGroup({
+  cwd,
+  records,
+  busy,
+  onArchive,
+  onArchiveRecordOnly,
+}: {
+  cwd: string;
+  records: WorkspaceWithRemovability[];
+  busy: boolean;
+  onArchive: (workspace: WorkspaceWithRemovability) => void;
+  onArchiveRecordOnly: (workspace: WorkspaceWithRemovability) => void;
+}) {
+  const size = formatDiskUsage(records[0].diskUsage);
+  const directory = records[0].directory;
+  const displayName = cwd.split("/").filter(Boolean).pop() || cwd;
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 12, marginBottom: 10, background: "var(--bg-secondary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{displayName}</span>
+        {size && (
+          <span style={chipStyle()}>
+            <HardDrive size={10} />
+            {size}
+          </span>
+        )}
+        {records.length > 1 && <span style={chipStyle()}>{records.length} workspaces on this directory</span>}
+        {directory.state !== "present" && (
+          <span style={chipStyle("warn")}>
+            <AlertTriangle size={10} />
+            {directory.state === "missing" ? "directory is gone" : "no longer a worktree"}
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          ...monoStyle,
+          fontSize: 11,
+          color: "var(--text-muted)",
+          marginTop: 3,
+          textDecoration: directory.state === "missing" ? "line-through" : "none",
+        }}
+      >
+        {cwd}
+      </div>
+      {directory.state !== "present" && <div style={{ fontSize: 11, color: "var(--warning)", marginTop: 6, lineHeight: 1.5 }}>{directory.detail}</div>}
+
+      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        {records.map((record) => (
+          <RecordRow key={record.id} record={record} busy={busy} onArchive={onArchive} onArchiveRecordOnly={onArchiveRecordOnly} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecordRow({
+  record,
+  busy,
+  onArchive,
+  onArchiveRecordOnly,
+}: {
+  record: WorkspaceWithRemovability;
+  busy: boolean;
+  onArchive: (workspace: WorkspaceWithRemovability) => void;
+  onArchiveRecordOnly: (workspace: WorkspaceWithRemovability) => void;
+}) {
+  const { removable, blockers } = record.removability;
+  const adoptionWouldHelp = blockers.some((b) => isFixedByAdoption(b.code));
+
+  return (
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "flex", gap: 12, alignItems: "flex-start" }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "var(--text)" }}>{record.name}</span>
+          {record.worktree?.branch && <span style={chipStyle()}>{record.worktree.branch}</span>}
+          <span style={chipStyle()}>{record.isolation}</span>
+          {record.worktree?.owned && <span style={chipStyle()}>owned by Callboard</span>}
+        </div>
+
+        {/*
+          Every blocker, not just the first. A user who fixes one and finds
+          another waiting has learned nothing about what to do next.
+        */}
+        {!removable && (
+          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+            {blockers.map((blocker) => (
+              <div key={blocker.code} style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                <Ban size={11} style={{ flexShrink: 0, marginTop: 2 }} />
+                <span>
+                  <strong style={{ color: "var(--text)" }}>{blockerLabel(blocker.code)}</strong> — {blocker.detail}
+                </span>
+              </div>
+            ))}
+            {adoptionWouldHelp && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", paddingLeft: 17 }}>Adopting this worktree from the Unmanaged tab would clear that.</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ flexShrink: 0 }}>
+        {removable ? (
+          <button onClick={() => onArchive(record)} disabled={busy} style={dangerButton()} title="Archive this workspace and move its worktree to the trash">
+            Archive &amp; trash…
+          </button>
+        ) : (
+          // Archiving the *record* is still useful — it is how the seven stale
+          // records pointing at removed directories get cleared — and it is a
+          // strictly different action from moving a directory, so it says so.
+          <button
+            onClick={() => onArchiveRecordOnly(record)}
+            disabled={busy}
+            style={{ ...primaryButton(false), background: "var(--bg-secondary)", color: "var(--text)", border: "1px solid var(--border)" }}
+            title="Mark the record archived. The directory is not touched."
+          >
+            Archive record…
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UnmanagedRow({ worktree, checked, onToggle }: { worktree: UnmanagedWorktree; checked: boolean; onToggle: () => void }) {
+  const size = formatDiskUsage(worktree.diskUsage);
+  const disabled = !worktree.adoptable;
+
+  return (
+    <label
+      style={{
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        padding: 10,
+        marginBottom: 8,
+        background: "var(--bg-secondary)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.6 : 1,
+      }}
+    >
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={onToggle} style={{ marginTop: 3, cursor: disabled ? "not-allowed" : "pointer" }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ ...monoStyle, fontSize: 12, color: "var(--text)" }}>{worktree.path}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+          <span style={chipStyle()}>{worktree.branch ?? "detached HEAD"}</span>
+          {size && (
+            <span style={chipStyle()}>
+              <HardDrive size={10} />
+              {size}
+            </span>
+          )}
+          {!worktree.cleanliness.clean && <span style={chipStyle("warn")}>has work in progress</span>}
+          {/*
+            The naming heuristic, labelled as the guess it is. Callboard has
+            used more than one convention and a user can produce either by
+            hand, so this may only ever help a person choose — nothing in the
+            adoption path reads it.
+          */}
+          <span style={chipStyle()} title={worktree.naming.detail}>
+            {worktree.naming.matches ? "looks like Callboard's naming (a guess)" : "unfamiliar name (a guess)"}
+          </span>
+        </div>
+        {!worktree.cleanliness.clean && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5, lineHeight: 1.5 }}>
+            {[
+              worktree.cleanliness.uncommittedChanges && "uncommitted changes",
+              worktree.cleanliness.untrackedFiles && "untracked files",
+              worktree.cleanliness.unpushedCommits && "commits that exist nowhere else",
+              worktree.cleanliness.error,
+            ]
+              .filter(Boolean)
+              .join(", ")}
+            . It can still be adopted — that only makes it manageable, and it stays unremovable until it is clean.
+          </div>
+        )}
+        {disabled && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5, lineHeight: 1.5 }}>
+            {worktree.adoptionBlockers.map((b) => b.detail).join(" ")}
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+function TrashRow({ entry, now, busy, onRestore }: { entry: TrashEntryView; now: number; busy: boolean; onRestore: (entry: TrashEntryView) => void }) {
+  const size = formatDiskUsage(entry.diskUsage);
+  const remaining = entry.expiresAt ? daysUntil(entry.expiresAt, now) : null;
+
+  return (
+    <div
+      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, marginBottom: 8, background: "var(--bg-secondary)", display: "flex", gap: 12 }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ ...monoStyle, fontSize: 12, color: "var(--text)" }}>{entry.originalPath ?? entry.entry}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+          {entry.branch && <span style={chipStyle()}>{entry.branch}</span>}
+          {size && (
+            <span style={chipStyle()}>
+              <HardDrive size={10} />
+              {size}
+            </span>
+          )}
+          {entry.quarantinedAt && <span style={chipStyle()}>quarantined {new Date(entry.quarantinedAt).toLocaleDateString()}</span>}
+          {/*
+            The countdown, or the honest absence of one. An entry the sweep
+            cannot date is kept forever; showing "expires in 30 days" for it
+            would be a lie in the direction that costs a user their data.
+          */}
+          {remaining === null ? (
+            <span style={chipStyle()} title={entry.sweepBlocked}>
+              never swept
+            </span>
+          ) : (
+            <span style={chipStyle(remaining <= 3 ? "danger" : remaining <= 7 ? "warn" : "neutral")}>
+              {remaining <= 0 ? "due for deletion" : `deleted in ${remaining} day${remaining === 1 ? "" : "s"}`}
+            </span>
+          )}
+        </div>
+        {!entry.restorable && entry.restoreBlocker && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5, lineHeight: 1.5 }}>Cannot restore: {entry.restoreBlocker}</div>
+        )}
+      </div>
+      <div style={{ flexShrink: 0, display: "flex", alignItems: "flex-start" }}>
+        <button
+          onClick={() => onRestore(entry)}
+          disabled={!entry.restorable || busy}
+          style={{ ...primaryButton(!entry.restorable || busy), display: "flex", alignItems: "center", gap: 5 }}
+          title={entry.restorable ? "Recreate the checkout and copy the untracked files back" : entry.restoreBlocker}
+        >
+          <RotateCcw size={12} />
+          Restore
+        </button>
+      </div>
+    </div>
+  );
+}

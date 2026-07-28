@@ -33,7 +33,7 @@
 import { resolve } from "path";
 import type { UnmanagedWorktree, UnmanagedWorktreeListing, WorktreeDiskUsage } from "shared/types/index.js";
 import { checkWorktreeClean, listIgnoredEntries, resolveWorktreeToMainRepo } from "../utils/git.js";
-import { directoryDiskUsage } from "../utils/disk-usage.js";
+import { DISK_USAGE_BUDGET_MS, newDiskUsageBudget } from "../utils/disk-usage.js";
 import { guessWorktreeNaming } from "../utils/worktree-naming.js";
 import { evaluateAdoption, newAdoptionContext } from "./workspace-adoption.js";
 import { createLogger } from "../utils/logger.js";
@@ -43,13 +43,11 @@ const log = createLogger("workspace-discovery");
 /**
  * Total wall-clock budget for measuring disk usage across one listing.
  *
- * `du -sk` over a worktree with a cold `node_modules` is seconds, and there can
- * be dozens of worktrees. Rather than make an interactive listing take minutes,
- * measurement stops when the budget is spent and the remaining entries say so
- * in their own `diskUsage.error` — a skipped measurement is visible per entry
- * and summarised in `diskUsageNote`. Nothing is silently truncated.
+ * Defined once in utils/disk-usage.ts and re-exported here: this listing is
+ * where the budget was first needed, and every other listing that measures more
+ * than one directory now shares the same primitive rather than a copy of it.
  */
-export const DISK_USAGE_BUDGET_MS = 120000;
+export { DISK_USAGE_BUDGET_MS };
 
 export interface DiscoveryOptions {
   /** Default true. The motivating number, but the slow part — skippable. */
@@ -74,12 +72,12 @@ export function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: Discov
 
   const ctx = newAdoptionContext(repoPath);
   const includeDiskUsage = opts?.includeDiskUsage !== false;
-  const budgetMs = opts?.diskUsageBudgetMs ?? DISK_USAGE_BUDGET_MS;
-  const startedAt = Date.now();
+  // Uncached: a scan is user-initiated and the number it reports is the whole
+  // point of running it, so it is measured rather than recalled.
+  const budget = newDiskUsageBudget({ budgetMs: opts?.diskUsageBudgetMs, cached: false });
 
   const worktrees: UnmanagedWorktree[] = [];
   let managedWorktrees = 0;
-  let skippedForBudget = 0;
 
   for (const entry of ctx.worktrees) {
     if (entry.isMainWorktree || entry.isBare) continue;
@@ -94,15 +92,7 @@ export function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: Discov
       continue;
     }
 
-    let diskUsage: WorktreeDiskUsage;
-    if (!includeDiskUsage) {
-      diskUsage = { error: "not measured (disk usage was not requested)" };
-    } else if (Date.now() - startedAt >= budgetMs) {
-      skippedForBudget++;
-      diskUsage = { error: `not measured — the ${budgetMs}ms disk-usage budget for this listing was exhausted` };
-    } else {
-      diskUsage = directoryDiskUsage(path);
-    }
+    const diskUsage: WorktreeDiskUsage = includeDiskUsage ? budget.measure(path) : { error: "not measured (disk usage was not requested)" };
 
     worktrees.push({
       path,
@@ -120,8 +110,9 @@ export function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: Discov
     });
   }
 
-  if (skippedForBudget > 0) {
-    log.warn(`Disk usage not measured for ${skippedForBudget} worktree(s) of ${repoPath} — budget exhausted`);
+  const diskUsageNote = budget.note(worktrees.length);
+  if (diskUsageNote) {
+    log.warn(`Disk usage not measured for ${budget.skipped} worktree(s) of ${repoPath} — budget exhausted`);
   }
 
   return {
@@ -129,8 +120,6 @@ export function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: Discov
     totalWorktrees: ctx.worktrees.length,
     managedWorktrees,
     worktrees,
-    ...(skippedForBudget > 0 && {
-      diskUsageNote: `Disk usage was not measured for ${skippedForBudget} of ${worktrees.length} worktree(s): the ${budgetMs}ms budget for this listing ran out. Re-run for the rest, or measure them with "du -sh".`,
-    }),
+    ...(diskUsageNote && { diskUsageNote }),
   };
 }

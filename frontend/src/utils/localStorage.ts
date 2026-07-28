@@ -37,6 +37,7 @@ interface LocalStorageData {
    * when a chat is seeded onto an existing card (that path joins, not creates). */
   defaultCreateCard?: boolean;
   folderMaxAgeDays?: number;
+  folderShowSizes?: boolean;
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
   defaultProvider?: AgentProviderKind;
@@ -415,6 +416,25 @@ export function getFolderMaxAgeDays(): number {
 export function saveFolderMaxAgeDays(days: number): void {
   const data = getStorageData();
   data.folderMaxAgeDays = days;
+  setStorageData(data);
+}
+
+/**
+ * Whether the folder list asks the server to measure each directory.
+ *
+ * Off by default and deliberately sticky: `du -sk` over a worktree with a cold
+ * `node_modules` is seconds, and this list is polled every fifteen seconds
+ * while a session is live. A user who wants sizes turns them on once; everyone
+ * else never pays for them.
+ */
+export function getFolderShowSizes(): boolean {
+  const data = getStorageData();
+  return data.folderShowSizes ?? false;
+}
+
+export function saveFolderShowSizes(value: boolean): void {
+  const data = getStorageData();
+  data.folderShowSizes = value;
   setStorageData(data);
 }
 
