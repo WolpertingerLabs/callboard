@@ -114,9 +114,9 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
-                background: "var(--status-green, #22c55e)",
+                background: "var(--status-green)",
                 flexShrink: 0,
-                boxShadow: "0 0 4px var(--status-green, #22c55e)",
+                boxShadow: "0 0 4px var(--status-green)",
               }}
             />
           )}
@@ -127,7 +127,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
-                background: "var(--warning, #f59e0b)",
+                background: "var(--warning)",
                 flexShrink: 0,
               }}
             />
