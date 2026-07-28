@@ -49,7 +49,19 @@ describe("workspace store with an uncreatable directory", () => {
     const id = store.captureWorktreeWorkspace({
       ok: true,
       folder: "/tmp/repo.feat-x",
-      worktree: { repoPath: "/tmp/repo", created: true, mode: "branch-off", branch: "feat/x" },
+      worktree: { repoPath: "/tmp/repo", created: true, isMainCheckout: false, mode: "branch-off", branch: "feat/x" },
+    });
+    expect(id).toBeUndefined();
+  });
+
+  it("also swallows the failure for a main-checkout resolution", () => {
+    // Same guarantee on the other branch of the capture: landing on the main
+    // checkout writes a `local` record instead of a worktree one, and that
+    // write can fail here too.
+    const id = store.captureWorktreeWorkspace({
+      ok: true,
+      folder: "/tmp/repo",
+      worktree: { repoPath: "/tmp/repo", created: false, isMainCheckout: true, mode: "checkout-branch", branch: "main" },
     });
     expect(id).toBeUndefined();
   });

@@ -285,10 +285,12 @@ function worktreeRecordMatchesDisk(workspace: Workspace): boolean {
   if (workspace.worktree?.owned && verifyWorktreeToken(workspace.cwd, workspace.id) !== "verified") {
     return false;
   }
-  // Degenerate case: ensureWorktree hands back the *main* checkout when the
-  // branch is already checked out there, so cwd === repoPath and the
-  // directory is not a worktree of anything. Existence of the repo is all
-  // there is to verify (and such a record is never `owned`).
+  // Degenerate case: a record whose cwd is its own repoPath, which is what
+  // ensureWorktree handing back the *main* checkout used to produce. The write
+  // path now records those as `local` ({@link recordMainCheckoutWorkspace}), so
+  // this covers the ones already on disk — they are not migrated. The directory
+  // is not a worktree of anything, so existence of the repo is all there is to
+  // verify (and such a record is never `owned`).
   if (!workspace.repoPath || samePath(workspace.repoPath, workspace.cwd)) {
     return existsSync(join(workspace.cwd, ".git"));
   }
@@ -369,6 +371,33 @@ export function recordWorktreeWorkspace(intent: WorktreeIntent): Workspace {
 }
 
 /**
+ * Adopt-or-create the `local` record for a `useWorktree` resolution that landed
+ * on the **main checkout** — the branch was already checked out there, so
+ * `ensureWorktreeDetailed` handed back the repository itself and created
+ * nothing (utils/git.ts, `isMainCheckout`).
+ *
+ * A worktree was asked for; none exists. Recording `isolation: "worktree"` here
+ * is what produced records describing the main repo as a worktree of itself —
+ * the write-path half of the defect whose read-path half is the `repoPath`
+ * guard in services/workspace-views.ts. There is no worktree provenance to
+ * capture (nothing was created, so `owned` would be false and `repoPath` would
+ * equal `cwd`), and the honest record for "work happens in this checkout as-is"
+ * is a local one.
+ *
+ * Only a `local` record is reused. A `worktree` record on a main checkout is
+ * one of the legacy misdescribing ones, and handing it back would mean stamping
+ * a new chat with a claim we have just stopped making; leaving it alone means
+ * the directory carries two active records, which is a state Phase 3 already
+ * models (`workspaceCount`) and which existing records are not migrated out of
+ * by design.
+ */
+function recordMainCheckoutWorkspace(cwd: string): Workspace {
+  const local = listWorkspacesByCwd(cwd).find((w) => w.isolation === "local");
+  if (local) return local;
+  return createWorkspace({ cwd, isolation: "local" });
+}
+
+/**
  * The single write path from branch resolution to a workspace record — both
  * chat-start entry points (the /new/message route and the start_chat_session
  * tool) go through this and nothing else writes worktree provenance.
@@ -381,6 +410,9 @@ export function recordWorktreeWorkspace(intent: WorktreeIntent): Workspace {
 export function captureWorktreeWorkspace(result: ResolveBranchResult): string | undefined {
   if (!result.ok || !result.worktree) return undefined;
   try {
+    // The resolution says which of the two it was; nothing here re-derives it
+    // from the paths.
+    if (result.worktree.isMainCheckout) return recordMainCheckoutWorkspace(result.folder).id;
     return recordWorktreeWorkspace({ cwd: result.folder, ...result.worktree }).id;
   } catch (err: any) {
     log.warn(`Failed to record workspace for worktree ${result.folder}: ${err.message}`);

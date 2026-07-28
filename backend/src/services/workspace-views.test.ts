@@ -146,6 +146,18 @@ describe("viewForDirectory — record wins", () => {
     expect(view.repoPath).toBeUndefined();
   });
 
+  it("gives the same answer for the local record the write path now produces there", () => {
+    // The record above is the legacy shape, kept because existing records are
+    // not migrated. A `useWorktree` chat whose branch is already checked out in
+    // the main repo now records `isolation: "local"` instead — the projection
+    // must land in exactly the same place, from the record rather than the
+    // filesystem.
+    const index = buildWorkspaceIndex([record({ id: "ws-main-local", cwd: repoDir, isolation: "local" })]);
+    const view = viewForDirectory(repoDir, index);
+    expect(view).toMatchObject({ workspaceId: "ws-main-local", isWorktree: false, source: "record" });
+    expect(view.repoPath).toBeUndefined();
+  });
+
   it("matches a record stored with a non-normalised cwd", () => {
     const index = buildWorkspaceIndex([
       record({
@@ -197,10 +209,7 @@ describe("viewForDirectory — record wins", () => {
       isolation: "worktree" as const,
       worktree: { owned: true, mode: "branch-off" as const, branch: "feat/real" },
     };
-    const index = buildWorkspaceIndex([
-      record({ id: "ws-via-link", cwd: link, ...shared }),
-      record({ id: "ws-via-real", cwd: realWorktree, ...shared }),
-    ]);
+    const index = buildWorkspaceIndex([record({ id: "ws-via-link", cwd: link, ...shared }), record({ id: "ws-via-real", cwd: realWorktree, ...shared })]);
     // Either spelling of the directory must see both — reporting one id here
     // would claim an unambiguous workspace for a shared directory.
     for (const spelling of [link, realWorktree]) {

@@ -40,6 +40,8 @@ export type {
   WorkspaceRemovalReason,
   WorkspaceRemovability,
   WorkspaceIgnoredPreview,
+  WorkspaceDirectoryState,
+  WorkspaceDirectory,
   WorkspaceWithRemovability,
   WorktreeDisposition,
   WorktreeInspection,

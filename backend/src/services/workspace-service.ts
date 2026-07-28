@@ -28,6 +28,11 @@
  * mid-check — is a refusal too. There is no branch in this file that removes a
  * directory on a "probably fine", and no `--force` anywhere in the path.
  *
+ * The same principle runs the other way for the registry itself:
+ * {@link describeWorkspaceDirectory} observes that a record's directory is gone
+ * and says so. It does not archive it. Records are only ever archived when
+ * somebody asks.
+ *
  * Refusals are collected, not short-circuited: a caller asking why a worktree
  * survived should see every reason at once.
  *
@@ -39,6 +44,7 @@ import type {
   ArchiveWorkspaceResult,
   Chat,
   Workspace,
+  WorkspaceDirectory,
   WorkspaceIgnoredPreview,
   WorkspaceRemovability,
   WorkspaceRemovalReason,
@@ -59,6 +65,12 @@ import { quarantineDirectory, sweepTrash } from "../utils/worktree-trash.js";
 import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { archiveWorkspace as markWorkspaceArchived, getWorkspace, listWorkspaces } from "./workspace-store.js";
+// Phase 3's predicate, imported rather than restated: "does this record claim
+// its cwd is a worktree?" must have exactly one definition, or the badge in the
+// sidebar and the state in the workspace list can disagree about the same
+// record. workspace-views reads the registry and git and nothing else, so this
+// is a leaf dependency, not a cycle.
+import { recordSaysWorktree } from "./workspace-views.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("workspace-service");
@@ -262,10 +274,78 @@ export function evaluateWorktreeRemoval(workspace: Workspace, ctx: RemovalContex
   return removable ? { removable, blockers, ignored: listIgnoredEntries(cwd) } : { removable, blockers };
 }
 
-/** Every workspace with its removability verdict attached. */
+/**
+ * What the record's directory looks like right now — observed, not stored.
+ *
+ * Records outlive their directories: nothing sweeps them, so a worktree removed
+ * outside Callboard leaves an `active` record pointing at nothing (7 of 10 on
+ * the author's machine). This is how that becomes visible, and it is
+ * deliberately *only* visible:
+ *
+ * > **A missing directory is evidence, not proof.** An unmounted volume looks
+ * > exactly like a deleted worktree. Nothing in this file archives, prunes or
+ * > deletes on the strength of a failed `stat` — the state is reported so a UI
+ * > can offer the archive, which is the same offer-don't-act rule adoption
+ * > follows. `git worktree prune`, in particular, is repo-global and would
+ * > happily unregister worktrees whose volumes are merely absent; it is never
+ * > run from here (only from the archive path, after a directory has already
+ * > been moved into the trash).
+ *
+ * Pure filesystem reads — `existsSync` plus, at most, parsing one `.git` file.
+ * No `git` subprocess, so a listing pays effectively nothing for it.
+ */
+export function describeWorkspaceDirectory(workspace: Workspace): WorkspaceDirectory {
+  const cwd = resolve(workspace.cwd);
+
+  if (!existsSync(cwd)) {
+    return {
+      state: "missing",
+      detail:
+        `${cwd} does not exist. Callboard has not touched it: a directory that is absent is not proof that the work is gone — an ` +
+        `unmounted volume looks the same from here. Archive this workspace explicitly if the worktree really was removed.`,
+    };
+  }
+
+  // Only a record that actually claims its cwd is a worktree has a claim to
+  // check. `recordSaysWorktree` is that one definition (isolation *and* a
+  // repoPath naming a different directory); a local record, or a legacy one
+  // whose repoPath is its own cwd, is simply present when it exists.
+  if (!recordSaysWorktree(workspace)) {
+    return { state: "present", detail: `${cwd} exists` };
+  }
+
+  // Uncached, like the removal gate: a five-minute-old answer about whether a
+  // directory is still a worktree is not an observation.
+  const resolution = resolveWorktreeToMainRepo(cwd);
+  if (!resolution.isWorktree) {
+    return {
+      state: "not-a-worktree",
+      detail:
+        `${cwd} exists but is no longer a git worktree — it may have been pruned, or replaced by a plain directory. Its contents are ` +
+        `untouched and Callboard will not remove it (the not-a-worktree-on-disk gate blocks that); the record is what is out of date.`,
+    };
+  }
+  if (workspace.repoPath && !samePath(resolution.mainRepoPath, workspace.repoPath)) {
+    return {
+      state: "not-a-worktree",
+      detail: `${cwd} is a worktree of ${resolution.mainRepoPath}, not of the recorded ${workspace.repoPath} — the record describes a different directory than the one on disk`,
+    };
+  }
+  return { state: "present", detail: `${cwd} is still a worktree of ${workspace.repoPath}` };
+}
+
+/**
+ * Every workspace with its removability verdict and the observed state of its
+ * directory. Both are read-only: listing workspaces writes nothing, archives
+ * nothing and removes nothing, however stale a record turns out to be.
+ */
 export function listWorkspacesWithRemovability(filter?: { status?: Workspace["status"] }): WorkspaceWithRemovability[] {
   const ctx = newRemovalContext();
-  return listWorkspaces(filter).map((workspace) => ({ ...workspace, removability: evaluateWorktreeRemoval(workspace, ctx) }));
+  return listWorkspaces(filter).map((workspace) => ({
+    ...workspace,
+    removability: evaluateWorktreeRemoval(workspace, ctx),
+    directory: describeWorkspaceDirectory(workspace),
+  }));
 }
 
 /**

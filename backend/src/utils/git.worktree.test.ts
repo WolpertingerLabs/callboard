@@ -32,19 +32,24 @@ describe("ensureWorktreeDetailed", () => {
     const first = ensureWorktreeDetailed(repoDir, "feat/new", true, "main");
     expect(first.path).toBe(join(tmpRoot, "repo.feat-new"));
     expect(first.created).toBe(true);
+    expect(first.isMainCheckout).toBe(false);
 
     // Same branch again: the directory is already there, so we didn't make it.
     const second = ensureWorktreeDetailed(repoDir, "feat/new", false);
     expect(second.path).toBe(first.path);
     expect(second.created).toBe(false);
+    // Reused, but still a linked worktree — `.git` there is a file.
+    expect(second.isMainCheckout).toBe(false);
   });
 
-  it("reports created=false when the branch is already checked out elsewhere", () => {
+  it("reports the main checkout as one when the branch is already checked out there", () => {
     // `main` lives in the main checkout — ensureWorktree hands back that path
-    // rather than failing, and it is emphatically not ours to remove.
+    // rather than failing. It is emphatically not ours to remove, and it is not
+    // a worktree: a record written from this resolution must say so.
     const ensured = ensureWorktreeDetailed(repoDir, "main", false);
     expect(ensured.path).toBe(repoDir);
     expect(ensured.created).toBe(false);
+    expect(ensured.isMainCheckout).toBe(true);
   });
 });
 
@@ -57,6 +62,7 @@ describe("resolveBranch worktree intent", () => {
     expect(result.worktree).toEqual({
       repoPath: repoDir,
       created: true,
+      isMainCheckout: false,
       mode: "branch-off",
       branch: "feat/off",
       baseBranch: "main",
@@ -71,8 +77,27 @@ describe("resolveBranch worktree intent", () => {
     expect(result.worktree).toEqual({
       repoPath: repoDir,
       created: true,
+      isMainCheckout: false,
       mode: "checkout-branch",
       branch: "feat/existing",
+    });
+  });
+
+  it("flags a resolution that landed on the main checkout", () => {
+    // The branch is already checked out in the main repo, so the "worktree"
+    // that comes back is the repository itself. The intent is still reported —
+    // a worktree was asked for — but with the one field that stops a caller
+    // recording the main repo as a worktree of itself.
+    const result = resolveBranch({ folder: repoDir, baseBranch: "main", useWorktree: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(repoDir);
+    expect(result.worktree).toEqual({
+      repoPath: repoDir,
+      created: false,
+      isMainCheckout: true,
+      mode: "checkout-branch",
+      branch: "main",
     });
   });
 
