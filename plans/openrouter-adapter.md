@@ -234,6 +234,42 @@ Option A — branch on `kind` in the policy factory, single-file change in `clau
 > whether `webAccess: "ask"` (as opposed to `"deny"`) should also withhold them, given there is no
 > per-call prompt to escalate to.
 
+> **Resolved, 2026-07-28 — shipped as `adapters/openrouter/serverToolPolicy.ts`.**
+>
+> **`"ask"` withholds, same as `"deny"`** (architect ruling). A server tool is decided once, when the
+> request body is assembled; there is no per-call moment at which a prompt could be raised, so
+> injecting on `"ask"` would mean silently proceeding on precisely the axis where the user asked to
+> be consulted. `datetime` is **not** gated — verified against 69 real items in the OR logs, every one
+> exactly `{ datetime: "<ISO>", timezone: "UTC" }`. It returns a clock reading; putting it behind a
+> web-access policy would be a category error.
+>
+> **The default path was the hard part, and it is the one that was live.** `serverTools: undefined`
+> means "harness, inject your `DEFAULT_SERVER_TOOLS`" — there is no "defaults minus web_search", so
+> stripping the web tools from an unconfigured chat requires sending an explicit array, which
+> requires knowing what the default path would have contained. Reading the harness's own constant
+> would be the honest way to know that and **it is not available**: `DEFAULT_SERVER_TOOLS` is exported
+> from the package's `tools/index.js` but not re-exported from its root, and the `exports` map
+> declares only `"."`, so a deep import fails at runtime with `ERR_PACKAGE_PATH_NOT_EXPORTED`
+> (verified against the installed 0.3.0).
+>
+> The copy is safe anyway because the coupling is confined to the restrictive branch, where drift
+> fails closed in every direction: `"allow"` passes `undefined` straight through and consults no copy
+> at all, so a newly-added harness default is injected exactly as before; under `"ask"`/`"deny"` a
+> tool we do not know about is simply absent from the array we send — withheld. Unknown types answer
+> "needs web access" for the same reason.
+>
+> **`fusion`, `advisor` and `subagent` are web access too**, which is not obvious from their names.
+> OpenRouter documents fusion's panel as running "with `openrouter:web_search` and
+> `openrouter:web_fetch` enabled", and both advisor and subagent as able to carry their own tools
+> including `web_search`. Permitting any of them under `webAccess: "deny"` would be a side door onto
+> the same axis, so the catalog marks them `webAccess: true`.
+>
+> **Still open:** the `plugins` channel. `modelParams.plugins` reaches OpenRouter by an entirely
+> different route (`orOpts.modelParams`, not `orOpts.serverTools`) and passes no policy at all. The
+> deprecated `web` plugin *is* web search, and the `fusion` plugin runs the same panel as the fusion
+> server tool — web-enabled — once per request rather than on model demand. Gating that channel is a
+> separate change; it is not reachable from `serverToolPolicy`.
+
 ### Tool exposure (`toolAdapter.ts`)
 
 Callboard's 4 in-process tool servers (`callboard`, `callboard-tools`, `mcp-proxy`, `qc`) are authored as `ToolServerSpec { name, version, tools: ToolDefinition[] }`. OR's `createSdkMcpServer` accepts an identical shape — re-export and bridge:

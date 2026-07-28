@@ -1494,6 +1494,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Server tools: map the persisted list to the harness's verbatim wire shape.
     // Left undefined when the setting is absent (harness injects its defaults);
     // an explicit empty array is preserved (disable all server tools).
+    //
+    // This is the user's INTENT only. OR's server tools execute on OpenRouter's
+    // servers and surface as `openrouter:*` output items rather than tool calls,
+    // so `canUseTool` never sees them and the categorizer's `webAccess` entries
+    // for web_search/web_fetch are unreachable. The `webAccess` axis is applied
+    // to this list in the OR adapter, via the `getPermissions` accessor below —
+    // see adapters/openrouter/serverToolPolicy.ts.
     const serverTools = agentSettings.openRouterServerTools?.map(serverToolToWire);
     // Generation params: merge the global default with the resolved model's
     // per-model override profile, then flatten to the harness's modelParams bag.
@@ -1513,12 +1520,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         }),
       ...(serverTools && { serverTools }),
       ...(modelParams && { modelParams }),
+      // The accessor, not its value — same reasoning as the ACP block below.
+      // It is read when the request body is assembled, so tightening webAccess
+      // mid-conversation takes effect on the next message rather than being
+      // frozen at whatever the policy was when this options blob was built.
+      getPermissions: getDefaultPermissions,
       appTitle: "callboard",
     };
     log.info(
       `OpenRouter chat config — trackingId=${trackingId}, model=${chatModel ?? "(default)"}` +
         `${requestedModel && requestedModel !== chatModel ? ` (alias "${requestedModel}")` : ""}, ` +
         `effort=${chatEffort ?? "(unset)"}, ` +
+        // Server tools as CONFIGURED, alongside the axis that narrows them. The
+        // effective set (and anything the policy withheld) is logged by the OR
+        // adapter's optionsAdapter, which is where the intersection happens.
+        `serverToolsConfigured=${serverTools ? `[${serverTools.map((t) => t.type).join(",")}]` : "(harness defaults)"}, ` +
+        `webAccess=${getDefaultPermissions()?.webAccess ?? "(none — treated as restrictive)"}, ` +
         `maxBudgetUsd=${queryOpts.options.openRouter.maxBudgetUsd ?? "(library default)"}, ` +
         `baseUrl=${queryOpts.options.openRouter.baseUrl ?? "(default)"}, ` +
         `logsRoot=${queryOpts.options.openRouter.logsRoot ?? "(default)"}, ` +

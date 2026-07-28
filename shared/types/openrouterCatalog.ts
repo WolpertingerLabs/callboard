@@ -88,6 +88,27 @@ export interface ServerToolSpec {
   description: string;
   /** Whether it's one of the harness's three defaults (datetime/web_search/web_fetch). */
   defaultOn: boolean;
+  /**
+   * Does invoking this tool let the model reach the open internet?
+   *
+   * This is the `webAccess` permission axis, and it is the ONLY gate these
+   * tools ever pass: they are injected into the request body and execute on
+   * OpenRouter's servers, coming back as `openrouter:*` output items rather
+   * than tool calls, so `canUseTool` never sees them (the harness's agent loop
+   * says so in as many words). Withholding them from the request is therefore
+   * the whole of the enforcement — see `applyServerToolPolicy` in
+   * `backend/src/agents/adapters/openrouter/serverToolPolicy.ts`.
+   *
+   * Set it for a tool that *can* reach the web, not only one that always does.
+   * `fusion`/`advisor`/`subagent` look like pure model-to-model routing and are
+   * not: OpenRouter documents each as running its panel/advisor/worker with
+   * `openrouter:web_search` and `openrouter:web_fetch` available, so allowing
+   * one under `webAccess: "deny"` would hand the model web search through a
+   * side door. When a new tool's reach is unclear, mark it `true` — the gate
+   * fails closed for tools missing from this catalog entirely, and a known
+   * entry should not be a weaker default than an unknown one.
+   */
+  webAccess: boolean;
   /** Configurable params (snake_case wire keys, nested under `parameters`). Empty = toggle only. */
   params: ParamFieldSpec[];
 }
@@ -120,6 +141,12 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Date / time",
     description: "Lets the model fetch the current date and time.",
     defaultOn: true,
+    // Not web access. Verified against 69 real `openrouter:datetime` items in
+    // ~/.openrouter-agent-harness/logs: every one is exactly
+    // `{ datetime: "<ISO>", timezone: "UTC", id, status, type }`. It returns a
+    // clock reading and egresses nothing the request did not already carry, so
+    // gating it on `webAccess` would be a category error.
+    webAccess: false,
     params: [],
   },
   {
@@ -127,6 +154,7 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Web search",
     description: "Lets the model search the web for current information.",
     defaultOn: true,
+    webAccess: true,
     params: [
       {
         key: "engine",
@@ -154,6 +182,11 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Web fetch",
     description: "Lets the model fetch and extract the contents of a specific URL.",
     defaultOn: true,
+    // Web access, and the URL itself egresses too: a production item in
+    // ~/.openrouter-agent-harness/logs records the model handing OpenRouter
+    // `http://localhost:3100/status`, which its Exa backend then tried to
+    // retrieve — a local-topology leak on top of the fetch.
+    webAccess: true,
     params: [{ key: "max_characters", label: "Max characters", type: "integer", min: 1, max: 100000 }],
   },
   {
@@ -161,6 +194,10 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Image generation",
     description: "Lets the model generate images from text prompts.",
     defaultOn: false,
+    // Synthesizes an image from the prompt the model writes and returns a URL
+    // to it. No retrieval of third-party web content, so not the `webAccess`
+    // axis.
+    webAccess: false,
     params: [],
   },
   {
@@ -168,6 +205,10 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Apply patch",
     description: "Lets the model propose file edits as V4A diff patches.",
     defaultOn: false,
+    // Emits a V4A diff for the caller to apply; it reaches no network of its
+    // own. (Whether a patch-shaped output belongs on the `fileWrite` axis is a
+    // separate question this flag does not answer — nothing applies it here.)
+    webAccess: false,
     params: [],
   },
   {
@@ -175,6 +216,11 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Fusion (server tool)",
     description: "Model-invoked panel-of-models + judge analysis. Distinct from the fusion plugin (which always runs once).",
     defaultOn: false,
+    // Web access by construction, with no knob to turn it off: OpenRouter
+    // documents the panel as "each runs in parallel with `openrouter:web_search`
+    // and `openrouter:web_fetch` enabled".
+    // https://openrouter.ai/docs/guides/features/server-tools/fusion
+    webAccess: true,
     params: [
       { key: "analysis_models", label: "Analysis models", type: "stringList", description: "1–8 panel model slugs." },
       { key: "model", label: "Judge model", type: "string", description: "Defaults to the outer model." },
@@ -186,6 +232,11 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Advisor",
     description: "Lets the model consult a stronger model mid-generation.",
     defaultOn: false,
+    // The advisor "can optionally run as a sub-agent with its own tools (for
+    // example openrouter:web_search)", so permitting it under a restrictive
+    // policy would be a web-search side door.
+    // https://openrouter.ai/docs/guides/features/server-tools/advisor
+    webAccess: true,
     params: [],
   },
   {
@@ -193,6 +244,10 @@ export const OR_SERVER_TOOLS: readonly ServerToolSpec[] = [
     label: "Subagent",
     description: "Lets the model delegate to a smaller/faster worker model.",
     defaultOn: false,
+    // Same side door: "Workers get their own tools. Give the worker
+    // openrouter:web_search and it can ground its output in fresh sources."
+    // https://openrouter.ai/blog/announcements/subagent-server-tool/
+    webAccess: true,
     params: [],
   },
 ];

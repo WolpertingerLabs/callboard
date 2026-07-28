@@ -31,8 +31,9 @@ import {
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 import { formatLogFields } from "./logFields.js";
+import { applyServerToolPolicy } from "./serverToolPolicy.js";
 import { createLogger } from "../../../utils/logger.js";
-import type { EffortLevel } from "shared/types/index.js";
+import type { DefaultPermissions, EffortLevel } from "shared/types/index.js";
 
 const log = createLogger("openrouter");
 
@@ -74,8 +75,27 @@ export interface OpenRouterOptionsExtras {
    * Typed structurally (rather than importing the harness's `ServerToolConfig`,
    * which is not exported from the package root) so the shape stays decoupled
    * from the harness's internal type names.
+   *
+   * This is the user's INTENT, not the effective set. {@link getPermissions}
+   * narrows it before it reaches the harness — see {@link applyServerToolPolicy}.
    */
   serverTools?: Array<{ type: string } & Record<string, unknown>>;
+  /**
+   * Live accessor for the chat's permission policy, threaded through so the
+   * `webAccess` axis can gate OR's SERVER tools. They execute on OpenRouter's
+   * servers and never reach `canUseTool`, so withholding them from the request
+   * body is the only enforcement available (see {@link applyServerToolPolicy}).
+   *
+   * The accessor rather than a snapshot, for the reason the ACP adapter's
+   * `getPermissions` gives: it is read at the last possible moment, so a policy
+   * the user tightened mid-conversation applies to the next request rather than
+   * to whichever value happened to be current when the options blob was built.
+   *
+   * Absent ⇒ treated as restrictive. `decidePermission` already collapses a
+   * missing policy to "ask", and a caller that forgets to wire this should lose
+   * web search visibly rather than silently reopen the gap this exists to close.
+   */
+  getPermissions?: () => DefaultPermissions | null;
   /**
    * Flattened OpenRouter generation params (camelCase sampling fields plus an
    * optional `plugins` array), as produced by `resolveModelParams`. Forwarded
@@ -254,13 +274,33 @@ export function translateOptions(
   //     `DEFAULT_SERVER_TOOLS` (datetime/web_search/web_fetch).
   //   - `[]` ⇒ disable all server tools (the request `tools` array is sent
   //     exactly as the agent built it).
+  //
+  // What claude.ts resolved is the user's INTENT; the `webAccess` policy decides
+  // what they may actually have. These tools run on OpenRouter's servers and come
+  // back as `openrouter:*` output items, never as tool calls, so `canUseTool` is
+  // never consulted for them — leaving them out of the request is the only gate
+  // there is. See ./serverToolPolicy.ts.
   if (bareToolset) {
     // A utility completion never needs OR's server tools; disabling them keeps
     // the model from wandering off (web_search/web_fetch) mid-answer. `[]`
     // means "send the request `tools` array exactly as built" (see above).
+    // Strictly narrower than anything the policy could produce, so it stays
+    // first and skips the gate entirely rather than intersecting with it.
     orOpts.serverTools = [];
-  } else if (orConfig.serverTools) {
-    orOpts.serverTools = orConfig.serverTools;
+  } else {
+    const { serverTools, withheld } = applyServerToolPolicy(orConfig.serverTools, orConfig.getPermissions?.());
+    if (serverTools !== undefined) orOpts.serverTools = serverTools;
+    if (withheld.length > 0) {
+      // A user who set webAccess to "ask" and finds web search simply missing
+      // deserves to be told why, so name the policy and the tools it took.
+      const policy = orConfig.getPermissions?.()?.webAccess ?? "(no policy — treated as restrictive)";
+      const message =
+        `withheld ${withheld.length} OpenRouter server tool(s) — webAccess=${policy}: ${withheld.join(", ")}. ` +
+        `These execute on OpenRouter's servers and never reach the permission prompt, so they are ` +
+        `withheld from the request rather than asked about. Set webAccess to "allow" to enable them.`;
+      log.warn(message);
+      if (opts.stderr) opts.stderr(`[openrouter] ${message}`);
+    }
   }
   // Forward the user's configured spend cap. `Number.isFinite` excludes
   // NaN/Infinity that could sneak in from a malformed setting; the absence
@@ -386,6 +426,7 @@ export function translateOptions(
       `baseUrl=${orOpts.baseUrl ?? "(default)"}, logsRoot=${orOpts.logsRoot}, ` +
       `maxTurns=${orOpts.maxTurns ?? "(default)"}, persistSession=${orOpts.persistSession ?? "(default)"}, ` +
       `cwd=${cwd}, instructions=${orOpts.instructions ? `${orOpts.instructions.length}chars` : "(none)"}, ` +
+      `serverTools=${orOpts.serverTools ? `[${orOpts.serverTools.map((t) => t.type).join(",")}]` : "(harness defaults)"}, ` +
       `tools=${orOpts.tools?.length ?? 0}, mcpServers=${orOpts.mcpServers?.length ?? 0}, ` +
       `allowedTools=${orOpts.allowedTools?.length ?? 0}, ` +
       `disallowedTools=${orOpts.disallowedTools?.length ?? 0}`,
