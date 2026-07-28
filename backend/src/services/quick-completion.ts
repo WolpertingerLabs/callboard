@@ -26,7 +26,10 @@ import { z } from "zod";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
 import { getAgentSettings, getClaudeCodeExecutablePath, isOpenRouterConfigured } from "./agent-settings.js";
-import type { CustomTheme, ThemeVariables } from "shared/types/index.js";
+import type { CustomTheme, ThemeVariables, ThemeContrastFailure } from "shared/types/index.js";
+import { correctThemeContrast } from "./theme-contrast.js";
+import type { Correction } from "./theme-contrast.js";
+import { THEME_VARIABLE_NAMES } from "./theme-variables.js";
 
 const log = createLogger("quick-completion");
 
@@ -456,64 +459,8 @@ export async function generateBranchName(
   }
 }
 
-// ─── Theme variable names that must be provided ─────────────────────
-const THEME_VARIABLE_NAMES = [
-  "bg",
-  "surface",
-  "border",
-  "text",
-  "text-muted",
-  "accent",
-  "accent-hover",
-  "user-bg",
-  "assistant-bg",
-  "code-bg",
-  "danger",
-  "error",
-  "success",
-  "warning",
-  "bg-secondary",
-  "text-secondary",
-  "border-light",
-  "text-on-accent",
-  "text-on-danger",
-  "accent-bg",
-  "accent-light",
-  "danger-bg",
-  "danger-border",
-  "warning-bg",
-  "success-bg",
-  "overlay-bg",
-  "shadow-sm",
-  "shadow-md",
-  "shadow-lg",
-  "diff-added-bg",
-  "diff-added-border",
-  "diff-added-text",
-  "diff-added-line-bg",
-  "diff-removed-bg",
-  "diff-removed-border",
-  "diff-removed-text",
-  "diff-removed-line-bg",
-  "diff-hunk-bg",
-  "toggle-knob",
-  "status-active",
-  "status-triggered",
-  "badge-info",
-  "badge-info-bg",
-  "badge-trigger",
-  "badge-worktree",
-  "badge-env-text",
-  "badge-env-bg",
-  "badge-env-border",
-  "badge-sse-text",
-  "badge-sse-bg",
-  "builtin-user-bg",
-  "builtin-user-border",
-  "builtin-assistant-bg",
-  "builtin-assistant-border",
-  "builtin-text",
-];
+/** How many times a theme may be regenerated before contrast failure is fatal. */
+const THEME_GENERATION_ATTEMPTS = 2;
 
 /**
  * Generate a complete custom theme via AI from a natural language description.
@@ -521,14 +468,62 @@ const THEME_VARIABLE_NAMES = [
  * Uses Sonnet for higher quality color design. The AI returns a JSON object
  * with dark and light mode CSS variable values.
  *
+ * The result is measured against every pairing the UI actually paints and, where
+ * a foreground is merely a little short, nudged into range before it is handed
+ * back — a theme that has not been stored yet is not user data, so correcting it
+ * here costs nobody anything. Where no legal value clears the pairing, the theme
+ * is regenerated with the specific failures quoted back, and if that also fails,
+ * rejected. Nothing sub-AA is returned silently.
+ *
  * Returns null if generation fails.
  */
 export async function generateThemeCSS(name: string, description: string): Promise<CustomTheme | null> {
+  let feedback = "";
+  for (let attempt = 1; attempt <= THEME_GENERATION_ATTEMPTS; attempt++) {
+    const outcome = await generateThemeAttempt(name, description, feedback);
+    if (!outcome) return null;
+    if (outcome.unsatisfiable.length === 0) {
+      if (outcome.corrections.length > 0) {
+        log.info(
+          `generateThemeCSS: corrected ${outcome.corrections.length} value(s) in "${name}" for contrast — ` +
+            outcome.corrections.map((c) => `${c.mode} --${c.variable} ${c.from}→${c.to}`).join(", "),
+        );
+      }
+      return outcome.theme;
+    }
+
+    const summary = outcome.unsatisfiable
+      .map((f) =>
+        f.unmeasurable
+          ? `${f.mode} ${f.where}: ${f.unmeasurable} is not a colour this checker can read — use #rrggbb or rgba(), not a named colour`
+          : `${f.mode} ${f.fg} on ${f.bg} over ${f.backdrop} (${f.where}) is ${f.ratio}, needs ${f.required}`,
+      )
+      .join("; ");
+    log.warn(`generateThemeCSS: attempt ${attempt} for "${name}" left ${outcome.unsatisfiable.length} pairing(s) below AA — ${summary}`);
+
+    if (attempt === THEME_GENERATION_ATTEMPTS) {
+      log.warn(`generateThemeCSS: rejecting "${name}" rather than storing a theme that cannot be read`);
+      return null;
+    }
+    feedback =
+      `\n\nA previous attempt failed contrast validation on these pairings, which no adjustment of ` +
+      `lightness alone could fix. Choose genuinely different values for the colours involved:\n${summary}\n`;
+  }
+  return null;
+}
+
+interface ThemeAttempt {
+  theme: CustomTheme;
+  corrections: Correction[];
+  unsatisfiable: ThemeContrastFailure[];
+}
+
+async function generateThemeAttempt(name: string, description: string, feedback: string): Promise<ThemeAttempt | null> {
   try {
     const variableList = THEME_VARIABLE_NAMES.map((v) => `"${v}"`).join(", ");
 
     const result = await quickCompletion({
-      prompt: `Create a theme called "${name}" based on this description: ${description}`,
+      prompt: `Create a theme called "${name}" based on this description: ${description}${feedback}`,
       systemPrompt:
         `You are a UI theme designer. Generate CSS variable values for a web application theme. ` +
         `The theme needs BOTH a dark mode and a light mode variant.\n\n` +
@@ -536,8 +531,25 @@ export async function generateThemeCSS(name: string, description: string): Promi
         `Rules:\n` +
         `- Use hex colors (#rrggbb), rgba(), or valid CSS values for shadows\n` +
         `- Dark mode: dark backgrounds, light text. Light mode: light backgrounds, dark text\n` +
-        `- Ensure sufficient contrast for readability (WCAG AA minimum)\n` +
-        `- text-on-accent and text-on-danger must be readable on accent/danger backgrounds\n` +
+        `- Contrast is checked mechanically after you answer, and a theme that cannot be ` +
+        `brought up to standard is rejected. The rules, precisely:\n` +
+        `  * Every "<name>" colour must reach 4.5:1 against its matching "<name>-bg" tint, ` +
+        `once that tint is composited over the surface behind it. This applies to every such ` +
+        `pair: warning/warning-bg, danger/danger-bg, success/success-bg, accent/accent-bg, ` +
+        `badge-info/badge-info-bg, badge-info/info-bg, badge-env-text/badge-env-bg, ` +
+        `badge-sse-text/badge-sse-bg, diff-added-text/diff-added-bg, diff-removed-text/diff-removed-bg.\n` +
+        `  * Because the tints are only 8-15% opaque, the colour on top has to be much darker ` +
+        `(light mode) or much lighter (dark mode) than the tint suggests. In light mode use the ` +
+        `700-800 step of a ramp for these, not the 400-500 step.\n` +
+        `  * text, text-muted and text-secondary must reach 4.5:1 on bg, bg-sidebar, bg-popout, ` +
+        `surface and bg-secondary.\n` +
+        `  * text-on-accent must reach 4.5:1 on accent, accent-hover, badge-worktree, ` +
+        `badge-provider-codex-bg and status-active; text-on-danger must reach 4.5:1 on danger. ` +
+        `Pick whichever of near-white or near-black clears all of them — do not default to white.\n` +
+        `  * status-active, status-green and warning are painted as small dots on bg-sidebar and ` +
+        `need 3:1 there; toggle-knob needs 3:1 on accent.\n` +
+        `  * status-triggered and accent are each painted as text on a 15% tint of themselves ` +
+        `over bg-sidebar, which is the hardest pairing in the UI — give them plenty of headroom.\n` +
         `- shadow-sm/md/lg are full box-shadow values (e.g. "0 1px 3px rgba(0,0,0,0.2)")\n` +
         `- overlay-bg should be semi-transparent (e.g. "rgba(0,0,0,0.5)")\n` +
         `- *-bg variables (accent-bg, danger-bg, etc.) should be very subtle tints\n` +
@@ -566,13 +578,30 @@ export async function generateThemeCSS(name: string, description: string): Promi
       }
     }
 
+    // Keep only names the theme is allowed to define. A model that helpfully
+    // volunteers `chatlist-badge-triggered-bg` would pin a derived variable to a
+    // flat value and cut it off from the primitive it is supposed to follow —
+    // the same class of half-overridden feature this branch exists to close.
+    const allowed = new Set(THEME_VARIABLE_NAMES);
+    const keep = (vars: ThemeVariables): ThemeVariables => Object.fromEntries(Object.entries(vars).filter(([name]) => allowed.has(name)));
+    const dropped = [...Object.keys(parsed.dark), ...Object.keys(parsed.light)].filter((name) => !allowed.has(name));
+    if (dropped.length > 0) {
+      log.info(`generateThemeCSS: dropped ${dropped.length} variable(s) outside the theme surface — ${[...new Set(dropped)].join(", ")}`);
+    }
+
+    const corrected = correctThemeContrast(keep(parsed.dark as ThemeVariables), keep(parsed.light as ThemeVariables));
+
     const now = new Date().toISOString();
     return {
-      name,
-      dark: parsed.dark as ThemeVariables,
-      light: parsed.light as ThemeVariables,
-      createdAt: now,
-      updatedAt: now,
+      theme: {
+        name,
+        dark: corrected.dark,
+        light: corrected.light,
+        createdAt: now,
+        updatedAt: now,
+      },
+      corrections: corrected.corrections,
+      unsatisfiable: corrected.unsatisfiable,
     };
   } catch (err: any) {
     log.warn(`generateThemeCSS failed: ${err.message}`);

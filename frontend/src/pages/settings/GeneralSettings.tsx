@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing } from "lucide-react";
+import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing, AlertTriangle } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
 import {
@@ -62,6 +62,8 @@ export default function GeneralSettings() {
   const [themeError, setThemeError] = useState("");
   const [regeneratingTheme, setRegeneratingTheme] = useState<string | null>(null);
   const [regenerateDesc, setRegenerateDesc] = useState("");
+  /** Which theme's contrast report is expanded. Surfaced, never acted on. */
+  const [contrastOpen, setContrastOpen] = useState<string | null>(null);
 
   // Ignored project folders state
   const [ignoredPrefixes, setIgnoredPrefixes] = useState<string[]>([]);
@@ -209,7 +211,10 @@ export default function GeneralSettings() {
     setThemeError("");
     try {
       const theme = await generateTheme(name, desc);
-      setCustomThemes((prev) => [...prev, { name: theme.name, createdAt: theme.createdAt, updatedAt: theme.updatedAt }]);
+      // Refetch rather than splice: the contrast report is measured server-side
+      // from the stored file, and a row built from the POST response would have
+      // none — reading as "no problems" rather than "not looked at yet".
+      setCustomThemes(await listThemes());
       setNewThemeName("");
       setNewThemeDesc("");
       // Auto-select the new theme
@@ -232,8 +237,8 @@ export default function GeneralSettings() {
     try {
       // Delete the old theme, generate a new one with the same name
       await deleteTheme(name);
-      const theme = await generateTheme(name, desc);
-      setCustomThemes((prev) => prev.map((t) => (t.name === name ? { name: theme.name, createdAt: theme.createdAt, updatedAt: theme.updatedAt } : t)));
+      await generateTheme(name, desc);
+      setCustomThemes(await listThemes());
       setRegeneratingTheme(null);
       setRegenerateDesc("");
       if (selectedTheme === name) {
@@ -674,6 +679,54 @@ export default function GeneralSettings() {
                   <Trash2 size={14} />
                 </button>
               </div>
+              {/*
+                Contrast is reported, never repaired. A stored theme is the
+                user's file; the row says which pairings fall short and leaves
+                the choice — regenerate, edit by hand, or live with it — to them.
+              */}
+              {theme.contrast && theme.contrast.failures.length > 0 && (
+                <div style={{ paddingLeft: 4 }}>
+                  <button
+                    onClick={() => setContrastOpen(contrastOpen === theme.name ? null : theme.name)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "var(--warning-bg)",
+                      // --text, not --warning: this row exists to report that a
+                      // theme's colours are unreadable, and --warning on
+                      // --warning-bg is one of the pairings it reports on. The
+                      // notice about low contrast must not be the low contrast.
+                      color: "var(--text)",
+                      border: "none",
+                      borderRadius: 6,
+                      padding: "5px 8px",
+                      fontSize: 11,
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <AlertTriangle size={12} style={{ color: "var(--warning)", flexShrink: 0 }} />
+                    {theme.contrast.failures.length} of {theme.contrast.checked} colour pairings fall below WCAG AA
+                  </button>
+                  {contrastOpen === theme.name && (
+                    <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                      {theme.contrast.failures.map((f) => (
+                        <div key={`${f.mode}-${f.id}`} style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", gap: 8 }}>
+                          <span style={{ width: 38, flexShrink: 0 }}>{f.mode}</span>
+                          <span style={{ width: 74, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+                            {f.ratio === null ? "unreadable" : `${f.ratio}:1 / ${f.required}`}
+                          </span>
+                          <span>{f.where}</span>
+                        </div>
+                      ))}
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                        Regenerating this theme produces one that is checked and corrected before it is saved. Nothing here is changed for you.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               {regeneratingTheme === theme.name && (
                 <div style={{ display: "flex", gap: 6, paddingLeft: 4 }}>
                   <input

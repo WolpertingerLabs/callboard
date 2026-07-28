@@ -80,7 +80,11 @@ themesRouter.post("/generate", async (req: Request, res: Response): Promise<void
   try {
     const theme = await generateThemeCSS(name.trim(), description);
     if (!theme) {
-      res.status(500).json({ error: "Failed to generate theme — AI did not return valid CSS variables" });
+      res.status(500).json({
+        error:
+          "Failed to generate theme — the model either returned something that was not a theme, or chose colours that could not be " +
+          "brought up to WCAG AA. Nothing was saved. Try describing more contrast between the accent and the background.",
+      });
       return;
     }
     themeFileService.createTheme(theme);

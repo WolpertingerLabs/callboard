@@ -838,7 +838,17 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
             }
             const theme = await generateThemeCSS(args.name, args.description);
             if (!theme) {
-              return { content: [{ type: "text" as const, text: "Failed to generate theme. The AI did not produce valid theme data." }] };
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text:
+                      "Failed to generate theme — either the model did not return valid theme data, or the colours it chose could not be " +
+                      "brought up to WCAG AA and were rejected rather than stored. Try a description with more contrast between the " +
+                      "accent and the background. See the server log for the specific pairings.",
+                  },
+                ],
+              };
             }
             themeFileService.createTheme(theme);
             return { content: [{ type: "text" as const, text: JSON.stringify({ message: `Theme "${theme.name}" created successfully.`, theme }, null, 2) }] };
