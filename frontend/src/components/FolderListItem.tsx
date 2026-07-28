@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { GitBranch, Plus, Zap, Clock, Bell, Workflow } from "lucide-react";
+import { GitBranch, Plus, Zap, Clock, Bell, Workflow, GitFork } from "lucide-react";
 import type { FolderSummary } from "../api";
 import ProviderBadge from "./ProviderBadge";
 
@@ -211,6 +211,34 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
             >
               <GitBranch size={10} style={{ flexShrink: 0 }} />
               {folder.gitBranch}
+            </span>
+          )}
+          {/*
+            Worktree marker. `isWorktree` has been on FolderSummary all along
+            and nothing rendered it, so a worktree row and a main-checkout row
+            were indistinguishable in a sidebar that is mostly worktrees. It
+            now comes from the workspace record where one exists, which is the
+            observable part of this phase.
+          */}
+          {folder.isWorktree && (
+            <span
+              title={folder.repoPath ? `Worktree of ${folder.repoPath}` : "Git worktree"}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                padding: "0 5px",
+                borderRadius: 3,
+                // Same tokens as the worktree tag in the chat header, so one
+                // concept reads the same in both places.
+                background: "var(--badge-worktree)",
+                color: "var(--text-on-accent)",
+                flexShrink: 0,
+              }}
+            >
+              <GitFork size={10} style={{ flexShrink: 0 }} />
+              worktree
             </span>
           )}
           <span style={{ opacity: 0.5 }}>({folder.chatCount})</span>

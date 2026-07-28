@@ -48,11 +48,52 @@ export interface ChatListResponse {
   stale?: boolean;
 }
 
+/**
+ * One sidebar row: a **directory workspace**.
+ *
+ * The row is keyed by `folder` — the directory work happens in — and a
+ * {@link Workspace} record supplies its identity when one claims that
+ * directory. Where no record exists (the overwhelming majority: workspace
+ * records are only written when a chat starts in a worktree), the row is a
+ * *synthesised* directory workspace with the same shape and no persisted
+ * state. The projection is uniform either way; see
+ * `backend/src/services/workspace-views.ts`.
+ *
+ * Row membership is deliberately **not** keyed on the chat's own
+ * `workspaceId`. A chat's `workspaceId` is provenance — it records which
+ * workspace it was started under — and using it to group would split a
+ * directory's chats across two identically-named rows for as long as most
+ * chats predate the entity. Workspace-owned *state* keys on `workspaceId`;
+ * the directory listing keys on the directory. See the keying rule in
+ * `.claude/CLAUDE.md`.
+ */
 export interface FolderSummary {
   /** Actual folder path (worktrees stay separate) */
   folder: string;
   /** Last path segment for display */
   displayName: string;
+  /**
+   * The {@link Workspace} record claiming this directory, when exactly one
+   * active record does. OPAQUE — never parse it back into a path.
+   *
+   * Absent when no record claims the directory (a synthesised directory
+   * workspace) *or* when several do — in the latter case `workspaceCount`
+   * says how many. Nothing may depend on its presence.
+   */
+  workspaceId?: string;
+  /**
+   * Number of active workspace records on this directory, present only when
+   * more than one. Multiple workspaces sharing a `cwd` is a supported state,
+   * not a bug; rendering them as separate rows is Phase 4's job, so this
+   * phase reports the count and declines to pick an id.
+   */
+  workspaceCount?: number;
+  /**
+   * The main checkout this directory belongs to, when `isWorktree`. Comes
+   * from the workspace record when one exists, and from resolving the `.git`
+   * file otherwise.
+   */
+  repoPath?: string;
   /** ID of the most recently created chat in this folder */
   mostRecentChatId: string;
   /** When the most recent chat was created (ISO) */
@@ -62,7 +103,17 @@ export interface FolderSummary {
   /** Folder status based on most recent chat */
   status: "ongoing" | "waiting" | "stopped";
   isGitRepo: boolean;
-  /** True when the folder is a git worktree rather than the main repo checkout. */
+  /**
+   * True when the folder is a git worktree rather than the main repo checkout.
+   *
+   * Read from the workspace record when one claims this directory, and from
+   * the `.git` file otherwise. Note that a record's `isolation: "worktree"`
+   * alone does **not** mean this: `ensureWorktreeDetailed` hands back the main
+   * checkout when the requested branch is already checked out there, so a
+   * record can say "worktree" about a directory that is the main repo. The
+   * record is only believed when its `repoPath` names a *different*
+   * directory.
+   */
   isWorktree: boolean;
   gitBranch?: string;
   /** Whether the most recent chat was triggered */

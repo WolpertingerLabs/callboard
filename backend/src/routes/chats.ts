@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
-import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
+import { getGitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
@@ -15,7 +15,8 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isRoutableProvider, type RoutableProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { createLogger } from "../utils/logger.js";
-import type { FolderSummary } from "shared/types/index.js";
+import { buildFolderSummaries } from "../services/folder-summaries.js";
+import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 // Chat-list response cache lives in a standalone module so services can
 // invalidate it without closing an import cycle back through this route.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
@@ -165,70 +166,21 @@ chatsRouter.get("/folders", (req, res) => {
     // Fetch all sessions (large limit to get everything within range)
     const { sessions } = discoverSessionsPaginated(9999, 0);
 
-    // Filter by age and group by folder
-    const folderMap = new Map<string, typeof sessions>();
-    for (const session of sessions) {
-      if (session.createdAt < cutoff) continue;
-      const group = folderMap.get(session.folder) || [];
-      group.push(session);
-      folderMap.set(session.folder, group);
-    }
+    // One registry read for the whole listing, not one per row.
+    const workspaces = buildWorkspaceIndex();
 
-    const folders: FolderSummary[] = [];
-
-    for (const [folder, chats] of folderMap) {
-      // Skip folders that no longer exist on disk
-      if (!existsSync(folder)) continue;
-
-      // Sort by created_at descending to find most recent
-      chats.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-      const mostRecent = chats[0];
-
-      // Find latest updated_at across all chats
-      const lastUpdatedAt = chats.reduce((latest, c) => (c.updatedAt > latest ? c.updatedAt : latest), chats[0].updatedAt);
-
-      // Get metadata from file storage for the most recent chat
-      const storedChat = chatFileService.getChat(mostRecent.sessionId);
-      const metadata = storedChat ? JSON.parse(storedChat.metadata || "{}") : {};
-
-      // Determine status
-      let status: "ongoing" | "waiting" | "stopped" = "stopped";
-      if (sessionRegistry.has(mostRecent.sessionId)) {
-        status = "ongoing";
-      } else if (hasPendingRequest(mostRecent.sessionId)) {
-        status = "waiting";
-      }
-
-      // Get git info
-      const gitInfo = getCachedGitInfo(folder);
-      const { isWorktree } = resolveWorktreeToMainRepoCached(folder);
-
-      // Extract folder display name (last path segment)
-      const displayName = folder.split("/").pop() || folder;
-
-      folders.push({
-        folder,
-        displayName,
-        mostRecentChatId: mostRecent.sessionId,
-        mostRecentChatCreatedAt: mostRecent.createdAt.toISOString(),
-        lastUpdatedAt: lastUpdatedAt.toISOString(),
-        status,
-        isGitRepo: gitInfo.isGitRepo,
-        isWorktree,
-        gitBranch: gitInfo.branch,
-        isTriggered: !!metadata.triggered,
-        triggeredBy: metadata.triggeredBy,
-        chatCount: chats.length,
-        chatStatus: metadata.chatStatus || undefined,
-        chatStatusEmoji: metadata.chatStatusEmoji || undefined,
-        hasSummon: !!metadata.summon,
-        chatTitle: metadata.title || undefined,
-        mostRecentChatProvider: metadata.provider || undefined,
-      });
-    }
-
-    // Sort by last updated descending (most recently active folders first)
-    folders.sort((a, b) => new Date(b.lastUpdatedAt).getTime() - new Date(a.lastUpdatedAt).getTime());
+    const folders = buildFolderSummaries(sessions, {
+      cutoff,
+      workspaces,
+      directoryExists: (folder) => existsSync(folder),
+      chatMetadata: (sessionId) => {
+        const storedChat = chatFileService.getChat(sessionId);
+        return storedChat ? JSON.parse(storedChat.metadata || "{}") : {};
+      },
+      isOngoing: (sessionId) => sessionRegistry.has(sessionId),
+      isWaiting: (sessionId) => hasPendingRequest(sessionId),
+      gitInfo: (folder) => getCachedGitInfo(folder),
+    });
 
     res.json({ folders });
   } catch (err: any) {
@@ -540,8 +492,11 @@ chatsRouter.get("/new/info", (req, res) => {
     gitInfo = getGitInfo(folder);
   } catch {}
 
-  // Resolve worktree to get main repo path
-  const { mainRepoPath, isWorktree } = resolveWorktreeToMainRepoCached(folder);
+  // Resolve worktree to get main repo path — through the same projection the
+  // sidebar row uses, so the two cannot disagree about one directory.
+  const view = viewForDirectory(folder, buildWorkspaceIndex());
+  const isWorktree = view.isWorktree;
+  const mainRepoPath = view.repoPath ?? folder;
 
   // Get slash commands and plugins for the folder
   let slashCommands: any[] = [];
