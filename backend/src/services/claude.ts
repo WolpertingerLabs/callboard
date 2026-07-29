@@ -45,6 +45,7 @@ import {
   getClaudeCodeExecutablePath,
 } from "./agent-settings.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
+import { isCodexRoutedThroughOpenRouter, detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -111,9 +112,7 @@ async function buildProxyConnectionsPrompt(proxyKeyAlias: string): Promise<strin
       error
         ? `The connection listing could not be retrieved just now (${error}). Do not conclude that`
         : "No connections are currently listed for you. Before concluding a service is unavailable,",
-      error
-        ? "no services are connected — call `mcp__mcp-proxy__list_routes` yourself to find out."
-        : "call `mcp__mcp-proxy__list_routes` to confirm.",
+      error ? "no services are connected — call `mcp__mcp-proxy__list_routes` yourself to find out." : "call `mcp__mcp-proxy__list_routes` to confirm.",
     ].join("\n");
   }
 
@@ -1583,9 +1582,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const authMode = agentSettings.codexAuthMode ?? "subscription";
     // OpenRouter endpoint routing takes precedence over codexAuthMode: the native
     // Codex harness talks to OpenRouter via the injected config.toml provider
-    // block. Requires its dedicated OR key (→ OPENROUTER_API_KEY).
-    const useOpenRouter = Boolean(agentSettings.codexUseOpenRouter && agentSettings.codexOpenRouterApiKey?.trim());
-    if (agentSettings.codexUseOpenRouter && !agentSettings.codexOpenRouterApiKey?.trim()) {
+    // block, keyed from OPENROUTER_API_KEY. Credentials may come from the stored
+    // key or from an ambient OpenRouter setup — see isCodexRoutedThroughOpenRouter
+    // for why the env case additionally requires an explicit endpoint override.
+    const useOpenRouter = isCodexRoutedThroughOpenRouter(agentSettings);
+    // Routing requested with no credentials anywhere — no stored key and no
+    // ambient OpenRouter setup — is a misconfiguration rather than a silent
+    // fallback onto codexAuthMode.
+    if (agentSettings.codexUseOpenRouter && !useOpenRouter && !detectCodexOpenRouterEnv()) {
       const message = "Codex chat selected with OpenRouter routing, but no OpenRouter API key is configured in Settings → API.";
       log.error(message);
       throw new Error(message);

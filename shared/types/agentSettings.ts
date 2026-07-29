@@ -124,8 +124,11 @@ export interface AgentSettings {
 
   /**
    * Override the OpenRouter Anthropic-gateway endpoint used when
-   * {@link claudeCodeUseOpenRouter} is on (→ ANTHROPIC_BASE_URL). Blank/unset ⇒
-   * the default `https://openrouter.ai/api`. Exists so users can point the native
+   * {@link claudeCodeUseOpenRouter} is on (→ ANTHROPIC_BASE_URL). Set, it always
+   * wins — including when the routing credentials come from the ambient
+   * environment rather than {@link claudeCodeOpenRouterApiKey}. Blank/unset ⇒ the
+   * default `https://openrouter.ai/api` with a stored key, or whatever endpoint
+   * the environment already chose when the key is the environment's. Exists so users can point the native
    * Claude Code harness at OpenRouter's regional endpoints (US/EU) or any future
    * variant without a code change. Must include the Anthropic-compatible `/api`
    * path (NO `/v1` suffix) — this is a full base URL, not just a host.
@@ -296,8 +299,10 @@ export interface AgentSettings {
   /**
    * Override the OpenRouter endpoint used when {@link codexUseOpenRouter} is on
    * (→ the injected `[model_providers.openrouter]` block's `base_url`).
-   * Blank/unset ⇒ the default `https://openrouter.ai/api/v1`. Lets users target
-   * OpenRouter's regional endpoints (US/EU) without a code change. Must include
+   * Blank/unset ⇒ the default `https://openrouter.ai/api/v1`, or — when the
+   * routing is credentialed by an ambient OpenRouter setup rather than
+   * {@link codexOpenRouterApiKey} — that setup's own endpoint, left untouched.
+   * Lets users target OpenRouter's regional endpoints (US/EU) without a code change. Must include
    * the OpenAI-compatible `/api/v1` path — note this differs from
    * {@link claudeCodeOpenRouterBaseUrl}, which takes the bare `/api` Anthropic
    * gateway path.

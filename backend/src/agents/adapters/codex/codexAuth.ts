@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentSettings } from "../../../services/agent-settings.js";
 import { resolveCodexHome } from "./sessionParser.js";
+import type { AgentSettings } from "shared";
 
 /** Which credential source backs the configured-state, or `null` when none. */
 export type CodexAuthSource = "api-key" | "auth.json" | "config.toml" | null;
@@ -97,4 +98,26 @@ export function detectCodexOpenRouterEnv(): boolean {
     // ignore — treat as not detected
   }
   return false;
+}
+
+/**
+ * Whether callboard should route the native Codex harness through OpenRouter —
+ * i.e. whether the options adapter injects its `[model_providers.openrouter]`
+ * block (base_url + `env_key = OPENROUTER_API_KEY`).
+ *
+ * Toggle plus credentials, with the same environment fallback as the Claude Code
+ * side (`isClaudeCodeRoutedThroughOpenRouter`) but deliberately narrower on the
+ * env half. When the ambient env / config.toml already routes Codex through
+ * OpenRouter, callboard takes the provider block over only if the user actually
+ * asked for a different endpoint: with no override there is nothing for us to
+ * add, and injecting the block anyway would replace a working hand-written
+ * provider with our own base_url/env_key assumptions. With an override there is
+ * no other way to honor it — a base URL typed into Settings that loses to
+ * $OPENAI_BASE_URL is a setting that does nothing.
+ */
+export function isCodexRoutedThroughOpenRouter(settings?: AgentSettings): boolean {
+  const s = settings ?? getAgentSettings();
+  if (!s.codexUseOpenRouter) return false;
+  if (s.codexOpenRouterApiKey?.trim()) return true;
+  return Boolean(s.codexOpenRouterBaseUrl?.trim()) && detectCodexOpenRouterEnv();
 }
