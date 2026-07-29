@@ -314,8 +314,9 @@ export interface AgentSettings {
   codexOpenRouterModel?: string;
 
   // ── Session completion callbacks ("phone home") loop-safety ───────
-  // Bounds on the start_chat_session onComplete feature, which automatically
-  // re-invokes a parent chat when a spawned child session finishes.
+  // Bounds on the onComplete feature (start_chat_session, continue_chat), which
+  // automatically re-invokes a parent chat when the session it is waiting on
+  // finishes.
 
   /**
    * Max callback-chain depth. A re-invoked parent that spawns another
@@ -328,7 +329,8 @@ export interface AgentSettings {
   /**
    * Max number of outstanding (undelivered) completion callbacks across the
    * whole instance. New onComplete registrations beyond this are skipped (the
-   * session still starts). Caps fan-out breadth. Default: 25.
+   * session still starts / the message is still sent). Caps fan-out breadth.
+   * Default: 25.
    */
   maxPendingCallbacks?: number;
 }

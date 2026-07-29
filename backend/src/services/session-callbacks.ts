@@ -6,8 +6,9 @@
  * subscribes to the session registry and, when the child session reaches any
  * terminal state, re-invokes the parent chat with a lightweight notification.
  *
- * The store is global (not per-agent) because the spawning tool
- * (`start_chat_session`) is a platform tool available to non-agent sessions too.
+ * The store is global (not per-agent) because the registering tools
+ * (`start_chat_session`, `continue_chat`) are platform tools available to
+ * non-agent sessions too.
  * It is persisted to disk so pending callbacks survive a backend restart — the
  * parent's turn has typically long ended by the time the child finishes.
  *
@@ -21,6 +22,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { DATA_DIR } from "../utils/paths.js";
+import { getAgentSettings } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("session-callbacks");
@@ -31,10 +33,17 @@ const STORE_PATH = join(DATA_DIR, "session-callbacks.json");
 export const DEFAULT_MAX_CALLBACK_CHAIN_DEPTH = 10;
 export const DEFAULT_MAX_PENDING_CALLBACKS = 25;
 
+/**
+ * How the parent came to be waiting on the child — only affects the wording of
+ * the notification. Absent on records written before the field existed; treat
+ * `undefined` as "spawned".
+ */
+export type CallbackKind = "spawned" | "continued";
+
 export interface PendingCallback {
   /** Stable id for this callback registration. */
   id: string;
-  /** The spawned child session whose completion we are waiting on. */
+  /** The child session whose completion we are waiting on. */
   childChatId: string;
   /** The chat to re-invoke (notify) when the child completes. */
   parentChatId: string;
@@ -45,6 +54,8 @@ export interface PendingCallback {
   parentAgentAlias?: string;
   /** Callback-chain depth of this registration (parent depth + 1). */
   depth: number;
+  /** Whether the parent spawned the child or sent it a follow-up. */
+  kind?: CallbackKind;
   /** Unix ms timestamp of registration. */
   createdAt: number;
   /**
@@ -89,6 +100,7 @@ export interface AddCallbackInput {
   parentChatId: string;
   parentAgentAlias?: string;
   depth: number;
+  kind?: CallbackKind;
 }
 
 export function addCallback(input: AddCallbackInput): PendingCallback {
@@ -99,6 +111,7 @@ export function addCallback(input: AddCallbackInput): PendingCallback {
     parentChatId: input.parentChatId,
     ...(input.parentAgentAlias ? { parentAgentAlias: input.parentAgentAlias } : {}),
     depth: input.depth,
+    ...(input.kind ? { kind: input.kind } : {}),
     createdAt: Date.now(),
     status: "waiting",
   };
@@ -110,6 +123,72 @@ export function addCallback(input: AddCallbackInput): PendingCallback {
 /** Count of registrations not yet delivered (waiting + ready). */
 export function countPending(): number {
   return readStore().callbacks.length;
+}
+
+// ── Guarded registration ────────────────────────────────────────────
+
+export interface RegisterCallbackInput {
+  childChatId: string;
+  /** The chat to notify. Undefined when the caller has no chat context. */
+  parentChatId?: string;
+  parentAgentAlias?: string;
+  kind: CallbackKind;
+}
+
+export interface CallbackRegistration {
+  registered: boolean;
+  /** Store id of the registration — pass to `removeCallbacks` to roll it back. */
+  id?: string;
+  /** Human-readable outcome, surfaced to the calling model in the tool result. */
+  note?: string;
+}
+
+/**
+ * Register a phone-home callback, applying the loop-safety limits. Shared by
+ * every tool that offers `onComplete` so the two paths cannot drift on how
+ * depth and pending counts are enforced.
+ *
+ * Never throws and never blocks the caller's real work: when a limit is hit the
+ * callback is skipped and the reason is returned for the tool to report.
+ */
+export function registerCompletionCallback(input: RegisterCallbackInput): CallbackRegistration {
+  const { childChatId, parentChatId, parentAgentAlias, kind } = input;
+
+  if (!parentChatId) {
+    return { registered: false, note: "No parent chat context available — cannot register completion callback." };
+  }
+
+  const settings = getAgentSettings();
+  const maxDepth = settings.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH;
+  const maxPending = settings.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS;
+  const depth = getChatDepth(parentChatId) + 1;
+  // "The session was started" / "The message was sent" — the work itself always
+  // goes ahead; only the notification is dropped.
+  const sent = kind === "spawned" ? "The session was started" : "The message was sent";
+
+  if (depth > maxDepth) {
+    log.warn(`callback depth ${depth} exceeds limit ${maxDepth} for parent ${parentChatId} — skipping callback`);
+    return {
+      registered: false,
+      note: `Callback chain depth limit reached (${maxDepth}). ${sent}, but it will not phone home to avoid runaway loops.`,
+    };
+  }
+
+  if (countPending() >= maxPending) {
+    log.warn(`pending callbacks at limit ${maxPending} — skipping callback for parent ${parentChatId}`);
+    return {
+      registered: false,
+      note: `Pending callback limit reached (${maxPending}). ${sent}, but it will not phone home until existing callbacks drain.`,
+    };
+  }
+
+  const cb = addCallback({ childChatId, parentChatId, ...(parentAgentAlias ? { parentAgentAlias } : {}), depth, kind });
+  log.info(`Registered on-complete callback (${kind}): child ${childChatId} → parent ${parentChatId} (depth ${depth})`);
+  return {
+    registered: true,
+    id: cb.id,
+    note: `This chat will be notified automatically when session ${childChatId} completes.`,
+  };
 }
 
 /** Mark every callback waiting on `childChatId` as ready for delivery. Returns affected callbacks. */

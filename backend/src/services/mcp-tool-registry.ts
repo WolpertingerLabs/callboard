@@ -353,6 +353,12 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       { name: "maxTurns", type: "number", description: "Maximum agentic turns", required: false },
       { name: "waitForCompletion", type: "boolean", description: "Block until the response is ready", required: false },
       {
+        name: "onComplete",
+        type: "boolean",
+        description: "Automatically re-invoke this chat when the continued session completes (no polling). Ignored with waitForCompletion",
+        required: false,
+      },
+      {
         name: "requireExplicitCompletion",
         type: "boolean",
         description: "Override the chat's explicit-completion requirement for this message (omit to inherit)",
