@@ -35,6 +35,18 @@
   /* Text on colored backgrounds */
   --text-on-accent: #ffffff;
   --text-on-danger: #ffffff;
+  /* --danger is the *ink* of an error message, so it has to stay light enough
+     to read on --danger-bg over a dark surface. That same lightness is what
+     makes white-on-it only 3.35:1 as a destructive button's fill. One token
+     cannot be both, so the fill is its own token — derived from --danger, not
+     a second literal, so a theme that moves --danger still moves the button
+     and no new variable is asked of a theme author. */
+  --danger-solid: color-mix(in srgb, var(--danger) 75%, black);
+  /* --accent as ink, for the places it is painted *as text* on a tint of
+     itself. #7c6aef tops out at 4.25:1 on --surface and 3.89:1 on the light
+     one, before any tint — so the ink has to leave the brand value even
+     though the fill must not. Lightened in dark, darkened in light. */
+  --accent-text: color-mix(in srgb, var(--accent) 80%, white);
 
   /* Semantic tint backgrounds */
   --accent-bg: rgba(99, 102, 241, 0.1);
@@ -60,19 +72,32 @@
   --diff-added-line-bg: rgba(46, 160, 67, 0.1);
   --diff-removed-bg: rgba(248, 81, 73, 0.15);
   --diff-removed-border: #f85149;
-  --diff-removed-text: #f85149;
+  /* Lighter than --diff-removed-border, because the border sits on --surface
+     while the text sits on --diff-removed-bg — a 15% red wash that lifts the
+     backdrop just enough to put #f85149 at 4.35:1. */
+  --diff-removed-text: #ff7b72;
   --diff-removed-line-bg: rgba(248, 81, 73, 0.1);
   --diff-hunk-bg: rgba(124, 106, 239, 0.08);
 
   /* UI elements */
   --toggle-knob: #ffffff;
   --status-active: #10b981;
+  /* --status-active is an indicator dot first, and has to stay bright enough to
+     read against --bg-sidebar; white on it is 2.54:1, which is what the CLI
+     session badge and the "Git" chip were painting. Same split as --danger /
+     --danger-solid: the *fill* darkens the dot colour rather than borrowing it,
+     and stays derived so a theme's --status-active still drives both. Light
+     needs no step down — its dot had to darken anyway. */
+  --status-active-solid: color-mix(in srgb, var(--status-active) 65%, black);
   --status-triggered: #f59e0b;
   --status-green: #22c55e;
   --badge-info: #58a6ff;
   --badge-info-bg: rgba(88, 166, 255, 0.15);
   --badge-trigger: #a78bfa;
-  --badge-worktree: #8b5cf6;
+  /* A fill only — the worktree and OpenRouter badges paint --text-on-accent on
+     it, and never use it as ink. violet-600 rather than violet-500 so that
+     white clears 4.5:1 (5.70 vs 4.23); the light palette already uses it. */
+  --badge-worktree: #7c3aed;
   --badge-provider-openrouter-bg: var(--badge-worktree);
   --badge-provider-codex-bg: #047857;
   --badge-provider-text: var(--text-on-accent);
@@ -108,11 +133,11 @@
   --chatlist-icon-nav: var(--text);
   --chatlist-icon-nav-active: var(--text-on-accent);
   --chatlist-badge-agent-bg: color-mix(in srgb, var(--accent) 15%, transparent);
-  --chatlist-badge-agent-text: var(--accent);
+  --chatlist-badge-agent-text: var(--accent-text);
   --chatlist-badge-triggered-bg: color-mix(in srgb, var(--status-triggered) 15%, transparent);
   --chatlist-badge-triggered-text: var(--status-triggered);
   --chatlist-badge-session-web-bg: var(--accent);
-  --chatlist-badge-session-cli-bg: var(--status-active);
+  --chatlist-badge-session-cli-bg: var(--status-active-solid);
   --chatlist-badge-session-text: var(--text-on-accent);
   --chatlist-badge-status-bg: color-mix(in srgb, var(--text-muted) 15%, transparent);
   --chatlist-badge-status-text: var(--text-muted);
@@ -177,7 +202,11 @@
      button, the over-budget pill), which the lighter values failed too. */
   --danger: #b91c1c;
   --error: #cf222e;
-  --success: #16a34a;
+  /* green-800, not green-600. #293 moved --danger and --warning down their ramps
+     for exactly this reason but left --success where it was, and it reads at
+     2.90:1 on --success-bg over --surface — the second-worst pairing left in the
+     palette. green-700 still misses at 4.41:1. */
+  --success: #166534;
   --warning: #854d0e;
   --bg-secondary: #f0f4f8;
   --text-secondary: #556070;
@@ -186,6 +215,13 @@
   /* Text on colored backgrounds */
   --text-on-accent: #ffffff;
   --text-on-danger: #ffffff;
+  /* Light's --danger is already dark enough to carry white (6.47:1), so the
+     split costs nothing here — but the token has to exist in both modes or the
+     buttons that paint it would be undefined in one. */
+  --danger-solid: var(--danger);
+  /* Darkened rather than lightened: see the dark block. #7c6aef as ink tops out
+     at 3.89:1 on --surface and 3.59:1 on --bg-sidebar before any tint. */
+  --accent-text: color-mix(in srgb, var(--accent) 75%, black);
 
   /* Semantic tint backgrounds */
   --accent-bg: rgba(124, 106, 239, 0.08);
@@ -209,17 +245,29 @@
   /* Diff view */
   --diff-added-bg: rgba(46, 160, 67, 0.12);
   --diff-added-border: #1a7f37;
-  --diff-added-text: #1a7f37;
+  /* Text and border part company here: the border sits on --surface, the text
+     sits on a 12% green wash over it, which cost #1a7f37 the last 0.23 it
+     needed (4.27:1). Matched to --success rather than invented. */
+  --diff-added-text: #166534;
   --diff-added-line-bg: rgba(46, 160, 67, 0.08);
   --diff-removed-bg: rgba(248, 81, 73, 0.12);
   --diff-removed-border: #cf222e;
-  --diff-removed-text: #cf222e;
+  /* Same wash, same story on the red side: #cf222e reads 4.44:1 there.
+     Matched to --danger. */
+  --diff-removed-text: #b91c1c;
   --diff-removed-line-bg: rgba(248, 81, 73, 0.08);
   --diff-hunk-bg: rgba(124, 106, 239, 0.06);
 
   /* UI elements */
   --toggle-knob: #ffffff;
-  --status-active: #10b981;
+  /* emerald-700, not emerald-500. Two jobs, both failed by #10b981 in light:
+     the ongoing-chat dot reads 2.24:1 on --bg-sidebar (WCAG asks 3:1 of a
+     non-text indicator), and the CLI session badge paints white on it at
+     2.54:1. Both want the same direction, so one darker emerald settles both
+     and the hue is unchanged. */
+  --status-active: #047857;
+  /* Nothing to step down to: emerald-700 already carries white at 5.48:1. */
+  --status-active-solid: var(--status-active);
   /* Same story as --warning: painted as a colour on a 15% tint of itself (the
      triggered badge in ChatListItem/FolderListItem, the "consolidation" filter
      pill in Activity), where amber-500 bottomed out at 1.71:1 — the worst
@@ -231,14 +279,21 @@
   /* Light needs a much darker green than dark does: #22c55e is only 2.0:1 on
      --bg-sidebar, well under the 3:1 WCAG asks of a non-text status indicator. */
   --status-green: #15803d;
-  --badge-info: #2563eb;
+  /* blue-700. blue-600 is a colour-on-a-tint-of-itself case that #293 measured
+     and published as fixed at 4.31:1 — which is below AA, not above it. Both
+     of its tints (--info-bg at 8%, --badge-info-bg at 10%) needed the ink to
+     move; neither opacity reaches 4.5:1 from blue-600. */
+  --badge-info: #1d4ed8;
   --badge-info-bg: rgba(37, 99, 235, 0.1);
   --badge-trigger: #7c3aed;
   --badge-worktree: #7c3aed;
   --badge-provider-openrouter-bg: var(--badge-worktree);
   --badge-provider-codex-bg: #047857;
   --badge-provider-text: var(--text-on-accent);
-  --badge-env-text: #16a34a;
+  /* green-800, matching --success: the stdio badge is this colour on a 10%
+     tint of it, which left green-600 at 2.83:1. The border keeps green-600 —
+     it sits on --surface, where it is not the thing being read. */
+  --badge-env-text: #166534;
   --badge-env-bg: rgba(22, 163, 106, 0.1);
   --badge-env-border: #16a34a;
   --badge-sse-text: #1d4ed8;
@@ -270,11 +325,11 @@
   --chatlist-icon-nav: var(--text);
   --chatlist-icon-nav-active: var(--text-on-accent);
   --chatlist-badge-agent-bg: color-mix(in srgb, var(--accent) 15%, transparent);
-  --chatlist-badge-agent-text: var(--accent);
+  --chatlist-badge-agent-text: var(--accent-text);
   --chatlist-badge-triggered-bg: color-mix(in srgb, var(--status-triggered) 15%, transparent);
   --chatlist-badge-triggered-text: var(--status-triggered);
   --chatlist-badge-session-web-bg: var(--accent);
-  --chatlist-badge-session-cli-bg: var(--status-active);
+  --chatlist-badge-session-cli-bg: var(--status-active-solid);
   --chatlist-badge-session-text: var(--text-on-accent);
   --chatlist-badge-status-bg: color-mix(in srgb, var(--text-muted) 15%, transparent);
   --chatlist-badge-status-text: var(--text-muted);

@@ -219,8 +219,8 @@ const allowBtn: React.CSSProperties = {
 };
 
 const denyBtn: React.CSSProperties = {
-  background: "var(--danger)",
-  color: "var(--text-on-accent)",
+  background: "var(--danger-solid)",
+  color: "var(--text-on-danger)",
   padding: "8px 20px",
   borderRadius: 6,
   fontSize: 14,

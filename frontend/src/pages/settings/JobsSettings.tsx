@@ -794,9 +794,9 @@ export default function JobsSettings() {
                   padding: "8px 16px",
                   borderRadius: 6,
                   fontSize: 14,
-                  background: "var(--danger)",
+                  background: "var(--danger-solid)",
                   border: "none",
-                  color: "var(--text-on-accent)",
+                  color: "var(--text-on-danger)",
                   fontWeight: 600,
                   cursor: importing ? "default" : "pointer",
                 }}

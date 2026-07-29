@@ -116,8 +116,8 @@ function dangerButton() {
     padding: "6px 12px",
     borderRadius: 6,
     fontSize: 12,
-    background: "var(--danger)",
-    color: "var(--text-on-accent)",
+    background: "var(--danger-solid)",
+    color: "var(--text-on-danger)",
     border: "none",
     cursor: "pointer" as const,
   };

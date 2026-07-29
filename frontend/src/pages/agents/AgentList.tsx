@@ -480,8 +480,8 @@ export default function AgentList() {
                   borderRadius: 8,
                   fontSize: 14,
                   fontWeight: 500,
-                  background: "var(--danger)",
-                  color: "var(--text-on-accent)",
+                  background: "var(--danger-solid)",
+                  color: "var(--text-on-danger)",
                 }}
               >
                 Delete

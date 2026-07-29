@@ -332,7 +332,7 @@ export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps
             <button
               onClick={() => act(() => respondJobApproval(run.runId, "reject", comment || undefined))}
               disabled={acting}
-              style={{ ...actionButtonStyle, background: "var(--danger)", color: "var(--text-on-accent)", border: "none", fontWeight: 600 }}
+              style={{ ...actionButtonStyle, background: "var(--danger-solid)", color: "var(--text-on-danger)", border: "none", fontWeight: 600 }}
             >
               Reject
             </button>

@@ -267,7 +267,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
                 alignItems: "center",
                 justifyContent: "center",
                 gap: 6,
-                color: "var(--accent)",
+                color: "var(--accent-text)",
                 fontSize: 14,
                 fontWeight: 500,
                 pointerEvents: "none",

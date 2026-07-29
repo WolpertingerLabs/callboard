@@ -2401,8 +2401,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   fontSize: 11,
                   padding: "2px 6px",
                   borderRadius: 4,
-                  background: globalSessionActive.type === "web" ? "var(--accent)" : "var(--status-active)",
-                  color: "var(--text-on-accent)",
+                  background: globalSessionActive.type === "web" ? "var(--chatlist-badge-session-web-bg)" : "var(--chatlist-badge-session-cli-bg)",
+                  color: "var(--chatlist-badge-session-text)",
                   fontWeight: 500,
                 }}
               >
@@ -2694,8 +2694,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           onClick={handleStop}
           disabled={!canStop}
           style={{
-            background: stopping ? "var(--bg-secondary)" : canStop ? "var(--danger)" : "var(--border)",
-            color: stopping ? "var(--danger)" : canStop ? "var(--text-on-accent)" : "var(--text-secondary)",
+            background: stopping ? "var(--bg-secondary)" : canStop ? "var(--danger-solid)" : "var(--border)",
+            color: stopping ? "var(--danger)" : canStop ? "var(--text-on-danger)" : "var(--text-secondary)",
             padding: "8px",
             borderRadius: 6,
             border: "none",
@@ -2978,7 +2978,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
                           <span
                             style={{
-                              background: "var(--status-active)",
+                              background: "var(--status-active-solid)",
                               color: "var(--text-on-accent)",
                               padding: "3px 8px",
                               borderRadius: 4,
