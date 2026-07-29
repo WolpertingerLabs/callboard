@@ -15,15 +15,38 @@
  * what it received. If ACP registration had OpenRouter's behaviour, the agent
  * would come back with a short list or none at all.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { AcpAdapter } from "./AcpAdapter.js";
+import { ACP_SESSIONS_DIRNAME } from "./transcript.js";
 import { acpStdioServer, buildAcpToolServer, collectAcpToolServers, isAcpToolServerHandle } from "./toolAdapter.js";
 import { defineTool, type ToolServerSpec } from "../../ports/tools.js";
 import { acpTestAgentPreset } from "./__fixtures__/testAgent.js";
 import type { AgentEvent } from "../../ports/events.js";
 
 const TEST_TIMEOUT = 45_000;
+
+// The anyOf probe below opens a real ACP session, and a real session gets a real
+// transcript. Point the callboard-owned transcript root at a scratch dir — same
+// as `AcpAdapter.e2e.test.ts` — or the fake agent's session is discovered as a
+// chat in the developer's own sidebar.
+let dataDir: string;
+let originalDataDir: string | undefined;
+
+beforeEach(() => {
+  originalDataDir = process.env.CALLBOARD_DATA_DIR;
+  dataDir = mkdtempSync(join(tmpdir(), "cb-acp-tools-"));
+  process.env.CALLBOARD_DATA_DIR = dataDir;
+});
+
+afterEach(() => {
+  if (originalDataDir === undefined) delete process.env.CALLBOARD_DATA_DIR;
+  else process.env.CALLBOARD_DATA_DIR = originalDataDir;
+  rmSync(dataDir, { recursive: true, force: true });
+});
 
 /**
  * A bundle with three tools, one of which has a union-typed argument.
@@ -136,6 +159,11 @@ describe("anyOf in tool schemas (the OpenRouter failure mode)", () => {
       expect(reported).toContain("anyOfSchema:kept");
       // A real call round-trips through the shim to the in-process handler.
       expect(reported).toContain("echo:echo:ping");
+
+      // The session this test opened was transcribed into the scratch dir. It
+      // once landed in the developer's real ~/.callboard, where discovery turned
+      // the fake agent into a permanent chat-list entry.
+      expect(existsSync(join(dataDir, ACP_SESSIONS_DIRNAME, "test-double", "fake-session-1.jsonl"))).toBe(true);
     },
     TEST_TIMEOUT,
   );
