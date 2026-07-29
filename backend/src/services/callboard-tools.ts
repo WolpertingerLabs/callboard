@@ -22,8 +22,7 @@ import { getSdkInfoAsync } from "./sdk-info.js";
 import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
-import { getAgentSettings } from "./agent-settings.js";
-import { addCallback, countPending, getChatDepth, DEFAULT_MAX_CALLBACK_CHAIN_DEPTH, DEFAULT_MAX_PENDING_CALLBACKS } from "./session-callbacks.js";
+import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
 import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CARD_CATEGORY_MAX } from "./card-store.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
@@ -869,38 +868,13 @@ export function buildCallboardToolsSpec(
             // ── "Phone home" on-complete callback registration ──
             let onComplete: { registered: boolean; note?: string } | undefined;
             if (args.onComplete) {
-              const parentChatId = getChatId?.();
-              if (!parentChatId) {
-                onComplete = { registered: false, note: "No parent chat context available — cannot register completion callback." };
-              } else {
-                const settings = getAgentSettings();
-                const maxDepth = settings.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH;
-                const maxPending = settings.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS;
-                const newDepth = getChatDepth(parentChatId) + 1;
-
-                if (newDepth > maxDepth) {
-                  onComplete = {
-                    registered: false,
-                    note: `Callback chain depth limit reached (${maxDepth}). The session was started, but it will not phone home to avoid runaway loops.`,
-                  };
-                  log.warn(`start_chat_session: callback depth ${newDepth} exceeds limit ${maxDepth} for parent ${parentChatId} — skipping callback`);
-                } else if (countPending() >= maxPending) {
-                  onComplete = {
-                    registered: false,
-                    note: `Pending callback limit reached (${maxPending}). The session was started, but it will not phone home until existing callbacks drain.`,
-                  };
-                  log.warn(`start_chat_session: pending callbacks at limit ${maxPending} — skipping callback for parent ${parentChatId}`);
-                } else {
-                  addCallback({
-                    childChatId: chatId,
-                    parentChatId,
-                    parentAgentAlias: getAgentAlias?.(),
-                    depth: newDepth,
-                  });
-                  onComplete = { registered: true, note: `This chat will be notified automatically when session ${chatId} completes.` };
-                  log.info(`Registered on-complete callback: child ${chatId} → parent ${parentChatId} (depth ${newDepth})`);
-                }
-              }
+              const { registered, note } = registerCompletionCallback({
+                childChatId: chatId,
+                parentChatId: getChatId?.(),
+                parentAgentAlias: getAgentAlias?.(),
+                kind: "spawned",
+              });
+              onComplete = { registered, ...(note && { note }) };
             }
 
             return {
@@ -1188,7 +1162,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "continue_chat",
-        "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. Set waitForCompletion=true to block until the response is ready.",
+        "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. Set waitForCompletion=true to block until the response is ready, or onComplete=true to be notified in a new turn of THIS chat when it finishes.",
         {
           chatId: z.string().describe("The chat/session ID to continue"),
           prompt: z.string().describe("The follow-up message to send"),
@@ -1197,6 +1171,12 @@ export function buildCallboardToolsSpec(
             .boolean()
             .optional()
             .describe("If true, wait for the session to complete and return the response text. Default: false (returns immediately)"),
+          onComplete: z
+            .boolean()
+            .optional()
+            .describe(
+              "If true, automatically re-invoke THIS chat with a notification when the continued session finishes (success, error, or stop), so you can read its results without polling. Ignored when waitForCompletion is true, which already returns the response inline. Default: false.",
+            ),
           requireExplicitCompletion: z
             .boolean()
             .optional()
@@ -1227,7 +1207,33 @@ export function buildCallboardToolsSpec(
 
             const sendMessage = getSendMessage();
 
-            // 3. Build async generator prompt (required when MCP servers are present)
+            // 3. "Phone home" on-complete callback registration.
+            //    Registered BEFORE the message is sent: unlike start_chat_session
+            //    we already know the child chatId, so there is no window in which
+            //    a fast continuation could stop before the callback exists (a
+            //    completion with nothing pending leaves the callback "waiting"
+            //    forever). Rolled back below if the send throws.
+            let onComplete: { registered: boolean; note?: string } | undefined;
+            let onCompleteId: string | undefined;
+            if (args.onComplete) {
+              if (args.waitForCompletion) {
+                onComplete = {
+                  registered: false,
+                  note: "waitForCompletion is set — the response is returned inline, so no completion callback was registered.",
+                };
+              } else {
+                const { registered, id, note } = registerCompletionCallback({
+                  childChatId: args.chatId,
+                  parentChatId: getChatId?.(),
+                  parentAgentAlias: getAgentAlias?.(),
+                  kind: "continued",
+                });
+                onComplete = { registered, ...(note && { note }) };
+                onCompleteId = id;
+              }
+            }
+
+            // 4. Build async generator prompt (required when MCP servers are present)
             const promptIterable = (async function* () {
               yield {
                 type: "user" as const,
@@ -1235,15 +1241,22 @@ export function buildCallboardToolsSpec(
               };
             })();
 
-            // 4. Send the continuation message
-            const emitter = await sendMessage({
-              chatId: args.chatId,
-              prompt: promptIterable,
-              maxTurns: args.maxTurns ?? 200,
-              ...(typeof args.requireExplicitCompletion === "boolean" && { requireExplicitCompletion: args.requireExplicitCompletion }),
-            });
+            // 5. Send the continuation message
+            let emitter;
+            try {
+              emitter = await sendMessage({
+                chatId: args.chatId,
+                prompt: promptIterable,
+                maxTurns: args.maxTurns ?? 200,
+                ...(typeof args.requireExplicitCompletion === "boolean" && { requireExplicitCompletion: args.requireExplicitCompletion }),
+              });
+            } catch (err) {
+              // Nothing is running, so nothing will ever mark this ready.
+              if (onCompleteId) removeCallbacks([onCompleteId]);
+              throw err;
+            }
 
-            // 5. If not waiting, return immediately after session starts
+            // 6. If not waiting, return immediately after session starts
             if (!args.waitForCompletion) {
               log.info(`Continued chat ${args.chatId} (async)`);
 
@@ -1251,13 +1264,18 @@ export function buildCallboardToolsSpec(
                 content: [
                   {
                     type: "text" as const,
-                    text: JSON.stringify({ chatId: args.chatId, status: "continued", waitForCompletion: false }),
+                    text: JSON.stringify({
+                      chatId: args.chatId,
+                      status: "continued",
+                      waitForCompletion: false,
+                      ...(onComplete && { onComplete }),
+                    }),
                   },
                 ],
               };
             }
 
-            // 6. Wait for completion and collect response
+            // 7. Wait for completion and collect response
             const responseTexts: string[] = [];
             await new Promise<void>((resolve, reject) => {
               const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety
@@ -1279,7 +1297,12 @@ export function buildCallboardToolsSpec(
 
             const response = responseTexts.join("") || "(No text response)";
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ chatId: args.chatId, status: "complete", response }) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ chatId: args.chatId, status: "complete", response, ...(onComplete && { onComplete }) }),
+                },
+              ],
             };
           } catch (err: any) {
             log.error(`continue_chat failed: ${err.message}`);

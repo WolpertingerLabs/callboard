@@ -881,9 +881,10 @@ export default function GeneralSettings() {
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
           When a session spawns another with{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>start_chat_session</code> using{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>onComplete</code>, the spawning chat is
-          automatically re-invoked when the child finishes — no polling. These limits guard against runaway loops. Set either to{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>start_chat_session</code> — or messages one
+          with <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>continue_chat</code> — using{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>onComplete</code>, the calling chat is
+          automatically re-invoked when that session finishes — no polling. These limits guard against runaway loops. Set either to{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>0</code> to disable new callbacks entirely.
         </div>
 

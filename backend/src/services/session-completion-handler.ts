@@ -24,6 +24,7 @@ import { sessionRegistry, type SessionEvent } from "./session-registry.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { executeAgent } from "./agent-executor.js";
 import {
+  type CallbackKind,
   markChildComplete,
   getReadyForParent,
   removeCallbacks,
@@ -35,11 +36,7 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("session-completion");
 
-type MessageSender = (opts: {
-  prompt: string | AsyncIterable<unknown>;
-  chatId?: string;
-  maxTurns?: number;
-}) => Promise<EventEmitter>;
+type MessageSender = (opts: { prompt: string | AsyncIterable<unknown>; chatId?: string; maxTurns?: number }) => Promise<EventEmitter>;
 
 type ActiveSessionLookup = (chatId: string) => unknown | undefined;
 
@@ -102,7 +99,10 @@ async function tryDeliver(parentChatId: string): Promise<void> {
     const ids = ready.map((c) => c.id);
     const childChatIds = ready.map((c) => c.childChatId);
     const depth = Math.max(...ready.map((c) => c.depth));
-    const prompt = buildNotification(childChatIds);
+    const prompt = buildNotification(
+      childChatIds,
+      ready.map((c) => c.kind ?? "spawned"),
+    );
 
     const parentChat = findChat(parentChatId, false);
 
@@ -149,12 +149,14 @@ async function tryDeliver(parentChatId: string): Promise<void> {
   }
 }
 
-function buildNotification(childChatIds: string[]): string {
+function buildNotification(childChatIds: string[], kinds: CallbackKind[]): string {
   const list = childChatIds.map((id) => `"${id}"`).join(", ");
-  const header =
-    childChatIds.length === 1
-      ? `🔔 A session you spawned has completed: ${list}.`
-      : `🔔 ${childChatIds.length} sessions you spawned have completed: ${list}.`;
+  // A batch can mix the two — the parent spawned one child and sent a follow-up
+  // to another, and both finished while it was busy. Only claim what is true.
+  const uniform = kinds.every((k) => k === kinds[0]) ? kinds[0] : undefined;
+  const one = uniform === "continued" ? "A session you sent a follow-up to" : uniform === "spawned" ? "A session you spawned" : "A session you are waiting on";
+  const many = uniform === "continued" ? "sessions you sent follow-ups to" : uniform === "spawned" ? "sessions you spawned" : "sessions you are waiting on";
+  const header = childChatIds.length === 1 ? `🔔 ${one} has completed: ${list}.` : `🔔 ${childChatIds.length} ${many} have completed: ${list}.`;
   return [
     header,
     "",
