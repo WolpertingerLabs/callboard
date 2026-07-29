@@ -239,7 +239,7 @@ export default function AgentList() {
                 justifyContent: "center",
               }}
             >
-              <Bot size={28} style={{ color: "var(--accent)" }} />
+              <Bot size={28} style={{ color: "var(--accent-text)" }} />
             </div>
             <div>
               <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 6 }}>No agents yet</h2>

@@ -157,7 +157,7 @@ export default function AboutSettings() {
             gap: 12,
           }}
         >
-          <ArrowUpCircle size={20} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <ArrowUpCircle size={20} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>Update available</div>
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
@@ -176,7 +176,7 @@ export default function AboutSettings() {
       {/* Application Info */}
       <div style={sectionStyle}>
         <div style={headerStyle}>
-          <Info size={16} style={{ color: "var(--accent)" }} />
+          <Info size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Application</span>
         </div>
         <div style={subtitleStyle}>Callboard version and build information.</div>
@@ -192,7 +192,7 @@ export default function AboutSettings() {
       {/* Account & Auth */}
       <div style={sectionStyle}>
         <div style={headerStyle}>
-          <Shield size={16} style={{ color: "var(--accent)" }} />
+          <Shield size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Account</span>
         </div>
         <div style={subtitleStyle}>Claude account and authentication details.</div>
@@ -209,7 +209,7 @@ export default function AboutSettings() {
       {systemInfo?.models && systemInfo.models.length > 0 && (
         <div style={sectionStyle}>
           <div style={headerStyle}>
-            <Layers size={16} style={{ color: "var(--accent)" }} />
+            <Layers size={16} style={{ color: "var(--accent-text)" }} />
             <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Supported Models</span>
           </div>
           <div style={subtitleStyle}>Models available for use with your current account.</div>
@@ -230,7 +230,7 @@ export default function AboutSettings() {
       {/* Proxy & Connectivity */}
       <div style={sectionStyle}>
         <div style={headerStyle}>
-          <Server size={16} style={{ color: "var(--accent)" }} />
+          <Server size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Proxy Configuration</span>
         </div>
         <div style={subtitleStyle}>Current proxy mode and server configuration.</div>
@@ -243,7 +243,7 @@ export default function AboutSettings() {
       {/* Runtime Environment */}
       <div style={sectionStyle}>
         <div style={headerStyle}>
-          <Cpu size={16} style={{ color: "var(--accent)" }} />
+          <Cpu size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Runtime Environment</span>
         </div>
         <div style={subtitleStyle}>Server runtime and platform details.</div>
@@ -259,7 +259,7 @@ export default function AboutSettings() {
           href="https://github.com/WolpertingerLabs/callboard"
           target="_blank"
           rel="noopener noreferrer"
-          style={{ color: "var(--accent)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
+          style={{ color: "var(--accent-text)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
         >
           <ExternalLink size={12} />
           GitHub

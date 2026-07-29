@@ -127,7 +127,7 @@ export default function CodeLoginModal({ isOpen, onClose, onStatusChange }: Code
               marginBottom: 16,
             }}
           >
-            <Terminal size={16} style={{ color: "var(--accent)", flexShrink: 0 }} />
+            <Terminal size={16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
             <code
               style={{
                 fontFamily: '"SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace',

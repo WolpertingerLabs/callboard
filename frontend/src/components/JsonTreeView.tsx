@@ -56,7 +56,7 @@ function tryParseNestedJson(s: string): unknown | null {
   }
 }
 
-const keyStyle: CSSProperties = { color: "var(--accent)", flexShrink: 0 };
+const keyStyle: CSSProperties = { color: "var(--accent-text)", flexShrink: 0 };
 const punctStyle: CSSProperties = { color: "var(--text-muted)" };
 const primitiveStyle: CSSProperties = { color: "var(--text-secondary)" };
 
@@ -216,7 +216,7 @@ function ContainerNode({ name, value, depth }: { name?: string; value: Record<st
                 e.stopPropagation();
                 setShowAll(true);
               }}
-              style={{ paddingLeft: INDENT + 13, color: "var(--accent)", cursor: "pointer", fontStyle: "italic" }}
+              style={{ paddingLeft: INDENT + 13, color: "var(--accent-text)", cursor: "pointer", fontStyle: "italic" }}
             >
               … show {entries.length - MAX_CHILDREN} more
             </div>

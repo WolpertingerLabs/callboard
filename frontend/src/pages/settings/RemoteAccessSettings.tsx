@@ -364,7 +364,7 @@ export default function RemoteAccessSettings() {
               href={status.url}
               target="_blank"
               rel="noreferrer"
-              style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--accent)", fontSize: 13, textDecoration: "none", wordBreak: "break-all" }}
+              style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--accent-text)", fontSize: 13, textDecoration: "none", wordBreak: "break-all" }}
             >
               {status.url} <ExternalLink size={13} />
             </a>
@@ -385,7 +385,7 @@ export default function RemoteAccessSettings() {
         {cloudflaredMissing && (
           <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
             The <code>cloudflared</code> binary is not installed.{" "}
-            <a href={CLOUDFLARED_INSTALL_URL} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+            <a href={CLOUDFLARED_INSTALL_URL} target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>
               Install it
             </a>{" "}
             and try again.

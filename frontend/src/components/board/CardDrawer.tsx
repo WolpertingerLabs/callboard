@@ -203,7 +203,7 @@ export default function CardDrawer({ card, categories, onPatch, onDelete, onClos
                       color: "var(--text)",
                     }}
                   >
-                    <Workflow size={12} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                    <Workflow size={12} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{run.title || run.jobName}</span>
                     <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{run.status}</span>
                   </div>
@@ -476,7 +476,7 @@ function CategorySection({
             maxWidth: "100%",
           }}
         >
-          <Tag size={11} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <Tag size={11} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{category}</span>
         </span>
       ) : (
@@ -577,7 +577,7 @@ function MetadataValue({ value, onSave }: { value: string; onSave: (value: strin
           target="_blank"
           rel="noreferrer"
           title={value}
-          style={{ color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          style={{ color: "var(--accent-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
         >
           {value}
         </a>

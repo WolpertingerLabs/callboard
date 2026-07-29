@@ -79,7 +79,7 @@ const StatusIcon = ({ status }: { status: string }) => {
     case "completed":
       return <Check size={14} style={{ color: "var(--status-active)" }} />;
     case "in_progress":
-      return <RotateCw size={14} style={{ color: "var(--accent)" }} />;
+      return <RotateCw size={14} style={{ color: "var(--accent-text)" }} />;
     case "pending":
     default:
       return <Square size={14} style={{ color: "var(--text-muted)" }} />;

@@ -83,32 +83,44 @@ describe("prepareThemeWrite — correction and refusal", () => {
 
 describe("prepareThemeWrite — what a write is accountable for", () => {
   /**
-   * The rule: introduces nothing, worsens nothing. Not "the whole app reaches
-   * AA".
+   * The rule is now the literal one: anything below AA is refused.
    *
-   * The palette pass took the stylesheet's own failures from 24 of 104 to 4, and
-   * the four left are `on-accent` and `on-accent-hover` in both modes: white on
-   * `--accent`, which no ink and no tint reaches, only a different brand colour.
-   * That is a smaller reason than the one this rule was written for, but it is
-   * the same reason. A write that says `{ warning: ... }` still inherits them,
-   * still cannot name them without authoring `--accent` too, and refusing it for
-   * a pairing it neither touched nor can reach is a rejection the author cannot
-   * act on. So the rule stays as it is until the accent question is answered.
+   * It could not be, until the palette reached zero. "Introduces nothing,
+   * worsens nothing" was a baseline exemption, and the baseline was the
+   * stylesheet's own 24 failing pairings — a write of one variable inherits all
+   * of them and can reach almost none. The palette pass closed 20; moving the
+   * brand accent closed the last four. With nothing left to inherit, the
+   * exemption became a no-op and was removed rather than left as a dead lever.
+   *
+   * These two tests are the pair that keeps that honest: the first says a
+   * partial write is still accepted (so the tightening did not make every write
+   * impossible), the second says a genuinely bad one is refused.
    */
-  it("accepts a partial write that leaves the stylesheet's own failures where they were", () => {
+  it("accepts a partial write, because what it inherits is clean", () => {
     const out = prepareThemeWrite({ light: { warning: "#8a5a00" } });
     expect(out.unsatisfiable).toEqual([]);
-    // And is not pretending they passed: the audit still carries every one.
-    expect(out.contrast.failures.some((f) => f.id === "on-accent")).toBe(true);
+    // Not by exemption — there is nothing to exempt. The full audit is empty.
+    expect(out.contrast.failures).toEqual([]);
   });
 
-  it("refuses a write that makes an already-failing pairing worse", () => {
-    // --accent-hover is the theme's to choose, and light-mode `on-accent-hover`
-    // starts at 3.08:1. Driving it below that is the write's doing.
+  it("refuses a write below AA outright, with no baseline to hide behind", () => {
+    // --accent-hover is the theme's to choose; a near-white one puts white ink
+    // on it at about 1:1. Under the old rule this was refused only because it
+    // was *worse* than the stylesheet's own 3.08:1. There is no 3.08 any more,
+    // and the refusal no longer depends on there being one.
     const out = prepareThemeWrite({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" } });
     const hover = out.unsatisfiable.find((f) => f.id === "on-accent-hover" && f.mode === "light");
     expect(hover).toBeDefined();
-    expect(hover!.ratio).toBeLessThan(3.08);
+    expect(hover!.ratio).toBeLessThan(4.5);
+  });
+
+  it("has no sub-AA pairing left in the stylesheet for the rule to be unsatisfiable against", () => {
+    // The load-bearing precondition, asserted from this side too. If index.css
+    // reintroduces a failing pairing, every partial write above starts refusing
+    // for a colour its author never named — and this is the test that says so
+    // before the write path does.
+    const out = prepareThemeWrite({});
+    expect(out.contrast.failures).toEqual([]);
   });
 
   it("refuses a write that breaks a pairing the stylesheet passes", () => {

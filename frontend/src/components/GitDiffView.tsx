@@ -399,7 +399,7 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
                     padding: "1px 6px",
                     borderRadius: 4,
                     background: "var(--diff-hunk-bg)",
-                    color: "var(--accent)",
+                    color: "var(--accent-text)",
                     fontWeight: 600,
                     flexShrink: 0,
                   }}
@@ -494,7 +494,7 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
                       style={{
                         background: "none",
                         border: "none",
-                        color: "var(--accent)",
+                        color: "var(--accent-text)",
                         cursor: loadingFiles.has(file.filename) ? "wait" : "pointer",
                         textDecoration: "underline",
                         fontSize: 13,

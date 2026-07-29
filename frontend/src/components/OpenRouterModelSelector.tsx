@@ -212,7 +212,7 @@ export default function OpenRouterModelSelector({ id, value, onChange, placehold
               >
                 {entry.kind === "alias" ? (
                   <span style={rowLabelStyle}>
-                    <span style={{ color: "var(--accent)" }}>{entry.alias.alias}</span>
+                    <span style={{ color: "var(--accent-text)" }}>{entry.alias.alias}</span>
                     <span style={{ color: "var(--text-muted)" }}> → {entry.alias.modelId}</span>
                   </span>
                 ) : (

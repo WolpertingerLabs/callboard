@@ -10,7 +10,7 @@
  * comment; these are the tests that make them claims.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { BUILTIN_PALETTE } from "./theme-contrast-palette.js";
@@ -213,5 +213,65 @@ describe("THEME_VARIABLE_NAMES", () => {
 
   it("has no duplicates", () => {
     expect(new Set(THEME_VARIABLE_NAMES).size).toBe(THEME_VARIABLE_NAMES.length);
+  });
+});
+
+/**
+ * `background: var(--accent)`, `color: var(--accent-text)`.
+ *
+ * The pairing table cannot catch a violation of this. It measures named
+ * pairings, and a component that writes `color: "var(--accent)"` inline invents
+ * a pairing nobody listed — which is how ~95 sites sat between 3.79:1 and
+ * 4.65:1 through two contrast passes without a single number going red.
+ *
+ * They are not a style preference. `--accent` is the fill white is painted on,
+ * so AA caps its luminance at 0.183, and a colour that dark reads 3.16:1 as ink
+ * on `--bg-popout`. The two roles pull in opposite directions and one token
+ * cannot serve both — `--accent-text` is the other half, derived from `--accent`
+ * so a theme still drives it.
+ *
+ * Scoped to `color:` on purpose. Fills, borders and dots keep naming `--accent`
+ * and should: `background: var(--accent)` is the correct half of the rule.
+ */
+describe("the accent fill/ink split", () => {
+  const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../../frontend/src");
+  /** `color: "var(--accent)"` but not `backgroundColor:`/`borderTopColor:`/… */
+  const INK = /(?<![A-Za-z])color:\s*(["'`]?)var\(--accent\)\1/g;
+
+  function walk(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) return walk(full);
+      return /\.(tsx?|css)$/.test(e.name) ? [full] : [];
+    });
+  }
+
+  it("leaves no component painting the brand fill as text", () => {
+    const offenders: string[] = [];
+    for (const file of walk(SRC)) {
+      readFileSync(file, "utf8")
+        .split("\n")
+        .forEach((line, i) => {
+          INK.lastIndex = 0;
+          if (INK.test(line)) offenders.push(`${file.slice(SRC.length + 1)}:${i + 1}`);
+        });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("still finds the sites it is meant to find", () => {
+    // A regex that matches nothing passes the test above for free.
+    const probe = (line: string) => {
+      INK.lastIndex = 0;
+      return INK.test(line);
+    };
+    expect(probe(`style={{ color: "var(--accent)" }}`)).toBe(true);
+    expect(probe(`  color: var(--accent);`)).toBe(true);
+    expect(probe(`{ color: 'var(--accent)', flexShrink: 0 }`)).toBe(true);
+    // The half of the rule that stays.
+    expect(probe(`background: "var(--accent)"`)).toBe(false);
+    expect(probe(`borderTopColor: "var(--accent)"`)).toBe(false);
+    expect(probe(`backgroundColor: "var(--accent)"`)).toBe(false);
+    expect(probe(`color: "var(--accent-text)"`)).toBe(false);
   });
 });

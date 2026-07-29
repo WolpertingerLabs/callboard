@@ -3021,7 +3021,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                                 borderRadius: 6,
                                 padding: "6px 12px",
                                 fontSize: 13,
-                                color: "var(--accent)",
+                                color: "var(--accent-text)",
                                 cursor: "pointer",
                                 fontFamily: "monospace",
                               }}

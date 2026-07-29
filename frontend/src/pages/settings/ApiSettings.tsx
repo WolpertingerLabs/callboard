@@ -112,7 +112,7 @@ function ReferenceLinksSection({ provider }: { provider: AgentProviderKind }) {
     <div style={{ ...sectionStyle, padding: "10px 12px", marginBottom: 12 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-          <Globe size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <Globe size={14} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Reference</span>
           <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             Usage, billing, and limits
@@ -245,7 +245,7 @@ function OpenRouterRoutingSection({
   return (
     <div style={sectionStyle}>
       <div style={headerStyle}>
-        <Network size={16} style={{ color: "var(--accent)" }} />
+        <Network size={16} style={{ color: "var(--accent-text)" }} />
         <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Route through OpenRouter</span>
       </div>
       <div style={subtitleStyle}>
@@ -253,7 +253,7 @@ function OpenRouterRoutingSection({
         OpenRouter&apos;s catalog.
       </div>
       {detected && (
-        <div style={{ ...helpStyle, marginTop: 0, marginBottom: 12, color: "var(--accent)" }}>
+        <div style={{ ...helpStyle, marginTop: 0, marginBottom: 12, color: "var(--accent-text)" }}>
           Detected OpenRouter in your environment — enabled by default. Add a key below to manage it through callboard, then Save.
         </div>
       )}
@@ -774,7 +774,7 @@ export default function ApiSettings() {
           {!claudeCodeUseOpenRouter && (
             <div style={sectionStyle}>
               <div style={headerStyle}>
-                <Globe size={16} style={{ color: "var(--accent)" }} />
+                <Globe size={16} style={{ color: "var(--accent-text)" }} />
                 <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
               </div>
               <div style={subtitleStyle}>
@@ -804,7 +804,7 @@ export default function ApiSettings() {
           {!claudeCodeUseOpenRouter && (
             <div style={sectionStyle}>
               <div style={headerStyle}>
-                <Key size={16} style={{ color: "var(--accent)" }} />
+                <Key size={16} style={{ color: "var(--accent-text)" }} />
                 <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Authentication</span>
               </div>
               <div style={subtitleStyle}>
@@ -850,7 +850,7 @@ export default function ApiSettings() {
           <div style={sectionStyle}>
             <div style={{ ...headerStyle, justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Cpu size={16} style={{ color: "var(--accent)" }} />
+                <Cpu size={16} style={{ color: "var(--accent-text)" }} />
                 <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Models</span>
               </div>
               <button
@@ -1037,7 +1037,7 @@ export default function ApiSettings() {
           {/* OpenRouter */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
-              <Network size={16} style={{ color: "var(--accent)" }} />
+              <Network size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenRouter</span>
             </div>
             <div style={subtitleStyle}>
@@ -1137,7 +1137,7 @@ export default function ApiSettings() {
           {/* OpenRouter — Server Tools */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
-              <Cpu size={16} style={{ color: "var(--accent)" }} />
+              <Cpu size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Server Tools</span>
             </div>
             <div style={subtitleStyle}>
@@ -1237,7 +1237,7 @@ export default function ApiSettings() {
           {/* OpenRouter — Per-Model Overrides */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
-              <Cpu size={16} style={{ color: "var(--accent)" }} />
+              <Cpu size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Per-Model Parameter Overrides</span>
             </div>
             <div style={subtitleStyle}>
@@ -1334,7 +1334,7 @@ export default function ApiSettings() {
           {!codexUseOpenRouter && (
             <div style={sectionStyle}>
               <div style={headerStyle}>
-                <Terminal size={16} style={{ color: "var(--accent)" }} />
+                <Terminal size={16} style={{ color: "var(--accent-text)" }} />
                 <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenAI Codex</span>
               </div>
               <div style={subtitleStyle}>
@@ -1449,7 +1449,7 @@ export default function ApiSettings() {
           {/* Codex — model + sandbox */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
-              <Cpu size={16} style={{ color: "var(--accent)" }} />
+              <Cpu size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Model &amp; Sandbox</span>
             </div>
             <div style={subtitleStyle}>Default model for new Codex chats and the sandbox the Codex agent runs commands under.</div>

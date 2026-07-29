@@ -158,7 +158,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
               fontSize: agent.emoji ? 22 : undefined,
             }}
           >
-            {agent.emoji || <Bot size={22} style={{ color: "var(--accent)" }} />}
+            {agent.emoji || <Bot size={22} style={{ color: "var(--accent-text)" }} />}
           </div>
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 700 }}>{agent.name}</h1>
@@ -374,7 +374,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
               alignItems: "center",
               gap: 4,
               background: "transparent",
-              color: "var(--accent)",
+              color: "var(--accent-text)",
               fontSize: 13,
               fontWeight: 500,
             }}

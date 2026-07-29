@@ -16,8 +16,14 @@
   --border: #30363d;
   --text: #e6edf3;
   --text-muted: #8b949e;
-  --accent: #7c6aef;
-  --accent-hover: #9484f0;
+  /* The brand accent is a *fill* — white is painted on it, so its luminance is
+     capped at 0.183 by AA and #7c6aef sat at 0.208. Darkened along its own
+     OKLCH lightness axis (0.609 → 0.566), hue and chroma untouched, which is
+     what keeps it the same violet. --accent-hover is the ceiling itself: any
+     lighter and white drops back under 4.5:1, so the hover step is smaller
+     than it was and cannot grow. See --accent-text below for the ink. */
+  --accent: #705ce0;
+  --accent-hover: #7562e6;
   --user-bg: #1a2332;
   --assistant-bg: #161b22;
   --code-bg: #0d1117;
@@ -42,11 +48,14 @@
      a second literal, so a theme that moves --danger still moves the button
      and no new variable is asked of a theme author. */
   --danger-solid: color-mix(in srgb, var(--danger) 75%, black);
-  /* --accent as ink, for the places it is painted *as text* on a tint of
-     itself. #7c6aef tops out at 4.25:1 on --surface and 3.89:1 on the light
-     one, before any tint — so the ink has to leave the brand value even
-     though the fill must not. Lightened in dark, darkened in light. */
-  --accent-text: color-mix(in srgb, var(--accent) 80%, white);
+  /* --accent as ink — every place the accent is painted with `color:`, not
+     just on a tint of itself. The fill can never double as ink: at the
+     luminance AA forces on it, raw --accent reads 3.16:1 on --bg-popout and
+     4.32:1 on the light sidebar. Lightened in dark, darkened in light, and
+     derived from --accent so a theme that moves the brand moves both.
+     The rule this token exists to make true: `background: var(--accent)`,
+     `color: var(--accent-text)`. Pinned by theme-contrast.stylesheet.test.ts. */
+  --accent-text: color-mix(in srgb, var(--accent) 70%, white);
 
   /* Semantic tint backgrounds */
   --accent-bg: rgba(99, 102, 241, 0.1);
@@ -77,7 +86,7 @@
      backdrop just enough to put #f85149 at 4.35:1. */
   --diff-removed-text: #ff7b72;
   --diff-removed-line-bg: rgba(248, 81, 73, 0.1);
-  --diff-hunk-bg: rgba(124, 106, 239, 0.08);
+  --diff-hunk-bg: rgba(112, 92, 224, 0.08);
 
   /* UI elements */
   --toggle-knob: #ffffff;
@@ -128,7 +137,7 @@
   --chatlist-item-path-text: var(--text-muted);
   --chatlist-item-time-text: var(--text-muted);
   --chatlist-icon: var(--text-muted);
-  --chatlist-icon-active: var(--accent);
+  --chatlist-icon-active: var(--accent-text);
   --chatlist-icon-delete: var(--text-muted);
   --chatlist-icon-nav: var(--text);
   --chatlist-icon-nav-active: var(--text-on-accent);
@@ -149,7 +158,7 @@
   --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 12%, transparent);
   --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
-  --chatlist-bookmark-icon: var(--accent);
+  --chatlist-bookmark-icon: var(--accent-text);
   --chatlist-empty-text: var(--text-muted);
   --chatlist-load-more-bg: var(--surface);
   --chatlist-load-more-text: var(--text);
@@ -164,7 +173,7 @@
   --board-tile-meta-text: var(--text-muted);
   --board-section-label-text: var(--text-muted);
   --board-rollup-needs-you: var(--warning);
-  --board-rollup-job-running: var(--accent);
+  --board-rollup-job-running: var(--accent-text);
   --board-rollup-active: var(--status-active);
   --board-rollup-idle: var(--text-muted);
   --board-unread-dot: var(--chatlist-unread-dot);
@@ -188,8 +197,11 @@
      from there, so the text colour is the only lever. Kept equal to
      --text-secondary, as both themes have always had them equal. */
   --text-muted: #556070;
-  --accent: #7c6aef;
-  --accent-hover: #9484f0;
+  /* Same two values as dark: the fill carries white in both modes, so the
+     luminance ceiling AA imposes on it is the same one, and a mode-specific
+     brand colour would be a second accent for no measured gain. */
+  --accent: #705ce0;
+  --accent-hover: #7562e6;
   --user-bg: #e0e7ff;
   --assistant-bg: #f8fafc;
   --code-bg: #f1f5f9;
@@ -219,13 +231,14 @@
      split costs nothing here — but the token has to exist in both modes or the
      buttons that paint it would be undefined in one. */
   --danger-solid: var(--danger);
-  /* Darkened rather than lightened: see the dark block. #7c6aef as ink tops out
-     at 3.89:1 on --surface and 3.59:1 on --bg-sidebar before any tint. */
-  --accent-text: color-mix(in srgb, var(--accent) 75%, black);
+  /* Darkened rather than lightened: see the dark block. Raw --accent as ink
+     reads 4.32:1 on --bg-sidebar here, so the same fill/ink split applies. */
+  --accent-text: color-mix(in srgb, var(--accent) 80%, black);
 
   /* Semantic tint backgrounds */
-  --accent-bg: rgba(124, 106, 239, 0.08);
-  --accent-light: rgba(124, 106, 239, 0.08);
+  /* Re-mixed from the new --accent, which these two spelled out literally. */
+  --accent-bg: rgba(112, 92, 224, 0.08);
+  --accent-light: rgba(112, 92, 224, 0.08);
   /* Tints re-mixed from the new --danger / --warning so the wash still reads as
      the same hue as the text sitting on it. */
   --danger-bg: rgba(185, 28, 28, 0.08);
@@ -256,7 +269,7 @@
      Matched to --danger. */
   --diff-removed-text: #b91c1c;
   --diff-removed-line-bg: rgba(248, 81, 73, 0.08);
-  --diff-hunk-bg: rgba(124, 106, 239, 0.06);
+  --diff-hunk-bg: rgba(112, 92, 224, 0.06);
 
   /* UI elements */
   --toggle-knob: #ffffff;
@@ -320,7 +333,7 @@
   --chatlist-item-path-text: var(--text-muted);
   --chatlist-item-time-text: var(--text-muted);
   --chatlist-icon: var(--text-muted);
-  --chatlist-icon-active: var(--accent);
+  --chatlist-icon-active: var(--accent-text);
   --chatlist-icon-delete: var(--text-muted);
   --chatlist-icon-nav: var(--text);
   --chatlist-icon-nav-active: var(--text-on-accent);
@@ -341,7 +354,7 @@
   --chatlist-summon-urgent-bg: color-mix(in srgb, var(--danger) 12%, transparent);
   --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
-  --chatlist-bookmark-icon: var(--accent);
+  --chatlist-bookmark-icon: var(--accent-text);
   --chatlist-empty-text: var(--text-muted);
   --chatlist-load-more-bg: var(--surface);
   --chatlist-load-more-text: var(--text);
@@ -356,7 +369,7 @@
   --board-tile-meta-text: var(--text-muted);
   --board-section-label-text: var(--text-muted);
   --board-rollup-needs-you: var(--warning);
-  --board-rollup-job-running: var(--accent);
+  --board-rollup-job-running: var(--accent-text);
   --board-rollup-active: var(--status-active);
   --board-rollup-idle: var(--text-muted);
   --board-unread-dot: var(--chatlist-unread-dot);
@@ -398,7 +411,7 @@ textarea {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 

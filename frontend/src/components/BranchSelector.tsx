@@ -134,7 +134,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   // Shared sub-components
   const baseBranchSelect = (
     <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: isMobile ? 1 : undefined }}>
-      <GitBranch size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
+      <GitBranch size={13} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
       {loading ? (
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</span>
       ) : error ? (
@@ -176,7 +176,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
             padding: "4px 8px",
             fontSize: 12,
             fontFamily: "monospace",
-            color: "var(--accent)",
+            color: "var(--accent-text)",
             fontStyle: "italic",
             opacity: 0.85,
             minWidth: 0,

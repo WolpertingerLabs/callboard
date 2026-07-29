@@ -113,7 +113,7 @@ export default function ApiKeysSection() {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <KeyRound size={16} style={{ color: "var(--accent)" }} />
+        <KeyRound size={16} style={{ color: "var(--accent-text)" }} />
         <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Keys</span>
       </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>

@@ -390,7 +390,7 @@ export default function GeneralSettings() {
         }}
       >
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-          <Contact size={16} style={{ color: "var(--accent)" }} />
+          <Contact size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Contact Info</span>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
@@ -501,7 +501,7 @@ export default function GeneralSettings() {
         }}
       >
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-          {themeMode === "light" ? <Sun size={16} style={{ color: "var(--accent)" }} /> : <Moon size={16} style={{ color: "var(--accent)" }} />}
+          {themeMode === "light" ? <Sun size={16} style={{ color: "var(--accent-text)" }} /> : <Moon size={16} style={{ color: "var(--accent-text)" }} />}
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Appearance</span>
         </div>
         <div
@@ -564,7 +564,7 @@ export default function GeneralSettings() {
         }}
       >
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-          <Palette size={16} style={{ color: "var(--accent)" }} />
+          <Palette size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Theme</span>
         </div>
         <div
@@ -733,7 +733,7 @@ export default function GeneralSettings() {
           }}
         >
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-            <Sparkles size={14} style={{ color: "var(--accent)" }} />
+            <Sparkles size={14} style={{ color: "var(--accent-text)" }} />
             Generate New Theme
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -876,7 +876,7 @@ export default function GeneralSettings() {
         }}
       >
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-          <PhoneOutgoing size={16} style={{ color: "var(--accent)" }} />
+          <PhoneOutgoing size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Session Completion Callbacks</span>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
@@ -978,7 +978,7 @@ export default function GeneralSettings() {
         }}
       >
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-          <FolderX size={16} style={{ color: "var(--accent)" }} />
+          <FolderX size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Ignored Project Folders</span>
         </div>
         <div

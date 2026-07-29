@@ -115,7 +115,7 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
           flex: 1,
           padding: "4px 0",
           fontSize: 12,
-          color: "var(--accent)",
+          color: "var(--accent-text)",
           fontStyle: "italic",
           opacity: 0.85,
           minWidth: 0,
@@ -196,7 +196,7 @@ export default function CardAssociationSelector({ value, onChange }: CardAssocia
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          <LayoutGrid size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <LayoutGrid size={13} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
           <span style={{ fontSize: 12, color: "var(--text-muted)", userSelect: "none" }}>Card</span>
         </div>
         {createToggle}

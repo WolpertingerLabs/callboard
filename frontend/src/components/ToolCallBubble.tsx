@@ -103,7 +103,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
               size={12}
               style={{
                 flexShrink: 0,
-                color: "var(--accent)",
+                color: "var(--accent-text)",
                 animation: "spin 1s linear infinite",
               }}
             />

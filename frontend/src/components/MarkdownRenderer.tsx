@@ -103,7 +103,7 @@ export default function MarkdownRenderer({ content, className }: Props) {
             target="_blank"
             rel="noopener noreferrer"
             style={{
-              color: 'var(--accent)',
+              color: 'var(--accent-text)',
               textDecoration: 'none',
             }}
             {...props}

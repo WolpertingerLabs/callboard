@@ -90,7 +90,7 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          <Lock size={16} style={{ color: "var(--accent)" }} />
+          <Lock size={16} style={{ color: "var(--accent-text)" }} />
           <span
             style={{
               fontSize: 14,

@@ -338,7 +338,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                       padding: "2px 6px",
                       borderRadius: 4,
                       background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                      color: "var(--accent)",
+                      color: "var(--accent-text)",
                       flexShrink: 0,
                     }}
                   >

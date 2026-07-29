@@ -373,7 +373,7 @@ export default function ChatDebugPanel({ messages }: Props) {
               style={{
                 background: "none",
                 border: "none",
-                color: "var(--accent)",
+                color: "var(--accent-text)",
                 cursor: "pointer",
                 fontSize: 11,
                 padding: 0,

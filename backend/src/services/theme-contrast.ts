@@ -420,11 +420,13 @@ export const PAIRINGS: Pairing[] = [
   { id: "danger-on-danger-bg-bg", where: "DraftModal / MessageBubble error box", fg: v("danger"), bg: v("danger-bg"), backdrop: v("bg"), kind: "text" },
   { id: "error-on-danger-bg-bg", where: "--error text in an error box", fg: v("error"), bg: v("danger-bg"), backdrop: v("bg"), kind: "text" },
   { id: "success-on-success-bg-surface", where: "McpToolsPanel 'agent' badge", fg: v("success"), bg: v("success-bg"), backdrop: v("surface"), kind: "text" },
-  // fg is --accent-text, not --accent, because that is what these two now paint.
-  // The brand accent as ink tops out at 4.25:1 on --surface and 3.89:1 on the
-  // light one *before* any tint, so no tint opacity could have rescued them;
-  // the ink had to become its own token. Measuring --accent here after the
-  // components stopped painting it would be measuring nothing.
+  // fg is --accent-text, not --accent, because that is what these two paint —
+  // and, since #297's successor, what *every* accent-coloured `color:` in the
+  // app paints. The brand accent as ink was already short of AA before it moved
+  // (4.25:1 on --surface, 3.89:1 on the light one, before any tint), and moving
+  // the fill under white's 0.183 luminance ceiling took it further down: 3.16:1
+  // on --bg-popout now. A fill dark enough for white ink cannot also be ink.
+  // Measuring --accent here would be measuring a value no component paints.
   { id: "accent-on-accent-bg-surface", where: "McpToolsPanel 'platform' badge", fg: v("accent-text"), bg: v("accent-bg"), backdrop: v("surface"), kind: "text" },
   { id: "accent-on-accent-bg-bg", where: "PromptInput drop-images overlay", fg: v("accent-text"), bg: v("accent-bg"), backdrop: v("bg"), kind: "text" },
   { id: "badge-info-on-info-bg", where: "McpToolsPanel 'proxy' badge", fg: v("badge-info"), bg: v("info-bg"), backdrop: v("surface"), kind: "text" },
