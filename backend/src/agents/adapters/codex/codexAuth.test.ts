@@ -10,7 +10,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getCodexAuthSource, isCodexConfigured } from "./codexAuth.js";
+import { getCodexAuthSource, isCodexConfigured, isCodexRoutedThroughOpenRouter } from "./codexAuth.js";
 
 const SETTINGS_MODULE = "../../../services/agent-settings.js";
 
@@ -106,5 +106,54 @@ describe("isCodexConfigured / getCodexAuthSource", () => {
     writeFileSync(join(CODEX_HOME, "config.toml"), 'model_provider = "myprov"\n', "utf-8");
     await setSettings({ codexAuthMode: "subscription", codexHome: CODEX_HOME });
     expect(getCodexAuthSource()).toBe("auth.json");
+  });
+});
+
+/**
+ * The endpoint override is the reason this predicate isn't just "toggle && key".
+ * A user whose environment already routes Codex through OpenRouter has no stored
+ * key to gate on, and gating on one left `codexOpenRouterBaseUrl` inert —
+ * $OPENAI_BASE_URL (or config.toml) stayed authoritative over the setting meant
+ * to override it. The env half is narrower than the Claude Code side on purpose:
+ * with nothing to override we leave the user's provider wiring alone rather than
+ * replacing it with our own base_url/env_key assumptions.
+ */
+describe("isCodexRoutedThroughOpenRouter", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("is off when the toggle is off, whatever else is set", async () => {
+    vi.stubEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1");
+    await setSettings({ codexUseOpenRouter: false, codexOpenRouterApiKey: "sk-or-test", codexOpenRouterBaseUrl: "https://eu.openrouter.ai/api/v1" });
+    expect(isCodexRoutedThroughOpenRouter()).toBe(false);
+  });
+
+  it("is on with a stored key, no environment involved", async () => {
+    await setSettings({ codexUseOpenRouter: true, codexOpenRouterApiKey: "sk-or-test", codexHome: CODEX_HOME });
+    expect(isCodexRoutedThroughOpenRouter()).toBe(true);
+  });
+
+  it("is on with no key when the env routes Codex AND an endpoint override needs honoring", async () => {
+    vi.stubEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1");
+    await setSettings({ codexUseOpenRouter: true, codexOpenRouterBaseUrl: "https://eu.openrouter.ai/api/v1", codexHome: CODEX_HOME });
+    expect(isCodexRoutedThroughOpenRouter()).toBe(true);
+  });
+
+  it("picks up the config.toml form of the ambient routing too", async () => {
+    writeFileSync(join(CODEX_HOME, "config.toml"), '[model_providers.openrouter]\nbase_url = "https://openrouter.ai/api/v1"\n', "utf-8");
+    await setSettings({ codexUseOpenRouter: true, codexOpenRouterBaseUrl: "https://eu.openrouter.ai/api/v1", codexHome: CODEX_HOME });
+    expect(isCodexRoutedThroughOpenRouter()).toBe(true);
+  });
+
+  it("stays off with no key and no override — the env's own provider wiring stands", async () => {
+    vi.stubEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1");
+    await setSettings({ codexUseOpenRouter: true, codexHome: CODEX_HOME });
+    expect(isCodexRoutedThroughOpenRouter()).toBe(false);
+  });
+
+  it("stays off with an override but no credentials anywhere", async () => {
+    await setSettings({ codexUseOpenRouter: true, codexOpenRouterBaseUrl: "https://eu.openrouter.ai/api/v1", codexHome: CODEX_HOME });
+    expect(isCodexRoutedThroughOpenRouter()).toBe(false);
   });
 });

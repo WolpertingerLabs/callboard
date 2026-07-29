@@ -278,8 +278,11 @@ function OpenRouterRoutingSection({
               style={inputStyle}
             />
             <div style={helpStyle}>
-              Leave blank for OpenRouter&apos;s default ({endpoint}). Override to target a regional endpoint (US/EU) or proxy — include the full path, e.g.{" "}
-              <code>{endpoint.replace("https://openrouter.ai", "https://eu.openrouter.ai")}</code>.
+              {detected && !apiKey.trim()
+                ? "Leave blank to keep the endpoint your environment already set."
+                : `Leave blank for OpenRouter's default (${endpoint}).`}{" "}
+              Override to target a regional endpoint (US/EU) or proxy — include the full path, e.g.{" "}
+              <code>{endpoint.replace("https://openrouter.ai", "https://eu.openrouter.ai")}</code>. An override always wins, including over the environment.
             </div>
           </div>
           <div style={fieldWrap}>

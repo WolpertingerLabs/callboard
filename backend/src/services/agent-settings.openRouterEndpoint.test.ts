@@ -5,7 +5,7 @@
  * lands on ANTHROPIC_BASE_URL (covered here); the Codex side lands on the
  * injected config.toml provider block (covered in the codex optionsAdapter test).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getApiEnvOverrides, migrateOpenRouterRoutingModels, OPENROUTER_ANTHROPIC_BASE_URL } from "./agent-settings.js";
 import type { AgentSettings } from "shared";
 
@@ -53,13 +53,88 @@ describe("getApiEnvOverrides — Claude Code → OpenRouter endpoint", () => {
     expect(env.ANTHROPIC_BASE_URL).toBe("https://manual.example/api");
   });
 
-  it("ignores the override when the routing key is missing", () => {
+  it("ignores the override when there are no credentials at all", () => {
     const env = getApiEnvOverrides({
       proxyMode: "local",
       claudeCodeUseOpenRouter: true,
       claudeCodeOpenRouterBaseUrl: "https://eu.openrouter.ai/api",
     });
     expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+});
+
+/**
+ * The BYO-gateway case: the user's shell already points Claude Code at
+ * OpenRouter, so callboard detects it and defaults the toggle on — and they
+ * never re-type the key into Settings, because the environment already has one.
+ *
+ * Gating the whole routed branch on a *stored* key made their endpoint field
+ * dead: process.env stayed authoritative over the one setting whose entire job
+ * is to override it. So the override now applies on the strength of the toggle
+ * plus the detected environment, while everything callboard would otherwise
+ * *invent* (the default endpoint, catalog role-model picks) stays behind the
+ * stored key — an env-credentialed setup already works, and the parts of it the
+ * user didn't ask us to change are not ours to overwrite.
+ */
+describe("getApiEnvOverrides — Claude Code routed by the ambient environment", () => {
+  const envRouted = (extra?: Partial<AgentSettings>): AgentSettings => ({
+    proxyMode: "local",
+    claudeCodeUseOpenRouter: true,
+    ...extra,
+  });
+
+  beforeEach(() => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://openrouter.ai/api");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("honors the endpoint override with no stored key — the env supplies the credential", () => {
+    const env = getApiEnvOverrides(envRouted({ claudeCodeOpenRouterBaseUrl: "https://eu.openrouter.ai/api" }));
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://eu.openrouter.ai/api");
+  });
+
+  it("leaves the endpoint alone when the override is blank", () => {
+    // Not "reset it to OpenRouter's global URL" — the env picked an endpoint and
+    // nothing in Settings contradicts it.
+    expect(getApiEnvOverrides(envRouted()).ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(getApiEnvOverrides(envRouted({ claudeCodeOpenRouterBaseUrl: "   " })).ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it("never touches the auth vars it has no replacement for", () => {
+    const env = getApiEnvOverrides(envRouted({ claudeCodeOpenRouterBaseUrl: "https://eu.openrouter.ai/api" }));
+    // Forcing ANTHROPIC_API_KEY="" here would blank the env's own credential.
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it("injects the routed model overrides the user set, and invents none they didn't", () => {
+    const env = getApiEnvOverrides(envRouted({ claudeCodeOpenRouterModel: "anthropic/claude-opus-4.8" }));
+    expect(env.ANTHROPIC_MODEL).toBe("anthropic/claude-opus-4.8");
+    // The catalog role defaults are a stored-key convenience; against an
+    // env-supplied key they would silently displace the user's own
+    // ANTHROPIC_DEFAULT_*_MODEL vars.
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined();
+    expect(env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined();
+  });
+
+  it("still ignores everything when the toggle is off", () => {
+    const env = getApiEnvOverrides({
+      proxyMode: "local",
+      claudeCodeUseOpenRouter: false,
+      claudeCodeOpenRouterBaseUrl: "https://eu.openrouter.ai/api",
+      apiBaseUrl: "https://manual.example/api",
+    });
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://manual.example/api");
+  });
+
+  it("a stored key still wins outright — default endpoint, forced auth", () => {
+    const env = getApiEnvOverrides(envRouted({ claudeCodeOpenRouterApiKey: "sk-or-test" }));
+    expect(env.ANTHROPIC_BASE_URL).toBe(OPENROUTER_ANTHROPIC_BASE_URL);
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-or-test");
+    expect(env.ANTHROPIC_API_KEY).toBe("");
   });
 });
 

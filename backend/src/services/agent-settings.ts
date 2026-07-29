@@ -167,6 +167,25 @@ export function detectClaudeCodeOpenRouterEnv(): boolean {
 }
 
 /**
+ * Whether the native Claude Code harness is effectively routed through
+ * OpenRouter: the toggle is on AND the credentials exist somewhere — either
+ * saved in callboard, or already in the ambient environment (the BYO-gateway
+ * setup {@link detectClaudeCodeOpenRouterEnv} finds, which is what defaults the
+ * toggle on in the first place).
+ *
+ * The env half is why this isn't just "toggle && key". Someone whose shell
+ * already exports ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN for OpenRouter has
+ * no reason to re-type the key into Settings, and gating the whole routed branch
+ * on a *stored* key left their endpoint override dead: process.env stayed
+ * authoritative over the one setting that exists to override it.
+ */
+export function isClaudeCodeRoutedThroughOpenRouter(settings?: AgentSettings): boolean {
+  const s = settings ?? loadSettings();
+  if (!s.claudeCodeUseOpenRouter) return false;
+  return Boolean(s.claudeCodeOpenRouterApiKey?.trim()) || detectClaudeCodeOpenRouterEnv();
+}
+
+/**
  * Resolve a cross-harness model alias to the concrete model for `provider`.
  *
  * Lookup is case-insensitive on the alias name. An alias shadows a real model
@@ -250,11 +269,28 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
   // the generic set (Anthropic aliases/ids). Neither mode can see the other's
   // values, which is what makes toggling lossless — see the AgentSettings
   // doc-comment on claudeCodeOpenRouterModel.
-  const claudeCodeOpenRouterKey = s.claudeCodeUseOpenRouter ? s.claudeCodeOpenRouterApiKey?.trim() : undefined;
-  if (claudeCodeOpenRouterKey) {
-    env.ANTHROPIC_BASE_URL = s.claudeCodeOpenRouterBaseUrl?.trim() || OPENROUTER_ANTHROPIC_BASE_URL;
-    env.ANTHROPIC_AUTH_TOKEN = claudeCodeOpenRouterKey;
-    env.ANTHROPIC_API_KEY = "";
+  //
+  // Routing can be credentialed from either side (see
+  // isClaudeCodeRoutedThroughOpenRouter), so this branch distinguishes the two:
+  // with a stored key callboard owns the whole configuration and fills in its
+  // defaults, whereas with an env-supplied key it only injects what the user
+  // explicitly set and leaves the rest of their working env alone.
+  const ccRouted = isClaudeCodeRoutedThroughOpenRouter(s);
+  const claudeCodeOpenRouterKey = ccRouted ? s.claudeCodeOpenRouterApiKey?.trim() : undefined;
+  if (ccRouted) {
+    // An explicit endpoint override ALWAYS wins — that is the field's entire
+    // job, and it has to hold when the key came from the environment (env
+    // supplies the credential, Settings picks the region). The built-in default
+    // is only injected when callboard owns the key: against an env-supplied one,
+    // a blank override means "keep the endpoint the env already chose" rather
+    // than "reset it to the global URL".
+    const endpointOverride = s.claudeCodeOpenRouterBaseUrl?.trim();
+    if (endpointOverride) env.ANTHROPIC_BASE_URL = endpointOverride;
+    else if (claudeCodeOpenRouterKey) env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
+    if (claudeCodeOpenRouterKey) {
+      env.ANTHROPIC_AUTH_TOKEN = claudeCodeOpenRouterKey;
+      env.ANTHROPIC_API_KEY = "";
+    }
     if (s.claudeCodeOpenRouterModel) env.ANTHROPIC_MODEL = s.claudeCodeOpenRouterModel;
     if (s.claudeCodeOpenRouterOpusModel) env.ANTHROPIC_DEFAULT_OPUS_MODEL = s.claudeCodeOpenRouterOpusModel;
     if (s.claudeCodeOpenRouterSonnetModel) env.ANTHROPIC_DEFAULT_SONNET_MODEL = s.claudeCodeOpenRouterSonnetModel;
@@ -266,7 +302,11 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
     // the newest matching anthropic slug from the live OpenRouter catalog (never
     // goes stale). Subagent inherits the sonnet default. Each only fills when the
     // user left it empty (the block just above already set any explicit value).
-    const roleDefaults = getLatestAnthropicRoleModels();
+    //
+    // Skipped when the credentials came from the environment: that setup already
+    // works, and its own ANTHROPIC_DEFAULT_*_MODEL vars are not ours to replace
+    // with catalog picks the user never asked for.
+    const roleDefaults: { opus?: string; sonnet?: string; haiku?: string } = claudeCodeOpenRouterKey ? getLatestAnthropicRoleModels() : {};
     if (!s.claudeCodeOpenRouterOpusModel && roleDefaults.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = roleDefaults.opus;
     if (!s.claudeCodeOpenRouterSonnetModel && roleDefaults.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = roleDefaults.sonnet;
     if (!s.claudeCodeOpenRouterHaikuModel && roleDefaults.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = roleDefaults.haiku;

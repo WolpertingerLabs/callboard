@@ -74,6 +74,7 @@ import {
   migrateDrawlatchDirs,
   migrateKeyDirectories,
   detectClaudeCodeOpenRouterEnv,
+  isClaudeCodeRoutedThroughOpenRouter,
 } from "./services/agent-settings.js";
 import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
@@ -82,7 +83,7 @@ import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
-import { getCodexAuthSource, detectCodexOpenRouterEnv, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
+import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 
 const log = createLogger("server");
 
@@ -409,16 +410,19 @@ app.get(
     // library's default. Falls back to the OR library's own default when no
     // user override is configured.
     let openRouterMaxBudgetUsd: number = OR_LIBRARY_DEFAULT_MAX_BUDGET_USD;
-    // Whether each native harness is routed through OpenRouter (key set + toggle
-    // on). The model selectors and New Chat panel read these to switch their
-    // catalog/ordering to OpenRouter. Keys themselves are never exposed.
+    // Whether each native harness is EFFECTIVELY routed through OpenRouter —
+    // toggle on and credentials available, from settings or from the ambient
+    // env. The model selectors and New Chat panel read these to switch their
+    // catalog/ordering to OpenRouter, so they must agree with what the session
+    // actually does; the predicates are the same ones getApiEnvOverrides and the
+    // Codex options adapter resolve from. Keys themselves are never exposed.
     let claudeCodeUseOpenRouter = false;
     let codexUseOpenRouter = false;
     try {
       const s = getAgentSettings();
       openRouterConfigured = Boolean(s.openRouterApiKey?.trim());
-      claudeCodeUseOpenRouter = Boolean(s.claudeCodeUseOpenRouter && s.claudeCodeOpenRouterApiKey?.trim());
-      codexUseOpenRouter = Boolean(s.codexUseOpenRouter && s.codexOpenRouterApiKey?.trim());
+      claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
+      codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
       if (typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd)) {
         openRouterMaxBudgetUsd = s.openRouterMaxBudgetUsd;
       }
