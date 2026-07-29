@@ -132,6 +132,32 @@ export interface AgentSettings {
    */
   claudeCodeOpenRouterBaseUrl?: string;
 
+  // ── Claude Code → OpenRouter model overrides ──────────────────────
+  // Parallel to the five generic model fields above, but only consulted while
+  // {@link claudeCodeUseOpenRouter} is on. The two sets are deliberately
+  // SEPARATE: a native session wants Anthropic aliases/ids ("opus",
+  // "claude-opus-4-7") while a routed session wants OpenRouter slugs
+  // ("anthropic/claude-opus-4.8"), and a single shared field meant flipping the
+  // toggle left the other mode pointing at a model its endpoint can't resolve.
+  // Each mode now keeps its own values, so toggling is lossless in both
+  // directions. Blank fields still fall back to the live-catalog role defaults
+  // (see getApiEnvOverrides), so leaving all five empty remains the easy path.
+
+  /** ANTHROPIC_MODEL while routing through OpenRouter. */
+  claudeCodeOpenRouterModel?: string;
+
+  /** ANTHROPIC_DEFAULT_OPUS_MODEL while routing through OpenRouter. */
+  claudeCodeOpenRouterOpusModel?: string;
+
+  /** ANTHROPIC_DEFAULT_SONNET_MODEL while routing through OpenRouter. */
+  claudeCodeOpenRouterSonnetModel?: string;
+
+  /** ANTHROPIC_DEFAULT_HAIKU_MODEL while routing through OpenRouter. */
+  claudeCodeOpenRouterHaikuModel?: string;
+
+  /** CLAUDE_CODE_SUBAGENT_MODEL while routing through OpenRouter. */
+  claudeCodeOpenRouterSubagentModel?: string;
+
   // ── OpenRouter (alternative provider) ─────────────────────────────
   // Populated when the user enables the OpenRouter provider in
   // Settings → API. Empty values mean "OpenRouter unavailable" — the
@@ -277,6 +303,15 @@ export interface AgentSettings {
    * gateway path.
    */
   codexOpenRouterBaseUrl?: string;
+
+  /**
+   * Default model for new Codex chats while {@link codexUseOpenRouter} is on.
+   * Separate from {@link codexModel} for the same reason the Claude Code pair is
+   * split: native Codex wants a bare CLI slug ("gpt-5.5") and the routed harness
+   * wants an OpenRouter slug ("openai/gpt-5.5-codex"), so sharing one field made
+   * toggling lossy. Blank ⇒ the harness's own default.
+   */
+  codexOpenRouterModel?: string;
 
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the start_chat_session onComplete feature, which automatically

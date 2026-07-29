@@ -468,6 +468,14 @@ export default function ApiSettings() {
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [claudeCodeOpenRouterApiKey, setClaudeCodeOpenRouterApiKey] = useState("");
   const [claudeCodeOpenRouterBaseUrl, setClaudeCodeOpenRouterBaseUrl] = useState("");
+  // Model overrides while routed through OpenRouter. Deliberately separate from
+  // the five generic model fields above so flipping the toggle doesn't leave the
+  // other mode pointing at a slug its endpoint can't resolve.
+  const [claudeCodeOpenRouterModel, setClaudeCodeOpenRouterModel] = useState("");
+  const [claudeCodeOpenRouterOpusModel, setClaudeCodeOpenRouterOpusModel] = useState("");
+  const [claudeCodeOpenRouterSonnetModel, setClaudeCodeOpenRouterSonnetModel] = useState("");
+  const [claudeCodeOpenRouterHaikuModel, setClaudeCodeOpenRouterHaikuModel] = useState("");
+  const [claudeCodeOpenRouterSubagentModel, setClaudeCodeOpenRouterSubagentModel] = useState("");
   // OpenRouter (alternative provider) overrides.
   const [openRouterApiKey, setOpenRouterApiKey] = useState("");
   const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState("");
@@ -500,6 +508,7 @@ export default function ApiSettings() {
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
   const [codexOpenRouterApiKey, setCodexOpenRouterApiKey] = useState("");
   const [codexOpenRouterBaseUrl, setCodexOpenRouterBaseUrl] = useState("");
+  const [codexOpenRouterModel, setCodexOpenRouterModel] = useState("");
   // Collapse state for the bulky sections.
   const [showDefaults, setShowDefaults] = useState(false);
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
@@ -523,6 +532,11 @@ export default function ApiSettings() {
       setClaudeCodeUseOpenRouter(s.claudeCodeUseOpenRouter ?? Boolean(sys?.claudeCodeOpenRouterDetected));
       setClaudeCodeOpenRouterApiKey(s.claudeCodeOpenRouterApiKey ?? "");
       setClaudeCodeOpenRouterBaseUrl(s.claudeCodeOpenRouterBaseUrl ?? "");
+      setClaudeCodeOpenRouterModel(s.claudeCodeOpenRouterModel ?? "");
+      setClaudeCodeOpenRouterOpusModel(s.claudeCodeOpenRouterOpusModel ?? "");
+      setClaudeCodeOpenRouterSonnetModel(s.claudeCodeOpenRouterSonnetModel ?? "");
+      setClaudeCodeOpenRouterHaikuModel(s.claudeCodeOpenRouterHaikuModel ?? "");
+      setClaudeCodeOpenRouterSubagentModel(s.claudeCodeOpenRouterSubagentModel ?? "");
       setOpenRouterApiKey(s.openRouterApiKey ?? "");
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
       setOpenRouterModel(s.openRouterModel ?? "");
@@ -540,6 +554,7 @@ export default function ApiSettings() {
       setCodexUseOpenRouter(s.codexUseOpenRouter ?? Boolean(sys?.codexOpenRouterDetected));
       setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
       setCodexOpenRouterBaseUrl(s.codexOpenRouterBaseUrl ?? "");
+      setCodexOpenRouterModel(s.codexOpenRouterModel ?? "");
       // Catalog (for supportedParameters); best-effort — fields still work offline.
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
@@ -607,6 +622,11 @@ export default function ApiSettings() {
         claudeCodeUseOpenRouter,
         claudeCodeOpenRouterApiKey,
         claudeCodeOpenRouterBaseUrl,
+        claudeCodeOpenRouterModel,
+        claudeCodeOpenRouterOpusModel,
+        claudeCodeOpenRouterSonnetModel,
+        claudeCodeOpenRouterHaikuModel,
+        claudeCodeOpenRouterSubagentModel,
         openRouterApiKey,
         openRouterBaseUrl,
         openRouterModel,
@@ -641,6 +661,7 @@ export default function ApiSettings() {
         codexUseOpenRouter,
         codexOpenRouterApiKey,
         codexOpenRouterBaseUrl,
+        codexOpenRouterModel,
       });
       setSettings(updated);
       // Re-sync the OR tool/param state from the saved value.
@@ -851,8 +872,8 @@ export default function ApiSettings() {
             </div>
             <div style={subtitleStyle}>
               {claudeCodeUseOpenRouter
-                ? "Pick OpenRouter slugs for the session model and the opus / sonnet / haiku aliases (anthropic/* listed first). Blank role fields default to the newest matching anthropic/* model in the OpenRouter catalog."
-                : "Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to."}
+                ? "Pick OpenRouter slugs for the session model and the opus / sonnet / haiku aliases (anthropic/* listed first). Blank role fields default to the newest matching anthropic/* model in the OpenRouter catalog. Saved separately from your direct-endpoint models, so turning routing off restores those."
+                : "Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to. Saved separately from your OpenRouter models, so turning routing back on restores those."}
             </div>
 
             {/* Currently available models (SDK catalog — hidden while routing through OpenRouter) */}
@@ -875,7 +896,13 @@ export default function ApiSettings() {
                 Default Model<span style={envLabelStyle}>ANTHROPIC_MODEL</span>
               </label>
               {claudeCodeUseOpenRouter ? (
-                <OpenRouterModelSelector id="model" value={model} onChange={setModel} priorityPrefix="anthropic/" placeholder="anthropic/claude-opus-4.7" />
+                <OpenRouterModelSelector
+                  id="model"
+                  value={claudeCodeOpenRouterModel}
+                  onChange={setClaudeCodeOpenRouterModel}
+                  priorityPrefix="anthropic/"
+                  placeholder="anthropic/claude-opus-4.7"
+                />
               ) : (
                 <input
                   id="model"
@@ -902,8 +929,8 @@ export default function ApiSettings() {
               {claudeCodeUseOpenRouter ? (
                 <OpenRouterModelSelector
                   id="opusModel"
-                  value={defaultOpusModel}
-                  onChange={setDefaultOpusModel}
+                  value={claudeCodeOpenRouterOpusModel}
+                  onChange={setClaudeCodeOpenRouterOpusModel}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "opus") ?? "anthropic/claude-opus-4.8"}
                 />
@@ -928,8 +955,8 @@ export default function ApiSettings() {
               {claudeCodeUseOpenRouter ? (
                 <OpenRouterModelSelector
                   id="sonnetModel"
-                  value={defaultSonnetModel}
-                  onChange={setDefaultSonnetModel}
+                  value={claudeCodeOpenRouterSonnetModel}
+                  onChange={setClaudeCodeOpenRouterSonnetModel}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "sonnet") ?? "anthropic/claude-sonnet-4.6"}
                 />
@@ -954,8 +981,8 @@ export default function ApiSettings() {
               {claudeCodeUseOpenRouter ? (
                 <OpenRouterModelSelector
                   id="haikuModel"
-                  value={defaultHaikuModel}
-                  onChange={setDefaultHaikuModel}
+                  value={claudeCodeOpenRouterHaikuModel}
+                  onChange={setClaudeCodeOpenRouterHaikuModel}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "haiku") ?? "anthropic/claude-haiku-4.5"}
                 />
@@ -981,8 +1008,8 @@ export default function ApiSettings() {
               {claudeCodeUseOpenRouter ? (
                 <OpenRouterModelSelector
                   id="subagentModel"
-                  value={subagentModel}
-                  onChange={setSubagentModel}
+                  value={claudeCodeOpenRouterSubagentModel}
+                  onChange={setClaudeCodeOpenRouterSubagentModel}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "sonnet") ?? "anthropic/claude-sonnet-4.6"}
                 />
@@ -1434,8 +1461,8 @@ export default function ApiSettings() {
               {codexUseOpenRouter ? (
                 <OpenRouterModelSelector
                   id="codexModel"
-                  value={codexModel}
-                  onChange={setCodexModel}
+                  value={codexOpenRouterModel}
+                  onChange={setCodexOpenRouterModel}
                   priorityPrefix="openai/"
                   placeholder="openai/gpt-5.5-codex"
                 />
@@ -1444,8 +1471,8 @@ export default function ApiSettings() {
               )}
               <div style={helpStyle}>
                 {codexUseOpenRouter
-                  ? "OpenRouter model slug (openai/* recommended). Free text accepted — OpenRouter validates the model."
-                  : "Start typing to filter the live Codex model catalog. Free text accepted — the CLI validates the model."}
+                  ? "OpenRouter model slug (openai/* recommended). Free text accepted — OpenRouter validates the model. Saved separately from your native Codex model, so turning routing off restores it."
+                  : "Start typing to filter the live Codex model catalog. Free text accepted — the CLI validates the model. Saved separately from your OpenRouter model, so turning routing back on restores it."}
               </div>
             </div>
 
