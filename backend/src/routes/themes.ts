@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { themeFileService } from "../services/theme-file-service.js";
 import { generateThemeCSS } from "../services/quick-completion.js";
 import { prepareThemeWrite, describeFailures } from "../services/theme-write.js";
@@ -43,50 +43,61 @@ themesRouter.get("/:name", (req: Request, res: Response): void => {
 });
 
 // Create a new theme (manual — client provides full theme data)
-themesRouter.post("/", (req: Request, res: Response): void => {
-  const { name, dark, light, allowBelowAA } = req.body;
-
-  if (!name || typeof name !== "string" || name.trim().length === 0) {
-    res.status(400).json({ error: "Theme name is required" });
-    return;
-  }
-  if (name.length > 64) {
-    res.status(400).json({ error: "Theme name must be 64 characters or fewer" });
-    return;
-  }
-  if (!dark || typeof dark !== "object") {
-    res.status(400).json({ error: "Dark mode variables are required" });
-    return;
-  }
-  if (!light || typeof light !== "object") {
-    res.status(400).json({ error: "Light mode variables are required" });
-    return;
-  }
-
-  const prepared = prepareThemeWrite({ dark, light, allowBelowAA: allowBelowAA === true });
-  if (prepared.unsatisfiable.length > 0) {
-    refuseSubAA(res, prepared);
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const theme: CustomTheme = {
-    name: name.trim(),
-    dark: prepared.dark,
-    light: prepared.light,
-    createdAt: now,
-    updatedAt: now,
-  };
-
+//
+// The gate is awaited rather than called: correction yields to the event loop
+// while it searches, so that a theme write does not stall every open SSE stream
+// for the length of the search — see theme-contrast.ts. That makes the handler
+// async, and an async handler's rejections are not Express 4's to catch, so the
+// body is wrapped and handed to `next` to land where a synchronous throw
+// used to.
+themesRouter.post("/", async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    themeFileService.createTheme(theme);
-    res.status(201).json({ theme, dropped: prepared.dropped, corrections: prepared.corrections, contrast: prepared.contrast });
-  } catch (err: any) {
-    if (err.message.includes("already exists")) {
-      res.status(409).json({ error: err.message });
-    } else {
-      res.status(500).json({ error: "Failed to create theme", details: err.message });
+    const { name, dark, light, allowBelowAA } = req.body;
+
+    if (!name || typeof name !== "string" || name.trim().length === 0) {
+      res.status(400).json({ error: "Theme name is required" });
+      return;
     }
+    if (name.length > 64) {
+      res.status(400).json({ error: "Theme name must be 64 characters or fewer" });
+      return;
+    }
+    if (!dark || typeof dark !== "object") {
+      res.status(400).json({ error: "Dark mode variables are required" });
+      return;
+    }
+    if (!light || typeof light !== "object") {
+      res.status(400).json({ error: "Light mode variables are required" });
+      return;
+    }
+
+    const prepared = await prepareThemeWrite({ dark, light, allowBelowAA: allowBelowAA === true });
+    if (prepared.unsatisfiable.length > 0) {
+      refuseSubAA(res, prepared);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const theme: CustomTheme = {
+      name: name.trim(),
+      dark: prepared.dark,
+      light: prepared.light,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    try {
+      themeFileService.createTheme(theme);
+      res.status(201).json({ theme, dropped: prepared.dropped, corrections: prepared.corrections, contrast: prepared.contrast });
+    } catch (err: any) {
+      if (err.message.includes("already exists")) {
+        res.status(409).json({ error: err.message });
+      } else {
+        res.status(500).json({ error: "Failed to create theme", details: err.message });
+      }
+    }
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -132,44 +143,48 @@ themesRouter.post("/generate", async (req: Request, res: Response): Promise<void
 });
 
 // Update an existing theme (merges provided variables with existing ones)
-themesRouter.put("/:name", (req: Request, res: Response): void => {
-  const { name, dark, light, allowBelowAA } = req.body;
-  const originalName = req.params.name;
-
-  if (dark && typeof dark !== "object") {
-    res.status(400).json({ error: "Dark mode variables must be an object" });
-    return;
-  }
-  if (light && typeof light !== "object") {
-    res.status(400).json({ error: "Light mode variables must be an object" });
-    return;
-  }
-
-  const existing = themeFileService.getTheme(originalName);
-  if (!existing) {
-    res.status(404).json({ error: "Theme not found" });
-    return;
-  }
-
-  const prepared = prepareThemeWrite({ dark, light, existing, allowBelowAA: allowBelowAA === true });
-  if (prepared.unsatisfiable.length > 0) {
-    refuseSubAA(res, prepared);
-    return;
-  }
-
-  const theme: CustomTheme = {
-    name: typeof name === "string" && name.trim().length > 0 ? name.trim() : existing.name,
-    dark: prepared.dark,
-    light: prepared.light,
-    createdAt: existing.createdAt,
-    updatedAt: new Date().toISOString(),
-  };
-
+themesRouter.put("/:name", async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    themeFileService.updateTheme(originalName, theme);
-    res.json({ theme, dropped: prepared.dropped, corrections: prepared.corrections, contrast: prepared.contrast });
-  } catch (err: any) {
-    res.status(500).json({ error: "Failed to update theme", details: err.message });
+    const { name, dark, light, allowBelowAA } = req.body;
+    const originalName = req.params.name;
+
+    if (dark && typeof dark !== "object") {
+      res.status(400).json({ error: "Dark mode variables must be an object" });
+      return;
+    }
+    if (light && typeof light !== "object") {
+      res.status(400).json({ error: "Light mode variables must be an object" });
+      return;
+    }
+
+    const existing = themeFileService.getTheme(originalName);
+    if (!existing) {
+      res.status(404).json({ error: "Theme not found" });
+      return;
+    }
+
+    const prepared = await prepareThemeWrite({ dark, light, existing, allowBelowAA: allowBelowAA === true });
+    if (prepared.unsatisfiable.length > 0) {
+      refuseSubAA(res, prepared);
+      return;
+    }
+
+    const theme: CustomTheme = {
+      name: typeof name === "string" && name.trim().length > 0 ? name.trim() : existing.name,
+      dark: prepared.dark,
+      light: prepared.light,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      themeFileService.updateTheme(originalName, theme);
+      res.json({ theme, dropped: prepared.dropped, corrections: prepared.corrections, contrast: prepared.contrast });
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to update theme", details: err.message });
+    }
+  } catch (err) {
+    next(err);
   }
 });
 

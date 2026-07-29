@@ -48,8 +48,47 @@ const NAMED: Record<string, Rgba> = {
   black: { r: 0, g: 0, b: 0, a: 1 },
 };
 
-/** Parse a literal CSS colour. Returns null for anything unrecognised. */
+/**
+ * Memoisation for the three pure string→value parses below.
+ *
+ * Correction is a search, and a search re-reads the same strings relentlessly:
+ * one candidate lightness for one variable re-resolves every pairing that
+ * variable touches, and every one of those walks `var()` chains that bottom out
+ * in the same handful of palette literals. Parsing is a pure function of the
+ * string, so the second read of `rgba(99, 102, 241, 0.1)` cannot differ from the
+ * first — caching it changes what the work costs, never what it says.
+ *
+ * The cap exists because the search *generates* strings: up to 201 candidate
+ * colours per variable per round. Clearing wholesale on overflow rather than
+ * evicting by age keeps the caches a pure accelerator — the answer at any point
+ * is the answer the uncached parse would give, whatever is or is not resident.
+ */
+const PARSE_CACHE_LIMIT = 1 << 14;
+
+function cached<T>(cache: Map<string, T>, key: string, compute: () => T): T {
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const value = compute();
+  if (cache.size >= PARSE_CACHE_LIMIT) cache.clear();
+  cache.set(key, value);
+  return value;
+}
+
+const COLOR_CACHE = new Map<string, Rgba | null>();
+
+/**
+ * Parse a literal CSS colour. Returns null for anything unrecognised.
+ *
+ * The result is copied out of the cache rather than shared, because an `Rgba` is
+ * a plain mutable object and this is an exported function: handing two callers
+ * the same one would make a caller that writes to it corrupt every later read.
+ */
 export function parseCssColor(raw: string): Rgba | null {
+  const hit = cached(COLOR_CACHE, raw, () => parseLiteralColor(raw));
+  return hit === null ? null : { ...hit };
+}
+
+function parseLiteralColor(raw: string): Rgba | null {
   const value = raw.trim().toLowerCase();
   if (value in NAMED) return { ...NAMED[value] };
 
@@ -153,6 +192,43 @@ function splitArgs(inner: string): string[] {
 const MAX_RESOLVE_DEPTH = 16;
 
 /**
+ * What an expression *is*, decided once per distinct string.
+ *
+ * The shape of `color-mix(in srgb, var(--x) 15%, transparent)` — that it is a
+ * mix, of those two arguments, at that weight — depends only on the characters,
+ * never on the variable map resolved against. Both walkers below ran the same
+ * three regexes and the same `splitArgs` on every visit, on every candidate of
+ * every scan; deciding it once and reading the answer back is the same walk with
+ * the lexing lifted out of the loop.
+ */
+type ParsedExpr =
+  | { kind: "var"; name: string; fallback: string | undefined }
+  | { kind: "mix"; args: Array<{ colorExpr: string; weight: number | null }> }
+  | { kind: "color" };
+
+const EXPR_CACHE = new Map<string, ParsedExpr>();
+
+function parseExpr(value: string): ParsedExpr {
+  return cached(EXPR_CACHE, value, () => {
+    const varRef = /^var\(\s*--([a-z0-9-]+)\s*(?:,([\s\S]*))?\)$/i.exec(value);
+    if (varRef) return { kind: "var", name: varRef[1], fallback: varRef[2] };
+
+    const mix = /^color-mix\(\s*in\s+srgb\s*,([\s\S]*)\)$/i.exec(value);
+    if (mix) {
+      return {
+        kind: "mix",
+        args: splitArgs(mix[1]).map((arg) => {
+          const pct = /\s(\d+(?:\.\d+)?)%$/.exec(arg);
+          return { colorExpr: pct ? arg.slice(0, pct.index).trim() : arg, weight: pct ? parseFloat(pct[1]) / 100 : null };
+        }),
+      };
+    }
+
+    return { kind: "color" };
+  });
+}
+
+/**
  * Resolve a CSS value expression to an Rgba, following `var()` and
  * `color-mix()` through the supplied variable map. Returns null if any link in
  * the chain is missing, cyclic, or not a colour this parser understands —
@@ -162,24 +238,18 @@ const MAX_RESOLVE_DEPTH = 16;
 export function resolveColor(expr: string, vars: Record<string, string>, depth = 0): Rgba | null {
   if (depth > MAX_RESOLVE_DEPTH) return null;
   const value = expr.trim();
+  const shape = parseExpr(value);
 
-  const varRef = /^var\(\s*--([a-z0-9-]+)\s*(?:,([\s\S]*))?\)$/i.exec(value);
-  if (varRef) {
-    const name = varRef[1];
+  if (shape.kind === "var") {
+    const name = shape.name;
     if (name in vars) return resolveColor(vars[name], vars, depth + 1);
-    if (varRef[2] !== undefined) return resolveColor(varRef[2], vars, depth + 1);
+    if (shape.fallback !== undefined) return resolveColor(shape.fallback, vars, depth + 1);
     return null;
   }
 
-  const mix = /^color-mix\(\s*in\s+srgb\s*,([\s\S]*)\)$/i.exec(value);
-  if (mix) {
-    const args = splitArgs(mix[1]);
-    if (args.length !== 2) return null;
-    const parsed = args.map((arg) => {
-      const pct = /\s(\d+(?:\.\d+)?)%$/.exec(arg);
-      const colorExpr = pct ? arg.slice(0, pct.index).trim() : arg;
-      return { color: resolveColor(colorExpr, vars, depth + 1), weight: pct ? parseFloat(pct[1]) / 100 : null };
-    });
+  if (shape.kind === "mix") {
+    if (shape.args.length !== 2) return null;
+    const parsed = shape.args.map((arg) => ({ color: resolveColor(arg.colorExpr, vars, depth + 1), weight: arg.weight }));
     if (parsed.some((p) => p.color === null)) return null;
     let [w0, w1] = [parsed[0].weight, parsed[1].weight];
     if (w0 === null && w1 === null) [w0, w1] = [0.5, 0.5];
@@ -214,20 +284,17 @@ export function resolveColor(expr: string, vars: Record<string, string>, depth =
 function unresolvableToken(expr: string, vars: Record<string, string>, depth = 0): string {
   const value = expr.trim();
   if (depth > MAX_RESOLVE_DEPTH) return value;
+  const shape = parseExpr(value);
 
-  const varRef = /^var\(\s*--([a-z0-9-]+)\s*(?:,([\s\S]*))?\)$/i.exec(value);
-  if (varRef) {
-    const name = varRef[1];
+  if (shape.kind === "var") {
+    const name = shape.name;
     if (name in vars) return unresolvableToken(vars[name], vars, depth + 1);
-    if (varRef[2] !== undefined) return unresolvableToken(varRef[2], vars, depth + 1);
+    if (shape.fallback !== undefined) return unresolvableToken(shape.fallback, vars, depth + 1);
     return value; // the variable is not defined anywhere — the reference is the fault
   }
 
-  const mix = /^color-mix\(\s*in\s+srgb\s*,([\s\S]*)\)$/i.exec(value);
-  if (mix) {
-    for (const arg of splitArgs(mix[1])) {
-      const pct = /\s(\d+(?:\.\d+)?)%$/.exec(arg);
-      const colorExpr = pct ? arg.slice(0, pct.index).trim() : arg;
+  if (shape.kind === "mix") {
+    for (const { colorExpr } of shape.args) {
       if (resolveColor(colorExpr, vars, depth + 1) === null) return unresolvableToken(colorExpr, vars, depth + 1);
     }
     return value;
@@ -350,6 +417,23 @@ export function oklchToRgba({ l, c, h, a }: Oklch): Rgba {
     b: clamp(linearToSrgb(clamp(rgb[2], 0, 1)), 0, 255),
     a,
   };
+}
+
+/**
+ * The CSS a candidate lightness produces, for a fixed hue, chroma and alpha.
+ *
+ * The scans below ask for the same colour over and over: the seed search runs
+ * the greedy pass up to 27 times from the same starting palette, so round one of
+ * every seed re-derives the identical grid for the identical variable. Each
+ * derivation is a gamut map, and for a saturated hue at an extreme lightness
+ * that is a 24-step chroma binary search — the single most expensive thing in a
+ * scan, and the top line of its profile. Keyed on the four numbers that decide
+ * the answer, because that is exactly what it is a function of.
+ */
+const CANDIDATE_CACHE = new Map<string, string>();
+
+function candidateCss(shape: Oklch, l: number): string {
+  return cached(CANDIDATE_CACHE, `${shape.c}|${shape.h}|${shape.a}|${l}`, () => toCss(oklchToRgba({ ...shape, l })));
 }
 
 function toCss(c: Rgba): string {
@@ -568,6 +652,67 @@ export function auditTheme(theme: Pick<CustomTheme, "dark" | "light">): ThemeCon
 // ─── Correction (generation time only) ──────────────────────────────
 
 /**
+ * How long correction may hold the thread before it hands it back.
+ *
+ * The search below is bounded but not small: the seed pass runs the greedy
+ * correction up to 27 times per mode, and each of those scans a 201-step
+ * lightness grid for every candidate lever of every round. On the built-in
+ * palette that is around 80ms of solid arithmetic; on a theme whose colours put
+ * three contrast carriers in the way it is seconds. Callboard's daemon is one
+ * thread, and that thread is also every open SSE stream and every pending
+ * request, so a synchronous search of that size is not slow — it is a stall in
+ * the whole application for as long as it runs.
+ *
+ * So the search yields. `setImmediate` puts the continuation in the check phase,
+ * behind whatever I/O the loop has waiting, which is exactly the ordering wanted
+ * here: pending socket writes and incoming requests go first, and correction
+ * resumes with what is left.
+ *
+ * **This changes when the work happens, never what it computes.** The sequence
+ * of candidates, measurements and comparisons is identical either way — nothing
+ * in this module reads a clock, and nothing outside it can reach the search's
+ * state to change it mid-run. Two concurrent corrections interleave at breath
+ * points and neither can see the other, because every value each one touches is
+ * local to its own call. The caches above are shared, but a cache of a pure
+ * function has no state to race on: whoever fills an entry, it holds the same
+ * answer.
+ *
+ * 8ms is a frame at 120Hz, and comfortably under the interval at which a stalled
+ * stream becomes visible as a stutter rather than as latency.
+ */
+const MAX_UNINTERRUPTED_MS = 8;
+
+/**
+ * How often the innermost loop consults the clock, as a power-of-two mask.
+ *
+ * A candidate costs single-digit microseconds, so checking every one would spend
+ * a meaningful fraction of the search on `performance.now()`. Every 32nd bounds
+ * the overshoot past a breath at roughly a tenth of a millisecond, which is
+ * nothing next to the 8ms it is measuring.
+ */
+const BREATH_CHECK_MASK = 31;
+
+let lastBreath = 0;
+
+function breathDue(): boolean {
+  return performance.now() - lastBreath >= MAX_UNINTERRUPTED_MS;
+}
+
+/**
+ * Yield to the event loop.
+ *
+ * The clock is module-scoped rather than per-run deliberately: the property
+ * worth holding is "this module does not hold the thread for more than
+ * MAX_UNINTERRUPTED_MS at a stretch", and that is a property of the thread, not
+ * of any one correction. Two corrections running at once should breathe twice as
+ * often between them, not twice as rarely.
+ */
+async function breathe(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  lastBreath = performance.now();
+}
+
+/**
  * The opaque surfaces a theme is *made of*. "A warm cream theme" is --bg;
  * moving it to rescue a badge answers a different request than the one asked.
  *
@@ -617,11 +762,22 @@ export function isAnchor(name: string, vars: Record<string, string>): boolean {
   return resolved.a < 1;
 }
 
+/**
+ * Every `var()` an expression names, in source order — the whole expression, not
+ * just its head, so a `color-mix()`'s arguments and a `var()`'s fallback both
+ * count. Cached for the same reason the shapes above are: `pairingsTouching`
+ * re-scans all three slots of all 57 pairings for every lever of every round.
+ */
+const VAR_REFS_CACHE = new Map<string, string[]>();
+
+function varReferences(expr: string): string[] {
+  return cached(VAR_REFS_CACHE, expr, () => [...expr.matchAll(/var\(\s*--([a-z0-9-]+)/gi)].map((m) => m[1]));
+}
+
 /** Which theme variables a pairing's outcome depends on. */
 function dependencies(expr: string, vars: Record<string, string>, seen = new Set<string>(), depth = 0): Set<string> {
   if (depth > MAX_RESOLVE_DEPTH) return seen;
-  for (const m of expr.matchAll(/var\(\s*--([a-z0-9-]+)/gi)) {
-    const name = m[1];
+  for (const name of varReferences(expr)) {
     if (seen.has(name)) continue;
     seen.add(name);
     if (name in vars) dependencies(vars[name], vars, seen, depth + 1);
@@ -651,6 +807,57 @@ export interface CorrectionOutcome {
  * the nearest passing step is, for practical purposes, the nearest passing value.
  */
 const L_STEPS = 201;
+
+/**
+ * The lightness grid in nearest-first order: ascending distance from `target`,
+ * ties broken toward the lower index, stopping at `budget`.
+ *
+ * Both scans below want *the nearest lightness at which every pairing passes*,
+ * and both used to find it by walking 0→200 and keeping the closest candidate
+ * seen so far. That is the same answer this yields — the minimum of
+ * (distance, index) over the passing candidates, either way — but reached in a
+ * different number of trials. Ascending index walks *toward* the origin, so
+ * every step of the way is a new closest and nothing is ever skipped; roughly
+ * half the grid is evaluated before the answer is even in view. Nearest-first
+ * lets the scan return at the first candidate that passes, because by then no
+ * nearer one exists to find.
+ *
+ * It matters because a trial is not cheap: a gamut-mapped OKLCh→sRGB conversion
+ * (a 24-step chroma binary search whenever the candidate leaves sRGB, which for
+ * a saturated hue at an extreme lightness is most of the grid) and then a full
+ * measurement of every pairing the variable touches. On a theme whose colours
+ * are a step or two off, this is ~3 trials where it was ~150.
+ *
+ * Distance is monotonic along each side, so a side that runs past `budget` is
+ * finished rather than merely skipped — which is also what makes a tightly
+ * budgeted variable cheap instead of a full-grid scan of `continue`s.
+ */
+function* nearestLightnessFirst(target: number, budget: number): Generator<{ l: number; distance: number }> {
+  const last = L_STEPS - 1;
+  // The largest index at or below `target`, and the smallest above it. `origin.l`
+  // is not guaranteed to sit inside [0, 1] — OKLCh lightness for a clipped white
+  // can land a hair outside — so both are clamped into the grid.
+  let lo = Math.min(last, Math.floor(target * last));
+  if (lo < -1) lo = -1;
+  let hi = lo + 1;
+  while (lo >= 0 || hi <= last) {
+    const dLo = lo >= 0 ? Math.abs(lo / last - target) : Infinity;
+    const dHi = hi <= last ? Math.abs(hi / last - target) : Infinity;
+    // A tie goes to `lo`, which is always the lower index — the same candidate
+    // the ascending scan's `distance >= best.distance` test used to keep.
+    const takeLo = dLo <= dHi;
+    const index = takeLo ? lo : hi;
+    const distance = takeLo ? dLo : dHi;
+    if (takeLo) lo--;
+    else hi++;
+    if (distance > budget) {
+      if (takeLo) lo = -1;
+      else hi = last + 1;
+      continue;
+    }
+    yield { l: index / last, distance };
+  }
+}
 
 /**
  * How far correction may drag an identity colour, in OKLCh lightness.
@@ -696,11 +903,11 @@ const CONTRAST_CARRIERS = new Set(["text-on-accent", "text-on-danger", "toggle-k
  * "darken until it passes" can chase an asymptote forever. Enumerating the grid
  * either finds a value satisfying all of them at once or proves none exists.
  */
-function correctVariable(
+async function correctVariable(
   name: string,
   vars: Record<string, string>,
   relevant: Pairing[],
-): { value: string; fixed: string[]; distance: number } | null {
+): Promise<{ value: string; fixed: string[]; distance: number } | null> {
   // Only a literal colour is a lever. A variable holding `var(--x)` or a
   // `color-mix()` is an alias by design; replacing it with a flat value would
   // sever the cascade it exists to carry — correct its source instead.
@@ -712,21 +919,17 @@ function correctVariable(
   const failingBefore = relevant.filter((p) => !measurePairing(p, vars).passes).map((p) => p.id);
   if (failingBefore.length === 0) return null;
 
-  let best: { value: string; distance: number } | null = null;
-  for (let i = 0; i < L_STEPS; i++) {
-    const l = i / (L_STEPS - 1);
-    const distance = Math.abs(l - origin.l);
-    if (distance > budget) continue;
-    if (best && distance >= best.distance) continue;
-    const candidate = toCss(oklchToRgba({ ...origin, l }));
+  let scanned = 0;
+  for (const { l, distance } of nearestLightnessFirst(origin.l, budget)) {
+    if ((scanned++ & BREATH_CHECK_MASK) === 0 && breathDue()) await breathe();
+    const candidate = candidateCss(origin, l);
     const trial = { ...vars, [name]: candidate };
     // Every pairing this variable touches, not just the failing ones: a move
     // that rescues a badge by breaking body text is not a correction.
     if (!relevant.every((p) => measurePairing(p, trial).passes)) continue;
-    best = { value: candidate, distance };
+    return { value: candidate, fixed: failingBefore, distance };
   }
-  if (!best) return null;
-  return { value: best.value, fixed: failingBefore, distance: best.distance };
+  return null;
 }
 
 /** Every pairing whose outcome depends on `name`, from any of its three slots. */
@@ -743,7 +946,7 @@ interface ModeOutcome {
   unsatisfiable: ThemeContrastFailure[];
 }
 
-function correctMode(themeVars: Record<string, string>, mode: ThemeMode, seed: Record<string, string> = {}): ModeOutcome {
+async function correctMode(themeVars: Record<string, string>, mode: ThemeMode, seed: Record<string, string> = {}): Promise<ModeOutcome> {
   const corrections: Correction[] = [];
   let vars = { ...effectiveVars(themeVars, mode), ...seed };
   const owned = new Set(Object.keys(themeVars));
@@ -751,6 +954,7 @@ function correctMode(themeVars: Record<string, string>, mode: ThemeMode, seed: R
   // One variable can carry several failing pairings, and correcting it can
   // resolve all of them; re-measure after each move rather than assuming.
   for (let round = 0; round < 24; round++) {
+    if (breathDue()) await breathe();
     const failures = PAIRINGS.map((p) => measurePairing(p, vars)).filter((m) => !m.passes);
     if (failures.length === 0) break;
 
@@ -770,7 +974,7 @@ function correctMode(themeVars: Record<string, string>, mode: ThemeMode, seed: R
 
     let choice: { lever: string; value: string; fixed: string[]; distance: number } | null = null;
     for (const lever of tally.keys()) {
-      const result = correctVariable(lever, vars, pairingsTouching(lever, vars));
+      const result = await correctVariable(lever, vars, pairingsTouching(lever, vars));
       if (!result) continue;
       const better =
         !choice || result.fixed.length > choice.fixed.length || (result.fixed.length === choice.fixed.length && result.distance < choice.distance);
@@ -856,7 +1060,7 @@ function blockingCarriers(themeVars: Record<string, string>, vars: Record<string
  * the nearest value that still keeps every pairing it touches passing costs one
  * grid scan and gives the theme back as much of its own knob as contrast allows.
  */
-function relaxCarrier(name: string, vars: Record<string, string>, original: string): string {
+async function relaxCarrier(name: string, vars: Record<string, string>, original: string): Promise<string> {
   const current = parseCssColor(vars[name] ?? "");
   const target = parseCssColor(original);
   if (!current || !target) return vars[name];
@@ -867,16 +1071,14 @@ function relaxCarrier(name: string, vars: Record<string, string>, original: stri
   // carrier that only had to be seeded to unstick something else is handed back
   // untouched rather than as a round-trip of itself.
   if (relevant.every((p) => measurePairing(p, { ...vars, [name]: original }).passes)) return original;
-  let best: { value: string; distance: number } | null = null;
-  for (let i = 0; i < L_STEPS; i++) {
-    const l = i / (L_STEPS - 1);
-    const distance = Math.abs(l - wanted);
-    if (best && distance >= best.distance) continue;
-    const candidate = toCss(oklchToRgba({ ...shape, l }));
+  let scanned = 0;
+  for (const { l } of nearestLightnessFirst(wanted, Infinity)) {
+    if ((scanned++ & BREATH_CHECK_MASK) === 0 && breathDue()) await breathe();
+    const candidate = candidateCss(shape, l);
     if (!relevant.every((p) => measurePairing(p, { ...vars, [name]: candidate }).passes)) continue;
-    best = { value: candidate, distance };
+    return candidate;
   }
-  return best?.value ?? vars[name];
+  return vars[name];
 }
 
 /**
@@ -907,8 +1109,8 @@ function relaxCarrier(name: string, vars: Record<string, string>, original: stri
  * colours that cannot reach AA on a tint of themselves inside
  * MAX_LIGHTNESS_DELTA — a theme to regenerate, not a search that gave up.
  */
-function correctModeFromBestSeed(themeVars: Record<string, string>, mode: ThemeMode): ModeOutcome {
-  const plain = correctMode(themeVars, mode);
+async function correctModeFromBestSeed(themeVars: Record<string, string>, mode: ThemeMode): Promise<ModeOutcome> {
+  const plain = await correctMode(themeVars, mode);
   if (plain.unsatisfiable.length === 0) return plain;
 
   const startVars = effectiveVars(themeVars, mode);
@@ -928,7 +1130,7 @@ function correctModeFromBestSeed(themeVars: Record<string, string>, mode: ThemeM
   let seeded: string[] = [];
   for (const seed of seeds) {
     if (Object.keys(seed).length === 0) continue;
-    const outcome = correctMode(themeVars, mode, seed);
+    const outcome = await correctMode(themeVars, mode, seed);
     const better =
       outcome.unsatisfiable.length < best.unsatisfiable.length ||
       (outcome.unsatisfiable.length === best.unsatisfiable.length && outcome.corrections.length < best.corrections.length);
@@ -942,11 +1144,11 @@ function correctModeFromBestSeed(themeVars: Record<string, string>, mode: ThemeM
 }
 
 /** Re-derive a settled outcome with each seeded carrier pulled back toward the theme's own value. */
-function relaxSeeds(outcome: ModeOutcome, themeVars: Record<string, string>, mode: ThemeMode, seeded: string[]): ModeOutcome {
+async function relaxSeeds(outcome: ModeOutcome, themeVars: Record<string, string>, mode: ThemeMode, seeded: string[]): Promise<ModeOutcome> {
   let vars = { ...effectiveVars(themeVars, mode), ...outcome.vars };
   for (const name of seeded) {
     if (outcome.vars[name] === undefined || outcome.vars[name] === themeVars[name]) continue;
-    vars = { ...vars, [name]: relaxCarrier(name, vars, themeVars[name]) };
+    vars = { ...vars, [name]: await relaxCarrier(name, vars, themeVars[name]) };
   }
   const relaxed: Record<string, string> = {};
   for (const key of Object.keys(outcome.vars)) relaxed[key] = vars[key];
@@ -970,9 +1172,9 @@ function relaxSeeds(outcome: ModeOutcome, themeVars: Record<string, string>, mod
  * When the grid search proves no lightness works, the pairing is returned in
  * `unsatisfiable` — the caller rejects rather than shipping something muddy.
  */
-export function correctThemeContrast(dark: Record<string, string>, light: Record<string, string>): CorrectionOutcome {
-  const d = correctModeFromBestSeed(dark, "dark");
-  const l = correctModeFromBestSeed(light, "light");
+export async function correctThemeContrast(dark: Record<string, string>, light: Record<string, string>): Promise<CorrectionOutcome> {
+  const d = await correctModeFromBestSeed(dark, "dark");
+  const l = await correctModeFromBestSeed(light, "light");
   return {
     dark: d.vars,
     light: l.vars,

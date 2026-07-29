@@ -18,12 +18,12 @@ function complete(dark: Record<string, string> = {}, light: Record<string, strin
 }
 
 describe("prepareThemeWrite — filtering", () => {
-  it("drops a derived variable rather than letting a write pin it flat", () => {
+  it("drops a derived variable rather than letting a write pin it flat", async () => {
     // `--chatlist-badge-triggered-bg` is a color-mix of `--status-triggered`. A
     // theme that set it to a literal would sever the cascade it exists to carry
     // — the same thing `keep()` prevents on the generate path, and exactly what
     // an agent asked to "make the triggered badge more orange" would write.
-    const out = prepareThemeWrite({
+    const out = await prepareThemeWrite({
       dark: { ...complete().dark, "chatlist-badge-triggered-bg": "#ff00ff" },
       light: complete().light,
     });
@@ -31,27 +31,27 @@ describe("prepareThemeWrite — filtering", () => {
     expect(out.dark).not.toHaveProperty("chatlist-badge-triggered-bg");
   });
 
-  it("drops a name that is not a theme variable at all", () => {
-    const out = prepareThemeWrite({ dark: { ...complete().dark, "not-a-variable": "#123456" }, light: complete().light });
+  it("drops a name that is not a theme variable at all", async () => {
+    const out = await prepareThemeWrite({ dark: { ...complete().dark, "not-a-variable": "#123456" }, light: complete().light });
     expect(out.dropped).toContain("not-a-variable");
   });
 
-  it("filters the incoming write, not the theme it is merged into", () => {
+  it("filters the incoming write, not the theme it is merged into", async () => {
     // Deleting a user's stored values because they were merged past on the way
     // to a different edit is a write nobody asked for.
     const existing = { dark: { ...complete().dark, "legacy-key": "#123456" }, light: complete().light };
-    const out = prepareThemeWrite({ dark: { warning: "#e3b341" }, existing });
+    const out = await prepareThemeWrite({ dark: { warning: "#e3b341" }, existing });
     expect(out.dark["legacy-key"]).toBe("#123456");
     expect(out.dropped).toEqual([]);
   });
 });
 
 describe("prepareThemeWrite — correction and refusal", () => {
-  it("corrects a sub-AA value arriving through an update, not just through generation", () => {
+  it("corrects a sub-AA value arriving through an update, not just through generation", async () => {
     // The item-1 scenario end to end: an agent asked to warm up the triggered
     // badge writes amber-500, which measures 1.71:1 as text on a tint of itself.
     const existing = complete();
-    const out = prepareThemeWrite({ light: { "status-triggered": "#f59e0b" }, existing });
+    const out = await prepareThemeWrite({ light: { "status-triggered": "#f59e0b" }, existing });
 
     expect(out.unsatisfiable).toEqual([]);
     expect(out.light["status-triggered"]).not.toBe("#f59e0b");
@@ -60,22 +60,22 @@ describe("prepareThemeWrite — correction and refusal", () => {
     expect(out.corrections.some((c) => c.variable === "status-triggered" && c.mode === "light")).toBe(true);
   });
 
-  it("reports what no lightness move fixes, so the caller can refuse", () => {
+  it("reports what no lightness move fixes, so the caller can refuse", async () => {
     // The ink is aliased to --bg rather than left at #ffffff: --bg is a surface
     // the corrector will not move, which is what leaves the pairing with no
     // lever at all. Against a literal white ink this is now *satisfiable* —
     // darkening --text-on-accent rescues it, an answer that only became legal
     // once the built-in fills all carried a dark ink at AA themselves.
     const existing = complete();
-    const out = prepareThemeWrite({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }, existing });
+    const out = await prepareThemeWrite({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }, existing });
     expect(out.unsatisfiable.some((f) => f.id === "on-accent-hover" && f.mode === "light")).toBe(true);
     // And says enough for a caller to fix the right colour.
     expect(describeFailures(out.unsatisfiable)).toContain("var(--accent-hover)");
     expect(describeFailures(out.unsatisfiable)).toContain("needs 4.5:1");
   });
 
-  it("hands back a clean audit alongside the values it would store", () => {
-    const out = prepareThemeWrite(complete());
+  it("hands back a clean audit alongside the values it would store", async () => {
+    const out = await prepareThemeWrite(complete());
     expect(out.contrast.failures).toEqual([]);
     expect(out.contrast.checked).toBeGreaterThan(0);
   });
@@ -96,42 +96,42 @@ describe("prepareThemeWrite — what a write is accountable for", () => {
    * partial write is still accepted (so the tightening did not make every write
    * impossible), the second says a genuinely bad one is refused.
    */
-  it("accepts a partial write, because what it inherits is clean", () => {
-    const out = prepareThemeWrite({ light: { warning: "#8a5a00" } });
+  it("accepts a partial write, because what it inherits is clean", async () => {
+    const out = await prepareThemeWrite({ light: { warning: "#8a5a00" } });
     expect(out.unsatisfiable).toEqual([]);
     // Not by exemption — there is nothing to exempt. The full audit is empty.
     expect(out.contrast.failures).toEqual([]);
   });
 
-  it("refuses a write below AA outright, with no baseline to hide behind", () => {
+  it("refuses a write below AA outright, with no baseline to hide behind", async () => {
     // --accent-hover is the theme's to choose; a near-white one puts white ink
     // on it at about 1:1. Under the old rule this was refused only because it
     // was *worse* than the stylesheet's own 3.08:1. There is no 3.08 any more,
     // and the refusal no longer depends on there being one.
-    const out = prepareThemeWrite({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" } });
+    const out = await prepareThemeWrite({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" } });
     const hover = out.unsatisfiable.find((f) => f.id === "on-accent-hover" && f.mode === "light");
     expect(hover).toBeDefined();
     expect(hover!.ratio).toBeLessThan(4.5);
   });
 
-  it("has no sub-AA pairing left in the stylesheet for the rule to be unsatisfiable against", () => {
+  it("has no sub-AA pairing left in the stylesheet for the rule to be unsatisfiable against", async () => {
     // The load-bearing precondition, asserted from this side too. If index.css
     // reintroduces a failing pairing, every partial write above starts refusing
     // for a colour its author never named — and this is the test that says so
     // before the write path does.
-    const out = prepareThemeWrite({});
+    const out = await prepareThemeWrite({});
     expect(out.contrast.failures).toEqual([]);
   });
 
-  it("refuses a write that breaks a pairing the stylesheet passes", () => {
+  it("refuses a write that breaks a pairing the stylesheet passes", async () => {
     // `text-on-bg` is 14.63:1 on the built-in light palette. Nothing about the
     // baseline rule lets a write take it to 1.0.
-    const out = prepareThemeWrite({ light: { text: "#fffef8", bg: "#fffef8" } });
+    const out = await prepareThemeWrite({ light: { text: "#fffef8", bg: "#fffef8" } });
     expect(out.unsatisfiable.some((f) => f.id === "text-on-bg" && f.mode === "light")).toBe(true);
   });
 
-  it("treats an unreadable value as the write's problem regardless of the baseline", () => {
-    const out = prepareThemeWrite({ light: { warning: "goldenrod" } });
+  it("treats an unreadable value as the write's problem regardless of the baseline", async () => {
+    const out = await prepareThemeWrite({ light: { warning: "goldenrod" } });
     expect(out.unsatisfiable.some((f) => f.unmeasurable?.includes("goldenrod"))).toBe(true);
   });
 });
@@ -139,32 +139,32 @@ describe("prepareThemeWrite — what a write is accountable for", () => {
 describe("prepareThemeWrite — the allowBelowAA opt-out", () => {
   const authored = { light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }, existing: complete() };
 
-  it("stores a human-authored value exactly as written", () => {
+  it("stores a human-authored value exactly as written", async () => {
     // The distinction is authorship. A person editing their own theme file
     // through an API they had to name a flag to reach is exercising ownership
     // over their own data; quietly moving the value answers a question nobody
     // asked. So the opt-out skips correction, not only the refusal.
-    const out = prepareThemeWrite({ ...authored, allowBelowAA: true });
+    const out = await prepareThemeWrite({ ...authored, allowBelowAA: true });
     expect(out.light["accent-hover"]).toBe("#fdfdfd");
     expect(out.corrections).toEqual([]);
     expect(out.unsatisfiable).toEqual([]);
   });
 
-  it("still reports what it stored, so the caller can warn", () => {
-    const out = prepareThemeWrite({ ...authored, allowBelowAA: true });
+  it("still reports what it stored, so the caller can warn", async () => {
+    const out = await prepareThemeWrite({ ...authored, allowBelowAA: true });
     expect(out.contrast.failures.some((f) => f.id === "on-accent-hover" && f.mode === "light")).toBe(true);
   });
 
-  it("still filters — a severed cascade is not a matter of taste", () => {
-    const out = prepareThemeWrite({ dark: { "chatlist-badge-triggered-bg": "#ff00ff" }, existing: complete(), allowBelowAA: true });
+  it("still filters — a severed cascade is not a matter of taste", async () => {
+    const out = await prepareThemeWrite({ dark: { "chatlist-badge-triggered-bg": "#ff00ff" }, existing: complete(), allowBelowAA: true });
     expect(out.dropped).toContain("chatlist-badge-triggered-bg");
     // The flat value never lands; the existing color-mix keeps carrying the
     // theme's own --status-triggered through to the badge, which is the point.
     expect(out.dark["chatlist-badge-triggered-bg"]).toContain("var(--status-triggered)");
   });
 
-  it("refuses the same write without the flag", () => {
-    const out = prepareThemeWrite(authored);
+  it("refuses the same write without the flag", async () => {
+    const out = await prepareThemeWrite(authored);
     expect(out.unsatisfiable.length).toBeGreaterThan(0);
   });
 });

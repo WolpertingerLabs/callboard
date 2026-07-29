@@ -124,7 +124,7 @@ function filterToSurface(vars: ThemeVariables | undefined): { kept: ThemeVariabl
   return { kept, dropped };
 }
 
-export function prepareThemeWrite(input: PrepareThemeWriteInput): PreparedThemeWrite {
+export async function prepareThemeWrite(input: PrepareThemeWriteInput): Promise<PreparedThemeWrite> {
   const dark = filterToSurface(input.dark);
   const light = filterToSurface(input.light);
   const dropped = [...new Set([...dark.dropped, ...light.dropped])];
@@ -137,7 +137,7 @@ export function prepareThemeWrite(input: PrepareThemeWriteInput): PreparedThemeW
     return { dark: mergedDark, light: mergedLight, dropped, corrections: [], unsatisfiable: [], contrast };
   }
 
-  const corrected = correctThemeContrast(mergedDark, mergedLight);
+  const corrected = await correctThemeContrast(mergedDark, mergedLight);
   return {
     dark: corrected.dark,
     light: corrected.light,

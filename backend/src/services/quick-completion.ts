@@ -595,7 +595,7 @@ async function generateThemeAttempt(name: string, description: string, feedback:
     // helpfully volunteers `chatlist-badge-triggered-bg` would pin a derived
     // variable to a flat value and cut it off from the primitive it is supposed
     // to follow; that is a rule about theme writes, not about generation.
-    const prepared = prepareThemeWrite({ dark: parsed.dark as ThemeVariables, light: parsed.light as ThemeVariables });
+    const prepared = await prepareThemeWrite({ dark: parsed.dark as ThemeVariables, light: parsed.light as ThemeVariables });
     if (prepared.dropped.length > 0) {
       log.info(`generateThemeCSS: dropped ${prepared.dropped.length} variable(s) outside the theme surface — ${prepared.dropped.join(", ")}`);
     }
