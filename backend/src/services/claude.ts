@@ -1598,14 +1598,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       throw new Error(message);
     }
     // Per-chat model override (persisted to metadata) takes precedence over the
-    // global codexModel default. Covers new chats (just written above) and
-    // resumed chats (loaded from disk).
-    // Per-chat override wins; either it or the global codexModel default may be a
+    // global default. Covers new chats (just written above) and resumed chats
+    // (loaded from disk).
+    // Per-chat override wins; either it or the global default may be a
     // cross-harness alias. A per-chat alias with no codex target falls back to the
-    // configured codexModel default rather than the SDK's built-in default.
+    // configured default rather than the SDK's built-in default.
+    // Which global default applies is mode-specific: routing through OpenRouter
+    // reads codexOpenRouterModel (an OR slug), native Codex reads codexModel (a
+    // bare CLI slug). Sharing one field made toggling lossy — see the
+    // AgentSettings doc-comment on codexOpenRouterModel.
     const requestedModel = resolveSessionModel(
       typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
-      agentSettings.codexModel,
+      useOpenRouter ? agentSettings.codexOpenRouterModel : agentSettings.codexModel,
       "codex",
       agentSettings,
     );

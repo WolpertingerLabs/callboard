@@ -71,6 +71,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     claudeCodeUseOpenRouter,
     claudeCodeOpenRouterApiKey,
     claudeCodeOpenRouterBaseUrl,
+    claudeCodeOpenRouterModel,
+    claudeCodeOpenRouterOpusModel,
+    claudeCodeOpenRouterSonnetModel,
+    claudeCodeOpenRouterHaikuModel,
+    claudeCodeOpenRouterSubagentModel,
     openRouterApiKey,
     openRouterBaseUrl,
     openRouterModel,
@@ -91,6 +96,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexUseOpenRouter,
     codexOpenRouterApiKey,
     codexOpenRouterBaseUrl,
+    codexOpenRouterModel,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -163,7 +169,12 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     subagentModel !== undefined ||
     claudeCodeUseOpenRouter !== undefined ||
     claudeCodeOpenRouterApiKey !== undefined ||
-    claudeCodeOpenRouterBaseUrl !== undefined;
+    claudeCodeOpenRouterBaseUrl !== undefined ||
+    claudeCodeOpenRouterModel !== undefined ||
+    claudeCodeOpenRouterOpusModel !== undefined ||
+    claudeCodeOpenRouterSonnetModel !== undefined ||
+    claudeCodeOpenRouterHaikuModel !== undefined ||
+    claudeCodeOpenRouterSubagentModel !== undefined;
 
   const codexFieldsTouched =
     codexAuthMode !== undefined ||
@@ -172,7 +183,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexHome !== undefined ||
     codexUseOpenRouter !== undefined ||
     codexOpenRouterApiKey !== undefined ||
-    codexOpenRouterBaseUrl !== undefined;
+    codexOpenRouterBaseUrl !== undefined ||
+    codexOpenRouterModel !== undefined;
 
   // Validate the alias map up front so bad input 400s before anything is written.
   let normalizedAliases: Record<string, string> | undefined;
@@ -325,6 +337,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(claudeCodeUseOpenRouter !== undefined && { claudeCodeUseOpenRouter: normalizeBool(claudeCodeUseOpenRouter) }),
       ...(claudeCodeOpenRouterApiKey !== undefined && { claudeCodeOpenRouterApiKey: normalize(claudeCodeOpenRouterApiKey) }),
       ...(claudeCodeOpenRouterBaseUrl !== undefined && { claudeCodeOpenRouterBaseUrl: normalize(claudeCodeOpenRouterBaseUrl) }),
+      ...(claudeCodeOpenRouterModel !== undefined && { claudeCodeOpenRouterModel: normalize(claudeCodeOpenRouterModel) }),
+      ...(claudeCodeOpenRouterOpusModel !== undefined && { claudeCodeOpenRouterOpusModel: normalize(claudeCodeOpenRouterOpusModel) }),
+      ...(claudeCodeOpenRouterSonnetModel !== undefined && { claudeCodeOpenRouterSonnetModel: normalize(claudeCodeOpenRouterSonnetModel) }),
+      ...(claudeCodeOpenRouterHaikuModel !== undefined && { claudeCodeOpenRouterHaikuModel: normalize(claudeCodeOpenRouterHaikuModel) }),
+      ...(claudeCodeOpenRouterSubagentModel !== undefined && { claudeCodeOpenRouterSubagentModel: normalize(claudeCodeOpenRouterSubagentModel) }),
       ...(openRouterApiKey !== undefined && { openRouterApiKey: normalize(openRouterApiKey) }),
       ...(openRouterBaseUrl !== undefined && { openRouterBaseUrl: normalize(openRouterBaseUrl) }),
       ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
@@ -351,6 +368,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
+      ...(codexOpenRouterModel !== undefined && { codexOpenRouterModel: normalize(codexOpenRouterModel) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });

@@ -38,7 +38,7 @@ function loadSettings(): AgentSettings {
     if (!raw.proxyMode) {
       raw.proxyMode = "local";
     }
-    return migrateModelAliases(raw);
+    return migrateOpenRouterRoutingModels(migrateModelAliases(raw));
   } catch (err: any) {
     log.warn(`Failed to load agent settings: ${err.message}`);
     return { proxyMode: "local" };
@@ -70,6 +70,62 @@ function migrateModelAliases(settings: AgentSettings): AgentSettings {
     }
   }
   return { ...settings, modelAliases: aliases };
+}
+
+/**
+ * Move model values that were configured for an OpenRouter-routed harness out of
+ * the shared model fields and into the dedicated `*OpenRouter*Model` ones.
+ *
+ * Before those dedicated fields existed, both modes shared `model` /
+ * `default{Opus,Sonnet,Haiku}Model` / `subagentModel` (and `codexModel`), so a
+ * user who configured OpenRouter slugs while routed had them injected verbatim
+ * after toggling back to the native endpoint — where an `anthropic/*` slug does
+ * not resolve. On first load after the upgrade we relocate those values, which
+ * both preserves the routed setup and leaves the native fields clean.
+ *
+ * Only runs when the harness's routing toggle is ON (the sole case in which the
+ * shared values are known to be OpenRouter slugs) and none of its dedicated
+ * fields are set yet. Pure and idempotent — after the move the guard is false,
+ * so re-running is a no-op. The relocation is persisted by the next
+ * saveSettings; until then every read applies this transform, so behavior is
+ * consistent either way.
+ */
+export function migrateOpenRouterRoutingModels(settings: AgentSettings): AgentSettings {
+  let next = settings;
+
+  const ccRouted = Boolean(settings.claudeCodeUseOpenRouter);
+  const ccClaimed =
+    settings.claudeCodeOpenRouterModel !== undefined ||
+    settings.claudeCodeOpenRouterOpusModel !== undefined ||
+    settings.claudeCodeOpenRouterSonnetModel !== undefined ||
+    settings.claudeCodeOpenRouterHaikuModel !== undefined ||
+    settings.claudeCodeOpenRouterSubagentModel !== undefined;
+  const ccHasLegacy = Boolean(
+    settings.model || settings.defaultOpusModel || settings.defaultSonnetModel || settings.defaultHaikuModel || settings.subagentModel,
+  );
+  if (ccRouted && !ccClaimed && ccHasLegacy) {
+    next = {
+      ...next,
+      claudeCodeOpenRouterModel: settings.model,
+      claudeCodeOpenRouterOpusModel: settings.defaultOpusModel,
+      claudeCodeOpenRouterSonnetModel: settings.defaultSonnetModel,
+      claudeCodeOpenRouterHaikuModel: settings.defaultHaikuModel,
+      claudeCodeOpenRouterSubagentModel: settings.subagentModel,
+      model: undefined,
+      defaultOpusModel: undefined,
+      defaultSonnetModel: undefined,
+      defaultHaikuModel: undefined,
+      subagentModel: undefined,
+    };
+    log.info("Migrated Claude-Code-via-OpenRouter model overrides into their dedicated settings fields");
+  }
+
+  if (settings.codexUseOpenRouter && settings.codexOpenRouterModel === undefined && settings.codexModel) {
+    next = { ...next, codexOpenRouterModel: settings.codexModel, codexModel: undefined };
+    log.info("Migrated Codex-via-OpenRouter model override into its dedicated settings field");
+  }
+
+  return next;
 }
 
 function saveSettings(settings: AgentSettings): void {
@@ -178,39 +234,52 @@ export function resolveOpenRouterModel(value: string | undefined, settings?: Age
  * regular subscription-based login flow) stays in effect.
  */
 export function getApiEnvOverrides(settings?: AgentSettings): Record<string, string> {
-  const s = settings ?? loadSettings();
+  const s = migrateOpenRouterRoutingModels(settings ?? loadSettings());
   const env: Record<string, string> = {};
-  if (s.apiBaseUrl) env.ANTHROPIC_BASE_URL = s.apiBaseUrl;
-  if (s.apiKey) env.ANTHROPIC_API_KEY = s.apiKey;
-  if (s.authToken) env.ANTHROPIC_AUTH_TOKEN = s.authToken;
-  if (s.model) env.ANTHROPIC_MODEL = s.model;
-  if (s.defaultOpusModel) env.ANTHROPIC_DEFAULT_OPUS_MODEL = s.defaultOpusModel;
-  if (s.defaultSonnetModel) env.ANTHROPIC_DEFAULT_SONNET_MODEL = s.defaultSonnetModel;
-  if (s.defaultHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.defaultHaikuModel;
-  if (s.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.subagentModel;
 
   // ── Claude Code → OpenRouter endpoint routing ───────────────────
   // Point the native Claude Code harness at OpenRouter's Anthropic-compatible
-  // gateway. Overrides the manual base-url/key/token fields above. The base URL
+  // gateway. Replaces the manual base-url/key/token fields entirely. The base URL
   // defaults to OpenRouter's `/api` (no `/v1`) but honors an explicit
   // claudeCodeOpenRouterBaseUrl so users can target regional endpoints; the key
   // rides as the Bearer auth token, and ANTHROPIC_API_KEY is forced empty so any
   // inherited subscription key in process.env can't shadow the OpenRouter token.
-  if (s.claudeCodeUseOpenRouter && s.claudeCodeOpenRouterApiKey?.trim()) {
+  //
+  // The model fields are mode-specific: the routed branch reads the
+  // claudeCodeOpenRouter*Model set (OpenRouter slugs), the native branch reads
+  // the generic set (Anthropic aliases/ids). Neither mode can see the other's
+  // values, which is what makes toggling lossless — see the AgentSettings
+  // doc-comment on claudeCodeOpenRouterModel.
+  const claudeCodeOpenRouterKey = s.claudeCodeUseOpenRouter ? s.claudeCodeOpenRouterApiKey?.trim() : undefined;
+  if (claudeCodeOpenRouterKey) {
     env.ANTHROPIC_BASE_URL = s.claudeCodeOpenRouterBaseUrl?.trim() || OPENROUTER_ANTHROPIC_BASE_URL;
-    env.ANTHROPIC_AUTH_TOKEN = s.claudeCodeOpenRouterApiKey.trim();
+    env.ANTHROPIC_AUTH_TOKEN = claudeCodeOpenRouterKey;
     env.ANTHROPIC_API_KEY = "";
+    if (s.claudeCodeOpenRouterModel) env.ANTHROPIC_MODEL = s.claudeCodeOpenRouterModel;
+    if (s.claudeCodeOpenRouterOpusModel) env.ANTHROPIC_DEFAULT_OPUS_MODEL = s.claudeCodeOpenRouterOpusModel;
+    if (s.claudeCodeOpenRouterSonnetModel) env.ANTHROPIC_DEFAULT_SONNET_MODEL = s.claudeCodeOpenRouterSonnetModel;
+    if (s.claudeCodeOpenRouterHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.claudeCodeOpenRouterHaikuModel;
+    if (s.claudeCodeOpenRouterSubagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.claudeCodeOpenRouterSubagentModel;
     // Role-model defaults. Through OpenRouter, Claude Code's built-in bare model
     // ids (e.g. "claude-opus-4-x") may not resolve — the gateway expects fully
     // qualified `anthropic/*` slugs. So when a role field is blank, fall back to
     // the newest matching anthropic slug from the live OpenRouter catalog (never
     // goes stale). Subagent inherits the sonnet default. Each only fills when the
-    // user left it empty (the generic block above already set any explicit value).
+    // user left it empty (the block just above already set any explicit value).
     const roleDefaults = getLatestAnthropicRoleModels();
-    if (!s.defaultOpusModel && roleDefaults.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = roleDefaults.opus;
-    if (!s.defaultSonnetModel && roleDefaults.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = roleDefaults.sonnet;
-    if (!s.defaultHaikuModel && roleDefaults.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = roleDefaults.haiku;
-    if (!s.subagentModel && roleDefaults.sonnet) env.CLAUDE_CODE_SUBAGENT_MODEL = roleDefaults.sonnet;
+    if (!s.claudeCodeOpenRouterOpusModel && roleDefaults.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = roleDefaults.opus;
+    if (!s.claudeCodeOpenRouterSonnetModel && roleDefaults.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = roleDefaults.sonnet;
+    if (!s.claudeCodeOpenRouterHaikuModel && roleDefaults.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = roleDefaults.haiku;
+    if (!s.claudeCodeOpenRouterSubagentModel && roleDefaults.sonnet) env.CLAUDE_CODE_SUBAGENT_MODEL = roleDefaults.sonnet;
+  } else {
+    if (s.apiBaseUrl) env.ANTHROPIC_BASE_URL = s.apiBaseUrl;
+    if (s.apiKey) env.ANTHROPIC_API_KEY = s.apiKey;
+    if (s.authToken) env.ANTHROPIC_AUTH_TOKEN = s.authToken;
+    if (s.model) env.ANTHROPIC_MODEL = s.model;
+    if (s.defaultOpusModel) env.ANTHROPIC_DEFAULT_OPUS_MODEL = s.defaultOpusModel;
+    if (s.defaultSonnetModel) env.ANTHROPIC_DEFAULT_SONNET_MODEL = s.defaultSonnetModel;
+    if (s.defaultHaikuModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = s.defaultHaikuModel;
+    if (s.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = s.subagentModel;
   }
 
   // ── Codex provider env ──────────────────────────────────────────
