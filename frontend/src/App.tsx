@@ -48,9 +48,30 @@ function applyTheme(mode: ThemeMode) {
     });
 }
 
-function applyCustomThemeVars(theme: CustomTheme, resolvedMode: string) {
+/**
+ * Write one mode's theme variables as inline styles on <html>.
+ *
+ * **Clearing the other mode first is the load-bearing half.** These are inline
+ * styles, so they beat both `:root` and `[data-theme="light"]` — which is how a
+ * custom theme works at all, and also how it breaks. Nothing requires the two
+ * modes to define the same keys: only five are checked for at generation time,
+ * and the theme surface filter runs over each mode independently. So a theme
+ * whose `dark` names `--warning` and whose `light` does not used to leave the
+ * dark `--warning` sitting inline after a switch to light, where it outranked
+ * the light stylesheet value that should have taken over.
+ *
+ * That is not a cosmetic gap: the contrast engine models light mode as
+ * `{...BUILTIN.light, ...theme.light}`, so a leaked dark value is a colour it
+ * never measured. A theme audited clean could render sub-AA, and the audit would
+ * have no way to know. Exported for the test that pins it.
+ */
+export function applyCustomThemeVars(theme: CustomTheme, resolvedMode: string) {
   const root = document.documentElement;
   const vars = resolvedMode === "light" ? theme.light : theme.dark;
+  const other = resolvedMode === "light" ? theme.dark : theme.light;
+  for (const key of Object.keys(other)) {
+    if (!(key in vars)) root.style.removeProperty(`--${key}`);
+  }
   for (const [key, value] of Object.entries(vars)) {
     root.style.setProperty(`--${key}`, value);
   }

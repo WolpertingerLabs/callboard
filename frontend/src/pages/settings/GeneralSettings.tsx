@@ -21,6 +21,7 @@ const DEFAULT_MAX_CALLBACK_CHAIN_DEPTH = 10;
 const DEFAULT_MAX_PENDING_CALLBACKS = 25;
 import { reloadCustomTheme } from "../../App";
 import type { ThemeListItem, UserContactInfo } from "../../api";
+import ThemeAuditPanel from "./ThemeAuditPanel";
 
 type ContactKey = keyof UserContactInfo;
 
@@ -209,7 +210,10 @@ export default function GeneralSettings() {
     setThemeError("");
     try {
       const theme = await generateTheme(name, desc);
-      setCustomThemes((prev) => [...prev, { name: theme.name, createdAt: theme.createdAt, updatedAt: theme.updatedAt }]);
+      // Refetch rather than splice: the contrast report is measured server-side
+      // from the stored file, and a row built from the POST response would have
+      // none — reading as "no problems" rather than "not looked at yet".
+      setCustomThemes(await listThemes());
       setNewThemeName("");
       setNewThemeDesc("");
       // Auto-select the new theme
@@ -232,8 +236,8 @@ export default function GeneralSettings() {
     try {
       // Delete the old theme, generate a new one with the same name
       await deleteTheme(name);
-      const theme = await generateTheme(name, desc);
-      setCustomThemes((prev) => prev.map((t) => (t.name === name ? { name: theme.name, createdAt: theme.createdAt, updatedAt: theme.updatedAt } : t)));
+      await generateTheme(name, desc);
+      setCustomThemes(await listThemes());
       setRegeneratingTheme(null);
       setRegenerateDesc("");
       if (selectedTheme === name) {
@@ -674,6 +678,12 @@ export default function GeneralSettings() {
                   <Trash2 size={14} />
                 </button>
               </div>
+              {/*
+                Reported, never repaired. A stored theme is the user's file; the
+                panel says what is wrong — failing pairings, and the variables
+                the theme never defines — and leaves the choice to them.
+              */}
+              {theme.contrast && <ThemeAuditPanel report={theme.contrast} />}
               {regeneratingTheme === theme.name && (
                 <div style={{ display: "flex", gap: 6, paddingLeft: 4 }}>
                   <input

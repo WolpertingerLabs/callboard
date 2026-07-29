@@ -3,6 +3,7 @@ import { join } from "path";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import type { CustomTheme, ThemeListItem } from "shared/types/index.js";
+import { auditTheme } from "./theme-contrast.js";
 
 const log = createLogger("theme-file-service");
 const THEMES_DIR = join(DATA_DIR, "themes");
@@ -27,7 +28,7 @@ class ThemeFileService {
     try {
       const files = readdirSync(THEMES_DIR).filter((f) => f.endsWith(".json"));
       return files
-        .map((f) => {
+        .map((f): ThemeListItem | null => {
           try {
             const content = readFileSync(join(THEMES_DIR, f), "utf8");
             const theme: CustomTheme = JSON.parse(content);
@@ -35,6 +36,10 @@ class ThemeFileService {
               name: theme.name,
               createdAt: theme.createdAt,
               updatedAt: theme.updatedAt,
+              // Reported, never repaired. A stored theme is the user's; the
+              // list says which pairings fall short and leaves the choice of
+              // what to do about it — regenerate, edit, ignore — to them.
+              contrast: auditTheme(theme),
             };
           } catch {
             return null;

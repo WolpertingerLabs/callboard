@@ -114,7 +114,7 @@ export type { AgentSettings, KeyAliasInfo, EnrolledCaller, EnrolledCallerAgent }
 
 export type { CallerInfo, ConnectionStatus } from "./connections.js";
 
-export type { CustomTheme, ThemeVariables, ThemeListItem } from "./theme.js";
+export type { CustomTheme, ThemeVariables, ThemeListItem, ThemeContrastReport, ThemeContrastFailure } from "./theme.js";
 
 export type { CustomSkill, CustomSkillListItem } from "./customSkill.js";
 

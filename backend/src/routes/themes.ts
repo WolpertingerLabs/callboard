@@ -2,9 +2,29 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { themeFileService } from "../services/theme-file-service.js";
 import { generateThemeCSS } from "../services/quick-completion.js";
+import { prepareThemeWrite, describeFailures } from "../services/theme-write.js";
+import type { PreparedThemeWrite } from "../services/theme-write.js";
 import type { CustomTheme } from "shared/types/index.js";
 
 export const themesRouter = Router();
+
+/**
+ * The 422 a gated write returns when it cannot be brought up to AA.
+ *
+ * It names the pairings rather than the fact of failure: a client that can see
+ * which colours clashed can fix the one that is wrong, and one that cannot is
+ * reduced to guessing. `allowBelowAA` is offered back explicitly, because the
+ * caller reaching this over HTTP may well be a person who meant it — see
+ * theme-write.ts for why that opt-out exists here and nowhere else.
+ */
+function refuseSubAA(res: Response, prepared: PreparedThemeWrite): void {
+  res.status(422).json({
+    error: `Refusing to store a theme with ${prepared.unsatisfiable.length} pairing(s) below WCAG AA that no lightness adjustment fixes.`,
+    unsatisfiable: prepared.unsatisfiable,
+    details: describeFailures(prepared.unsatisfiable),
+    hint: "Choose genuinely different colours for the variables involved, or resend with allowBelowAA: true to store them as written.",
+  });
+}
 
 // List all themes
 themesRouter.get("/", (_req: Request, res: Response): void => {
@@ -24,7 +44,7 @@ themesRouter.get("/:name", (req: Request, res: Response): void => {
 
 // Create a new theme (manual — client provides full theme data)
 themesRouter.post("/", (req: Request, res: Response): void => {
-  const { name, dark, light } = req.body;
+  const { name, dark, light, allowBelowAA } = req.body;
 
   if (!name || typeof name !== "string" || name.trim().length === 0) {
     res.status(400).json({ error: "Theme name is required" });
@@ -43,18 +63,24 @@ themesRouter.post("/", (req: Request, res: Response): void => {
     return;
   }
 
+  const prepared = prepareThemeWrite({ dark, light, allowBelowAA: allowBelowAA === true });
+  if (prepared.unsatisfiable.length > 0) {
+    refuseSubAA(res, prepared);
+    return;
+  }
+
   const now = new Date().toISOString();
   const theme: CustomTheme = {
     name: name.trim(),
-    dark,
-    light,
+    dark: prepared.dark,
+    light: prepared.light,
     createdAt: now,
     updatedAt: now,
   };
 
   try {
     themeFileService.createTheme(theme);
-    res.status(201).json({ theme });
+    res.status(201).json({ theme, dropped: prepared.dropped, corrections: prepared.corrections, contrast: prepared.contrast });
   } catch (err: any) {
     if (err.message.includes("already exists")) {
       res.status(409).json({ error: err.message });
@@ -78,13 +104,24 @@ themesRouter.post("/generate", async (req: Request, res: Response): Promise<void
   }
 
   try {
-    const theme = await generateThemeCSS(name.trim(), description);
-    if (!theme) {
-      res.status(500).json({ error: "Failed to generate theme — AI did not return valid CSS variables" });
+    const result = await generateThemeCSS(name.trim(), description);
+    if (!result.ok) {
+      // Which pairings, not just that there were some — the settings page can
+      // show them, and a caller that can see the clash can describe its way out
+      // of it. See theme-write.ts / generateThemeCSS on why this is not a log line.
+      res.status(result.reason === "contrast" ? 422 : 502).json({
+        error:
+          result.reason === "contrast"
+            ? `The model chose colours that could not be brought up to WCAG AA after ${result.attempts} attempts. Nothing was saved.`
+            : `The model did not return a theme after ${result.attempts} attempts. Nothing was saved.`,
+        details: result.detail,
+        ...(result.reason === "contrast" ? { unsatisfiable: result.unsatisfiable } : {}),
+        hint: "Try describing more contrast between the accent and the background.",
+      });
       return;
     }
-    themeFileService.createTheme(theme);
-    res.status(201).json({ theme });
+    themeFileService.createTheme(result.theme);
+    res.status(201).json({ theme: result.theme, corrections: result.corrections });
   } catch (err: any) {
     if (err.message.includes("already exists")) {
       res.status(409).json({ error: err.message });
@@ -96,7 +133,7 @@ themesRouter.post("/generate", async (req: Request, res: Response): Promise<void
 
 // Update an existing theme (merges provided variables with existing ones)
 themesRouter.put("/:name", (req: Request, res: Response): void => {
-  const { name, dark, light } = req.body;
+  const { name, dark, light, allowBelowAA } = req.body;
   const originalName = req.params.name;
 
   if (dark && typeof dark !== "object") {
@@ -114,17 +151,23 @@ themesRouter.put("/:name", (req: Request, res: Response): void => {
     return;
   }
 
+  const prepared = prepareThemeWrite({ dark, light, existing, allowBelowAA: allowBelowAA === true });
+  if (prepared.unsatisfiable.length > 0) {
+    refuseSubAA(res, prepared);
+    return;
+  }
+
   const theme: CustomTheme = {
     name: typeof name === "string" && name.trim().length > 0 ? name.trim() : existing.name,
-    dark: { ...existing.dark, ...(dark as Record<string, string> | undefined) },
-    light: { ...existing.light, ...(light as Record<string, string> | undefined) },
+    dark: prepared.dark,
+    light: prepared.light,
     createdAt: existing.createdAt,
     updatedAt: new Date().toISOString(),
   };
 
   try {
     themeFileService.updateTheme(originalName, theme);
-    res.json({ theme });
+    res.json({ theme, dropped: prepared.dropped, corrections: prepared.corrections, contrast: prepared.contrast });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to update theme", details: err.message });
   }
