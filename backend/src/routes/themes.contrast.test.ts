@@ -61,7 +61,7 @@ const themeFile = join(themesDir, "Sub AA.json");
 const onDisk = JSON.stringify(PARTIAL_THEME, null, 2);
 writeFileSync(themeFile, onDisk, "utf8");
 
-function handlerFor(path: string, method: "get" | "post") {
+function handlerFor(path: string, method: "get" | "post" | "put") {
   return (themesRouter as any).stack.find((layer: any) => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle as (
     req: Request,
     res: Response,
@@ -138,5 +138,89 @@ describe("GET /api/themes — contrast report", () => {
     // a future change to either shape is a deliberate one.
     expect(res.body.theme.name).toBe("Sub AA");
     expect(res.body.theme.contrast).toBeUndefined();
+  });
+
+  it("names the variables the theme never defines, which produce no failures at all", async () => {
+    // The other half of the diagnosis. This theme defines eight variables, so
+    // the rest inherit from the stylesheet — and every one of those inherited
+    // colours is perfectly legible, which is exactly why a report made only of
+    // ratios says nothing about a half-themed sidebar.
+    const res = await list();
+    const report = res.body.themes[0].contrast;
+    expect(report.undefinedVariables.dark).toContain("status-green");
+    expect(report.undefinedVariables.dark).toContain("bg-sidebar");
+    expect(report.undefinedVariables.dark).not.toContain("status-triggered");
+    expect(report.undefinedVariables.light).toContain("info-bg");
+  });
+});
+
+/**
+ * The two HTTP writes, which until now stored whatever they were handed.
+ *
+ * These run against their own theme so the sub-AA fixture above stays exactly as
+ * written — the audit tests depend on it being byte-identical on disk.
+ */
+describe("POST /api/themes and PUT /:name — the write gate", () => {
+  const create = (body: any) => invoke(handlerFor("/", "post"), { body });
+  const update = (name: string, body: any) => invoke(handlerFor("/:name", "put"), { params: { name } as any, body });
+
+  const CLEAN = { dark: { warning: "#e3b341" }, light: { warning: "#8a5a00" } };
+
+  it("refuses a create that cannot reach AA, and names the pairings", async () => {
+    const res = await create({
+      name: "Refused",
+      dark: CLEAN.dark,
+      light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" },
+    });
+    expect(res.code).toBe(422);
+    expect(res.body.unsatisfiable.some((f: any) => f.id === "on-accent-hover")).toBe(true);
+    expect(res.body.details).toContain("var(--accent-hover)");
+    // Nothing was written.
+    const listed = await list();
+    expect(listed.body.themes.some((t: any) => t.name === "Refused")).toBe(false);
+  });
+
+  it("stores a refused theme when a human names the opt-out, uncorrected", async () => {
+    const res = await create({
+      name: "Deliberate",
+      dark: CLEAN.dark,
+      light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" },
+      allowBelowAA: true,
+    });
+    expect(res.code).toBe(201);
+    // As written — the opt-out exists because the author meant it.
+    expect(res.body.theme.light["accent-hover"]).toBe("#fdfdfd");
+    expect(res.body.contrast.failures.some((f: any) => f.id === "on-accent-hover")).toBe(true);
+  });
+
+  it("corrects a sub-AA value on create and reports what it moved", async () => {
+    const res = await create({ name: "Corrected", dark: CLEAN.dark, light: { "status-triggered": "#f59e0b" } });
+    expect(res.code).toBe(201);
+    expect(res.body.theme.light["status-triggered"]).not.toBe("#f59e0b");
+    expect(res.body.corrections.some((c: any) => c.variable === "status-triggered")).toBe(true);
+  });
+
+  it("drops a derived variable on create rather than pinning it flat", async () => {
+    const res = await create({ name: "Overreach", dark: { "chatlist-badge-triggered-bg": "#ff00ff", ...CLEAN.dark }, light: CLEAN.light });
+    expect(res.code).toBe(201);
+    expect(res.body.dropped).toContain("chatlist-badge-triggered-bg");
+    expect(res.body.theme.dark).not.toHaveProperty("chatlist-badge-triggered-bg");
+  });
+
+  it("refuses an update that would take a stored theme below AA", async () => {
+    await create({ name: "Editable", dark: CLEAN.dark, light: CLEAN.light });
+    const res = await update("Editable", { light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" } });
+    expect(res.code).toBe(422);
+    // The theme on disk is untouched.
+    const after = await invoke(handlerFor("/:name", "get"), { params: { name: "Editable" } as any });
+    expect(after.body.theme.light).not.toHaveProperty("accent-hover");
+  });
+
+  it("corrects an update that a lightness move can rescue", async () => {
+    await create({ name: "Warmed", dark: CLEAN.dark, light: CLEAN.light });
+    const res = await update("Warmed", { light: { "status-triggered": "#f59e0b" } });
+    expect(res.code).toBe(200);
+    expect(res.body.theme.light["status-triggered"]).not.toBe("#f59e0b");
+    expect(res.body.corrections.length).toBeGreaterThan(0);
   });
 });

@@ -36,7 +36,12 @@ export interface ThemeContrastFailure {
   required: number;
   /** Measured ratio, or null when a variable in the chain could not be resolved. */
   ratio: number | null;
-  /** Set instead of a ratio: the expression that failed to resolve. */
+  /**
+   * Set instead of a ratio: the expression that failed to resolve, followed by
+   * the literal it resolved to when the two differ — `var(--warning) →
+   * goldenrod`. Naming only the reference would leave a caller unable to tell an
+   * unparseable value from an undefined variable, which are different repairs.
+   */
   unmeasurable?: string;
 }
 
@@ -49,6 +54,23 @@ export interface ThemeContrastReport {
   checked: number;
   /** Worst first. */
   failures: ThemeContrastFailure[];
+  /**
+   * Theme-surface variables the theme never defines, and so inherits from the
+   * stylesheet.
+   *
+   * This is the audit's *other* half, and it is the half a user is more likely
+   * to be looking at. A theme that overrides `--status-triggered` but not
+   * `--status-green` paints one sidebar dot in its own palette and the next in
+   * the built-in one — visibly wrong, and worth exactly zero contrast failures,
+   * because each colour is perfectly legible on its own. A panel that reported
+   * only ratios would say nothing at all about it.
+   *
+   * Optional: absent from clients or responses built before this existed.
+   */
+  undefinedVariables?: {
+    dark: string[];
+    light: string[];
+  };
 }
 
 export interface ThemeListItem {

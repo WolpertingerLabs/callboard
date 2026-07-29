@@ -24,6 +24,7 @@ import { getActivity, appendActivity } from "./agent-activity.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { themeFileService } from "./theme-file-service.js";
 import { generateThemeCSS } from "./quick-completion.js";
+import { prepareThemeWrite, describeFailures, describeCorrections } from "./theme-write.js";
 import type { CustomTheme } from "shared/types/index.js";
 
 import { createLogger } from "../utils/logger.js";
@@ -836,31 +837,63 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
             if (existing) {
               return { content: [{ type: "text" as const, text: `Theme "${args.name}" already exists. Use a different name or delete it first.` }] };
             }
-            const theme = await generateThemeCSS(args.name, args.description);
-            if (!theme) {
+            const result = await generateThemeCSS(args.name, args.description);
+            if (!result.ok) {
+              // The pairings, not a pointer to a log this caller cannot open.
+              // You are a model reading a tool result; "see the server log" is
+              // the one place you provably cannot look, and a blind retry costs
+              // two more generations against a problem you never saw.
               return {
                 content: [
                   {
                     type: "text" as const,
                     text:
-                      "Failed to generate theme — either the model did not return valid theme data, or the colours it chose could not be " +
-                      "brought up to WCAG AA and were rejected rather than stored. Try a description with more contrast between the " +
-                      "accent and the background. See the server log for the specific pairings.",
+                      result.reason === "contrast"
+                        ? `Theme not created: after ${result.attempts} attempts these pairings were still below WCAG AA, and no lightness ` +
+                          `adjustment fixes them — ${result.detail}. Nothing was saved. Try again with genuinely different colours for the ` +
+                          `variables named above (a much darker foreground in light mode, or a much lighter one in dark mode).`
+                        : `Theme not created: after ${result.attempts} attempts the model did not return usable theme data — ${result.detail}. Nothing was saved.`,
                   },
                 ],
               };
             }
-            themeFileService.createTheme(theme);
-            return { content: [{ type: "text" as const, text: JSON.stringify({ message: `Theme "${theme.name}" created successfully.`, theme }, null, 2) }] };
+            themeFileService.createTheme(result.theme);
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      message: `Theme "${result.theme.name}" created successfully.`,
+                      ...(result.corrections.length > 0 ? { correctedForContrast: describeCorrections(result.corrections) } : {}),
+                      theme: result.theme,
+                    },
+                    null,
+                    2,
+                  ),
+                },
+              ],
+            };
           } catch (err: any) {
             return { content: [{ type: "text" as const, text: `Error generating theme: ${err.message}` }] };
           }
         },
       ),
 
+      /**
+       * The write an agent actually reaches for, and — until the gate below —
+       * the one nobody was checking. "Make the warning colour a bit more
+       * orange" is a reasonable request that lands a 2.1:1 pairing on disk, and
+       * it was also the natural recovery path from a `generate_theme` refusal:
+       * hand-author the same colours here and they stored unexamined. Same gate
+       * as every other write now, with no `allowBelowAA` — that opt-out is for a
+       * human editing their own file, not for this. See theme-write.ts.
+       */
       defineTool(
         "update_theme",
-        "Update an existing custom UI theme. You only need to provide the CSS variables you want to change — any variables not included will keep their existing values. You can also optionally rename the theme.",
+        "Update an existing custom UI theme. You only need to provide the CSS variables you want to change — any variables not included will keep " +
+          "their existing values. You can also optionally rename the theme. The result is checked for WCAG AA contrast before it is stored: values a " +
+          "small lightness change can rescue are corrected for you and reported back, and a theme that cannot be brought up to standard is refused.",
         {
           name: z.string().describe("Current name of the theme to update"),
           new_name: z.string().optional().describe("New name for the theme (omit to keep current name)"),
@@ -873,16 +906,46 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
             if (!existing) {
               return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found. Use get_theme to see available themes.` }] };
             }
+            const prepared = prepareThemeWrite({ dark: args.dark, light: args.light, existing });
+            if (prepared.unsatisfiable.length > 0) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text:
+                      `Theme "${args.name}" NOT updated — nothing was written. These pairings would be below WCAG AA and no lightness ` +
+                      `adjustment fixes them: ${describeFailures(prepared.unsatisfiable)}. Pick genuinely different colours for the variables ` +
+                      `named above and call update_theme again.`,
+                  },
+                ],
+              };
+            }
             const updated: CustomTheme = {
               name: args.new_name?.trim() || existing.name,
-              dark: { ...existing.dark, ...(args.dark as Record<string, string> | undefined) },
-              light: { ...existing.light, ...(args.light as Record<string, string> | undefined) },
+              dark: prepared.dark,
+              light: prepared.light,
               createdAt: existing.createdAt,
               updatedAt: new Date().toISOString(),
             };
             themeFileService.updateTheme(args.name, updated);
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ message: `Theme "${updated.name}" updated successfully.`, theme: updated }, null, 2) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      message: `Theme "${updated.name}" updated successfully.`,
+                      ...(prepared.corrections.length > 0 ? { correctedForContrast: describeCorrections(prepared.corrections) } : {}),
+                      ...(prepared.dropped.length > 0
+                        ? { droppedNotThemeVariables: prepared.dropped, droppedWhy: "these are derived from other variables and cannot be set directly" }
+                        : {}),
+                      theme: updated,
+                    },
+                    null,
+                    2,
+                  ),
+                },
+              ],
             };
           } catch (err: any) {
             return { content: [{ type: "text" as const, text: `Error updating theme: ${err.message}` }] };

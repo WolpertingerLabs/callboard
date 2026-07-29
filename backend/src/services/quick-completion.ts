@@ -27,8 +27,8 @@ import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
 import { getAgentSettings, getClaudeCodeExecutablePath, isOpenRouterConfigured } from "./agent-settings.js";
 import type { CustomTheme, ThemeVariables, ThemeContrastFailure } from "shared/types/index.js";
-import { correctThemeContrast } from "./theme-contrast.js";
 import type { Correction } from "./theme-contrast.js";
+import { prepareThemeWrite, describeFailures, describeCorrections } from "./theme-write.js";
 import { THEME_VARIABLE_NAMES } from "./theme-variables.js";
 
 const log = createLogger("quick-completion");
@@ -459,8 +459,27 @@ export async function generateBranchName(
   }
 }
 
-/** How many times a theme may be regenerated before contrast failure is fatal. */
+/**
+ * How many times a theme may be regenerated before failure is fatal.
+ *
+ * One budget, both failure modes. It used to be one retry for a contrast
+ * failure and *zero* for a malformed response, which had the budget exactly
+ * backwards: a model that answered with prose instead of JSON is the cheapest
+ * thing in the world to ask again, and the retry it was denied is the one most
+ * likely to succeed.
+ */
 const THEME_GENERATION_ATTEMPTS = 2;
+
+/** Why a generation attempt did not produce a storable theme. */
+export type ThemeGenerationFailure =
+  /** Colours that no lightness move brings up to AA. `unsatisfiable` names each one. */
+  | { reason: "contrast"; detail: string; unsatisfiable: ThemeContrastFailure[] }
+  /** The model did not return a theme: prose, invalid JSON, or missing required variables. */
+  | { reason: "malformed"; detail: string };
+
+export type ThemeGenerationResult =
+  | { ok: true; theme: CustomTheme; corrections: Correction[]; dropped: string[] }
+  | ({ ok: false; attempts: number } & ThemeGenerationFailure);
 
 /**
  * Generate a complete custom theme via AI from a natural language description.
@@ -468,57 +487,53 @@ const THEME_GENERATION_ATTEMPTS = 2;
  * Uses Sonnet for higher quality color design. The AI returns a JSON object
  * with dark and light mode CSS variable values.
  *
- * The result is measured against every pairing the UI actually paints and, where
- * a foreground is merely a little short, nudged into range before it is handed
- * back — a theme that has not been stored yet is not user data, so correcting it
- * here costs nobody anything. Where no legal value clears the pairing, the theme
- * is regenerated with the specific failures quoted back, and if that also fails,
- * rejected. Nothing sub-AA is returned silently.
+ * The result goes through `prepareThemeWrite` like every other theme write:
+ * filtered to the theme surface, measured against every pairing the UI actually
+ * paints, and — where a foreground is merely a little short — nudged into range
+ * before it is handed back. A theme that has not been stored yet is not user
+ * data, so correcting it here costs nobody anything. Where no legal value clears
+ * the pairing, the theme is regenerated with the specific failures quoted back,
+ * and if that also fails, refused.
  *
- * Returns null if generation fails.
+ * **The failure comes back with its reasons attached, and that is deliberate.**
+ * Both callers of this function report to something that can act on them — an
+ * MCP tool result read by a model, or an HTTP response read by a UI — and
+ * neither can read the server log. A caller told only "it failed" retries blind,
+ * at the cost of two model calls, against a problem it cannot see.
  */
-export async function generateThemeCSS(name: string, description: string): Promise<CustomTheme | null> {
+export async function generateThemeCSS(name: string, description: string): Promise<ThemeGenerationResult> {
   let feedback = "";
+  let last: ThemeGenerationFailure = { reason: "malformed", detail: "no attempt was made" };
+
   for (let attempt = 1; attempt <= THEME_GENERATION_ATTEMPTS; attempt++) {
     const outcome = await generateThemeAttempt(name, description, feedback);
-    if (!outcome) return null;
-    if (outcome.unsatisfiable.length === 0) {
+
+    if (outcome.ok) {
       if (outcome.corrections.length > 0) {
-        log.info(
-          `generateThemeCSS: corrected ${outcome.corrections.length} value(s) in "${name}" for contrast — ` +
-            outcome.corrections.map((c) => `${c.mode} --${c.variable} ${c.from}→${c.to}`).join(", "),
-        );
+        log.info(`generateThemeCSS: corrected ${outcome.corrections.length} value(s) in "${name}" for contrast — ${describeCorrections(outcome.corrections)}`);
       }
-      return outcome.theme;
+      return outcome;
     }
 
-    const summary = outcome.unsatisfiable
-      .map((f) =>
-        f.unmeasurable
-          ? `${f.mode} ${f.where}: ${f.unmeasurable} is not a colour this checker can read — use #rrggbb or rgba(), not a named colour`
-          : `${f.mode} ${f.fg} on ${f.bg} over ${f.backdrop} (${f.where}) is ${f.ratio}, needs ${f.required}`,
-      )
-      .join("; ");
-    log.warn(`generateThemeCSS: attempt ${attempt} for "${name}" left ${outcome.unsatisfiable.length} pairing(s) below AA — ${summary}`);
+    last = outcome;
+    log.warn(`generateThemeCSS: attempt ${attempt} for "${name}" failed (${outcome.reason}) — ${outcome.detail}`);
+    if (attempt === THEME_GENERATION_ATTEMPTS) break;
 
-    if (attempt === THEME_GENERATION_ATTEMPTS) {
-      log.warn(`generateThemeCSS: rejecting "${name}" rather than storing a theme that cannot be read`);
-      return null;
-    }
     feedback =
-      `\n\nA previous attempt failed contrast validation on these pairings, which no adjustment of ` +
-      `lightness alone could fix. Choose genuinely different values for the colours involved:\n${summary}\n`;
+      outcome.reason === "contrast"
+        ? `\n\nA previous attempt failed contrast validation on these pairings, which no adjustment of ` +
+          `lightness alone could fix. Choose genuinely different values for the colours involved:\n${outcome.detail}\n`
+        : `\n\nA previous attempt could not be read as a theme (${outcome.detail}). Return ONLY the JSON object — ` +
+          `no prose, no markdown, no code fences — with both a "dark" and a "light" key.\n`;
   }
-  return null;
+
+  log.warn(`generateThemeCSS: refusing "${name}" after ${THEME_GENERATION_ATTEMPTS} attempts rather than storing a theme that cannot be read`);
+  return { ok: false, attempts: THEME_GENERATION_ATTEMPTS, ...last };
 }
 
-interface ThemeAttempt {
-  theme: CustomTheme;
-  corrections: Correction[];
-  unsatisfiable: ThemeContrastFailure[];
-}
+type ThemeAttempt = { ok: true; theme: CustomTheme; corrections: Correction[]; dropped: string[] } | ({ ok: false } & ThemeGenerationFailure);
 
-async function generateThemeAttempt(name: string, description: string, feedback: string): Promise<ThemeAttempt | null> {
+async function generateThemeAttempt(name: string, description: string, feedback: string): Promise<ThemeAttempt> {
   try {
     const variableList = THEME_VARIABLE_NAMES.map((v) => `"${v}"`).join(", ");
 
@@ -563,48 +578,41 @@ async function generateThemeAttempt(name: string, description: string, feedback:
 
     const parsed = JSON.parse(result.text.trim());
     if (!parsed.dark || !parsed.light) {
-      log.warn("generateThemeCSS: AI response missing dark or light keys");
-      return null;
+      return { ok: false, reason: "malformed", detail: "the response had no `dark` or no `light` key" };
     }
 
     // Validate that at least the core variables are present
     const darkKeys = Object.keys(parsed.dark);
     const lightKeys = Object.keys(parsed.light);
     const requiredCore = ["bg", "surface", "text", "accent", "border"];
-    for (const key of requiredCore) {
-      if (!darkKeys.includes(key) || !lightKeys.includes(key)) {
-        log.warn(`generateThemeCSS: Missing required variable "${key}"`);
-        return null;
-      }
+    const missing = requiredCore.filter((key) => !darkKeys.includes(key) || !lightKeys.includes(key));
+    if (missing.length > 0) {
+      return { ok: false, reason: "malformed", detail: `required variable(s) missing from one or both modes: ${missing.join(", ")}` };
     }
 
-    // Keep only names the theme is allowed to define. A model that helpfully
-    // volunteers `chatlist-badge-triggered-bg` would pin a derived variable to a
-    // flat value and cut it off from the primitive it is supposed to follow —
-    // the same class of half-overridden feature this branch exists to close.
-    const allowed = new Set(THEME_VARIABLE_NAMES);
-    const keep = (vars: ThemeVariables): ThemeVariables => Object.fromEntries(Object.entries(vars).filter(([name]) => allowed.has(name)));
-    const dropped = [...Object.keys(parsed.dark), ...Object.keys(parsed.light)].filter((name) => !allowed.has(name));
-    if (dropped.length > 0) {
-      log.info(`generateThemeCSS: dropped ${dropped.length} variable(s) outside the theme surface — ${[...new Set(dropped)].join(", ")}`);
+    // Filtering to the theme surface and correcting happen in the same gate
+    // every other theme write goes through — see theme-write.ts. A model that
+    // helpfully volunteers `chatlist-badge-triggered-bg` would pin a derived
+    // variable to a flat value and cut it off from the primitive it is supposed
+    // to follow; that is a rule about theme writes, not about generation.
+    const prepared = prepareThemeWrite({ dark: parsed.dark as ThemeVariables, light: parsed.light as ThemeVariables });
+    if (prepared.dropped.length > 0) {
+      log.info(`generateThemeCSS: dropped ${prepared.dropped.length} variable(s) outside the theme surface — ${prepared.dropped.join(", ")}`);
     }
-
-    const corrected = correctThemeContrast(keep(parsed.dark as ThemeVariables), keep(parsed.light as ThemeVariables));
+    if (prepared.unsatisfiable.length > 0) {
+      return { ok: false, reason: "contrast", detail: describeFailures(prepared.unsatisfiable), unsatisfiable: prepared.unsatisfiable };
+    }
 
     const now = new Date().toISOString();
     return {
-      theme: {
-        name,
-        dark: corrected.dark,
-        light: corrected.light,
-        createdAt: now,
-        updatedAt: now,
-      },
-      corrections: corrected.corrections,
-      unsatisfiable: corrected.unsatisfiable,
+      ok: true,
+      theme: { name, dark: prepared.dark, light: prepared.light, createdAt: now, updatedAt: now },
+      corrections: prepared.corrections,
+      dropped: prepared.dropped,
     };
   } catch (err: any) {
-    log.warn(`generateThemeCSS failed: ${err.message}`);
-    return null;
+    // Invalid JSON, a provider error, a timeout — all of them mean this attempt
+    // produced nothing readable, and all of them are worth one more try.
+    return { ok: false, reason: "malformed", detail: err.message };
   }
 }

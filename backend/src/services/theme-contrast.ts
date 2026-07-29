@@ -24,6 +24,7 @@
  */
 
 import { BUILTIN_PALETTE } from "./theme-contrast-palette.js";
+import { THEME_VARIABLE_NAMES } from "./theme-variables.js";
 import type { CustomTheme, ThemeContrastReport, ThemeContrastFailure } from "shared/types/index.js";
 
 export type ThemeMode = "dark" | "light";
@@ -87,7 +88,43 @@ export function parseCssColor(raw: string): Rgba | null {
     return { r: clamp(r, 0, 255), g: clamp(g, 0, 255), b: clamp(b, 0, 255), a: clamp(a, 0, 1) };
   }
 
+  // hsl()/hsla(). Not a shape this stylesheet uses, but valid CSS and the
+  // notation a model reaches for when asked to vary one colour's lightness — and
+  // an unparseable value is not a soft failure here: every pairing touching it
+  // becomes unmeasurable, which correction cannot fix, which means rejection.
+  // Refusing to read a legal colour is a rejection the author cannot act on.
+  const hslFn = /^hsla?\(([^)]*)\)$/.exec(value);
+  if (hslFn) {
+    const parts = hslFn[1]
+      .replace(/\//g, " ")
+      .split(/[\s,]+/)
+      .filter(Boolean);
+    if (parts.length < 3) return null;
+    // Hue is an angle: bare number = degrees, and the three other CSS units are
+    // accepted because a model that writes `turn` means it.
+    const hueUnit = /^(-?\d*\.?\d+)(deg|grad|rad|turn)?$/.exec(parts[0]);
+    if (!hueUnit) return null;
+    const hueScale = { deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360 } as const;
+    const h = parseFloat(hueUnit[1]) * (hueUnit[2] ? hueScale[hueUnit[2] as keyof typeof hueScale] : 1);
+    const s = parseFloat(parts[1]) / 100;
+    const l = parseFloat(parts[2]) / 100;
+    const a = parts[3] === undefined ? 1 : parts[3].endsWith("%") ? parseFloat(parts[3]) / 100 : parseFloat(parts[3]);
+    if ([h, s, l, a].some((n) => !Number.isFinite(n))) return null;
+    return { ...hslToRgb(h, clamp(s, 0, 1), clamp(l, 0, 1)), a: clamp(a, 0, 1) };
+  }
+
   return null;
+}
+
+/** CSS Color 4's hsl→rgb, hue in degrees, s and l as 0-1. */
+function hslToRgb(hue: number, s: number, l: number): { r: number; g: number; b: number } {
+  const h = ((hue % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const [r, g, b] =
+    h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -163,6 +200,46 @@ export function resolveColor(expr: string, vars: Record<string, string>, depth =
   }
 
   return parseCssColor(value);
+}
+
+/**
+ * Follow a failed resolution to the token that actually failed.
+ *
+ * `resolveColor` returns null for the whole expression, which makes for a
+ * diagnostic nobody can act on: told that `var(--warning)` is unreadable, a
+ * caller still does not know that `--warning` is the string `goldenrod`, and
+ * cannot tell that from a `--warning` that is simply absent. This walks the same
+ * chain and hands back the last thing it could not parse.
+ */
+function unresolvableToken(expr: string, vars: Record<string, string>, depth = 0): string {
+  const value = expr.trim();
+  if (depth > MAX_RESOLVE_DEPTH) return value;
+
+  const varRef = /^var\(\s*--([a-z0-9-]+)\s*(?:,([\s\S]*))?\)$/i.exec(value);
+  if (varRef) {
+    const name = varRef[1];
+    if (name in vars) return unresolvableToken(vars[name], vars, depth + 1);
+    if (varRef[2] !== undefined) return unresolvableToken(varRef[2], vars, depth + 1);
+    return value; // the variable is not defined anywhere — the reference is the fault
+  }
+
+  const mix = /^color-mix\(\s*in\s+srgb\s*,([\s\S]*)\)$/i.exec(value);
+  if (mix) {
+    for (const arg of splitArgs(mix[1])) {
+      const pct = /\s(\d+(?:\.\d+)?)%$/.exec(arg);
+      const colorExpr = pct ? arg.slice(0, pct.index).trim() : arg;
+      if (resolveColor(colorExpr, vars, depth + 1) === null) return unresolvableToken(colorExpr, vars, depth + 1);
+    }
+    return value;
+  }
+
+  return value;
+}
+
+/** "var(--warning) → goldenrod", or just the expression when it is its own fault. */
+function describeUnresolvable(expr: string, vars: Record<string, string>): string {
+  const token = unresolvableToken(expr, vars);
+  return token === expr.trim() ? token : `${expr.trim()} → ${token}`;
 }
 
 // ─── Compositing & WCAG ratio ───────────────────────────────────────
@@ -409,7 +486,7 @@ export function measurePairing(pairing: Pairing, vars: Record<string, string>): 
 
   const missing = !backdrop ? pairing.backdrop : !bg ? pairing.bg : !fg ? pairing.fg : null;
   if (missing || !backdrop || !bg || !fg) {
-    return { pairing, ratio: null, required, passes: false, unmeasurable: missing ?? undefined };
+    return { pairing, ratio: null, required, passes: false, unmeasurable: missing ? describeUnresolvable(missing, vars) : undefined };
   }
 
   // The backdrop is the bottom of the stack and must be opaque; if the theme
@@ -446,6 +523,9 @@ function toFailure(mode: ThemeMode, m: PairingMeasurement): ThemeContrastFailure
  * Reports; never modifies. Stored themes are user data — see
  * `correctThemeContrast` for the generation-time path, which is the only place
  * values are allowed to move.
+ *
+ * Two independent kinds of wrong come back from here, and the second is the one
+ * with no ratio attached: see `undefinedVariables` on the report.
  */
 export function auditThemeVars(dark: Record<string, string>, light: Record<string, string>): ThemeContrastReport {
   const failures: ThemeContrastFailure[] = [];
@@ -460,7 +540,14 @@ export function auditThemeVars(dark: Record<string, string>, light: Record<strin
     }
   }
   failures.sort((a, b) => (a.ratio ?? 0) - (b.ratio ?? 0));
-  return { checked, failures };
+  return {
+    checked,
+    failures,
+    undefinedVariables: {
+      dark: THEME_VARIABLE_NAMES.filter((name) => !(name in dark)),
+      light: THEME_VARIABLE_NAMES.filter((name) => !(name in light)),
+    },
+  };
 }
 
 export function auditTheme(theme: Pick<CustomTheme, "dark" | "light">): ThemeContrastReport {
@@ -472,8 +559,28 @@ export function auditTheme(theme: Pick<CustomTheme, "dark" | "light">): ThemeCon
 /**
  * The opaque surfaces a theme is *made of*. "A warm cream theme" is --bg;
  * moving it to rescue a badge answers a different request than the one asked.
+ *
+ * The list is longer than the window chrome, because "surface" is about what a
+ * value *is*, not where it sits in the stylesheet. `--user-bg`, `--assistant-bg`
+ * and `--code-bg` are the message bubbles — the largest painted areas in the
+ * app and, for a theme described in a sentence, the thing being described. They
+ * are opaque fills, so `isAnchor`'s alpha test says nothing about them and the
+ * corrector was free to slide all three to the same grey to rescue the body text
+ * on top; naming them here is what stops that. The two `--builtin-*` bubble
+ * fills are the same surface wearing a slash-command's colour.
  */
-export const SURFACE_VARS = new Set(["bg", "bg-sidebar", "bg-popout", "surface", "bg-secondary"]);
+export const SURFACE_VARS = new Set([
+  "bg",
+  "bg-sidebar",
+  "bg-popout",
+  "surface",
+  "bg-secondary",
+  "user-bg",
+  "assistant-bg",
+  "code-bg",
+  "builtin-user-bg",
+  "builtin-assistant-bg",
+]);
 
 /**
  * Variables correction is not allowed to move.
@@ -688,36 +795,113 @@ function correctMode(themeVars: Record<string, string>, mode: ThemeMode, seed: R
 }
 
 /**
+ * Which contrast carriers are worth reseeding, given what the greedy pass could
+ * not resolve.
+ *
+ * **A carrier blocks by passing.** That is the whole subtlety, and reading
+ * "blocking" as "failing" is the bug this function exists to not have.
+ * `correctVariable` will only move a lever to a value where *every* pairing that
+ * lever touches passes — so a carrier that shares a pairing with a stuck lever
+ * constrains that lever's entire search while being perfectly healthy itself,
+ * and therefore never appears among the unsatisfiable at all.
+ *
+ * Reproduced, dark mode: an `--accent` of `#36967a` needs to lighten to clear
+ * `accent-on-accent-bg-surface` and `chatlist-badge-agent`, and a near-white
+ * `--toggle-knob` reads 3.12:1 on it — passing, with room to spare by the only
+ * test that looks at it. Lighten the accent by any amount and the knob drops
+ * under 3:1, so no candidate survives the all-pairings rule and `--accent` does
+ * not move at all. Seeding the knob dark costs `--accent` 0.017 of lightness and
+ * clears both. The joint answer existed and was nearly free.
+ *
+ * So the relation is traced forwards, not looked up: from the stuck pairings, to
+ * the levers that could fix them, to every pairing constraining those levers. A
+ * carrier appearing anywhere in that closure is a candidate.
+ */
+function blockingCarriers(themeVars: Record<string, string>, vars: Record<string, string>, unsatisfiable: ThemeContrastFailure[]): string[] {
+  const byId = new Map(PAIRINGS.map((p) => [p.id, p]));
+  const constraining = new Set(unsatisfiable.map((f) => f.id));
+  for (const f of unsatisfiable) {
+    if (f.ratio === null) continue; // unmeasurable — no lever fixes a missing link
+    const pairing = byId.get(f.id);
+    if (!pairing) continue;
+    for (const dep of [...dependencies(pairing.fg, vars), ...dependencies(pairing.bg, vars)]) {
+      if (!(dep in themeVars) || isAnchor(dep, vars)) continue;
+      for (const constrained of pairingsTouching(dep, vars)) constraining.add(constrained.id);
+    }
+  }
+  return [...CONTRAST_CARRIERS].filter(
+    (name) => name in themeVars && parseCssColor(themeVars[name]) !== null && pairingsTouching(name, vars).some((p) => constraining.has(p.id)),
+  );
+}
+
+/**
+ * Pull a seeded carrier back toward the value the theme actually asked for.
+ *
+ * A seed is deliberately extreme — near-black or near-white — because its job is
+ * to break a deadlock, not to be the answer. Once the greedy pass has settled
+ * everything else around that choice, the extreme is usually far more than was
+ * needed: the knob above only has to reach 3:1, and leaving it at L=0.02 when
+ * the theme asked for white is a correction nobody requested. Moving it back to
+ * the nearest value that still keeps every pairing it touches passing costs one
+ * grid scan and gives the theme back as much of its own knob as contrast allows.
+ */
+function relaxCarrier(name: string, vars: Record<string, string>, original: string): string {
+  const current = parseCssColor(vars[name] ?? "");
+  const target = parseCssColor(original);
+  if (!current || !target) return vars[name];
+  const shape = rgbaToOklch(current);
+  const wanted = rgbaToOklch(target).l;
+  const relevant = pairingsTouching(name, vars);
+  // The value the theme wrote, verbatim, when it turns out to work — so a
+  // carrier that only had to be seeded to unstick something else is handed back
+  // untouched rather than as a round-trip of itself.
+  if (relevant.every((p) => measurePairing(p, { ...vars, [name]: original }).passes)) return original;
+  let best: { value: string; distance: number } | null = null;
+  for (let i = 0; i < L_STEPS; i++) {
+    const l = i / (L_STEPS - 1);
+    const distance = Math.abs(l - wanted);
+    if (best && distance >= best.distance) continue;
+    const candidate = toCss(oklchToRgba({ ...shape, l }));
+    if (!relevant.every((p) => measurePairing(p, { ...vars, [name]: candidate }).passes)) continue;
+    best = { value: candidate, distance };
+  }
+  return best?.value ?? vars[name];
+}
+
+/**
  * Run `correctMode` from several starting points and keep the best result.
  *
- * One variable at a time is the wrong shape for exactly one situation, and it
- * is not a rare one. `--text-on-accent` is painted on five unrelated fills —
- * `--accent`, `--accent-hover`, `--badge-worktree`, `--badge-provider-codex-bg`
- * and (through `--chatlist-badge-session-text`) `--status-active`. Whether it
- * should be near-white or near-black is a single decision binding all five, and
- * the fills have to move to agree with it. Correcting greedily, the search sees
- * only that flipping the text breaks a badge, and that fixing the badge breaks
- * the text — so it reports both as impossible while a joint answer exists.
+ * One variable at a time is the wrong shape for two situations, and neither is
+ * rare. `--text-on-accent` is painted on five unrelated fills — `--accent`,
+ * `--accent-hover`, `--badge-worktree`, `--badge-provider-codex-bg` and (through
+ * `--chatlist-badge-session-text`) `--status-active`. Whether it should be
+ * near-white or near-black is a single decision binding all five, and the fills
+ * have to move to agree with it. Correcting greedily, the search sees only that
+ * flipping the text breaks a badge, and that fixing the badge breaks the text.
+ * The second is `blockingCarriers`' case: a carrier that is fine on its own
+ * numbers and pins a lever that is not.
  *
  * Rather than a general joint search, seed the carriers at each polarity and let
- * the ordinary greedy pass settle the fills around that choice. The carriers are
- * effectively binary in practice, so a handful of runs covers the space, and the
- * outcome with the fewest unresolved pairings wins.
+ * the ordinary greedy pass settle the fills around that choice, then relax the
+ * seed back toward what the theme asked for. The carriers are effectively binary
+ * in practice, so a handful of runs covers the space, and the outcome with the
+ * fewest unresolved pairings wins.
+ *
+ * It is not a complete joint search and does not claim to be. What it guarantees
+ * is the *direction* of the error: an outcome is only ever accepted over `plain`
+ * when it resolves strictly more, so seeding never makes a theme worse, only
+ * sometimes not better. Measured on a 40-theme synthetic corpus against the
+ * relation this replaced: 33 rejections fell to 20, 13 themes were rescued
+ * outright, and nothing regressed. What survives is dominated by pale identity
+ * colours that cannot reach AA on a tint of themselves inside
+ * MAX_LIGHTNESS_DELTA — a theme to regenerate, not a search that gave up.
  */
 function correctModeFromBestSeed(themeVars: Record<string, string>, mode: ThemeMode): ModeOutcome {
   const plain = correctMode(themeVars, mode);
   if (plain.unsatisfiable.length === 0) return plain;
 
-  // Only carriers actually implicated in something unresolved are worth
-  // re-seeding; flipping one whose pairings all pass just costs a search.
   const startVars = effectiveVars(themeVars, mode);
-  const stuck = new Set(plain.unsatisfiable.map((f) => f.id));
-  const carriers = [...CONTRAST_CARRIERS].filter(
-    (name) =>
-      name in themeVars &&
-      parseCssColor(themeVars[name]) &&
-      pairingsTouching(name, startVars).some((p) => stuck.has(p.id)),
-  );
+  const carriers = blockingCarriers(themeVars, startVars, plain.unsatisfiable);
   if (carriers.length === 0) return plain;
 
   // Every combination of polarities across the implicated carriers, minus the
@@ -730,16 +914,41 @@ function correctModeFromBestSeed(themeVars: Record<string, string>, mode: ThemeM
   }
 
   let best: ModeOutcome = plain;
+  let seeded: string[] = [];
   for (const seed of seeds) {
     if (Object.keys(seed).length === 0) continue;
     const outcome = correctMode(themeVars, mode, seed);
     const better =
       outcome.unsatisfiable.length < best.unsatisfiable.length ||
       (outcome.unsatisfiable.length === best.unsatisfiable.length && outcome.corrections.length < best.corrections.length);
-    if (better) best = outcome;
+    if (better) {
+      best = outcome;
+      seeded = Object.keys(seed);
+    }
     if (best.unsatisfiable.length === 0) break;
   }
-  return best;
+  return seeded.length === 0 ? best : relaxSeeds(best, themeVars, mode, seeded);
+}
+
+/** Re-derive a settled outcome with each seeded carrier pulled back toward the theme's own value. */
+function relaxSeeds(outcome: ModeOutcome, themeVars: Record<string, string>, mode: ThemeMode, seeded: string[]): ModeOutcome {
+  let vars = { ...effectiveVars(themeVars, mode), ...outcome.vars };
+  for (const name of seeded) {
+    if (outcome.vars[name] === undefined || outcome.vars[name] === themeVars[name]) continue;
+    vars = { ...vars, [name]: relaxCarrier(name, vars, themeVars[name]) };
+  }
+  const relaxed: Record<string, string> = {};
+  for (const key of Object.keys(outcome.vars)) relaxed[key] = vars[key];
+  const corrections = outcome.corrections
+    .filter((c) => relaxed[c.variable] !== themeVars[c.variable])
+    .map((c) => ({ ...c, to: relaxed[c.variable] }));
+  const unsatisfiable = PAIRINGS.map((p) => measurePairing(p, vars))
+    .filter((m) => !m.passes)
+    .map((m) => toFailure(mode, m));
+  // Relaxation only ever moves within values that keep every touched pairing
+  // passing, so this cannot regress — but it is measured rather than asserted,
+  // because "cannot" is exactly the claim a corrector should not be trusted on.
+  return unsatisfiable.length > outcome.unsatisfiable.length ? outcome : { vars: relaxed, corrections, unsatisfiable };
 }
 
 /**

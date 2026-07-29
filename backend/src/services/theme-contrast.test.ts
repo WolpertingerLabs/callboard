@@ -156,8 +156,52 @@ describe("colour parsing", () => {
     // A shadow is not a colour, and a pairing that lands on one must report
     // itself unmeasurable — silently reading it as black would pass any test.
     expect(parseCssColor("0 4px 12px rgba(0, 0, 0, 0.15)")).toBeNull();
-    expect(parseCssColor("hsl(220 50% 40%)")).toBeNull();
     expect(parseCssColor("")).toBeNull();
+    // A named colour outside the three the stylesheet uses stays unreadable on
+    // purpose: guessing at the CSS colour keyword table is a lot of surface for
+    // a value a theme has no reason to write.
+    expect(parseCssColor("goldenrod")).toBeNull();
+  });
+
+  it("reads hsl(), because refusing legal CSS is a rejection the author cannot act on", () => {
+    // Not a shape index.css uses — but a shape a model reaches for, and an
+    // unparseable value is not a soft failure: every pairing touching it becomes
+    // unmeasurable, which correction cannot fix, which means the theme is
+    // refused for a reason that is entirely this parser's.
+    // Channels stay in floating point, as they do for a percentage rgb() — the
+    // compositing below never wanted integers.
+    const near = (value: string, expected: { r: number; g: number; b: number }) => {
+      const c = parseCssColor(value);
+      expect(c, value).not.toBeNull();
+      expect(c!.r, `${value} r`).toBeCloseTo(expected.r, 6);
+      expect(c!.g, `${value} g`).toBeCloseTo(expected.g, 6);
+      expect(c!.b, `${value} b`).toBeCloseTo(expected.b, 6);
+    };
+    near("hsl(220 50% 40%)", { r: 51, g: 85, b: 153 });
+    near("hsl(220, 50%, 40%)", { r: 51, g: 85, b: 153 });
+    near("hsl(0 0% 100%)", { r: 255, g: 255, b: 255 });
+    expect(parseCssColor("hsla(220, 50%, 40%, 0.5)")?.a).toBeCloseTo(0.5, 4);
+    expect(parseCssColor("hsl(220 50% 40% / 25%)")?.a).toBeCloseTo(0.25, 4);
+    // Hue is an angle, and the units are not decoration.
+    near("hsl(0.5turn 50% 40%)", parseCssColor("hsl(180 50% 40%)")!);
+    near("hsl(-140 50% 40%)", { r: 51, g: 85, b: 153 });
+    expect(parseCssColor("hsl(220 50%)")).toBeNull();
+  });
+});
+
+describe("unmeasurable diagnostics", () => {
+  it("names the literal that could not be read, not just the reference to it", () => {
+    // "var(--warning) is not a colour" leaves the caller unable to tell an
+    // unparseable value from an undefined variable — different repairs.
+    const vars = { ...effectiveVars(undefined, "light"), warning: "goldenrod" };
+    const m = measurePairing(PAIRINGS.find((p) => p.id === "warning-on-warning-bg-bg")!, vars);
+    expect(m.ratio).toBeNull();
+    expect(m.unmeasurable).toBe("var(--warning) → goldenrod");
+  });
+
+  it("blames the reference itself when the variable is simply absent", () => {
+    const m = measurePairing({ id: "t", where: "t", fg: "var(--nope)", bg: "var(--bg)", backdrop: "var(--bg)", kind: "text" }, effectiveVars(undefined, "dark"));
+    expect(m.unmeasurable).toBe("var(--nope)");
   });
 });
 
@@ -303,6 +347,16 @@ describe("anchors", () => {
     expect(isAnchor("accent-light", vars)).toBe(true);
   });
 
+  it("counts the message bubbles as surfaces, because that is what they are", () => {
+    // These are opaque fills, so the alpha test says nothing about them, and the
+    // corrector was free to slide all three to the same grey to rescue the body
+    // text on top — the largest painted areas in the app, and for a theme
+    // described in a sentence, the thing being described.
+    for (const name of ["user-bg", "assistant-bg", "code-bg", "builtin-user-bg", "builtin-assistant-bg"]) {
+      expect(isAnchor(name, vars), name).toBe(true);
+    }
+  });
+
   it("decides on alpha, not on the name", () => {
     // Opaque despite the -bg suffix: a fill, and therefore movable.
     expect(isAnchor("badge-provider-codex-bg", vars)).toBe(false);
@@ -387,6 +441,78 @@ describe("generation-time correction", () => {
     const theme = completeTheme({ light: { warning: "var(--danger)", danger: "#ef4444" } });
     const after = correctThemeContrast(theme.dark, theme.light);
     expect(after.light.warning).toBe("var(--danger)");
+  });
+
+  it("leaves the message-bubble surfaces where the theme put them", () => {
+    // Reproduced before SURFACE_VARS grew: mid-grey bubbles under a near-white
+    // --text, which cannot lighten further, so the cheapest move the corrector
+    // could find was to drag all three fills #8a8a8a → #6a6a6a — collapsing the
+    // user bubble, the assistant bubble and the code block onto one colour. They
+    // are opaque, so isAnchor's alpha test said nothing about them, and they are
+    // the largest painted areas in the app.
+    const theme = completeTheme({
+      dark: { "user-bg": "#8a8a8a", "assistant-bg": "#8a8a8a", "code-bg": "#8a8a8a" },
+    });
+    const after = correctThemeContrast(theme.dark, theme.light);
+    expect(after.dark["user-bg"]).toBe("#8a8a8a");
+    expect(after.dark["assistant-bg"]).toBe("#8a8a8a");
+    expect(after.dark["code-bg"]).toBe("#8a8a8a");
+    expect(after.corrections.some((c) => ["user-bg", "assistant-bg", "code-bg"].includes(c.variable))).toBe(false);
+    // Held as a surface, the pairing is correctly reported as one nothing legal
+    // fixes rather than silently repainted.
+    expect(after.unsatisfiable.some((f) => f.id === "text-on-user-bg" && f.mode === "dark")).toBe(true);
+  });
+
+  it("reseeds a carrier that blocks by passing, not only one that is itself failing", () => {
+    // The H2 case, reproduced. --accent must lighten to clear
+    // `accent-on-accent-bg-surface` (4.32:1) and `chatlist-badge-agent` (4.04:1);
+    // a near-white --toggle-knob reads 3.12:1 on it, which *passes*. Lighten the
+    // accent at all and the knob drops under 3:1, so correctVariable's
+    // all-pairings rule admits no candidate and --accent never moves. The knob
+    // never appears among the failures, so a filter looking for carriers in
+    // `stuck` never considers it — and the joint answer costs 0.036 of accent
+    // lightness.
+    const theme = completeTheme({ dark: { accent: "#36967a", "toggle-knob": "#eeeeee" } });
+
+    const before = measureMode(theme.dark, "dark");
+    expect(before.find((m) => m.pairing.id === "toggle-knob-on-accent")!.passes).toBe(true);
+    expect(before.find((m) => m.pairing.id === "accent-on-accent-bg-surface")!.passes).toBe(false);
+
+    const after = correctThemeContrast(theme.dark, theme.light);
+    expect(after.unsatisfiable.filter((f) => f.mode === "dark")).toEqual([]);
+
+    // --accent moved, which is the whole point: it could not before.
+    const accentMove = Math.abs(rgbaToOklch(parseCssColor(after.dark.accent)!).l - rgbaToOklch(parseCssColor("#36967a")!).l);
+    expect(accentMove).toBeGreaterThan(0);
+    expect(accentMove).toBeLessThan(0.1);
+  });
+
+  it("relaxes a seeded carrier back toward the value the theme asked for", () => {
+    // A seed is deliberately extreme because its job is to break a deadlock, not
+    // to be the answer. Handing back a near-black knob when the theme asked for
+    // a near-white one is a correction nobody requested — the knob only has to
+    // reach 3:1.
+    const theme = completeTheme({ dark: { accent: "#36967a", "toggle-knob": "#eeeeee" } });
+    const after = correctThemeContrast(theme.dark, theme.light);
+
+    const knob = rgbaToOklch(parseCssColor(after.dark["toggle-knob"])!);
+    expect(knob.l).toBeGreaterThan(0.9);
+    const measured = measureMode(after.dark, "dark").find((m) => m.pairing.id === "toggle-knob-on-accent");
+    expect(measured!.ratio).toBeGreaterThanOrEqual(3);
+  });
+
+  it("never accepts a seeded outcome that resolves less than the plain one", () => {
+    // The search is not a complete joint solver and does not claim to be. What
+    // it guarantees is the direction of the error: seeding can fail to help, and
+    // must never hurt.
+    const theme = completeTheme({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff", "toggle-knob": "#f4f4f4" } });
+    const after = correctThemeContrast(theme.dark, theme.light);
+    const report = auditThemeVars(after.dark, after.light);
+    // Everything it claims to have fixed really is fixed...
+    const stillFailing = new Set(report.failures.map((f) => `${f.mode}:${f.id}`));
+    for (const c of after.corrections) for (const id of c.fixed) expect(stillFailing.has(`${c.mode}:${id}`), id).toBe(false);
+    // ...and what it gave up on, it reported.
+    for (const f of report.failures) expect(after.unsatisfiable.some((u) => u.id === f.id && u.mode === f.mode), `${f.mode}:${f.id}`).toBe(true);
   });
 
   it("terminates on a self-referential tint rather than chasing the asymptote", () => {
