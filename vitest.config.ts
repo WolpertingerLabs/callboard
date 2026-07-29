@@ -45,6 +45,9 @@ export default defineConfig({
           name: "node",
           environment: "node",
           exclude: ["**/node_modules/**", "**/dist/**", "frontend/**"],
+          // Runs before each test file is imported, so module-level constants
+          // like paths.ts's DATA_DIR resolve to the scratch dir. See the file.
+          setupFiles: ["./vitest.setup.node.ts"],
         },
       },
       {
