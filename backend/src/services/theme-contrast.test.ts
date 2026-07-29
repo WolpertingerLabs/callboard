@@ -429,40 +429,40 @@ describe("generation-time correction", () => {
     };
   }
 
-  it("finds no work at all on the built-in palette", () => {
+  it("finds no work at all on the built-in palette", async () => {
     // The palette used to arrive here with two failing pairings and leave with
     // them intact. Now the corrector is handed a clean theme and must recognise
     // it as clean — a correction on this input would mean the stylesheet and
     // the measurement disagree about what AA is.
     const seed = completeTheme();
-    const outcome = correctThemeContrast(seed.dark, seed.light);
+    const outcome = await correctThemeContrast(seed.dark, seed.light);
     expect(outcome.corrections).toEqual([]);
     expect(outcome.unsatisfiable).toEqual([]);
   });
 
-  it("reaches a fixed point — correcting its own output changes nothing", () => {
+  it("reaches a fixed point — correcting its own output changes nothing", async () => {
     // Not a stylistic nicety: a corrector that keeps finding work on its own
     // output is one whose "fixed" claims are not stable, and the retry loop in
     // generateThemeCSS would be deciding on numbers that move underneath it.
     // The seed has to be a theme that genuinely needs work: the built-in
     // palette no longer does, so using it here would assert nothing.
     const seed = completeTheme({ light: { "status-triggered": "#f59e0b" }, dark: { accent: "#17604a", "toggle-knob": "#a8a8a8" } });
-    const once = correctThemeContrast(seed.dark, seed.light);
+    const once = await correctThemeContrast(seed.dark, seed.light);
     expect(once.corrections.length).toBeGreaterThan(0);
-    const twice = correctThemeContrast(once.dark, once.light);
+    const twice = await correctThemeContrast(once.dark, once.light);
     expect(twice.corrections).toEqual([]);
     // Whatever it could not reach on the first pass it still cannot reach, and
     // it does not thrash trying.
     expect(twice.unsatisfiable.map((f) => `${f.mode}:${f.id}`)).toEqual(once.unsatisfiable.map((f) => `${f.mode}:${f.id}`));
   });
 
-  it("raises a sub-AA foreground to AA, keeping its hue", () => {
+  it("raises a sub-AA foreground to AA, keeping its hue", async () => {
     // amber-500 as text on a tint of itself: 1.71:1, the worst pairing #293 met.
     const theme = completeTheme({ light: { "status-triggered": "#f59e0b" } });
     const before = auditThemeVars(theme.dark, theme.light);
     expect(before.failures.some((f) => f.id === "chatlist-badge-triggered" && f.mode === "light")).toBe(true);
 
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     const moved = after.corrections.find((c) => c.variable === "status-triggered" && c.mode === "light");
     expect(moved).toBeDefined();
 
@@ -474,16 +474,16 @@ describe("generation-time correction", () => {
     expect(measured!.ratio).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("never returns a corrected theme that still fails a pairing it claims to have fixed", () => {
+  it("never returns a corrected theme that still fails a pairing it claims to have fixed", async () => {
     const theme = completeTheme({ light: { "status-triggered": "#f59e0b", warning: "#ca8a04", danger: "#ef4444" } });
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     const report = auditThemeVars(after.dark, after.light);
     const stillFailing = new Set(report.failures.map((f) => `${f.mode}:${f.id}`));
     const claimed = after.corrections.flatMap((c) => c.fixed.map((id) => `${c.mode}:${id}`));
     for (const id of claimed) expect(stillFailing.has(id), id).toBe(false);
   });
 
-  it("reports what it could not fix instead of dragging a colour somewhere muddy", () => {
+  it("reports what it could not fix instead of dragging a colour somewhere muddy", async () => {
     // A near-white hover fill. --accent-hover is an identity colour, so the fill
     // does not move; the ink is aliased to --bg, and --bg is a surface the
     // corrector must not touch, so the ink does not move either. Both levers
@@ -495,29 +495,29 @@ describe("generation-time correction", () => {
     // available where before it broke `provider-badge-codex`. Correction getting
     // *better* is not something to hide behind a fixture that no longer bites.
     const theme = completeTheme({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" } });
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     const hoverFail = after.unsatisfiable.find((f) => f.id === "on-accent-hover" && f.mode === "light");
     expect(hoverFail).toBeDefined();
     // And it did not silently blacken the identity colour to get there.
     expect(after.corrections.find((c) => c.variable === "accent-hover" && c.mode === "light")).toBeUndefined();
   });
 
-  it("only ever hands back keys the theme already owned", () => {
+  it("only ever hands back keys the theme already owned", async () => {
     const dark = { ...BUILTIN_PALETTE.dark };
     const light = { warning: "#ca8a04" };
-    const after = correctThemeContrast(dark, light);
+    const after = await correctThemeContrast(dark, light);
     expect(Object.keys(after.light)).toEqual(["warning"]);
   });
 
-  it("does not flatten an alias into a literal", () => {
+  it("does not flatten an alias into a literal", async () => {
     // A theme that aliases one variable to another keeps the alias: correcting
     // it would sever the cascade the alias exists to carry.
     const theme = completeTheme({ light: { warning: "var(--danger)", danger: "#ef4444" } });
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     expect(after.light.warning).toBe("var(--danger)");
   });
 
-  it("leaves the message-bubble surfaces where the theme put them", () => {
+  it("leaves the message-bubble surfaces where the theme put them", async () => {
     // Reproduced before SURFACE_VARS grew: mid-grey bubbles under a near-white
     // --text, which cannot lighten further, so the cheapest move the corrector
     // could find was to drag all three fills #8a8a8a → #6a6a6a — collapsing the
@@ -527,7 +527,7 @@ describe("generation-time correction", () => {
     const theme = completeTheme({
       dark: { "user-bg": "#8a8a8a", "assistant-bg": "#8a8a8a", "code-bg": "#8a8a8a" },
     });
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     expect(after.dark["user-bg"]).toBe("#8a8a8a");
     expect(after.dark["assistant-bg"]).toBe("#8a8a8a");
     expect(after.dark["code-bg"]).toBe("#8a8a8a");
@@ -537,7 +537,7 @@ describe("generation-time correction", () => {
     expect(after.unsatisfiable.some((f) => f.id === "text-on-user-bg" && f.mode === "dark")).toBe(true);
   });
 
-  it("reseeds a carrier that blocks by passing, not only one that is itself failing", () => {
+  it("reseeds a carrier that blocks by passing, not only one that is itself failing", async () => {
     // The H2 case, reproduced. --accent must lighten to clear
     // `accent-on-accent-bg-surface` (4.06:1) and `chatlist-badge-agent` (4.05:1);
     // a mid-grey --toggle-knob reads 3.14:1 on it, which *passes*. Lighten the
@@ -558,7 +558,7 @@ describe("generation-time correction", () => {
     expect(before.find((m) => m.pairing.id === "toggle-knob-on-accent")!.passes).toBe(true);
     expect(before.find((m) => m.pairing.id === "accent-on-accent-bg-surface")!.passes).toBe(false);
 
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     expect(after.unsatisfiable.filter((f) => f.mode === "dark")).toEqual([]);
     // The knob is what was reseeded — that is the behaviour under test, and
     // asserting it here is what stops this from passing for the wrong reason.
@@ -571,7 +571,7 @@ describe("generation-time correction", () => {
     expect(accentMove).toBeLessThan(0.1);
   });
 
-  it("relaxes a seeded carrier back toward the value the theme asked for", () => {
+  it("relaxes a seeded carrier back toward the value the theme asked for", async () => {
     // A seed is deliberately extreme because its job is to break a deadlock, not
     // to be the answer. Handing back a near-black knob when the theme asked for
     // a light one is a correction nobody requested — the knob only has to
@@ -579,7 +579,7 @@ describe("generation-time correction", () => {
     // seeds it; on the old pair nothing deadlocked, so nothing was seeded and
     // this asserted only that an untouched value came back untouched.
     const theme = completeTheme({ dark: { accent: "#2a7059", "toggle-knob": "#bdbdbd" } });
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
 
     const knob = rgbaToOklch(parseCssColor(after.dark["toggle-knob"])!);
     expect(knob.l).toBeGreaterThanOrEqual(rgbaToOklch(parseCssColor("#bdbdbd")!).l);
@@ -587,12 +587,12 @@ describe("generation-time correction", () => {
     expect(measured!.ratio).toBeGreaterThanOrEqual(3);
   });
 
-  it("never accepts a seeded outcome that resolves less than the plain one", () => {
+  it("never accepts a seeded outcome that resolves less than the plain one", async () => {
     // The search is not a complete joint solver and does not claim to be. What
     // it guarantees is the direction of the error: seeding can fail to help, and
     // must never hurt.
     const theme = completeTheme({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff", "toggle-knob": "#f4f4f4" } });
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     const report = auditThemeVars(after.dark, after.light);
     // Everything it claims to have fixed really is fixed...
     const stillFailing = new Set(report.failures.map((f) => `${f.mode}:${f.id}`));
@@ -601,15 +601,53 @@ describe("generation-time correction", () => {
     for (const f of report.failures) expect(after.unsatisfiable.some((u) => u.id === f.id && u.mode === f.mode), `${f.mode}:${f.id}`).toBe(true);
   });
 
-  it("terminates on a self-referential tint rather than chasing the asymptote", () => {
+  it("terminates on a self-referential tint rather than chasing the asymptote", async () => {
     // --chatlist-summon-bg is a color-mix of --warning itself, so darkening
     // --warning darkens its own backdrop. There is a value that works, but the
     // point is that the search returns at all.
     const theme = completeTheme({ light: { warning: "#fde68a" } });
     const started = Date.now();
-    const after = correctThemeContrast(theme.dark, theme.light);
+    const after = await correctThemeContrast(theme.dark, theme.light);
     expect(Date.now() - started).toBeLessThan(20_000);
     expect(after).toBeDefined();
+  });
+
+  it("hands the event loop back while it searches", async () => {
+    // The daemon is one thread, and that thread is also every open SSE stream.
+    // A search that never yields is a stall in the whole application for as long
+    // as it runs — which is the reason this function is async at all, so it is
+    // worth asserting rather than assuming.
+    //
+    // The fixture is chosen for its *cost*, not for what it says about colour:
+    // pale identity colours in both modes, which is the shape that makes the
+    // seed pass run the greedy correction from every carrier polarity. It has to
+    // outlast the yield interval by a wide margin for the assertion to mean
+    // anything, and the built-in palette no longer does — it corrects in under a
+    // millisecond now that it arrives here clean. So the run's length is asserted
+    // too: if this fixture ever stops being expensive, the failure should say
+    // "re-pick the fixture" rather than quietly stop testing anything.
+    const pale = {
+      warning: "#fde68a",
+      "status-triggered": "#f59e0b",
+      "accent-hover": "#fdfdfd",
+      "text-on-accent": "#ffffff",
+      "toggle-knob": "#f4f4f4",
+      danger: "#fca5a5",
+      success: "#bbf7d0",
+      "badge-info": "#bfdbfe",
+    };
+    const theme = completeTheme({ dark: pale, light: pale });
+
+    let ticks = 0;
+    const heartbeat = setInterval(() => ticks++, 1);
+    const started = performance.now();
+    try {
+      await correctThemeContrast(theme.dark, theme.light);
+    } finally {
+      clearInterval(heartbeat);
+    }
+    expect(performance.now() - started).toBeGreaterThan(20);
+    expect(ticks).toBeGreaterThan(0);
   });
 });
 

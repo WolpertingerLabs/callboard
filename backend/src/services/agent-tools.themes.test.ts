@@ -53,7 +53,7 @@ const surface = (palette: Record<string, string>) => Object.fromEntries(THEME_VA
  * unrelated variables, which is the palette's own 24 failures showing through
  * rather than anything the edit did.
  */
-const CLEAN = prepareThemeWrite({ dark: surface(BUILTIN_PALETTE.dark), light: surface(BUILTIN_PALETTE.light) });
+const CLEAN = await prepareThemeWrite({ dark: surface(BUILTIN_PALETTE.dark), light: surface(BUILTIN_PALETTE.light) });
 
 beforeEach(() => {
   writeFileSync(

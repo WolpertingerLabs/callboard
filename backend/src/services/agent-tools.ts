@@ -906,7 +906,7 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
             if (!existing) {
               return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found. Use get_theme to see available themes.` }] };
             }
-            const prepared = prepareThemeWrite({ dark: args.dark, light: args.light, existing });
+            const prepared = await prepareThemeWrite({ dark: args.dark, light: args.light, existing });
             if (prepared.unsatisfiable.length > 0) {
               return {
                 content: [
