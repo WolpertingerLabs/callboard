@@ -43,20 +43,20 @@ streamRouter.post("/new/message", async (req, res) => {
           properties: {
             folder: { type: "string", description: "Absolute path to the project folder" },
             prompt: { type: "string", description: "The user message to send" },
-            defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess — each 'allow', 'deny', or 'ask')" },
+            defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess — each one of allow, deny, or ask)" },
             imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image IDs to attach" },
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
-            systemPrompt: { type: "string", description: "Custom system prompt appended to Claude Code's preset system prompt" },
+            systemPrompt: { type: "string", description: "Custom system prompt appended to the Claude Code preset system prompt" },
             agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
-            model: { type: "string", description: "Model for the chat's provider. OpenRouter: a model slug (e.g. 'anthropic/claude-opus-4.7') or alias. Claude Code: an Anthropic model alias ('opus', 'sonnet', 'haiku', 'opusplan') or full model ID (e.g. 'claude-sonnet-4-6'). Omit to use the provider's global default." },
+            model: { type: "string", description: "Model for the provider of the chat. OpenRouter: a model slug (e.g. anthropic/claude-opus-4.7) or alias. Claude Code: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID (e.g. claude-sonnet-4-6). Omit to use the global default of the provider." },
             requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
-            chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the new chat's tree node, e.g. 'subagent', 'monitor', 'engine-switch'. Only used with parentChatId." },
+            chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the tree node of the new chat, e.g. subagent, monitor, engine-switch. Only used with parentChatId." },
             cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
-            createCard: { type: "boolean", description: "Create a new open card and attach the chat to it. Ignored when cardId resolves to an existing open card. The card title follows the chat's auto-generated title." },
+            createCard: { type: "boolean", description: "Create a new open card and attach the chat to it. Ignored when cardId resolves to an existing open card. The card title follows the auto-generated title of the chat." },
             cardCategory: { type: "string", description: "Optional category for the auto-created card (used with createCard; max 64 chars). The board groups open cards by category." },
-            clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match 'new-<alphanumeric/_/->', max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
+            clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match new-<alphanumeric/_/->, max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
             branchConfig: {
               type: "object",
               properties: {
@@ -315,9 +315,9 @@ streamRouter.post("/:id/message", async (req, res) => {
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
-            model: { type: "string", description: "Model to persist for this chat. OpenRouter chats: a model slug or alias. Claude Code chats: an Anthropic model alias ('opus', 'sonnet', 'haiku', 'opusplan') or full model ID. Empty string clears the per-chat override and reverts to the global default." },
-            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "OpenRouter reasoning-effort level to persist for this chat. Only honored when the chat's provider is 'openrouter'; ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
-            requireExplicitCompletion: { type: "boolean", description: "Override the chat's explicit-completion requirement for this message only. Omit to inherit the chat's persisted setting." }
+            model: { type: "string", description: "Model to persist for this chat. OpenRouter chats: a model slug or alias. Claude Code chats: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID. Empty string clears the per-chat override and reverts to the global default." },
+            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "OpenRouter reasoning-effort level to persist for this chat. Only honored when the provider of the chat is openrouter; ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
+            requireExplicitCompletion: { type: "boolean", description: "Override the explicit-completion requirement for this message only. Omit to inherit the persisted setting of the chat." }
           }
         }
       }

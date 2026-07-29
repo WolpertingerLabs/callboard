@@ -11,7 +11,7 @@
  * is set before the store is imported.
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, readdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, readdirSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +26,10 @@ const { evaluateWorktreeRemoval } = await import("./workspace-service.js");
 
 const workspacesDir = join(tmpRoot, "workspaces");
 
-const gitRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-views-git-"));
+// Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
+// a symlink to `/private/var/folders/...`. The `.git` file records the real
+// repo path, so a fixture built on the symlinked spelling never compares equal.
+const gitRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-workspace-views-git-")));
 const repoDir = join(gitRoot, "repo");
 
 function git(args: string[], cwd: string): void {

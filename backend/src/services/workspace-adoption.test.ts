@@ -26,7 +26,7 @@
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -46,7 +46,11 @@ const trashDir = join(tmpRoot, "trash");
 
 // ── Real git fixtures ───────────────────────────────────────────────
 
-const gitRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-adoption-git-"));
+// Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
+// a symlink to `/private/var/folders/...`. Adoption records git's spelling of a
+// path, which is the real one, so a fixture built on the symlinked spelling
+// never compares equal.
+const gitRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-workspace-adoption-git-")));
 const repoDir = join(gitRoot, "repo");
 
 function git(args: string[], cwd: string): string {

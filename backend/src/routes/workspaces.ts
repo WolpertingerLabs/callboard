@@ -53,7 +53,7 @@ workspacesRouter.get("/", (req, res) => {
   // #swagger.summary = 'List workspaces'
   // #swagger.description = 'List workspaces with a removability verdict for each — whether its worktree can be removed, and every reason it cannot — plus `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Read-only: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
   /* #swagger.parameters['status'] = { in: 'query', type: 'string', description: 'Filter by status - active or archived. Omit for both.' } */
-  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass "true" to measure each workspace with du -sk. Off by default: it is the slow part. Measurements are memoised for five minutes, a workspace whose directory is missing is not measured, and the whole listing shares one wall-clock budget — entries past it carry an error saying so and the response carries a diskUsageNote.' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each workspace with du -sk. Off by default: it is the slow part. Measurements are memoised for five minutes, a workspace whose directory is missing is not measured, and the whole listing shares one wall-clock budget — entries past it carry an error saying so and the response carries a diskUsageNote.' } */
   /* #swagger.responses[200] = { description: "Workspaces with removability" } */
   /* #swagger.responses[400] = { description: "Invalid status filter" } */
   try {
@@ -219,7 +219,7 @@ workspacesRouter.get("/trash", (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'List quarantined worktrees'
   // #swagger.description = 'Read-only listing of ~/.callboard/trash: every quarantined worktree, where it came from, the branch and repository needed to restore it, when it was quarantined and when the 30-day retention sweep would delete it. Ages come from each entry\'s own manifest, exactly as the sweep reads them, never from directory mtime (rename does not update it). An entry the sweep will never take — no readable manifest, or no usable timestamp — reports `sweepBlocked` instead of an expiry, because unknowns are kept forever by design. Writes nothing and sweeps nothing.'
-  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass "true" to measure each entry with du -sk. Off by default. The whole listing shares one wall-clock budget; entries past it carry an error saying so and the response carries a diskUsageNote.' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each entry with du -sk. Off by default. The whole listing shares one wall-clock budget; entries past it carry an error saying so and the response carries a diskUsageNote.' } */
   /* #swagger.responses[200] = { description: "Trash entries, soonest to expire first" } */
   try {
     res.json(listTrash({ includeDiskUsage: req.query.includeDiskUsage === "true" }));
