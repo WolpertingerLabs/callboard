@@ -23,10 +23,10 @@ import type { JobRun, JobRunStatus, JobStep } from "../api";
 const TERMINAL_STATUSES: JobRunStatus[] = ["succeeded", "failed", "cancelled"];
 
 export const JOB_RUN_STATUS_META: Record<JobRunStatus, { label: string; color: string }> = {
-  running: { label: "Running", color: "var(--accent)" },
+  running: { label: "Running", color: "var(--accent-text)" },
   waiting_approval: { label: "Waiting for approval", color: "var(--warning)" },
   waiting_event: { label: "Waiting for event", color: "var(--badge-info)" },
-  waiting_child: { label: "Running sub-job", color: "var(--accent)" },
+  waiting_child: { label: "Running sub-job", color: "var(--accent-text)" },
   sleeping: { label: "Sleeping", color: "var(--badge-info)" },
   paused: { label: "Paused", color: "var(--text-muted)" },
   succeeded: { label: "Succeeded", color: "var(--success)" },
@@ -97,7 +97,8 @@ export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps
   for (const entry of run.history) latestByStep.set(entry.stepId, entry);
 
   const branchIcon = (status: string) => {
-    if (status === "running" || status === "starting") return <Loader2 size={13} style={{ color: "var(--accent)", animation: "spin 1.5s linear infinite" }} />;
+    if (status === "running" || status === "starting")
+      return <Loader2 size={13} style={{ color: "var(--accent-text)", animation: "spin 1.5s linear infinite" }} />;
     if (status === "completed") return <CheckCircle2 size={13} style={{ color: "var(--success)" }} />;
     if (status === "cancelled") return <Ban size={13} style={{ color: "var(--text-muted)" }} />;
     return <XCircle size={13} style={{ color: "var(--danger)" }} />;
@@ -150,7 +151,7 @@ export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps
                   border: "none",
                   padding: 0,
                   cursor: "pointer",
-                  color: "var(--accent)",
+                  color: "var(--accent-text)",
                   display: "inline-flex",
                   alignItems: "center",
                 }}
@@ -188,7 +189,7 @@ export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps
             border: "none",
             padding: 0,
             cursor: "pointer",
-            color: "var(--accent)",
+            color: "var(--accent-text)",
             fontSize: 12,
           }}
         >
@@ -210,7 +211,7 @@ export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps
     const isCurrent = run.currentStepId === step.id && !TERMINAL_STATUSES.includes(run.status);
     if (isCurrent) {
       if (run.status === "running" || run.status === "waiting_child")
-        return <Loader2 size={15} style={{ color: "var(--accent)", animation: "spin 1.5s linear infinite" }} />;
+        return <Loader2 size={15} style={{ color: "var(--accent-text)", animation: "spin 1.5s linear infinite" }} />;
       if (run.status === "waiting_approval") return <Clock size={15} style={{ color: "var(--warning)" }} />;
       if (run.status === "sleeping" || run.status === "waiting_event") return <Clock size={15} style={{ color: "var(--badge-info)" }} />;
       return <CircleDot size={15} style={{ color: "var(--text-muted)" }} />;
@@ -425,7 +426,7 @@ export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps
                               border: "none",
                               padding: 0,
                               cursor: "pointer",
-                              color: "var(--accent)",
+                              color: "var(--accent-text)",
                               display: "inline-flex",
                               alignItems: "center",
                             }}

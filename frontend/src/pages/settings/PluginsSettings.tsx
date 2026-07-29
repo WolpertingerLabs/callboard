@@ -242,7 +242,7 @@ export default function PluginsSettings() {
         }}
       >
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-          <Plug size={16} style={{ color: "var(--accent)" }} />
+          <Plug size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Plugins & MCP Servers</span>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16 }}>
@@ -365,7 +365,7 @@ export default function PluginsSettings() {
               borderRadius: 6,
               border: "1px dashed var(--border)",
               background: "transparent",
-              color: "var(--accent)",
+              color: "var(--accent-text)",
               fontSize: 13,
               cursor: isScanning ? "default" : "pointer",
               width: "100%",
@@ -457,7 +457,7 @@ export default function PluginsSettings() {
                         fontSize: 13,
                         fontWeight: 500,
                         fontFamily: "monospace",
-                        color: "var(--accent)",
+                        color: "var(--accent-text)",
                       }}
                     >
                       {plugin.manifest.name}

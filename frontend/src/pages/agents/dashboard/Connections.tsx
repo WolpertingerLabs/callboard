@@ -84,7 +84,7 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
           alignItems: "flex-start",
         }}
       >
-        <Info size={18} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 2 }} />
+        <Info size={18} style={{ color: "var(--accent-text)", flexShrink: 0, marginTop: 2 }} />
         <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--text-muted)" }}>
           Connections, secrets, and listeners are managed in drawlatch&apos;s own dashboard — this is a read-only view of the routes available to this agent.
           Agents access these services via MCP tools during sessions.
@@ -95,7 +95,7 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
                 href={dashboardUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ color: "var(--accent)", display: "inline-flex", alignItems: "center", gap: 3, whiteSpace: "nowrap" }}
+                style={{ color: "var(--accent-text)", display: "inline-flex", alignItems: "center", gap: 3, whiteSpace: "nowrap" }}
               >
                 Open drawlatch dashboard <ExternalLink size={12} />
               </a>
@@ -209,7 +209,7 @@ export default function Connections({ agent }: { agent: AgentConfig }) {
                       flexShrink: 0,
                     }}
                   >
-                    <Wifi size={18} style={{ color: "var(--accent)" }} />
+                    <Wifi size={18} style={{ color: "var(--accent-text)" }} />
                   </div>
                   <div>
                     <h3 style={{ fontSize: 15, fontWeight: 600 }}>{route.name || `Route ${route.index}`}</h3>

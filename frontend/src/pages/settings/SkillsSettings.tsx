@@ -117,7 +117,7 @@ export default function SkillsSettings() {
       <div style={sectionStyle}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Sparkles size={16} style={{ color: "var(--accent)" }} />
+            <Sparkles size={16} style={{ color: "var(--accent-text)" }} />
             <span style={{ fontSize: 15, fontWeight: 600 }}>Custom Skills</span>
           </div>
           {!editor && (

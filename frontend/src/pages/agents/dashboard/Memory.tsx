@@ -201,7 +201,7 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
                   style={{
                     fontSize: 10,
                     fontFamily: "monospace",
-                    color: "var(--accent)",
+                    color: "var(--accent-text)",
                     background: "color-mix(in srgb, var(--accent) 12%, transparent)",
                     padding: "2px 6px",
                     borderRadius: 6,

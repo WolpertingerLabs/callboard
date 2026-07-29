@@ -67,7 +67,7 @@ export default function CardTile({ card, onClick }: CardTileProps) {
         >
           {card.title}
         </span>
-        {card.pinned && <Pin size={12} style={{ color: "var(--accent)", flexShrink: 0 }} />}
+        {card.pinned && <Pin size={12} style={{ color: "var(--accent-text)", flexShrink: 0 }} />}
         {card.unread && (
           <span title="Unread activity" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />
         )}

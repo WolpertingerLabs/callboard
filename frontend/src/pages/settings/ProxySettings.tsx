@@ -305,7 +305,7 @@ export default function ProxySettings() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <Server size={16} style={{ color: "var(--accent)" }} />
+            <Server size={16} style={{ color: "var(--accent-text)" }} />
             <span style={{ fontSize: 14, fontWeight: 600 }}>drawlatch daemon</span>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
@@ -461,7 +461,7 @@ export default function ProxySettings() {
                         }}
                       >
                         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-                          <code style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>{c.alias}</code>
+                          <code style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color: "var(--accent-text)" }}>{c.alias}</code>
                           <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace", wordBreak: "break-all" }} title={c.fingerprint ?? undefined}>
                             {c.fingerprint ? `fp: ${c.fingerprint}` : "fingerprint unavailable (keys unreadable)"}
                           </div>
@@ -563,7 +563,7 @@ export default function ProxySettings() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <ExternalLink size={16} style={{ color: "var(--accent)" }} />
+            <ExternalLink size={16} style={{ color: "var(--accent-text)" }} />
             <span style={{ fontSize: 14, fontWeight: 600 }}>Manage connections in drawlatch</span>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
@@ -613,7 +613,7 @@ export default function ProxySettings() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <Globe size={16} style={{ color: "var(--accent)" }} />
+            <Globe size={16} style={{ color: "var(--accent-text)" }} />
             <span style={{ fontSize: 14, fontWeight: 600 }}>Proxy Mode</span>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
@@ -809,7 +809,7 @@ export default function ProxySettings() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <Upload size={16} style={{ color: "var(--accent)" }} />
+              <Upload size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600 }}>Import caller bundle</span>
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>

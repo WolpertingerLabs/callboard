@@ -358,7 +358,7 @@ export default function ProviderConfigPicker({
               Configure{" "}
               <a
                 href="/settings/api"
-                style={{ color: "var(--accent)", textDecoration: "underline" }}
+                style={{ color: "var(--accent-text)", textDecoration: "underline" }}
                 onClick={(e) => {
                   e.preventDefault();
                   onOpenApiSettings();
@@ -374,7 +374,7 @@ export default function ProviderConfigPicker({
               Configure your{" "}
               <a
                 href="/settings/api"
-                style={{ color: "var(--accent)", textDecoration: "underline" }}
+                style={{ color: "var(--accent-text)", textDecoration: "underline" }}
                 onClick={(e) => {
                   e.preventDefault();
                   onOpenApiSettings();
@@ -390,7 +390,7 @@ export default function ProviderConfigPicker({
               Spend cap: ${openRouterMaxBudgetUsd.toFixed(2)} per session.{" "}
               <a
                 href="/settings/api"
-                style={{ color: "var(--accent)", textDecoration: "underline" }}
+                style={{ color: "var(--accent-text)", textDecoration: "underline" }}
                 onClick={(e) => {
                   e.preventDefault();
                   onOpenApiSettings();

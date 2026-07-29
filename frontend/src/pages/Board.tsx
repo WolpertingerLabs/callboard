@@ -209,7 +209,7 @@ export default function Board() {
               <ChevronLeft size={20} />
             </button>
           )}
-          <LayoutGrid size={20} style={{ color: "var(--accent)" }} />
+          <LayoutGrid size={20} style={{ color: "var(--accent-text)" }} />
           <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text)", flex: 1 }}>Board</h1>
           <button
             onClick={() => setShowNewCard(true)}

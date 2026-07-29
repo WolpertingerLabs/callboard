@@ -42,49 +42,39 @@
  * it. What comes back is the audit, for the caller to show.
  */
 import type { ThemeVariables, ThemeContrastFailure, ThemeContrastReport } from "shared/types/index.js";
-import { auditThemeVars, correctThemeContrast, measureMode } from "./theme-contrast.js";
-import type { Correction, ThemeMode } from "./theme-contrast.js";
+import { auditThemeVars, correctThemeContrast } from "./theme-contrast.js";
+import type { Correction } from "./theme-contrast.js";
 import { THEME_VARIABLE_NAMES } from "./theme-variables.js";
 
 const ALLOWED = new Set(THEME_VARIABLE_NAMES);
 
 /**
- * What the stylesheet on its own already measures, per pairing and mode.
+ * The rule step 3 enforces, and why it is finally the literal one.
  *
- * The built-in palette fails 24 of its 104 pairings — a separately ticketed
- * problem, deliberately not fixed here — and a theme inherits every variable it
- * does not define. So a write of two variables is measured against 58 it never
- * touched, and refusing it for `session-badge-cli` at the stylesheet's own
- * 2.54:1 would make *every* partial write impossible until the palette pass
- * lands, while telling the author to fix a colour they cannot reach: both sides
- * of that pairing are in the derived layer, where no theme can name them.
+ * This used to read "introduces nothing, worsens nothing": a pairing the
+ * stylesheet itself failed was the write's fault only if the write made it
+ * worse. That was not a softening of the standard, it was the only satisfiable
+ * standard available. A theme inherits every variable it does not define, so a
+ * write of two variables is measured against a hundred it never touched — and
+ * with the built-in palette failing 24 of its 104 pairings, refusing a write for
+ * `session-badge-cli` at the stylesheet's own 2.54:1 would have made *every*
+ * partial write impossible, while telling the author to fix a colour they could
+ * not reach: both sides of that pairing live in the derived layer, which no
+ * theme can name.
+ *
+ * The palette pass closed 20 of the 24. The accent pass closed the last four by
+ * moving the brand colour, which was the only lever they had. With the
+ * stylesheet at zero, the exemption has nothing left to exempt — a failing
+ * pairing under a partial write is now, without exception, something the write
+ * did. So the filter is gone and every failure is refused.
+ *
+ * This is a real tightening and it is load-bearing on the palette staying
+ * clean: `theme-contrast.test.ts`'s "leaves nothing below AA, in either mode"
+ * is the assertion that keeps it satisfiable, and the one below pins the link
+ * from this side. Reintroducing a sub-AA pairing into index.css would make
+ * every partial theme write refuse — which is the correct alarm, not a
+ * regression to work around by restoring the baseline.
  */
-const BASELINE: Record<ThemeMode, Map<string, number | null>> = {
-  dark: new Map(measureMode(undefined, "dark").map((m) => [m.pairing.id, m.passes ? null : m.ratio === null ? null : Number(m.ratio.toFixed(2))])),
-  light: new Map(measureMode(undefined, "light").map((m) => [m.pairing.id, m.passes ? null : m.ratio === null ? null : Number(m.ratio.toFixed(2))])),
-};
-
-/**
- * Whether a failing pairing is this write's to answer for.
- *
- * The guarantee a write is held to is **"introduces nothing and worsens
- * nothing"**, not "the whole app reaches AA" — the second is the palette's job
- * and the palette is not what is being written. So a pairing the stylesheet
- * already fails is the write's fault only if the write made it worse; anything
- * the stylesheet passes is the write's fault outright.
- *
- * Nothing is hidden by this: the exempted pairings are still in the audit that
- * comes back on `contrast`, which is what the settings panel renders. This only
- * decides what gets *refused*.
- */
-function isCausedByWrite(f: ThemeContrastFailure): boolean {
-  if (!BASELINE[f.mode].has(f.id)) return true; // a pairing added since — judge it
-  const baseline = BASELINE[f.mode].get(f.id);
-  if (baseline === null || baseline === undefined) return true; // the stylesheet passes it, or cannot be read there
-  if (f.ratio === null) return true; // unmeasurable is always the write's problem
-  return f.ratio < baseline;
-}
-
 export interface PreparedThemeWrite {
   /** The variables to store. */
   dark: ThemeVariables;
@@ -94,9 +84,9 @@ export interface PreparedThemeWrite {
   /** Values the gate moved to reach AA. Empty when `allowBelowAA` was set. */
   corrections: Correction[];
   /**
-   * Pairings this write is accountable for that are still below AA. Non-empty
-   * means the caller must refuse — unless it opted out. See `isCausedByWrite`
-   * for why this is narrower than `contrast.failures`.
+   * Pairings still below AA after correction. Non-empty means the caller must
+   * refuse — unless it opted out. Every one of them, now that the stylesheet
+   * this is measured against has none of its own; see the note above.
    */
   unsatisfiable: ThemeContrastFailure[];
   /** The audit of what would be stored, for callers that report rather than refuse. */
@@ -153,7 +143,7 @@ export function prepareThemeWrite(input: PrepareThemeWriteInput): PreparedThemeW
     light: corrected.light,
     dropped,
     corrections: corrected.corrections,
-    unsatisfiable: corrected.unsatisfiable.filter(isCausedByWrite),
+    unsatisfiable: corrected.unsatisfiable,
     contrast: auditThemeVars(corrected.dark, corrected.light),
   };
 }

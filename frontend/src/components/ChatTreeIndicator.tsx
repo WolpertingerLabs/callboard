@@ -209,7 +209,7 @@ export default function ChatTreeIndicator({ chatId, folder, compact }: Props) {
                 cursor: "pointer",
                 borderTop: "1px solid var(--border)",
                 marginTop: 4,
-                color: "var(--accent)",
+                color: "var(--accent-text)",
                 fontSize: 12,
                 fontWeight: 500,
               }}

@@ -57,7 +57,7 @@ export default function AdoptWorktreesConfirm({ worktrees, busy, onCancel, onCon
       >
         <div style={{ padding: "20px 24px 12px", borderBottom: "1px solid var(--border)" }}>
           <h2 style={{ margin: 0, fontSize: 17, display: "flex", alignItems: "center", gap: 8 }}>
-            <FolderGit2 size={17} style={{ color: "var(--accent)" }} />
+            <FolderGit2 size={17} style={{ color: "var(--accent-text)" }} />
             Adopt {worktrees.length} worktree{worktrees.length === 1 ? "" : "s"}?
           </h2>
         </div>

@@ -330,7 +330,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                 border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
                 borderRadius: 8,
                 fontSize: 13,
-                color: "var(--accent)",
+                color: "var(--accent-text)",
                 fontWeight: 500,
               }}
             >
@@ -603,7 +603,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                 fontSize: 13,
                 fontWeight: 500,
                 background: "transparent",
-                color: "var(--accent)",
+                color: "var(--accent-text)",
                 border: "1px solid color-mix(in srgb, var(--accent) 40%, transparent)",
                 cursor: backtesting ? "not-allowed" : "pointer",
                 opacity: backtesting ? 0.6 : 1,
@@ -698,7 +698,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                             padding: "1px 5px",
                             borderRadius: 3,
                             background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                            color: "var(--accent)",
+                            color: "var(--accent-text)",
                             flexShrink: 0,
                           }}
                         >
@@ -890,7 +890,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                         fontSize: 12,
                         fontWeight: 500,
                         background: "transparent",
-                        color: "var(--accent)",
+                        color: "var(--accent-text)",
                         border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
                         transition: "background 0.15s",
                         cursor: "pointer",
@@ -1022,7 +1022,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                       borderRadius: 8,
                     }}
                   >
-                    <code style={{ fontSize: 13, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--accent)" }}>{item.placeholder}</code>
+                    <code style={{ fontSize: 13, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--accent-text)" }}>{item.placeholder}</code>
                     <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.4 }}>
                       {item.desc}
                       <span style={{ opacity: 0.7 }}> — e.g. {item.example}</span>

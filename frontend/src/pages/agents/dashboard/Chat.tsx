@@ -184,7 +184,7 @@ export default function Chat({ agent }: { agent: AgentConfig }) {
                       flexShrink: 0,
                     }}
                   >
-                    <MessageSquare size={16} style={{ color: "var(--accent)" }} />
+                    <MessageSquare size={16} style={{ color: "var(--accent-text)" }} />
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div

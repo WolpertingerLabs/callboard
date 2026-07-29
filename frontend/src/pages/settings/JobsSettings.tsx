@@ -299,7 +299,7 @@ export default function JobsSettings() {
       <div style={sectionStyle}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Workflow size={16} style={{ color: "var(--accent)" }} />
+            <Workflow size={16} style={{ color: "var(--accent-text)" }} />
             <span style={{ fontSize: 15, fontWeight: 600 }}>Jobs</span>
           </div>
           {!editor && (
@@ -557,7 +557,7 @@ export default function JobsSettings() {
                       background: "none",
                       border: "1px solid var(--border)",
                       borderRadius: 6,
-                      color: "var(--accent)",
+                      color: "var(--accent-text)",
                       cursor: "pointer",
                       padding: "4px 10px",
                       fontSize: 12,
@@ -779,7 +779,7 @@ export default function JobsSettings() {
                   fontSize: 14,
                   background: "transparent",
                   border: "1px solid var(--accent)",
-                  color: "var(--accent)",
+                  color: "var(--accent-text)",
                   fontWeight: 600,
                   cursor: importing ? "default" : "pointer",
                 }}

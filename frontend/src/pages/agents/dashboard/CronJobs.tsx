@@ -176,7 +176,7 @@ function describeCron(expr: string, sourceTimezone: string): string {
 }
 
 const typeConfig: Record<string, { color: string; icon: typeof Clock }> = {
-  "one-off": { color: "var(--accent)", icon: Calendar },
+  "one-off": { color: "var(--accent-text)", icon: Calendar },
   recurring: { color: "var(--success)", icon: RotateCcw },
   indefinite: { color: "var(--warning)", icon: Clock },
 };
@@ -826,7 +826,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
                 fontSize: 12,
                 fontWeight: 500,
                 background: "transparent",
-                color: "var(--accent)",
+                color: "var(--accent-text)",
                 border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
                 transition: "background 0.15s",
                 cursor: runningJobId === job.id ? "not-allowed" : "pointer",

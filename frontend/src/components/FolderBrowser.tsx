@@ -365,9 +365,9 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flex: 1, minWidth: 0 }}>
                       {item.isGitRepo ? (
-                        <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                        <GitBranch size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
                       ) : (
-                        <Folder size={isMobile ? 14 : 16} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                        <Folder size={isMobile ? 14 : 16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
                       )}
                       <span
                         style={{

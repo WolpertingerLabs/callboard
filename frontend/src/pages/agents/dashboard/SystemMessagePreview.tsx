@@ -13,7 +13,7 @@ function TokenBadge({ tokens }: { tokens: number }) {
       style={{
         fontSize: 11,
         fontFamily: "monospace",
-        color: "var(--accent)",
+        color: "var(--accent-text)",
         background: "color-mix(in srgb, var(--accent) 12%, transparent)",
         padding: "2px 8px",
         borderRadius: 6,

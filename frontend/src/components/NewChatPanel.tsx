@@ -534,7 +534,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                     }}
                     style={{
                       cursor: "pointer",
-                      color: "var(--accent)",
+                      color: "var(--accent-text)",
                       fontWeight: 500,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
@@ -738,7 +738,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                         flexShrink: 0,
                       }}
                     >
-                      <Bot size={16} style={{ color: "var(--accent)" }} />
+                      <Bot size={16} style={{ color: "var(--accent-text)" }} />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 14, fontWeight: 500 }}>{agent.name}</div>

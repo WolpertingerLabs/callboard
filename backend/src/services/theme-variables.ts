@@ -11,7 +11,7 @@
  *
  * The stylesheet has two kinds of variable and the split is not stylistic:
  *
- * - **Primitives** hold a literal colour or shadow (`--accent: #7c6aef`). A
+ * - **Primitives** hold a literal colour or shadow (`--accent: #705ce0`). A
  *   theme is the act of choosing these, so all of them belong here.
  * - **Derived** variables hold `var()` or `color-mix()` referring to primitives
  *   (`--chatlist-badge-triggered-bg: color-mix(in srgb, var(--status-triggered)
