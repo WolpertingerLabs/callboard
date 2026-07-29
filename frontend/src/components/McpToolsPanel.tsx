@@ -8,7 +8,7 @@ interface Props {
 }
 
 const CATEGORY_STYLES: Record<string, { color: string; bg: string; label: string }> = {
-  platform: { color: "var(--accent)", bg: "var(--accent-bg)", label: "platform" },
+  platform: { color: "var(--accent-text)", bg: "var(--accent-bg)", label: "platform" },
   proxy: { color: "var(--badge-info)", bg: "var(--info-bg)", label: "proxy" },
   agent: { color: "var(--success)", bg: "var(--success-bg)", label: "agent" },
   external: { color: "var(--warning)", bg: "var(--warning-bg)", label: "external" },
@@ -81,7 +81,7 @@ function ToolCard({ tool }: { tool: McpToolDefinition }) {
             style={{
               fontSize: "13px",
               fontFamily: "var(--font-mono)",
-              color: "var(--accent)",
+              color: "var(--accent-text)",
               fontWeight: 600,
             }}
           >

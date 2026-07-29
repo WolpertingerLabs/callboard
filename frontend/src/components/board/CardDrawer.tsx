@@ -357,7 +357,7 @@ export default function CardDrawer({ card, categories, onPatch, onDelete, onClos
                 padding: "8px 12px",
                 borderRadius: 6,
                 border: "1px solid var(--danger)",
-                background: confirmingDelete ? "var(--danger)" : "var(--danger-bg)",
+                background: confirmingDelete ? "var(--danger-solid)" : "var(--danger-bg)",
                 color: confirmingDelete ? "var(--text-on-danger)" : "var(--danger)",
                 fontSize: 13,
                 cursor: "pointer",

@@ -53,31 +53,31 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "danger-on-danger-bg-bg": 5.14,
     "error-on-danger-bg-bg": 5.14,
     "success-on-success-bg-surface": 5.84,
-    "accent-on-accent-bg-surface": 3.84,
-    "accent-on-accent-bg-bg": 4.25,
+    "accent-on-accent-bg-surface": 5.28,
+    "accent-on-accent-bg-bg": 5.84,
     "badge-info-on-info-bg": 5.84,
     "badge-info-on-badge-info-bg": 5.32,
     "badge-env-on-badge-env-bg": 5.64,
     "badge-sse-on-badge-sse-bg": 9.15,
     "diff-added-on-added-bg": 5.59,
     "diff-added-on-added-line-bg": 6.01,
-    "diff-removed-on-removed-bg": 4.35,
-    "diff-removed-on-removed-line-bg": 4.65,
+    "diff-removed-on-removed-bg": 5.79,
+    "diff-removed-on-removed-line-bg": 6.18,
     "chatlist-summon": 5.83,
     "chatlist-summon-urgent": 4.65,
     "chatlist-badge-triggered": 6.34,
-    "chatlist-badge-agent": 3.67,
+    "chatlist-badge-agent": 5.04,
     "chatlist-badge-status": 4.62,
     "chatlist-title-active": 13.55,
     "chatlist-path-active": 5.2,
     "chatlist-path-hover": 5.62,
     "on-accent": 4.07,
     "on-accent-hover": 3.08,
-    "on-danger": 3.35,
-    "provider-badge-openrouter": 4.23,
+    "on-danger": 5.52,
+    "provider-badge-openrouter": 5.7,
     "provider-badge-codex": 5.48,
-    "session-badge-cli": 2.54,
-    "worktree-badge": 4.23,
+    "session-badge-cli": 5.47,
+    "worktree-badge": 5.7,
     "builtin-on-user-bg": 10.33,
     "builtin-on-assistant-bg": 10.3,
     "status-green-dot": 7.76,
@@ -106,21 +106,21 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "danger-on-danger-bg-surface": 5.41,
     "danger-on-danger-bg-bg": 5.66,
     "error-on-danger-bg-bg": 4.68,
-    "success-on-success-bg-surface": 2.9,
-    "accent-on-accent-bg-surface": 3.55,
-    "accent-on-accent-bg-bg": 3.7,
-    "badge-info-on-info-bg": 4.43,
-    "badge-info-on-badge-info-bg": 4.31,
-    "badge-env-on-badge-env-bg": 2.83,
+    "success-on-success-bg-surface": 6.26,
+    "accent-on-accent-bg-surface": 5.63,
+    "accent-on-accent-bg-bg": 5.88,
+    "badge-info-on-info-bg": 5.75,
+    "badge-info-on-badge-info-bg": 5.59,
+    "badge-env-on-badge-env-bg": 6.13,
     "badge-sse-on-badge-sse-bg": 5.5,
-    "diff-added-on-added-bg": 4.27,
-    "diff-added-on-added-line-bg": 4.46,
-    "diff-removed-on-removed-bg": 4.44,
-    "diff-removed-on-removed-line-bg": 4.66,
+    "diff-added-on-added-bg": 6,
+    "diff-added-on-added-line-bg": 6.26,
+    "diff-removed-on-removed-bg": 5.37,
+    "diff-removed-on-removed-line-bg": 5.63,
     "chatlist-summon": 5.09,
     "chatlist-summon-urgent": 4.69,
     "chatlist-badge-triggered": 4.99,
-    "chatlist-badge-agent": 3.04,
+    "chatlist-badge-agent": 4.83,
     "chatlist-badge-status": 4.6,
     "chatlist-title-active": 11.84,
     "chatlist-path-active": 5.16,
@@ -130,12 +130,12 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "on-danger": 6.47,
     "provider-badge-openrouter": 5.7,
     "provider-badge-codex": 5.48,
-    "session-badge-cli": 2.54,
+    "session-badge-cli": 5.48,
     "worktree-badge": 5.7,
     "builtin-on-user-bg": 7.15,
     "builtin-on-assistant-bg": 8.01,
     "status-green-dot": 4.43,
-    "status-active-dot": 2.24,
+    "status-active-dot": 4.84,
     "warning-waiting-dot": 6.05,
     "toggle-knob-on-accent": 4.07,
   },
@@ -281,14 +281,39 @@ describe("built-in palette tripwire", () => {
     });
   }
 
-  it("still reads #293's three documented ceilings at their published values", () => {
-    const light = Object.fromEntries(measureMode(undefined, "light").map((m) => [m.pairing.id, m.ratio]));
-    // "--accent on --accent-bg (3.70:1 light)" and
-    // "--badge-info chip on --badge-info-bg is 4.31:1 in light".
-    expect(light["accent-on-accent-bg-bg"]).toBeCloseTo(3.7, 2);
-    expect(light["badge-info-on-badge-info-bg"]).toBeCloseTo(4.31, 2);
-    // "amber-800 clears at 4.99:1" — the worst pairing in the palette, fixed.
+  it("closed the two ceilings #293 published as fixed while they were still below AA", () => {
+    const light = Object.fromEntries(measureMode(undefined, "light").map((m) => [m.pairing.id, m.ratio as number]));
+    // #293 reported "--accent on --accent-bg (3.70:1 light)" and "--badge-info
+    // chip on --badge-info-bg is 4.31:1 in light" among its fixes. Both numbers
+    // are below 4.5 on their face. The first needed a token split (--accent-text)
+    // because the brand accent as ink cannot reach AA at any tint opacity; the
+    // second only needed blue-700.
+    expect(light["accent-on-accent-bg-bg"]).toBeGreaterThanOrEqual(4.5);
+    expect(light["badge-info-on-badge-info-bg"]).toBeGreaterThanOrEqual(4.5);
+    // "amber-800 clears at 4.99:1" — the worst pairing in the palette, and the
+    // one #293 got right. Untouched here, so it is still pinned exactly.
     expect(light["chatlist-badge-triggered"]).toBeCloseTo(4.99, 2);
+  });
+
+  /**
+   * What is left, and why it is not a colour that could have been picked better.
+   *
+   * `--accent: #7c6aef` is luminance 0.208. White needs the fill at or below
+   * 0.183 to reach 4.5:1, so *no* text colour rescues these: white is 4.07:1 and
+   * black is 5.17:1 on the base but 6.82:1 on the hover, which would invert the
+   * ink between a button and its own hover state. --text-on-accent cannot move
+   * either, since it is also the ink on --badge-provider-codex-bg, where black
+   * reads 3.83:1. The only lever left is the brand colour, which is a product
+   * decision rather than an implementation one — so these two are pinned as
+   * known-failing rather than quietly worked around.
+   */
+  it("leaves exactly the two brand-accent fills failing, in both modes", () => {
+    for (const mode of ["dark", "light"] as const) {
+      const failing = measureMode(undefined, mode)
+        .filter((m) => !m.passes)
+        .map((m) => m.pairing.id);
+      expect(failing, mode).toEqual(["on-accent", "on-accent-hover"]);
+    }
   });
 
   it("holds every light-mode pairing #293 moved above AA", () => {
@@ -417,10 +442,17 @@ describe("generation-time correction", () => {
   });
 
   it("reports what it could not fix instead of dragging a colour somewhere muddy", () => {
-    // A pale accent with a pale knob: the knob is a contrast carrier and moves
-    // freely, but --accent-hover is an identity colour, and white text on a
-    // near-white hover fill cannot be rescued by lightness within budget.
-    const theme = completeTheme({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" } });
+    // A near-white hover fill. --accent-hover is an identity colour, so the fill
+    // does not move; the ink is aliased to --bg, and --bg is a surface the
+    // corrector must not touch, so the ink does not move either. Both levers
+    // gone, the pairing is reported rather than approximated.
+    //
+    // The ink is pinned deliberately. Left as a literal #ffffff this is no longer
+    // unsatisfiable — darkening --text-on-accent rescues it, and since the
+    // built-in palette's fills now all carry a dark ink at AA, that answer is
+    // available where before it broke `provider-badge-codex`. Correction getting
+    // *better* is not something to hide behind a fixture that no longer bites.
+    const theme = completeTheme({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" } });
     const after = correctThemeContrast(theme.dark, theme.light);
     const hoverFail = after.unsatisfiable.find((f) => f.id === "on-accent-hover" && f.mode === "light");
     expect(hoverFail).toBeDefined();
@@ -465,14 +497,18 @@ describe("generation-time correction", () => {
 
   it("reseeds a carrier that blocks by passing, not only one that is itself failing", () => {
     // The H2 case, reproduced. --accent must lighten to clear
-    // `accent-on-accent-bg-surface` (4.32:1) and `chatlist-badge-agent` (4.04:1);
-    // a near-white --toggle-knob reads 3.12:1 on it, which *passes*. Lighten the
+    // `accent-on-accent-bg-surface` (4.06:1) and `chatlist-badge-agent` (4.05:1);
+    // a mid-grey --toggle-knob reads 3.14:1 on it, which *passes*. Lighten the
     // accent at all and the knob drops under 3:1, so correctVariable's
     // all-pairings rule admits no candidate and --accent never moves. The knob
     // never appears among the failures, so a filter looking for carriers in
-    // `stuck` never considers it — and the joint answer costs 0.036 of accent
-    // lightness.
-    const theme = completeTheme({ dark: { accent: "#36967a", "toggle-knob": "#eeeeee" } });
+    // `stuck` never considers it.
+    //
+    // The seed moved with the palette pass: the accent-ink pairings now read
+    // --accent-text (--accent lightened 80% toward white), so a *pale* accent no
+    // longer fails them and the old #36967a/#eeeeee pair stopped deadlocking.
+    // Darker accent, darker knob, same geometry.
+    const theme = completeTheme({ dark: { accent: "#2a7059", "toggle-knob": "#bdbdbd" } });
 
     const before = measureMode(theme.dark, "dark");
     expect(before.find((m) => m.pairing.id === "toggle-knob-on-accent")!.passes).toBe(true);
@@ -490,13 +526,15 @@ describe("generation-time correction", () => {
   it("relaxes a seeded carrier back toward the value the theme asked for", () => {
     // A seed is deliberately extreme because its job is to break a deadlock, not
     // to be the answer. Handing back a near-black knob when the theme asked for
-    // a near-white one is a correction nobody requested — the knob only has to
-    // reach 3:1.
-    const theme = completeTheme({ dark: { accent: "#36967a", "toggle-knob": "#eeeeee" } });
+    // a light one is a correction nobody requested — the knob only has to
+    // reach 3:1. Same fixture as the test above, which is the one that actually
+    // seeds it; on the old pair nothing deadlocked, so nothing was seeded and
+    // this asserted only that an untouched value came back untouched.
+    const theme = completeTheme({ dark: { accent: "#2a7059", "toggle-knob": "#bdbdbd" } });
     const after = correctThemeContrast(theme.dark, theme.light);
 
     const knob = rgbaToOklch(parseCssColor(after.dark["toggle-knob"])!);
-    expect(knob.l).toBeGreaterThan(0.9);
+    expect(knob.l).toBeGreaterThanOrEqual(rgbaToOklch(parseCssColor("#bdbdbd")!).l);
     const measured = measureMode(after.dark, "dark").find((m) => m.pairing.id === "toggle-knob-on-accent");
     expect(measured!.ratio).toBeGreaterThanOrEqual(3);
   });

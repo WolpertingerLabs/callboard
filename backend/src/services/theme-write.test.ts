@@ -61,8 +61,13 @@ describe("prepareThemeWrite — correction and refusal", () => {
   });
 
   it("reports what no lightness move fixes, so the caller can refuse", () => {
+    // The ink is aliased to --bg rather than left at #ffffff: --bg is a surface
+    // the corrector will not move, which is what leaves the pairing with no
+    // lever at all. Against a literal white ink this is now *satisfiable* —
+    // darkening --text-on-accent rescues it, an answer that only became legal
+    // once the built-in fills all carried a dark ink at AA themselves.
     const existing = complete();
-    const out = prepareThemeWrite({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" }, existing });
+    const out = prepareThemeWrite({ light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }, existing });
     expect(out.unsatisfiable.some((f) => f.id === "on-accent-hover" && f.mode === "light")).toBe(true);
     // And says enough for a caller to fix the right colour.
     expect(describeFailures(out.unsatisfiable)).toContain("var(--accent-hover)");
@@ -79,18 +84,22 @@ describe("prepareThemeWrite — correction and refusal", () => {
 describe("prepareThemeWrite — what a write is accountable for", () => {
   /**
    * The rule: introduces nothing, worsens nothing. Not "the whole app reaches
-   * AA" — the built-in palette fails 24 of its own 104 pairings, that is
-   * separately ticketed, and a two-variable write inherits all 58 it never
-   * touched. Refusing that write for `session-badge-cli` at the stylesheet's own
-   * 2.54:1 would block every partial write until the palette pass lands, while
-   * telling the author to fix a pairing whose two sides are both in the derived
-   * layer where no theme can name them.
+   * AA".
+   *
+   * The palette pass took the stylesheet's own failures from 24 of 104 to 4, and
+   * the four left are `on-accent` and `on-accent-hover` in both modes: white on
+   * `--accent`, which no ink and no tint reaches, only a different brand colour.
+   * That is a smaller reason than the one this rule was written for, but it is
+   * the same reason. A write that says `{ warning: ... }` still inherits them,
+   * still cannot name them without authoring `--accent` too, and refusing it for
+   * a pairing it neither touched nor can reach is a rejection the author cannot
+   * act on. So the rule stays as it is until the accent question is answered.
    */
   it("accepts a partial write that leaves the stylesheet's own failures where they were", () => {
     const out = prepareThemeWrite({ light: { warning: "#8a5a00" } });
     expect(out.unsatisfiable).toEqual([]);
     // And is not pretending they passed: the audit still carries every one.
-    expect(out.contrast.failures.some((f) => f.id === "session-badge-cli")).toBe(true);
+    expect(out.contrast.failures.some((f) => f.id === "on-accent")).toBe(true);
   });
 
   it("refuses a write that makes an already-failing pairing worse", () => {
@@ -116,7 +125,7 @@ describe("prepareThemeWrite — what a write is accountable for", () => {
 });
 
 describe("prepareThemeWrite — the allowBelowAA opt-out", () => {
-  const authored = { light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" }, existing: complete() };
+  const authored = { light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }, existing: complete() };
 
   it("stores a human-authored value exactly as written", () => {
     // The distinction is authorship. A person editing their own theme file

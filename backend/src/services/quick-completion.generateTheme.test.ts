@@ -88,9 +88,13 @@ describe("generateThemeCSS — contrast gate", () => {
     setAgentProviderForTesting(mock);
 
     const pending = generateThemeCSS("Pale", "barely-there pastels");
-    // A near-white hover fill under white text: no lightness inside the budget
-    // rescues it, so this attempt must be rejected rather than clamped.
-    await answerOnce(mock, themeJson({}, { "accent-hover": "#fdfdfd" }));
+    // A near-white hover fill whose ink is aliased to --bg: the fill is an
+    // identity colour and --bg is a surface, so no lightness move inside the
+    // budget rescues it and this attempt must be rejected rather than clamped.
+    // (Left as a literal white ink it is now satisfiable — darkening
+    // --text-on-accent answers it, which only became legal once the built-in
+    // fills carried a dark ink at AA themselves.)
+    await answerOnce(mock, themeJson({}, { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }));
     await answerOnce(mock, themeJson({}, { "accent-hover": "#6d5ad8" }));
     const { theme } = expectOk(await pending);
 
@@ -102,8 +106,8 @@ describe("generateThemeCSS — contrast gate", () => {
     setAgentProviderForTesting(mock);
 
     const pending = generateThemeCSS("Invisible", "white on white");
-    await answerOnce(mock, themeJson({}, { "accent-hover": "#fdfdfd" }));
-    await answerOnce(mock, themeJson({}, { "accent-hover": "#fefefe" }));
+    await answerOnce(mock, themeJson({}, { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }));
+    await answerOnce(mock, themeJson({}, { "accent-hover": "#fefefe", "text-on-accent": "var(--bg)" }));
 
     const result = await pending;
     expect(result.ok).toBe(false);
@@ -118,8 +122,8 @@ describe("generateThemeCSS — contrast gate", () => {
     setAgentProviderForTesting(mock);
 
     const pending = generateThemeCSS("Invisible", "white on white");
-    await answerOnce(mock, themeJson({}, { "accent-hover": "#fdfdfd" }));
-    await answerOnce(mock, themeJson({}, { "accent-hover": "#fefefe" }));
+    await answerOnce(mock, themeJson({}, { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" }));
+    await answerOnce(mock, themeJson({}, { "accent-hover": "#fefefe", "text-on-accent": "var(--bg)" }));
     const result = await pending;
 
     if (result.ok) throw new Error("expected a refusal");

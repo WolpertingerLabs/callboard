@@ -420,8 +420,13 @@ export const PAIRINGS: Pairing[] = [
   { id: "danger-on-danger-bg-bg", where: "DraftModal / MessageBubble error box", fg: v("danger"), bg: v("danger-bg"), backdrop: v("bg"), kind: "text" },
   { id: "error-on-danger-bg-bg", where: "--error text in an error box", fg: v("error"), bg: v("danger-bg"), backdrop: v("bg"), kind: "text" },
   { id: "success-on-success-bg-surface", where: "McpToolsPanel 'agent' badge", fg: v("success"), bg: v("success-bg"), backdrop: v("surface"), kind: "text" },
-  { id: "accent-on-accent-bg-surface", where: "McpToolsPanel 'platform' badge", fg: v("accent"), bg: v("accent-bg"), backdrop: v("surface"), kind: "text" },
-  { id: "accent-on-accent-bg-bg", where: "PromptInput attachment chip", fg: v("accent"), bg: v("accent-bg"), backdrop: v("bg"), kind: "text" },
+  // fg is --accent-text, not --accent, because that is what these two now paint.
+  // The brand accent as ink tops out at 4.25:1 on --surface and 3.89:1 on the
+  // light one *before* any tint, so no tint opacity could have rescued them;
+  // the ink had to become its own token. Measuring --accent here after the
+  // components stopped painting it would be measuring nothing.
+  { id: "accent-on-accent-bg-surface", where: "McpToolsPanel 'platform' badge", fg: v("accent-text"), bg: v("accent-bg"), backdrop: v("surface"), kind: "text" },
+  { id: "accent-on-accent-bg-bg", where: "PromptInput drop-images overlay", fg: v("accent-text"), bg: v("accent-bg"), backdrop: v("bg"), kind: "text" },
   { id: "badge-info-on-info-bg", where: "McpToolsPanel 'proxy' badge", fg: v("badge-info"), bg: v("info-bg"), backdrop: v("surface"), kind: "text" },
   { id: "badge-info-on-badge-info-bg", where: "MessageBubble info chip", fg: v("badge-info"), bg: v("badge-info-bg"), backdrop: v("surface"), kind: "text" },
   { id: "badge-env-on-badge-env-bg", where: "PluginsSettings stdio badge", fg: v("badge-env-text"), bg: v("badge-env-bg"), backdrop: v("surface"), kind: "text" },
@@ -446,7 +451,11 @@ export const PAIRINGS: Pairing[] = [
   // ── Text on solid fills ──
   { id: "on-accent", where: "primary buttons, active nav", fg: v("text-on-accent"), bg: v("accent"), backdrop: v("bg"), kind: "text" },
   { id: "on-accent-hover", where: "primary buttons, hovered", fg: v("text-on-accent"), bg: v("accent-hover"), backdrop: v("bg"), kind: "text" },
-  { id: "on-danger", where: "confirm-delete button", fg: v("text-on-danger"), bg: v("danger"), backdrop: v("bg"), kind: "text" },
+  // bg is --danger-solid for the same reason: --danger has to stay light enough
+  // to read as *ink* on --danger-bg over a dark surface, which is exactly what
+  // put white-on-it at 3.35:1. Every destructive button now paints the fill
+  // token; `--danger-solid` derives from `--danger`, so a theme still drives it.
+  { id: "on-danger", where: "confirm-delete button", fg: v("text-on-danger"), bg: v("danger-solid"), backdrop: v("bg"), kind: "text" },
   { id: "provider-badge-openrouter", where: "OpenRouter provider badge", fg: v("badge-provider-text"), bg: v("badge-provider-openrouter-bg"), backdrop: v("bg-sidebar"), kind: "text" },
   { id: "provider-badge-codex", where: "Codex provider badge", fg: v("badge-provider-text"), bg: v("badge-provider-codex-bg"), backdrop: v("bg-sidebar"), kind: "text" },
   { id: "session-badge-cli", where: "CLI session badge", fg: v("chatlist-badge-session-text"), bg: v("chatlist-badge-session-cli-bg"), backdrop: v("bg-sidebar"), kind: "text" },

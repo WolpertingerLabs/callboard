@@ -598,7 +598,7 @@ export default function GeneralSettings() {
             }}
           >
             <span>Classic Callboard</span>
-            {selectedTheme === null && <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 500 }}>Active</span>}
+            {selectedTheme === null && <span style={{ fontSize: 11, color: "var(--accent-text)", fontWeight: 500 }}>Active</span>}
           </button>
 
           {/* Custom themes */}
@@ -630,7 +630,7 @@ export default function GeneralSettings() {
                   }}
                 >
                   <span>{theme.name}</span>
-                  {selectedTheme === theme.name && <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 500 }}>Active</span>}
+                  {selectedTheme === theme.name && <span style={{ fontSize: 11, color: "var(--accent-text)", fontWeight: 500 }}>Active</span>}
                 </button>
                 <button
                   onClick={() => {

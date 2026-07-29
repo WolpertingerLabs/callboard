@@ -88,7 +88,9 @@ describe("update_theme — the gate an agent actually reaches", () => {
   });
 
   it("refuses a write nothing legal fixes, and names the pairings", async () => {
-    const text = await call("update_theme", { name: "Editable", light: { "accent-hover": "#fdfdfd", "text-on-accent": "#ffffff" } });
+    // A near-white hover fill whose ink is aliased to --bg: the fill is an
+    // identity colour and --bg is a surface, so correction has no lever left.
+    const text = await call("update_theme", { name: "Editable", light: { "accent-hover": "#fdfdfd", "text-on-accent": "var(--bg)" } });
 
     expect(text).toContain("NOT updated");
     // The specific clash — not "see the server log", which is the one place a

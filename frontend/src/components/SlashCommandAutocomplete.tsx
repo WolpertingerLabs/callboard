@@ -101,7 +101,7 @@ export default function SlashCommandAutocomplete({ slashCommands, query, onSelec
                 borderRadius: "4px",
                 fontSize: 13,
                 fontFamily: "var(--font-mono)",
-                color: "var(--accent)",
+                color: "var(--accent-text)",
               }}
             >
               {command}

@@ -346,7 +346,7 @@ export default function SlashCommandsModal({
                             >
                               <code
                                 style={{
-                                  color: "var(--accent)",
+                                  color: "var(--accent-text)",
                                   fontWeight: 600,
                                   fontSize: "14px",
                                   fontFamily: "var(--font-mono)",
@@ -428,7 +428,7 @@ export default function SlashCommandsModal({
                               >
                                 <code
                                   style={{
-                                    color: "var(--accent)",
+                                    color: "var(--accent-text)",
                                     fontWeight: 600,
                                     fontSize: "14px",
                                     fontFamily: "var(--font-mono)",

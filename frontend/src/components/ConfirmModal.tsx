@@ -67,8 +67,8 @@ export default function ConfirmModal({ isOpen, onClose, onConfirm, title, messag
               padding: "8px 16px",
               borderRadius: 6,
               fontSize: 14,
-              background: confirmStyle === "danger" ? "var(--danger)" : "var(--accent)",
-              color: "var(--text-on-accent)",
+              background: confirmStyle === "danger" ? "var(--danger-solid)" : "var(--accent)",
+              color: confirmStyle === "danger" ? "var(--text-on-danger)" : "var(--text-on-accent)",
               border: "none",
               cursor: "pointer",
             }}
