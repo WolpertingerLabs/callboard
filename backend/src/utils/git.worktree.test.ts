@@ -8,12 +8,15 @@
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureWorktreeDetailed, resolveBranch } from "./git.js";
 
-const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-git-worktree-"));
+// Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
+// a symlink to `/private/var/folders/...`. Worktree resolution reports the real
+// path, so a fixture built on the symlinked spelling never compares equal.
+const tmpRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-worktree-")));
 const repoDir = join(tmpRoot, "repo");
 
 function git(args: string[], cwd: string): void {

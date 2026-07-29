@@ -161,7 +161,7 @@ chatsRouter.get("/folders", (req, res) => {
   // #swagger.summary = 'List chats grouped by folder'
   // #swagger.description = 'Returns folders with aggregated chat info, ordered by most recently created chat. Folders that no longer exist on disk are filtered out, except when an active workspace record claims them — those are listed with directoryState "missing" so the stale record can be seen and archived. Each row also carries the active workspace records claiming the directory (id, name, isolation, owned, branch, directory state); it deliberately carries no removal verdict, which costs several git subprocesses per record — ask GET /api/workspaces for that.'
   /* #swagger.parameters['maxAgeDays'] = { in: 'query', type: 'integer', description: 'Maximum age in days (default: 5)' } */
-  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass "true" to measure each listed directory with du -sk. Off by default: it is the slow part, and this endpoint is polled. Measurements are memoised for five minutes.' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each listed directory with du -sk. Off by default: it is the slow part, and this endpoint is polled. Measurements are memoised for five minutes.' } */
   try {
     const maxAgeDays = parseInt(req.query.maxAgeDays as string, 10) || 5;
     const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
@@ -614,7 +614,7 @@ chatsRouter.post("/:id/fork", (req, res) => {
           required: ["timestamp"],
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
-            provider: { type: "string", enum: ["claude-code", "openrouter", "codex"], description: "Target harness. Omit to fork within the chat's current harness (higher fidelity)." },
+            provider: { type: "string", enum: ["claude-code", "openrouter", "codex"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity)." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
             effort: { type: "string", description: "Reasoning effort for the new chat (openrouter / codex only)." }
           }

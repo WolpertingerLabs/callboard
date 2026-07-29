@@ -20,7 +20,7 @@
  * Real git fixtures, because "is this a worktree?" is a filesystem claim.
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +34,10 @@ const { evaluateAdoption } = await import("./workspace-adoption.js");
 
 const workspacesDir = join(tmpRoot, "workspaces");
 
-const gitRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-create-git-"));
+// Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
+// a symlink to `/private/var/folders/...`. These records store the canonical
+// cwd, so a fixture built on the symlinked spelling never compares equal.
+const gitRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-workspace-create-git-")));
 const repoDir = join(gitRoot, "repo");
 
 function git(args: string[], cwd: string): void {

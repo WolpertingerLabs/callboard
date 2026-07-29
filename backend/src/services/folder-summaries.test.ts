@@ -25,7 +25,7 @@
  * pre-change grouping alongside the new one.
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +42,10 @@ const { buildWorkspaceIndex } = await import("./workspace-views.js");
 const { describeWorkspaceDirectory } = await import("./workspace-service.js");
 
 // ── Fixture directories. Real git, because worktree-ness is a filesystem claim. ──
-const gitRoot = mkdtempSync(join(tmpdir(), "callboard-folder-summaries-git-"));
+// Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
+// a symlink to `/private/var/folders/...`. Summaries key on the resolved cwd,
+// so a fixture built on the symlinked spelling never compares equal.
+const gitRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-folder-summaries-git-")));
 const repoDir = join(gitRoot, "repo");
 
 function git(args: string[], cwd: string): void {
@@ -223,10 +226,7 @@ describe("what the row is called", () => {
    * their names intact for the drill-down to render.
    */
   it("falls back to the directory when two records claim it with different names", () => {
-    const twoRecords: Workspace[] = [
-      ...records,
-      record({ id: "ws-second", cwd: wtRecorded, isolation: "local", name: "A completely different name" }),
-    ];
+    const twoRecords: Workspace[] = [...records, record({ id: "ws-second", cwd: wtRecorded, isolation: "local", name: "A completely different name" })];
     const row = build({ records: twoRecords.map((r) => (r.id === "ws-recorded" ? { ...r, name: "Recorded work" } : r)) }).find((f) => f.folder === wtRecorded)!;
 
     expect(row.displayName).toBe(wtRecorded.split("/").pop());

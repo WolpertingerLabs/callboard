@@ -22,7 +22,7 @@
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative as relativePath } from "node:path";
 
@@ -44,7 +44,11 @@ const trashDir = join(tmpRoot, "trash");
 
 // ── Real git fixtures ───────────────────────────────────────────────
 
-const gitRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-service-git-"));
+// Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
+// a symlink to `/private/var/folders/...`. Worktree paths come back from git as
+// the real ones, so a fixture built on the symlinked spelling never compares
+// equal — and, worse, reads as a *different* worktree to the removal gate.
+const gitRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-workspace-service-git-")));
 const repoDir = join(gitRoot, "repo");
 
 function git(args: string[], cwd: string): string {
@@ -460,7 +464,12 @@ describe("archiveWorkspace quarantines what it may", () => {
     mkdirSync(stale, { recursive: true });
     writeFileSync(
       join(stale, TRASH_MANIFEST_FILE),
-      JSON.stringify({ workspaceId: "ws-someone-else", originalPath: "/gone", quarantinedAt: new Date(Date.now() - 400 * 86_400_000).toISOString(), restore: [] }),
+      JSON.stringify({
+        workspaceId: "ws-someone-else",
+        originalPath: "/gone",
+        quarantinedAt: new Date(Date.now() - 400 * 86_400_000).toISOString(),
+        restore: [],
+      }),
     );
     const young = join(trashDir, "ws-recent-2026-07-01T00-00-00-000Z");
     mkdirSync(young, { recursive: true });

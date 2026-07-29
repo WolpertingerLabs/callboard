@@ -6,7 +6,7 @@
  * top-level dynamic import) — each test file gets its own throwaway data dir.
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, readdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +37,10 @@ const workspacesDir = join(tmpRoot, "workspaces");
 
 // Real git fixtures. Revalidation is a claim about the filesystem, so the
 // tests that exercise it use actual worktrees rather than invented paths.
-const gitRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-git-"));
+// Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
+// a symlink to `/private/var/folders/...`. Resolution reports the real path, so
+// a fixture built on the symlinked spelling never compares equal.
+const gitRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-workspace-git-")));
 const repoDir = join(gitRoot, "repo");
 
 function git(args: string[], cwd: string): void {
