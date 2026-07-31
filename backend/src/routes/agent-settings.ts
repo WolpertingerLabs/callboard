@@ -284,6 +284,10 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
 
   const normalizeRemoteMode = (v: unknown): "quick" | "named" | undefined => (v === "quick" || v === "named" ? v : undefined);
 
+  // Proxy mode is a closed enum — anything else clears the override (which
+  // reads back as "local", the documented default).
+  const normalizeProxyMode = (v: unknown): "local" | "remote" | undefined => (v === "local" || v === "remote" ? v : undefined);
+
   // ── Remote-access (public tunnel) gate ───────────────────────────────
   // Enabling exposes callboard to the internet — the login password becomes the
   // only barrier. Block the enable if no password is configured (the UI mirrors
@@ -317,10 +321,17 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
   }
 
   try {
+    const before = getAgentSettings();
     const updated = updateAgentSettings({
-      proxyMode: proxyMode ?? undefined,
-      remoteServerUrl: remoteServerUrl ?? undefined,
-      tunnelEnabled: tunnelEnabled ?? undefined,
+      // These three MUST stay behind the `!== undefined` guard like every other
+      // field: updateAgentSettings merges with a spread, so an explicit
+      // `undefined` overwrites the stored value and JSON.stringify then drops
+      // the key entirely. Passing them unconditionally meant every save from an
+      // unrelated settings tab (API keys, model aliases, remote access…) erased
+      // the drawlatch endpoint and silently reverted the daemon to local mode.
+      ...(proxyMode !== undefined && { proxyMode: normalizeProxyMode(proxyMode) }),
+      ...(remoteServerUrl !== undefined && { remoteServerUrl: normalize(remoteServerUrl) }),
+      ...(tunnelEnabled !== undefined && { tunnelEnabled: normalizeBool(tunnelEnabled) }),
       ...(remoteAccessEnabled !== undefined && { remoteAccessEnabled: typeof remoteAccessEnabled === "boolean" ? remoteAccessEnabled : undefined }),
       ...(remoteAccessMode !== undefined && { remoteAccessMode: normalizeRemoteMode(remoteAccessMode) }),
       ...(cloudflaredToken !== undefined && { cloudflaredToken: normalize(cloudflaredToken) }),
@@ -372,9 +383,13 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });
-    // Handle proxy mode switching — creates/destroys LocalProxy as needed
-    // and resets cached remote ProxyClient instances
-    await switchProxyMode(updated.proxyMode);
+    // Handle proxy mode switching — creates/destroys LocalProxy as needed and
+    // resets cached ProxyClient instances. Only when the endpoint actually
+    // moved: an unrelated settings save should never bounce the daemon or drop
+    // the route cache.
+    if (updated.proxyMode !== before.proxyMode || updated.remoteServerUrl !== before.remoteServerUrl) {
+      await switchProxyMode(updated.proxyMode);
+    }
 
     // Apply remote-access tunnel changes live (only when a relevant field was
     // touched, so an unrelated settings save never tears down a healthy tunnel).
