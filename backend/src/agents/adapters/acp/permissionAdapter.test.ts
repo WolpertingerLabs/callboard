@@ -156,10 +156,25 @@ describe("acpToolLabel", () => {
     expect(categorizeAcpToolName(acpToolLabel(prose))).toBe("codeExecution");
   });
 
-  it("prefers a name, then a shaped title, then the kind — in that order", () => {
+  it("prefers a name, then the kind, then a shaped title — in that order", () => {
     expect(acpToolLabel({ toolCallId: "c", name: "read_file", title: "Reading a file", kind: "execute" } as never)).toBe("read_file");
-    expect(acpToolLabel({ toolCallId: "c", title: "write", kind: "edit" } as never)).toBe("write");
-    expect(acpToolLabel({ toolCallId: "c", title: "Writing to a file", kind: "edit" } as never)).toBe("edit");
+    expect(acpToolLabel({ toolCallId: "c", title: "write", kind: "edit" } as never)).toBe("edit");
+    expect(acpToolLabel({ toolCallId: "c", title: "write" } as never)).toBe("write");
+  });
+
+  it("does not let the shape of a filename choose the permission axis", () => {
+    // OpenCode puts the file being touched in `title`, and whether that string
+    // is identifier-shaped depends on something with no bearing on the tool:
+    // an absolute path is not (leading slash), a bare filename is. With `title`
+    // ranked above `kind`, the same edit landed on fileWrite when the path was
+    // absolute and on codeExecution when it was relative. Caught by the live
+    // suite, not by the double.
+    const absolute = { toolCallId: "c", kind: "edit", title: "/tmp/proj/notes.txt" } as never;
+    const relative = { toolCallId: "c", kind: "edit", title: "notes.txt" } as never;
+    expect(acpToolLabel(absolute)).toBe("edit");
+    expect(acpToolLabel(relative)).toBe("edit");
+    expect(categorizeAcpToolName(acpToolLabel(absolute))).toBe(categorizeAcpToolName(acpToolLabel(relative)));
+    expect(categorizeAcpToolName(acpToolLabel(relative))).toBe("fileWrite");
   });
 
   it("maps every ACP kind onto a category at least as strict as the kind table's", () => {

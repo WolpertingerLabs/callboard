@@ -2,6 +2,7 @@ import type { AgentProviderKind, EffortLevel } from "../utils/localStorage";
 import OpenRouterModelSelector from "./OpenRouterModelSelector";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
+import AcpModelSelector from "./AcpModelSelector";
 
 export type ProviderConfigPickerMode = "panel" | "inline";
 
@@ -41,6 +42,13 @@ interface ProviderConfigPickerProps {
   // Selecting an ACP vendor sets BOTH the kind and the id, so callers wire this
   // together with onProviderChange rather than as an independent control.
   onAcpProviderChange?: (providerId: string) => void;
+  // Per-chat ACP model, as the vendor names it. Empty = leave the vendor CLI's
+  // own configured model alone. Kept separate from the other providers' model
+  // values so switching the toggle restores each one's prior selection, the same
+  // way `model` / `claudeModel` / `codexModel` already do. Optional — callers
+  // that don't surface a per-chat ACP model omit it and the field hides.
+  acpModel?: string;
+  onAcpModelChange?: (model: string) => void;
   // `null` while /system-info is in flight — OR is treated as available until
   // we know otherwise (the disabled gate only kicks in on an explicit false).
   openRouterConfigured: boolean | null;
@@ -100,6 +108,8 @@ export default function ProviderConfigPicker({
   acpProviders,
   acpProviderId,
   onAcpProviderChange,
+  acpModel,
+  onAcpModelChange,
   openRouterConfigured,
   openRouterMaxBudgetUsd,
   onOpenApiSettings,
@@ -298,6 +308,32 @@ export default function ProviderConfigPicker({
       </div>
     ) : null;
 
+  // ACP model — only when the caller wired a change handler, like Codex's. There
+  // is no effort control: ACP has no reasoning-effort concept to map onto.
+  const acpControls =
+    provider === "acp" && onAcpModelChange !== undefined ? (
+      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
+        <label
+          htmlFor={inline ? "inlineAcpModel" : "newChatAcpModel"}
+          style={{ display: "block", fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}
+        >
+          Model
+        </label>
+        <AcpModelSelector
+          id={inline ? "inlineAcpModel" : "newChatAcpModel"}
+          value={acpModel ?? ""}
+          onChange={onAcpModelChange}
+          providerId={acpProviderId ?? ""}
+          placeholder={inline ? "(vendor default)" : "(leave empty to use the vendor's own configured model)"}
+        />
+        {!inline && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+            Suggestions come from models this agent has advertised before. Any model it does not have is refused outright rather than swapped for a default.
+          </div>
+        )}
+      </div>
+    ) : null;
+
   return (
     <>
       {showProviderToggle && (
@@ -405,11 +441,8 @@ export default function ProviderConfigPicker({
             })}
           </div>
           {provider === "acp" && !inline && (
-            // ACP model selection is the vendor's own: ACP 1.3.0 exposes models
-            // as a post-session config option, so there is nothing to pick here
-            // before the session exists. Saying so beats an empty Model field.
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-              Model and permissions for this harness are configured in its own CLI. Callboard still gates every tool call.
+              Credentials for this harness live in its own CLI. Callboard gates every tool call it makes.
             </div>
           )}
           {codexConfigured === false && provider === "codex" && (
@@ -466,6 +499,7 @@ export default function ProviderConfigPicker({
       {orControls}
       {claudeControls}
       {codexControls}
+      {acpControls}
     </>
   );
 }

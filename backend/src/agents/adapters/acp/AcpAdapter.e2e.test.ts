@@ -23,6 +23,7 @@ import { AcpAdapter } from "./AcpAdapter.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { acpTestAgentPreset } from "./__fixtures__/testAgent.js";
 import { AcpSessionProvider } from "./AcpSessionProvider.js";
+import { getAcpModelCatalog, resetAcpModelCatalogCache } from "./modelCatalog.js";
 import type { FakeAcpScenario } from "./__fixtures__/fake-acp-agent.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 
@@ -38,6 +39,9 @@ beforeEach(() => {
   originalDataDir = process.env.CALLBOARD_DATA_DIR;
   dataDir = mkdtempSync(join(tmpdir(), "cb-acp-e2e-"));
   process.env.CALLBOARD_DATA_DIR = dataDir;
+  // The model catalog is keyed by provider id and persisted under the data dir,
+  // so it has to be dropped with it or one test's catalog answers another's.
+  resetAcpModelCatalogCache();
 });
 
 afterEach(() => {
@@ -57,6 +61,8 @@ interface RunOptions {
   mcpServers?: Record<string, unknown>;
   /** Preset fields to override — e.g. a short `initializeTimeoutMs` for the wedge tests. */
   preset?: Partial<import("./vendors.js").AcpVendorPreset>;
+  /** The vendor model to request, applied after the session attaches. */
+  model?: string;
 }
 
 /** Drive one full turn against `scenario` and collect the normalized events. */
@@ -70,7 +76,11 @@ async function run(scenario: FakeAcpScenario, opts: RunOptions = {}): Promise<Ag
       ...(opts.abortController ? { abortController: opts.abortController } : {}),
       ...(opts.canUseTool ? { canUseTool: opts.canUseTool } : {}),
       ...(opts.mcpServers ? { mcpServers: opts.mcpServers } : {}),
-      acp: { preset: acpTestAgentPreset(scenario, opts.preset ?? {}), getPermissions: opts.getPermissions ?? (() => opts.permissions ?? null) },
+      acp: {
+        preset: acpTestAgentPreset(scenario, opts.preset ?? {}),
+        getPermissions: opts.getPermissions ?? (() => opts.permissions ?? null),
+        ...(opts.model ? { model: opts.model } : {}),
+      },
     },
   });
 
@@ -551,6 +561,79 @@ describe("model discovery", () => {
       } finally {
         await query.close();
       }
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+describe("model selection", () => {
+  it(
+    "applies the requested model before prompting, and reports it as current",
+    async () => {
+      const adapter = new AcpAdapter("test-double");
+      const query = adapter.query({
+        prompt: "hi",
+        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("config-options"), getPermissions: () => allowAll, model: "vendor/slow" } },
+      });
+      try {
+        const events: AgentEvent[] = [];
+        for await (const event of query) events.push(event);
+        // The turn ran — a rejected model would have ended it before the prompt.
+        expect(events.at(-1)).toMatchObject({ type: "result", status: "success" });
+        // `set_config_option` echoes the whole option set back, and the query
+        // adopts it, so this reflects the agent's state rather than our request.
+        expect(await query.supportedModels()).toContainEqual({ value: "vendor/slow", displayName: "Slow", description: "Thinks harder" });
+      } finally {
+        await query.close();
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "fails the turn when the agent rejects the model, instead of running on its default",
+    async () => {
+      const events = await run("config-options", { prompt: "hi", model: "vendor/does-not-exist" });
+      // Silently falling through would run — and bill — on a model the user did
+      // not choose, which is worse than an error naming the problem.
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: "result", status: "error" });
+      expect((events[0] as { reason: string }).reason).toContain("vendor/does-not-exist");
+      expect((events[0] as { reason: string }).reason).toContain("model not found");
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "fails clearly when the agent advertises no model option at all",
+    async () => {
+      // The "basic" double returns no configOptions, so there is no config id to
+      // send — the request would come back as `unknown config option`, which is
+      // a worse message than saying so up front.
+      const events = await run("basic", { prompt: "hi", model: "anything" });
+      expect(events).toHaveLength(1);
+      expect((events[0] as { reason: string }).reason).toContain("advertises no model option");
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "leaves the agent's own default alone when no model is requested",
+    async () => {
+      const events = await run("config-options", { prompt: "hi" });
+      expect(events.at(-1)).toMatchObject({ type: "result", status: "success" });
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "banks the catalog for the picker, from the session it was already opening",
+    async () => {
+      await run("config-options", { prompt: "hi" });
+      // Nothing is spawned for discovery — a promptless ACP session persists in
+      // the vendor's own store. See modelCatalog.ts.
+      const catalog = getAcpModelCatalog("test-double");
+      expect(catalog?.models.map((m) => m.value)).toEqual(["vendor/fast", "vendor/slow"]);
     },
     TEST_TIMEOUT,
   );

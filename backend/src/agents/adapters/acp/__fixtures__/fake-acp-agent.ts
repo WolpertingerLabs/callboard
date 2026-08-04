@@ -31,6 +31,7 @@ import {
   methods,
   ndJsonStream,
   PROTOCOL_VERSION,
+  RequestError,
   type AgentContext,
   type InitializeResponse,
   type NewSessionRequest,
@@ -437,6 +438,27 @@ createAgentApp({ name: "fake-acp-agent" })
     sessions.set(sessionId, { pending: null, prompts: [] });
     mcpServersBySession.set(sessionId, ctx.params.mcpServers ?? []);
     return scenario === "config-options" ? { sessionId, configOptions: MODEL_CONFIG_OPTIONS } : { sessionId };
+  })
+  .onRequest(methods.agent.session.setConfigOption, (ctx) => {
+    // Mirrors what OpenCode really does: unknown option id and unknown value are
+    // both `Invalid params` errors, and a successful set echoes the WHOLE option
+    // set back with `currentValue` updated.
+    const { configId, value } = ctx.params as { configId?: string; value?: unknown };
+    const option = MODEL_CONFIG_OPTIONS.find((o) => o.id === configId);
+    // RequestError, not a bare Error: the SDK maps an untyped throw onto a
+    // generic "Internal error", and a real agent answers with a typed
+    // `Invalid params` whose message reaches the client. The double has to be
+    // faithful about that, or the adapter's error path is tested against a
+    // message no vendor sends.
+    if (!option) throw RequestError.invalidParams(undefined, `unknown config option: ${configId}`);
+    const known = new Set<string>();
+    for (const entry of (option as { options?: unknown[] }).options ?? []) {
+      const group = (entry as { options?: unknown[] }).options;
+      for (const candidate of group ?? [entry]) known.add(String((candidate as { value?: unknown }).value));
+    }
+    if (typeof value !== "string" || !known.has(value)) throw RequestError.invalidParams(undefined, `model not found: ${String(value)}`);
+    (option as { currentValue?: string }).currentValue = value;
+    return { configOptions: MODEL_CONFIG_OPTIONS };
   })
   .onRequest(methods.agent.session.resume, (ctx) => {
     // Re-attach WITHOUT replaying history — that is the whole point of resume.

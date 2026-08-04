@@ -555,6 +555,29 @@ export class AcpAgentClient {
   }
 
   /**
+   * Set one of the session's config options, e.g. the model.
+   *
+   * ACP 1.3.0 has no models API — a model is just a `SessionConfigOption` whose
+   * `category` is `"model"`, so selecting one is `session/set_config_option`
+   * after the session exists. That ordering is forced by the protocol, not a
+   * choice: there is nowhere on `session/new` to ask for a model.
+   *
+   * Returns the agent's updated `configOptions` (it echoes the whole set back,
+   * with `currentValue` reflecting the change), so a caller can confirm what it
+   * actually got rather than assume the request took.
+   *
+   * Deliberately does NOT swallow errors. A rejected model is reported as
+   * `Invalid params: model not found: …` and the caller's job is to fail the
+   * turn — quietly continuing would run, and bill, on a model the user did not
+   * choose.
+   */
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<SessionConfigOption[] | null> {
+    const conn = this.requireConnection();
+    const res = await conn.agent.request(methods.agent.session.setConfigOption, { sessionId, configId, value } as never);
+    return (res as { configOptions?: SessionConfigOption[] } | null)?.configOptions ?? null;
+  }
+
+  /**
    * Wait briefly for the agent's `available_commands_update`, for vendors whose
    * command list lands just after `session/new`.
    *

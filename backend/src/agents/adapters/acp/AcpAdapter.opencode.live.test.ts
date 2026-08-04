@@ -39,6 +39,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpAdapter } from "./AcpAdapter.js";
 import { ACP_VENDOR_PRESETS } from "./vendors.js";
+import { getAcpModelCatalog, resetAcpModelCatalogCache } from "./modelCatalog.js";
 import type { AgentEvent } from "../../ports/events.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 
@@ -65,6 +66,7 @@ beforeEach(() => {
   originalDataDir = process.env.CALLBOARD_DATA_DIR;
   dataDir = mkdtempSync(join(tmpdir(), "cb-acp-live-"));
   process.env.CALLBOARD_DATA_DIR = dataDir;
+  resetAcpModelCatalogCache();
 });
 
 afterEach(() => {
@@ -90,7 +92,7 @@ interface LiveRun {
   sessionId: string;
 }
 
-async function run(opts: { cwd: string; prompt: string; permissions: DefaultPermissions; resume?: string; allow?: boolean }): Promise<LiveRun> {
+async function run(opts: { cwd: string; prompt: string; permissions: DefaultPermissions; resume?: string; allow?: boolean; model?: string }): Promise<LiveRun> {
   const adapter = new AcpAdapter("opencode");
   const prompted: string[] = [];
   const query = adapter.query({
@@ -100,7 +102,7 @@ async function run(opts: { cwd: string; prompt: string; permissions: DefaultPerm
       ...(opts.resume ? { resume: opts.resume } : {}),
       // The real preset, not a test-local one — the point is to exercise what
       // ships, including its injected permission config.
-      acp: { preset: ACP_VENDOR_PRESETS.opencode, getPermissions: () => opts.permissions },
+      acp: { preset: ACP_VENDOR_PRESETS.opencode, getPermissions: () => opts.permissions, ...(opts.model ? { model: opts.model } : {}) },
       canUseTool: async (toolName: string, input: Record<string, unknown>) => {
         prompted.push(toolName);
         return opts.allow === false ? { behavior: "deny" as const } : { behavior: "allow" as const, updatedInput: input };
@@ -212,6 +214,49 @@ describeLive("OpenCode over ACP (live)", () => {
       } finally {
         await query.close();
       }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "runs on the model callboard asked for, not the vendor's configured default",
+    async () => {
+      // The scratch project pins nemotron; ask for a different free model and
+      // check the agent actually switched. `supportedModels()` reflects the
+      // agent's echoed config, so it is its answer rather than ours.
+      const { events } = await run({
+        cwd: project(),
+        prompt: "Reply with exactly: OK",
+        permissions: allowAll,
+        model: "opencode/mimo-v2.5-free",
+      });
+      expect(events.at(-1)).toMatchObject({ type: "result", status: "success" });
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "fails the turn on a model the vendor does not have",
+    async () => {
+      const { events } = await run({ cwd: project(), prompt: "hi", permissions: allowAll, model: "opencode/not-a-real-model" });
+      // One event, and it is the error: nothing was prompted, so nothing was
+      // billed against a model the user did not choose.
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: "result", status: "error" });
+      expect((events[0] as { reason: string }).reason).toContain("not-a-real-model");
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "banks the catalog from a chat, with no extra session opened",
+    async () => {
+      // A promptless session persists in OpenCode's own store, so discovery
+      // rides on sessions that were happening anyway. See modelCatalog.ts.
+      await run({ cwd: project(), prompt: "Reply with exactly: OK", permissions: allowAll });
+      const catalog = getAcpModelCatalog("opencode");
+      expect(catalog?.models.length).toBeGreaterThan(0);
+      expect(catalog?.models.some((m) => m.value.startsWith("opencode/"))).toBe(true);
     },
     TEST_TIMEOUT,
   );

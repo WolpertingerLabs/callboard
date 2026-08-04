@@ -326,6 +326,28 @@ turns "we support 4 agents" into "we support any ACP agent".
 **Phase 4 — parity polish.** Slash commands, modes/thinking levels, model selection where
 advertised, cost/usage reporting into `TokenUsage`, model-alias integration.
 
+> **Model selection landed 2026-08-04.** ACP has no models API; a model is a
+> `SessionConfigOption` with `category: "model"`, so the adapter applies one with
+> `session/set_config_option` **after** attaching. A model the agent does not have fails
+> the turn with the vendor's own message rather than falling back — running on a model the
+> user did not pick would bill them for it.
+>
+> The catalog is **harvested, not probed**. The obvious design is `codex-models.ts`'s: ask
+> the vendor once at startup and cache it. That is wrong here, for a reason specific to the
+> protocol — a promptless ACP session _persists_, so probing leaves a
+> `New session - <timestamp>` entry in the user's own store on every daemon start (verified
+> with `opencode session list`). Instead every real chat's `session/new` already returns the
+> catalog, and `modelCatalog.ts` banks it there. Cold start costs a vendor its suggestions
+> until its first chat, which is exactly the free-text state the Codex selector already
+> handles.
+>
+> Still open in this phase: **modes** (OpenCode advertises a `build`/`plan` selector through
+> the same mechanism, so it is the same call with a different `configId`), **cost** —
+> OpenCode reports `cost: {amount, currency}` on `usage_update`, which is session-cumulative
+> rather than per-turn and so does not fit `TokenUsage` as-is — and **model aliases**, which
+> `HarnessProvider` deliberately excludes ACP from (an alias names a model id up front; ACP
+> has nowhere to put one, and one kind covers vendors with unrelated catalogs).
+
 ---
 
 ## Non-goals

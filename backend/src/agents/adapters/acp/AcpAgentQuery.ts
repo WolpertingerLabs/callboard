@@ -40,6 +40,7 @@ import type { DefaultPermissions } from "shared/types/index.js";
 import { createLogger } from "../../../utils/logger.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
 import { AcpToolCallBuffer, buildAcpUsage, mapStopReason, translateAcpUpdate } from "./messageAdapter.js";
+import { acpModelConfigId, extractAcpModels, recordAcpModels } from "./modelCatalog.js";
 import type { CanUseToolFn } from "./permissionAdapter.js";
 import type { AcpToolServerHandle } from "./toolAdapter.js";
 import { AcpTranscriptWriter } from "./transcript.js";
@@ -53,6 +54,13 @@ export interface AcpQueryParams {
   prompt: string | AsyncIterable<unknown>;
   /** Session to re-attach to, when this is a follow-up message. */
   resumeSessionId?: string;
+  /**
+   * Model the chat should run on, as the vendor names it (e.g.
+   * `"opencode/nemotron-3-ultra-free"`). Applied AFTER the session exists —
+   * ACP has no way to request one on `session/new` — and an empty value means
+   * "whatever the agent's own configuration already selected".
+   */
+  model?: string;
   /**
    * Live accessor for callboard's four-axis defaults, forwarded to the
    * permission adapter. A getter rather than a value so the policy is read at
@@ -145,6 +153,42 @@ export class AcpAgentQuery implements AgentQuery {
       this.sessionId = session.sessionId;
       this.configOptions = session.configOptions ?? [];
 
+      // Everything the agent advertised about its models, banked for the
+      // picker. Free, because this session was being opened anyway — see
+      // modelCatalog.ts for why nothing is spawned to discover it.
+      recordAcpModels(preset.id, session.configOptions, new Date().toISOString());
+
+      // Apply the requested model before the prompt goes out, and fail the turn
+      // if the agent refuses it. Falling through to the agent's default would
+      // run — and bill — on a model the user did not pick, which is worse than
+      // an error that names the problem.
+      const requestedModel = this.params.model?.trim();
+      if (requestedModel) {
+        // The agent's own name for its model selector, not a hardcoded "model":
+        // `category` is the standardized hint, `id` is what set_config_option
+        // takes, and an agent offering neither cannot honour the request at all.
+        const configId = acpModelConfigId(session.configOptions);
+        if (!configId) {
+          const reason = `ACP agent "${preset.id}" advertises no model option, so it cannot run on "${requestedModel}"`;
+          log.error(reason);
+          yield { type: "result", status: "error", reason };
+          return;
+        }
+        try {
+          const updated = await client.setConfigOption(session.sessionId, configId, requestedModel);
+          if (updated) {
+            this.configOptions = updated;
+            recordAcpModels(preset.id, updated, new Date().toISOString());
+          }
+          log.info(`ACP session ${session.sessionId} set model=${requestedModel}`);
+        } catch (err) {
+          const reason = `ACP agent "${preset.id}" rejected model "${requestedModel}": ${err instanceof Error ? err.message : String(err)}`;
+          log.error(reason);
+          yield { type: "result", status: "error", reason };
+          return;
+        }
+      }
+
       transcript = new AcpTranscriptWriter(preset.id, session.sessionId, cwd);
       // Only a genuinely new session gets a header; a resumed one appends to the
       // file that already opens with the original.
@@ -224,42 +268,14 @@ export class AcpAgentQuery implements AgentQuery {
    * model list, where an agent offers one at all, is a `select` config option
    * returned by `session/new`.
    *
-   * That means this can only answer *after* a session exists. Before then the
-   * honest answer is an empty list, not a guessed catalog — see the Phase 1
-   * report; wiring model selection properly is Phase 4 work.
+   * That means this can only answer *after* a session exists; before then the
+   * honest answer is an empty list, not a guessed catalog. The list a user picks
+   * from in the New Chat panel therefore comes from `modelCatalog.ts`, which
+   * banks what past sessions reported — the same projection, applied to the same
+   * data, one turn earlier.
    */
   async supportedModels(): Promise<Array<{ value: string; displayName: string; description: string }>> {
-    const modelOption = this.configOptions.find((o) => o?.category === "model" && o.type === "select");
-    if (!modelOption || modelOption.type !== "select") return [];
-    const options = modelOption.options;
-    if (!Array.isArray(options)) return [];
-    const models: Array<{ value: string; displayName: string; description: string }> = [];
-    for (const entry of options) {
-      if (!entry || typeof entry !== "object") continue;
-      // A select's options are either flat values or groups of them; flatten
-      // both shapes rather than assuming one.
-      const group = (entry as { options?: unknown }).options;
-      const candidates = Array.isArray(group) ? group : [entry];
-      for (const candidate of candidates) {
-        if (!candidate || typeof candidate !== "object") continue;
-        // `value`, not `id`. `SessionConfigSelectOption` in the pinned schema
-        // requires `{value, name}` — `id` is the identifier of the *enclosing*
-        // `SessionConfigOption` (the "model" selector itself), not of one
-        // selectable value. Reading `id` here matched nothing a conformant agent
-        // sends, so this returned [] for every vendor; OpenCode's 40-model list
-        // was the first live proof.
-        const value = (candidate as { value?: unknown }).value;
-        if (typeof value !== "string" || !value) continue;
-        const name = (candidate as { name?: unknown }).name;
-        const description = (candidate as { description?: unknown }).description;
-        models.push({
-          value,
-          displayName: typeof name === "string" && name ? name : value,
-          description: typeof description === "string" && description ? description : value,
-        });
-      }
-    }
-    return models;
+    return extractAcpModels(this.configOptions).models;
   }
 
   /**

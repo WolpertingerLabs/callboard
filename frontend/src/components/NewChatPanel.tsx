@@ -26,6 +26,8 @@ import {
   saveDefaultCodexModel,
   getDefaultAcpProviderId,
   saveDefaultAcpProviderId,
+  getDefaultAcpModel,
+  saveDefaultAcpModel,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -110,6 +112,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // there are no buttons to render at all, so there is no optimistic case.
   const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>([]);
   const [acpProviderId, setAcpProviderId] = useState<string>(getDefaultAcpProviderId);
+  // Per-chat ACP model, as the vendor names it. Empty = leave the vendor CLI's
+  // own configured model alone; there is no callboard-side global ACP default,
+  // because one kind covers many vendors whose catalogs share nothing.
+  const [acpModel, setAcpModel] = useState<string>(getDefaultAcpModel);
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -162,9 +168,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   };
 
   // Each provider carries its own model selection; forward the matching one.
-  // ACP has none to forward: ACP 1.3.0 exposes models only as a post-session
-  // config option, so there is nothing a New Chat panel could pick.
-  const modelForProvider = (p: AgentProviderKind): string => (p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? "" : claudeModel);
+  // ACP's is the vendor's own model id, applied after the session attaches.
+  const modelForProvider = (p: AgentProviderKind): string => (p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? acpModel : claudeModel);
 
   const confirmRemoveRecentDir = () => {
     removeRecentDirectory(confirmModal.path);
@@ -190,6 +195,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultClaudeModel(claudeModel);
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
+    saveDefaultAcpModel(acpModel);
     // Runtime guard: only downgrade to claude-code when we KNOW the chosen
     // provider is not configured. While still loading (null), trust the user's
     // choice — sendMessage rejects loudly if creds are missing, so we get a
@@ -232,6 +238,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultClaudeModel(claudeModel);
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
+    saveDefaultAcpModel(acpModel);
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -465,6 +472,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               acpProviders={acpProviders}
               acpProviderId={acpProviderId}
               onAcpProviderChange={setAcpProviderId}
+              acpModel={acpModel}
+              onAcpModelChange={setAcpModel}
               effort={effort}
               onEffortChange={setEffort}
               model={model}
@@ -694,6 +703,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               acpProviders={acpProviders}
               acpProviderId={acpProviderId}
               onAcpProviderChange={setAcpProviderId}
+              acpModel={acpModel}
+              onAcpModelChange={setAcpModel}
               effort={effort}
               onEffortChange={setEffort}
               model={model}

@@ -1060,7 +1060,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // agentSettings.openRouterModel (OR config block below); claude-code
       // chats pass it to the SDK as options.model. Ignored for other
       // providers (codex/mock).
-      ...(opts.model && (opts.provider === "openrouter" || (opts.provider ?? "claude-code") === "claude-code") && { model: opts.model }),
+      // ...and for acp, where it names one of the vendor's own models and is
+      // applied via `session/set_config_option` once the session exists.
+      ...(opts.model &&
+        (opts.provider === "openrouter" || opts.provider === "acp" || (opts.provider ?? "claude-code") === "claude-code") && { model: opts.model }),
       // Pin model routing (OpenRouter-only). When on, the classifier below picks
       // the model for this chat and a reclassify_model tool is exposed. Follow-up
       // messages inherit the flag + chosen rank so re-classification keeps working.
@@ -1652,13 +1655,20 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // tier chosen at thread start — ACP gates per call, so the defaults are only
   // the FIRST half of the decision: the adapter consults them, and anything
   // resolving to "ask" escalates through the `canUseTool` already on
-  // `queryOpts.options` (the same callback Claude Code uses). No model or effort
-  // knob is set here: ACP 1.3.0 exposes models only as a post-session config
-  // option and has no reasoning-effort concept at all, so there is nothing
-  // honest to pass. See the adapter's `supportedModels` doc-comment.
+  // `queryOpts.options` (the same callback Claude Code uses). A model IS passed
+  // now — ACP exposes models only as a post-session config option, so the
+  // adapter applies it with `session/set_config_option` after attaching rather
+  // than requesting it on `session/new`. There is still no effort knob: ACP has
+  // no reasoning-effort concept at all, so there would be nothing honest to send.
   if (providerKind === "acp") {
+    // The vendor's own model id, e.g. "opencode/nemotron-3-ultra-free". Empty
+    // means "whatever the vendor CLI is already configured for" — callboard has
+    // no global ACP model default to fall back to, because one kind covers many
+    // vendors whose catalogs share nothing.
+    const acpModel = typeof initialMetadata.model === "string" && initialMetadata.model.trim() ? initialMetadata.model.trim() : undefined;
     queryOpts.options.acp = {
       ...(acpProviderId && { providerId: acpProviderId }),
+      ...(acpModel && { model: acpModel }),
       // The accessor, not its value. `toolPermissionPolicy` above holds this
       // same function and calls it per tool call; handing the adapter a
       // snapshot taken here would let pass 1 auto-allow on a policy the user
@@ -1667,7 +1677,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // moment of reading it.
       getPermissions: getDefaultPermissions,
     };
-    log.info(`ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}`);
+    log.info(`ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}, model=${acpModel ?? "(agent default)"}`);
   }
 
   log.debug(

@@ -75,6 +75,12 @@ export interface AcpRunOptions {
    * asymmetry rule 1 of the two-pass rule forbids. See ./permissionAdapter.ts.
    */
   getPermissions?: () => DefaultPermissions | null;
+  /**
+   * The vendor's own model id for this chat (e.g. `"opencode/gpt-5.5"`).
+   * Applied after the session is attached; empty means the vendor's own
+   * configured default stands.
+   */
+  model?: string;
   /** Extra environment for the spawned agent. */
   env?: Record<string, string | undefined>;
 }
@@ -97,13 +103,19 @@ export class AcpAdapter implements AgentProvider {
     }
 
     const cwd = typeof options.cwd === "string" && options.cwd ? options.cwd : process.cwd();
+    // The chat's per-run model, from the `acp` sub-object — the same shape
+    // `options.codex.model` and `options.openRouter.model` use, rather than the
+    // top-level `options.model`, which claude.ts populates only for Claude Code.
+    // ACP cannot request a model on `session/new`, so the query applies it once
+    // the session exists.
+    const model = typeof acp.model === "string" && acp.model.trim() ? acp.model.trim() : undefined;
     const resumeSessionId = typeof options.resume === "string" && options.resume ? options.resume : undefined;
     const externalSignal = (options.abortController as AbortController | undefined)?.signal;
     const canUseTool = typeof options.canUseTool === "function" ? (options.canUseTool as CanUseToolFn) : undefined;
     const toolServerHandles = collectAcpToolServers(options.mcpServers);
 
     log.debug(
-      `query() — provider=${preset.id}, cwd=${cwd}, resume=${resumeSessionId ?? "none"}, ` +
+      `query() — provider=${preset.id}, cwd=${cwd}, resume=${resumeSessionId ?? "none"}, model=${model ?? "(agent default)"}, ` +
         `toolServers=${toolServerHandles.length}, canUseTool=${canUseTool ? "yes" : "no"}`,
     );
 
@@ -112,6 +124,7 @@ export class AcpAdapter implements AgentProvider {
       cwd,
       prompt: req.prompt,
       ...(resumeSessionId && { resumeSessionId }),
+      ...(model && { model }),
       ...(acp.getPermissions && { getPermissions: acp.getPermissions }),
       ...(canUseTool && { canUseTool }),
       ...(externalSignal && { externalSignal }),
