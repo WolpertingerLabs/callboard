@@ -32,7 +32,7 @@
  * | `current_mode_update`       | `adapter_specific`                          |
  * | `config_option_update`      | `adapter_specific`                          |
  * | `session_info_update`       | `adapter_specific`                          |
- * | `usage_update`              | `adapter_specific`                          |
+ * | `usage_update`              | `adapter_specific`, plus a `turn_cost` beacon when it carries a USD cost |
  * | *anything else*             | `adapter_specific`                          |
  *
  * Two mappings deserve their reasoning spelled out:
@@ -267,13 +267,20 @@ function translateKnownUpdate(kind: string, update: SessionUpdate, buffer: AcpTo
       return commands.length > 0 ? [{ type: "slash_commands", commands }] : [];
     }
 
+    case "usage_update": {
+      // Rides through like its neighbours, plus a cost beacon when the agent
+      // reported one — see `acpTurnCost`.
+      const passthrough = adapterSpecific(kind, stripDiscriminator(update));
+      const cost = acpTurnCost((update as { cost?: unknown }).cost);
+      return cost === null ? [passthrough] : [passthrough, adapterSpecific("turn_cost", { costUsd: cost })];
+    }
+
     case "plan":
     case "plan_update":
     case "plan_removed":
     case "current_mode_update":
     case "config_option_update":
     case "session_info_update":
-    case "usage_update":
       // Real, well-formed ACP signals with no home in the core AgentEvent union.
       // Riding them through keeps the data available to any future consumer
       // without inventing event types the frontend does not render.
@@ -283,6 +290,31 @@ function translateKnownUpdate(kind: string, update: SessionUpdate, buffer: AcpTo
       log.debug(`unrecognized sessionUpdate "${kind}" — riding through as adapter_specific`);
       return [adapterSpecific(kind, stripDiscriminator(update))];
   }
+}
+
+/**
+ * ACP's cumulative session cost, in USD, or null when there is nothing usable.
+ *
+ * `UsageUpdate.cost` is `{amount, currency}` with an ISO 4217 code, and it is
+ * **cumulative for the session** rather than for the turn — the same semantics
+ * the OpenRouter adapter's `turn_cost` beacon already carries, which is why this
+ * reuses that kind rather than inventing a second one. `services/claude.ts`
+ * forwards it as a live `budget` StreamEvent, so an ACP chat moves the spend
+ * indicator mid-run like every other provider.
+ *
+ * **Only USD passes.** The field it feeds is named `costUsd` and the UI renders
+ * it with a dollar sign, so a vendor billing in EUR would have its number
+ * relabelled rather than converted. Showing no cost is the honest outcome there;
+ * a wrong currency is worse than a missing one. Zero is a real answer and is
+ * reported — OpenCode's free models genuinely cost nothing, and suppressing that
+ * would look like "no data" instead of "no charge".
+ */
+export function acpTurnCost(cost: unknown): number | null {
+  if (!cost || typeof cost !== "object") return null;
+  const { amount, currency } = cost as { amount?: unknown; currency?: unknown };
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) return null;
+  if (typeof currency !== "string" || currency.trim().toUpperCase() !== "USD") return null;
+  return amount;
 }
 
 function commandName(command: AvailableCommand | null | undefined): string | null {

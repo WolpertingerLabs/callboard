@@ -187,6 +187,32 @@ describe("translateAcpUpdate — the escape hatch", () => {
     expect(event).toMatchObject({ type: "adapter_specific", adapter: "acp", payload: { kind: "from_the_future", data: 7 } });
   });
 
+  it("emits a turn_cost beacon beside the usage passthrough when a USD cost arrives", () => {
+    // ACP's cost is cumulative for the session, which is the same shape the
+    // OpenRouter adapter's `turn_cost` already carries — so it reuses that kind
+    // and claude.ts forwards both through one branch.
+    const events = tr(asUpdate({ sessionUpdate: "usage_update", used: 100, size: 200000, cost: { amount: 0.42, currency: "USD" } }));
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ payload: { kind: "usage_update", used: 100 } });
+    expect(events[1]).toMatchObject({ type: "adapter_specific", adapter: "acp", payload: { kind: "turn_cost", costUsd: 0.42 } });
+  });
+
+  it("reports a zero cost rather than suppressing it", () => {
+    // OpenCode's free models genuinely cost nothing. Dropping the beacon would
+    // render as "no data" instead of "no charge".
+    const events = tr(asUpdate({ sessionUpdate: "usage_update", used: 1, size: 2, cost: { amount: 0, currency: "USD" } }));
+    expect(events[1]).toMatchObject({ payload: { kind: "turn_cost", costUsd: 0 } });
+  });
+
+  it("refuses to relabel a non-USD cost as dollars", () => {
+    // The field is `costUsd` and the UI prints a dollar sign, so a EUR amount
+    // would be mislabelled rather than converted. No cost beats a wrong one.
+    for (const cost of [{ amount: 1, currency: "EUR" }, { amount: 1 }, { amount: "1", currency: "USD" }, { amount: -1, currency: "USD" }, null, "free"]) {
+      const events = tr(asUpdate({ sessionUpdate: "usage_update", used: 1, size: 2, cost }));
+      expect(events).toHaveLength(1);
+    }
+  });
+
   it("does NOT map usage_update onto result.usage", () => {
     // ACP's UsageUpdate is context-window occupancy ({used, size}), not tokens
     // billed for the turn. Putting it in TokenUsage would be a category error.
