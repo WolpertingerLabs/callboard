@@ -131,7 +131,7 @@ export function readAcpTranscriptCwd(filePath: string): string {
  *
  * The mapping is nearly an identity — the transcript already holds normalized
  * {@link AgentEvent}s, which is the whole reason the writer stores them
- * post-normalization. Only four things need care:
+ * post-normalization. Only five things need care:
  *
  *  - **Consecutive `text` events are one assistant message, and so are
  *    consecutive `thinking` events.** ACP streams `agent_message_chunk` and
@@ -146,8 +146,12 @@ export function readAcpTranscriptCwd(filePath: string): string {
  *    collapsed "Thinking..." rows stacked above the reply.
  *  - **`result` events are not messages.** They terminate a turn; the usage they
  *    carry is attached to the assistant message they close.
- *  - **`adapter_specific` is not rendered.** It exists so data is not lost, not
- *    so it appears in the transcript view.
+ *  - **`adapter_specific` is not rendered, but it is read.** It still produces no
+ *    message of its own — it exists so data is not lost, not so it appears in
+ *    the transcript view — and two of its payloads (`turn_model`, `turn_cost`)
+ *    annotate messages that already exist. See "Per-turn metrics" below for why
+ *    the model and the spend arrive that way rather than on an event of their
+ *    own.
  *  - **`user_message` lines are the user's turns.** They are not events (the
  *    agent never sent them), so they arrive as their own line type — see
  *    {@link AcpTranscriptUserMessage}. A transcript written before that line
@@ -166,14 +170,15 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   const flushText = (): void => {
     if (!pendingText) return;
     const content = pendingText.content.join("");
-    if (content.trim()) messages.push({ role: "assistant", type: "text", content, timestamp: pendingText.timestamp });
+    if (content.trim()) messages.push({ role: "assistant", type: "text", content, timestamp: pendingText.timestamp, ...(turnModel && { model: turnModel }) });
     pendingText = null;
   };
 
   const flushThinking = (): void => {
     if (!pendingThinking) return;
     const content = pendingThinking.content.join("");
-    if (content.trim()) messages.push({ role: "assistant", type: "thinking", content, timestamp: pendingThinking.timestamp });
+    if (content.trim())
+      messages.push({ role: "assistant", type: "thinking", content, timestamp: pendingThinking.timestamp, ...(turnModel && { model: turnModel }) });
     pendingThinking = null;
   };
 
@@ -181,6 +186,78 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   const flush = (): void => {
     flushText();
     flushThinking();
+  };
+
+  // ── Per-turn metrics ───────────────────────────────────────────────
+  //
+  // ACP reports what a turn cost in three different places and none of them is
+  // an event about a message: the model is a *session config option*, token
+  // counts ride on `PromptResponse.usage` (the turn's terminal `result`), and
+  // spend arrives as a cumulative `usage_update`. So none of it lands on a
+  // ParsedMessage unless this parser puts it there — which is why an ACP chat
+  // showed no model under its replies and produced no rows at all in the debug
+  // panel, whose whole selector is `role === "assistant" && usage`.
+  //
+  // Attribution is turn-scoped. `turnStart` is where the current turn's output
+  // begins, so the terminal `result` can find the reply *it* closed rather than
+  // whatever assistant message happens to be last in the file.
+  let turnModel: string | undefined;
+  let turnStart = 0;
+  /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
+  let cumulativeCostUsd: number | null = null;
+  /** Spend attributable to the turn in progress, differenced on arrival. */
+  let turnCostUsd: number | null = null;
+
+  /** Begin a new turn's attribution window. Model carries over until changed. */
+  const startTurn = (): void => {
+    turnStart = messages.length;
+  };
+
+  /**
+   * Attach the turn's metrics to the assistant message its `result` closed.
+   *
+   * The last assistant message of the turn, whatever kind — usually the reply,
+   * but a turn that ended on a tool call has only that, and pinning the numbers
+   * to something is better than dropping them. A turn that produced no
+   * assistant message at all (an error before the agent spoke) gets nothing,
+   * which is correct: there is nothing to attach to.
+   */
+  const closeTurn = (usage: { inputTokens: number; outputTokens: number } | undefined, durationMs: number | undefined): void => {
+    for (let i = messages.length - 1; i >= turnStart; i--) {
+      const message = messages[i];
+      if (message.role !== "assistant") continue;
+      if (usage) message.usage = { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens };
+      if (durationMs != null) message.durationMs = durationMs;
+      if (turnCostUsd != null) message.costUsd = turnCostUsd;
+      break;
+    }
+    turnCostUsd = null;
+    startTurn();
+  };
+
+  /**
+   * Read the two `adapter_specific` beacons that carry turn metrics.
+   *
+   * `adapter_specific` is otherwise not rendered, and that stays true — these
+   * are not projected into messages of their own, they only annotate messages
+   * that already exist. Anything else riding through is ignored, as before.
+   */
+  const applyAdapterMetric = (payload: unknown): void => {
+    if (!payload || typeof payload !== "object") return;
+    const { kind, model, costUsd } = payload as { kind?: unknown; model?: unknown; costUsd?: unknown };
+    if (kind === "turn_model" && typeof model === "string" && model.trim()) {
+      turnModel = model.trim();
+      return;
+    }
+    if (kind === "turn_cost" && typeof costUsd === "number" && Number.isFinite(costUsd)) {
+      // Cumulative for the session, so a turn's own spend is the step since the
+      // last beacon. Zero is a real answer — OpenCode's free models genuinely
+      // cost nothing — so it is reported rather than suppressed. A figure that
+      // went *backwards* (a resumed session whose agent restarted its counter)
+      // is treated as a fresh baseline instead of a negative charge.
+      turnCostUsd = cumulativeCostUsd === null || costUsd < cumulativeCostUsd ? costUsd : costUsd - cumulativeCostUsd;
+      cumulativeCostUsd = costUsd;
+    }
   };
 
   for (const line of lines) {
@@ -218,6 +295,7 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
           toolName: event.toolName,
           toolUseId: event.callId,
           timestamp,
+          ...(turnModel && { model: turnModel }),
         });
         break;
 
@@ -228,12 +306,24 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
 
       case "result":
         flush();
+        closeTurn(event.usage, event.durationMs);
         break;
 
       case "session_started":
+        // Emitted once per turn — the adapter spawns a fresh agent each time —
+        // so it doubles as the marker for where a turn's output begins. A
+        // transcript that predates per-turn metrics still parses: the window is
+        // only ever used to *find* a message to annotate.
+        flush();
+        startTurn();
+        break;
+
+      case "adapter_specific":
+        applyAdapterMetric(event.payload);
+        break;
+
       case "slash_commands":
       case "compaction_boundary":
-      case "adapter_specific":
         // Not user-visible transcript content.
         break;
     }

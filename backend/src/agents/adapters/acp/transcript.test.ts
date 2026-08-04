@@ -222,6 +222,119 @@ describe("reading transcripts back", () => {
   });
 });
 
+describe("per-turn metrics", () => {
+  // None of this rides on an event about a message: ACP puts the model on a
+  // session config option, tokens on the turn's terminal result, and spend on a
+  // cumulative beacon. Without this projection an ACP chat showed no model under
+  // its replies and produced zero rows in the debug panel, whose whole selector
+  // is `role === "assistant" && usage`.
+  function turn(
+    writer: AcpTranscriptWriter,
+    opts: { model?: string; prompt: string; reply: string; cumulativeCost?: number; usage?: { inputTokens: number; outputTokens: number } },
+  ) {
+    writer.writeEvent({ type: "session_started", sessionId: "s" } as never);
+    if (opts.model) writer.writeEvent({ type: "adapter_specific", adapter: "acp", payload: { kind: "turn_model", model: opts.model } } as never);
+    writer.writeUserMessage(opts.prompt);
+    writer.writeEvent({ type: "text", content: opts.reply } as never);
+    if (opts.cumulativeCost != null) {
+      writer.writeEvent({ type: "adapter_specific", adapter: "acp", payload: { kind: "turn_cost", costUsd: opts.cumulativeCost } } as never);
+    }
+    writer.writeEvent({ type: "result", status: "success", ...(opts.usage && { usage: opts.usage }) } as never);
+  }
+
+  it("labels a turn's messages with the model it ran on", () => {
+    const writer = new AcpTranscriptWriter("opencode", "m1", "/work");
+    writer.writeHeader(null);
+    turn(writer, { model: "opencode/big-pickle", prompt: "hi", reply: "hello", usage: { inputTokens: 10, outputTokens: 3 } });
+
+    const messages = parseAcpTranscript(findAcpTranscript("m1")!.filePath);
+    const reply = messages.find((m) => m.role === "assistant");
+    expect(reply?.model).toBe("opencode/big-pickle");
+    expect(reply?.usage).toEqual({ input_tokens: 10, output_tokens: 3 });
+    // The prompt is not the agent's output and carries no model.
+    expect(messages.find((m) => m.role === "user")?.model).toBeUndefined();
+  });
+
+  it("attributes tokens to the reply of the turn that reported them", () => {
+    const writer = new AcpTranscriptWriter("opencode", "m2", "/work");
+    writer.writeHeader(null);
+    turn(writer, { model: "a", prompt: "one", reply: "first", usage: { inputTokens: 1, outputTokens: 2 } });
+    turn(writer, { model: "b", prompt: "two", reply: "second", usage: { inputTokens: 30, outputTokens: 40 } });
+
+    const replies = parseAcpTranscript(findAcpTranscript("m2")!.filePath).filter((m) => m.role === "assistant");
+    expect(replies.map((m) => [m.model, m.usage?.input_tokens, m.usage?.output_tokens])).toEqual([
+      ["a", 1, 2],
+      ["b", 30, 40],
+    ]);
+  });
+
+  it("differences the cumulative spend beacon into a per-turn cost", () => {
+    // The beacon is cumulative for the SESSION. Attaching it verbatim would
+    // report the running total as the price of every individual turn.
+    const writer = new AcpTranscriptWriter("opencode", "m3", "/work");
+    writer.writeHeader(null);
+    turn(writer, { prompt: "one", reply: "first", cumulativeCost: 0.01 });
+    turn(writer, { prompt: "two", reply: "second", cumulativeCost: 0.03 });
+
+    const replies = parseAcpTranscript(findAcpTranscript("m3")!.filePath).filter((m) => m.role === "assistant");
+    expect(replies[0].costUsd).toBeCloseTo(0.01, 10);
+    // Not 0.03 — the second turn cost the step, not the running total. Compared
+    // approximately because differencing floats is what a subtraction of
+    // decimal money does; the UI formats to five places either way.
+    expect(replies[1].costUsd).toBeCloseTo(0.02, 10);
+  });
+
+  it("reports a genuinely free turn as free rather than as no data", () => {
+    const writer = new AcpTranscriptWriter("opencode", "m4", "/work");
+    writer.writeHeader(null);
+    turn(writer, { prompt: "hi", reply: "hello", cumulativeCost: 0 });
+    expect(parseAcpTranscript(findAcpTranscript("m4")!.filePath).find((m) => m.role === "assistant")?.costUsd).toBe(0);
+  });
+
+  it("treats a counter that went backwards as a fresh baseline, not a refund", () => {
+    // A resumed session whose agent restarted its own accounting.
+    const writer = new AcpTranscriptWriter("opencode", "m5", "/work");
+    writer.writeHeader(null);
+    turn(writer, { prompt: "one", reply: "first", cumulativeCost: 0.05 });
+    turn(writer, { prompt: "two", reply: "second", cumulativeCost: 0.01 });
+
+    const replies = parseAcpTranscript(findAcpTranscript("m5")!.filePath).filter((m) => m.role === "assistant");
+    expect(replies.map((m) => m.costUsd)).toEqual([0.05, 0.01]);
+  });
+
+  it("annotates the tool call when a turn ends without a reply", () => {
+    const writer = new AcpTranscriptWriter("opencode", "m6", "/work");
+    writer.writeHeader(null);
+    writer.writeEvent({ type: "session_started", sessionId: "s" } as never);
+    writer.writeUserMessage("do it");
+    writer.writeEvent({ type: "tool_use", toolName: "bash", input: { command: "ls" }, callId: "c1" } as never);
+    writer.writeEvent({ type: "result", status: "success", usage: { inputTokens: 5, outputTokens: 1 } } as never);
+
+    const messages = parseAcpTranscript(findAcpTranscript("m6")!.filePath);
+    expect(messages.find((m) => m.type === "tool_use")?.usage).toEqual({ input_tokens: 5, output_tokens: 1 });
+  });
+
+  it("attaches nothing when a turn produced no assistant message at all", () => {
+    const writer = new AcpTranscriptWriter("opencode", "m7", "/work");
+    writer.writeHeader(null);
+    writer.writeEvent({ type: "session_started", sessionId: "s" } as never);
+    writer.writeUserMessage("do it");
+    writer.writeEvent({ type: "result", status: "error", reason: "agent exited" } as never);
+
+    // The prompt must not be annotated as though the user's message billed.
+    expect(parseAcpTranscript(findAcpTranscript("m7")!.filePath).every((m) => m.usage === undefined)).toBe(true);
+  });
+
+  it("still parses a transcript written before metrics existed", () => {
+    const writer = new AcpTranscriptWriter("opencode", "m8", "/work");
+    writer.writeHeader(null);
+    writer.writeEvent({ type: "text", content: "bare" } as never);
+    const messages = parseAcpTranscript(findAcpTranscript("m8")!.filePath);
+    expect(messages.map((m) => `${m.role}:${m.content}`)).toEqual(["assistant:bare"]);
+    expect(messages[0].model).toBeUndefined();
+  });
+});
+
 describe("user turns in the transcript", () => {
   it("renders each prompt as a user message, in conversation order", () => {
     // Both halves of the chat, and the ordering is the point: the UI retires the
