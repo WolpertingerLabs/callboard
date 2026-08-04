@@ -13,7 +13,7 @@
  * `AgentProviderKind` union (in `backend/src/agents/ports/AgentProvider.ts`)
  * also includes adapters not exposed to end users (`mock`).
  */
-export type UiAgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "cline";
+export type UiAgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "pi";
 
 /**
  * OpenRouter reasoning-effort levels. Maps onto the OR `reasoning.effort`

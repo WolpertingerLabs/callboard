@@ -39,6 +39,12 @@
  *    pass 2. The easiest case of the three: Cline's `ToolApprovalRequest`
  *    always carries a real `toolName`, so there is no label ladder to keep the
  *    two passes agreeing — they receive the same string by construction.
+ *  - **pi** — yes, and the same easy shape as Cline. `decidePiToolCall` (the
+ *    `tool_call` extension handler) is pass 1, `buildCanUseTool` pass 2, and
+ *    `ToolCallEvent.toolName` is always a real identifier from a closed set
+ *    plus callboard's own tool names. Note pi does not ask *at all* without
+ *    that handler — an unblocked `tool_call` executes — so the gate is not an
+ *    escalation path but the whole permission surface.
  *  - **claude-code** — one pass. The SDK calls `canUseTool`; nothing else
  *    decides.
  *  - **openrouter** — one pass. The harness wraps each client tool's execute
@@ -57,6 +63,7 @@ import { categorizeClaudeTool } from "../adapters/claude-code/permissionAdapter.
 import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
 import { categorizeOpenRouterTool } from "../adapters/openrouter/permissionAdapter.js";
 import { categorizeClineToolName } from "../adapters/cline/permissionAdapter.js";
+import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
 
 /** Tool name → permission category. `null` means "ask", never "allowed". */
 export type ToolCategorizer = (toolName: string) => PermissionCategory | null;
@@ -92,6 +99,7 @@ export const TOOL_CATEGORIZERS: Record<AgentProviderKind, ToolCategorizer> = {
   openrouter: categorizeOpenRouterTool,
   acp: categorizeAcpToolName,
   cline: categorizeClineToolName,
+  pi: categorizePiToolName,
   codex: gateEverything,
   mock: categorizeClaudeTool,
 };

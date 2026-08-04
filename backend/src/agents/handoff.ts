@@ -106,6 +106,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   openrouter: "OpenRouter",
+  cline: "Cline",
+  pi: "pi",
   // One label for the whole ACP family. The vendor is in `acpProviderId`, not in
   // the kind, so this is as specific as a kind-keyed label can honestly be — and
   // its only caller today is the fork route's "not supported" message, which is

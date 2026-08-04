@@ -57,7 +57,7 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * travels in a separate `providerId` (see {@link AcpAdapter}) and the union
  * stays closed at one entry for the whole family.
  */
-export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "mock";
+export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "pi" | "mock";
 
 /**
  * The provider kinds a **request** may ask for — the user-selectable harnesses.
@@ -79,7 +79,7 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
  * `seedSession` — an honest 400 rather than a chat that renders and then loses
  * its context.
  */
-export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline"] as const;
+export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline", "pi"] as const;
 
 /** A provider kind a request may ask for (i.e. not test-only, and fully specifiable). */
 export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];

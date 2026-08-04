@@ -23,7 +23,7 @@ import type { AgentProviderKind } from "../ports/AgentProvider.js";
  * The `satisfies` clause makes the list itself type-checked: a name that is not
  * a real kind is a compile error, so this cannot drift into fiction.
  */
-const ALL_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline", "mock"] as const satisfies readonly AgentProviderKind[];
+const ALL_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline", "pi", "mock"] as const satisfies readonly AgentProviderKind[];
 
 /**
  * Compile-time completeness for {@link ALL_KINDS}.

@@ -120,6 +120,18 @@ const providerReferenceLinks: Record<AgentProviderKind, ReferenceLink[]> = {
     { label: "Model providers", href: "https://docs.cline.bot/sdk/model-providers", note: "Provider ids and credentials the SDK accepts" },
     { label: "Console billing", href: "https://console.anthropic.com/settings/billing", note: "Anthropic credits, for the default provider" },
   ],
+  // Same shape as Cline: pi embeds a runtime rather than wrapping a service, so
+  // billing lives with whichever model provider the user points it at. Its
+  // default is OpenRouter, which is where the useful links go.
+  //
+  // Phase 3 adds this entry because `Record<UiAgentProviderKind, …>` demands it
+  // once `"pi"` joins the union — the pi *tab* and its credential form are
+  // Phase 4.
+  pi: [
+    { label: "pi on npm", href: "https://www.npmjs.com/package/@earendil-works/pi-coding-agent", note: "The agent runtime callboard embeds" },
+    { label: "pi source", href: "https://github.com/earendil-works/pi", note: "Tools, extensions and session format" },
+    { label: "OpenRouter credits", href: "https://openrouter.ai/settings/credits", note: "Credit balance, for the default provider" },
+  ],
 };
 
 /**
