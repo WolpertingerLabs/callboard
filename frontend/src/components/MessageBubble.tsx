@@ -1,7 +1,8 @@
-import { useState, useCallback, useMemo, useEffect, useRef, type CSSProperties } from "react";
-import { Check, Copy, GitFork, RotateCw, Square, X } from "lucide-react";
+import { useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
+import { Check, GitFork, RotateCw, Square, X } from "lucide-react";
 import type { ForkProvider, ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
+import CopyButton from "./CopyButton";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
@@ -86,73 +87,9 @@ const StatusIcon = ({ status }: { status: string }) => {
   }
 };
 
-function copyToClipboard(text: string): boolean {
-  // Fallback for non-secure contexts (HTTP on non-localhost)
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    const ok = document.execCommand("copy");
-    return ok;
-  } catch {
-    return false;
-  } finally {
-    document.body.removeChild(textarea);
-  }
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(
-    async (e: React.MouseEvent) => {
-      e.stopPropagation();
-      let ok = false;
-      if (navigator.clipboard?.writeText) {
-        try {
-          await navigator.clipboard.writeText(text);
-          ok = true;
-        } catch {
-          // Clipboard API failed (non-secure context, permission denied, etc.)
-          ok = copyToClipboard(text);
-        }
-      } else {
-        ok = copyToClipboard(text);
-      }
-      if (ok) {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }
-    },
-    [text],
-  );
-
-  return (
-    <button
-      className="copy-btn"
-      onClick={handleCopy}
-      title="Copy message"
-      style={{
-        position: "absolute",
-        top: 6,
-        right: 6,
-        padding: 4,
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 6,
-        cursor: "pointer",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1,
-      }}
-    >
-      {copied ? <Check size={14} style={{ color: "var(--success)" }} /> : <Copy size={14} style={{ color: "var(--text-muted)" }} />}
-    </button>
-  );
+/** The message-level copy affordance, revealed on `.msg-bubble:hover`. */
+function MessageCopyButton({ text }: { text: string }) {
+  return <CopyButton text={text} title="Copy message" className="copy-btn" style={{ position: "absolute", top: 6, right: 6 }} />;
 }
 
 /** The harnesses a conversation can be forked into, in menu order. */
@@ -813,7 +750,7 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
             wordBreak: "break-word",
           }}
         >
-          <CopyButton text={message.content} />
+          <MessageCopyButton text={message.content} />
           <MarkdownRenderer content={message.content} className="message-markdown" />
           {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
         </div>
@@ -850,7 +787,7 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
           }),
         }}
       >
-        <CopyButton text={message.content} />
+        <MessageCopyButton text={message.content} />
         {onFork && <ForkButton onFork={onFork} currentProvider={forkCurrentProvider} />}
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}

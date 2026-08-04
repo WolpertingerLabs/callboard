@@ -786,6 +786,22 @@ pre {
   pointer-events: auto;
 }
 
+/* Copy button on code-block hover. Same contract as `.copy-btn` above: the
+   rule matches a DIRECT child of the hovered wrapper, so the button must stay
+   a sibling of the <pre>. Keyboard users get it via :focus-visible, since
+   `pointer-events: none` hides it from the mouse but not from Tab. */
+.code-block > .code-copy-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.code-block:hover > .code-copy-btn,
+.code-block > .code-copy-btn:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* Fix native <option> elements being unreadable in dark mode */
 select option {
   background: var(--bg);
