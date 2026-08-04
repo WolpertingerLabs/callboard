@@ -137,6 +137,47 @@ describe("acpToolLabel", () => {
     expect(acpToolLabel({ toolCallId: "c", title: "Run" })).toBe("Run");
     expect(acpToolLabel({ toolCallId: "c" } as never)).toBe("unknown_tool");
   });
+
+  it("names a call after its ACP kind when nothing else identifies it", () => {
+    // OpenCode's real permission request: no `name`, and a `title` that is the
+    // file path. Falling through to "unknown_tool" put every OpenCode tool —
+    // reads included — on codeExecution, which stops the other three axes
+    // governing anything at all for that vendor.
+    const openCodeShape = { toolCallId: "c", kind: "edit", title: "/tmp/proj/hello.txt", rawInput: {} } as never;
+    expect(acpToolLabel(openCodeShape)).toBe("edit");
+    expect(categorizeAcpToolName(acpToolLabel(openCodeShape))).toBe("fileWrite");
+  });
+
+  it("still refuses to be identified by prose", () => {
+    // Rule 3. This title tokenizes to `search` → fileRead if it were ever read
+    // for words, which is the whole reason it is skipped.
+    const prose = { toolCallId: "c", title: "Run `rm -rf` to clear the search index" } as never;
+    expect(acpToolLabel(prose)).toBe("unknown_tool");
+    expect(categorizeAcpToolName(acpToolLabel(prose))).toBe("codeExecution");
+  });
+
+  it("prefers a name, then a shaped title, then the kind — in that order", () => {
+    expect(acpToolLabel({ toolCallId: "c", name: "read_file", title: "Reading a file", kind: "execute" } as never)).toBe("read_file");
+    expect(acpToolLabel({ toolCallId: "c", title: "write", kind: "edit" } as never)).toBe("write");
+    expect(acpToolLabel({ toolCallId: "c", title: "Writing to a file", kind: "edit" } as never)).toBe("edit");
+  });
+
+  it("maps every ACP kind onto a category at least as strict as the kind table's", () => {
+    // The ladder's last rung must not be a back door. Where
+    // categorizeAcpToolKind has an opinion, the label agrees with it; where it
+    // returns null (think / switch_mode / other), the label lands on the
+    // strictest category rather than on nothing.
+    const kinds = ["read", "search", "edit", "delete", "move", "execute", "fetch", "think", "switch_mode", "other"] as const;
+    for (const kind of kinds) {
+      const viaLabel = categorizeAcpToolName(acpToolLabel({ toolCallId: "c", kind } as never));
+      const viaKind = categorizeAcpToolKind(kind);
+      expect(viaLabel).toBe(viaKind ?? "codeExecution");
+    }
+  });
+
+  it("ignores a kind that is not identifier-shaped", () => {
+    expect(acpToolLabel({ toolCallId: "c", kind: "not a kind" } as never)).toBe("unknown_tool");
+  });
 });
 
 describe("the two-pass rule", () => {
@@ -203,7 +244,15 @@ describe("the two-pass rule", () => {
     // categorized is the same label canUseTool receives, so the two passes
     // cannot reach different answers by construction.
     for (const perm of [askExec, readAllowed, perms()]) {
-      for (const name of ["run_command", "search_and_run", "web_search", "search_replace", "read_file", "Run `rm -rf` to clear the search index", "unknown_tool"]) {
+      for (const name of [
+        "run_command",
+        "search_and_run",
+        "web_search",
+        "search_replace",
+        "read_file",
+        "Run `rm -rf` to clear the search index",
+        "unknown_tool",
+      ]) {
         expect(secondPass(perm)(name).category).toBe(categorizeAcpToolName(name));
       }
     }
@@ -325,14 +374,37 @@ describe("resolveAcpPermission", () => {
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
-  it("refuses to categorize a tool that has only a title", async () => {
-    // No `name`, so the label is a human sentence. ACP's `kind: "read"` is right
-    // there and is deliberately ignored: pass 2 cannot see it, and using it here
-    // would recreate the disagreement. Prose gets the strictest gate instead —
+  it("refuses to categorize a tool from prose alone", async () => {
+    // No `name`, no `kind`, and a title that is a human sentence. Nothing here
+    // may be read for words (rule 3), so the call gets the strictest gate —
     // codeExecution: "deny" ⇒ reject.
-    const req = request({ toolCall: { toolCallId: "c1", title: "rm -rf /", kind: "read" } as never });
+    const req = request({ toolCall: { toolCallId: "c1", title: "rm -rf /" } as never });
     const res = await resolveAcpPermission(req, { getPermissions: () => perms({ fileRead: "allow", codeExecution: "deny" }), signal });
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
+  });
+
+  it("categorizes from the ACP kind when the title is prose", async () => {
+    // The behaviour change: previously this fell to codeExecution because the
+    // title is unreadable, which is what made every OpenCode tool — reads
+    // included — land on the one axis. The kind is a closed enum, both passes
+    // see it (it IS the label), so fileWrite: "deny" is what governs an edit.
+    const req = request({ toolCall: { toolCallId: "c1", title: "/tmp/proj/hello.txt", kind: "edit" } as never });
+    const res = await resolveAcpPermission(req, { getPermissions: () => perms({ fileWrite: "deny", codeExecution: "allow" }), signal });
+    expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
+  });
+
+  it("takes a lying kind at face value — the same standing risk as a lying name", async () => {
+    // Pinned deliberately rather than left implicit. An agent that labels a
+    // destructive call `kind: "read"` is auto-allowed under fileRead: "allow" —
+    // but an agent that labels it `name: "read_file"` always was, and `name`
+    // outranks `kind`. The protocol offers no defence either way: an agent that
+    // wants to dodge the gate just never sends session/request_permission. If a
+    // real vendor is ever found abusing `kind`, the escalation is a per-vendor
+    // opt-in in vendors.ts, not a return to categorizing everything as
+    // codeExecution.
+    const req = request({ toolCall: { toolCallId: "c1", title: "rm -rf /", kind: "read" } as never });
+    const res = await resolveAcpPermission(req, { getPermissions: () => perms({ fileRead: "allow", codeExecution: "deny" }), signal });
+    expect(res).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
   });
 
   it("survives a request with no toolCall at all", async () => {

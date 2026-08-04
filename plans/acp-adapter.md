@@ -18,14 +18,14 @@ session parser, plus tests.
 
 Paseo solved the same problem once. Their file sizes tell the story:
 
-| File | Lines |
-| --- | --- |
-| `providers/acp-agent.ts` (base client) | 3486 |
-| `providers/generic-acp-agent.ts` | 237 |
-| `providers/copilot-acp-agent.ts` | 248 |
-| `providers/kiro-acp-agent.ts` | 101 |
-| `providers/cursor-acp-agent.ts` | **45** |
-| `providers/trae-acp-agent.ts` | **30** |
+| File                                   | Lines  |
+| -------------------------------------- | ------ |
+| `providers/acp-agent.ts` (base client) | 3486   |
+| `providers/generic-acp-agent.ts`       | 237    |
+| `providers/copilot-acp-agent.ts`       | 248    |
+| `providers/kiro-acp-agent.ts`          | 101    |
+| `providers/cursor-acp-agent.ts`        | **45** |
+| `providers/trae-acp-agent.ts`          | **30** |
 
 Cursor and Trae are 30–45 lines because everything vendor-specific collapses into
 constructor options — `waitForInitialCommands`, `initialCommandsWaitTimeoutMs`,
@@ -35,8 +35,7 @@ Better still, paseo's `docs/custom-providers.md` exposes `extends: "acp"` in con
 user adds an ACP agent with a JSON block and **zero** code:
 
 ```json
-{ "agents": { "providers": { "my-agent": { "extends": "acp", "label": "My Agent",
-  "command": ["my-agent-cli", "--acp"] } } } }
+{ "agents": { "providers": { "my-agent": { "extends": "acp", "label": "My Agent", "command": ["my-agent-cli", "--acp"] } } } }
 ```
 
 For callboard the payoff is the same shape: one substantial adapter, then vendors are
@@ -83,20 +82,21 @@ Three things do need attention:
    union.
 
    > **Routability — architect ruling, 2026-07-28.** The first cut added `"acp"` to
-   > `ROUTABLE_PROVIDER_KINDS`, the allowlist every *route* narrows request bodies
+   > `ROUTABLE_PROVIDER_KINDS`, the allowlist every _route_ narrows request bodies
    > against. That was wrong for Phase 1. Membership in that list is a promise that a
    > request can fully specify a chat on the kind, and no route surfaces `acpProviderId`
    > — so `POST /api/chats/:id/fork` accepted `{"provider":"acp"}` and would have
    > persisted a chat with a kind and no vendor: a permanently wedged chat, exactly what
    > `resolveProviderKind`'s warn-and-fallback exists to prevent.
    >
-   > The split that resolves it: `ROUTABLE_PROVIDER_KINDS` is what a *request* may name;
+   > The split that resolves it: `ROUTABLE_PROVIDER_KINDS` is what a _request_ may name;
    > `INTERNAL_PROVIDER_KINDS` (= routable + `"acp"`) is what `sendMessage` will route and
    > persist. Phase 1 reaches ACP only through `SendMessageOptions.acpProviderId`, which
    > is internal. Phase 2 adds the picker and the `acpProviderId` plumbing, and re-adds
    > `"acp"` to the routable list alongside them — not before.
+
 2. **`getAgentProvider(kind)` memoizes one instance per kind.** ACP needs one instance per
-   *configured provider id*, so the cache key becomes `kind + ":" + providerId`.
+   _configured provider id_, so the cache key becomes `kind + ":" + providerId`.
 3. **`SessionProvider`** — ACP sessions are provider-managed. See "Session discovery" below.
 
 ---
@@ -121,7 +121,7 @@ is simpler for our volume and makes the config-driven path fall out for free:
 
 ```ts
 interface AcpVendorPreset {
-  id: string;                       // "copilot" | "cursor" | ...
+  id: string; // "copilot" | "cursor" | ...
   label: string;
   command: [string, ...string[]];
   waitForInitialCommands?: boolean;
@@ -163,7 +163,7 @@ vocabulary and is the closest precedent.
 > **The two-pass rule — architect ruling, 2026-07-28. Non-negotiable.**
 > Callboard evaluates tool permission **twice**: once in the adapter's own resolve path, and
 > again in `buildCanUseTool` before prompting. Review reproduced a bypass where the ACP
-> adapter's two passes disagreed because they were given *different inputs* — pass 1 had
+> adapter's two passes disagreed because they were given _different inputs_ — pass 1 had
 > ACP's structured `ToolKind`, pass 2 only ever sees a name string, because the bridge is
 > `canUseTool(toolName: string, …)`. Where they disagreed and the name-derived category was
 > set to `allow`, the tool **executed with no prompt**. Cursor's real `search_replace` edits
@@ -175,7 +175,7 @@ vocabulary and is the closest precedent.
 >    cannot see a field, pass 1 must not use it to decide. Better information that only one
 >    pass has is worse than no information, because it manufactures disagreement.
 >
->    The user's permission settings are input too, and *identical* covers **when** they are
+>    The user's permission settings are input too, and _identical_ covers **when** they are
 >    read. `ToolPermissionPolicy` (pass 2) holds a live `getDefaultPermissions` accessor and
 >    re-reads chat metadata on every call; the ACP adapter originally received a
 >    `DefaultPermissions` **value** resolved once at send time. A user who tightened a policy
@@ -185,18 +185,41 @@ vocabulary and is the closest precedent.
 >    `AcpPermissionContext.getPermissions`. Codex is the deliberate exception — it has no
 >    per-call hook at all, so its permissions collapse onto a sandbox tier fixed at thread
 >    start; with only one pass there is nothing to disagree with.
-> 2. **Ambiguity resolves to the *most* restrictive matching category, not the least.** The
+>
+> 2. **Ambiguity resolves to the _most_ restrictive matching category, not the least.** The
 >    original ordering checked least-privileged first on the reasoning that an ambiguous name
 >    "never silently widens its own gate". That is backwards: resolving `search_and_run` to
->    `fileRead` treats a run-capable tool as read-only, which *is* the widening. Most-
+>    `fileRead` treats a run-capable tool as read-only, which _is_ the widening. Most-
 >    restrictive-wins is the only safe polarity.
 > 3. **Never categorize from prose.** `name` is optional on ACP's `ToolCallUpdate`, and the
 >    fallback was `title` — a human sentence. ``Run `rm -rf` to clear the search index``
 >    tokenizes to `search` → `fileRead`. When no reliable tool name exists, categorize to the
 >    most restrictive category; do not parse the sentence.
 >
+> **Amendment, 2026-08-04 — the label ladder ends at `kind`.** Rule 1 constrains the
+> _input_ both passes see, not the field it was read from. So when a call carries no
+> `name` and a `title` that is prose, `acpToolLabel` now names it after its ACP `kind`
+> and hands _that_ to `canUseTool` — one string, one categorizer, both passes, rule 1
+> intact. `categorizeAcpToolKind` remains diagnostic-only; nothing reads `kind` to
+> decide.
+>
+> The prompt for the change was the first live vendor. OpenCode's
+> `session/request_permission` carries no `name` and a `title` of the **file path**
+> (`/tmp/proj/hello.txt`), so every tool it asked about — reads included — resolved to
+> `unknown_tool` → `codeExecution`. That is safe-by-default and inoperative in
+> practice: with one axis governing everything, `fileRead`/`fileWrite`/`webAccess` stop
+> meaning anything for that vendor, and the user's natural response is to set
+> `codeExecution: allow`, which is strictly worse than gating edits as `fileWrite`.
+>
+> Accepted residual: a vendor that lies in `kind` under-gates. It is the risk `name`
+> has always carried — `name` outranks `kind` in the ladder — and the protocol has no
+> answer to it either way, since an agent that wants to dodge the gate simply never
+> sends `session/request_permission`. If a real vendor is found abusing `kind`, the
+> escalation is a per-vendor opt-in field in `vendors.ts`, not a return to
+> categorizing every tool as `codeExecution`.
+
 > **Known limit of rule 3 — accepted, not a bug.** `isToolIdentifier` separates names from
-> prose by shape, so a *one-word* `title` ("Search", "Delete") is indistinguishable from a
+> prose by shape, so a _one-word_ `title` ("Search", "Delete") is indistinguishable from a
 > real tool name and is tokenized as one. This is not a bypass: both passes receive that same
 > label from `acpToolLabel` and reach the same category, so nothing is silently auto-allowed
 > that the second pass would have caught. Closing it would mean categorizing the two cases
@@ -259,7 +282,7 @@ and resumed against the double.
 > a double that speaks the real wire format. Paseo does the same thing (`mock-load-test-agent`,
 > `acp-wrapper-smoke.test.ts`) alongside its real vendors.
 >
-> What a double genuinely cannot prove is that a *specific* vendor's ACP implementation
+> What a double genuinely cannot prove is that a _specific_ vendor's ACP implementation
 > behaves as specified — capability lies, non-standard update shapes, auth quirks. That is
 > what Phase 2's vendor presets are for, and it is a thin surface: paseo's vendor files are
 > 30–45 lines. Wiring the first real vendor once one is authenticated should be a small
@@ -282,7 +305,7 @@ advertised, cost/usage reporting into `TokenUsage`, model-alias integration.
 
 - Replacing `claude-code`, `codex`, or `openrouter` adapters. ACP is additive. Claude Code
   via the Agent SDK stays the default and the richest path.
-- Implementing the *server* side of ACP (callboard exposing itself as an ACP agent). Real
+- Implementing the _server_ side of ACP (callboard exposing itself as an ACP agent). Real
   option later; out of scope here.
 - Per-vendor bespoke features that aren't runtime-discoverable. If it needs a special case
   beyond a preset field, that's a signal to reconsider, not to add a subclass.
@@ -299,12 +322,13 @@ advertised, cost/usage reporting into `TokenUsage`, model-alias integration.
   One limit on that escape hatch, corrected 2026-07-28: an update whose shape this SDK pin
   cannot parse never reaches the adapter at all. `ClientApp` installs a session-update
   router whose `handleMessage` runs `validate.zSessionNotification.parse(...)` **unguarded**
-  before any of our handlers. It was first written up as the router *dropping* such
+  before any of our handlers. It was first written up as the router _dropping_ such
   updates; it in fact **throws**, and the throw is swallowed upstream. The user-visible
   conclusion is unchanged — the router returns `Handled.no`, valid notifications keep
   arriving, and the connection survives (the e2e `malformed` scenario proves all three) —
   but a drop and a swallowed throw do not behave the same under a sustained malformed
   stream, so the distinction is worth keeping straight.
+
 - **Coverage gate.** The global coverage thresholds bite hard on a 1–2k-line adapter.
   Budget test-writing at parity with implementation, and avoid spread-guards that inflate
   branch count.
