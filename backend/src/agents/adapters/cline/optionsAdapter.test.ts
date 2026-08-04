@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildClineStartConfig, DEFAULT_CLINE_PROVIDER_ID, translateEffort } from "./optionsAdapter.js";
+import { buildClineStartConfig, DEFAULT_CLINE_PROVIDER_ID, resolveDefaultModelId, translateEffort } from "./optionsAdapter.js";
 
 const base = { cwd: "/repo", sessionId: "sess1", extraTools: [] };
 
@@ -19,6 +19,48 @@ describe("translateEffort", () => {
     for (const level of ["minimal", "low", "medium", "high", "xhigh"] as const) {
       expect(translateEffort(level)).toEqual({ thinking: true, reasoningEffort: level });
     }
+  });
+});
+
+/**
+ * The regression that reached a user.
+ *
+ * The first cut passed `modelId: ""` when nothing resolved, on the assumption
+ * Cline would fall back to its own default. It validates `modelId` with
+ * `min(1)`, so the turn died before it started and the chat showed a raw Zod
+ * dump instead of a reply.
+ *
+ * Reachable by an ordinary path: a chat on a model alias with no `cline` target
+ * (`planner` had claude-code/openrouter/codex) plus a blank Settings → API
+ * model. `resolveModelAlias` correctly returns undefined so the caller "falls
+ * back to the provider's configured default" — and that default has to be a
+ * real model id, which is what this now guarantees.
+ */
+describe("model fallback", () => {
+  it("never yields an empty model id", () => {
+    // The literal failure: modelId "" is rejected by the SDK's own schema.
+    expect(buildClineStartConfig({ ...base, cline: {} }).modelId).not.toBe("");
+    expect(buildClineStartConfig({ ...base, cline: { model: "   " } }).modelId).not.toBe("");
+  });
+
+  it("falls back to the SDK's own per-provider default, not a hardcoded id", () => {
+    // Asked of the installed SDK rather than asserted as a literal, so an
+    // upstream change to the default shows up as a real difference rather than
+    // a test that has to be edited to match.
+    for (const providerId of ["anthropic", "openai-native", "openrouter", "gemini"]) {
+      const expected = resolveDefaultModelId(providerId);
+      expect(expected.length).toBeGreaterThan(0);
+      expect(buildClineStartConfig({ ...base, cline: { providerId } }).modelId).toBe(expected);
+    }
+  });
+
+  it("still prefers an explicitly chosen model", () => {
+    expect(buildClineStartConfig({ ...base, cline: { model: "claude-haiku-4-5" } }).modelId).toBe("claude-haiku-4-5");
+  });
+
+  it("raises something a human can act on when the provider is unknown", () => {
+    // A Zod dump names no fix. This names two.
+    expect(() => resolveDefaultModelId("not-a-real-provider")).toThrow(/Settings → API/);
   });
 });
 

@@ -10,7 +10,7 @@
  * @see plans/cline-adapter.md
  * @see plans/cline-spike-findings.md (§4 — what we can and cannot set)
  */
-import { getClineDefaultSystemPrompt, type AgentTool, type ClineCoreStartConfig } from "@cline/sdk";
+import { getClineDefaultSystemPrompt, getProviderConfig, type AgentTool, type ClineCoreStartConfig } from "@cline/sdk";
 import type { EffortLevel } from "shared/types/index.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -77,6 +77,51 @@ export function translateEffort(effort: EffortLevel | undefined): { thinking?: b
   return { thinking: true, reasoningEffort: effort satisfies ClineReasoningEffort };
 }
 
+/**
+ * The provider's own default model, for a chat that named none.
+ *
+ * ## The bug this exists to fix
+ *
+ * The first cut passed `modelId: ""` here, on a comment that read "Cline
+ * resolves its own default when the id is empty". It does not. `CoreModelConfig`
+ * validates `modelId` with a `min(1)` string schema, so an empty id fails
+ * *before the turn starts*, and what reached the user was a raw Zod dump:
+ *
+ *     {"code":"too_small","minimum":1,"path":["model"],
+ *      "message":"Too small: expected string to have >=1 characters"}
+ *
+ * That was reachable by an ordinary path, not a corner: a chat on the `planner`
+ * **model alias** whose registry entry has `claude-code`, `openrouter` and
+ * `codex` targets but no `cline` one. `resolveModelAlias` then does exactly what
+ * it documents — returns undefined so the caller "falls back to the provider's
+ * configured default" — and with Settings → API's Cline model blank, that
+ * default was the empty string. Every layer behaved as designed except this one.
+ *
+ * ## Why the SDK's own default rather than a constant
+ *
+ * `getProviderConfig(providerId).modelId` is the default Cline itself would use,
+ * per provider — verified against 0.0.69: `anthropic` → `claude-sonnet-5`,
+ * `openai-native` → `gpt-5.4`, `openrouter` → `anthropic/claude-sonnet-5`,
+ * `gemini` → `gemini-3.5-flash-lite`. Hardcoding one id here would be wrong for
+ * every provider but the one it was copied from, and stale the moment the SDK
+ * moves.
+ *
+ * An unknown provider id has no defaults to offer, and there is nothing honest
+ * to invent — so that throws, with a message naming the two places a human can
+ * fix it. A clear error beats both a Zod dump and a silently surprising model.
+ */
+export function resolveDefaultModelId(providerId: string): string {
+  const fallback = getProviderConfig(providerId)?.modelId?.trim();
+  if (fallback) {
+    log.debug(`no model configured for Cline provider "${providerId}" — using its default, ${fallback}`);
+    return fallback;
+  }
+  throw new Error(
+    `No model is configured for Cline provider "${providerId}", and the SDK reports no default for it. ` +
+      `Set a default model in Settings → API, choose one on the chat, or give the model alias a "cline" target.`,
+  );
+}
+
 export interface BuildClineConfigInput {
   cline: ClineRunOptions;
   cwd: string;
@@ -124,15 +169,7 @@ export interface BuildClineConfigInput {
 export function buildClineStartConfig(input: BuildClineConfigInput): ClineCoreStartConfig {
   const { cline, cwd, sessionId, extraTools } = input;
   const providerId = cline.providerId?.trim() || DEFAULT_CLINE_PROVIDER_ID;
-  const modelId = cline.model?.trim() ?? "";
-
-  if (!modelId) {
-    // Not thrown: Cline resolves its own default when the id is empty, and a
-    // hard failure here would make "start a chat before picking a model"
-    // impossible. Worth a line in the log so a chat on an unexpected model is
-    // explicable.
-    log.debug(`no model id for provider "${providerId}" — deferring to Cline's default`);
-  }
+  const modelId = cline.model?.trim() || resolveDefaultModelId(providerId);
 
   return {
     sessionId,
