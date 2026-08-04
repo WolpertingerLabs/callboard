@@ -87,6 +87,13 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
             'acp target — a model id as the ACP vendor names it, e.g. "opencode/gpt-5.5". One key covers every configured ACP vendor, ' +
               'so it is only unambiguous while a single vendor is configured. Pass "" to clear.',
           ),
+        cline: z
+          .string()
+          .optional()
+          .describe(
+            'cline target — a model id within the configured Cline provider, e.g. "claude-sonnet-4-6". The provider itself is a global ' +
+              'setting (Settings → API), not part of the alias. Pass "" to clear.',
+          ),
       },
       async (args) => {
         const name = args.name.trim();

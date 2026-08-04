@@ -58,7 +58,7 @@ export interface ModelAliasInfo extends ModelAlias {
 }
 
 /** The harnesses an alias can target, in canonical order. */
-export const HARNESS_PROVIDERS: HarnessProvider[] = ["claude-code", "openrouter", "codex", "acp"];
+export const HARNESS_PROVIDERS: HarnessProvider[] = ["claude-code", "openrouter", "codex", "acp", "cline"];
 
 /**
  * Validate + normalize a model-alias registry. Shared by the settings route and

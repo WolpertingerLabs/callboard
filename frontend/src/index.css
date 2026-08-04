@@ -114,6 +114,11 @@
      from the violet OpenRouter and emerald Codex fills, so the three badges are
      told apart by colour and not only by their two-or-three letters. */
   --badge-provider-acp-bg: #1d4ed8;
+  /* amber-700. A fill only, like the three above: --badge-provider-text (white)
+     sits on it at 5.02:1. Warm, so it is the one hue family the violet
+     OpenRouter, emerald Codex and blue ACP fills leave free — four badges have
+     to be told apart by colour, not only by their two letters. */
+  --badge-provider-cline-bg: #b45309;
   --badge-provider-text: var(--text-on-accent);
   --badge-env-text: #3fb950;
   --badge-env-bg: rgba(63, 185, 80, 0.12);
@@ -312,6 +317,11 @@
      from the violet OpenRouter and emerald Codex fills, so the three badges are
      told apart by colour and not only by their two-or-three letters. */
   --badge-provider-acp-bg: #1d4ed8;
+  /* amber-700. A fill only, like the three above: --badge-provider-text (white)
+     sits on it at 5.02:1. Warm, so it is the one hue family the violet
+     OpenRouter, emerald Codex and blue ACP fills leave free — four badges have
+     to be told apart by colour, not only by their two letters. */
+  --badge-provider-cline-bg: #b45309;
   --badge-provider-text: var(--text-on-accent);
   /* green-800, matching --success: the stdio badge is this colour on a 10%
      tint of it, which left green-600 at 2.83:1. The border keeps green-600 —

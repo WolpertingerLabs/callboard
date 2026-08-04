@@ -27,9 +27,10 @@ interface AliasRow {
   openrouter: string;
   codex: string;
   acp: string;
+  cline: string;
 }
 
-const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "" });
+const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "", cline: "" });
 
 function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
   return (aliases ?? []).map((a) => ({
@@ -39,6 +40,7 @@ function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
     openrouter: a.targets.openrouter ?? "",
     codex: a.targets.codex ?? "",
     acp: a.targets.acp ?? "",
+    cline: a.targets.cline ?? "",
   }));
 }
 
@@ -51,6 +53,7 @@ function toAliases(rows: AliasRow[]): ModelAlias[] {
       if (r.openrouter.trim()) targets.openrouter = r.openrouter.trim();
       if (r.codex.trim()) targets.codex = r.codex.trim();
       if (r.acp.trim()) targets.acp = r.acp.trim();
+      if (r.cline.trim()) targets.cline = r.cline.trim();
       const alias: ModelAlias = { name: r.name.trim(), targets };
       if (r.description.trim()) alias.description = r.description.trim();
       return alias;
@@ -131,7 +134,7 @@ export default function ModelAliasesSettings() {
   // A named row with no target at all is a likely mistake — flag it even though
   // toAliases() would silently drop it.
   const targetlessNames = rows
-    .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim())
+    .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim() && !r.cline.trim())
     .map((r) => r.name.trim());
 
   const handleSave = async () => {
@@ -260,6 +263,23 @@ export default function ModelAliasesSettings() {
                     onChange={(v) => update(i, { acp: v })}
                     providerId={acpProviderId}
                     placeholder={acpProviderId === "opencode" ? "opencode/gpt-5.5" : "vendor model id"}
+                  />
+                </div>
+                {/* A plain input rather than a selector: Cline's catalog is
+                    per-provider and the provider is a global setting, so there
+                    is no single list to offer here the way there is for Codex.
+                    The Settings → API field, which knows the provider, does
+                    offer suggestions. */}
+                <div style={{ minWidth: 0 }}>
+                  <label style={colLabel}>Cline</label>
+                  <input
+                    type="text"
+                    value={row.cline}
+                    onChange={(e) => update(i, { cline: e.target.value })}
+                    placeholder="claude-sonnet-4-6"
+                    autoComplete="off"
+                    spellCheck={false}
+                    style={inputStyle}
                   />
                 </div>
               </div>

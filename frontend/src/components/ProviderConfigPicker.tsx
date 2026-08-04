@@ -49,6 +49,13 @@ interface ProviderConfigPickerProps {
   // that don't surface a per-chat ACP model omit it and the field hides.
   acpModel?: string;
   onAcpModelChange?: (model: string) => void;
+  // Per-chat Cline model, within the provider configured in Settings → API.
+  // Empty = that global default. Kept separate from the other providers' model
+  // values for the same reason `acpModel` is: switching the toggle restores each
+  // one's prior selection. Optional — callers that don't surface it omit it and
+  // the field hides.
+  clineModel?: string;
+  onClineModelChange?: (model: string) => void;
   // `null` while /system-info is in flight — OR is treated as available until
   // we know otherwise (the disabled gate only kicks in on an explicit false).
   openRouterConfigured: boolean | null;
@@ -110,6 +117,8 @@ export default function ProviderConfigPicker({
   onAcpProviderChange,
   acpModel,
   onAcpModelChange,
+  clineModel,
+  onClineModelChange,
   openRouterConfigured,
   openRouterMaxBudgetUsd,
   onOpenApiSettings,
@@ -126,7 +135,7 @@ export default function ProviderConfigPicker({
   const showCodexKnobs = provider === "codex" && onCodexModelChange !== undefined;
   // Reasoning effort is shared by the two reasoning-capable providers
   // (OpenRouter → OR `reasoning.effort`, Codex → `modelReasoningEffort`).
-  const showEffort = showOrKnobs || provider === "codex";
+  const showEffort = showOrKnobs || provider === "codex" || provider === "cline";
 
   // The reasoning-effort selector, shared by the OR and Codex control rows. Only
   // one provider's row renders at a time, so the element id never collides.
@@ -334,6 +343,51 @@ export default function ProviderConfigPicker({
       </div>
     ) : null;
 
+  // Cline — effort plus a per-chat model. Unlike the ACP selector there is no
+  // vendor to scope the catalog to: the Cline provider is a global setting, so
+  // the suggestions come from whichever one Settings → API names.
+  const clineControls =
+    provider === "cline" ? (
+      <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
+        {effortControl}
+        {onClineModelChange !== undefined && (
+          <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
+            <label
+              htmlFor={inline ? "inlineClineModel" : "newChatClineModel"}
+              style={{ display: "block", fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}
+            >
+              Model
+            </label>
+            <input
+              id={inline ? "inlineClineModel" : "newChatClineModel"}
+              type="text"
+              value={clineModel ?? ""}
+              onChange={(e) => onClineModelChange(e.target.value)}
+              placeholder={inline ? "(default)" : "(leave empty to use the default from Settings → API)"}
+              autoComplete="off"
+              spellCheck={false}
+              style={{
+                width: "100%",
+                padding: inline ? "6px 8px" : "8px 12px",
+                fontSize: inline ? 12 : 13,
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontFamily: "monospace",
+                boxSizing: "border-box",
+              }}
+            />
+            {!inline && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                Optional — a model id within your configured Cline provider. Free text: the provider validates it.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    ) : null;
+
   return (
     <>
       {showProviderToggle && (
@@ -405,6 +459,32 @@ export default function ProviderConfigPicker({
               }}
             >
               Codex
+            </button>
+            <button
+              type="button"
+              onClick={() => onProviderChange("cline")}
+              // No `configured` gate, unlike the three above. Cline is an
+              // embedded SDK rather than a binary to install or an account to
+              // sign into: it falls back to the backend's own environment
+              // credentials, so there is no state in which the button would be
+              // honestly disabled. A genuinely missing key surfaces as the
+              // provider's own error on the first turn, which says more than a
+              // greyed-out button could.
+              title="Use the Cline agent runtime for this chat"
+              style={{
+                flex: "1 1 84px",
+                padding: inline ? "6px 10px" : "8px 12px",
+                fontSize: inline ? 12 : 13,
+                fontWeight: 500,
+                borderRadius: 6,
+                border: provider === "cline" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: provider === "cline" ? "var(--accent)" : "var(--surface)",
+                color: provider === "cline" ? "var(--text-on-accent)" : "var(--text)",
+                cursor: "pointer",
+                transition: "all 0.15s",
+              }}
+            >
+              Cline
             </button>
             {(acpProviders ?? []).map((vendor) => {
               // Selected only when BOTH the kind and the id match — two ACP
@@ -500,6 +580,7 @@ export default function ProviderConfigPicker({
       {claudeControls}
       {codexControls}
       {acpControls}
+      {clineControls}
     </>
   );
 }

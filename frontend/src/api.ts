@@ -1319,6 +1319,38 @@ export async function getAcpModels(providerId: string): Promise<AcpModelCatalogI
   return res.json();
 }
 
+/** One model the configured Cline provider will route to. */
+export interface ClineModelInfo {
+  value: string;
+  displayName: string;
+  description: string;
+}
+
+/**
+ * Provider ids the embedded Cline runtime supports.
+ *
+ * Read from the SDK by the backend rather than from a table, so this stays
+ * correct across SDK bumps without a frontend change.
+ */
+export async function getClineProviders(): Promise<{ providers: string[] }> {
+  const res = await fetch(`${BASE}/cline/providers`, { credentials: "include" });
+  await assertOk(res, "Failed to get Cline providers");
+  return res.json();
+}
+
+/**
+ * Models for one Cline provider.
+ *
+ * An empty list means the provider could not be reached, not that it has no
+ * models — every model field accepts free text, so the picker degrades to an
+ * input rather than blocking.
+ */
+export async function getClineModels(providerId: string): Promise<{ providerId: string; models: ClineModelInfo[] }> {
+  const res = await fetch(`${BASE}/cline/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get Cline models");
+  return res.json();
+}
+
 export interface AcpProviderInfo {
   id: string;
   label: string;

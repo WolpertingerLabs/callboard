@@ -197,6 +197,34 @@ export function getToolSummary(toolName: string, content: string): string {
       case "ask_user_question":
         return input.question ? ` - ${truncate(input.question)}` : "";
 
+      // ---- Cline built-ins --------------------------------------------------
+      // Cline's tools are plural where the others are singular — it reads N
+      // files, runs N commands and fetches N urls per call — so the summaries
+      // name the first item and count the rest rather than dropping to the
+      // generic fallback. Shapes verified against the SDK's own zod schemas
+      // (`@cline/core/dist/extensions/tools/schemas.d.ts`), not guessed.
+      case "read_files":
+        return listSummary(input.files, (f) => basename(field(f, "path")));
+      case "search_codebase":
+        return listSummary(input.queries, (q) => `'${String(q)}'`);
+      case "run_commands":
+        // Each entry is either a bare string or `{ command, args }`.
+        return listSummary(input.commands, (c) => truncate(typeof c === "string" ? c : field(c, "command")));
+      case "fetch_web_content":
+        return listSummary(input.requests, (r) => hostnameOf(field(r, "url")));
+      case "editor":
+        return input.path ? ` - ${basename(String(input.path))}` : "";
+      case "apply_patch":
+        // The patch body is the only field; its first `*** …File: <path>` marker
+        // is the useful part, and the whole diff is far too long to inline.
+        return patchSummary(input.input);
+      case "skills":
+        return input.skill ? ` - ${String(input.skill)}` : "";
+      case "ask_question":
+        return input.question ? ` - ${truncate(String(input.question))}` : "";
+      case "submit_and_exit":
+        return input.summary ? ` - ${truncate(String(input.summary))}` : "";
+
       // ---- callboard-tools (matched by bare name for all providers) ---------
       case "render_file":
         if (input.file_path) return ` - ${basename(input.file_path)}`;
@@ -221,6 +249,42 @@ export function getToolSummary(toolName: string, content: string): string {
   } catch {
     return "";
   }
+}
+
+/** One string field off an unknown object, or "" when it is not there. */
+function field(item: unknown, key: string): string {
+  if (!item || typeof item !== "object") return "";
+  const value = (item as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * ` - <first>` for a one-item list, ` - <first> +N more` beyond that.
+ *
+ * Cline's tools all take arrays, and a call that reads eight files should say so
+ * rather than either naming one (misleading) or listing all eight (unreadable in
+ * a one-line summary).
+ */
+function listSummary(value: unknown, describe: (item: unknown) => string): string {
+  if (!Array.isArray(value) || value.length === 0) return "";
+  const first = describe(value[0]);
+  if (!first) return "";
+  return value.length === 1 ? ` - ${first}` : ` - ${first} +${value.length - 1} more`;
+}
+
+/**
+ * ` - <path>` from the first file marker in an apply_patch body, else a count of
+ * how large the patch is.
+ *
+ * The whole point is that the diff itself must not be inlined — it is routinely
+ * hundreds of lines — but "apply_patch" alone says nothing about what is being
+ * changed.
+ */
+function patchSummary(patch: unknown): string {
+  if (typeof patch !== "string" || !patch) return "";
+  const marker = patch.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/m);
+  if (marker?.[1]) return ` - ${basename(marker[1].trim())}`;
+  return ` - ${patch.split("\n").length} line patch`;
 }
 
 /**

@@ -10,7 +10,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { getAgentProvider, setAgentProviderForTesting } from "./factory.js";
+import { getAgentProvider, getSessionProvider, setAgentProviderForTesting } from "./factory.js";
+import { ROUTABLE_PROVIDER_KINDS } from "./ports/AgentProvider.js";
 import { MockAgentProvider } from "./adapters/mock/MockAgentProvider.js";
 import type { AgentEvent } from "./ports/events.js";
 import { decidePermission, ToolPermissionPolicy } from "./permissions/ToolPermissionPolicy.js";
@@ -159,5 +160,29 @@ describe("ToolPermissionPolicy", () => {
       () => ({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" }),
     );
     expect(policy.decide("TodoWrite").decision).toBe("ask");
+  });
+});
+
+/**
+ * Registry coverage.
+ *
+ * A kind that compiles but is never constructed is the failure this catches:
+ * `AgentProviderKind` widening is enforced by the exhaustiveness check in
+ * `constructProvider`, but nothing makes anyone *register a session provider* —
+ * a chat on that kind would then start fine and vanish from the chat list.
+ */
+describe("factory registry — every routable kind is reachable", () => {
+  it("constructs an agent provider for each routable kind", () => {
+    for (const kind of ROUTABLE_PROVIDER_KINDS) {
+      // ACP needs a vendor id; every other kind identifies its engine alone.
+      const provider = kind === "acp" ? getAgentProvider(kind, "opencode") : getAgentProvider(kind);
+      expect(provider.kind, `${kind} constructed the wrong adapter`).toBe(kind);
+    }
+  });
+
+  it("registers a session provider for each routable kind", () => {
+    for (const kind of ROUTABLE_PROVIDER_KINDS) {
+      expect(getSessionProvider(kind), `${kind} has no SessionProvider — its chats would not be listed`).toBeDefined();
+    }
   });
 });

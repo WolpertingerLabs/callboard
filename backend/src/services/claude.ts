@@ -1054,7 +1054,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // codex (→ Codex `modelReasoningEffort`); their config blocks below pull it
       // out of metadata. The stream.ts boundary already drops `effort` when the
       // paired provider can't use it, so this second guard is defense-in-depth.
-      ...(opts.effort && (opts.provider === "openrouter" || opts.provider === "codex") && { effort: opts.effort }),
+      // ...and cline (→ Cline `thinking` / `reasoningEffort`), whose vocabulary is
+      // callboard's `EffortLevel` minus `"none"` — see cline/optionsAdapter.
+      ...(opts.effort && (opts.provider === "openrouter" || opts.provider === "codex" || opts.provider === "cline") && { effort: opts.effort }),
       // Pin the per-chat model alongside provider/effort. Meaningful for both
       // user-facing providers: openrouter chats prefer it over the global
       // agentSettings.openRouterModel (OR config block below); claude-code
@@ -1062,8 +1064,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // providers (codex/mock).
       // ...and for acp, where it names one of the vendor's own models and is
       // applied via `session/set_config_option` once the session exists.
+      // ...and for cline, where it names a model within the configured Cline
+      // provider and is passed on `CoreSessionConfig.modelId`.
       ...(opts.model &&
-        (opts.provider === "openrouter" || opts.provider === "acp" || (opts.provider ?? "claude-code") === "claude-code") && { model: opts.model }),
+        (opts.provider === "openrouter" || opts.provider === "acp" || opts.provider === "cline" || (opts.provider ?? "claude-code") === "claude-code") && {
+          model: opts.model,
+        }),
       // Pin model routing (OpenRouter-only). When on, the classifier below picks
       // the model for this chat and a reclassify_model tool is exposed. Follow-up
       // messages inherit the flag + chosen rank so re-classification keeps working.
@@ -1694,6 +1700,50 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     log.info(
       `ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}, model=${acpModel ?? "(agent default)"}, ` +
         `openRouter=${acpOpenRouterApiKey ? "on" : "off"}`,
+    );
+  }
+
+  // For Cline chats, surface the per-provider settings the Cline adapter's
+  // optionsAdapter looks for. Closest in shape to the ACP block above rather than
+  // the Codex one: Cline gates per call through `requestToolApproval`, so the
+  // permission defaults are only the FIRST half of the decision and anything
+  // resolving to "ask" escalates through the same `canUseTool` Claude Code uses.
+  //
+  // Unlike every other provider there is no credential *mode* to resolve and no
+  // "not configured" error to raise here. `@cline/sdk` runs in this process and
+  // falls back to its own environment lookup when no key is set, so a user whose
+  // machine already has ANTHROPIC_API_KEY exported gets a working chat with an
+  // empty Settings → API form. A genuinely missing credential surfaces as the
+  // provider's own error on the terminal `result`, which is both more accurate
+  // and more specific than anything a pre-flight check here could say.
+  if (providerKind === "cline") {
+    // Per-chat override wins over the global default; either may be a
+    // cross-harness alias, resolved through the same registry as every other
+    // harness so `planner` lands on whatever the user pointed the `cline` target
+    // at.
+    const clineModel = resolveSessionModel(
+      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
+      agentSettings.clineModel,
+      "cline",
+      agentSettings,
+    );
+    const chatEffort = initialMetadata.effort as EffortLevel | undefined;
+    queryOpts.options.cline = {
+      ...(agentSettings.clineProviderId?.trim() && { providerId: agentSettings.clineProviderId.trim() }),
+      ...(clineModel && { model: clineModel }),
+      ...(agentSettings.clineApiKey?.trim() && { apiKey: agentSettings.clineApiKey.trim() }),
+      ...(agentSettings.clineBaseUrl?.trim() && { baseUrl: agentSettings.clineBaseUrl.trim() }),
+      ...(typeof agentSettings.clineMaxIterations === "number" && { maxIterations: agentSettings.clineMaxIterations }),
+      ...(chatEffort && { effort: chatEffort }),
+      // The accessor, not its value — see the ACP block above for why. Both
+      // permission passes must read the policy at the same moment.
+      getPermissions: getDefaultPermissions,
+    };
+    log.info(
+      `Cline chat config — trackingId=${trackingId}, provider=${agentSettings.clineProviderId?.trim() || "(anthropic)"}, ` +
+        `model=${clineModel ?? "(provider default)"}, effort=${chatEffort ?? "(default)"}, ` +
+        `baseUrl=${agentSettings.clineBaseUrl?.trim() || "(default)"}, ` +
+        `apiKey=${agentSettings.clineApiKey?.trim() ? `…${agentSettings.clineApiKey.trim().slice(-4)}` : "(from environment)"}`,
     );
   }
 

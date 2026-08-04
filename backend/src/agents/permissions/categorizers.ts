@@ -35,6 +35,10 @@
  * Which providers actually have two passes, as of this file:
  *  - **acp** — yes. `resolveAcpPermission` is pass 1, `buildCanUseTool` pass 2.
  *    Kept in sync by `acpToolLabel` producing the one string both categorize.
+ *  - **cline** — yes. `buildRequestToolApproval` is pass 1, `buildCanUseTool`
+ *    pass 2. The easiest case of the three: Cline's `ToolApprovalRequest`
+ *    always carries a real `toolName`, so there is no label ladder to keep the
+ *    two passes agreeing — they receive the same string by construction.
  *  - **claude-code** — one pass. The SDK calls `canUseTool`; nothing else
  *    decides.
  *  - **openrouter** — one pass. The harness wraps each client tool's execute
@@ -52,6 +56,7 @@ import type { PermissionCategory } from "./ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../adapters/claude-code/permissionAdapter.js";
 import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
 import { categorizeOpenRouterTool } from "../adapters/openrouter/permissionAdapter.js";
+import { categorizeClineToolName } from "../adapters/cline/permissionAdapter.js";
 
 /** Tool name → permission category. `null` means "ask", never "allowed". */
 export type ToolCategorizer = (toolName: string) => PermissionCategory | null;
@@ -86,6 +91,7 @@ export const TOOL_CATEGORIZERS: Record<AgentProviderKind, ToolCategorizer> = {
   "claude-code": categorizeClaudeTool,
   openrouter: categorizeOpenRouterTool,
   acp: categorizeAcpToolName,
+  cline: categorizeClineToolName,
   codex: gateEverything,
   mock: categorizeClaudeTool,
 };

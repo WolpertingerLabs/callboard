@@ -671,6 +671,14 @@ export const PAIRINGS: Pairing[] = [
     kind: "text",
   },
   {
+    id: "provider-badge-cline",
+    where: "Cline provider badge",
+    fg: v("badge-provider-text"),
+    bg: v("badge-provider-cline-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
     id: "session-badge-cli",
     where: "CLI session badge",
     fg: v("chatlist-badge-session-text"),

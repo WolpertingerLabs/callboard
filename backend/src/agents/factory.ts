@@ -25,6 +25,8 @@ import { CodexAdapter } from "./adapters/codex/CodexAdapter.js";
 import { CodexSessionProvider } from "./adapters/codex/CodexSessionProvider.js";
 import { AcpAdapter } from "./adapters/acp/AcpAdapter.js";
 import { AcpSessionProvider } from "./adapters/acp/AcpSessionProvider.js";
+import { ClineAdapter } from "./adapters/cline/ClineAdapter.js";
+import { ClineSessionProvider } from "./adapters/cline/ClineSessionProvider.js";
 
 // ── Agent Provider (execution) ──────────────────────────────────────
 
@@ -70,6 +72,8 @@ function constructProvider(kind: AgentProviderKind, providerId?: string): AgentP
       return new OpenRouterAdapter();
     case "codex":
       return new CodexAdapter();
+    case "cline":
+      return new ClineAdapter();
     case "acp":
       if (!providerId) {
         throw new Error('ACP adapter requires a providerId (e.g. getAgentProvider("acp", "opencode")); "acp" alone does not identify a vendor');
@@ -136,6 +140,7 @@ export function getSessionProviders(): readonly SessionProvider[] {
       new ClaudeCodeSessionProvider(),
       new OpenRouterSessionProvider(),
       new CodexSessionProvider(),
+      new ClineSessionProvider(),
       // One session provider for every ACP vendor: the transcript is
       // callboard-owned and its layout is vendor-independent, so a single
       // reader covers the whole family (unlike the adapters, which are per
