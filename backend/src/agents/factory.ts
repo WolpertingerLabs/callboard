@@ -72,13 +72,11 @@ function constructProvider(kind: AgentProviderKind, providerId?: string): AgentP
       return new CodexAdapter();
     case "acp":
       if (!providerId) {
-        throw new Error('ACP adapter requires a providerId (e.g. getAgentProvider("acp", "gemini")); "acp" alone does not identify a vendor');
+        throw new Error('ACP adapter requires a providerId (e.g. getAgentProvider("acp", "opencode")); "acp" alone does not identify a vendor');
       }
       return new AcpAdapter(providerId);
     case "mock":
-      throw new Error(
-        "Mock adapter must be injected via setAgentProviderForTesting(); no implicit construction",
-      );
+      throw new Error("Mock adapter must be injected via setAgentProviderForTesting(); no implicit construction");
     default: {
       // Exhaustiveness check — adding a new AgentProviderKind without a case
       // here is a compile error.
@@ -109,11 +107,7 @@ function constructProvider(kind: AgentProviderKind, providerId?: string): AgentP
  * Not intended for production use — kept intentionally undocumented in
  * user-facing places.
  */
-export function setAgentProviderForTesting(
-  provider: AgentProvider | null,
-  kind?: AgentProviderKind,
-  providerId?: string,
-): void {
+export function setAgentProviderForTesting(provider: AgentProvider | null, kind?: AgentProviderKind, providerId?: string): void {
   if (provider === null) {
     if (kind === undefined) {
       _providers.clear();

@@ -123,9 +123,9 @@ describe("the catalog", () => {
 
   it("keeps vendors separate", () => {
     recordAcpModels("opencode", flat, "t1");
-    recordAcpModels("gemini", grouped, "t2");
+    recordAcpModels("another-vendor", grouped, "t2");
     expect(getAcpModelCatalog("opencode")?.models.map((m) => m.value)).toEqual(["v/fast", "v/slow"]);
-    expect(getAcpModelCatalog("gemini")?.models.map((m) => m.value)).toEqual(["g/one", "g/two"]);
+    expect(getAcpModelCatalog("another-vendor")?.models.map((m) => m.value)).toEqual(["g/one", "g/two"]);
   });
 
   it("does not blank a known list when a later session reports no models", () => {

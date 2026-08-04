@@ -292,6 +292,13 @@ and resumed against the double.
 Chat panel groups ACP vendors under their own labels. Availability detection (is the binary
 on PATH / authenticated) mirroring `provider-availability` behavior.
 
+> **Gemini CLI removed, 2026-08-04.** It shipped in `vendors.ts` as a
+> documentation-derived entry and was never run. Documentation is enough to make a preset
+> _plausible_ and not enough to make it _offered_: an unverified vendor cannot be shown to
+> request permission reliably, which is the criterion below. A disabled picker entry also
+> implies callboard knows the CLI would work once installed, and nobody here had seen it
+> run. Re-adding it is a preset plus a live session, which is the point of the seam.
+
 > **OpenCode onboarded, 2026-08-04.** The first vendor exercised against its real binary
 > (`opencode acp`, 1.18.12; MIT; `anomalyco/opencode`). It answers open question 1 —
 > nothing needed authenticating, because OpenCode is BYO-provider and ships free models.

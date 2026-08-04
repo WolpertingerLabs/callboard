@@ -89,9 +89,12 @@ describe("GET /api/acp/models", () => {
     expect(unknown.body.error).toContain("not-a-vendor");
   });
 
-  it("keeps vendors' catalogs apart", () => {
+  it("does not serve one vendor's catalog under another's id", () => {
+    // Only `opencode` ships a preset today, so an unconfigured id is rejected
+    // rather than answered — which is the same guard as the unknown case above,
+    // reached from the direction that would actually leak a catalog.
     recordAcpModels("opencode", catalog, "t1");
-    expect(get({ providerId: "gemini" }).body.models).toEqual([]);
+    expect(get({ providerId: "some-other-vendor" }).status).toBe(400);
     expect(get({ providerId: "opencode" }).body.models).toHaveLength(1);
   });
 });

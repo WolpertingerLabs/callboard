@@ -107,22 +107,23 @@ export const OPENCODE_FORCE_ASK_CONFIG = JSON.stringify({ permission: { "*": "as
 /**
  * Built-in presets.
  *
- * Two entries, and they are not equally proven — the distinction matters more
- * than the count:
+ * **One entry, and that is the bar rather than an accident.** OpenCode is
+ * verified against its real binary (1.18.12): the handshake, capability set,
+ * permission flow, tool arguments, model selection, resume and cancellation were
+ * all exercised end to end, and several adapter defects were found that way.
+ * `AcpAdapter.opencode.live.test.ts` re-runs that proof on demand.
  *
- * - **opencode** is verified against the real binary (1.18.12). The handshake,
- *   capability set, permission flow, tool arguments, resume and cancellation
- *   were all exercised end to end; two adapter defects were found and fixed that
- *   way. `AcpAdapter.opencode.live.test.ts` re-runs that proof on demand.
- * - **gemini** is recorded from vendor documentation and has never been run
- *   here. Its `--experimental-acp` flag is citable, which is the bar for
- *   shipping an entry at all: a wrong `command` fails at spawn time with a
- *   confusing error and looks like an adapter bug.
+ * A Gemini CLI entry shipped here briefly and was removed, unrun. It was
+ * recorded from vendor documentation, which is enough to be *plausible* and not
+ * enough to be *offered*: an unverified vendor cannot be shown to request
+ * permission reliably, and one that does not is one callboard cannot gate — the
+ * criterion the plan sets for onboarding. Listing it also cost something real,
+ * since a disabled button in the picker implies callboard knows the CLI would
+ * work if installed, and nobody here had ever seen it run.
  *
- * A vendor that does not reliably request permission is one callboard cannot
- * gate. That is the onboarding criterion, and it is why the OpenCode entry
- * carries an `env` and Gemini does not — Gemini's behaviour here is simply not
- * yet known.
+ * The seam is unchanged by having one entry. A vendor is still data: adding the
+ * next one is this object plus a live run, and `resolveAcpVendorPreset`'s
+ * `override` already takes a full preset for anyone wiring one by hand.
  */
 export const ACP_VENDOR_PRESETS: Readonly<Record<string, AcpVendorPreset>> = Object.freeze({
   opencode: Object.freeze({
@@ -131,13 +132,6 @@ export const ACP_VENDOR_PRESETS: Readonly<Record<string, AcpVendorPreset>> = Obj
     command: ["opencode", "acp"] as const,
     // See OPENCODE_FORCE_ASK_CONFIG. Without this the gate is decorative.
     env: { OPENCODE_CONFIG_CONTENT: OPENCODE_FORCE_ASK_CONFIG },
-  } satisfies AcpVendorPreset),
-  gemini: Object.freeze({
-    id: "gemini",
-    label: "Gemini CLI",
-    command: ["gemini", "--experimental-acp"] as const,
-    // Gemini publishes its command list after session creation.
-    waitForInitialCommands: true,
   } satisfies AcpVendorPreset),
 });
 

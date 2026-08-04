@@ -51,14 +51,14 @@ describe("vendor presets", () => {
   });
 
   it("resolves a built-in by id and returns null for an unknown one", () => {
-    expect(resolveAcpVendorPreset("gemini")?.id).toBe("gemini");
+    expect(resolveAcpVendorPreset("opencode")?.id).toBe("opencode");
     expect(resolveAcpVendorPreset("not-a-vendor")).toBeNull();
     expect(resolveAcpVendorPreset("")).toBeNull();
   });
 
   it("lets an inline preset win outright — the Phase 3 / test seam", () => {
     const custom: AcpVendorPreset = { id: "mine", label: "Mine", command: ["my-agent", "--acp"] };
-    expect(resolveAcpVendorPreset("gemini", custom)).toBe(custom);
+    expect(resolveAcpVendorPreset("opencode", custom)).toBe(custom);
     expect(resolveAcpVendorPreset("unknown-id", custom)).toBe(custom);
   });
 });
@@ -77,23 +77,22 @@ describe("the provider seam", () => {
     expect(isInternalProvider("acp")).toBe(true);
     // The vendor is NOT a kind — that is the whole point, and it stays true now
     // that both lists agree about "acp".
-    expect(isRoutableProvider("gemini")).toBe(false);
     expect(isRoutableProvider("opencode")).toBe(false);
-    expect(isInternalProvider("gemini")).toBe(false);
-    expect(isInternalProvider("acp:gemini")).toBe(false);
+    expect(isInternalProvider("opencode")).toBe(false);
+    expect(isInternalProvider("acp:opencode")).toBe(false);
     // "mock" is test-only and belongs to neither list.
     expect(isRoutableProvider("mock")).toBe(false);
     expect(isInternalProvider("mock")).toBe(false);
   });
 
   it("memoizes one adapter instance per provider id, not per kind", () => {
-    const a = getAgentProvider("acp", "gemini");
-    const b = getAgentProvider("acp", "gemini");
+    const a = getAgentProvider("acp", "opencode");
+    const b = getAgentProvider("acp", "opencode");
     const c = getAgentProvider("acp", "other-vendor");
 
     expect(a).toBe(b);
     expect(a).not.toBe(c);
-    expect((a as AcpAdapter).providerId).toBe("gemini");
+    expect((a as AcpAdapter).providerId).toBe("opencode");
     expect((c as AcpAdapter).providerId).toBe("other-vendor");
     expect(a.kind).toBe("acp");
   });
@@ -111,13 +110,13 @@ describe("the provider seam", () => {
 
   it("injects and clears an ACP test double under its provider id", () => {
     const fake = { kind: "acp" as const, query: () => ({}) as never, buildToolServer: () => ({}) };
-    setAgentProviderForTesting(fake, "acp", "gemini");
-    expect(getAgentProvider("acp", "gemini")).toBe(fake);
+    setAgentProviderForTesting(fake, "acp", "opencode");
+    expect(getAgentProvider("acp", "opencode")).toBe(fake);
     // A different vendor is unaffected by the injection.
     expect(getAgentProvider("acp", "elsewhere")).not.toBe(fake);
 
-    setAgentProviderForTesting(null, "acp", "gemini");
-    expect(getAgentProvider("acp", "gemini")).not.toBe(fake);
+    setAgentProviderForTesting(null, "acp", "opencode");
+    expect(getAgentProvider("acp", "opencode")).not.toBe(fake);
   });
 });
 
@@ -136,6 +135,6 @@ describe("AcpAdapter.query configuration", () => {
 
   it("lets options.acp.providerId override the adapter's own id", () => {
     const adapter = new AcpAdapter("nope");
-    expect(() => adapter.query({ prompt: "hi", options: { cwd: "/tmp", acp: { providerId: "gemini" } } })).not.toThrow();
+    expect(() => adapter.query({ prompt: "hi", options: { cwd: "/tmp", acp: { providerId: "opencode" } } })).not.toThrow();
   });
 });
