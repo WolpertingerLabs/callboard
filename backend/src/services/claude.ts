@@ -2025,23 +2025,29 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               break;
 
             case "adapter_specific": {
-              // OR per-turn cost beacons → live `budget` StreamEvents. The
-              // harness reports the CUMULATIVE run cost at each turn boundary;
+              // Per-turn cost beacons → live `budget` StreamEvents. Adapters
+              // report the CUMULATIVE run cost at each turn boundary;
               // forwarding it lets the UI move the spend indicator mid-run
               // instead of waiting for `done`. Track it as lastCostUsd too so
               // an abnormal end (e.g. abort before the result event) still has
               // the freshest spend on hand.
-              if (event.adapter === "openrouter") {
-                const payload = event.payload as { kind?: string; costUsd?: number } | null;
-                if (payload?.kind === "turn_cost" && typeof payload.costUsd === "number") {
-                  lastCostUsd = payload.costUsd;
-                  emitter.emit("event", {
-                    type: "budget",
-                    content: "",
-                    costUsd: payload.costUsd,
-                    ...(typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
-                  } as StreamEvent);
-                }
+              //
+              // Keyed on the payload rather than on the adapter. `turn_cost` was
+              // OpenRouter's alone when it was written, but nothing about it is
+              // OpenRouter-shaped — it is a number in USD — and the ACP adapter
+              // now emits it too, from ACP's own `usage_update.cost`. Gating on
+              // the emitter's name would have meant a second identical branch.
+              // `maxBudgetUsd` stays OR-specific: it is callboard's spend cap for
+              // that provider, and there is no equivalent to quote for the others.
+              const payload = event.payload as { kind?: string; costUsd?: number } | null;
+              if (payload?.kind === "turn_cost" && typeof payload.costUsd === "number") {
+                lastCostUsd = payload.costUsd;
+                emitter.emit("event", {
+                  type: "budget",
+                  content: "",
+                  costUsd: payload.costUsd,
+                  ...(event.adapter === "openrouter" && typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
+                } as StreamEvent);
               }
               break;
             }
