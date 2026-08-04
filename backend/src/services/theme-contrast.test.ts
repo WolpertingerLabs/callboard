@@ -76,6 +76,7 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "on-danger": 5.52,
     "provider-badge-openrouter": 5.7,
     "provider-badge-codex": 5.48,
+    "provider-badge-acp": 6.7,
     "session-badge-cli": 5.47,
     "worktree-badge": 5.7,
     "builtin-on-user-bg": 10.33,
@@ -130,6 +131,7 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "on-danger": 6.47,
     "provider-badge-openrouter": 5.7,
     "provider-badge-codex": 5.48,
+    "provider-badge-acp": 6.7,
     "session-badge-cli": 5.48,
     "worktree-badge": 5.7,
     "builtin-on-user-bg": 7.15,
@@ -200,7 +202,10 @@ describe("unmeasurable diagnostics", () => {
   });
 
   it("blames the reference itself when the variable is simply absent", () => {
-    const m = measurePairing({ id: "t", where: "t", fg: "var(--nope)", bg: "var(--bg)", backdrop: "var(--bg)", kind: "text" }, effectiveVars(undefined, "dark"));
+    const m = measurePairing(
+      { id: "t", where: "t", fg: "var(--nope)", bg: "var(--bg)", backdrop: "var(--bg)", kind: "text" },
+      effectiveVars(undefined, "dark"),
+    );
     expect(m.unmeasurable).toBe("var(--nope)");
   });
 });
@@ -242,14 +247,8 @@ describe("compositing", () => {
 
   it("is why the backdrop has to be named — the same tint measures differently on each", () => {
     const vars = effectiveVars(undefined, "light");
-    const onSidebar = measurePairing(
-      { id: "t", where: "t", fg: "var(--warning)", bg: "var(--warning-bg)", backdrop: "var(--bg-sidebar)", kind: "text" },
-      vars,
-    );
-    const onBg = measurePairing(
-      { id: "t", where: "t", fg: "var(--warning)", bg: "var(--warning-bg)", backdrop: "var(--bg)", kind: "text" },
-      vars,
-    );
+    const onSidebar = measurePairing({ id: "t", where: "t", fg: "var(--warning)", bg: "var(--warning-bg)", backdrop: "var(--bg-sidebar)", kind: "text" }, vars);
+    const onBg = measurePairing({ id: "t", where: "t", fg: "var(--warning)", bg: "var(--warning-bg)", backdrop: "var(--bg)", kind: "text" }, vars);
     expect(onSidebar.ratio).not.toBeCloseTo(onBg.ratio as number, 2);
   });
 
@@ -598,7 +597,11 @@ describe("generation-time correction", () => {
     const stillFailing = new Set(report.failures.map((f) => `${f.mode}:${f.id}`));
     for (const c of after.corrections) for (const id of c.fixed) expect(stillFailing.has(`${c.mode}:${id}`), id).toBe(false);
     // ...and what it gave up on, it reported.
-    for (const f of report.failures) expect(after.unsatisfiable.some((u) => u.id === f.id && u.mode === f.mode), `${f.mode}:${f.id}`).toBe(true);
+    for (const f of report.failures)
+      expect(
+        after.unsatisfiable.some((u) => u.id === f.id && u.mode === f.mode),
+        `${f.mode}:${f.id}`,
+      ).toBe(true);
   });
 
   it("terminates on a self-referential tint rather than chasing the asymptote", async () => {

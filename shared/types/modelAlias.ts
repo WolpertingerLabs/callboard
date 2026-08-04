@@ -13,8 +13,18 @@
  */
 import type { UiAgentProviderKind } from "./providers.js";
 
-/** The three harnesses an alias can target. */
-export type HarnessProvider = UiAgentProviderKind;
+/**
+ * The three harnesses an alias can target.
+ *
+ * Not every UI-selectable provider qualifies. `"acp"` is excluded because an
+ * alias resolves to a **model id you can name up front**, and ACP has nowhere to
+ * put one: the protocol (1.3.0) exposes models only as a `session/new` config
+ * option, so there is no model to select before a session exists — and `"acp"`
+ * is one kind covering many vendors, whose catalogs have nothing in common.
+ * Widening this to the whole UI union would let the registry accept a target
+ * that no code path could ever apply.
+ */
+export type HarnessProvider = Exclude<UiAgentProviderKind, "acp">;
 
 export interface ModelAlias {
   /** Alias name, e.g. "planner". Unique case-insensitively across the registry. */

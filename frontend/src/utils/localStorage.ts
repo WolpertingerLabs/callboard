@@ -41,6 +41,8 @@ interface LocalStorageData {
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
   defaultProvider?: AgentProviderKind;
+  /** Last-selected ACP vendor id. Only meaningful when defaultProvider is "acp". */
+  defaultAcpProviderId?: string;
   /** User's last-selected OpenRouter reasoning effort in the New Chat panel.
    * Stored even when the provider is Claude Code so toggling back to OR
    * restores the prior selection. */
@@ -113,7 +115,7 @@ export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   setStorageData(data);
 }
 
-const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex"]);
+const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex", "acp"]);
 
 export function getDefaultProvider(): AgentProviderKind {
   const data = getStorageData();
@@ -128,6 +130,27 @@ export function saveDefaultProvider(provider: AgentProviderKind): void {
   if (!KNOWN_PROVIDERS.has(provider)) return;
   const data = getStorageData();
   data.defaultProvider = provider;
+  setStorageData(data);
+}
+
+/**
+ * Last-selected ACP vendor id (`"opencode"`, …).
+ *
+ * Deliberately NOT validated against a known set on read, unlike the provider
+ * above: the vendor list is server-side data that grows without a frontend
+ * build (built-in presets today, user-defined providers later), so a set here
+ * would go stale and silently discard a legitimate choice. The caller checks it
+ * against the live `acpProviders` list from `/api/system-info` instead, which is
+ * the only place that can actually know.
+ */
+export function getDefaultAcpProviderId(): string {
+  const data = getStorageData();
+  return typeof data.defaultAcpProviderId === "string" ? data.defaultAcpProviderId : "";
+}
+
+export function saveDefaultAcpProviderId(providerId: string): void {
+  const data = getStorageData();
+  data.defaultAcpProviderId = providerId;
   setStorageData(data);
 }
 

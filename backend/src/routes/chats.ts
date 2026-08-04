@@ -650,6 +650,27 @@ chatsRouter.post("/:id/fork", (req, res) => {
     return res.status(400).json({ error: `Unknown target provider "${req.body.provider}"` });
   }
   const targetKind: RoutableProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
+  // Forking INTO ACP is refused on the kind itself, and this guard is the
+  // route's own invariant rather than a consequence of some provider's missing
+  // method. Two independent reasons, either one sufficient:
+  //
+  //  1. `"acp"` names a wire format, not a harness. The vendor rides in
+  //     `acpProviderId`, which this route does not accept, so a fork here could
+  //     only stamp a chat with a kind and no vendor — permanently unrunnable.
+  //  2. Even given a vendor it could not work. ACP session state lives inside
+  //     the agent's process, and the protocol gives a client no way to hand an
+  //     agent a conversation it did not have; a seeded transcript would render
+  //     correctly and lose every bit of context on the next message.
+  //
+  // `AcpSessionProvider` implements neither `forkSession` nor `seedSession`
+  // today, which would also produce a 400 — but that is its decision to revisit,
+  // and while `"acp"` was outside `ROUTABLE_PROVIDER_KINDS` the allowlist was
+  // the real guard. Now that a request may name the kind, the guard has to live
+  // here, or adding a transcript-seeding method later would silently start
+  // minting wedged chats.
+  if (targetKind === "acp") {
+    return res.status(400).json({ error: `Forking into ${providerLabel("acp")} is not supported` });
+  }
   const targetProvider = getSessionProviders().find((p) => p.kind === targetKind);
   if (!targetProvider) {
     return res.status(400).json({ error: `Forking into ${providerLabel(targetKind)} is not supported` });

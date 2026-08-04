@@ -30,6 +30,17 @@ interface ProviderConfigPickerProps {
   // doesn't gate Codex) — Codex is treated as available until an explicit
   // false disables the button (mirrors `openRouterConfigured`).
   codexConfigured?: boolean | null;
+  // ACP vendors, from /api/system-info. One button each rather than an "ACP"
+  // button plus a sub-picker: `acp` is a wire format, not a harness, and a user
+  // picks OpenCode the same way they pick Codex. The kind travels as "acp" with
+  // the id alongside it — see acpProviderId below. Omitted/empty renders nothing,
+  // so callers that don't offer ACP are unaffected.
+  acpProviders?: Array<{ id: string; label: string; available: boolean; command: string }>;
+  // Which ACP vendor is selected. Only meaningful when provider === "acp".
+  acpProviderId?: string;
+  // Selecting an ACP vendor sets BOTH the kind and the id, so callers wire this
+  // together with onProviderChange rather than as an independent control.
+  onAcpProviderChange?: (providerId: string) => void;
   // `null` while /system-info is in flight — OR is treated as available until
   // we know otherwise (the disabled gate only kicks in on an explicit false).
   openRouterConfigured: boolean | null;
@@ -86,6 +97,9 @@ export default function ProviderConfigPicker({
   codexModel,
   onCodexModelChange,
   codexConfigured,
+  acpProviders,
+  acpProviderId,
+  onAcpProviderChange,
   openRouterConfigured,
   openRouterMaxBudgetUsd,
   onOpenApiSettings,
@@ -352,7 +366,48 @@ export default function ProviderConfigPicker({
             >
               Codex
             </button>
+            {(acpProviders ?? []).map((vendor) => {
+              // Selected only when BOTH the kind and the id match — two ACP
+              // vendors must never light up together.
+              const selected = provider === "acp" && acpProviderId === vendor.id;
+              return (
+                <button
+                  key={vendor.id}
+                  type="button"
+                  onClick={() => {
+                    if (!vendor.available) return;
+                    onAcpProviderChange?.(vendor.id);
+                    onProviderChange("acp");
+                  }}
+                  disabled={!vendor.available}
+                  title={vendor.available ? `Use ${vendor.label} for this chat` : `Install the \`${vendor.command}\` CLI to enable this provider`}
+                  style={{
+                    flex: 1,
+                    padding: inline ? "6px 10px" : "8px 12px",
+                    fontSize: inline ? 12 : 13,
+                    fontWeight: 500,
+                    borderRadius: 6,
+                    border: selected ? "1px solid var(--accent)" : "1px solid var(--border)",
+                    background: selected ? "var(--accent)" : "var(--surface)",
+                    color: !vendor.available ? "var(--text-muted)" : selected ? "var(--text-on-accent)" : "var(--text)",
+                    cursor: vendor.available ? "pointer" : "not-allowed",
+                    opacity: vendor.available ? 1 : 0.6,
+                    transition: "all 0.15s",
+                  }}
+                >
+                  {vendor.label}
+                </button>
+              );
+            })}
           </div>
+          {provider === "acp" && !inline && (
+            // ACP model selection is the vendor's own: ACP 1.3.0 exposes models
+            // as a post-session config option, so there is nothing to pick here
+            // before the session exists. Saying so beats an empty Model field.
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+              Model and permissions for this harness are configured in its own CLI. Callboard still gates every tool call.
+            </div>
+          )}
           {codexConfigured === false && provider === "codex" && (
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
               Configure{" "}

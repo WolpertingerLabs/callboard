@@ -104,6 +104,13 @@ const providerReferenceLinks: Record<AgentProviderKind, ReferenceLink[]> = {
     { label: "API billing", href: "https://platform.openai.com/settings/organization/billing/overview", note: "OpenAI Platform billing" },
     { label: "API limits", href: "https://platform.openai.com/settings/organization/limits", note: "OpenAI Platform limits" },
   ],
+  // ACP is a wire format, not a vendor, so there is no single usage or billing
+  // page to link — credentials belong to whichever CLI the user configured, and
+  // callboard never handles them. The protocol docs are the honest destination.
+  acp: [
+    { label: "Agent Client Protocol", href: "https://agentclientprotocol.com", note: "The protocol callboard speaks to these agents" },
+    { label: "OpenCode docs", href: "https://opencode.ai/docs/", note: "Model, auth and permission configuration for OpenCode" },
+  ],
 };
 
 function ReferenceLinksSection({ provider }: { provider: AgentProviderKind }) {
