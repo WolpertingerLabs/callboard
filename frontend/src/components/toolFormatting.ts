@@ -12,6 +12,12 @@
  * - **Codex** — normalized `Bash` / `Edit` / `WebSearch` names (but `Edit`
  *   carries a change-list input, not `{file_path, old_string, new_string}`),
  *   and MCP tools as `<server>__<tool>` (e.g. `callboard-tools__render_file`).
+ * - **ACP vendors** — whatever the agent calls its own tools. OpenCode's are
+ *   lowercase (`read`, `glob`, `task`, `bash`) with **camelCase** input keys
+ *   (`filePath`, not `file_path`), so they reach `fallbackSummary` rather than
+ *   a dedicated case. That is the design working — the fallback is what makes a
+ *   vendor a data entry — but it only works if it probes the keys real agents
+ *   send, which is why `filePath` is in the path list below.
  *
  * This module parses all three conventions down to a bare tool name, renders
  * a short display name, and produces the one-line contextual summary shown in
@@ -96,7 +102,7 @@ function summarizeCodexChanges(changes: CodexFileChange[]): string {
  * future harness tools): probe common input fields in priority order.
  */
 function fallbackSummary(input: Record<string, unknown>): string {
-  const path = input.file_path ?? input.path ?? input.notebook_path;
+  const path = input.file_path ?? input.filePath ?? input.path ?? input.notebook_path;
   if (typeof path === "string" && path) return ` - ${basename(path)}`;
   if (typeof input.url === "string" && input.url) return ` - ${hostnameOf(input.url)}`;
   for (const key of ["query", "pattern"] as const) {
@@ -217,8 +223,11 @@ export function getToolSummary(toolName: string, content: string): string {
   }
 }
 
-/** ` - <basename>` from `file_path` (Claude) or `path` (OR harness), else "". */
-function path2(input: { file_path?: unknown; path?: unknown }): string {
-  const p = input.file_path ?? input.path;
+/**
+ * ` - <basename>` from `file_path` (Claude), `filePath` (ACP vendors) or `path`
+ * (OR harness), else "".
+ */
+function path2(input: { file_path?: unknown; filePath?: unknown; path?: unknown }): string {
+  const p = input.file_path ?? input.filePath ?? input.path;
   return typeof p === "string" && p ? ` - ${basename(p)}` : "";
 }
