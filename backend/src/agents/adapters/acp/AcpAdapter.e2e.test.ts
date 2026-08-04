@@ -525,13 +525,67 @@ describe("AcpAdapter transcript round-trip", () => {
   );
 });
 
+describe("model discovery", () => {
+  it(
+    "flattens the session's model config option into supportedModels()",
+    async () => {
+      const adapter = new AcpAdapter("test-double");
+      const query = adapter.query({
+        prompt: "hi",
+        options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("config-options"), getPermissions: () => allowAll } },
+      });
+      try {
+        // `configOptions` only exists once a session does — ACP 1.3.0 has no
+        // models API, so the list cannot be answered before the turn starts.
+        expect(await query.supportedModels()).toEqual([]);
+        for await (const _event of query) {
+          /* drain */
+        }
+        // Grouped options are flattened, the non-model selector ("mode") is
+        // ignored, and each value is read from `value` — reading `id` (which a
+        // selectable value does not have) returned [] for every conformant agent.
+        expect(await query.supportedModels()).toEqual([
+          { value: "vendor/fast", displayName: "Fast", description: "vendor/fast" },
+          { value: "vendor/slow", displayName: "Slow", description: "Thinks harder" },
+        ]);
+      } finally {
+        await query.close();
+      }
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+describe("tool calls whose arguments arrive late", () => {
+  it(
+    "emits one tool_use carrying the arguments from the later update",
+    async () => {
+      const events = await run("late-args");
+      const toolUses = events.filter((e) => e.type === "tool_use");
+      const results = events.filter((e) => e.type === "tool_result");
+
+      // One card per call — not one empty card on open and another when the
+      // arguments land.
+      expect(toolUses).toEqual([
+        { type: "tool_use", toolName: "write", input: { filePath: "/tmp/notes.txt", content: "hello" }, callId: "call-late" },
+        // Opened and never updated: reported argument-less rather than dropped.
+        { type: "tool_use", toolName: "glob", input: {}, callId: "call-orphan" },
+      ]);
+      expect(results).toHaveLength(1);
+
+      // The completed call's result must not precede its own tool_use.
+      expect(events.indexOf(toolUses[0])).toBeLessThan(events.indexOf(results[0]));
+      // The orphan is flushed at the end of the turn, before the result event.
+      const terminal = events.findIndex((e) => e.type === "result");
+      expect(events.indexOf(toolUses[1])).toBeLessThan(terminal);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
 // ── helpers ───────────────────────────────────────────────────────────
 
-async function collect(
-  adapter: AcpAdapter,
-  preset: ReturnType<typeof acpTestAgentPreset>,
-  opts: { prompt: string; resume?: string },
-): Promise<AgentEvent[]> {
+async function collect(adapter: AcpAdapter, preset: ReturnType<typeof acpTestAgentPreset>, opts: { prompt: string; resume?: string }): Promise<AgentEvent[]> {
   const query = adapter.query({
     prompt: opts.prompt,
     options: { cwd: process.cwd(), ...(opts.resume ? { resume: opts.resume } : {}), acp: { preset, getPermissions: () => allowAll } },

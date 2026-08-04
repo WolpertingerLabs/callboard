@@ -39,7 +39,7 @@ import type { AgentEvent } from "../../ports/events.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { createLogger } from "../../../utils/logger.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
-import { buildAcpUsage, mapStopReason, translateAcpUpdate } from "./messageAdapter.js";
+import { AcpToolCallBuffer, buildAcpUsage, mapStopReason, translateAcpUpdate } from "./messageAdapter.js";
 import type { CanUseToolFn } from "./permissionAdapter.js";
 import type { AcpToolServerHandle } from "./toolAdapter.js";
 import { AcpTranscriptWriter } from "./transcript.js";
@@ -93,6 +93,10 @@ export class AcpAgentQuery implements AgentQuery {
   private async *iterate(): AsyncIterable<AgentEvent> {
     const { preset, cwd, resumeSessionId } = this.params;
     let transcript: AcpTranscriptWriter | null = null;
+    // One buffer per turn: it holds tool calls whose arguments have not arrived
+    // yet, and is drained at every exit below so a call the agent opened and
+    // never updated still reaches the transcript.
+    const toolCalls = new AcpToolCallBuffer();
 
     // Everything a yielded event needs to also reach disk goes through here, so
     // the live stream and the stored transcript cannot diverge.
@@ -159,6 +163,7 @@ export class AcpAgentQuery implements AgentQuery {
         if (next.done) {
           // Queue closed before a stop message — the agent process died mid-turn.
           if (!this.isAborted()) {
+            for (const event of toolCalls.flush()) yield emit(event);
             yield emit({ type: "result", status: "error", reason: `ACP agent "${preset.id}" exited before completing the turn` });
           }
           return;
@@ -166,12 +171,13 @@ export class AcpAgentQuery implements AgentQuery {
 
         const message = next.value;
         if (message.kind === "update") {
-          for (const event of translateAcpUpdate(message.notification.update)) yield emit(event);
+          for (const event of translateAcpUpdate(message.notification.update, toolCalls)) yield emit(event);
           continue;
         }
 
         if (message.kind === "error") {
           if (this.isAborted()) return;
+          for (const event of toolCalls.flush()) yield emit(event);
           const raw = message.error instanceof Error ? message.error.message : String(message.error);
           // A dead child rejects the in-flight request with the SDK's generic
           // "ACP connection closed". Prefer the process's actual exit status —
@@ -184,6 +190,7 @@ export class AcpAgentQuery implements AgentQuery {
         }
 
         // kind === "stop"
+        for (const event of toolCalls.flush()) yield emit(event);
         const result = mapStopReason(message.response.stopReason);
         const usage = buildAcpUsage(message.response.usage);
         yield emit(usage ? { ...result, usage } : result);
@@ -235,14 +242,20 @@ export class AcpAgentQuery implements AgentQuery {
       const candidates = Array.isArray(group) ? group : [entry];
       for (const candidate of candidates) {
         if (!candidate || typeof candidate !== "object") continue;
-        const id = (candidate as { id?: unknown }).id;
-        if (typeof id !== "string" || !id) continue;
+        // `value`, not `id`. `SessionConfigSelectOption` in the pinned schema
+        // requires `{value, name}` — `id` is the identifier of the *enclosing*
+        // `SessionConfigOption` (the "model" selector itself), not of one
+        // selectable value. Reading `id` here matched nothing a conformant agent
+        // sends, so this returned [] for every vendor; OpenCode's 40-model list
+        // was the first live proof.
+        const value = (candidate as { value?: unknown }).value;
+        if (typeof value !== "string" || !value) continue;
         const name = (candidate as { name?: unknown }).name;
         const description = (candidate as { description?: unknown }).description;
         models.push({
-          value: id,
-          displayName: typeof name === "string" && name ? name : id,
-          description: typeof description === "string" && description ? description : id,
+          value,
+          displayName: typeof name === "string" && name ? name : value,
+          description: typeof description === "string" && description ? description : value,
         });
       }
     }

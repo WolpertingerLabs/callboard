@@ -12,26 +12,31 @@
  */
 import { describe, expect, it } from "vitest";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
-import { buildAcpUsage, contentBlockToText, mapStopReason, toolContentToText, translateAcpUpdate } from "./messageAdapter.js";
+import { AcpToolCallBuffer, buildAcpUsage, contentBlockToText, mapStopReason, toolContentToText, translateAcpUpdate } from "./messageAdapter.js";
 
 /** Cast helper: these tests deliberately feed shapes outside the union. */
 const asUpdate = (value: unknown): SessionUpdate => value as SessionUpdate;
 
+/**
+ * Translate against a throwaway buffer.
+ *
+ * Most cases here are single updates with nothing held, so a fresh buffer per
+ * call is the honest default. The deferral tests pass one explicitly, because a
+ * held `tool_use` only means anything across two updates.
+ */
+const tr = (update: SessionUpdate, buffer: AcpToolCallBuffer = new AcpToolCallBuffer()) => translateAcpUpdate(update, buffer);
+
 describe("translateAcpUpdate — core mapping", () => {
   it("maps agent_message_chunk to text", () => {
-    expect(translateAcpUpdate(asUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } }))).toEqual([
-      { type: "text", content: "hi" },
-    ]);
+    expect(tr(asUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } }))).toEqual([{ type: "text", content: "hi" }]);
   });
 
   it("maps agent_thought_chunk to thinking", () => {
-    expect(translateAcpUpdate(asUpdate({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } }))).toEqual([
-      { type: "thinking", content: "hmm" },
-    ]);
+    expect(tr(asUpdate({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } }))).toEqual([{ type: "thinking", content: "hmm" }]);
   });
 
   it("drops user_message_chunk so callboard does not double the user's turn", () => {
-    expect(translateAcpUpdate(asUpdate({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "mine" } }))).toEqual([]);
+    expect(tr(asUpdate({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "mine" } }))).toEqual([]);
   });
 
   it("maps available_commands_update to slash_commands, skipping unnamed entries", () => {
@@ -39,23 +44,24 @@ describe("translateAcpUpdate — core mapping", () => {
       sessionUpdate: "available_commands_update",
       availableCommands: [{ name: "a", description: "" }, { description: "no name" }, { name: "  ", description: "blank" }, { name: "b", description: "" }],
     });
-    expect(translateAcpUpdate(update)).toEqual([{ type: "slash_commands", commands: ["a", "b"] }]);
+    expect(tr(update)).toEqual([{ type: "slash_commands", commands: ["a", "b"] }]);
   });
 
   it("emits nothing for an empty command list rather than an empty slash_commands event", () => {
-    expect(translateAcpUpdate(asUpdate({ sessionUpdate: "available_commands_update", availableCommands: [] }))).toEqual([]);
+    expect(tr(asUpdate({ sessionUpdate: "available_commands_update", availableCommands: [] }))).toEqual([]);
   });
 });
 
 describe("translateAcpUpdate — tool call lifecycle", () => {
   it("opens a pending tool_call as tool_use only", () => {
     const update = asUpdate({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Read it", name: "read_file", status: "pending", rawInput: { p: 1 } });
-    expect(translateAcpUpdate(update)).toEqual([{ type: "tool_use", toolName: "read_file", input: { p: 1 }, callId: "c1" }]);
+    expect(tr(update)).toEqual([{ type: "tool_use", toolName: "read_file", input: { p: 1 }, callId: "c1" }]);
   });
 
   it("falls back to the title when the experimental name is absent", () => {
-    const update = asUpdate({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Read it", status: "pending" });
-    expect(translateAcpUpdate(update)[0]).toMatchObject({ toolName: "Read it" });
+    const buffer = new AcpToolCallBuffer();
+    tr(asUpdate({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Read it", status: "pending" }), buffer);
+    expect(buffer.flush()[0]).toMatchObject({ toolName: "Read it" });
   });
 
   it("also emits a tool_result for a call that is born terminal", () => {
@@ -68,7 +74,7 @@ describe("translateAcpUpdate — tool call lifecycle", () => {
       status: "completed",
       content: [{ type: "content", content: { type: "text", text: "done" } }],
     });
-    expect(translateAcpUpdate(update)).toEqual([
+    expect(tr(update)).toEqual([
       { type: "tool_use", toolName: "Cached read", input: {}, callId: "c1" },
       { type: "tool_result", callId: "c1", content: "done", isError: false },
     ]);
@@ -76,7 +82,7 @@ describe("translateAcpUpdate — tool call lifecycle", () => {
 
   it("emits tool_result only on a terminal tool_call_update", () => {
     const inProgress = asUpdate({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "in_progress", content: [] });
-    expect(translateAcpUpdate(inProgress)).toEqual([]);
+    expect(tr(inProgress)).toEqual([]);
 
     const failed = asUpdate({
       sessionUpdate: "tool_call_update",
@@ -84,12 +90,86 @@ describe("translateAcpUpdate — tool call lifecycle", () => {
       status: "failed",
       content: [{ type: "content", content: { type: "text", text: "boom" } }],
     });
-    expect(translateAcpUpdate(failed)).toEqual([{ type: "tool_result", callId: "c1", content: "boom", isError: true }]);
+    expect(tr(failed)).toEqual([{ type: "tool_result", callId: "c1", content: "boom", isError: true }]);
   });
 
   it("drops tool events with no correlation id rather than inventing one", () => {
-    expect(translateAcpUpdate(asUpdate({ sessionUpdate: "tool_call", title: "no id" }))).toEqual([]);
-    expect(translateAcpUpdate(asUpdate({ sessionUpdate: "tool_call_update", status: "completed" }))).toEqual([]);
+    expect(tr(asUpdate({ sessionUpdate: "tool_call", title: "no id" }))).toEqual([]);
+    expect(tr(asUpdate({ sessionUpdate: "tool_call_update", status: "completed" }))).toEqual([]);
+  });
+});
+
+describe("translateAcpUpdate — deferred tool arguments", () => {
+  // OpenCode opens every call with `rawInput: {}` and sends the real arguments
+  // on the next update. `tool_use` is one-shot on the wire, so emitting on
+  // arrival would pin `{}` in the transcript for good.
+  const opened = asUpdate({ sessionUpdate: "tool_call", toolCallId: "c1", title: "write", kind: "edit", status: "pending", rawInput: {} });
+
+  it("holds a tool_use whose arguments have not arrived", () => {
+    expect(tr(opened, new AcpToolCallBuffer())).toEqual([]);
+  });
+
+  it("releases it with the arguments from the first update that carries them", () => {
+    const buffer = new AcpToolCallBuffer();
+    tr(opened, buffer);
+    const events = tr(
+      asUpdate({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "c1",
+        status: "in_progress",
+        title: "/tmp/a.txt",
+        rawInput: { filePath: "/tmp/a.txt", content: "x" },
+      }),
+      buffer,
+    );
+    // The label is the one the call opened with ("write"), not the update's
+    // `title` — OpenCode rewrites that to the file path partway through.
+    expect(events).toEqual([{ type: "tool_use", toolName: "write", input: { filePath: "/tmp/a.txt", content: "x" }, callId: "c1" }]);
+  });
+
+  it("releases a held call on its terminal update, before the result", () => {
+    const buffer = new AcpToolCallBuffer();
+    tr(opened, buffer);
+    const events = tr(
+      asUpdate({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "c1",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: "ok" } }],
+      }),
+      buffer,
+    );
+    expect(events).toEqual([
+      { type: "tool_use", toolName: "write", input: {}, callId: "c1" },
+      { type: "tool_result", callId: "c1", content: "ok", isError: false },
+    ]);
+  });
+
+  it("does not re-emit a tool_use for a call that was never held", () => {
+    const buffer = new AcpToolCallBuffer();
+    // Opened WITH arguments, so it was emitted immediately...
+    expect(tr(asUpdate({ sessionUpdate: "tool_call", toolCallId: "c2", name: "read", status: "pending", rawInput: { p: 1 } }), buffer)).toHaveLength(1);
+    // ...and a later update carrying arguments must not produce a second card.
+    expect(tr(asUpdate({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "in_progress", rawInput: { p: 2 } }), buffer)).toEqual([]);
+  });
+
+  it("flushes calls the agent opened and never updated", () => {
+    const buffer = new AcpToolCallBuffer();
+    tr(opened, buffer);
+    tr(asUpdate({ sessionUpdate: "tool_call", toolCallId: "c3", title: "grep", status: "pending" }), buffer);
+    // An absent tool call is a worse lie than an argument-less one.
+    expect(buffer.flush()).toEqual([
+      { type: "tool_use", toolName: "write", input: {}, callId: "c1" },
+      { type: "tool_use", toolName: "grep", input: {}, callId: "c3" },
+    ]);
+    expect(buffer.flush()).toEqual([]);
+  });
+
+  it("treats a non-object or array rawInput as no arguments at all", () => {
+    const buffer = new AcpToolCallBuffer();
+    expect(tr(asUpdate({ sessionUpdate: "tool_call", toolCallId: "c4", name: "x", status: "pending", rawInput: ["a"] }), buffer)).toEqual([]);
+    expect(tr(asUpdate({ sessionUpdate: "tool_call", toolCallId: "c5", name: "y", status: "pending", rawInput: "nope" }), buffer)).toEqual([]);
+    expect(buffer.flush()).toHaveLength(2);
   });
 });
 
@@ -97,20 +177,20 @@ describe("translateAcpUpdate — the escape hatch", () => {
   it.each(["plan", "plan_update", "plan_removed", "current_mode_update", "config_option_update", "session_info_update", "usage_update"])(
     "rides %s through as adapter_specific",
     (kind) => {
-      const [event] = translateAcpUpdate(asUpdate({ sessionUpdate: kind, some: "payload" }));
+      const [event] = tr(asUpdate({ sessionUpdate: kind, some: "payload" }));
       expect(event).toMatchObject({ type: "adapter_specific", adapter: "acp", payload: { kind, some: "payload" } });
     },
   );
 
   it("rides an unknown sessionUpdate through instead of dropping it", () => {
-    const [event] = translateAcpUpdate(asUpdate({ sessionUpdate: "from_the_future", data: 7 }));
+    const [event] = tr(asUpdate({ sessionUpdate: "from_the_future", data: 7 }));
     expect(event).toMatchObject({ type: "adapter_specific", adapter: "acp", payload: { kind: "from_the_future", data: 7 } });
   });
 
   it("does NOT map usage_update onto result.usage", () => {
     // ACP's UsageUpdate is context-window occupancy ({used, size}), not tokens
     // billed for the turn. Putting it in TokenUsage would be a category error.
-    const [event] = translateAcpUpdate(asUpdate({ sessionUpdate: "usage_update", used: 100, size: 200000 }));
+    const [event] = tr(asUpdate({ sessionUpdate: "usage_update", used: 100, size: 200000 }));
     expect(event.type).toBe("adapter_specific");
   });
 });
@@ -129,8 +209,8 @@ describe("translateAcpUpdate — never throws", () => {
     ["commands that are not an array", { sessionUpdate: "available_commands_update", availableCommands: "nope" }],
     ["a tool call with array content of junk", { sessionUpdate: "tool_call", toolCallId: "c", status: "completed", content: [null, 1, "x"] }],
   ])("survives %s", (_label, input) => {
-    expect(() => translateAcpUpdate(asUpdate(input))).not.toThrow();
-    expect(Array.isArray(translateAcpUpdate(asUpdate(input)))).toBe(true);
+    expect(() => tr(asUpdate(input))).not.toThrow();
+    expect(Array.isArray(tr(asUpdate(input)))).toBe(true);
   });
 });
 
