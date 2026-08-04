@@ -1,5 +1,16 @@
 # pi as a native Callboard agent provider
 
+> **Read `plans/pi-spike-findings.md` first.** It records what
+> `@earendil-works/pi-coding-agent` **0.83.0** actually ships — measured against
+> the installed package and a live run — and it corrects fourteen assumptions in
+> the surface table below (project trust is never resolved by
+> `createAgentSession()` and defaults to *trusted*; `getEnvApiKey`, `AuthStorage`
+> and `loadExtensionFromFactory` are not exported; usage lands on `message_end`
+> and not `turn_end`; cancel is `stopReason === "aborted"`, not `willRetry`).
+> The table below was read off 0.80.2. **Where the two documents disagree, the
+> findings win.** The scope and phasing here still stand; specific lines in the
+> adapter files do not.
+
 ## Context
 
 Callboard runs chats through five harnesses today — Claude Code, OpenRouter, Codex, the ACP family (OpenCode), and Cline. Each is an implementation of the two ports in `backend/src/agents/ports/`: `AgentProvider` (execution) and `SessionProvider` (discovery/history). This is the sixth, and it follows the Cline landing beat for beat.
