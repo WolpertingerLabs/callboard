@@ -25,8 +25,8 @@
  * | `user_message_chunk`        | *(dropped — callboard already has the prompt)* |
  * | `agent_message_chunk`       | `text`                                      |
  * | `agent_thought_chunk`       | `thinking`                                  |
- * | `tool_call`                 | `tool_use` (+ `tool_result` if born terminal) |
- * | `tool_call_update`          | `tool_result` when status is terminal, else dropped |
+ * | `tool_call`                 | `tool_use`, deferred until its arguments arrive (+ `tool_result` if born terminal) |
+ * | `tool_call_update`          | a deferred `tool_use`, and `tool_result` once terminal |
  * | `available_commands_update` | `slash_commands`                            |
  * | `plan` / `plan_update` / `plan_removed` | `adapter_specific`               |
  * | `current_mode_update`       | `adapter_specific`                          |
@@ -41,6 +41,10 @@
  * *fresh* client can render a conversation it did not send. callboard already
  * persisted the user's message before `query()` was called, so re-emitting it
  * would double every user turn in the UI.
+ *
+ * **`tool_call` is deferred, not translated on arrival.** An agent may open a
+ * call before its arguments exist; emitting then would pin `input: {}` for the
+ * life of the transcript. See {@link AcpToolCallBuffer}.
  *
  * **`usage_update` is NOT a `result.usage`.** ACP's `UsageUpdate` is
  * `{ used, size }` — *context-window occupancy*, not tokens billed for the turn.
@@ -146,12 +150,74 @@ function toolName(update: { name?: string | null; title?: string | null }): stri
 }
 
 /**
+ * Holds a `tool_use` back until the call's arguments are known.
+ *
+ * ACP lets an agent open a tool call before it has settled the arguments, and
+ * OpenCode does exactly that: `tool_call` arrives with `rawInput: {}` and the
+ * real `{filePath, content}` lands on the *next* `tool_call_update`. callboard's
+ * `tool_use` is a one-shot event with no callId on the wire (see the
+ * `StreamEvent` mapping in `services/claude.ts`), so a second, fuller `tool_use`
+ * would render as a second tool card rather than an amendment. Emitting early
+ * therefore means emitting `{}` forever — every OpenCode tool in the transcript
+ * showing no file, no command, no arguments at all.
+ *
+ * So the first `tool_use` waits for the first non-empty `rawInput`. The label
+ * comes from the opening `tool_call` (`"write"`), not from the update whose
+ * `title` OpenCode later rewrites to the file path.
+ *
+ * Bounded by construction: entries leave on the call's first argument-bearing
+ * update, on its terminal update, or on {@link flush} at the end of the turn.
+ * A call is never held past the turn that opened it.
+ */
+export class AcpToolCallBuffer {
+  private readonly held = new Map<string, string>();
+
+  /** Remember a call whose arguments have not arrived yet. */
+  hold(callId: string, toolName: string): void {
+    this.held.set(callId, toolName);
+  }
+
+  /** The held `tool_use` for this call, now that there is something to say. */
+  release(callId: string, input: Record<string, unknown>): AgentEvent[] {
+    const toolName = this.held.get(callId);
+    if (toolName === undefined) return [];
+    this.held.delete(callId);
+    return [{ type: "tool_use", toolName, input, callId }];
+  }
+
+  /**
+   * Everything still held, in the order it was opened.
+   *
+   * A turn that ends with calls still held means the agent opened them and never
+   * updated them. They still happened, so they are emitted argument-less rather
+   * than dropped — an absent tool call is a worse lie than an empty one.
+   */
+  flush(): AgentEvent[] {
+    const events: AgentEvent[] = [];
+    for (const [callId, toolName] of this.held) events.push({ type: "tool_use", toolName, input: {}, callId });
+    this.held.clear();
+    return events;
+  }
+}
+
+/** `rawInput` as a non-empty object, or null when there is nothing to report. */
+function argumentsOf(rawInput: unknown): Record<string, unknown> | null {
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return null;
+  const record = rawInput as Record<string, unknown>;
+  return Object.keys(record).length > 0 ? record : null;
+}
+
+/**
  * Translate one `SessionUpdate` into zero or more {@link AgentEvent}s.
  *
  * Exported so tests can assert the mapping table directly without standing up a
  * connection. Total by construction — see the module doc-comment.
+ *
+ * `buffer` carries the only state translation needs: which tool calls are open
+ * but not yet argument-bearing (see {@link AcpToolCallBuffer}). It belongs to one
+ * turn, and the caller flushes it when the turn ends.
  */
-export function translateAcpUpdate(update: SessionUpdate | null | undefined): AgentEvent[] {
+export function translateAcpUpdate(update: SessionUpdate | null | undefined, buffer: AcpToolCallBuffer): AgentEvent[] {
   if (!update || typeof update !== "object") {
     log.warn("dropped a session/update with no update payload");
     return [];
@@ -165,7 +231,7 @@ export function translateAcpUpdate(update: SessionUpdate | null | undefined): Ag
   }
 
   try {
-    return translateKnownUpdate(kind, update);
+    return translateKnownUpdate(kind, update, buffer);
   } catch (err) {
     // Belt-and-braces: a shape we mis-guessed must not kill the connection.
     log.warn(`session/update "${kind}" failed to translate — riding through as adapter_specific: ${err instanceof Error ? err.message : String(err)}`);
@@ -173,7 +239,7 @@ export function translateAcpUpdate(update: SessionUpdate | null | undefined): Ag
   }
 }
 
-function translateKnownUpdate(kind: string, update: SessionUpdate): AgentEvent[] {
+function translateKnownUpdate(kind: string, update: SessionUpdate, buffer: AcpToolCallBuffer): AgentEvent[] {
   switch (kind) {
     case "user_message_chunk":
       // callboard already stored the user's message; echoing it would duplicate.
@@ -190,10 +256,10 @@ function translateKnownUpdate(kind: string, update: SessionUpdate): AgentEvent[]
     }
 
     case "tool_call":
-      return translateToolCall(update as Extract<SessionUpdate, { sessionUpdate: "tool_call" }>);
+      return translateToolCall(update as Extract<SessionUpdate, { sessionUpdate: "tool_call" }>, buffer);
 
     case "tool_call_update":
-      return translateToolCallUpdate(update as Extract<SessionUpdate, { sessionUpdate: "tool_call_update" }>);
+      return translateToolCallUpdate(update as Extract<SessionUpdate, { sessionUpdate: "tool_call_update" }>, buffer);
 
     case "available_commands_update": {
       const raw = (update as Extract<SessionUpdate, { sessionUpdate: "available_commands_update" }>).availableCommands;
@@ -240,14 +306,25 @@ function stripDiscriminator(update: SessionUpdate): Record<string, unknown> {
  * only `tool_use` there would leave the call spinning in the UI forever, so a
  * born-terminal call also emits its `tool_result` immediately.
  */
-function translateToolCall(update: Extract<SessionUpdate, { sessionUpdate: "tool_call" }>): AgentEvent[] {
+function translateToolCall(update: Extract<SessionUpdate, { sessionUpdate: "tool_call" }>, buffer: AcpToolCallBuffer): AgentEvent[] {
   const callId = typeof update.toolCallId === "string" ? update.toolCallId : "";
   if (!callId) {
     log.warn("dropped a tool_call with no toolCallId");
     return [];
   }
-  const events: AgentEvent[] = [{ type: "tool_use", toolName: toolName(update), input: update.rawInput ?? {}, callId }];
-  if (typeof update.status === "string" && TERMINAL_TOOL_STATUSES.has(update.status)) {
+  const label = toolName(update);
+  const args = argumentsOf(update.rawInput);
+  const terminal = typeof update.status === "string" && TERMINAL_TOOL_STATUSES.has(update.status);
+
+  // A call that is already over gets no second chance at arguments, so it is
+  // emitted with whatever it arrived with.
+  if (!terminal && !args) {
+    buffer.hold(callId, label);
+    return [];
+  }
+
+  const events: AgentEvent[] = [{ type: "tool_use", toolName: label, input: args ?? {}, callId }];
+  if (terminal) {
     events.push({ type: "tool_result", callId, content: toolContentToText(update.content), isError: update.status === "failed" });
   }
   return events;
@@ -259,15 +336,26 @@ function translateToolCall(update: Extract<SessionUpdate, { sessionUpdate: "tool
  * `tool_result` for the same `callId` and the UI would render the tool finishing
  * repeatedly.
  */
-function translateToolCallUpdate(update: Extract<SessionUpdate, { sessionUpdate: "tool_call_update" }>): AgentEvent[] {
+function translateToolCallUpdate(update: Extract<SessionUpdate, { sessionUpdate: "tool_call_update" }>, buffer: AcpToolCallBuffer): AgentEvent[] {
   const callId = typeof update.toolCallId === "string" ? update.toolCallId : "";
   if (!callId) {
     log.warn("dropped a tool_call_update with no toolCallId");
     return [];
   }
   const status = typeof update.status === "string" ? update.status : "";
-  if (!TERMINAL_TOOL_STATUSES.has(status)) return [];
-  return [{ type: "tool_result", callId, content: toolContentToText(update.content), isError: status === "failed" }];
+  const terminal = TERMINAL_TOOL_STATUSES.has(status);
+  const args = argumentsOf(update.rawInput);
+
+  // Release a held call as soon as it has something to say — on its arguments if
+  // they ever arrive, on its ending if they never do. `release` is a no-op for a
+  // call whose `tool_use` already went out, so a mid-turn update carrying
+  // arguments for an already-emitted call adds nothing rather than duplicating.
+  const events: AgentEvent[] = args ? buffer.release(callId, args) : terminal ? buffer.release(callId, {}) : [];
+
+  if (terminal) {
+    events.push({ type: "tool_result", callId, content: toolContentToText(update.content), isError: status === "failed" });
+  }
+  return events;
 }
 
 /**

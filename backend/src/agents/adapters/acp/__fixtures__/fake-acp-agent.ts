@@ -34,6 +34,7 @@ import {
   type AgentContext,
   type InitializeResponse,
   type NewSessionRequest,
+  type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
 } from "@agentclientprotocol/sdk";
@@ -66,6 +67,17 @@ export const SCENARIOS = [
    * the plan names by risk — the process stays alive after refusing.
    */
   "reject-init",
+  /**
+   * Returns spec-shaped `configOptions` from `session/new` — the only place ACP
+   * 1.3.0 advertises a model list. Covers both `SessionConfigSelectOptions`
+   * forms (flat and grouped).
+   */
+  "config-options",
+  /**
+   * Opens a tool call with empty `rawInput` and sends the real arguments on a
+   * later `tool_call_update`, the way OpenCode does.
+   */
+  "late-args",
 ] as const;
 
 export type FakeAcpScenario = (typeof SCENARIOS)[number];
@@ -151,6 +163,35 @@ async function runBasic(cx: AgentContext, sessionId: string, params: PromptReque
   await update(cx, sessionId, { sessionUpdate: "plan", entries: [{ content: "Do the thing", priority: "high", status: "pending" }] });
 
   return { stopReason: "end_turn", usage: { totalTokens: 30, inputTokens: 10, outputTokens: 20 } };
+}
+
+/**
+ * A tool call whose arguments land after it opens.
+ *
+ * OpenCode's real shape: `tool_call` carries `rawInput: {}`, the arguments
+ * arrive on the first `tool_call_update`, and the `title` is rewritten to the
+ * file path partway through. The adapter must emit one `tool_use` — labelled
+ * from the opening call, carrying the later arguments.
+ */
+async function runLateArgs(cx: AgentContext, sessionId: string): Promise<PromptResponse> {
+  await update(cx, sessionId, { sessionUpdate: "tool_call", toolCallId: "call-late", title: "write", kind: "edit", status: "pending", rawInput: {} });
+  await update(cx, sessionId, {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "call-late",
+    status: "in_progress",
+    title: "/tmp/notes.txt",
+    rawInput: { filePath: "/tmp/notes.txt", content: "hello" },
+  });
+  await update(cx, sessionId, {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "call-late",
+    status: "completed",
+    content: [{ type: "content", content: { type: "text", text: "Wrote file successfully." } }],
+  });
+  // A second call that opens and is never mentioned again — the turn must still
+  // report it rather than swallowing it.
+  await update(cx, sessionId, { sessionUpdate: "tool_call", toolCallId: "call-orphan", title: "glob", kind: "search", status: "pending", rawInput: {} });
+  return { stopReason: "end_turn" };
 }
 
 async function runPermission(cx: AgentContext, sessionId: string): Promise<PromptResponse> {
@@ -292,6 +333,43 @@ async function runCrash(cx: AgentContext, sessionId: string): Promise<PromptResp
 
 // ── Wiring ────────────────────────────────────────────────────────────
 
+/**
+ * Spec-shaped `configOptions` for the `config-options` scenario.
+ *
+ * Written against `SessionConfigOption` in the pinned schema, deliberately using
+ * BOTH `SessionConfigSelectOptions` forms: the `model` selector is grouped, the
+ * `mode` selector is flat. Note `{value, name}` on each selectable value — the
+ * enclosing option has an `id`, its values do not, and reading `id` there is the
+ * defect this scenario exists to catch.
+ */
+const MODEL_CONFIG_OPTIONS: NewSessionResponse["configOptions"] = [
+  {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: "vendor/fast",
+    options: [
+      {
+        group: "vendor",
+        name: "Vendor",
+        options: [
+          { value: "vendor/fast", name: "Fast" },
+          { value: "vendor/slow", name: "Slow", description: "Thinks harder" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "mode",
+    name: "Session Mode",
+    category: "mode",
+    type: "select",
+    currentValue: "build",
+    options: [{ value: "build", name: "build" }],
+  },
+];
+
 /** MCP servers the client registered, per session — read by the `mcp` scenario. */
 const mcpServersBySession = new Map<string, NewSessionRequest["mcpServers"]>();
 
@@ -319,6 +397,8 @@ async function handlePrompt(params: PromptRequest, cx: AgentContext): Promise<Pr
         return await runMcp(cx, sessionId);
       case "crash":
         return await runCrash(cx, sessionId);
+      case "late-args":
+        return await runLateArgs(cx, sessionId);
       case "basic":
       default:
         return await runBasic(cx, sessionId, params);
@@ -356,7 +436,7 @@ createAgentApp({ name: "fake-acp-agent" })
     const sessionId = newSessionId();
     sessions.set(sessionId, { pending: null, prompts: [] });
     mcpServersBySession.set(sessionId, ctx.params.mcpServers ?? []);
-    return { sessionId };
+    return scenario === "config-options" ? { sessionId, configOptions: MODEL_CONFIG_OPTIONS } : { sessionId };
   })
   .onRequest(methods.agent.session.resume, (ctx) => {
     // Re-attach WITHOUT replaying history — that is the whole point of resume.
