@@ -164,3 +164,95 @@ describe("parseMessages — CLI plumbing is not conversation", () => {
     ]);
   });
 });
+
+/**
+ * Background-task completion notices. Every fixture below is a verbatim
+ * record shape lifted from a real session log — the point of this suite is
+ * that these shapes reach the UI at all, and they used to reach it as
+ * nothing (attachments) or as raw XML in a user bubble (prompts).
+ */
+describe("parseMessages — background task notifications", () => {
+  const SHELL_NOTICE =
+    "<task-notification>\n<task-id>budijlgzl</task-id>\n<tool-use-id>toolu_01Ckwx</tool-use-id>\n" +
+    "<output-file>/tmp/claude-1001/tasks/budijlgzl.output</output-file>\n<status>completed</status>\n" +
+    '<summary>Background command "Full baseline run on pristine original" completed (exit code 0)</summary>\n</task-notification>';
+
+  /** Shape 1: consumed mid-turn, as a queued-command attachment. */
+  function attachmentLine(prompt: string, timestamp = "2026-01-01T10:00:00.000Z") {
+    return {
+      type: "attachment",
+      attachment: { type: "queued_command", commandMode: "task-notification", prompt, timestamp },
+      timestamp,
+    };
+  }
+
+  /** Shape 2: flushed from the queue on resume, as a plain user prompt. */
+  function noticeAsPrompt(content: string, timestamp = "2026-01-01T10:00:00.000Z") {
+    return { type: "user", message: { role: "user", content }, timestamp };
+  }
+
+  it("surfaces a mid-turn attachment notice as a background_task marker", () => {
+    const [msg] = parseMessages([attachmentLine(SHELL_NOTICE)]);
+    expect(msg).toMatchObject({
+      role: "system",
+      type: "system",
+      subtype: "background_task",
+      backgroundTaskStatus: "completed",
+      toolUseId: "toolu_01Ckwx",
+      content: 'Background command "Full baseline run on pristine original" completed (exit code 0)',
+    });
+  });
+
+  it("surfaces the same notice delivered as a prompt, instead of a user bubble of XML", () => {
+    const [msg] = parseMessages([noticeAsPrompt(SHELL_NOTICE)]);
+    expect(msg).toMatchObject({ role: "system", type: "system", subtype: "background_task" });
+    expect(msg.content).not.toContain("<task-notification>");
+  });
+
+  it("renders a notice recorded in both shapes exactly once", () => {
+    // The overlap is real: ~11 of 207 notices in the local corpus arrive as
+    // an attachment AND as a prompt.
+    const parsed = parseMessages([attachmentLine(SHELL_NOTICE), noticeAsPrompt(SHELL_NOTICE)]);
+    expect(parsed.filter((m) => m.subtype === "background_task")).toHaveLength(1);
+  });
+
+  it("does not re-render the queue bookkeeping that mirrors each notice", () => {
+    // enqueue/remove carry the same payload; rendering them would triple it.
+    const parsed = parseMessages([
+      { type: "queue-operation", operation: "enqueue", content: SHELL_NOTICE },
+      attachmentLine(SHELL_NOTICE),
+      { type: "queue-operation", operation: "remove", content: SHELL_NOTICE },
+    ]);
+    expect(parsed.filter((m) => m.subtype === "background_task")).toHaveLength(1);
+  });
+
+  it("carries the orphaned-task summary through, without its internal scan marker", () => {
+    const orphan =
+      "<task-notification>\n<task-id>bqg7u6zpk</task-id>\n<task-id>__orphan_summary__:shell</task-id>\n<status>stopped</status>\n" +
+      "<summary>1 background shell command task(s) from the previous session have no completion record.</summary>\n</task-notification>";
+    const [msg] = parseMessages([noticeAsPrompt(orphan)]);
+    expect(msg).toMatchObject({ subtype: "background_task", backgroundTaskStatus: "stopped" });
+    expect(msg.content).toBe("1 background shell command task(s) from the previous session have no completion record.");
+    // Multi-task notice: not attributable to a single tool call.
+    expect(msg.toolUseId).toBeUndefined();
+  });
+
+  it("synthesises a line when the notice carries no summary", () => {
+    const bare = "<task-notification>\n<task-id>bwt15dfbo</task-id>\n<status>failed</status>\n</task-notification>";
+    const [msg] = parseMessages([attachmentLine(bare)]);
+    expect(msg).toMatchObject({ subtype: "background_task", content: "Background task bwt15dfbo failed" });
+  });
+
+  it("leaves other attachment kinds dropped, as before", () => {
+    const parsed = parseMessages([
+      { type: "attachment", attachment: { type: "task_reminder", content: "..." }, timestamp: "2026-01-01T10:00:00.000Z" },
+      { type: "attachment", attachment: { type: "deferred_tools_delta", removedNames: ["a"] }, timestamp: "2026-01-01T10:00:00.000Z" },
+    ]);
+    expect(parsed).toEqual([]);
+  });
+
+  it("leaves a user message that merely mentions the tag alone", () => {
+    const [msg] = parseMessages([noticeAsPrompt("why is <task-notification> not rendering?")]);
+    expect(msg).toMatchObject({ role: "user", type: "text" });
+  });
+});
