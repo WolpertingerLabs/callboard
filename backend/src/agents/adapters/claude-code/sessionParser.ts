@@ -31,6 +31,87 @@ const META_PROMPT_ACK = "No response requested.";
  */
 const INTERRUPT_MARKERS: ReadonlySet<string> = new Set(["[Request interrupted by user]", "[Request interrupted by user for tool use]"]);
 
+// ── Background task notifications ───────────────────────────────────
+
+/**
+ * When a background task finishes — a Bash shell started with
+ * `run_in_background`, or a subagent, which the Agent tool backgrounds by
+ * default — the CLI does **not** resolve the original `tool_use`. It enqueues
+ * a `<task-notification>` blob as a *prompt*, which reaches the JSONL in three
+ * places, all carrying the same payload:
+ *
+ *   0. `type: "queue-operation"`, `operation: "enqueue"` — written the moment
+ *      the task finishes. Always present, and the only trace left when the
+ *      session ends before the queue drains.
+ *   1. `type: "attachment"` with `attachment.commandMode === "task-notification"`
+ *      — the notice being consumed mid-turn, while the agent is still working.
+ *   2. `type: "user"` with the blob as its whole string content — the shape
+ *      used when the queue is flushed on resume, typically carrying the
+ *      "these tasks were orphaned" summary.
+ *
+ * 0 and 1 carry no `message.content` blocks, so they used to fall straight
+ * through this parser and render nothing: the agent, which *does* receive
+ * them, would announce a result the user never saw finish. Shape 2 did render
+ * — as a user bubble of raw XML, putting markup in the user's mouth.
+ *
+ * All three are normalised into one `subtype: "background_task"` system
+ * marker, the same treatment compaction and interruption boundaries get, and
+ * deduped on the payload so a notice recorded more than once shows up once.
+ */
+const TASK_NOTIFICATION_OPEN = "<task-notification>";
+const TASK_NOTIFICATION_CLOSE = "</task-notification>";
+
+/** Task ids the CLI uses for its own bookkeeping rather than a real task. */
+const INTERNAL_TASK_ID_PREFIX = "__orphan_summary__";
+
+interface TaskNotification {
+  /** Human-readable line to show, from `<summary>` or synthesised from ids. */
+  summary: string;
+  /** `completed`, `failed`, `stopped`, … when the notice declares one. */
+  status?: string;
+  /** The `tool_use` this notice reports on, when it names a single one. */
+  toolUseId?: string;
+  /** Identity for dedup — a notice can arrive as both shapes above. */
+  key: string;
+}
+
+/** All values of a repeated simple tag, in document order, trimmed. */
+function tagValues(xml: string, tag: string): string[] {
+  const matches = xml.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"));
+  return [...matches].map((m) => m[1].trim()).filter(Boolean);
+}
+
+/**
+ * Parse a `<task-notification>` payload. Returns null for anything that isn't
+ * one, so callers can pass arbitrary content through without pre-checking.
+ */
+function parseTaskNotification(raw: unknown): TaskNotification | null {
+  if (typeof raw !== "string") return null;
+  // Whole-payload match, not a substring one: the CLI always writes the blob
+  // as the entire content, so anything merely *containing* the tag is prose —
+  // a user asking why `<task-notification>` renders oddly is a real message.
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith(TASK_NOTIFICATION_OPEN) || !trimmed.endsWith(TASK_NOTIFICATION_CLOSE)) return null;
+
+  const status = tagValues(trimmed, "status")[0];
+  const toolUseIds = tagValues(trimmed, "tool-use-id");
+  const taskIds = tagValues(trimmed, "task-id").filter((id) => !id.startsWith(INTERNAL_TASK_ID_PREFIX));
+  // The CLI's own summary is already written for a human ("Background command
+  // "npm test" completed (exit code 0)"), so prefer it verbatim.
+  const summary = tagValues(trimmed, "summary").join(" ");
+
+  const fallback = taskIds.length > 0 ? `Background task ${taskIds.join(", ")} ${status || "reported"}` : `Background task ${status || "reported"}`;
+
+  return {
+    summary: summary || fallback,
+    ...(status && { status }),
+    // Only when the notice reports on exactly one call — a multi-task summary
+    // must not be attributed to whichever id happened to come first.
+    ...(toolUseIds.length === 1 && { toolUseId: toolUseIds[0] }),
+    key: trimmed,
+  };
+}
+
 /** Flatten JSONL message content (string or block array) to its plain text. */
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -185,6 +266,24 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
   // entries (attachment / last-prompt / queue-operation) that sit between
   // them, and is cleared by the first real message either way.
   let afterMetaPrompt = false;
+  // A single background-task notice can be recorded as both an attachment and
+  // a user message; keyed on the payload so it is rendered exactly once.
+  const seenTaskNotifications = new Set<string>();
+
+  /** Push the one system marker a background-task notice renders as. */
+  const pushTaskNotification = (notification: TaskNotification, timestamp: string | undefined): void => {
+    if (seenTaskNotifications.has(notification.key)) return;
+    seenTaskNotifications.add(notification.key);
+    result.push({
+      role: "system",
+      type: "system",
+      content: notification.summary,
+      subtype: "background_task",
+      ...(notification.status && { backgroundTaskStatus: notification.status }),
+      ...(notification.toolUseId && { toolUseId: notification.toolUseId }),
+      timestamp,
+    });
+  };
 
   for (const msg of rawMessages) {
     // Detect session boundary — inject a "Conversation was cleared" marker
@@ -200,7 +299,33 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
     if (msg._sessionId) currentSessionId = msg._sessionId;
 
     // Skip internal metadata lines
-    if (msg.type === "summary" || msg.type === "queue-operation") continue;
+    if (msg.type === "summary") continue;
+
+    // The CLI's prompt-queue bookkeeping. An `enqueue` carries the whole
+    // notification payload and is written the moment the task finishes, so it
+    // is both the earliest and the most reliable record of it — and for a task
+    // whose notice is never delivered (the session ended before the queue
+    // drained) it is the *only* record: no attachment or prompt line is ever
+    // written. The matching remove/dequeue lines repeat the same payload, as
+    // do the delivery shapes below; `pushTaskNotification` dedups on the
+    // payload so the marker still renders exactly once.
+    if (msg.type === "queue-operation") {
+      if (msg.operation === "enqueue") {
+        const notification = parseTaskNotification(msg.content);
+        if (notification) pushTaskNotification(notification, msg.timestamp);
+      }
+      continue;
+    }
+
+    // Shape 1: a background task reporting in mid-turn. Attachment records
+    // carry no `message.content`, so every branch below drops them — this one
+    // has to be read before that happens. Non-notification attachments
+    // (task_reminder, deferred_tools_delta, …) stay dropped, as before.
+    if (msg.type === "attachment") {
+      const notification = parseTaskNotification(msg.attachment?.prompt);
+      if (notification) pushTaskNotification(notification, msg.timestamp);
+      continue;
+    }
 
     // Drop CLI plumbing the user never wrote. `isMeta` marks entries the CLI
     // injects itself: the "Continue from where you left off." nudge it adds
@@ -255,6 +380,17 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
         timestamp,
       });
       continue;
+    }
+
+    // Shape 2: the same notice arriving as a prompt rather than an attachment,
+    // which is how the CLI flushes the queue on resume. Rendering it as-is
+    // would show the user a block of XML they never typed.
+    if (role === "user") {
+      const notification = parseTaskNotification(contentText(content));
+      if (notification) {
+        pushTaskNotification(notification, timestamp);
+        continue;
+      }
     }
 
     // Extract per-entry metadata (shared across all content blocks from this JSONL line)

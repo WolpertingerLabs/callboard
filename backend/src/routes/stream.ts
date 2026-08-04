@@ -535,7 +535,11 @@ streamRouter.get("/:id/stream", (req, res) => {
           if (!line.trim()) continue;
           try {
             const parsed = JSON.parse(line);
-            if (parsed.message?.content) {
+            // A background task's completion notice arrives as a queued-command
+            // attachment, which carries no `message.content` — without this it
+            // would sit unrendered until the agent's next output happened to
+            // poke a refetch.
+            if (parsed.message?.content || parsed.attachment?.commandMode === "task-notification") {
               sendSSE(res, { type: "message_update" });
             }
             // Detect conversation compaction (context window auto-summary)

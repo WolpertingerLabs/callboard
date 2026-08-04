@@ -644,6 +644,38 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
         </div>
       );
     }
+    // A background task (background Bash shell, or a subagent) reporting in.
+    // Not a boundary marker: this one carries a result the user is waiting on,
+    // and the summary is a full sentence — so it gets a badge that wraps
+    // rather than the nowrap divider below, which would clip it.
+    if (message.subtype === "background_task") {
+      const status = message.backgroundTaskStatus;
+      const tone = status === "failed" ? "var(--danger)" : status === "completed" ? "var(--success)" : "var(--warning)";
+      return (
+        <div style={{ display: "flex", justifyContent: "center", margin: "12px 0", padding: "0 8px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "baseline",
+              gap: 8,
+              maxWidth: "100%",
+              padding: "6px 12px",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              fontSize: 12,
+              color: "var(--text-muted)",
+              wordBreak: "break-word",
+            }}
+          >
+            <span aria-hidden style={{ color: tone, fontSize: 9, lineHeight: "16px" }}>
+              ●
+            </span>
+            <span style={{ whiteSpace: "pre-wrap" }}>{message.content}</span>
+          </div>
+        </div>
+      );
+    }
     return (
       <div
         style={{

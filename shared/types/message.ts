@@ -14,8 +14,19 @@ export interface ParsedMessage {
   isBuiltInCommand?: boolean;
   timestamp?: string;
   teamName?: string;
-  /** Present on system messages like compact_boundary */
+  /**
+   * Present on system messages: `compact_boundary`, `clear_boundary`,
+   * `interrupted`, `session_error`, `background_task`.
+   */
   subtype?: string;
+  /**
+   * Outcome a `background_task` marker is reporting — `completed`, `failed`,
+   * `stopped`, … Taken verbatim from the CLI's notification rather than
+   * narrowed to a union, since the CLI owns the vocabulary and a value this
+   * build hasn't seen should still render. Absent when the notice declares no
+   * status.
+   */
+  backgroundTaskStatus?: string;
   /** Model name from the API response, e.g. "claude-opus-4-6" */
   model?: string;
   /** Git branch at the time this message was recorded */
