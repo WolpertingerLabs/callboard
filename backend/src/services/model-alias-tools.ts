@@ -94,6 +94,13 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
             'cline target — a model id within the configured Cline provider, e.g. "claude-sonnet-4-6". The provider itself is a global ' +
               'setting (Settings → API), not part of the alias. Pass "" to clear.',
           ),
+        pi: z
+          .string()
+          .optional()
+          .describe(
+            'pi target — a model id within the configured pi provider, e.g. "google/gemini-3.6-flash". The provider itself is a global ' +
+              'setting (Settings → API), not part of the alias. Pass "" to clear.',
+          ),
       },
       async (args) => {
         const name = args.name.trim();

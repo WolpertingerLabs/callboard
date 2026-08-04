@@ -20,7 +20,7 @@
  * is set before any of the modules are imported (hence the top-level dynamic
  * imports).
  */
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -697,6 +697,22 @@ describe("a failed removal reports what it actually left behind", () => {
 // ── Live sessions ───────────────────────────────────────────────────
 
 describe("nothing is moved out from under a running session", () => {
+  // `interruptChat` reaches `stopSessionAndWait` through a lazy
+  // `await import("./claude.js")`, and claude.ts pulls in every provider adapter
+  // — each of which loads its harness SDK at module scope. That cold import is
+  // ~1.5s and grows with every adapter callboard gains (@cline/sdk alone is
+  // ~930ms; pi's package ~570ms), which was quietly eating most of the 5s
+  // budget of the cases below.
+  //
+  // Warming it here rather than raising the timeout: the module load is a
+  // one-off that has nothing to do with what these cases assert, and a timeout
+  // large enough to hide it would also hide a genuinely hung teardown. In
+  // production this cost is paid once at server startup, since routes import
+  // claude.ts at boot.
+  beforeAll(async () => {
+    await import("./claude.js");
+  });
+
   it("refuses while any session is live in the directory, even one it does not own", async () => {
     // A chat that predates workspace linkage, running in the same worktree.
     // The archive's own cascade would never see it — it matches on

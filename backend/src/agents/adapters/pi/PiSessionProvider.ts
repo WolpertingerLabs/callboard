@@ -83,10 +83,7 @@ export function parentSessionIdOf(filePath: string): string | null {
 }
 
 export class PiSessionProvider implements SessionProvider {
-  // Not yet a member of `AgentProviderKind` — Phase 3 widens the union and
-  // registers this in `factory.ts`. Typed loosely so Phase 2 compiles
-  // standalone, exactly as `PiAdapter` does.
-  readonly kind = "pi" as unknown as SessionProvider["kind"];
+  readonly kind = "pi" as const;
 
   // ── Discovery ───────────────────────────────────────────────────────
 

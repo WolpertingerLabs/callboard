@@ -50,6 +50,7 @@
  * @see plans/pi-spike-findings.md
  */
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 import type { AgentProvider, AgentQuery, AgentQueryRequest } from "../../ports/AgentProvider.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
 import type { DefaultPermissions } from "shared/types/index.js";
@@ -66,6 +67,21 @@ const log = createLogger("pi-adapter");
  * supplies alongside it.
  */
 export interface PiAdapterOptions extends PiRunOptions {
+  /**
+   * Absolute path to the pi session file to resume — **not** a session id.
+   *
+   * pi resumes by opening a file (`SessionManager.open(path)`), while every
+   * other harness resumes by id. `options.resume` carries the id for all of
+   * them, so this adapter deliberately does **not** read it: overloading one
+   * untyped field with two meanings is how a resumed chat silently becomes a
+   * fresh one with the user's history gone and no error anywhere.
+   *
+   * `services/claude.ts` resolves the id to a path through
+   * `PiSessionProvider.resolveSession()` and sets this. A value that is not an
+   * absolute `.jsonl` path throws — see {@link assertPiResumePath}.
+   */
+  resumeSessionPath?: string;
+
   /**
    * Live accessor for callboard's four-axis permission defaults.
    *
@@ -109,18 +125,44 @@ function isToolServerSpec(value: unknown): value is ToolServerSpec {
   return typeof spec.name === "string" && Array.isArray(spec.tools);
 }
 
+/**
+ * Fail loudly when a session **id** arrives where a **path** belongs.
+ *
+ * The one wiring mistake this adapter is most likely to suffer, and the one
+ * with the worst failure mode if it stays quiet: `SessionManager.open()` given
+ * a bare id would not find a file, pi would start a fresh session, and the chat
+ * would answer as though its history never happened — no error, no log, nothing
+ * to notice until a user asks "why did it forget?".
+ *
+ * So the shape is checked rather than trusted. An absolute path ending in
+ * `.jsonl` is the only accepted form, which a UUID chat id can never satisfy.
+ */
+export function assertPiResumePath(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`pi resumeSessionPath must be a non-empty string, got ${typeof value}`);
+  }
+  const path = value.trim();
+  if (!isAbsolute(path) || !path.endsWith(".jsonl")) {
+    throw new Error(
+      `pi resumeSessionPath must be an absolute path to a .jsonl session file, got "${path}". ` +
+        `This is almost certainly a session id — pi resumes by file path, not by id; ` +
+        `resolve it through PiSessionProvider.resolveSession() first.`,
+    );
+  }
+  return path;
+}
+
 export class PiAdapter implements AgentProvider {
-  // Not yet a member of `AgentProviderKind` — Phase 3 widens the union and
-  // registers this in `factory.ts`. Typed loosely here so Phase 1 compiles
-  // standalone, exactly as the plan's scope boundary intends.
-  readonly kind = "pi" as unknown as AgentProvider["kind"];
+  readonly kind = "pi" as const;
 
   query(req: AgentQueryRequest): AgentQuery {
     const options = req.options;
     const pi = (options.pi ?? {}) as PiAdapterOptions;
 
     const cwd = typeof options.cwd === "string" && options.cwd ? options.cwd : process.cwd();
-    const resumePath = typeof options.resume === "string" && options.resume ? options.resume : undefined;
+    // `options.resume` is deliberately NOT read here — it holds a session *id*
+    // for every other harness, and pi needs a path. See `resumeSessionPath`.
+    const resumePath = pi.resumeSessionPath ? assertPiResumePath(pi.resumeSessionPath) : undefined;
     const externalSignal = (options.abortController as AbortController | undefined)?.signal;
     const canUseTool = typeof options.canUseTool === "function" ? (options.canUseTool as CanUseToolFn) : undefined;
     const toolSpecs = collectPiToolSpecs(options.mcpServers);

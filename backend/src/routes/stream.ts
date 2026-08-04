@@ -189,9 +189,10 @@ streamRouter.post("/new/message", async (req, res) => {
 
     // Effort forwarded only when paired with a reasoning-capable provider
     // (openrouter → OR reasoning.effort, codex → modelReasoningEffort, cline →
-    // Cline `thinking`/`reasoningEffort`). On a claude-code chat it would be
+    // Cline `thinking`/`reasoningEffort`, pi → `thinkingLevel`). On a
+    // claude-code chat it would be
     // persisted to metadata for nothing and confuse future debugging.
-    const effortCapableProvider = safeProvider === "openrouter" || safeProvider === "codex" || safeProvider === "cline";
+    const effortCapableProvider = safeProvider === "openrouter" || safeProvider === "codex" || safeProvider === "cline" || safeProvider === "pi";
     const safeEffort: EffortLevel | undefined =
       effortCapableProvider && typeof effort === "string" && VALID_EFFORTS.has(effort) ? (effort as EffortLevel) : undefined;
 
@@ -390,7 +391,7 @@ streamRouter.post("/:id/message", async (req, res) => {
     // Same treatment for per-chat reasoning effort. Empty string clears the
     // override (so the chat falls back to the model default); any other
     // non-allowlisted value is silently dropped.
-    if (typeof effort === "string" && (meta.provider === "openrouter" || meta.provider === "codex" || meta.provider === "cline")) {
+    if (typeof effort === "string" && (meta.provider === "openrouter" || meta.provider === "codex" || meta.provider === "cline" || meta.provider === "pi")) {
       const trimmed = effort.trim();
       if (trimmed.length === 0) {
         chatFileService.updateChatMetadata(req.params.id, { effort: undefined });
