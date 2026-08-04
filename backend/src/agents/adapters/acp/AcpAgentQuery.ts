@@ -43,7 +43,7 @@ import type { AgentEvent } from "../../ports/events.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { createLogger } from "../../../utils/logger.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
-import { AcpToolCallBuffer, buildAcpUsage, contentBlockToText, mapStopReason, translateAcpUpdate } from "./messageAdapter.js";
+import { ACP_ADAPTER_TAG, AcpToolCallBuffer, buildAcpUsage, contentBlockToText, mapStopReason, translateAcpUpdate } from "./messageAdapter.js";
 import { acpModelConfigId, extractAcpModels, recordAcpModels } from "./modelCatalog.js";
 import type { CanUseToolFn } from "./permissionAdapter.js";
 import type { AcpToolServerHandle } from "./toolAdapter.js";
@@ -200,6 +200,21 @@ export class AcpAgentQuery implements AgentQuery {
 
       yield emit({ type: "session_started", sessionId: session.sessionId });
       if (this.isAborted()) return;
+
+      // Which model this turn actually runs on, recorded so the transcript can
+      // label its messages with it.
+      //
+      // ACP reports the model as a *session config option*, not on any event, so
+      // nothing in the turn's own event stream carries it — an ACP chat's
+      // messages showed no model at all, while every other provider's carried
+      // one from its transcript. It is read after `set_config_option` rather
+      // than from `params.model`, so the value recorded is what the agent
+      // confirmed rather than what callboard asked for, and it is written per
+      // turn rather than into the header because a later turn can change it.
+      const turnModel = extractAcpModels(this.configOptions).currentValue?.trim();
+      if (turnModel) {
+        yield emit({ type: "adapter_specific", adapter: ACP_ADAPTER_TAG, payload: { kind: "turn_model", model: turnModel } });
+      }
 
       // Some agents publish their command list moments after session creation.
       await client.waitForInitialCommands();
