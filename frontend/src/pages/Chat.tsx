@@ -3396,8 +3396,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
                 {chatProvider === "claude-code" ? "Model for this chat" : "Model & reasoning effort for this chat"}
               </div>
-              {/* All three model props share the same pending-model cell —
-                    only the control matching the chat's pinned provider renders. */}
+              {/* Every model prop shares the same pending-model cell — only the
+                    control matching the chat's pinned provider renders. */}
               <ProviderConfigPicker
                 provider={chatProvider}
                 onProviderChange={() => {}}
@@ -3411,6 +3411,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 onClaudeModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 codexModel={pendingModel ?? currentModel}
                 onCodexModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                acpModel={pendingModel ?? currentModel}
+                onAcpModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                // The chat's pinned vendor, so the selector offers that
+                // catalog rather than another vendor's.
+                acpProviderId={acpProviderId}
                 codexConfigured={true}
                 openRouterConfigured={true}
                 openRouterMaxBudgetUsd={null}

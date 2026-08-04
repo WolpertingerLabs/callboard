@@ -240,19 +240,28 @@ export function categorizeAcpToolName(name: string): PermissionCategory | null {
  *
  *  1. **`name`** — ACP's actual tool identifier. Optional on `ToolCallUpdate`,
  *     and OpenCode never sends it on a permission request.
- *  2. **`title`, when it is identifier-shaped** — agents that omit `name` often
- *     put the tool's name here (`"write"`, `"Run"`). When it is a sentence
- *     instead, it is skipped rather than tokenized: rule 3.
- *  3. **`kind`** — ACP's closed `ToolKind` enum (`read` / `edit` / `execute` /
- *     `fetch` / …). Added because step 2 kept failing in the field: OpenCode's
- *     permission requests carry no `name` and a `title` of the *file path*
- *     (`/tmp/proj/hello.txt`), so every call landed on `unknown_tool` →
- *     `codeExecution`. That is safe-by-default and useless in practice — with
- *     every tool on one axis, the other three axes stop governing anything for
- *     that vendor and a user's natural response is to loosen `codeExecution`,
- *     which is strictly worse than gating edits as `fileWrite`.
+ *  2. **`kind`** — ACP's closed `ToolKind` enum (`read` / `edit` / `execute` /
+ *     `fetch` / …). Needed because step 1 keeps failing in the field: OpenCode's
+ *     permission requests carry no `name` at all.
+ *  3. **`title`, when it is identifier-shaped** — the last resort, for an agent
+ *     that sends neither of the above but does put its tool's name here
+ *     (`"write"`, `"Run"`). When it is a sentence instead, it is skipped rather
+ *     than tokenized: rule 3.
  *  4. **`"unknown_tool"`** — nothing identifiable, so
  *     {@link categorizeAcpToolName} gives it the strictest gate.
+ *
+ * **`kind` outranks `title`, and a live agent is why.** The first cut had them
+ * the other way around, on the reasoning that a specific name beats a general
+ * category. OpenCode disproved it: its permission `title` is the file being
+ * touched, and whether that string is "identifier-shaped" depends on something
+ * with no bearing on the tool at all — `/tmp/proj/notes.txt` is not (leading
+ * slash), `notes.txt` is. So the same edit tool landed on `fileWrite` via `kind`
+ * when the path was absolute and on `codeExecution` via an unrecognized
+ * `notes.txt` when it was relative. Both passes agreed each time, so it was
+ * never a bypass — it was worse in a quieter way: a permission axis selected by
+ * the shape of a filename, and a prompt that named a file where it should name a
+ * tool. A closed enum the agent chose deliberately beats a free-text field whose
+ * shape is incidental.
  *
  * Step 3 does not weaken the two-pass rule, and the distinction is worth being
  * precise about because the ruling that produced this file forbade *deciding*
@@ -282,20 +291,20 @@ export function categorizeAcpToolName(name: string): PermissionCategory | null {
  *    gating on prose. The specifics are not lost — `rawInput` travels with the
  *    prompt, and for OpenCode that is the filepath and the diff, which says more
  *    than the path-as-title ever did.
- *  - **A shaped `title` still outranks `kind`.** So a vendor whose title
- *    understates its kind (`"search"` on an `execute` call) is categorized by the
- *    title. That is not a new exposure: `name` sits above both and carries the
- *    identical risk — it is the `search_replace` case the token table already
- *    had to be taught. Ranking a free-text field the vendor chose above a closed
- *    enum is the part worth revisiting if a real agent ever abuses it.
+ *  - **A `name` that understates its kind is still taken at face value.**
+ *    `name` sits above `kind`, so a tool called `search` that actually executes
+ *    is categorized by the name — the `search_replace` case the token table
+ *    already had to be taught. `name` is a real tool identifier rather than a
+ *    display string, which is why it keeps the top slot; if a vendor is ever
+ *    found abusing it, the same demotion `title` just took is available.
  */
 export function acpToolLabel(toolCall: RequestPermissionRequest["toolCall"]): string {
   const name = typeof toolCall?.name === "string" ? toolCall.name.trim() : "";
   if (name) return name;
-  const title = typeof toolCall?.title === "string" ? toolCall.title.trim() : "";
-  if (title && isToolIdentifier(title)) return title;
   const kind = typeof toolCall?.kind === "string" ? toolCall.kind.trim() : "";
   if (kind && isToolIdentifier(kind)) return kind;
+  const title = typeof toolCall?.title === "string" ? toolCall.title.trim() : "";
+  if (title && isToolIdentifier(title)) return title;
   return "unknown_tool";
 }
 

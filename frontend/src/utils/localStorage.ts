@@ -43,6 +43,8 @@ interface LocalStorageData {
   defaultProvider?: AgentProviderKind;
   /** Last-selected ACP vendor id. Only meaningful when defaultProvider is "acp". */
   defaultAcpProviderId?: string;
+  /** Last-selected ACP model, as the vendor names it. */
+  defaultAcpModel?: string;
   /** User's last-selected OpenRouter reasoning effort in the New Chat panel.
    * Stored even when the provider is Claude Code so toggling back to OR
    * restores the prior selection. */
@@ -151,6 +153,27 @@ export function getDefaultAcpProviderId(): string {
 export function saveDefaultAcpProviderId(providerId: string): void {
   const data = getStorageData();
   data.defaultAcpProviderId = providerId;
+  setStorageData(data);
+}
+
+/**
+ * Last-selected ACP model. Empty means "leave the vendor CLI's own configured
+ * model alone", which is the only sensible default: `acp` covers many vendors
+ * and there is no model id that would be a reasonable guess across them.
+ *
+ * Stored per user rather than per vendor, matching how the OR / Claude / Codex
+ * model preferences are kept. Switching vendors therefore carries the old
+ * string over — the agent rejects a model it does not have, with its own
+ * message, rather than silently running on something else.
+ */
+export function getDefaultAcpModel(): string {
+  const data = getStorageData();
+  return typeof data.defaultAcpModel === "string" ? data.defaultAcpModel : "";
+}
+
+export function saveDefaultAcpModel(model: string): void {
+  const data = getStorageData();
+  data.defaultAcpModel = model;
   setStorageData(data);
 }
 

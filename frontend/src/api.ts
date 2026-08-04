@@ -1296,6 +1296,29 @@ export interface SystemInfo {
   acpProviders?: AcpProviderInfo[];
 }
 
+/** The models callboard has seen an ACP vendor advertise. */
+export interface AcpModelCatalogInfo {
+  providerId: string;
+  models: { value: string; displayName: string; description: string }[];
+  /** ISO timestamp of the session that produced the list; "" when never seen. */
+  discoveredAt: string;
+  /** The model that session was running on, when the vendor reported one. */
+  currentValue?: string;
+}
+
+/**
+ * Models known for an ACP vendor.
+ *
+ * Harvested from previous chats rather than probed — a promptless ACP session
+ * persists in the vendor's own store — so a vendor that has never run reports an
+ * empty list. That is not an error, and the model field takes free text anyway.
+ */
+export async function getAcpModels(providerId: string): Promise<AcpModelCatalogInfo> {
+  const res = await fetch(`${BASE}/acp/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get ACP models");
+  return res.json();
+}
+
 export interface AcpProviderInfo {
   id: string;
   label: string;
