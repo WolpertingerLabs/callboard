@@ -38,9 +38,7 @@ async function collect(events: ThreadEvent[]): Promise<AgentEvent[]> {
 
 describe("translateCodexEvent — lifecycle events", () => {
   it("thread.started → session_started with the thread_id", () => {
-    expect(
-      translateCodexEvent({ type: "thread.started", thread_id: "thr_1" }),
-    ).toEqual({ type: "session_started", sessionId: "thr_1" });
+    expect(translateCodexEvent({ type: "thread.started", thread_id: "thr_1" })).toEqual({ type: "session_started", sessionId: "thr_1" });
   });
 
   it("turn.started is dropped (rolls into turn.completed)", () => {
@@ -51,7 +49,13 @@ describe("translateCodexEvent — lifecycle events", () => {
     expect(
       translateCodexEvent({
         type: "turn.completed",
-        usage: { input_tokens: 22311, cached_input_tokens: 19200, output_tokens: 71, reasoning_output_tokens: 0 },
+        usage: {
+          input_tokens: 22311,
+          cached_input_tokens: 19200,
+          cache_write_input_tokens: 3100,
+          output_tokens: 71,
+          reasoning_output_tokens: 0,
+        },
       }),
     ).toEqual({
       type: "result",
@@ -61,21 +65,23 @@ describe("translateCodexEvent — lifecycle events", () => {
   });
 
   it("turn.completed tolerates a null usage", () => {
-    expect(
-      translateCodexEvent({ type: "turn.completed", usage: null as never }),
-    ).toEqual({ type: "result", status: "success", usage: { inputTokens: 0, outputTokens: 0 } });
+    expect(translateCodexEvent({ type: "turn.completed", usage: null as never })).toEqual({
+      type: "result",
+      status: "success",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
   });
 
   it("turn.failed → result error carrying the message", () => {
-    expect(
-      translateCodexEvent({ type: "turn.failed", error: { message: "model overloaded" } }),
-    ).toEqual({ type: "result", status: "error", reason: "model overloaded" });
+    expect(translateCodexEvent({ type: "turn.failed", error: { message: "model overloaded" } })).toEqual({
+      type: "result",
+      status: "error",
+      reason: "model overloaded",
+    });
   });
 
   it("top-level error (fatal stream error) → result error", () => {
-    expect(
-      translateCodexEvent({ type: "error", message: "stream died" }),
-    ).toEqual({ type: "result", status: "error", reason: "stream died" });
+    expect(translateCodexEvent({ type: "error", message: "stream died" })).toEqual({ type: "result", status: "error", reason: "stream died" });
   });
 });
 
@@ -212,7 +218,13 @@ describe("translateCodexEvent — tool items (started → tool_use, completed �
           server: "callboard",
           tool: "find_chats",
           arguments: { q: "x" },
-          result: { content: [{ type: "text", text: "one" }, { type: "text", text: "two" }], structured_content: null },
+          result: {
+            content: [
+              { type: "text", text: "one" },
+              { type: "text", text: "two" },
+            ],
+            structured_content: null,
+          },
           status: "completed",
         },
       }),

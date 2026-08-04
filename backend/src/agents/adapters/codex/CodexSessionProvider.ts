@@ -292,7 +292,7 @@ export class CodexSessionProvider implements SessionProvider {
    * Write a fresh rollout whose transcript is `turns`, so `resumeThread(id)`
    * picks it up as an ordinary thread.
    *
-   * Verified against codex-cli 0.144.6: the CLI locates a thread by **scanning
+   * Verified against codex-cli 0.146.0: the CLI locates a thread by **scanning
    * the dated tree** for a filename ending in the thread id, and rehydrates
    * whatever `response_item` lines it finds. No row in `$CODEX_HOME/state_*.sqlite`
    * is required — that index backs the CLI's own history UI, not resume — so a
