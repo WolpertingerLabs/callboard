@@ -515,15 +515,22 @@ describe("AcpAdapter transcript round-trip", () => {
 
       // Parsing coalesces the streamed chunks back into one assistant message.
       const messages = provider.parseSessionMessages([sessionId]);
-      const assistantText = messages.filter((m) => m.type === "text").map((m) => m.content);
+      const assistantText = messages.filter((m) => m.type === "text" && m.role === "assistant").map((m) => m.content);
       expect(assistantText).toEqual(["Hello, world!"]);
+
+      // The user's own turn is in the transcript too, ahead of the reply — it is
+      // the only line callboard writes that no agent event carries, and without
+      // it a reopened chat shows answers with nothing they answered.
+      expect(messages[0]).toMatchObject({ role: "user", type: "text", content: "hello" });
 
       const toolUse = messages.find((m) => m.type === "tool_use");
       expect(toolUse).toMatchObject({ toolName: "read_file", toolUseId: "call-1" });
       expect(messages.find((m) => m.type === "tool_result")).toMatchObject({ toolUseId: "call-1", content: "# Hello" });
 
-      // Preview and search read the same file.
-      expect(provider.getSessionPreview(resolved!.logPath)).toBe("Hello");
+      // Preview and search read the same file. The prompt is what previews now,
+      // matching Codex; the agent's opening text is only the fallback for
+      // transcripts written before user turns were recorded.
+      expect(provider.getSessionPreview(resolved!.logPath)).toBe("hello");
       expect(provider.searchSessions({ folder: process.cwd() }).total).toBe(1);
       expect(provider.searchSessions({ folder: "/nowhere-at-all" }).total).toBe(0);
 

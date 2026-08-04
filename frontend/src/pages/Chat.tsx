@@ -2482,7 +2482,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 Model + effort selection has moved out of the header and into
                 the composer's hamburger menu (see PromptInput's `menuItems`
                 prop below). */}
-            <ProviderBadge provider={chatProvider} />
+            <ProviderBadge provider={chatProvider} acpProviderId={acpProviderId} />
             {/* Parentage-tree indicator — parent breadcrumb + tree dropdown
                 for chats linked into a cross-engine chat tree. Renders
                 nothing when the chat has no lineage and no descendants. */}

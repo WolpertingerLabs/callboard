@@ -147,6 +147,12 @@ export interface FolderSummary {
   /** Provider of the most recent chat ("openrouter"); absent means Claude Code. */
   mostRecentChatProvider?: string;
   /**
+   * Which ACP vendor runs the most recent chat, when its provider is `"acp"`.
+   * The kind alone does not name a harness — "acp" is a wire format that every
+   * vendor speaks — so the badge needs this to say "OC" rather than "ACP".
+   */
+  mostRecentChatAcpProviderId?: string;
+  /**
    * The active workspace records claiming this directory, cheapest-fields-only
    * (Phase 4a). Absent when none do — most directories. Length is the count
    * the row renders; the array is what a drill-down iterates.
@@ -197,8 +203,10 @@ export interface ChatTreeNode {
   title: string | null;
   /** Free-form role label (e.g. "subagent", "monitor", "router", "fork"). */
   role?: string;
-  /** "claude-code" | "openrouter" | "codex" */
+  /** "claude-code" | "openrouter" | "codex" | "acp" */
   provider: string;
+  /** Which ACP vendor, when `provider` is `"acp"`. Absent otherwise. */
+  acpProviderId?: string;
   status: "ongoing" | "waiting" | "stopped";
   chatStatus?: string;
   chatStatusEmoji?: string;

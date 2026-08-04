@@ -102,7 +102,8 @@ export function readAcpTranscriptLines(filePath: string): AcpTranscriptLine[] {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line) as AcpTranscriptLine;
-      if (parsed && typeof parsed === "object" && (parsed.type === "session_meta" || parsed.type === "event")) lines.push(parsed);
+      if (parsed && typeof parsed === "object" && (parsed.type === "session_meta" || parsed.type === "event" || parsed.type === "user_message"))
+        lines.push(parsed);
     } catch {
       // A partially-flushed tail line while the agent is mid-turn. Expected.
     }
@@ -130,7 +131,7 @@ export function readAcpTranscriptCwd(filePath: string): string {
  *
  * The mapping is nearly an identity — the transcript already holds normalized
  * {@link AgentEvent}s, which is the whole reason the writer stores them
- * post-normalization. Only three things need care:
+ * post-normalization. Only four things need care:
  *
  *  - **Consecutive `text` events are one assistant message, and so are
  *    consecutive `thinking` events.** ACP streams `agent_message_chunk` and
@@ -147,6 +148,10 @@ export function readAcpTranscriptCwd(filePath: string): string {
  *    carry is attached to the assistant message they close.
  *  - **`adapter_specific` is not rendered.** It exists so data is not lost, not
  *    so it appears in the transcript view.
+ *  - **`user_message` lines are the user's turns.** They are not events (the
+ *    agent never sent them), so they arrive as their own line type — see
+ *    {@link AcpTranscriptUserMessage}. A transcript written before that line
+ *    existed simply has none, and renders exactly as it did before.
  */
 export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   const lines = readAcpTranscriptLines(filePath);
@@ -179,6 +184,14 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   };
 
   for (const line of lines) {
+    if (line.type === "user_message") {
+      // Closes whatever the previous turn was still streaming, then takes its
+      // place in order — the line was appended just before its own prompt went
+      // out, so its position in the file IS its position in the conversation.
+      flush();
+      messages.push({ role: "user", type: "text", content: line.content, timestamp: line.timestamp });
+      continue;
+    }
     if (line.type !== "event") continue;
     const { event, timestamp } = line as AcpTranscriptEntry;
     if (!event || typeof event !== "object") continue;
@@ -233,14 +246,22 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
 /**
  * First user-visible text in a session, for the chat-list preview.
  *
- * ACP transcripts hold only the *agent's* side — callboard stores the user's
- * prompt in its own chat record before `query()` runs, and the adapter drops the
- * `user_message_chunk` echo (see `messageAdapter`). So the preview is the
- * agent's opening text, which is the best available summary of the session from
- * this file alone.
+ * The opening *prompt* when the transcript has one, which is what every other
+ * provider previews (`CodexSessionProvider` reads the first user prompt too) and
+ * what makes `searchSessions`'s grep filter comparable across engines.
+ *
+ * The agent's opening text is the fallback, not a second choice made lightly:
+ * transcripts written before `user_message` lines existed hold only the agent's
+ * side, and previewing nothing for those chats would blank rows that render fine
+ * today. Both passes walk one already-parsed line list, so the fallback costs a
+ * loop rather than a second read.
  */
 export function readAcpTranscriptPreview(filePath: string): string | null {
-  for (const line of readAcpTranscriptLines(filePath)) {
+  const lines = readAcpTranscriptLines(filePath);
+  for (const line of lines) {
+    if (line.type === "user_message" && line.content.trim()) return line.content.trim();
+  }
+  for (const line of lines) {
     if (line.type !== "event") continue;
     const event = (line as AcpTranscriptEntry).event as AgentEvent | undefined;
     if (event?.type === "text" && event.content.trim()) return event.content.trim();

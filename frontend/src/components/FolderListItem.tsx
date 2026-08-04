@@ -181,7 +181,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
               <Bell size={10} />
             </span>
           )}
-          <ProviderBadge provider={folder.mostRecentChatProvider} compact />
+          <ProviderBadge provider={folder.mostRecentChatProvider} acpProviderId={folder.mostRecentChatAcpProviderId} compact />
           <div
             style={{
               fontSize: 15,

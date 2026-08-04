@@ -203,12 +203,69 @@ describe("reading transcripts back", () => {
     expect(readAcpTranscriptPreview(join(dataDir, "nope.jsonl"))).toBeNull();
   });
 
-  it("previews the first agent text", () => {
+  it("previews the prompt when the transcript records one", () => {
+    const writer = new AcpTranscriptWriter("opencode", "s6", "/work");
+    writer.writeHeader(null);
+    writer.writeUserMessage("  what does this do?  ");
+    writer.writeEvent({ type: "text", content: "It does things." } as never);
+    expect(readAcpTranscriptPreview(findAcpTranscript("s6")!.filePath)).toBe("what does this do?");
+  });
+
+  it("falls back to the first agent text for a transcript with no prompt line", () => {
+    // Every transcript written before user turns were recorded. Previewing
+    // nothing would blank rows that render fine today.
     seed("opencode", "s1", "/work", [
       { type: "thinking", content: "not this" },
       { type: "text", content: "  the preview  " },
     ]);
     expect(readAcpTranscriptPreview(findAcpTranscript("s1")!.filePath)).toBe("the preview");
+  });
+});
+
+describe("user turns in the transcript", () => {
+  it("renders each prompt as a user message, in conversation order", () => {
+    // Both halves of the chat, and the ordering is the point: the UI retires the
+    // composer's optimistic bubble by matching a `role: "user"` message in the
+    // fetched transcript, so a transcript without one leaves the message the
+    // user just sent pinned below the reply streaming in above it.
+    const writer = new AcpTranscriptWriter("opencode", "s7", "/work");
+    writer.writeHeader(null);
+    writer.writeUserMessage("first question");
+    writer.writeEvent({ type: "text", content: "first " } as never);
+    writer.writeEvent({ type: "text", content: "answer" } as never);
+    writer.writeEvent({ type: "result", status: "success" } as never);
+    writer.writeUserMessage("second question");
+    writer.writeEvent({ type: "text", content: "second answer" } as never);
+
+    const messages = parseAcpTranscript(findAcpTranscript("s7")!.filePath);
+    expect(messages.map((m) => `${m.role}:${m.content}`)).toEqual([
+      "user:first question",
+      "assistant:first answer",
+      "user:second question",
+      "assistant:second answer",
+    ]);
+  });
+
+  it("closes a streaming reply before the next prompt rather than swallowing it", () => {
+    // A turn the user interrupted has no `result` to flush the pending text.
+    const writer = new AcpTranscriptWriter("opencode", "s8", "/work");
+    writer.writeHeader(null);
+    writer.writeEvent({ type: "text", content: "half a repl" } as never);
+    writer.writeUserMessage("stop, do this instead");
+
+    const messages = parseAcpTranscript(findAcpTranscript("s8")!.filePath);
+    expect(messages.map((m) => `${m.role}:${m.content}`)).toEqual(["assistant:half a repl", "user:stop, do this instead"]);
+  });
+
+  it("skips an empty prompt instead of writing a blank bubble", () => {
+    // `resolveAcpPrompt` synthesizes one empty text block when a prompt flattens
+    // to nothing, because ACP rejects an empty `prompt` array.
+    const writer = new AcpTranscriptWriter("opencode", "s9", "/work");
+    writer.writeHeader(null);
+    writer.writeUserMessage("   ");
+    writer.writeEvent({ type: "text", content: "hi" } as never);
+
+    expect(parseAcpTranscript(findAcpTranscript("s9")!.filePath).map((m) => m.role)).toEqual(["assistant"]);
   });
 });
 

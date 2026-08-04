@@ -325,6 +325,15 @@ on PATH / authenticated) mirroring `provider-availability` behavior.
 >
 > Standing proof lives in `AcpAdapter.opencode.live.test.ts`, opt-in behind
 > `CALLBOARD_ACP_LIVE=1`, pinned to a free model so re-running it costs nothing.
+>
+> **Amendment (1.18.13):** the injected value is no longer a constant. OpenCode never
+> forwards a **child session's** permission requests to its ACP client — its `task` tool
+> runs a subagent in one, its own log records the ask, and nothing is written to the wire —
+> so a blanket `"*": "ask"` deadlocks every turn that delegates. Reproduced with a raw
+> JSON-RPC client, so it is upstream. `openCodePermissionConfig` therefore injects
+> `{"*": "allow"}` when all four callboard axes are `allow` (the round trip decided nothing
+> there anyway) and `{"*": "ask", "task": "deny"}` otherwise, trading subagents for a turn
+> that finishes. See the function's doc comment for the invariant this bends.
 
 **Phase 3 — user-defined ACP providers.** Settings → Providers accepts a custom entry
 (id, label, command, env). Validated against the same preset schema. This is the item that

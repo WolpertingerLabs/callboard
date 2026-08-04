@@ -15,13 +15,17 @@
  *   spawn + initialize        →  (capabilities known)
  *   attachSession             →  session_started
  *   [waitForInitialCommands]  →  slash_commands, maybe
+ *   writeUserMessage          →  (transcript only — the composer shows it live)
  *   startPrompt               →  text / thinking / tool_use / tool_result …
  *   stop                      →  result
  * ```
  *
  * Everything yielded is also appended to the callboard-owned transcript, so the
  * event stream the UI renders live and the history it re-reads later are
- * literally the same data — there is no second serialization to drift.
+ * literally the same data — there is no second serialization to drift. The one
+ * line that is written without being yielded is the user's own prompt, which no
+ * agent event carries and which the transcript would otherwise be missing
+ * entirely — see {@link AcpTranscriptWriter.writeUserMessage}.
  *
  * ## Teardown
  *
@@ -39,7 +43,7 @@ import type { AgentEvent } from "../../ports/events.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { createLogger } from "../../../utils/logger.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
-import { AcpToolCallBuffer, buildAcpUsage, mapStopReason, translateAcpUpdate } from "./messageAdapter.js";
+import { AcpToolCallBuffer, buildAcpUsage, contentBlockToText, mapStopReason, translateAcpUpdate } from "./messageAdapter.js";
 import { acpModelConfigId, extractAcpModels, recordAcpModels } from "./modelCatalog.js";
 import type { CanUseToolFn } from "./permissionAdapter.js";
 import type { AcpToolServerHandle } from "./toolAdapter.js";
@@ -199,6 +203,13 @@ export class AcpAgentQuery implements AgentQuery {
 
       // Some agents publish their command list moments after session creation.
       await client.waitForInitialCommands();
+
+      // The user's half of the conversation, recorded before the prompt goes
+      // out so it precedes every event the turn produces. Written rather than
+      // yielded: the composer already shows this message live, and re-emitting
+      // it would render it twice — the same reason `messageAdapter` drops the
+      // agent's `user_message_chunk` echo.
+      transcript.writeUserMessage(blocks.map(contentBlockToText).filter(Boolean).join("\n"));
 
       client.startPrompt(session.sessionId, blocks);
 
