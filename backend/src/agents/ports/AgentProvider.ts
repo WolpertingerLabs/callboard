@@ -61,24 +61,25 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
 
 /**
  * The provider kinds a **request** may ask for — the user-selectable harnesses.
- * Excludes `"mock"` (test-only) and, for now, `"acp"` (see below).
+ * Excludes only `"mock"` (test-only).
  *
  * This is the external allowlist: route handlers narrow free-form `provider`
  * values from request bodies against it via {@link isRoutableProvider} instead
  * of keeping their own copies. Membership here is a promise that a user can
  * *fully specify* a chat on this kind with the fields the routes accept.
  *
- * `"acp"` cannot make that promise yet, which is why it is absent. `"acp"` alone
- * does not identify an engine — the paired `acpProviderId` does — and no route
- * surfaces that field. Admitting `"acp"` here let `POST /api/chats/:id/fork`
- * accept `{"provider":"acp"}` and stamp a chat with a kind that has no vendor,
- * which is precisely the permanently-broken chat that `resolveProviderKind`'s
- * warn-and-fallback exists to prevent. Phase 2 adds the picker and the
- * `acpProviderId` plumbing, and re-adds `"acp"` here alongside them.
- *
- * Internally ACP is fully routable — see {@link INTERNAL_PROVIDER_KINDS}.
+ * `"acp"` was held out of this list through Phase 1 because it could not make
+ * that promise: `"acp"` alone does not identify an engine — the paired
+ * `acpProviderId` does — and no route surfaced that field, so
+ * `POST /api/chats/:id/fork` accepting `{"provider":"acp"}` would have stamped a
+ * chat with a kind and no vendor. It is admitted now because the promise now
+ * holds: `POST /api/stream` takes `acpProviderId`, validates it against the
+ * configured presets, and refuses `"acp"` without one. Forking *into* ACP is
+ * still rejected, by `AcpSessionProvider` implementing neither `forkSession` nor
+ * `seedSession` — an honest 400 rather than a chat that renders and then loses
+ * its context.
  */
-export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex"] as const;
+export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex", "acp"] as const;
 
 /** A provider kind a request may ask for (i.e. not test-only, and fully specifiable). */
 export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
@@ -87,15 +88,18 @@ export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
  * The provider kinds `sendMessage` will actually route and persist.
  *
  * A superset of {@link ROUTABLE_PROVIDER_KINDS}: everything a user may request,
- * plus the kinds reachable only from inside the process — today just `"acp"`,
- * via `SendMessageOptions.acpProviderId`. Still excludes `"mock"`, which is
- * never a chat's persisted provider.
+ * plus the kinds reachable only from inside the process. Still excludes
+ * `"mock"`, which is never a chat's persisted provider.
  *
- * The split is what lets a kind be *implemented* before it is *offered*. Use
- * {@link isRoutableProvider} for anything that came from a request, and
- * {@link isInternalProvider} for chat metadata and internal callers.
+ * **Currently identical to the routable list**, now that `"acp"` is offered. The
+ * split is kept deliberately rather than collapsed: it is the mechanism that let
+ * ACP be *implemented* before it was *offered*, one full phase apart, and the
+ * next adapter to land will want the same runway. Keep using
+ * {@link isRoutableProvider} for anything that came from a request and
+ * {@link isInternalProvider} for chat metadata and internal callers, so the two
+ * separate again cleanly when they next differ.
  */
-export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS, "acp"] as const;
+export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS] as const;
 
 /** A provider kind that can back a real chat, offered to users or not. */
 export type InternalProviderKind = (typeof INTERNAL_PROVIDER_KINDS)[number];

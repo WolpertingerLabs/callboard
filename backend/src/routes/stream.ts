@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
+import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
 import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { loadImageBuffers } from "../services/image-storage.js";
@@ -56,6 +57,7 @@ streamRouter.post("/new/message", async (req, res) => {
             cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
             createCard: { type: "boolean", description: "Create a new open card and attach the chat to it. Ignored when cardId resolves to an existing open card. The card title follows the auto-generated title of the chat." },
             cardCategory: { type: "string", description: "Optional category for the auto-created card (used with createCard; max 64 chars). The board groups open cards by category." },
+            acpProviderId: { type: "string", description: "Which ACP vendor runs the chat. Required when provider is \'acp\', ignored otherwise. Must name a configured preset (see GET /api/system-info acpProviders)." },
             clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match new-<alphanumeric/_/->, max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
             branchConfig: {
               type: "object",
@@ -86,6 +88,7 @@ streamRouter.post("/new/message", async (req, res) => {
     systemPrompt,
     agentAlias,
     provider,
+    acpProviderId,
     effort,
     model,
     requireExplicitCompletion,
@@ -164,6 +167,26 @@ streamRouter.post("/new/message", async (req, res) => {
     // allowlist is silently dropped — same outcome as omitting the field.
     const safeProvider: AgentProviderKind | undefined = isRoutableProvider(provider) ? provider : undefined;
 
+    // `"acp"` is one kind covering many vendors, so it is the only kind whose
+    // request is incomplete without a second field. An unknown or missing
+    // `acpProviderId` is rejected outright rather than dropped like the other
+    // optional knobs: silently falling back to Claude Code would start a chat on
+    // a harness the user did not pick, and persisting `provider: "acp"` with no
+    // vendor would wedge the chat permanently — the exact failure that kept
+    // `"acp"` out of the routable list until this endpoint existed.
+    let safeAcpProviderId: string | undefined;
+    if (safeProvider === "acp") {
+      const requested = typeof acpProviderId === "string" ? acpProviderId.trim() : "";
+      if (!resolveAcpVendorPreset(requested)) {
+        return res.status(400).json({
+          error: requested
+            ? `Unknown ACP provider "${requested}". Configured providers: ${listAcpVendorIds().join(", ")}`
+            : `acpProviderId is required when provider is "acp". Configured providers: ${listAcpVendorIds().join(", ")}`,
+        });
+      }
+      safeAcpProviderId = requested;
+    }
+
     // Effort forwarded only when paired with a reasoning-capable provider
     // (openrouter → OR reasoning.effort, codex → modelReasoningEffort). On a
     // claude-code chat it would be persisted to metadata for nothing and
@@ -202,6 +225,7 @@ streamRouter.post("/new/message", async (req, res) => {
       systemPrompt,
       agentAlias,
       ...(safeProvider && { provider: safeProvider }),
+      ...(safeAcpProviderId && { acpProviderId: safeAcpProviderId }),
       ...(safeEffort && { effort: safeEffort }),
       ...(safeModel && { model: safeModel }),
       ...(safeModelRouting && { modelRouting: true }),

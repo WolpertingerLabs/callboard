@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, getSystemInfo, getAgentSettings, type DefaultPermissions, type AgentConfig } from "../api";
+import { listAgents, getAgentIdentityPrompt, getSystemInfo, getAgentSettings, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
 import type { ModelRoutingConfig } from "shared/types/index.js";
 import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
@@ -24,6 +24,8 @@ import {
   saveDefaultClaudeModel,
   getDefaultCodexModel,
   saveDefaultCodexModel,
+  getDefaultAcpProviderId,
+  saveDefaultAcpProviderId,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -103,6 +105,11 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // `null` until /system-info returns — Codex treated as available until an
   // explicit false (same tri-state as openRouterConfigured below).
   const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
+  // ACP vendors from /system-info. Empty until it returns, and empty is the
+  // honest default — unlike the two tri-states above, an unknown ACP list means
+  // there are no buttons to render at all, so there is no optimistic case.
+  const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>([]);
+  const [acpProviderId, setAcpProviderId] = useState<string>(getDefaultAcpProviderId);
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -148,11 +155,16 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const downgradeProvider = (p: AgentProviderKind): AgentProviderKind => {
     if (p === "openrouter" && openRouterConfigured === false) return "claude-code";
     if (p === "codex" && codexConfigured === false) return "claude-code";
+    // No installed vendor means the request would be rejected by the route, so
+    // downgrade here for the same reason the other two do.
+    if (p === "acp" && !acpProviders.some((v) => v.id === acpProviderId && v.available)) return "claude-code";
     return p;
   };
 
   // Each provider carries its own model selection; forward the matching one.
-  const modelForProvider = (p: AgentProviderKind): string => (p === "openrouter" ? model : p === "codex" ? codexModel : claudeModel);
+  // ACP has none to forward: ACP 1.3.0 exposes models only as a post-session
+  // config option, so there is nothing a New Chat panel could pick.
+  const modelForProvider = (p: AgentProviderKind): string => (p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? "" : claudeModel);
 
   const confirmRemoveRecentDir = () => {
     removeRecentDirectory(confirmModal.path);
@@ -177,6 +189,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultOpenRouterModel(model);
     saveDefaultClaudeModel(claudeModel);
     saveDefaultCodexModel(codexModel);
+    saveDefaultAcpProviderId(acpProviderId);
     // Runtime guard: only downgrade to claude-code when we KNOW the chosen
     // provider is not configured. While still loading (null), trust the user's
     // choice — sendMessage rejects loudly if creds are missing, so we get a
@@ -193,6 +206,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       state: {
         defaultPermissions,
         provider: effectiveProvider,
+        // The vendor travels with the kind — `provider: "acp"` alone does not
+        // say which harness runs the chat, and the route rejects it without this.
+        ...(effectiveProvider === "acp" && { acpProviderId }),
         ...((effectiveProvider === "openrouter" || effectiveProvider === "codex") && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
@@ -215,6 +231,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultOpenRouterModel(model);
     saveDefaultClaudeModel(claudeModel);
     saveDefaultCodexModel(codexModel);
+    saveDefaultAcpProviderId(acpProviderId);
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -242,6 +259,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         systemPrompt,
         agentAlias: agent.alias,
         provider: effectiveProvider,
+        ...(effectiveProvider === "acp" && { acpProviderId }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
         // Pass the router toggle as an explicit boolean (not only when true) so
@@ -343,6 +361,17 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         }
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+
+        // The stored ACP vendor is validated here rather than in localStorage,
+        // because this is the only place that knows the live list — vendors are
+        // server-side data and can appear or disappear without a frontend build.
+        const vendors = info.acpProviders ?? [];
+        setAcpProviders(vendors);
+        const usable = vendors.find((v) => v.id === acpProviderId && v.available) ?? vendors.find((v) => v.available);
+        if (usable && usable.id !== acpProviderId) setAcpProviderId(usable.id);
+        // Nothing installed (or the saved vendor was uninstalled) — fall back
+        // rather than leaving a selected provider that cannot start a chat.
+        if (!usable && provider === "acp") setProvider("claude-code");
       })
       .catch(() => {
         // /system-info unreachable — assume unavailable and surface the
@@ -433,6 +462,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
             <ProviderConfigPicker
               provider={provider}
               onProviderChange={setProvider}
+              acpProviders={acpProviders}
+              acpProviderId={acpProviderId}
+              onAcpProviderChange={setAcpProviderId}
               effort={effort}
               onEffortChange={setEffort}
               model={model}
@@ -659,6 +691,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
             <ProviderConfigPicker
               provider={provider}
               onProviderChange={setProvider}
+              acpProviders={acpProviders}
+              acpProviderId={acpProviderId}
+              onAcpProviderChange={setAcpProviderId}
               effort={effort}
               onEffortChange={setEffort}
               model={model}

@@ -9,7 +9,8 @@ interface Props {
   /** Target harness, or null when the modal is closed. */
   target: ForkProvider | null;
   /** Harness the conversation is leaving — named in the explanation. */
-  from: ForkProvider;
+  /** The chat's own harness. `null` for a chat that cannot be forked at all (ACP). */
+  from: ForkProvider | null;
   onCancel: () => void;
   onConfirm: (opts: { model?: string }) => void;
 }
@@ -46,7 +47,7 @@ export default function ForkHandoffModal({ target, from, onCancel, onConfirm }: 
     return () => document.removeEventListener("keydown", onKey);
   }, [target, onCancel]);
 
-  if (!target) return null;
+  if (!target || !from) return null;
 
   const label = LABELS[target];
 

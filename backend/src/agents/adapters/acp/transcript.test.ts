@@ -68,7 +68,10 @@ describe("AcpTranscriptWriter", () => {
     writer.writeEvent({ type: "text", content: "hello" });
     writer.writeEvent({ type: "result", status: "success" });
 
-    const lines = readFileSync(writer.filePath!, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const lines = readFileSync(writer.filePath!, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
     expect(lines).toHaveLength(3);
     expect(lines[0]).toMatchObject({ type: "session_meta", providerId: "gemini", sessionId: "s1", cwd: "/work/repo", agentInfo: { name: "gemini" } });
     expect(lines[1]).toMatchObject({ type: "event", event: { type: "text", content: "hello" } });
@@ -79,7 +82,10 @@ describe("AcpTranscriptWriter", () => {
     const writer = new AcpTranscriptWriter("gemini", "s1", "/work/repo");
     writer.writeHeader(null);
     writer.writeHeader(null);
-    const headers = readFileSync(writer.filePath!, "utf8").trim().split("\n").filter((l) => l.includes("session_meta"));
+    const headers = readFileSync(writer.filePath!, "utf8")
+      .trim()
+      .split("\n")
+      .filter((l) => l.includes("session_meta"));
     expect(headers).toHaveLength(1);
   });
 
@@ -129,6 +135,47 @@ describe("reading transcripts back", () => {
     expect(messages.map((m) => `${m.type}:${m.content}`)).toEqual(["text:Hello", "thinking:pondering", "text:again"]);
   });
 
+  it("coalesces streamed thinking chunks the same way", () => {
+    // Not cosmetic. OpenCode streams reasoning a word at a time, so 1:1 rendered
+    // one turn as ~30 collapsed "Thinking..." rows stacked above the reply. The
+    // double emits one thought per turn, which is why nothing caught it here.
+    seed("opencode", "s2", "/work", [
+      { type: "thinking", content: "The" },
+      { type: "thinking", content: " user" },
+      { type: "thinking", content: " wants" },
+      { type: "text", content: "Done." },
+      { type: "result", status: "success" },
+    ]);
+    const messages = parseAcpTranscript(findAcpTranscript("s2")!.filePath);
+    expect(messages.map((m) => `${m.type}:${m.content}`)).toEqual(["thinking:The user wants", "text:Done."]);
+  });
+
+  it("never merges reasoning into the reply when the two interleave", () => {
+    // Separate buffers, not one "pending block": an agent may think, speak, and
+    // think again, and a shared buffer would splice reasoning into the answer.
+    seed("opencode", "s3", "/work", [
+      { type: "thinking", content: "first " },
+      { type: "thinking", content: "thought" },
+      { type: "text", content: "Answer " },
+      { type: "text", content: "one." },
+      { type: "thinking", content: "second thought" },
+      { type: "text", content: "Answer two." },
+    ]);
+    const messages = parseAcpTranscript(findAcpTranscript("s3")!.filePath);
+    expect(messages.map((m) => `${m.type}:${m.content}`)).toEqual([
+      "thinking:first thought",
+      "text:Answer one.",
+      "thinking:second thought",
+      "text:Answer two.",
+    ]);
+  });
+
+  it("flushes a trailing thought when the turn ends without a reply", () => {
+    seed("opencode", "s4", "/work", [{ type: "thinking", content: "unfinished" }]);
+    const messages = parseAcpTranscript(findAcpTranscript("s4")!.filePath);
+    expect(messages.map((m) => `${m.type}:${m.content}`)).toEqual(["thinking:unfinished"]);
+  });
+
   it("projects tool events and skips non-renderable ones", () => {
     seed("gemini", "s1", "/work", [
       { type: "tool_use", toolName: "read_file", input: { path: "a" }, callId: "c1" },
@@ -157,7 +204,10 @@ describe("reading transcripts back", () => {
   });
 
   it("previews the first agent text", () => {
-    seed("gemini", "s1", "/work", [{ type: "thinking", content: "not this" }, { type: "text", content: "  the preview  " }]);
+    seed("gemini", "s1", "/work", [
+      { type: "thinking", content: "not this" },
+      { type: "text", content: "  the preview  " },
+    ]);
     expect(readAcpTranscriptPreview(findAcpTranscript("s1")!.filePath)).toBe("the preview");
   });
 });

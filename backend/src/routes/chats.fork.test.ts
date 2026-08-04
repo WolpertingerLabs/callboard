@@ -74,8 +74,13 @@ vi.mock("../agents/factory.js", () => ({
       // AcpSessionProvider IS registered in the real getSessionProviders(), so
       // the route's `find(p => p.kind === targetKind)` guard succeeds for "acp".
       // Stubbed here WITH a seedSession the real one does not have, on purpose:
-      // that makes the rejection below prove the routable allowlist is what
-      // stops an ACP fork, rather than a missing method that Phase 2 will add.
+      // that makes the rejection below prove the ROUTE refuses an ACP fork on
+      // its own, rather than inheriting the refusal from a missing method.
+      //
+      // This stub has already earned its keep once. It was written when the
+      // routable allowlist was the guard; when "acp" joined that allowlist it
+      // turned green-to-201 and caught the reintroduced wedged-chat bug in the
+      // same commit, which is why the route now carries an explicit check.
       kind: "acp",
       seedSession: (...args: unknown[]) => {
         calls.seedSession.push(args);
@@ -91,8 +96,10 @@ vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMet
 
 const { chatsRouter } = await import("./chats.js");
 
-const forkHandler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/fork" && layer.route.methods.post)
-  .route.stack[0].handle as (req: Request, res: Response) => void;
+const forkHandler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/fork" && layer.route.methods.post).route.stack[0].handle as (
+  req: Request,
+  res: Response,
+) => void;
 
 /** Invoke POST /:id/fork and resolve with the status code, the fork's parsed metadata, and the raw record. */
 function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta: any; chat: any }> {
@@ -110,10 +117,7 @@ function fork(body: Record<string, unknown> = {}): Promise<{ code: number; meta:
         return this;
       },
     };
-    forkHandler(
-      { params: { id: "parent-chat" }, body: { timestamp: "2026-01-01T00:00:00Z", ...body } } as unknown as Request,
-      res as unknown as Response,
-    );
+    forkHandler({ params: { id: "parent-chat" }, body: { timestamp: "2026-01-01T00:00:00Z", ...body } } as unknown as Request, res as unknown as Response);
   });
 }
 
@@ -244,18 +248,20 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     expect(res.meta.error).toContain("Unknown target provider");
   });
 
-  it("rejects a fork into acp, which no request can fully specify", async () => {
-    // "acp" is one kind covering many vendors: the vendor lives in
-    // `acpProviderId`, and no route accepts that field. Forking into it would
-    // stamp a chat with a kind and no vendor — sendMessage cannot construct an
-    // adapter for that, so the chat would be permanently wedged. Keeping "acp"
-    // out of ROUTABLE_PROVIDER_KINDS is what turns that into a 400 at
-    // validation time, BEFORE anything is written.
+  it("rejects a fork into acp, which no ACP agent can be handed a conversation", async () => {
+    // "acp" is a routable kind now, so this is no longer stopped by the
+    // allowlist — it is stopped by `AcpSessionProvider` implementing neither
+    // `forkSession` nor `seedSession`, deliberately. ACP session state lives
+    // inside the vendor's process and the protocol gives a client no way to
+    // hand an agent a conversation it did not have, so a seeded transcript
+    // would render correctly and then lose every bit of context on the next
+    // message. A 400 is the honest answer.
     setParent({});
     const res = await fork({ provider: "acp" });
     expect(res.code).toBe(400);
-    expect(res.meta.error).toContain("Unknown target provider");
-    // Rejected at the allowlist, not deep in the seeding path.
+    expect(res.meta.error).toContain("not supported");
+    // Still refused before anything is written — which is the property that
+    // actually matters, and the one the old allowlist rejection provided.
     expect(calls.seedSession).toHaveLength(0);
   });
 

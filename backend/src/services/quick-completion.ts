@@ -80,6 +80,12 @@ export interface QuickCompletionOptions {
  * - `codex` — NO. Codex models are heavyweight reasoning agents with no
  *   cheap/fast tier appropriate for a throwaway utility call, so a codex chat
  *   always falls back to another provider for its title/branch generation.
+ * - `acp` — NO, and for a second reason on top of Codex's. A utility call would
+ *   spawn a whole vendor CLI and complete a handshake to name a branch, and it
+ *   has no `canUseTool` to answer with, so any tool the vendor reached for would
+ *   be refused. It is listed explicitly rather than left to `default` because
+ *   `"acp"` became user-routable and this switch is where each kind states its
+ *   own answer.
  * - anything else (`mock`) — not a real utility backend.
  */
 function canRunQuickCompletion(provider: AgentProviderKind): boolean {
@@ -89,6 +95,7 @@ function canRunQuickCompletion(provider: AgentProviderKind): boolean {
     case "openrouter":
       return isOpenRouterConfigured();
     case "codex":
+    case "acp":
     case "mock":
     default:
       return false;
@@ -140,11 +147,7 @@ const QUICK_MODEL_TO_OPENROUTER: Record<QuickModel, string> = {
  * {@link isOpenRouterConfigured} is true, but the explicit check keeps the
  * failure mode legible.
  */
-function buildOpenRouterExtras(
-  model: QuickModel,
-  effort: "low" | "medium" | "high",
-  modelOverride?: string,
-): OpenRouterOptionsExtras {
+function buildOpenRouterExtras(model: QuickModel, effort: "low" | "medium" | "high", modelOverride?: string): OpenRouterOptionsExtras {
   const s = getAgentSettings();
   const apiKey = s.openRouterApiKey?.trim();
   if (!apiKey) {
@@ -383,10 +386,7 @@ function timeout(ms: number): Promise<undefined> {
  *   provider as the chat (with fallback for codex / unconfigured providers).
  *   Omit to use the global fallback resolution.
  */
-export async function generateChatTitle(
-  firstMessage: string,
-  provider?: AgentProviderKind,
-): Promise<string | null> {
+export async function generateChatTitle(firstMessage: string, provider?: AgentProviderKind): Promise<string | null> {
   try {
     const truncated = firstMessage.length > 500 ? firstMessage.slice(0, 500) + "..." : firstMessage;
 
@@ -421,10 +421,7 @@ export async function generateChatTitle(
  *   generated on the same provider (with fallback for codex / unconfigured
  *   providers). Omit to use the global fallback resolution.
  */
-export async function generateBranchName(
-  request: string,
-  provider?: AgentProviderKind,
-): Promise<string | null> {
+export async function generateBranchName(request: string, provider?: AgentProviderKind): Promise<string | null> {
   try {
     const truncated = request.length > 500 ? request.slice(0, 500) + "..." : request;
 

@@ -1,31 +1,42 @@
 interface ProviderBadgeProps {
-  // Chat provider from metadata. "openrouter" → "OR", "codex" → "CX".
-  // Anything else (including undefined/null, which is how Claude Code chats are
-  // stored — only the alternative providers are persisted to metadata) renders
-  // as the "CC" default.
+  // Chat provider from metadata. "openrouter" → "OR", "codex" → "CX",
+  // "acp" → "ACP". Anything else (including undefined/null, which is how Claude
+  // Code chats are stored — only the alternative providers are persisted to
+  // metadata) renders as the "CC" default.
   provider?: string | null;
   // Smaller variant for dense list rows; the default sizing suits the chat header.
   compact?: boolean;
 }
 
 // Small tag marking which provider a chat runs on: "OR" for OpenRouter,
-// "CX" for Codex, "CC" (Claude Code) otherwise. Shared by the chat header,
-// the chat list, and the folder list so the indicator is consistent everywhere.
+// "CX" for Codex, "ACP" for an ACP vendor, "CC" (Claude Code) otherwise. Shared
+// by the chat header, the chat list, and the folder list so the indicator is
+// consistent everywhere.
+//
+// ACP gets one badge for the whole family rather than one per vendor. The badge
+// is keyed on the chat's provider KIND, which is all the chat list rows carry —
+// the vendor lives in a separate `acpProviderId` — and a two-or-three-character
+// tag has no room to distinguish vendors anyway.
 export default function ProviderBadge({ provider, compact }: ProviderBadgeProps) {
   const isOpenRouter = provider === "openrouter";
   const isCodex = provider === "codex";
-  const label = isOpenRouter ? "OR" : isCodex ? "CX" : "CC";
+  const isAcp = provider === "acp";
+  const label = isOpenRouter ? "OR" : isCodex ? "CX" : isAcp ? "ACP" : "CC";
   const title = isOpenRouter
     ? "This chat is routed through OpenRouter"
     : isCodex
       ? "This chat runs on OpenAI Codex"
-      : "This chat runs on Claude Code";
+      : isAcp
+        ? "This chat runs on an ACP agent"
+        : "This chat runs on Claude Code";
 
   const palette = isOpenRouter
     ? { background: "var(--badge-provider-openrouter-bg)", color: "var(--badge-provider-text)" }
     : isCodex
       ? { background: "var(--badge-provider-codex-bg)", color: "var(--badge-provider-text)" }
-      : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" };
+      : isAcp
+        ? { background: "var(--badge-provider-acp-bg)", color: "var(--badge-provider-text)" }
+        : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" };
 
   return (
     <span

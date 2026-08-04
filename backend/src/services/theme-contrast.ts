@@ -161,8 +161,7 @@ function hslToRgb(hue: number, s: number, l: number): { r: number; g: number; b:
   const c = (1 - Math.abs(2 * l - 1)) * s;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
   const m = l - c / 2;
-  const [r, g, b] =
-    h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
   return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
 }
 
@@ -492,13 +491,27 @@ export const PAIRINGS: Pairing[] = [
   { id: "muted-on-bg", where: "secondary text, main window", fg: v("text-muted"), bg: v("bg"), backdrop: v("bg"), kind: "text" },
   { id: "muted-on-surface", where: "secondary text, panels", fg: v("text-muted"), bg: v("surface"), backdrop: v("surface"), kind: "text" },
   { id: "muted-on-sidebar", where: "chat list subtitles, timestamps", fg: v("text-muted"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "muted-on-bg-secondary", where: "secondary text, secondary panels", fg: v("text-muted"), bg: v("bg-secondary"), backdrop: v("bg-secondary"), kind: "text" },
+  {
+    id: "muted-on-bg-secondary",
+    where: "secondary text, secondary panels",
+    fg: v("text-muted"),
+    bg: v("bg-secondary"),
+    backdrop: v("bg-secondary"),
+    kind: "text",
+  },
   { id: "secondary-on-bg", where: "--text-secondary, main window", fg: v("text-secondary"), bg: v("bg"), backdrop: v("bg"), kind: "text" },
   { id: "secondary-on-surface", where: "--text-secondary, panels", fg: v("text-secondary"), bg: v("surface"), backdrop: v("surface"), kind: "text" },
 
   // ── Colour on a tint of itself: the family #293 fixed ──
   { id: "warning-on-warning-bg-surface", where: "McpToolsPanel 'external' badge", fg: v("warning"), bg: v("warning-bg"), backdrop: v("surface"), kind: "text" },
-  { id: "warning-on-warning-bg-sidebar", where: "FolderListItem warning strip", fg: v("warning"), bg: v("warning-bg"), backdrop: v("bg-sidebar"), kind: "text" },
+  {
+    id: "warning-on-warning-bg-sidebar",
+    where: "FolderListItem warning strip",
+    fg: v("warning"),
+    bg: v("warning-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
   { id: "warning-on-warning-bg-bg", where: "CodeLoginModal warning box", fg: v("warning"), bg: v("warning-bg"), backdrop: v("bg"), kind: "text" },
   { id: "danger-on-danger-bg-surface", where: "JobRunPanel error box", fg: v("danger"), bg: v("danger-bg"), backdrop: v("surface"), kind: "text" },
   { id: "danger-on-danger-bg-bg", where: "DraftModal / MessageBubble error box", fg: v("danger"), bg: v("danger-bg"), backdrop: v("bg"), kind: "text" },
@@ -511,28 +524,119 @@ export const PAIRINGS: Pairing[] = [
   // the fill under white's 0.183 luminance ceiling took it further down: 3.16:1
   // on --bg-popout now. A fill dark enough for white ink cannot also be ink.
   // Measuring --accent here would be measuring a value no component paints.
-  { id: "accent-on-accent-bg-surface", where: "McpToolsPanel 'platform' badge", fg: v("accent-text"), bg: v("accent-bg"), backdrop: v("surface"), kind: "text" },
+  {
+    id: "accent-on-accent-bg-surface",
+    where: "McpToolsPanel 'platform' badge",
+    fg: v("accent-text"),
+    bg: v("accent-bg"),
+    backdrop: v("surface"),
+    kind: "text",
+  },
   { id: "accent-on-accent-bg-bg", where: "PromptInput drop-images overlay", fg: v("accent-text"), bg: v("accent-bg"), backdrop: v("bg"), kind: "text" },
   { id: "badge-info-on-info-bg", where: "McpToolsPanel 'proxy' badge", fg: v("badge-info"), bg: v("info-bg"), backdrop: v("surface"), kind: "text" },
   { id: "badge-info-on-badge-info-bg", where: "MessageBubble info chip", fg: v("badge-info"), bg: v("badge-info-bg"), backdrop: v("surface"), kind: "text" },
-  { id: "badge-env-on-badge-env-bg", where: "PluginsSettings stdio badge", fg: v("badge-env-text"), bg: v("badge-env-bg"), backdrop: v("surface"), kind: "text" },
+  {
+    id: "badge-env-on-badge-env-bg",
+    where: "PluginsSettings stdio badge",
+    fg: v("badge-env-text"),
+    bg: v("badge-env-bg"),
+    backdrop: v("surface"),
+    kind: "text",
+  },
   { id: "badge-sse-on-badge-sse-bg", where: "PluginsSettings sse badge", fg: v("badge-sse-text"), bg: v("badge-sse-bg"), backdrop: v("surface"), kind: "text" },
 
   // ── Diff view ──
   { id: "diff-added-on-added-bg", where: "GitDiffView added line", fg: v("diff-added-text"), bg: v("diff-added-bg"), backdrop: v("surface"), kind: "text" },
-  { id: "diff-added-on-added-line-bg", where: "GitDiffView added line body", fg: v("diff-added-text"), bg: v("diff-added-line-bg"), backdrop: v("surface"), kind: "text" },
-  { id: "diff-removed-on-removed-bg", where: "GitDiffView removed line", fg: v("diff-removed-text"), bg: v("diff-removed-bg"), backdrop: v("surface"), kind: "text" },
-  { id: "diff-removed-on-removed-line-bg", where: "GitDiffView removed line body", fg: v("diff-removed-text"), bg: v("diff-removed-line-bg"), backdrop: v("surface"), kind: "text" },
+  {
+    id: "diff-added-on-added-line-bg",
+    where: "GitDiffView added line body",
+    fg: v("diff-added-text"),
+    bg: v("diff-added-line-bg"),
+    backdrop: v("surface"),
+    kind: "text",
+  },
+  {
+    id: "diff-removed-on-removed-bg",
+    where: "GitDiffView removed line",
+    fg: v("diff-removed-text"),
+    bg: v("diff-removed-bg"),
+    backdrop: v("surface"),
+    kind: "text",
+  },
+  {
+    id: "diff-removed-on-removed-line-bg",
+    where: "GitDiffView removed line body",
+    fg: v("diff-removed-text"),
+    bg: v("diff-removed-line-bg"),
+    backdrop: v("surface"),
+    kind: "text",
+  },
 
   // ── Chat-list derived layer: tints mixed from the theme's own primitives ──
-  { id: "chatlist-summon", where: "ChatListItem summon badge", fg: v("chatlist-summon-text"), bg: v("chatlist-summon-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "chatlist-summon-urgent", where: "ChatListItem urgent summon badge", fg: v("chatlist-summon-urgent-text"), bg: v("chatlist-summon-urgent-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "chatlist-badge-triggered", where: "ChatListItem/FolderListItem triggered badge", fg: v("chatlist-badge-triggered-text"), bg: v("chatlist-badge-triggered-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "chatlist-badge-agent", where: "FolderListItem agent badge", fg: v("chatlist-badge-agent-text"), bg: v("chatlist-badge-agent-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "chatlist-badge-status", where: "FolderListItem status badge", fg: v("chatlist-badge-status-text"), bg: v("chatlist-badge-status-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "chatlist-title-active", where: "active chat row title", fg: v("chatlist-item-title-text"), bg: v("chatlist-item-active-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "chatlist-path-active", where: "active chat row path", fg: v("chatlist-item-path-text"), bg: v("chatlist-item-active-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "chatlist-path-hover", where: "hovered chat row path", fg: v("chatlist-item-path-text"), bg: v("chatlist-item-hover-bg"), backdrop: v("bg-sidebar"), kind: "text" },
+  {
+    id: "chatlist-summon",
+    where: "ChatListItem summon badge",
+    fg: v("chatlist-summon-text"),
+    bg: v("chatlist-summon-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "chatlist-summon-urgent",
+    where: "ChatListItem urgent summon badge",
+    fg: v("chatlist-summon-urgent-text"),
+    bg: v("chatlist-summon-urgent-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "chatlist-badge-triggered",
+    where: "ChatListItem/FolderListItem triggered badge",
+    fg: v("chatlist-badge-triggered-text"),
+    bg: v("chatlist-badge-triggered-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "chatlist-badge-agent",
+    where: "FolderListItem agent badge",
+    fg: v("chatlist-badge-agent-text"),
+    bg: v("chatlist-badge-agent-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "chatlist-badge-status",
+    where: "FolderListItem status badge",
+    fg: v("chatlist-badge-status-text"),
+    bg: v("chatlist-badge-status-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "chatlist-title-active",
+    where: "active chat row title",
+    fg: v("chatlist-item-title-text"),
+    bg: v("chatlist-item-active-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "chatlist-path-active",
+    where: "active chat row path",
+    fg: v("chatlist-item-path-text"),
+    bg: v("chatlist-item-active-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "chatlist-path-hover",
+    where: "hovered chat row path",
+    fg: v("chatlist-item-path-text"),
+    bg: v("chatlist-item-hover-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
 
   // ── Text on solid fills ──
   { id: "on-accent", where: "primary buttons, active nav", fg: v("text-on-accent"), bg: v("accent"), backdrop: v("bg"), kind: "text" },
@@ -542,12 +646,48 @@ export const PAIRINGS: Pairing[] = [
   // put white-on-it at 3.35:1. Every destructive button now paints the fill
   // token; `--danger-solid` derives from `--danger`, so a theme still drives it.
   { id: "on-danger", where: "confirm-delete button", fg: v("text-on-danger"), bg: v("danger-solid"), backdrop: v("bg"), kind: "text" },
-  { id: "provider-badge-openrouter", where: "OpenRouter provider badge", fg: v("badge-provider-text"), bg: v("badge-provider-openrouter-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "provider-badge-codex", where: "Codex provider badge", fg: v("badge-provider-text"), bg: v("badge-provider-codex-bg"), backdrop: v("bg-sidebar"), kind: "text" },
-  { id: "session-badge-cli", where: "CLI session badge", fg: v("chatlist-badge-session-text"), bg: v("chatlist-badge-session-cli-bg"), backdrop: v("bg-sidebar"), kind: "text" },
+  {
+    id: "provider-badge-openrouter",
+    where: "OpenRouter provider badge",
+    fg: v("badge-provider-text"),
+    bg: v("badge-provider-openrouter-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "provider-badge-codex",
+    where: "Codex provider badge",
+    fg: v("badge-provider-text"),
+    bg: v("badge-provider-codex-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "provider-badge-acp",
+    where: "ACP provider badge",
+    fg: v("badge-provider-text"),
+    bg: v("badge-provider-acp-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
+  {
+    id: "session-badge-cli",
+    where: "CLI session badge",
+    fg: v("chatlist-badge-session-text"),
+    bg: v("chatlist-badge-session-cli-bg"),
+    backdrop: v("bg-sidebar"),
+    kind: "text",
+  },
   { id: "worktree-badge", where: "FolderListItem worktree badge", fg: v("text-on-accent"), bg: v("badge-worktree"), backdrop: v("bg-sidebar"), kind: "text" },
   { id: "builtin-on-user-bg", where: "slash-command user message", fg: v("builtin-text"), bg: v("builtin-user-bg"), backdrop: v("bg"), kind: "text" },
-  { id: "builtin-on-assistant-bg", where: "slash-command assistant message", fg: v("builtin-text"), bg: v("builtin-assistant-bg"), backdrop: v("bg"), kind: "text" },
+  {
+    id: "builtin-on-assistant-bg",
+    where: "slash-command assistant message",
+    fg: v("builtin-text"),
+    bg: v("builtin-assistant-bg"),
+    backdrop: v("bg"),
+    kind: "text",
+  },
 
   // ── Non-text indicators (3:1) ──
   { id: "status-green-dot", where: "FolderListItem running dot", fg: v("status-green"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
@@ -976,8 +1116,7 @@ async function correctMode(themeVars: Record<string, string>, mode: ThemeMode, s
     for (const lever of tally.keys()) {
       const result = await correctVariable(lever, vars, pairingsTouching(lever, vars));
       if (!result) continue;
-      const better =
-        !choice || result.fixed.length > choice.fixed.length || (result.fixed.length === choice.fixed.length && result.distance < choice.distance);
+      const better = !choice || result.fixed.length > choice.fixed.length || (result.fixed.length === choice.fixed.length && result.distance < choice.distance);
       if (better) choice = { lever, ...result };
     }
     if (!choice) break;
@@ -1152,9 +1291,7 @@ async function relaxSeeds(outcome: ModeOutcome, themeVars: Record<string, string
   }
   const relaxed: Record<string, string> = {};
   for (const key of Object.keys(outcome.vars)) relaxed[key] = vars[key];
-  const corrections = outcome.corrections
-    .filter((c) => relaxed[c.variable] !== themeVars[c.variable])
-    .map((c) => ({ ...c, to: relaxed[c.variable] }));
+  const corrections = outcome.corrections.filter((c) => relaxed[c.variable] !== themeVars[c.variable]).map((c) => ({ ...c, to: relaxed[c.variable] }));
   const unsatisfiable = PAIRINGS.map((p) => measurePairing(p, vars))
     .filter((m) => !m.passes)
     .map((m) => toFailure(mode, m));

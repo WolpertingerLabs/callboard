@@ -64,23 +64,25 @@ describe("vendor presets", () => {
 });
 
 describe("the provider seam", () => {
-  it("routes 'acp' internally but does not offer it to requests", () => {
-    // Phase 1 has no user-facing surface for ACP: the vendor lives in
-    // `acpProviderId` and no route accepts that field, so a request naming
-    // "acp" could only ever produce a chat with a kind and no vendor. Routes
-    // narrow against the routable list, which therefore excludes it.
-    expect(ROUTABLE_PROVIDER_KINDS).not.toContain("acp");
-    expect(isRoutableProvider("acp")).toBe(false);
-    // sendMessage still routes and persists it, reached via
-    // SendMessageOptions.acpProviderId. Phase 2 adds the picker and moves "acp"
-    // back into the routable list alongside it.
+  it("offers 'acp' to requests now that a route can fully specify it", () => {
+    // Held out of this list through Phase 1, because the vendor lives in
+    // `acpProviderId` and no route accepted that field — a request naming "acp"
+    // could only ever produce a chat with a kind and no vendor. Admitted once
+    // `POST /api/chats/new/message` took the field and started rejecting "acp"
+    // without it (see stream.acp-provider.test.ts, which is the other half of
+    // this contract and the reason this assertion is safe to flip).
+    expect(ROUTABLE_PROVIDER_KINDS).toContain("acp");
+    expect(isRoutableProvider("acp")).toBe(true);
     expect(INTERNAL_PROVIDER_KINDS).toContain("acp");
     expect(isInternalProvider("acp")).toBe(true);
-    // The vendor is NOT a kind — that is the whole point.
+    // The vendor is NOT a kind — that is the whole point, and it stays true now
+    // that both lists agree about "acp".
     expect(isRoutableProvider("gemini")).toBe(false);
+    expect(isRoutableProvider("opencode")).toBe(false);
     expect(isInternalProvider("gemini")).toBe(false);
     expect(isInternalProvider("acp:gemini")).toBe(false);
     // "mock" is test-only and belongs to neither list.
+    expect(isRoutableProvider("mock")).toBe(false);
     expect(isInternalProvider("mock")).toBe(false);
   });
 

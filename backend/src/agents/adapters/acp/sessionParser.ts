@@ -132,10 +132,17 @@ export function readAcpTranscriptCwd(filePath: string): string {
  * {@link AgentEvent}s, which is the whole reason the writer stores them
  * post-normalization. Only three things need care:
  *
- *  - **Consecutive `text` events are one assistant message.** ACP streams
- *    `agent_message_chunk` per fragment; rendering each as its own bubble would
- *    shatter one reply into dozens. Chunks are coalesced until something else
- *    (a tool call, a thinking block, a result) interrupts them.
+ *  - **Consecutive `text` events are one assistant message, and so are
+ *    consecutive `thinking` events.** ACP streams `agent_message_chunk` and
+ *    `agent_thought_chunk` per fragment; rendering each as its own bubble would
+ *    shatter one reply into dozens. Chunks of either kind are coalesced until
+ *    something of a different kind (the other stream, a tool call, a result)
+ *    interrupts them.
+ *
+ *    Thinking was originally 1:1, which was invisible against a double that
+ *    emits one thought per turn and unusable against a real one: OpenCode
+ *    streams reasoning a word at a time, so a single turn rendered as ~30
+ *    collapsed "Thinking..." rows stacked above the reply.
  *  - **`result` events are not messages.** They terminate a turn; the usage they
  *    carry is attached to the assistant message they close.
  *  - **`adapter_specific` is not rendered.** It exists so data is not lost, not
@@ -144,13 +151,31 @@ export function readAcpTranscriptCwd(filePath: string): string {
 export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   const lines = readAcpTranscriptLines(filePath);
   const messages: ParsedMessage[] = [];
+  // One buffer per streamed kind. They are separate rather than one "pending
+  // block" because an agent can interleave them — a thought, a sentence, more
+  // thinking — and merging across the boundary would put reasoning inside the
+  // reply.
   let pendingText: { content: string[]; timestamp: string } | null = null;
+  let pendingThinking: { content: string[]; timestamp: string } | null = null;
 
   const flushText = (): void => {
     if (!pendingText) return;
     const content = pendingText.content.join("");
     if (content.trim()) messages.push({ role: "assistant", type: "text", content, timestamp: pendingText.timestamp });
     pendingText = null;
+  };
+
+  const flushThinking = (): void => {
+    if (!pendingThinking) return;
+    const content = pendingThinking.content.join("");
+    if (content.trim()) messages.push({ role: "assistant", type: "thinking", content, timestamp: pendingThinking.timestamp });
+    pendingThinking = null;
+  };
+
+  /** Close both streams — everything that is not itself a chunk starts here. */
+  const flush = (): void => {
+    flushText();
+    flushThinking();
   };
 
   for (const line of lines) {
@@ -160,17 +185,19 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
 
     switch (event.type) {
       case "text":
+        flushThinking();
         if (pendingText) pendingText.content.push(event.content);
         else pendingText = { content: [event.content], timestamp };
         break;
 
       case "thinking":
         flushText();
-        messages.push({ role: "assistant", type: "thinking", content: event.content, timestamp });
+        if (pendingThinking) pendingThinking.content.push(event.content);
+        else pendingThinking = { content: [event.content], timestamp };
         break;
 
       case "tool_use":
-        flushText();
+        flush();
         messages.push({
           role: "assistant",
           type: "tool_use",
@@ -182,12 +209,12 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
         break;
 
       case "tool_result":
-        flushText();
+        flush();
         messages.push({ role: "user", type: "tool_result", content: event.content, toolUseId: event.callId, timestamp });
         break;
 
       case "result":
-        flushText();
+        flush();
         break;
 
       case "session_started":
@@ -199,7 +226,7 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
     }
   }
 
-  flushText();
+  flush();
   return messages;
 }
 

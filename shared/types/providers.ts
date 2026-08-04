@@ -13,7 +13,7 @@
  * `AgentProviderKind` union (in `backend/src/agents/ports/AgentProvider.ts`)
  * also includes adapters not exposed to end users (`mock`).
  */
-export type UiAgentProviderKind = "claude-code" | "openrouter" | "codex";
+export type UiAgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp";
 
 /**
  * OpenRouter reasoning-effort levels. Maps onto the OR `reasoning.effort`
@@ -38,6 +38,17 @@ export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "non
  */
 export interface ProviderRunConfig {
   provider?: UiAgentProviderKind;
+  /**
+   * Which ACP vendor runs the chat — `"opencode"`, `"gemini"`, … Meaningful only
+   * when `provider` is `"acp"`, and required there: `"acp"` is one kind covering
+   * many CLIs, so the kind alone does not identify a harness.
+   *
+   * Optional on this type because every other provider ignores it, not because
+   * it is optional for ACP. `POST /api/stream` rejects `provider: "acp"` without
+   * a valid one rather than falling back, so a chat can never be persisted with
+   * a kind and no vendor.
+   */
+  acpProviderId?: string;
   /**
    * Model for the chat's provider. For "openrouter": an OR slug (e.g.
    * "anthropic/claude-opus-4.7") or a user-defined alias. For "claude-code":

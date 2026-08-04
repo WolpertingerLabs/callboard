@@ -210,7 +210,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const agentAlias = (location.state as any)?.agentAlias as string | undefined;
   // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
   // by chat metadata server-side; this value is only honored on creation.
-  const newChatProvider = (location.state as any)?.provider as "claude-code" | "openrouter" | "codex" | undefined;
+  const newChatProvider = (location.state as any)?.provider as "claude-code" | "openrouter" | "codex" | "acp" | undefined;
+  const newChatAcpProviderId = (location.state as any)?.acpProviderId as string | undefined;
   // OpenRouter reasoning-effort for NEW chats, set by NewChatPanel. Like the
   // provider, only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
@@ -486,13 +487,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id]);
 
-  const chatProvider = useMemo((): "claude-code" | "openrouter" | "codex" => {
+  const chatProvider = useMemo((): "claude-code" | "openrouter" | "codex" | "acp" => {
     if (!id) return newChatProvider ?? "claude-code";
     if (chat?.metadata) {
       try {
         const meta = JSON.parse(chat.metadata);
         if (meta.provider === "openrouter") return "openrouter";
         if (meta.provider === "codex") return "codex";
+        if (meta.provider === "acp") return "acp";
       } catch {
         // ignore — fall through
       }
@@ -500,8 +502,48 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return "claude-code";
   }, [id, newChatProvider, chat?.metadata]);
 
+  // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
+  // derived from `chatProvider`, because the kind alone does not name a harness.
+  const acpProviderId = useMemo((): string => {
+    if (!id) return newChatAcpProviderId ?? "";
+    try {
+      const meta = chat?.metadata ? JSON.parse(chat.metadata) : null;
+      return typeof meta?.acpProviderId === "string" ? meta.acpProviderId : "";
+    } catch {
+      return "";
+    }
+  }, [id, newChatAcpProviderId, chat?.metadata]);
+
+  // Vendor id → display label, for ACP chats. Chat metadata stores the id
+  // ("opencode"); only the server knows it is spelled "OpenCode". Title-casing
+  // the id gets that wrong, and the vendor's own spelling is the one the user
+  // picked in the panel. Declared here rather than beside the other
+  // /system-info state below because `providerDisplayName` reads it during
+  // render, and a `const` declared further down would be in the TDZ.
+  const [acpLabels, setAcpLabels] = useState<Record<string, string>>({});
+
+  // Forking is meaningless for an ACP chat, so the source is null there rather
+  // than a stand-in value. ACP session state lives inside the vendor's process
+  // and the protocol gives a client no way to hand an agent a conversation it
+  // did not have — `AcpSessionProvider` implements neither `forkSession` nor
+  // `seedSession`, so the route would 400. Hiding the button is the honest
+  // surface for that; a fork that renders and then loses all context is worse
+  // than no fork button.
+  const forkSourceProvider: ForkProvider | null = chatProvider === "acp" ? null : chatProvider;
+
   // Human-readable harness name for status text ("Claude is thinking...").
-  const providerDisplayName = chatProvider === "openrouter" ? "OpenRouter" : chatProvider === "codex" ? "Codex" : "Claude";
+  // ACP shows the vendor, not the protocol: "OpenCode is thinking" is what the
+  // user picked, and "ACP is thinking" names a wire format.
+  const providerDisplayName =
+    chatProvider === "openrouter"
+      ? "OpenRouter"
+      : chatProvider === "codex"
+        ? "Codex"
+        : chatProvider === "acp"
+          ? // The vendor's own label when the server has told us one; otherwise a
+            // neutral noun rather than a guessed capitalization of the id.
+            (acpLabels[acpProviderId] ?? "The agent")
+          : "Claude";
 
   // Fork the conversation at a message: the backend copies session history
   // up to and including that message into a new chat, which we navigate to.
@@ -590,6 +632,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (cancelled) return;
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+        setAcpLabels(Object.fromEntries((info.acpProviders ?? []).map((v) => [v.id, v.label])));
       })
       .catch(() => {});
     return () => {
@@ -1753,6 +1796,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
           if (newChatProvider && newChatProvider !== "claude-code") {
             requestBody.provider = newChatProvider;
+          }
+          // The vendor rides with the kind. Without it the route rejects the
+          // request outright rather than guessing a harness.
+          if (newChatProvider === "acp" && newChatAcpProviderId) {
+            requestBody.acpProviderId = newChatAcpProviderId;
           }
           if (newChatEffort && (newChatProvider === "openrouter" || newChatProvider === "codex")) {
             requestBody.effort = newChatEffort;
@@ -3174,14 +3222,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // cross-harness fork seeds the target from the parsed
                   // history.
                   const msgTimestamp = item.message.timestamp;
-                  const canFork = item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id;
+                  const canFork = item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id && forkSourceProvider !== null;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
                       <MessageBubble
                         message={item.message}
                         teamColorMap={teamColorMap}
                         onFork={canFork ? (provider) => handleFork(msgTimestamp!, provider) : undefined}
-                        forkCurrentProvider={chatProvider}
+                        forkCurrentProvider={forkSourceProvider ?? undefined}
                       />
                     </div>
                   );
@@ -3512,7 +3560,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         // Keyed on the target so each opening gets a fresh model field.
         key={pendingHandoff?.provider ?? "none"}
         target={pendingHandoff?.provider ?? null}
-        from={chatProvider}
+        from={forkSourceProvider}
         onCancel={() => setPendingHandoff(null)}
         onConfirm={({ model }) => {
           const handoff = pendingHandoff;

@@ -1285,6 +1285,23 @@ export interface SystemInfo {
    * status accurately ("auth.json", "config.toml", api key, or unconfigured).
    */
   codexAuthSource?: "api-key" | "auth.json" | "config.toml" | null;
+  /**
+   * Configured ACP vendors and whether each one's CLI is installed.
+   *
+   * `available` means the binary resolves on PATH — **not** that the user is
+   * authenticated. ACP has no auth introspection, so an unauthenticated vendor
+   * reports available and fails at send time with the CLI's own message. Absent
+   * on servers older than the ACP picker; treat that as "no ACP vendors".
+   */
+  acpProviders?: AcpProviderInfo[];
+}
+
+export interface AcpProviderInfo {
+  id: string;
+  label: string;
+  available: boolean;
+  /** The binary probed, so a disabled entry can say what to install. */
+  command: string;
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
