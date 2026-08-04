@@ -218,7 +218,7 @@ describe("seedSession", () => {
     expect(existsSync(seeded!.logPath)).toBe(true);
     // Must land in the dated tree with the thread id trailing the filename —
     // that is the only way findRollout locates it (and how the CLI's own
-    // `resume <id>` does, verified against codex-cli 0.144.6).
+    // `resume <id>` does, verified against codex-cli 0.146.0).
     expect(seeded!.logPath).toMatch(/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-.*-019f9fa2-0d7b-72b6-bb47-e215c05d31f9\.jsonl$/);
 
     const resolved = provider.resolveSession(SEED_ID);

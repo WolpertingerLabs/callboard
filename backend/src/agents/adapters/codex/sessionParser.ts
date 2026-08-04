@@ -54,7 +54,7 @@ const log = createLogger("codex-session-parser");
  * `session_meta.cli_version` differs we log once so a future format drift is
  * diagnosable rather than silently mis-parsed (spike risk #4).
  */
-export const EXPECTED_CODEX_CLI_VERSION = "0.139.0";
+export const EXPECTED_CODEX_CLI_VERSION = "0.146.0";
 
 /** Synthetic lead messages the Codex CLI injects ahead of the real transcript. */
 const SYNTHETIC_MESSAGE_PREFIXES = ["<permissions", "<environment_context", "<user_instructions"];
@@ -97,8 +97,7 @@ export function resolveCodexSessionsRoot(): string {
  *   rollout-2026-06-14T17-03-58-019ec7f2-cd5d-7823-b2d1-6683c42bfe32.jsonl
  *                                └──────────────── thread_id ───────────┘
  */
-const ROLLOUT_FILENAME_RE =
-  /^rollout-.*-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/;
+const ROLLOUT_FILENAME_RE = /^rollout-.*-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/;
 
 export function extractThreadIdFromFilename(filename: string): string | null {
   const m = ROLLOUT_FILENAME_RE.exec(filename);
@@ -287,10 +286,7 @@ export function parseCodexRollout(filePath: string): ParsedMessage[] {
  * Translate one `response_item` payload into a ParsedMessage, or `null` to drop
  * it (synthetic lead messages, empty content, unhandled item types).
  */
-function translateResponseItem(
-  payload: Record<string, unknown> | undefined,
-  timestamp: string | undefined,
-): ParsedMessage | null {
+function translateResponseItem(payload: Record<string, unknown> | undefined, timestamp: string | undefined): ParsedMessage | null {
   if (!payload || typeof payload !== "object") return null;
   const itemType = typeof payload.type === "string" ? payload.type : undefined;
   const ts = typeof timestamp === "string" ? timestamp : undefined;
@@ -348,10 +344,7 @@ function translateResponseItem(
 }
 
 /** Translate a `payload.type === "message"` item, filtering synthetic leads. */
-function translateMessage(
-  payload: Record<string, unknown>,
-  ts: string | undefined,
-): ParsedMessage | null {
+function translateMessage(payload: Record<string, unknown>, ts: string | undefined): ParsedMessage | null {
   const role = typeof payload.role === "string" ? payload.role : undefined;
   const { text: content, imageIds } = extractTextAndImages(payload.content);
   if (!content && imageIds.length === 0) return null;
@@ -363,8 +356,7 @@ function translateMessage(
   const head = content.trimStart().toLowerCase();
   if (SYNTHETIC_MESSAGE_PREFIXES.some((p) => head.startsWith(p))) return null;
 
-  const mappedRole: ParsedMessage["role"] =
-    role === "assistant" ? "assistant" : role === "user" ? "user" : "system";
+  const mappedRole: ParsedMessage["role"] = role === "assistant" ? "assistant" : role === "user" ? "user" : "system";
 
   return { role: mappedRole, type: "text", content, ...(imageIds.length > 0 && { imageIds }), ...(ts && { timestamp: ts }) };
 }

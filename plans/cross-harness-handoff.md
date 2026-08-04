@@ -45,18 +45,18 @@ no native fork (Codex, OpenRouter).
 
 ## Seed targets
 
-| Harness | Written files | Resume mechanism |
-| --- | --- | --- |
-| claude-code | `<projectDir>/<sessionId>.jsonl` | SDK reads the JSONL by session id |
-| codex | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<threadId>.jsonl` | CLI scans the dated tree for a filename ending in the thread id |
-| openrouter | `<logsRoot>/<sid>/{session.json,state.json,transcript.jsonl}` | harness resumes from `state.json`'s local `messages` |
+| Harness     | Written files                                                   | Resume mechanism                                                |
+| ----------- | --------------------------------------------------------------- | --------------------------------------------------------------- |
+| claude-code | `<projectDir>/<sessionId>.jsonl`                                | SDK reads the JSONL by session id                               |
+| codex       | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<threadId>.jsonl` | CLI scans the dated tree for a filename ending in the thread id |
+| openrouter  | `<logsRoot>/<sid>/{session.json,state.json,transcript.jsonl}`   | harness resumes from `state.json`'s local `messages`            |
 
 Two findings that made this feasible, both contradicting comments previously in
 the code:
 
 - **Codex needs no sqlite row.** `$CODEX_HOME/state_*.sqlite` has a `threads`
   table mapping id → rollout path, but it backs the CLI's own history UI, not
-  resume. A hand-written rollout with no row resumes fine (codex-cli 0.144.6).
+  resume. A hand-written rollout with no row resumes fine (codex-cli 0.146.0).
 - **OpenRouter's `previousResponseId` is not load-bearing.**
   `ConversationState.messages` is the full local history; the response id is
   only a server-side prefix-cache hint. The harness's own compaction and prune
@@ -64,14 +64,14 @@ the code:
   normally — a seeded history is the same situation.
 
 The OR writer must emit `transcript.jsonl`, not just `state.json`:
-`parseSessionMessages` *prefers* the transcript and the harness appends to it on
+`parseSessionMessages` _prefers_ the transcript and the harness appends to it on
 the next turn, so seeding without one would show the carried history until the
 new session replied once, then lose it.
 
 ## Tool traffic is flattened to text
 
 `ParsedMessage` carries enough to replay tool calls structurally, but tool
-*names* don't survive the trip — Claude's `Bash`/`Read` have no counterpart in
+_names_ don't survive the trip — Claude's `Bash`/`Read` have no counterpart in
 Codex's `shell`/`apply_patch` or OpenRouter's `bash`. Replaying them verbatim
 would seed the target with function calls naming tools absent from its tool
 list.
@@ -93,12 +93,12 @@ All three round-trip back into image ids on read, so they still render.
 
 Two limits, both stated in the preamble when they bite:
 
-- **Assistant-side images can't be carried.** Images the agent *read* (a
+- **Assistant-side images can't be carried.** Images the agent _read_ (a
   screenshot opened with `Read`) land on a tool result, which folds into an
   assistant turn — and no harness accepts image blocks on assistant output.
   The flattened text notes how many were left behind.
 - **Caps: 12 images / 6 MB.** Unlike text, an image is carried whole or not at
-  all, and each costs a four-figure token count on *every* subsequent turn.
+  all, and each costs a four-figure token count on _every_ subsequent turn.
   Images are taken in conversation order so early references keep resolving.
 
 For OpenRouter the transcript's `text` field carries multimodal prompts as a
@@ -113,7 +113,7 @@ confirmation modal carrying a model field (the target harness's own selector),
 without which every switch would silently land on the target's global default.
 
 `metadata.model` is honored by all three harnesses — `stream.ts` persists it
-for any provider and each config block reads it. (`sendMessage`'s *new-chat*
+for any provider and each config block reads it. (`sendMessage`'s _new-chat_
 block guards model to openrouter/claude-code, but that guard doesn't apply to
 this route, which writes metadata itself.) Effort stays guarded to the two
 reasoning-capable harnesses.
@@ -121,7 +121,7 @@ reasoning-capable harnesses.
 ## Verification
 
 Each writer was driven end-to-end against the real engine, seeding a history
-whose only source for a magic string was a *flattened tool result*, then asking
+whose only source for a magic string was a _flattened tool result_, then asking
 the resumed session to recall it without tools:
 
 - **Codex** — `codex exec resume <id>` recalled `XYLOPHONE-7734` and attributed
@@ -130,7 +130,7 @@ the resumed session to recall it without tools:
 - **Claude Code** — `claude -p --resume <id>` did the same, attributing it to
   Codex.
 
-In all three the model correctly reported that *another* harness ran the
+In all three the model correctly reported that _another_ harness ran the
 command, confirming the preamble does its job.
 
 The image path was verified the same way, seeding a solid-red PNG on a user
