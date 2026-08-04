@@ -58,7 +58,7 @@ Verified by reading the **shipped `.d.ts` files** of 0.80.2 (installed by Ori at
 
 **Decision 1 — Callboard reads pi's own sessions; no shadow transcript.** This is the deliberate divergence from `plans/cline-adapter.md`. Cline forced Callboard to own a transcript because its history API was async and its on-disk format undocumented and pre-1.0. Neither holds here: `parseSessionEntries(content)` is *synchronous and takes a string*, which is exactly the shape `SessionProvider`'s synchronous methods need, and the format is versioned with a migrator (`CURRENT_SESSION_VERSION = 3`, `migrateSessionEntries`). Point `SessionManager.create(cwd, sessionDir)` at `<DATA_DIR>/pi-sessions/` so `CALLBOARD_DATA_DIR` still moves everything, and read those files back. One store, not two — no drift between what pi resumes from and what Callboard renders. If the spike finds the format harder to consume than it reads, the Cline shadow-transcript pattern is the documented fallback; take it as a whole, not halfway.
 
-**Decision 2 — fork and seed are native.** `SessionManager.forkFrom()` gives `forkSession` directly, and pi already models sessions as a tree with `parentSession` on the header, so Callboard's chat lineage and pi's branch structure agree instead of being reconciled. `seedSession` writes a session file from neutral `HandoffTurn[]` (`backend/src/agents/handoff.ts`) — hand-written session state, the same technique the Claude, Codex and OpenRouter adapters already use for handoff. `parseSessionEntries` + `CURRENT_SESSION_VERSION` being exported is what makes the written shape checkable rather than reverse-engineered.
+**Decision 2 — fork and seed are native.** `SessionManager.forkFrom()` gives `forkSession` most of the way, and pi already models sessions as a tree with `parentSession` on the header. *(Corrected in Phase 2: `parentSession` holds a **file path**, not a session id, so the two lineages do not simply agree — Callboard owns a small translation step, `parentSessionIdOf()`. And `forkFrom` has no cutoff parameter, so the truncation is Callboard's too.)* `seedSession` writes a session file from neutral `HandoffTurn[]` (`backend/src/agents/handoff.ts`) — hand-written session state, the same technique the Claude, Codex and OpenRouter adapters already use for handoff. `parseSessionEntries` + `CURRENT_SESSION_VERSION` being exported is what makes the written shape checkable rather than reverse-engineered.
 
 **Decision 3 — credentials never touch `~/.pi/agent/auth.json`.** Construct `AuthStorage` over `InMemoryAuthStorageBackend` seeded from `getAgentSettings()`. A Callboard chat must not mutate the user's global pi login, and two chats on different providers must not fight over one file. Same reasoning as `AcpAdapter` refusing to forward `options.env` wholesale.
 
@@ -97,12 +97,18 @@ New files under `backend/src/agents/adapters/pi/`:
 
 ## Phase 2 — SessionProvider (history, fork, handoff)
 
-- **`sessionParser.ts`** — `parseSessionEntries` + `buildSessionContext` → `ParsedMessage[]`; first-user-message preview from `SessionInfo.firstMessage`. Path-traversal guard on session ids (`isSafePathSegment`, as `acp/transcript.ts` does).
-- **`PiSessionProvider.ts`** — `SessionProvider` with `kind = "pi"`, over `<DATA_DIR>/pi-sessions/`. Discovery/resolve/search/delete from `SessionInfo` (`allMessagesText` makes search cheap). Plus:
-  - `forkSession(...)` → `SessionManager.forkFrom()`.
+- **`sessionParser.ts`** — `parseSessionEntries` → `ParsedMessage[]`; first-user-message preview. Path-traversal guard on session ids (`isSafePathSegment`, as `acp/transcript.ts` does).
+- **`PiSessionProvider.ts`** — `SessionProvider` with `kind = "pi"`, over `<DATA_DIR>/pi-sessions/`. Discovery/resolve/search/delete. Plus:
+  - `forkSession(...)` → `SessionManager.forkFrom()` for the file and lineage, then a rewrite for the cutoff — `forkFrom` has no cutoff parameter and takes one source, while the port takes an array.
   - `seedSession(turns, { folder, newSessionId })` → write a version-3 session file from `HandoffTurn[]`, making pi a valid **target** for cross-harness handoff.
   - `resolvePiSessionsRoot()` as a **function**, not a module const, so a per-test `CALLBOARD_DATA_DIR` is honoured.
-- Register in `factory.ts`: `constructProvider` case `"pi"` → `new PiAdapter()`, and push `new PiSessionProvider()` into `getSessionProviders()`.
+
+**Two corrections this phase applied, both measured against 0.83.0:**
+
+- **`SessionInfo` is not reachable from a synchronous port.** This section originally read discovery/search "from `SessionInfo` (`allMessagesText` makes search cheap)". `SessionManager.list()` returns a **`Promise`**, and every `SessionProvider` method is synchronous, so `firstMessage` and `allMessagesText` are re-derived from `readFileSync` + `parseSessionEntries` instead. Decision 1 is unaffected — it rested on `parseSessionEntries` being sync, which it is. Search is not "cheap": it is linear in bytes on disk (measured: 6.8 ms for a 1.69 MB / 2,601-entry session, so ~1.4 s for an unscoped grep over 200 of them). `SessionManager.list()` would not have been cheaper; it reads and parses every file too.
+- **Lineage needs a translation step.** Decision 2 claims callboard's chat lineage and pi's branch structure "agree instead of being reconciled". `SessionHeader.parentSession` is an absolute **file path**, not a session id, so `PiSessionProvider.parentSessionIdOf()` parses one out of the basename. One line, but real.
+
+**Registration moved to Phase 3.** It was listed here, but `constructProvider` case `"pi"` and `getSessionProviders()` both require `AgentProviderKind` to include `"pi"` — and widening that union is Phase 3. Registering here would not compile. Phase 2 lands unreferenced, exactly as Phase 1 did.
 
 ## Phase 3 — Backend plumbing
 
@@ -116,6 +122,7 @@ Mechanical, and the exact set the Cline landing touched:
 - `backend/src/index.ts` — mount `piRouter`.
 - `backend/src/services/agent-settings.ts` — `resolveModel` case for `"pi"`.
 - `backend/src/services/model-alias-tools.ts` — `pi` target in the alias schema.
+- `backend/src/agents/factory.ts` — `constructProvider` case `"pi"` → `new PiAdapter()`, and push `new PiSessionProvider()` into `getSessionProviders()`. **Moved here from Phase 2**: both need `"pi"` in `AgentProviderKind`, which is widened in this phase.
 - `shared/types/agentSettings.ts` — `piProviderId`, `piModel`, `piApiKey`, `piBaseUrl`, `piThinkingLevel`. Follow the Cline note: OpenRouter is a *value* of `piProviderId`, not a mode, so no `piUseOpenRouter` toggle.
 - `shared/types/providers.ts` — `UiAgentProviderKind` += `"pi"`; `shared/types/modelAlias.ts` — `HARNESS_PROVIDERS` += `"pi"`.
 - `backend/src/services/theme-variables.ts`, `theme-contrast-palette.ts`, `theme-contrast.ts` — register `--badge-provider-pi-bg` and its contrast expectation (`theme-contrast.test.ts` asserts a ratio per badge; a new badge without an entry fails the suite).

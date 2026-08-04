@@ -50,13 +50,12 @@
  * @see plans/pi-spike-findings.md
  */
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import type { AgentProvider, AgentQuery, AgentQueryRequest } from "../../ports/AgentProvider.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
 import type { DefaultPermissions } from "shared/types/index.js";
-import { DATA_DIR } from "../../../utils/paths.js";
 import { createLogger } from "../../../utils/logger.js";
 import { PiAgentQuery } from "./PiAgentQuery.js";
+import { resolvePiSessionsRoot } from "./paths.js";
 import type { CanUseToolFn } from "./permissionAdapter.js";
 import type { PiRunOptions } from "./optionsAdapter.js";
 
@@ -82,14 +81,11 @@ export interface PiAdapterOptions extends PiRunOptions {
 /**
  * Where pi session files live.
  *
- * A **function**, not a module const, so a per-test `CALLBOARD_DATA_DIR` is
- * honoured. Phase 2's `PiSessionProvider` reads the same directory; the plan
- * calls this out because the ACP suite once wrote fake sessions into a
- * developer's real chat list (#302).
+ * Moved to `./paths.ts` in Phase 2 so `PiSessionProvider` can reach it without
+ * importing this module (and with it the whole execution half). Re-exported here
+ * because that is where it was first defined and callers already import it.
  */
-export function resolvePiSessionsRoot(): string {
-  return join(DATA_DIR, "pi-sessions");
-}
+export { resolvePiSessionsRoot } from "./paths.js";
 
 /**
  * Recover the `ToolServerSpec`s from whatever `services/claude.ts` put in
