@@ -59,7 +59,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
     defineTool(
       "list_model_aliases",
       "View the global cross-harness model alias registry. Each alias resolves to a different concrete model per provider — an " +
-        "Anthropic alias/ID for claude-code, an OpenRouter slug for openrouter, a Codex slug for codex — so `model: \"<alias>\"` works " +
+        'Anthropic alias/ID for claude-code, an OpenRouter slug for openrouter, a Codex slug for codex — so `model: "<alias>"` works ' +
         "on any harness (new chats, per-chat overrides, job steps, cron/trigger actions). Returns every alias with its per-provider targets.",
       {},
       async () => ok({ modelAliases: currentAliases() }),
@@ -68,7 +68,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
     defineTool(
       "set_model_alias",
       "Create or update one cross-harness model alias. Identified by `name` (case-insensitive). Provide a target for any subset of the " +
-        "three harnesses; omitted targets are left unchanged on an existing alias, and an empty string clears that provider's target. " +
+        "harnesses; omitted targets are left unchanged on an existing alias, and an empty string clears that provider's target. " +
         "An alias must keep at least one target. Targets must be real model ids, never other alias names (resolution is one hop). " +
         "Writing the registry retires the deprecated OpenRouter-only alias map.",
       {
@@ -80,6 +80,13 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
           .describe('claude-code target — an Anthropic alias ("opus"/"sonnet"/"haiku"/"opusplan") or full model id. Pass "" to clear.'),
         openrouter: z.string().optional().describe('openrouter target — an OpenRouter model slug. Pass "" to clear.'),
         codex: z.string().optional().describe('codex target — a Codex model slug, e.g. "gpt-5.5". Pass "" to clear.'),
+        acp: z
+          .string()
+          .optional()
+          .describe(
+            'acp target — a model id as the ACP vendor names it, e.g. "opencode/gpt-5.5". One key covers every configured ACP vendor, ' +
+              'so it is only unambiguous while a single vendor is configured. Pass "" to clear.',
+          ),
       },
       async (args) => {
         const name = args.name.trim();
@@ -100,8 +107,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
           return err(`Alias "${name}" must have at least one provider target`);
         }
 
-        const description =
-          args.description !== undefined ? args.description.trim() || undefined : existing?.description;
+        const description = args.description !== undefined ? args.description.trim() || undefined : existing?.description;
         const next: ModelAlias = { name, ...(description && { description }), targets };
         return saveAliases([...others, next]);
       },

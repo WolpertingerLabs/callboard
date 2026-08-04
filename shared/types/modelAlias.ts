@@ -14,17 +14,24 @@
 import type { UiAgentProviderKind } from "./providers.js";
 
 /**
- * The three harnesses an alias can target.
+ * The harnesses an alias can target.
  *
- * Not every UI-selectable provider qualifies. `"acp"` is excluded because an
- * alias resolves to a **model id you can name up front**, and ACP has nowhere to
- * put one: the protocol (1.3.0) exposes models only as a `session/new` config
- * option, so there is no model to select before a session exists — and `"acp"`
- * is one kind covering many vendors, whose catalogs have nothing in common.
- * Widening this to the whole UI union would let the registry accept a target
- * that no code path could ever apply.
+ * `"acp"` was excluded when this was written, on the grounds that an alias
+ * resolves to a model id you can name up front and ACP had nowhere to put one.
+ * That stopped being true: the adapter now applies a named model with
+ * `session/set_config_option` once the session exists, so `planner` →
+ * `opencode/gpt-5.5` is as applicable as `planner` → `gpt-5.5` on Codex.
+ *
+ * **One key covers every ACP vendor, and that is a real limitation.** Model ids
+ * are vendor-specific — `opencode/mimo-v2.5-free` means nothing to a different
+ * ACP CLI — so a user running two ACP vendors would have one target applied to
+ * both, and the wrong one is refused by the agent with its own error rather than
+ * silently substituted. Exactly one vendor ships today, which is why this is a
+ * documented edge and not a bug; the fix when a second lands is a per-vendor key
+ * with this one as the fallback, which the normalizer's unknown-key handling
+ * already leaves room for.
  */
-export type HarnessProvider = Exclude<UiAgentProviderKind, "acp">;
+export type HarnessProvider = UiAgentProviderKind;
 
 export interface ModelAlias {
   /** Alias name, e.g. "planner". Unique case-insensitively across the registry. */
@@ -50,8 +57,8 @@ export interface ModelAliasInfo extends ModelAlias {
   resolvedNames?: Partial<Record<HarnessProvider, string>>;
 }
 
-/** The three harnesses an alias can target, in canonical order. */
-export const HARNESS_PROVIDERS: HarnessProvider[] = ["claude-code", "openrouter", "codex"];
+/** The harnesses an alias can target, in canonical order. */
+export const HARNESS_PROVIDERS: HarnessProvider[] = ["claude-code", "openrouter", "codex", "acp"];
 
 /**
  * Validate + normalize a model-alias registry. Shared by the settings route and
