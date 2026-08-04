@@ -35,7 +35,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpAdapter } from "./AcpAdapter.js";
 import { ACP_VENDOR_PRESETS } from "./vendors.js";
@@ -92,7 +92,15 @@ interface LiveRun {
   sessionId: string;
 }
 
-async function run(opts: { cwd: string; prompt: string; permissions: DefaultPermissions; resume?: string; allow?: boolean; model?: string }): Promise<LiveRun> {
+async function run(opts: {
+  cwd: string;
+  prompt: string;
+  permissions: DefaultPermissions;
+  resume?: string;
+  allow?: boolean;
+  model?: string;
+  openRouterApiKey?: string;
+}): Promise<LiveRun> {
   const adapter = new AcpAdapter("opencode");
   const prompted: string[] = [];
   const query = adapter.query({
@@ -102,7 +110,12 @@ async function run(opts: { cwd: string; prompt: string; permissions: DefaultPerm
       ...(opts.resume ? { resume: opts.resume } : {}),
       // The real preset, not a test-local one — the point is to exercise what
       // ships, including its injected permission config.
-      acp: { preset: ACP_VENDOR_PRESETS.opencode, getPermissions: () => opts.permissions, ...(opts.model ? { model: opts.model } : {}) },
+      acp: {
+        preset: ACP_VENDOR_PRESETS.opencode,
+        getPermissions: () => opts.permissions,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.openRouterApiKey ? { openRouterApiKey: opts.openRouterApiKey } : {}),
+      },
       canUseTool: async (toolName: string, input: Record<string, unknown>) => {
         prompted.push(toolName);
         return opts.allow === false ? { behavior: "deny" as const } : { behavior: "allow" as const, updatedInput: input };
@@ -118,6 +131,38 @@ async function run(opts: { cwd: string; prompt: string; permissions: DefaultPerm
   }
   const started = events.find((e) => e.type === "session_started") as { sessionId: string } | undefined;
   return { events, prompted, sessionId: started?.sessionId ?? "" };
+}
+
+/** The user's OpenRouter key from agent settings, or "" when they have none. */
+function openRouterKeyFromSettings(): string {
+  try {
+    const raw = readFileSync(join(homedir(), ".callboard", "agent-settings.json"), "utf-8");
+    return String((JSON.parse(raw) as { openRouterApiKey?: unknown }).openRouterApiKey ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+/** Model ids the agent advertises for a session, without prompting it. */
+async function catalogFor(opts: { cwd: string; openRouterApiKey?: string }): Promise<string[]> {
+  const adapter = new AcpAdapter("opencode");
+  const query = adapter.query({
+    prompt: "unused — the session is opened and closed without a turn",
+    options: {
+      cwd: opts.cwd,
+      acp: {
+        preset: ACP_VENDOR_PRESETS.opencode,
+        getPermissions: () => allowAll,
+        ...(opts.openRouterApiKey ? { openRouterApiKey: opts.openRouterApiKey } : {}),
+      },
+    },
+  });
+  try {
+    for await (const event of query) if (event.type === "session_started") break;
+    return (await query.supportedModels()).map((m) => m.value);
+  } finally {
+    await query.close();
+  }
 }
 
 const allowAll: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
@@ -257,6 +302,25 @@ describeLive("OpenCode over ACP (live)", () => {
       const catalog = getAcpModelCatalog("opencode");
       expect(catalog?.models.length).toBeGreaterThan(0);
       expect(catalog?.models.some((m) => m.value.startsWith("opencode/"))).toBe(true);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "offers OpenRouter models once handed a key, and none without one",
+    async () => {
+      // Credential pickup is provable from the catalog alone, so this costs
+      // nothing: OpenCode advertises ~340 extra `openrouter/*` entries when the
+      // key lands, and none when it does not.
+      const key = openRouterKeyFromSettings();
+      if (!key) return; // no key configured on this machine — nothing to prove
+      const without = await catalogFor({ cwd: project() });
+      const with_ = await catalogFor({ cwd: project(), openRouterApiKey: key });
+
+      expect(without.some((m) => m.startsWith("openrouter/"))).toBe(false);
+      expect(with_.filter((m) => m.startsWith("openrouter/")).length).toBeGreaterThan(50);
+      // Everything it already had is still there — the key adds, never replaces.
+      expect(without.every((m) => with_.includes(m))).toBe(true);
     },
     TEST_TIMEOUT,
   );

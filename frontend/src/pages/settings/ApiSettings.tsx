@@ -126,7 +126,22 @@ const providerReferenceLinks: Record<AgentProviderKind, ReferenceLink[]> = {
  * vendor's own permission config for sessions it launches, which is invisible
  * otherwise and materially changes how the agent behaves.
  */
-function AcpProviderSection({ vendor }: { vendor: AcpProviderInfo }) {
+function AcpProviderSection({
+  vendor,
+  useOpenRouter,
+  onUseOpenRouterChange,
+  openRouterApiKey,
+  onOpenRouterApiKeyChange,
+  accountKeySet,
+}: {
+  vendor: AcpProviderInfo;
+  useOpenRouter: boolean;
+  onUseOpenRouterChange: (v: boolean) => void;
+  openRouterApiKey: string;
+  onOpenRouterApiKeyChange: (v: string) => void;
+  /** Whether the account-wide OpenRouter key is set, so the copy can say what blank falls back to. */
+  accountKeySet: boolean;
+}) {
   const [catalog, setCatalog] = useState<AcpModelCatalogInfo | null>(null);
 
   useEffect(() => {
@@ -197,6 +212,44 @@ function AcpProviderSection({ vendor }: { vendor: AcpProviderInfo }) {
           ) : (
             <>None yet — the list is learned from chats you run, so it fills in after the first one.</>
           ),
+        )}
+      </div>
+
+      <div style={sectionStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+          <Network size={14} style={{ color: "var(--accent-text)" }} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>OpenRouter</span>
+        </div>
+        <div style={{ ...helpStyle, marginTop: 0, marginBottom: 10 }}>
+          Hand {vendor.label} an OpenRouter key so its own OpenRouter provider works. Nothing about the agent is rewritten — it simply gains the
+          <code style={{ fontSize: 11 }}> openrouter/&hellip; </code> models in the per-chat model picker alongside whatever it already had.
+        </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
+          <input type="checkbox" checked={useOpenRouter} onChange={(e) => onUseOpenRouterChange(e.target.checked)} />
+          <span style={{ fontSize: 13, color: "var(--text)" }}>Give ACP agents an OpenRouter key</span>
+        </label>
+
+        {useOpenRouter && (
+          <div style={fieldWrap}>
+            <label htmlFor="acp-or-key" style={labelStyle}>
+              OpenRouter API key
+            </label>
+            <input
+              id="acp-or-key"
+              type="password"
+              value={openRouterApiKey}
+              onChange={(e) => onOpenRouterApiKeyChange(e.target.value)}
+              placeholder={accountKeySet ? "Leave empty to use your account-wide OpenRouter key" : "sk-or-v1-…"}
+              style={inputStyle}
+              autoComplete="off"
+            />
+            <div style={helpStyle}>
+              Optional. Blank uses the key from the OpenRouter tab
+              {accountKeySet ? "" : ", which is not set yet — without one of the two, nothing is passed"}. Delivered as{" "}
+              <code style={{ fontSize: 11 }}>OPENROUTER_API_KEY</code> to the process Callboard spawns, and only to vendors recorded as reading it.
+            </div>
+          </div>
         )}
       </div>
 
@@ -613,6 +666,11 @@ export default function ApiSettings() {
   // Codex → OpenRouter endpoint routing
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
   const [codexOpenRouterApiKey, setCodexOpenRouterApiKey] = useState("");
+  // ACP → OpenRouter. Unlike the two above this rewrites nothing in the agent's
+  // config; it only hands the vendor a key, so there is no base-URL or model
+  // pair to keep alongside it.
+  const [acpUseOpenRouter, setAcpUseOpenRouter] = useState(false);
+  const [acpOpenRouterApiKey, setAcpOpenRouterApiKey] = useState("");
   const [codexOpenRouterBaseUrl, setCodexOpenRouterBaseUrl] = useState("");
   const [codexOpenRouterModel, setCodexOpenRouterModel] = useState("");
   // Collapse state for the bulky sections.
@@ -669,6 +727,8 @@ export default function ApiSettings() {
       setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
       setCodexUseOpenRouter(s.codexUseOpenRouter ?? Boolean(sys?.codexOpenRouterDetected));
       setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
+      setAcpUseOpenRouter(Boolean(s.acpUseOpenRouter));
+      setAcpOpenRouterApiKey(s.acpOpenRouterApiKey ?? "");
       setCodexOpenRouterBaseUrl(s.codexOpenRouterBaseUrl ?? "");
       setCodexOpenRouterModel(s.codexOpenRouterModel ?? "");
       // Catalog (for supportedParameters); best-effort — fields still work offline.
@@ -778,6 +838,8 @@ export default function ApiSettings() {
         codexOpenRouterApiKey,
         codexOpenRouterBaseUrl,
         codexOpenRouterModel,
+        acpUseOpenRouter,
+        acpOpenRouterApiKey,
       });
       setSettings(updated);
       // Re-sync the OR tool/param state from the saved value.
@@ -1446,7 +1508,16 @@ export default function ApiSettings() {
       {activeProvider === "acp" &&
         (() => {
           const vendor = (systemInfo?.acpProviders ?? []).find((v) => v.id === activeAcpProviderId);
-          return vendor ? <AcpProviderSection vendor={vendor} /> : null;
+          return vendor ? (
+            <AcpProviderSection
+              vendor={vendor}
+              useOpenRouter={acpUseOpenRouter}
+              onUseOpenRouterChange={setAcpUseOpenRouter}
+              openRouterApiKey={acpOpenRouterApiKey}
+              onOpenRouterApiKeyChange={setAcpOpenRouterApiKey}
+              accountKeySet={Boolean(settings?.openRouterApiKey?.trim())}
+            />
+          ) : null;
         })()}
 
       {activeProvider === "codex" && (
@@ -1663,10 +1734,7 @@ export default function ApiSettings() {
 
       {error && <div style={{ fontSize: 13, color: "var(--error)", marginBottom: 12 }}>{error}</div>}
 
-      {/* No Save on the ACP tab: it edits nothing. Callboard holds no credentials
-          for an ACP agent, so the tab reports state rather than collecting it,
-          and a button that writes the OTHER providers' fields would be a trap. */}
-      <div style={{ display: activeProvider === "acp" ? "none" : "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
         <button
           onClick={handleSave}
           disabled={saving}
@@ -1698,8 +1766,8 @@ export default function ApiSettings() {
         </div>
       ) : activeProvider === "acp" ? (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
-          Nothing on this tab is editable, because Callboard holds no credentials for an ACP agent — the CLI does. Pick the model per chat in the New Chat panel
-          or the composer, and set what it may do under Permissions.
+          An ACP agent&rsquo;s own credentials live in its CLI, so the only thing to set here is whether Callboard also hands it an OpenRouter key. Pick the
+          model per chat in the New Chat panel or the composer, and set what it may do under Permissions.
         </div>
       ) : (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>

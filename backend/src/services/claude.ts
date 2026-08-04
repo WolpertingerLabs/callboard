@@ -1671,9 +1671,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // catalogs share nothing, so "leave the vendor CLI's own choice alone" is
     // the only honest default.
     const acpModel = resolveSessionModel(typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, undefined, "acp", agentSettings);
+    // OpenRouter credential, when the user turned it on. The dedicated key wins,
+    // then the account-wide one — unlike the Codex pair, which requires its own,
+    // because nothing here rewrites the agent's provider config and there is no
+    // reason to make a user re-enter a key they have already given. The adapter
+    // still drops it unless the vendor's preset names an env var for it.
+    const acpOpenRouterApiKey = agentSettings.acpUseOpenRouter
+      ? agentSettings.acpOpenRouterApiKey?.trim() || agentSettings.openRouterApiKey?.trim() || undefined
+      : undefined;
     queryOpts.options.acp = {
       ...(acpProviderId && { providerId: acpProviderId }),
       ...(acpModel && { model: acpModel }),
+      ...(acpOpenRouterApiKey && { openRouterApiKey: acpOpenRouterApiKey }),
       // The accessor, not its value. `toolPermissionPolicy` above holds this
       // same function and calls it per tool call; handing the adapter a
       // snapshot taken here would let pass 1 auto-allow on a policy the user
@@ -1682,7 +1691,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // moment of reading it.
       getPermissions: getDefaultPermissions,
     };
-    log.info(`ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}, model=${acpModel ?? "(agent default)"}`);
+    log.info(
+      `ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}, model=${acpModel ?? "(agent default)"}, ` +
+        `openRouter=${acpOpenRouterApiKey ? "on" : "off"}`,
+    );
   }
 
   log.debug(
