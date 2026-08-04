@@ -261,6 +261,9 @@ export class AcpAgentClient {
       // uses for every other spawned agent. Do NOT invent a second env policy.
       ...sanitizeInheritedAgentEnv(process.env),
       ...preset.env,
+      // Policy-derived vendor config, read here because this is the moment the
+      // process is configured and the last moment the policy can still reach it.
+      ...preset.permissionEnv?.(this.opts.permissionContext.getPermissions?.() ?? null),
       ...this.opts.env,
     };
 

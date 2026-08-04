@@ -93,7 +93,34 @@ export interface AcpTranscriptEntry {
   event: AgentEvent;
 }
 
-export type AcpTranscriptLine = AcpTranscriptHeader | AcpTranscriptEntry;
+/**
+ * One turn's user prompt, recorded in wire order just before it is sent.
+ *
+ * The other three adapters read a transcript their engine wrote, and every one
+ * of those contains both sides of the conversation. This file is callboard's
+ * own, and it started out holding only {@link AgentEvent}s — which is exactly
+ * the agent's half. So an ACP chat rendered from disk had no user turns at all:
+ * reopening one showed the replies with nothing they were replying to, and the
+ * optimistic bubble the composer shows while a run is in flight never retired
+ * (`utils/inFlightMessages.ts` retires it when the fetched transcript contains
+ * a matching `role: "user"` message), leaving the message the user just sent
+ * pinned below the answer streaming in above it.
+ *
+ * It is a third line `type` rather than a new {@link AgentEvent} variant
+ * because it is not one: `AgentEvent` is what an *agent* emits, and every
+ * consumer of that union switches over it. The transcript's own line union is
+ * the right place for "something callboard knows that the agent did not say".
+ * Readers already filter on `type`, so a build predating this change skips the
+ * line rather than choking on it.
+ */
+export interface AcpTranscriptUserMessage {
+  type: "user_message";
+  timestamp: string;
+  /** Flattened prompt text, non-text blocks summarized (`[image image/png]`). */
+  content: string;
+}
+
+export type AcpTranscriptLine = AcpTranscriptHeader | AcpTranscriptEntry | AcpTranscriptUserMessage;
 
 /**
  * Append-only writer for one session's transcript.
@@ -149,6 +176,20 @@ export class AcpTranscriptWriter {
   /** Record one normalized event. */
   writeEvent(event: AgentEvent): void {
     this.append({ type: "event", timestamp: new Date().toISOString(), event });
+  }
+
+  /**
+   * Record the prompt for the turn about to start.
+   *
+   * Called once per turn, immediately before `session/prompt` goes out, so the
+   * line lands ahead of every event the turn produces and the file stays in
+   * conversation order. Empty prompts are skipped — a blank user bubble is
+   * noise, and `resolveAcpPrompt` synthesizes one empty text block when a
+   * prompt flattens to nothing.
+   */
+  writeUserMessage(content: string): void {
+    if (!content.trim()) return;
+    this.append({ type: "user_message", timestamp: new Date().toISOString(), content });
   }
 
   private append(line: AcpTranscriptLine): void {

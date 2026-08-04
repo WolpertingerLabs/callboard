@@ -110,6 +110,7 @@ function toNode(chat: Chat, meta: ChatMeta): ChatTreeNode {
     title: title || null,
     ...(typeof meta.chatRole === "string" && meta.chatRole && { role: meta.chatRole }),
     provider: typeof meta.provider === "string" && meta.provider ? meta.provider : "claude-code",
+    ...(typeof meta.acpProviderId === "string" && meta.acpProviderId && { acpProviderId: meta.acpProviderId }),
     status: chatStatus(chat),
     ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),
     ...(typeof meta.chatStatusEmoji === "string" && meta.chatStatusEmoji && { chatStatusEmoji: meta.chatStatusEmoji }),

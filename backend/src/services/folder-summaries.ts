@@ -209,6 +209,7 @@ export function buildFolderSummaries(sessions: DiscoveredSession[], deps: Folder
       hasSummon: !!metadata.summon,
       chatTitle: metadata.title || undefined,
       mostRecentChatProvider: metadata.provider || undefined,
+      mostRecentChatAcpProviderId: metadata.acpProviderId || undefined,
       ...(records.length > 0 && { workspaces: records }),
       ...(directory && { directoryState: directory.state, directoryDetail: directory.detail }),
       // A directory that is gone has no size to measure, and asking would just

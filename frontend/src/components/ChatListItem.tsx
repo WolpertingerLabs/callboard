@@ -71,6 +71,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let chatStatusEmoji: string | undefined;
   let summon: { message: string; urgency: string; createdAt: string } | undefined;
   let provider: string | undefined;
+  let acpProviderId: string | undefined;
   let jobRunId: string | undefined;
   let jobStepId: string | undefined;
   let hasCard = false;
@@ -87,6 +88,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     chatStatusEmoji = meta.chatStatusEmoji || undefined;
     summon = meta.summon || undefined;
     provider = meta.provider || undefined;
+    acpProviderId = meta.acpProviderId || undefined;
     jobRunId = meta.jobRunId || undefined;
     jobStepId = meta.jobStepId || undefined;
   } catch {}
@@ -211,7 +213,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
               <Zap size={10} style={{ color: "var(--chatlist-badge-triggered-text)" }} />
             </span>
           )}
-          <ProviderBadge provider={provider} compact />
+          <ProviderBadge provider={provider} acpProviderId={acpProviderId} compact />
           {summon && (
             <span
               title={`Summon: ${summon.message}`}

@@ -161,7 +161,7 @@ export default function ChatTreeIndicator({ chatId, folder, compact }: Props) {
                     background: STATUS_DOT[node.status] || "var(--text-muted)",
                   }}
                 />
-                <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} compact />
+                <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} acpProviderId={node.acpProviderId} compact />
                 {node.role && (
                   <span
                     style={{

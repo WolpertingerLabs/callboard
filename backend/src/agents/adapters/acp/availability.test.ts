@@ -7,7 +7,8 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { acpProviderAvailability, listAcpProviderAvailability, resetAcpAvailabilityCache } from "./availability.js";
-import { ACP_VENDOR_PRESETS, type AcpVendorPreset } from "./vendors.js";
+import { ACP_VENDOR_PRESETS, OPENCODE_CONFIG_CONTENT_ENV, type AcpVendorPreset } from "./vendors.js";
+import type { DefaultPermissions } from "shared/types/index.js";
 
 const preset = (command: string): AcpVendorPreset => ({ id: "probe", label: "Probe", command: [command] });
 
@@ -58,19 +59,41 @@ describe("the OpenCode preset", () => {
     expect(opencode.command).toEqual(["opencode", "acp"]);
   });
 
-  it("forces OpenCode to ask about every tool", () => {
+  const injectedConfig = (permissions: DefaultPermissions | null) => JSON.parse(opencode.permissionEnv?.(permissions)?.[OPENCODE_CONFIG_CONTENT_ENV] ?? "{}");
+
+  it("forces OpenCode to ask about every tool when any axis is gated", () => {
     // Load-bearing. OpenCode defaults most permissions to `allow` and then never
     // sends session/request_permission, which would leave callboard rendering a
     // permission UI that governs nothing.
-    const injected = JSON.parse(opencode.env?.OPENCODE_CONFIG_CONTENT ?? "{}");
-    expect(injected).toEqual({ permission: { "*": "ask" } });
+    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow" })).toMatchObject({
+      permission: { "*": "ask" },
+    });
+    // No policy at all is the same case: nothing is known to be allowed.
+    expect(injectedConfig(null)).toMatchObject({ permission: { "*": "ask" } });
+  });
+
+  it("denies `task` on the asking path, because subagent asks never reach the wire", () => {
+    // OpenCode 1.18.13 never forwards a child session's permission requests to
+    // its ACP client, so a subagent's first tool call blocks the whole turn
+    // forever. `task` is the only route to a child session.
+    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow" }).permission.task).toBe("deny");
+  });
+
+  it("stops asking entirely when every axis is `allow`", () => {
+    // The round trip decides nothing here — callboard would auto-allow every
+    // call — and making it happen is what exposes the subagent deadlock. So the
+    // gate is expressed to OpenCode directly and `task` stays usable.
+    const config = injectedConfig({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" });
+    expect(config).toEqual({ permission: { "*": "allow" } });
+    expect(config.permission.task).toBeUndefined();
   });
 
   it("uses the channel that outranks a project's own opencode.json", () => {
     // OPENCODE_CONFIG (a path) sits BELOW project config, so a project with
     // `permission: {"*": "allow"}` would silently switch callboard's gate off.
     // Verified against the real binary; see the constant's doc comment.
-    expect(opencode.env).toHaveProperty("OPENCODE_CONFIG_CONTENT");
-    expect(opencode.env).not.toHaveProperty("OPENCODE_CONFIG");
+    expect(opencode.permissionEnv?.(null)).toHaveProperty(OPENCODE_CONFIG_CONTENT_ENV);
+    expect(opencode.permissionEnv?.(null)).not.toHaveProperty("OPENCODE_CONFIG");
+    expect(opencode.env ?? {}).not.toHaveProperty("OPENCODE_CONFIG");
   });
 });

@@ -6,7 +6,7 @@
  * provider cache therefore keys on `kind + ":" + providerId`.
  */
 import { describe, expect, it, afterEach } from "vitest";
-import { ACP_VENDOR_PRESETS, listAcpVendorIds, resolveAcpVendorPreset, type AcpVendorPreset } from "./vendors.js";
+import { ACP_VENDOR_PRESETS, OPENCODE_CONFIG_CONTENT_ENV, listAcpVendorIds, resolveAcpVendorPreset, type AcpVendorPreset } from "./vendors.js";
 import { AcpAdapter } from "./AcpAdapter.js";
 import { getAgentProvider, setAgentProviderForTesting } from "../../factory.js";
 import { INTERNAL_PROVIDER_KINDS, isInternalProvider, isRoutableProvider, ROUTABLE_PROVIDER_KINDS } from "../../ports/AgentProvider.js";
@@ -44,6 +44,10 @@ describe("vendor presets", () => {
       "initializeTimeoutMs",
       "clientCapabilityMeta",
       "env",
+      // The shape of a vendor's own config file, computed from callboard's
+      // permission axes. Not runtime-discoverable, and not constant either —
+      // see openCodePermissionConfig.
+      "permissionEnv",
       // Which env var a CLI reads an OpenRouter key from is not something ACP
       // can report — nothing in the protocol describes third-party credentials.
       "openRouterApiKeyEnv",
@@ -158,8 +162,9 @@ describe("the OpenRouter credential gate", () => {
     const query = adapter.query({ prompt: "hi", options: { cwd: "/tmp", acp: { openRouterApiKey: "sk-or-v1-test" } } });
     const env = (query as unknown as { params: { env?: Record<string, string | undefined> } }).params.env;
     expect(env).toEqual({ OPENROUTER_API_KEY: "sk-or-v1-test" });
-    // The preset's own env is merged later, by the client, so both survive.
-    expect(ACP_VENDOR_PRESETS.opencode.env).toHaveProperty("OPENCODE_CONFIG_CONTENT");
+    // The preset's own permission config is merged later, by the client, so both
+    // survive.
+    expect(ACP_VENDOR_PRESETS.opencode.permissionEnv?.(null)).toHaveProperty(OPENCODE_CONFIG_CONTENT_ENV);
   });
 });
 

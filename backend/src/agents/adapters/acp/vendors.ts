@@ -12,6 +12,7 @@
  *
  * @see plans/acp-adapter.md (Phase 2 — vendor presets)
  */
+import type { DefaultPermissions } from "shared/types/index.js";
 
 /**
  * Everything callboard needs to know about an ACP-speaking CLI that it cannot
@@ -53,6 +54,20 @@ export interface AcpVendorPreset {
   /** Extra environment variables layered onto the spawned process. */
   env?: Record<string, string>;
   /**
+   * Environment that has to be computed from callboard's four permission axes,
+   * evaluated once per spawn and layered over {@link env}.
+   *
+   * Separate from `env` because it is not constant: a vendor whose own config
+   * decides which tool calls reach the wire cannot be configured until the
+   * policy those calls will be judged against is known. Still a per-vendor
+   * delta, and still nothing the agent could tell us — it is the shape of the
+   * vendor's *config file*, which is exactly what this file is for.
+   *
+   * Called with the policy in force at spawn time, or null when there is none
+   * (which every implementation must read as "ask about everything").
+   */
+  permissionEnv?: (permissions: DefaultPermissions | null) => Record<string, string>;
+  /**
    * The environment variable this CLI reads an OpenRouter API key from, when it
    * supports OpenRouter at all.
    *
@@ -85,7 +100,7 @@ export const DEFAULT_INITIAL_COMMANDS_WAIT_MS = 2000;
 export const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
 
 /**
- * The OpenCode config callboard injects into the agent it spawns.
+ * The channel callboard injects OpenCode's permission config through.
  *
  * **Why this exists at all.** ACP is explicit that requesting permission is the
  * agent's prerogative — nothing on the client side compels it — and OpenCode
@@ -93,9 +108,13 @@ export const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
  * Measured, not assumed: an unconfigured `opencode acp` overwrote a file with no
  * `session/request_permission` at all. Left alone, callboard would render a
  * four-axis permission UI that governed nothing, which is worse than not
- * offering the vendor. Setting every tool to `ask` moves the decision onto the
- * wire, where callboard's own policy answers it — auto-allowing what the user's
- * axes already allow, prompting only where they say `ask`.
+ * offering the vendor. Moving the decision onto the wire is what makes the gate
+ * real — callboard's own policy answers there, auto-allowing what the user's
+ * axes already allow and prompting only where they say `ask`.
+ *
+ * {@link openCodePermissionConfig} builds the value that goes in this variable,
+ * which depends on the axes — read it for why a blanket `ask` is not always the
+ * right answer.
  *
  * **Why the highest-precedence channel.** OpenCode reads config from several
  * sources; two can carry ours. Both were tried against a project whose own
@@ -119,7 +138,60 @@ export const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
  * env var is set only on the process callboard spawns, so the user's own
  * terminal sessions are untouched.
  */
-export const OPENCODE_FORCE_ASK_CONFIG = JSON.stringify({ permission: { "*": "ask" } });
+export const OPENCODE_CONFIG_CONTENT_ENV = "OPENCODE_CONFIG_CONTENT";
+
+/**
+ * The OpenCode config for one spawn, given the policy the turn will run under.
+ *
+ * ## The bug this exists to route around
+ *
+ * OpenCode's `task` tool runs a subagent in a **child session**, and OpenCode
+ * 1.18.13 never forwards a child session's permission requests to its ACP
+ * client. Its own log shows the ask (`asking id=… permission=read`); no
+ * `session/request_permission` is ever written to the wire. Nothing answers it,
+ * so the subagent blocks, the parent turn blocks behind it, and the chat sits
+ * on an in-progress `task` card forever with no error and no result.
+ *
+ * Reproduced against the real binary with a raw JSON-RPC client — no callboard
+ * code, no SDK — so it is upstream, and no amount of client-side handling makes
+ * a request that was never sent arrive. What callboard *can* do is stop asking
+ * OpenCode to ask.
+ *
+ * ## What this returns, and why each branch is right
+ *
+ * - **Every axis `allow` → `{"*": "allow"}`.** With all four axes open,
+ *   `resolveAcpPermission` auto-allows every tool anyway (`categorizeAcpToolName`
+ *   always lands on one of the four categories), so the round trip decides
+ *   nothing and only creates the opportunity to deadlock. Removing it is
+ *   behaviour-preserving for the gate and subagents work again — verified end to
+ *   end against 1.18.13.
+ * - **Anything else → `{"*": "ask", "task": "deny"}`.** Here the round trip is
+ *   load-bearing: at least one axis is `ask` or `deny`, so callboard must see
+ *   the calls. `task` is denied because it is the only route to a child session,
+ *   and a child session's calls are exactly the ones that never arrive. The cost
+ *   is real — no subagents in a chat with a non-`allow` axis — and it buys the
+ *   difference between "OpenCode declined to delegate" (which the model reads
+ *   and works around, verified) and a turn that hangs indefinitely.
+ *
+ * ## The one invariant this bends
+ *
+ * `permissionAdapter`'s rule 1 wants both permission passes reading the policy
+ * at *decision* time. A config baked into the process env is read at *spawn*
+ * time instead, so tightening a policy mid-turn no longer binds on the current
+ * turn's remaining tool calls. The window is one turn — the adapter spawns a
+ * fresh agent per turn — and it is the same window the Codex adapter has always
+ * had, which flattens the axes once at thread start. Loosening mid-turn is
+ * unaffected in the direction that matters: the `ask` branch still round-trips
+ * everything, so it is only the all-`allow` branch that is fixed in advance, and
+ * that branch grants nothing the live policy did not already grant when the turn
+ * began.
+ */
+export function openCodePermissionConfig(permissions: DefaultPermissions | null): string {
+  const axes: Array<keyof DefaultPermissions> = ["fileRead", "fileWrite", "codeExecution", "webAccess"];
+  const allAllowed = !!permissions && axes.every((axis) => permissions[axis] === "allow");
+  if (allAllowed) return JSON.stringify({ permission: { "*": "allow" } });
+  return JSON.stringify({ permission: { "*": "ask", task: "deny" } });
+}
 
 /**
  * Built-in presets.
@@ -147,8 +219,10 @@ export const ACP_VENDOR_PRESETS: Readonly<Record<string, AcpVendorPreset>> = Obj
     id: "opencode",
     label: "OpenCode",
     command: ["opencode", "acp"] as const,
-    // See OPENCODE_FORCE_ASK_CONFIG. Without this the gate is decorative.
-    env: { OPENCODE_CONFIG_CONTENT: OPENCODE_FORCE_ASK_CONFIG },
+    // See OPENCODE_CONFIG_CONTENT_ENV for why callboard injects a config at all,
+    // and openCodePermissionConfig for why the value depends on the axes.
+    // Without this the gate is decorative.
+    permissionEnv: (permissions) => ({ [OPENCODE_CONFIG_CONTENT_ENV]: openCodePermissionConfig(permissions) }),
     // OpenCode's own documented channel is `opencode auth login` writing
     // ~/.local/share/opencode/auth.json, which callboard must not touch — it is
     // the user's credential store, shared with their terminal sessions. The
