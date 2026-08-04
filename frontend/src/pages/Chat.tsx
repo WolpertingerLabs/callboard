@@ -514,6 +514,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, newChatAcpProviderId, chat?.metadata]);
 
+  // Vendor id → display label, for ACP chats. Chat metadata stores the id
+  // ("opencode"); only the server knows it is spelled "OpenCode". Title-casing
+  // the id gets that wrong, and the vendor's own spelling is the one the user
+  // picked in the panel. Declared here rather than beside the other
+  // /system-info state below because `providerDisplayName` reads it during
+  // render, and a `const` declared further down would be in the TDZ.
+  const [acpLabels, setAcpLabels] = useState<Record<string, string>>({});
+
   // Forking is meaningless for an ACP chat, so the source is null there rather
   // than a stand-in value. ACP session state lives inside the vendor's process
   // and the protocol gives a client no way to hand an agent a conversation it
@@ -532,7 +540,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       : chatProvider === "codex"
         ? "Codex"
         : chatProvider === "acp"
-          ? acpProviderId.charAt(0).toUpperCase() + acpProviderId.slice(1) || "The agent"
+          ? // The vendor's own label when the server has told us one; otherwise a
+            // neutral noun rather than a guessed capitalization of the id.
+            (acpLabels[acpProviderId] ?? "The agent")
           : "Claude";
 
   // Fork the conversation at a message: the backend copies session history
@@ -622,6 +632,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (cancelled) return;
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+        setAcpLabels(Object.fromEntries((info.acpProviders ?? []).map((v) => [v.id, v.label])));
       })
       .catch(() => {});
     return () => {

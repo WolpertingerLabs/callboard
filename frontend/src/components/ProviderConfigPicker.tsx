@@ -303,12 +303,16 @@ export default function ProviderConfigPicker({
       {showProviderToggle && (
         <div style={{ marginBottom: inline ? 8 : 12 }}>
           <div style={{ fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}>Provider</div>
-          <div style={{ display: "flex", gap: 6 }}>
+          {/* Wraps: the row held three buttons when it was written, and each ACP
+              vendor adds another. `flex: 1` alone cannot shrink a button below
+              its label (min-width defaults to auto), so a fifth entry pushed
+              the last one outside the sidebar rather than onto a second line. */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button
               type="button"
               onClick={() => onProviderChange("claude-code")}
               style={{
-                flex: 1,
+                flex: "1 1 84px",
                 padding: inline ? "6px 10px" : "8px 12px",
                 fontSize: inline ? 12 : 13,
                 fontWeight: 500,
@@ -330,7 +334,7 @@ export default function ProviderConfigPicker({
                 openRouterConfigured === false ? "Configure your OpenRouter API key in Settings → API to enable this provider" : "Use OpenRouter for this chat"
               }
               style={{
-                flex: 1,
+                flex: "1 1 84px",
                 padding: inline ? "6px 10px" : "8px 12px",
                 fontSize: inline ? 12 : 13,
                 fontWeight: 500,
@@ -351,7 +355,7 @@ export default function ProviderConfigPicker({
               disabled={codexConfigured === false}
               title={codexConfigured === false ? "Configure Codex in Settings → API to enable this provider" : "Use OpenAI Codex for this chat"}
               style={{
-                flex: 1,
+                flex: "1 1 84px",
                 padding: inline ? "6px 10px" : "8px 12px",
                 fontSize: inline ? 12 : 13,
                 fontWeight: 500,
@@ -382,7 +386,7 @@ export default function ProviderConfigPicker({
                   disabled={!vendor.available}
                   title={vendor.available ? `Use ${vendor.label} for this chat` : `Install the \`${vendor.command}\` CLI to enable this provider`}
                   style={{
-                    flex: 1,
+                    flex: "1 1 84px",
                     padding: inline ? "6px 10px" : "8px 12px",
                     fontSize: inline ? 12 : 13,
                     fontWeight: 500,
