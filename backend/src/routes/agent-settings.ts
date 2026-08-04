@@ -99,6 +99,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     acpOpenRouterApiKey,
     codexOpenRouterBaseUrl,
     codexOpenRouterModel,
+    clineProviderId,
+    clineModel,
+    clineApiKey,
+    clineBaseUrl,
+    clineMaxIterations,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -188,7 +193,12 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     acpUseOpenRouter !== undefined ||
     acpOpenRouterApiKey !== undefined ||
     codexOpenRouterBaseUrl !== undefined ||
-    codexOpenRouterModel !== undefined;
+    codexOpenRouterModel !== undefined ||
+    clineProviderId !== undefined ||
+    clineModel !== undefined ||
+    clineApiKey !== undefined ||
+    clineBaseUrl !== undefined ||
+    clineMaxIterations !== undefined;
 
   // Validate the alias map up front so bad input 400s before anything is written.
   let normalizedAliases: Record<string, string> | undefined;
@@ -386,6 +396,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(acpOpenRouterApiKey !== undefined && { acpOpenRouterApiKey: normalize(acpOpenRouterApiKey) }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
       ...(codexOpenRouterModel !== undefined && { codexOpenRouterModel: normalize(codexOpenRouterModel) }),
+      ...(clineProviderId !== undefined && { clineProviderId: normalize(clineProviderId) }),
+      ...(clineModel !== undefined && { clineModel: normalize(clineModel) }),
+      ...(clineApiKey !== undefined && { clineApiKey: normalize(clineApiKey) }),
+      ...(clineBaseUrl !== undefined && { clineBaseUrl: normalize(clineBaseUrl) }),
+      ...(clineMaxIterations !== undefined && { clineMaxIterations: normalizeCount(clineMaxIterations) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });

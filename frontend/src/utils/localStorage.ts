@@ -45,6 +45,10 @@ interface LocalStorageData {
   defaultAcpProviderId?: string;
   /** Last-selected ACP model, as the vendor names it. */
   defaultAcpModel?: string;
+  /** User's last-selected Cline model. Kept separate from the other providers'
+   * model values so switching the toggle restores each one's prior selection.
+   * Empty/absent means "use the global default from Settings → API". */
+  defaultClineModel?: string;
   /** User's last-selected OpenRouter reasoning effort in the New Chat panel.
    * Stored even when the provider is Claude Code so toggling back to OR
    * restores the prior selection. */
@@ -174,6 +178,26 @@ export function getDefaultAcpModel(): string {
 export function saveDefaultAcpModel(model: string): void {
   const data = getStorageData();
   data.defaultAcpModel = model;
+  setStorageData(data);
+}
+
+/**
+ * Last-selected Cline model.
+ *
+ * One value, not one per Cline provider. Changing the provider in
+ * Settings → API is a rare, deliberate act, and the suggestion list re-scopes
+ * itself the moment it changes — so a carried-over model from the previous
+ * provider is visible and correctable rather than silent. Same trade the ACP
+ * pair makes across vendors.
+ */
+export function getDefaultClineModel(): string {
+  const data = getStorageData();
+  return typeof data.defaultClineModel === "string" ? data.defaultClineModel : "";
+}
+
+export function saveDefaultClineModel(model: string): void {
+  const data = getStorageData();
+  data.defaultClineModel = model;
   setStorageData(data);
 }
 

@@ -28,6 +28,8 @@ import {
   saveDefaultAcpProviderId,
   getDefaultAcpModel,
   saveDefaultAcpModel,
+  getDefaultClineModel,
+  saveDefaultClineModel,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -116,6 +118,14 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // own configured model alone; there is no callboard-side global ACP default,
   // because one kind covers many vendors whose catalogs share nothing.
   const [acpModel, setAcpModel] = useState<string>(getDefaultAcpModel);
+  // Per-chat Cline model, within the provider configured in Settings → API.
+  // Empty = that global default (and when that is blank too, the adapter asks
+  // the SDK for the provider's own default — an empty model id is rejected by
+  // Cline's config schema).
+  const [clineModel, setClineModel] = useState<string>(getDefaultClineModel);
+  // Which Cline provider scopes the model catalog. Surfaced by /system-info so
+  // selecting `openrouter` there offers OpenRouter's models here.
+  const [clineProviderId, setClineProviderId] = useState<string>("");
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -169,7 +179,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
   // Each provider carries its own model selection; forward the matching one.
   // ACP's is the vendor's own model id, applied after the session attaches.
-  const modelForProvider = (p: AgentProviderKind): string => (p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? acpModel : claudeModel);
+  const modelForProvider = (p: AgentProviderKind): string =>
+    p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? acpModel : p === "cline" ? clineModel : claudeModel;
 
   const confirmRemoveRecentDir = () => {
     removeRecentDirectory(confirmModal.path);
@@ -196,6 +207,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
     saveDefaultAcpModel(acpModel);
+    saveDefaultClineModel(clineModel);
     // Runtime guard: only downgrade to claude-code when we KNOW the chosen
     // provider is not configured. While still loading (null), trust the user's
     // choice — sendMessage rejects loudly if creds are missing, so we get a
@@ -239,6 +251,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
     saveDefaultAcpModel(acpModel);
+    saveDefaultClineModel(clineModel);
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -368,6 +381,11 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         }
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+        // Scopes the Cline model catalog. No availability check to match the
+        // ACP block below: Cline is embedded and falls back to the backend's
+        // own environment credentials, so there is no unavailable state to
+        // fall back FROM.
+        setClineProviderId(info.clineProviderId ?? "");
 
         // The stored ACP vendor is validated here rather than in localStorage,
         // because this is the only place that knows the live list — vendors are
@@ -474,6 +492,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
               onAcpModelChange={setAcpModel}
+              clineModel={clineModel}
+              onClineModelChange={setClineModel}
+              clineProviderId={clineProviderId}
               effort={effort}
               onEffortChange={setEffort}
               model={model}
@@ -705,6 +726,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
               onAcpModelChange={setAcpModel}
+              clineModel={clineModel}
+              onClineModelChange={setClineModel}
+              clineProviderId={clineProviderId}
               effort={effort}
               onEffortChange={setEffort}
               model={model}

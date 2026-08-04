@@ -625,6 +625,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // composer's model picker to OpenRouter's catalog. Sourced from /system-info.
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  // Which Cline provider scopes the composer's model catalog. Unlike the ACP
+  // vendor below this is NOT per-chat: Cline's provider is a global setting, so
+  // there is nothing pinned in chat metadata to read it from.
+  const [clineProviderId, setClineProviderId] = useState("");
   useEffect(() => {
     let cancelled = false;
     getSystemInfo()
@@ -632,6 +636,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (cancelled) return;
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+        setClineProviderId(info.clineProviderId ?? "");
         setAcpLabels(Object.fromEntries((info.acpProviders ?? []).map((v) => [v.id, v.label])));
       })
       .catch(() => {});
@@ -3413,6 +3418,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 onCodexModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 acpModel={pendingModel ?? currentModel}
                 onAcpModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                clineModel={pendingModel ?? currentModel}
+                onClineModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                clineProviderId={clineProviderId}
                 // The chat's pinned vendor, so the selector offers that
                 // catalog rather than another vendor's.
                 acpProviderId={acpProviderId}
