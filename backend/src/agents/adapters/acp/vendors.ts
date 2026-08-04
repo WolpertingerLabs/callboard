@@ -52,6 +52,23 @@ export interface AcpVendorPreset {
   clientCapabilityMeta?: Record<string, unknown>;
   /** Extra environment variables layered onto the spawned process. */
   env?: Record<string, string>;
+  /**
+   * The environment variable this CLI reads an OpenRouter API key from, when it
+   * supports OpenRouter at all.
+   *
+   * Declaring it is what *opts a vendor in* to receiving the user's key: an
+   * agent with no entry here is never handed one, however the setting is
+   * configured. That matters because an ACP vendor is an arbitrary third-party
+   * binary — the same reasoning that keeps `options.env` from being forwarded
+   * wholesale (see AcpAdapter) — so the credential goes only where a human has
+   * recorded that it belongs.
+   *
+   * Qualifies for a preset because the agent cannot tell us: nothing in ACP
+   * describes how a CLI takes third-party credentials. Verified for OpenCode by
+   * opening a session with and without the variable set — the model list it
+   * advertises grows from 39 entries to 376.
+   */
+  openRouterApiKeyEnv?: string;
 }
 
 /** Default ceiling on the post-`session/new` wait for `available_commands_update`. */
@@ -132,6 +149,12 @@ export const ACP_VENDOR_PRESETS: Readonly<Record<string, AcpVendorPreset>> = Obj
     command: ["opencode", "acp"] as const,
     // See OPENCODE_FORCE_ASK_CONFIG. Without this the gate is decorative.
     env: { OPENCODE_CONFIG_CONTENT: OPENCODE_FORCE_ASK_CONFIG },
+    // OpenCode's own documented channel is `opencode auth login` writing
+    // ~/.local/share/opencode/auth.json, which callboard must not touch — it is
+    // the user's credential store, shared with their terminal sessions. The
+    // environment variable reaches the same provider without writing anything,
+    // and is scoped to the process callboard spawns.
+    openRouterApiKeyEnv: "OPENROUTER_API_KEY",
   } satisfies AcpVendorPreset),
 });
 

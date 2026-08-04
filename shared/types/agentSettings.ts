@@ -310,6 +310,40 @@ export interface AgentSettings {
   codexOpenRouterBaseUrl?: string;
 
   /**
+   * When true, hand ACP agents an OpenRouter credential so they can route
+   * through it.
+   *
+   * Unlike the Claude Code and Codex toggles, this injects nothing into the
+   * agent's configuration and rewrites no endpoint. An ACP agent is a
+   * third-party CLI that already knows how to talk to OpenRouter; all callboard
+   * supplies is the key, through the environment variable the vendor's preset
+   * declares (`AcpVendorPreset.openRouterApiKeyEnv`). A vendor that declares
+   * none never receives a key, which is the guard that keeps this from spraying
+   * a credential at an arbitrary binary.
+   *
+   * The agent decides what to do with it. OpenCode, given
+   * `OPENROUTER_API_KEY`, adds ~340 `openrouter/*` entries to the model list it
+   * advertises — so selecting one is the ordinary per-chat model choice, not a
+   * separate mode.
+   *
+   * One flag covers every ACP vendor, the same trade the alias registry makes:
+   * exactly one ships today, and the per-vendor `openRouterApiKeyEnv` gate means
+   * an unrelated vendor is skipped rather than handed the key.
+   */
+  acpUseOpenRouter?: boolean;
+
+  /**
+   * Dedicated OpenRouter API key for ACP agents.
+   *
+   * Blank falls back to {@link openRouterApiKey}, the account-wide key — which
+   * is what most users want and what the Codex pair deliberately does NOT do
+   * (its separate key exists because its routing rewrites Codex's own provider
+   * config, and mixing the two was lossy). Nothing is rewritten here, so there
+   * is no reason to make a user re-enter a key they have already given.
+   */
+  acpOpenRouterApiKey?: string;
+
+  /**
    * Default model for new Codex chats while {@link codexUseOpenRouter} is on.
    * Separate from {@link codexModel} for the same reason the Claude Code pair is
    * split: native Codex wants a bare CLI slug ("gpt-5.5") and the routed harness

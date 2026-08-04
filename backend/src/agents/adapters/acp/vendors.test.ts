@@ -44,6 +44,9 @@ describe("vendor presets", () => {
       "initializeTimeoutMs",
       "clientCapabilityMeta",
       "env",
+      // Which env var a CLI reads an OpenRouter key from is not something ACP
+      // can report — nothing in the protocol describes third-party credentials.
+      "openRouterApiKeyEnv",
     ]);
     for (const preset of Object.values(ACP_VENDOR_PRESETS)) {
       for (const field of Object.keys(preset)) expect(allowed).toContain(field);
@@ -117,6 +120,46 @@ describe("the provider seam", () => {
 
     setAgentProviderForTesting(null, "acp", "opencode");
     expect(getAgentProvider("acp", "opencode")).not.toBe(fake);
+  });
+});
+
+describe("the OpenRouter credential gate", () => {
+  it("only reaches a vendor that records where it goes", () => {
+    // Declaring `openRouterApiKeyEnv` is the opt-in. A vendor without one is an
+    // arbitrary third-party binary as far as callboard knows, and there is no
+    // conventional variable to guess at.
+    expect(ACP_VENDOR_PRESETS.opencode.openRouterApiKeyEnv).toBe("OPENROUTER_API_KEY");
+    const unaware: AcpVendorPreset = { id: "unaware", label: "Unaware", command: ["true"] };
+    expect(unaware.openRouterApiKeyEnv).toBeUndefined();
+  });
+
+  it("passes the key through the declared variable, and drops it otherwise", () => {
+    const seen: Array<Record<string, string | undefined> | undefined> = [];
+    const capture = (preset: AcpVendorPreset) => {
+      const adapter = new AcpAdapter(preset.id);
+      const query = adapter.query({ prompt: "hi", options: { cwd: "/tmp", acp: { preset, openRouterApiKey: "sk-or-v1-test" } } });
+      // The query stores its params without spawning; read back what env it built.
+      seen.push((query as unknown as { params: { env?: Record<string, string | undefined> } }).params.env);
+      return query;
+    };
+
+    capture({ id: "declares", label: "Declares", command: ["true"], openRouterApiKeyEnv: "OPENROUTER_API_KEY" });
+    capture({ id: "silent", label: "Silent", command: ["true"] });
+
+    expect(seen[0]).toEqual({ OPENROUTER_API_KEY: "sk-or-v1-test" });
+    // Not "an env with an empty value" — no env at all, so nothing is exported.
+    expect(seen[1]).toBeUndefined();
+  });
+
+  it("leaves the preset's own env in place alongside the credential", () => {
+    // OpenCode's preset already carries the permission override; the key must be
+    // layered onto it rather than replacing it.
+    const adapter = new AcpAdapter("opencode");
+    const query = adapter.query({ prompt: "hi", options: { cwd: "/tmp", acp: { openRouterApiKey: "sk-or-v1-test" } } });
+    const env = (query as unknown as { params: { env?: Record<string, string | undefined> } }).params.env;
+    expect(env).toEqual({ OPENROUTER_API_KEY: "sk-or-v1-test" });
+    // The preset's own env is merged later, by the client, so both survive.
+    expect(ACP_VENDOR_PRESETS.opencode.env).toHaveProperty("OPENCODE_CONFIG_CONTENT");
   });
 });
 

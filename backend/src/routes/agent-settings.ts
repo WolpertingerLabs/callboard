@@ -95,6 +95,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexSandboxMode,
     codexUseOpenRouter,
     codexOpenRouterApiKey,
+    acpUseOpenRouter,
+    acpOpenRouterApiKey,
     codexOpenRouterBaseUrl,
     codexOpenRouterModel,
     maxCallbackChainDepth,
@@ -183,6 +185,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexHome !== undefined ||
     codexUseOpenRouter !== undefined ||
     codexOpenRouterApiKey !== undefined ||
+    acpUseOpenRouter !== undefined ||
+    acpOpenRouterApiKey !== undefined ||
     codexOpenRouterBaseUrl !== undefined ||
     codexOpenRouterModel !== undefined;
 
@@ -378,6 +382,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
       ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
+      ...(acpUseOpenRouter !== undefined && { acpUseOpenRouter: normalizeBool(acpUseOpenRouter) }),
+      ...(acpOpenRouterApiKey !== undefined && { acpOpenRouterApiKey: normalize(acpOpenRouterApiKey) }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
       ...(codexOpenRouterModel !== undefined && { codexOpenRouterModel: normalize(codexOpenRouterModel) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),

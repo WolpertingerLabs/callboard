@@ -81,6 +81,16 @@ export interface AcpRunOptions {
    * configured default stands.
    */
   model?: string;
+  /**
+   * An OpenRouter API key to hand the vendor, when the user has turned that on.
+   *
+   * Delivered only if the vendor's preset declares `openRouterApiKeyEnv` — the
+   * key never reaches an agent that has not been recorded as taking one. That
+   * gate is the whole safety story: an ACP vendor is an arbitrary third-party
+   * binary, and this module already refuses to forward `options.env` wholesale
+   * for exactly that reason.
+   */
+  openRouterApiKey?: string;
   /** Extra environment for the spawned agent. */
   env?: Record<string, string | undefined>;
 }
@@ -114,9 +124,22 @@ export class AcpAdapter implements AgentProvider {
     const canUseTool = typeof options.canUseTool === "function" ? (options.canUseTool as CanUseToolFn) : undefined;
     const toolServerHandles = collectAcpToolServers(options.mcpServers);
 
+    // The OpenRouter key, if the user enabled it AND this vendor declares where
+    // it goes. A key with nowhere named is dropped rather than guessed at: there
+    // is no conventional variable to fall back on, and inventing one would put a
+    // credential in a third-party process on a hunch.
+    const openRouterKey = typeof acp.openRouterApiKey === "string" ? acp.openRouterApiKey.trim() : "";
+    const credentialEnv: Record<string, string> = {};
+    if (openRouterKey) {
+      if (preset.openRouterApiKeyEnv) credentialEnv[preset.openRouterApiKeyEnv] = openRouterKey;
+      else log.warn(`ACP provider "${preset.id}" has no openRouterApiKeyEnv, so the OpenRouter key was not passed to it`);
+    }
+    const env = Object.keys(credentialEnv).length > 0 || acp.env ? { ...acp.env, ...credentialEnv } : undefined;
+
     log.debug(
       `query() — provider=${preset.id}, cwd=${cwd}, resume=${resumeSessionId ?? "none"}, model=${model ?? "(agent default)"}, ` +
-        `toolServers=${toolServerHandles.length}, canUseTool=${canUseTool ? "yes" : "no"}`,
+        `toolServers=${toolServerHandles.length}, canUseTool=${canUseTool ? "yes" : "no"}, ` +
+        `openRouterKey=${openRouterKey ? (preset.openRouterApiKeyEnv ? `via ${preset.openRouterApiKeyEnv}` : "declined") : "no"}`,
     );
 
     return new AcpAgentQuery({
@@ -128,7 +151,7 @@ export class AcpAdapter implements AgentProvider {
       ...(acp.getPermissions && { getPermissions: acp.getPermissions }),
       ...(canUseTool && { canUseTool }),
       ...(externalSignal && { externalSignal }),
-      ...(acp.env && { env: acp.env }),
+      ...(env && { env }),
       toolServerHandles,
     });
   }
