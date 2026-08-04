@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plus, Trash2, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
-import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog } from "../../api";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Plus, Trash2, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
+import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog, getAcpModels } from "../../api";
 import type { AgentSettings, OpenRouterModelInfo, OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { OR_SERVER_TOOLS, OR_PLUGINS, OR_SAMPLING_PARAMS, validateServerTools, validateParamProfile } from "shared/types/index.js";
-import type { SystemInfo } from "../../api";
+import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import ParamFieldForm from "../../components/ParamFieldForm";
-import { getDefaultProvider } from "../../utils/localStorage";
+import { getDefaultProvider, getDefaultAcpProviderId } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
 
 const sectionStyle: React.CSSProperties = {
@@ -112,6 +112,98 @@ const providerReferenceLinks: Record<AgentProviderKind, ReferenceLink[]> = {
     { label: "OpenCode docs", href: "https://opencode.ai/docs/", note: "Model, auth and permission configuration for OpenCode" },
   ],
 };
+
+/**
+ * Read-only status for one ACP vendor.
+ *
+ * Every other tab on this page edits credentials callboard holds. This one has
+ * none to edit, and that is the point rather than an omission: ACP's model is
+ * that credentials belong to the vendor CLI — `initialize` advertises
+ * `authMethods` and never a place to hand over a key — so the useful thing to
+ * show is what callboard *does* know, and what it does to the agent it spawns.
+ *
+ * The permission line is the part worth surfacing. Callboard overrides the
+ * vendor's own permission config for sessions it launches, which is invisible
+ * otherwise and materially changes how the agent behaves.
+ */
+function AcpProviderSection({ vendor }: { vendor: AcpProviderInfo }) {
+  const [catalog, setCatalog] = useState<AcpModelCatalogInfo | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAcpModels(vendor.id)
+      .then((c) => {
+        if (!cancelled) setCatalog(c);
+      })
+      .catch(() => {
+        // A vendor with no catalog is the normal cold-start state, not an error.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vendor.id]);
+
+  const row = (label: string, body: React.ReactNode) => (
+    <div style={{ ...rowStyle, alignItems: "flex-start", gap: 16 }}>
+      <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{label}</span>
+      <span style={{ color: "var(--text)", textAlign: "right", lineHeight: 1.5 }}>{body}</span>
+    </div>
+  );
+
+  return (
+    <>
+      <div style={sectionStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+          <Plug size={14} style={{ color: "var(--accent-text)" }} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{vendor.label}</span>
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Agent Client Protocol</span>
+        </div>
+
+        {row(
+          "CLI",
+          vendor.available ? (
+            <>
+              <code style={{ fontSize: 11 }}>{vendor.command}</code> found on PATH
+            </>
+          ) : (
+            <>
+              <code style={{ fontSize: 11 }}>{vendor.command}</code> not found — install it to enable this provider
+            </>
+          ),
+        )}
+
+        {row(
+          "Credentials",
+          <>
+            Held by the CLI, never by Callboard. ACP has no way to hand an agent a key, so &ldquo;found on PATH&rdquo; does not mean &ldquo;signed in&rdquo; —
+            an unauthenticated agent fails at send time with its own message.
+          </>,
+        )}
+
+        {row(
+          "Permissions",
+          <>
+            Callboard runs this agent with every tool set to <code style={{ fontSize: 11 }}>ask</code>, so its own four axes decide. Without that override the
+            vendor&rsquo;s defaults apply and the permission settings here would govern nothing.
+          </>,
+        )}
+
+        {row(
+          "Models",
+          catalog && catalog.models.length > 0 ? (
+            <>
+              {catalog.models.length} known{catalog.currentValue ? <> · last ran {<code style={{ fontSize: 11 }}>{catalog.currentValue}</code>}</> : null}
+            </>
+          ) : (
+            <>None yet — the list is learned from chats you run, so it fills in after the first one.</>
+          ),
+        )}
+      </div>
+
+      <ReferenceLinksSection provider="acp" />
+    </>
+  );
+}
 
 function ReferenceLinksSection({ provider }: { provider: AgentProviderKind }) {
   const links = providerReferenceLinks[provider];
@@ -457,6 +549,10 @@ export default function ApiSettings() {
   // Seeded from the user's New Chat default so the page opens on the provider
   // they actually use; purely a view selector, not persisted back.
   const [activeProvider, setActiveProvider] = useState<AgentProviderKind>(() => getDefaultProvider());
+  // Which ACP vendor the "acp" tab is showing. `activeProvider` is a KIND, and
+  // `acp` is one kind covering many CLIs, so the vendor needs its own slot —
+  // the same split the chat metadata and the New Chat picker already make.
+  const [activeAcpProviderId, setActiveAcpProviderId] = useState("");
 
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
@@ -529,6 +625,16 @@ export default function ApiSettings() {
       const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo().catch(() => null)]);
       setSettings(s);
       setSystemInfo(sys);
+      // Seed the ACP tab's vendor. The kind alone cannot say which one, so a
+      // user whose New Chat default is an ACP vendor would otherwise land on a
+      // selected tab with an empty body. Prefer their saved pick, then anything
+      // installed, then whatever is configured.
+      const vendors = sys?.acpProviders ?? [];
+      if (vendors.length > 0) {
+        const saved = getDefaultAcpProviderId();
+        const pick = vendors.find((v) => v.id === saved) ?? vendors.find((v) => v.available) ?? vendors[0];
+        setActiveAcpProviderId((current) => current || pick.id);
+      }
       setApiBaseUrl(s.apiBaseUrl ?? "");
       setApiKey(s.apiKey ?? "");
       setAuthToken(s.authToken ?? "");
@@ -719,6 +825,9 @@ export default function ApiSettings() {
       <div
         style={{
           display: "flex",
+          // Wraps: the row was built for three fixed tabs, and each configured
+          // ACP vendor adds another.
+          flexWrap: "wrap",
           borderRadius: 8,
           border: "1px solid var(--border)",
           overflow: "hidden",
@@ -726,34 +835,51 @@ export default function ApiSettings() {
         }}
       >
         {[
-          { kind: "claude-code" as AgentProviderKind, label: "Claude Code", icon: <Bot size={14} /> },
-          { kind: "openrouter" as AgentProviderKind, label: "OpenRouter", icon: <Network size={14} /> },
-          { kind: "codex" as AgentProviderKind, label: "Codex", icon: <Terminal size={14} /> },
-        ].map(({ kind, label, icon }, idx, arr) => (
-          <button
-            key={kind}
-            onClick={() => setActiveProvider(kind)}
-            style={{
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-              padding: "10px 12px",
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: "pointer",
-              border: "none",
-              borderRight: idx < arr.length - 1 ? "1px solid var(--border)" : "none",
-              background: activeProvider === kind ? "var(--accent)" : "var(--surface)",
-              color: activeProvider === kind ? "var(--text-on-accent)" : "var(--text)",
-              transition: "background 0.15s, color 0.15s",
-            }}
-          >
-            {icon}
-            {label}
-          </button>
-        ))}
+          { kind: "claude-code" as AgentProviderKind, label: "Claude Code", icon: <Bot size={14} />, acpId: "" },
+          { kind: "openrouter" as AgentProviderKind, label: "OpenRouter", icon: <Network size={14} />, acpId: "" },
+          { kind: "codex" as AgentProviderKind, label: "Codex", icon: <Terminal size={14} />, acpId: "" },
+          // One tab per configured ACP vendor rather than a single "ACP" tab:
+          // a user picks OpenCode here the same way they pick it in New Chat,
+          // and the page has nothing to say about the protocol in the abstract.
+          ...(systemInfo?.acpProviders ?? []).map((v) => ({
+            kind: "acp" as AgentProviderKind,
+            label: v.label,
+            icon: <Plug size={14} />,
+            acpId: v.id,
+          })),
+        ].map(({ kind, label, icon, acpId }, idx, arr) => {
+          // Two tabs share the `acp` kind, so the vendor has to match as well or
+          // every ACP tab would highlight at once.
+          const isActiveTab = activeProvider === kind && (!acpId || activeAcpProviderId === acpId);
+          return (
+            <button
+              key={acpId || kind}
+              onClick={() => {
+                setActiveProvider(kind);
+                if (acpId) setActiveAcpProviderId(acpId);
+              }}
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                padding: "10px 12px",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                border: "none",
+                borderRight: idx < arr.length - 1 ? "1px solid var(--border)" : "none",
+                background: isActiveTab ? "var(--accent)" : "var(--surface)",
+                color: isActiveTab ? "var(--text-on-accent)" : "var(--text)",
+                transition: "background 0.15s, color 0.15s",
+              }}
+            >
+              {icon}
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {activeProvider === "claude-code" && (
@@ -1317,6 +1443,12 @@ export default function ApiSettings() {
         </>
       )}
 
+      {activeProvider === "acp" &&
+        (() => {
+          const vendor = (systemInfo?.acpProviders ?? []).find((v) => v.id === activeAcpProviderId);
+          return vendor ? <AcpProviderSection vendor={vendor} /> : null;
+        })()}
+
       {activeProvider === "codex" && (
         <>
           <ReferenceLinksSection provider="codex" />
@@ -1531,7 +1663,10 @@ export default function ApiSettings() {
 
       {error && <div style={{ fontSize: 13, color: "var(--error)", marginBottom: 12 }}>{error}</div>}
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
+      {/* No Save on the ACP tab: it edits nothing. Callboard holds no credentials
+          for an ACP agent, so the tab reports state rather than collecting it,
+          and a button that writes the OTHER providers' fields would be a trap. */}
+      <div style={{ display: activeProvider === "acp" ? "none" : "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
         <button
           onClick={handleSave}
           disabled={saving}
@@ -1560,6 +1695,11 @@ export default function ApiSettings() {
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
           Overrides are applied as environment variables when Callboard spawns an OpenRouter session. They take effect for new sessions; resume an existing chat
           to pick up the new settings. Leave a field empty to fall back to the ambient environment.
+        </div>
+      ) : activeProvider === "acp" ? (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
+          Nothing on this tab is editable, because Callboard holds no credentials for an ACP agent — the CLI does. Pick the model per chat in the New Chat panel
+          or the composer, and set what it may do under Permissions.
         </div>
       ) : (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>

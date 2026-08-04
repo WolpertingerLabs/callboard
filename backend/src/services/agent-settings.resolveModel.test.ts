@@ -25,6 +25,21 @@ describe("resolveModelAlias", () => {
     expect(resolveModelAlias("planner", "codex", s)).toBe("gpt-5.5");
   });
 
+  it("resolves an acp target, so an alias works on an ACP chat too", () => {
+    // ACP was excluded from HarnessProvider until the adapter could apply a
+    // named model (session/set_config_option). It can, so an alias points at a
+    // vendor's model id like any other harness. One key covers every ACP vendor
+    // — see HarnessProvider's doc-comment for why that is a documented edge.
+    const s = withAliases([{ name: "planner", targets: { "claude-code": "opus", acp: "opencode/gpt-5.5" } }]);
+    expect(resolveModelAlias("planner", "acp", s)).toBe("opencode/gpt-5.5");
+    expect(resolveSessionModel("planner", undefined, "acp", s)).toBe("opencode/gpt-5.5");
+    // An alias with no acp target leaves the vendor CLI's own choice standing,
+    // rather than borrowing another harness's model id.
+    expect(resolveModelAlias("worker", "acp", withAliases([{ name: "worker", targets: { codex: "gpt-5.5" } }]))).toBeUndefined();
+    // And a literal model id still passes straight through.
+    expect(resolveModelAlias("opencode/mimo-v2.5-free", "acp", s)).toBe("opencode/mimo-v2.5-free");
+  });
+
   it("returns undefined when the alias has no target for that provider", () => {
     const s = withAliases([{ name: "worker", targets: { openrouter: "moonshotai/kimi-k2" } }]);
     expect(resolveModelAlias("worker", "openrouter", s)).toBe("moonshotai/kimi-k2");

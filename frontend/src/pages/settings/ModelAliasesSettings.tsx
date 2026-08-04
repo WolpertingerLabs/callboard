@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { Route, Plus, Trash2, Save, Check } from "lucide-react";
-import { getAgentSettings, updateAgentSettings } from "../../api";
+import { getAgentSettings, updateAgentSettings, getSystemInfo, type AcpProviderInfo } from "../../api";
 import type { ModelAlias } from "shared/types/index.js";
 import { validateModelAliases } from "shared/types/index.js";
 import ClaudeModelSelector from "../../components/ClaudeModelSelector";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
+import AcpModelSelector from "../../components/AcpModelSelector";
 
 /**
  * Settings → Model Aliases.
@@ -25,9 +26,10 @@ interface AliasRow {
   claudeCode: string;
   openrouter: string;
   codex: string;
+  acp: string;
 }
 
-const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "" });
+const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "" });
 
 function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
   return (aliases ?? []).map((a) => ({
@@ -36,6 +38,7 @@ function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
     claudeCode: a.targets["claude-code"] ?? "",
     openrouter: a.targets.openrouter ?? "",
     codex: a.targets.codex ?? "",
+    acp: a.targets.acp ?? "",
   }));
 }
 
@@ -47,6 +50,7 @@ function toAliases(rows: AliasRow[]): ModelAlias[] {
       if (r.claudeCode.trim()) targets["claude-code"] = r.claudeCode.trim();
       if (r.openrouter.trim()) targets.openrouter = r.openrouter.trim();
       if (r.codex.trim()) targets.codex = r.codex.trim();
+      if (r.acp.trim()) targets.acp = r.acp.trim();
       const alias: ModelAlias = { name: r.name.trim(), targets };
       if (r.description.trim()) alias.description = r.description.trim();
       return alias;
@@ -80,6 +84,16 @@ export default function ModelAliasesSettings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  // Configured ACP vendors, for the ACP column's label and its model
+  // suggestions. Empty until /system-info answers, and empty is fine — the
+  // column still renders as a free-text field, which is all it ever guarantees.
+  const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>([]);
+  // The alias registry keys ACP targets on the KIND, so there is one column
+  // whatever the vendor count. It borrows the vendor's name only when that name
+  // is unambiguous; with several configured, "ACP" is the honest label because
+  // the one target really does apply to all of them.
+  const acpLabel = acpProviders.length === 1 ? acpProviders[0].label : "ACP";
+  const acpProviderId = acpProviders.length === 1 ? acpProviders[0].id : "";
 
   const load = async () => {
     setLoading(true);
@@ -95,6 +109,18 @@ export default function ModelAliasesSettings() {
 
   useEffect(() => {
     load();
+    let cancelled = false;
+    getSystemInfo()
+      .then((info) => {
+        if (!cancelled) setAcpProviders(info.acpProviders ?? []);
+      })
+      .catch(() => {
+        // No ACP vendors surfaced — the column stays free text, which is what it
+        // degrades to for an unseen vendor anyway.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const update = (i: number, patch: Partial<AliasRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -104,7 +130,9 @@ export default function ModelAliasesSettings() {
   const { errors: validationErrors } = validateModelAliases(toAliases(rows));
   // A named row with no target at all is a likely mistake — flag it even though
   // toAliases() would silently drop it.
-  const targetlessNames = rows.filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim()).map((r) => r.name.trim());
+  const targetlessNames = rows
+    .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim())
+    .map((r) => r.name.trim());
 
   const handleSave = async () => {
     if (validationErrors.length > 0) {
@@ -136,9 +164,10 @@ export default function ModelAliasesSettings() {
         </div>
         <div style={helpStyle}>
           Name a shortcut once and point it at a different model per harness — e.g. <code>planner</code> → <code>opus</code> on Claude Code,{" "}
-          <code>anthropic/claude-opus-4.8</code> on OpenRouter, <code>gpt-5.5</code> on Codex. Then set <code>model: &quot;planner&quot;</code> anywhere a model is
-          configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it resolves to the target for whichever harness runs the session.
-          Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets must be real model ids, never other alias names.
+          <code>anthropic/claude-opus-4.8</code> on OpenRouter, <code>gpt-5.5</code> on Codex, <code>opencode/gpt-5.5</code> on an ACP agent. Then set{" "}
+          <code>model: &quot;planner&quot;</code> anywhere a model is configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it
+          resolves to the target for whichever harness runs the session. Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets
+          must be real model ids, never other alias names.
         </div>
 
         <div style={{ marginTop: 16 }}>
@@ -200,7 +229,7 @@ export default function ModelAliasesSettings() {
                 </button>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
                 <div style={{ minWidth: 0 }}>
                   <label style={colLabel}>Claude Code</label>
                   <ClaudeModelSelector value={row.claudeCode} onChange={(v) => update(i, { claudeCode: v })} placeholder="opus / claude-sonnet-4-6" />
@@ -218,6 +247,20 @@ export default function ModelAliasesSettings() {
                 <div style={{ minWidth: 0 }}>
                   <label style={colLabel}>Codex</label>
                   <CodexModelSelector value={row.codex} onChange={(v) => update(i, { codex: v })} placeholder="gpt-5.5" />
+                </div>
+                {/* One column for the whole ACP family. The registry keys on the
+                    kind, not the vendor, so it is labelled with the vendor only
+                    while exactly one is configured — with several, the label says
+                    ACP because the single target really does apply to all of
+                    them. See HarnessProvider's doc-comment for the limitation. */}
+                <div style={{ minWidth: 0 }}>
+                  <label style={colLabel}>{acpLabel}</label>
+                  <AcpModelSelector
+                    value={row.acp}
+                    onChange={(v) => update(i, { acp: v })}
+                    providerId={acpProviderId}
+                    placeholder={acpProviderId === "opencode" ? "opencode/gpt-5.5" : "vendor model id"}
+                  />
                 </div>
               </div>
             </div>

@@ -1665,7 +1665,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // means "whatever the vendor CLI is already configured for" — callboard has
     // no global ACP model default to fall back to, because one kind covers many
     // vendors whose catalogs share nothing.
-    const acpModel = typeof initialMetadata.model === "string" && initialMetadata.model.trim() ? initialMetadata.model.trim() : undefined;
+    // Through the alias registry like every other harness, so `planner` resolves
+    // to whatever the user pointed the `acp` target at. There is no global ACP
+    // model default to pass as a fallback: one kind covers many vendors whose
+    // catalogs share nothing, so "leave the vendor CLI's own choice alone" is
+    // the only honest default.
+    const acpModel = resolveSessionModel(typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, undefined, "acp", agentSettings);
     queryOpts.options.acp = {
       ...(acpProviderId && { providerId: acpProviderId }),
       ...(acpModel && { model: acpModel }),
