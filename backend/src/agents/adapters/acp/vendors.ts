@@ -68,21 +68,70 @@ export const DEFAULT_INITIAL_COMMANDS_WAIT_MS = 2000;
 export const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
 
 /**
+ * The OpenCode config callboard injects into the agent it spawns.
+ *
+ * **Why this exists at all.** ACP is explicit that requesting permission is the
+ * agent's prerogative — nothing on the client side compels it — and OpenCode
+ * defaults [most permissions to `allow`](https://opencode.ai/docs/permissions/).
+ * Measured, not assumed: an unconfigured `opencode acp` overwrote a file with no
+ * `session/request_permission` at all. Left alone, callboard would render a
+ * four-axis permission UI that governed nothing, which is worse than not
+ * offering the vendor. Setting every tool to `ask` moves the decision onto the
+ * wire, where callboard's own policy answers it — auto-allowing what the user's
+ * axes already allow, prompting only where they say `ask`.
+ *
+ * **Why the highest-precedence channel.** OpenCode reads config from several
+ * sources; two can carry ours. Both were tried against a project whose own
+ * `opencode.json` said `permission: {edit: "deny"}`:
+ *
+ * | Channel | Precedence | User's `edit: deny` | Result |
+ * | --- | --- | --- | --- |
+ * | `OPENCODE_CONFIG` (a file path) | *below* project config | survives | edit denied by OpenCode, `execute` still asked |
+ * | `OPENCODE_CONFIG_CONTENT` (inline) | above project config | overridden | both asked, callboard decides |
+ *
+ * The lower-precedence channel looks more deferential and is the wrong choice:
+ * it lets the user's file *loosen* us too. A project with
+ * `permission: {"*": "allow"}` would stop OpenCode asking altogether and
+ * silently switch callboard's gate off, which is exactly the failure the plan
+ * names as disqualifying for a vendor. So callboard takes the authoritative
+ * channel: for chats **callboard runs**, callboard's four axes are the policy.
+ *
+ * The cost, stated plainly: a user's own `deny` is weakened to `ask` inside
+ * callboard-launched sessions. It is bounded — `ask` still requires an explicit
+ * human approval, `deny` is available on the matching callboard axis, and the
+ * env var is set only on the process callboard spawns, so the user's own
+ * terminal sessions are untouched.
+ */
+export const OPENCODE_FORCE_ASK_CONFIG = JSON.stringify({ permission: { "*": "ask" } });
+
+/**
  * Built-in presets.
  *
- * Deliberately minimal. Phase 1 ships against a conformant test double because
- * no ACP-speaking CLI is installed or authenticated on the build machine, so
- * every entry here is unverified against a live binary — the commands are
- * recorded from vendor documentation, not from a run. Phase 2 is where each one
- * gets exercised and where the remaining vendors land.
+ * Two entries, and they are not equally proven — the distinction matters more
+ * than the count:
  *
- * Gemini CLI is the single entry because its ACP flag (`--experimental-acp`) is
- * the one this adapter's author could cite without guessing. Adding a vendor
- * whose invocation we would have had to invent is worse than shipping none:
- * a wrong `command` fails at spawn time with a confusing error and looks like
- * an adapter bug.
+ * - **opencode** is verified against the real binary (1.18.12). The handshake,
+ *   capability set, permission flow, tool arguments, resume and cancellation
+ *   were all exercised end to end; two adapter defects were found and fixed that
+ *   way. `AcpAdapter.opencode.live.test.ts` re-runs that proof on demand.
+ * - **gemini** is recorded from vendor documentation and has never been run
+ *   here. Its `--experimental-acp` flag is citable, which is the bar for
+ *   shipping an entry at all: a wrong `command` fails at spawn time with a
+ *   confusing error and looks like an adapter bug.
+ *
+ * A vendor that does not reliably request permission is one callboard cannot
+ * gate. That is the onboarding criterion, and it is why the OpenCode entry
+ * carries an `env` and Gemini does not — Gemini's behaviour here is simply not
+ * yet known.
  */
 export const ACP_VENDOR_PRESETS: Readonly<Record<string, AcpVendorPreset>> = Object.freeze({
+  opencode: Object.freeze({
+    id: "opencode",
+    label: "OpenCode",
+    command: ["opencode", "acp"] as const,
+    // See OPENCODE_FORCE_ASK_CONFIG. Without this the gate is decorative.
+    env: { OPENCODE_CONFIG_CONTENT: OPENCODE_FORCE_ASK_CONFIG },
+  } satisfies AcpVendorPreset),
   gemini: Object.freeze({
     id: "gemini",
     label: "Gemini CLI",

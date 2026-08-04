@@ -84,6 +84,7 @@ import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
+import { listAcpProviderAvailability } from "./agents/adapters/acp/availability.js";
 
 const log = createLogger("server");
 
@@ -451,6 +452,17 @@ app.get(
       if (!codexAuthSource) codexAuthSource = "config.toml";
     }
 
+    // ACP vendors are one kind covering many CLIs, so there is no single
+    // "acpConfigured" flag — the picker needs the per-vendor list. Cached after
+    // the first PATH lookup, so this is cheap on every subsequent poll.
+    let acpProviders: ReturnType<typeof listAcpProviderAvailability> = [];
+    try {
+      acpProviders = listAcpProviderAvailability();
+    } catch {
+      // A failed PATH probe must not take the whole system-info payload down;
+      // an empty list reads as "no ACP vendors", which is the safe answer.
+    }
+
     // Detect whether the ambient environment already routes each harness through
     // OpenRouter (ANTHROPIC_BASE_URL / OPENAI base / config.toml pointing at
     // openrouter.ai). Settings → API defaults the routing toggle on from these
@@ -484,6 +496,11 @@ app.get(
       codexOpenRouterDetected,
       codexConfigured,
       codexAuthSource,
+      // Which ACP vendors have their CLI installed. One entry per built-in
+      // preset, present even when unavailable so the picker can say what to
+      // install. Availability here means "the binary resolves", never
+      // "authenticated" — see adapters/acp/availability.ts.
+      acpProviders,
     });
   },
 );
