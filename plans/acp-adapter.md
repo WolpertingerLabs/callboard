@@ -292,6 +292,33 @@ and resumed against the double.
 Chat panel groups ACP vendors under their own labels. Availability detection (is the binary
 on PATH / authenticated) mirroring `provider-availability` behavior.
 
+> **OpenCode onboarded, 2026-08-04.** The first vendor exercised against its real binary
+> (`opencode acp`, 1.18.12; MIT; `anomalyco/opencode`). It answers open question 1 —
+> nothing needed authenticating, because OpenCode is BYO-provider and ships free models.
+>
+> What the live run established, and what it cost:
+>
+> | Question       | Answer                                                                                                                              |
+> | -------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+> | Protocol       | Negotiates v1 against the 1.3.0 pin, no mismatch                                                                                    |
+> | Capabilities   | `loadSession`, `sessionCapabilities: {resume, fork, list, close}`, MCP http+sse, prompt image + embeddedContext                     |
+> | Resume         | Real: turn 2 recalled turn 1's codeword over `session/resume`                                                                       |
+> | Models         | 40, via a `session/new` config option — which exposed the `id`/`value` defect                                                       |
+> | Tool arguments | Sent _after_ the call opens — which exposed the `input: {}` defect                                                                  |
+> | Permission     | **Does not ask by default.** Defaults are `allow`; an unconfigured run overwrote a file with no `session/request_permission` at all |
+>
+> That last row is the plan's own disqualifying criterion, and it is fixed by configuration
+> rather than by dropping the vendor: the preset injects
+> `OPENCODE_CONFIG_CONTENT={"permission":{"*":"ask"}}`, which moves every tool decision onto
+> the wire where callboard's four axes answer it. The lower-precedence channel
+> (`OPENCODE_CONFIG`) was tried and rejected — it lets a project's own `opencode.json`
+> _loosen_ us, and `permission: {"*":"allow"}` there would switch callboard's gate off
+> silently. The accepted cost is the mirror image: a user's own `deny` is weakened to `ask`
+> inside callboard-launched sessions only.
+>
+> Standing proof lives in `AcpAdapter.opencode.live.test.ts`, opt-in behind
+> `CALLBOARD_ACP_LIVE=1`, pinned to a free model so re-running it costs nothing.
+
 **Phase 3 — user-defined ACP providers.** Settings → Providers accepts a custom entry
 (id, label, command, env). Validated against the same preset schema. This is the item that
 turns "we support 4 agents" into "we support any ACP agent".
@@ -337,7 +364,9 @@ advertised, cost/usage reporting into `TokenUsage`, model-alias integration.
 
 ## Open questions
 
-1. Which vendor for Phase 1? Depends on which we can authenticate on this machine today.
+1. ~~Which vendor for Phase 1?~~ **Resolved 2026-08-04: OpenCode.** Nothing needed
+   authenticating — it is BYO-provider and ships free models — so the question of what we
+   could log into never arose. See the onboarding record under Phase 2.
 2. ~~Does the SDK license permit MIT distribution?~~ **Resolved 2026-07-27: Apache-2.0, yes.**
 3. Do we expose ACP vendors as distinct entries in the model-routing/alias system, or as one
    `acp` provider with a vendor sub-selector? Leaning distinct entries; routing config
