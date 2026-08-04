@@ -43,7 +43,7 @@ describe("resolveAcpSessionsRoot", () => {
 
 describe("path segment safety", () => {
   it("accepts ordinary ids", () => {
-    for (const id of ["gemini", "fake-session-1", "a.b_c-1", "A1"]) expect(isSafePathSegment(id)).toBe(true);
+    for (const id of ["opencode", "fake-session-1", "a.b_c-1", "A1"]) expect(isSafePathSegment(id)).toBe(true);
   });
 
   it("rejects anything that could escape the transcript root", () => {
@@ -55,16 +55,16 @@ describe("path segment safety", () => {
   });
 
   it("returns null from acpTranscriptPath when either id is unsafe", () => {
-    expect(acpTranscriptPath("gemini", "../../../etc/passwd")).toBeNull();
+    expect(acpTranscriptPath("opencode", "../../../etc/passwd")).toBeNull();
     expect(acpTranscriptPath("../..", "s1")).toBeNull();
-    expect(acpTranscriptPath("gemini", "s1")).toBe(join(dataDir, "acp-sessions", "gemini", "s1.jsonl"));
+    expect(acpTranscriptPath("opencode", "s1")).toBe(join(dataDir, "acp-sessions", "opencode", "s1.jsonl"));
   });
 });
 
 describe("AcpTranscriptWriter", () => {
   it("writes a header then appends events as JSONL", () => {
-    const writer = new AcpTranscriptWriter("gemini", "s1", "/work/repo");
-    writer.writeHeader({ name: "gemini", version: "2.0" });
+    const writer = new AcpTranscriptWriter("opencode", "s1", "/work/repo");
+    writer.writeHeader({ name: "opencode", version: "2.0" });
     writer.writeEvent({ type: "text", content: "hello" });
     writer.writeEvent({ type: "result", status: "success" });
 
@@ -73,13 +73,13 @@ describe("AcpTranscriptWriter", () => {
       .split("\n")
       .map((l) => JSON.parse(l));
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toMatchObject({ type: "session_meta", providerId: "gemini", sessionId: "s1", cwd: "/work/repo", agentInfo: { name: "gemini" } });
+    expect(lines[0]).toMatchObject({ type: "session_meta", providerId: "opencode", sessionId: "s1", cwd: "/work/repo", agentInfo: { name: "opencode" } });
     expect(lines[1]).toMatchObject({ type: "event", event: { type: "text", content: "hello" } });
     expect(typeof lines[1].timestamp).toBe("string");
   });
 
   it("writes the header only once, so a resumed session is not two sessions", () => {
-    const writer = new AcpTranscriptWriter("gemini", "s1", "/work/repo");
+    const writer = new AcpTranscriptWriter("opencode", "s1", "/work/repo");
     writer.writeHeader(null);
     writer.writeHeader(null);
     const headers = readFileSync(writer.filePath!, "utf8")
@@ -90,12 +90,12 @@ describe("AcpTranscriptWriter", () => {
   });
 
   it("appends to an existing transcript rather than truncating it", () => {
-    const first = new AcpTranscriptWriter("gemini", "s1", "/work/repo");
+    const first = new AcpTranscriptWriter("opencode", "s1", "/work/repo");
     first.writeHeader(null);
     first.writeEvent({ type: "text", content: "turn one" });
 
     // A follow-up turn constructs a fresh writer for the same session.
-    const second = new AcpTranscriptWriter("gemini", "s1", "/work/repo");
+    const second = new AcpTranscriptWriter("opencode", "s1", "/work/repo");
     second.writeEvent({ type: "text", content: "turn two" });
 
     const content = readFileSync(first.filePath!, "utf8");
@@ -104,7 +104,7 @@ describe("AcpTranscriptWriter", () => {
   });
 
   it("refuses to write at all when an id is unsafe", () => {
-    const writer = new AcpTranscriptWriter("gemini", "../escape", "/work");
+    const writer = new AcpTranscriptWriter("opencode", "../escape", "/work");
     expect(writer.filePath).toBeNull();
     // Must not throw — a rejected id degrades to "no transcript", never a crash.
     expect(() => {
@@ -123,7 +123,7 @@ describe("reading transcripts back", () => {
   }
 
   it("coalesces streamed text chunks into one assistant message", () => {
-    seed("gemini", "s1", "/work", [
+    seed("opencode", "s1", "/work", [
       { type: "session_started", sessionId: "s1" },
       { type: "text", content: "Hel" },
       { type: "text", content: "lo" },
@@ -177,7 +177,7 @@ describe("reading transcripts back", () => {
   });
 
   it("projects tool events and skips non-renderable ones", () => {
-    seed("gemini", "s1", "/work", [
+    seed("opencode", "s1", "/work", [
       { type: "tool_use", toolName: "read_file", input: { path: "a" }, callId: "c1" },
       { type: "tool_result", callId: "c1", content: "contents" },
       { type: "slash_commands", commands: ["a"] },
@@ -190,7 +190,7 @@ describe("reading transcripts back", () => {
   });
 
   it("skips a truncated tail line instead of failing the whole read", () => {
-    seed("gemini", "s1", "/work", [{ type: "text", content: "good" }]);
+    seed("opencode", "s1", "/work", [{ type: "text", content: "good" }]);
     const path = findAcpTranscript("s1")!.filePath;
     // A partially-flushed line is NORMAL while an agent is mid-turn, not corruption.
     writeFileSync(path, '{"type":"event","timesta', { flag: "a" });
@@ -204,7 +204,7 @@ describe("reading transcripts back", () => {
   });
 
   it("previews the first agent text", () => {
-    seed("gemini", "s1", "/work", [
+    seed("opencode", "s1", "/work", [
       { type: "thinking", content: "not this" },
       { type: "text", content: "  the preview  " },
     ]);
@@ -218,23 +218,23 @@ describe("listAcpTranscripts", () => {
   });
 
   it("walks exactly two levels and ignores stray content", () => {
-    const writer = new AcpTranscriptWriter("gemini", "s1", "/work");
+    const writer = new AcpTranscriptWriter("opencode", "s1", "/work");
     writer.writeHeader(null);
     const root = resolveAcpSessionsRoot();
     // Stray file at the provider level, a non-jsonl file, and a nested dir —
     // none of these may become phantom sessions.
     writeFileSync(join(root, "loose.jsonl"), "{}\n");
-    writeFileSync(join(root, "gemini", "notes.txt"), "hi");
-    mkdirSync(join(root, "gemini", "nested"), { recursive: true });
-    writeFileSync(join(root, "gemini", "nested", "deep.jsonl"), "{}\n");
+    writeFileSync(join(root, "opencode", "notes.txt"), "hi");
+    mkdirSync(join(root, "opencode", "nested"), { recursive: true });
+    writeFileSync(join(root, "opencode", "nested", "deep.jsonl"), "{}\n");
 
     const found = listAcpTranscripts();
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ providerId: "gemini", sessionId: "s1" });
+    expect(found[0]).toMatchObject({ providerId: "opencode", sessionId: "s1" });
   });
 
   it("finds a session across provider directories and rejects unsafe lookups", () => {
-    new AcpTranscriptWriter("gemini", "alpha", "/a").writeHeader(null);
+    new AcpTranscriptWriter("opencode", "alpha", "/a").writeHeader(null);
     new AcpTranscriptWriter("other-vendor", "beta", "/b").writeHeader(null);
     expect(findAcpTranscript("beta")?.providerId).toBe("other-vendor");
     expect(findAcpTranscript("../alpha")).toBeNull();

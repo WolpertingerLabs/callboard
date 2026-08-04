@@ -39,7 +39,7 @@ export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "non
 export interface ProviderRunConfig {
   provider?: UiAgentProviderKind;
   /**
-   * Which ACP vendor runs the chat — `"opencode"`, `"gemini"`, … Meaningful only
+   * Which ACP vendor runs the chat — `"opencode"`, … Meaningful only
    * when `provider` is `"acp"`, and required there: `"acp"` is one kind covering
    * many CLIs, so the kind alone does not identify a harness.
    *
