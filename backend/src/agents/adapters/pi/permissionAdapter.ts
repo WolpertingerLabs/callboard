@@ -341,6 +341,15 @@ export function assertPiTrustDenied(options: CreateAgentSessionServicesOptions):
     problems.push("noExtensions is not true — project-local extensions are discoverable");
   }
 
+  // Skills are trust-gated content too, and this flag is the one most likely to
+  // be "fixed" by someone wiring callboard's custom skills into pi: flipping it
+  // to false makes them appear, and silently re-admits `.pi/skills/` from the
+  // opened repo alongside them. The supported route is `additionalSkillPaths`,
+  // which survives the flag — see optionsAdapter.buildPiServicesOptions.
+  if (options.resourceLoaderOptions?.noSkills !== true) {
+    problems.push("noSkills is not true — project-local skills are discoverable");
+  }
+
   const factories = options.resourceLoaderOptions?.extensionFactories ?? [];
   if (factories.length === 0) {
     problems.push("no extensionFactories — the permission gate is not installed");

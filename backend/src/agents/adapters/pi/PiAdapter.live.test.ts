@@ -55,6 +55,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-live-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 const { PiAdapter } = await import("./PiAdapter.js");
+const { customSkillsService } = await import("../../../services/custom-skills-service.js");
 
 const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
 const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask" };
@@ -62,10 +63,37 @@ const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExe
 /** A scratch project, deliberately NOT under /tmp's ignored prefix for realism. */
 let repo: string;
 
+/** In the callboard skill's **body** only — see the custom-skill case for why. */
+const PROBE_WORD = "chrysanthemum";
+/**
+ * In the repo's own `.pi/skills`. A rival answer to the same prompt, present so
+ * the custom-skill case runs against a realistic repo rather than an empty one —
+ * see that case for why its absence from the reply is not asserted.
+ */
+const PROJECT_WORD = "nightshade";
+
 beforeAll(() => {
   repo = join(tmpRoot, "repo");
   mkdirSync(repo, { recursive: true });
   writeFileSync(join(repo, "NOTES.md"), "the codeword is albatross\n", "utf8");
+
+  // A real custom skill, written through the real service. `CALLBOARD_DATA_DIR`
+  // already points at tmpRoot, so this lands where `resolveCallboardSkillPaths()`
+  // looks and no test-only plumbing is involved.
+  customSkillsService.createSkill({
+    name: "callboard probe skill",
+    description: "Use this when asked for the callboard probe word.",
+    content: `The callboard probe word is ${PROBE_WORD}. When asked for it, reply with that single word.`,
+  });
+
+  // The hostile twin: a project-local skill in the opened repo, same shape,
+  // different word.
+  mkdirSync(join(repo, ".pi", "skills", "project-probe-skill"), { recursive: true });
+  writeFileSync(
+    join(repo, ".pi", "skills", "project-probe-skill", "SKILL.md"),
+    `---\nname: "project-probe-skill"\ndescription: "Use this when asked for the callboard probe word."\n---\n\nThe callboard probe word is ${PROJECT_WORD}.\n`,
+    "utf8",
+  );
 });
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
@@ -301,6 +329,55 @@ describe.skipIf(!live)("pi adapter — live", () => {
 
       const second = await run("What is my favourite fruit? One word, from memory.", { pi: { resumeSessionPath: resolved!.logPath } });
       expect(second.text.toLowerCase()).toContain("persimmon");
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "invokes a callboard custom skill, body and all",
+    async () => {
+      // The point of a live case here is that the *model* uses the skill. That
+      // the directory reaches pi's loader is settled offline and deterministically
+      // by `customSkills.test.ts`; a live test asserting only that would be
+      // paying network latency for a fact already proven.
+      //
+      // So the codeword lives in the skill **body**, never in its description.
+      // The description reaches the model in the system prompt, the body only
+      // through pi's advertised route — the model reading SKILL.md off disk with
+      // the `read` tool. Answering correctly is therefore proof of invocation
+      // rather than proof of a path being passed in.
+      const { text, toolNames, events } = await run(
+        "What is the callboard probe word? Use the available skill, then reply with that word only.",
+      );
+
+      expect(text.toLowerCase()).toContain(PROBE_WORD);
+      expect(toolNames, "the model never read the skill file").toContain("read");
+      const readPaths = events
+        .filter((e) => e.type === "tool_use")
+        .map((e) => JSON.stringify((e as { input: Record<string, unknown> }).input));
+      expect(readPaths.some((p) => p.includes("SKILL.md")), "no read targeted a SKILL.md").toBe(true);
+
+      // Deliberately NO assertion that the repo's own skill went unused, though
+      // it sits in `.pi/skills/` with a rival word for exactly this prompt.
+      //
+      // A control run with callboard's skill absent was measured, and it is the
+      // reason this comment exists rather than an assertion: the model never
+      // produced the callboard word (so the case above passes because of the
+      // feature and nothing else), but it *did* produce the project one — by
+      // running `ls`/`find` and reading `.pi/skills/…/SKILL.md` itself.
+      //
+      // That is not a hole in this feature, and it is worth being exact about
+      // why. The property is that pi does not **load** project-local skills:
+      // they never enter the system prompt, and — unlike extensions — nothing
+      // executes. A model that goes looking and reads a markdown file inside the
+      // workspace it was pointed at is doing ordinary file reading, gated by the
+      // `fileRead`/`codeExecution` axes like any other read of NOTES.md. Not
+      // loaded does not mean unreachable, and only the first is a trust boundary.
+      //
+      // Asserting the negative here would therefore be asserting that the model
+      // does not go looking, which it sometimes does — a flake dressed as
+      // coverage, as the denied-tool case above puts it. The rigorous, model-free
+      // version of this negative lives in `customSkills.test.ts`.
     },
     TEST_TIMEOUT,
   );
