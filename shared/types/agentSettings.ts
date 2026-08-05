@@ -401,6 +401,51 @@ export interface AgentSettings {
    */
   clineMaxIterations?: number;
 
+  // ── pi ─────────────────────────────────────────────────────────────
+  // Settings → API. Like Cline, pi embeds its agent runtime **in the backend
+  // process**, so there is no binary to configure and no login: credentials are
+  // config fields handed to the runtime per session and never written to the
+  // user's own `~/.pi/agent/auth.json`.
+
+  /**
+   * Which pi provider backs new pi chats — `"openrouter"`, `"anthropic"`,
+   * `"google"`, `"openai"`, …
+   *
+   * Blank defaults to `"openrouter"`: pi is the agent underneath OpenRouter's
+   * Ori, and its bundled catalog carries 307 OpenRouter models offline. The full
+   * list is served by `GET /api/pi/providers`, read from the installed package
+   * rather than from a table here — a hardcoded list would drift on every bump.
+   */
+  piProviderId?: string;
+
+  /** Default model id for new pi chats. Blank ⇒ pi's own default. */
+  piModel?: string;
+
+  /**
+   * API key for {@link piProviderId}.
+   *
+   * Injected into the session's `ModelRuntime` at run time, never persisted to
+   * pi's auth file. Blank means pi falls back to its own environment lookup
+   * (`OPENROUTER_API_KEY`, …) — and note the explicit key **wins** over the
+   * environment when both are present, so a shell variable cannot silently take
+   * over a chat configured with a different key.
+   */
+  piApiKey?: string;
+
+  /**
+   * Base URL override, for an OpenAI-compatible or self-hosted endpoint.
+   *
+   * As with Cline there is deliberately no `piUseOpenRouter` toggle: OpenRouter
+   * is a first-class value of {@link piProviderId}, not a mode.
+   */
+  piBaseUrl?: string;
+
+  // No `piThinkingLevel` here, despite the plan listing one. Reasoning effort is
+  // per-chat for every harness — it rides on `ProviderRunConfig.effort` and is
+  // persisted to chat metadata by `routes/stream.ts` — and no other provider
+  // keeps a settings-level default. Adding one only for pi would ship a field
+  // nothing reads.
+
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the onComplete feature (start_chat_session, continue_chat), which
   // automatically re-invokes a parent chat when the session it is waiting on

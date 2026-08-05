@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, Plus, Trash2, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
-import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog, getAcpModels, getClineProviders } from "../../api";
+import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog, getAcpModels, getClineProviders, getPiProviders } from "../../api";
+import PiModelSelector from "../../components/PiModelSelector";
 import type { AgentSettings, OpenRouterModelInfo, OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { OR_SERVER_TOOLS, OR_PLUGINS, OR_SAMPLING_PARAMS, validateServerTools, validateParamProfile } from "shared/types/index.js";
 import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo } from "../../api";
@@ -120,6 +121,18 @@ const providerReferenceLinks: Record<AgentProviderKind, ReferenceLink[]> = {
     { label: "Cline SDK docs", href: "https://docs.cline.bot/sdk/overview", note: "The agent runtime callboard embeds" },
     { label: "Model providers", href: "https://docs.cline.bot/sdk/model-providers", note: "Provider ids and credentials the SDK accepts" },
     { label: "Console billing", href: "https://console.anthropic.com/settings/billing", note: "Anthropic credits, for the default provider" },
+  ],
+  // Same shape as Cline: pi embeds a runtime rather than wrapping a service, so
+  // billing lives with whichever model provider the user points it at. Its
+  // default is OpenRouter, which is where the useful links go.
+  //
+  // Phase 3 adds this entry because `Record<UiAgentProviderKind, …>` demands it
+  // once `"pi"` joins the union — the pi *tab* and its credential form are
+  // Phase 4.
+  pi: [
+    { label: "pi on npm", href: "https://www.npmjs.com/package/@earendil-works/pi-coding-agent", note: "The agent runtime callboard embeds" },
+    { label: "pi source", href: "https://github.com/earendil-works/pi", note: "Tools, extensions and session format" },
+    { label: "OpenRouter credits", href: "https://openrouter.ai/settings/credits", note: "Credit balance, for the default provider" },
   ],
 };
 
@@ -691,6 +704,11 @@ export default function ApiSettings() {
   const [clineBaseUrl, setClineBaseUrl] = useState("");
   const [clineMaxIterations, setClineMaxIterations] = useState("");
   const [clineProviders, setClineProviders] = useState<string[]>([]);
+  const [piProviderId, setPiProviderId] = useState("");
+  const [piModel, setPiModel] = useState("");
+  const [piApiKey, setPiApiKey] = useState("");
+  const [piBaseUrl, setPiBaseUrl] = useState("");
+  const [piProviders, setPiProviders] = useState<string[]>([]);
   // Collapse state for the bulky sections.
   const [showDefaults, setShowDefaults] = useState(false);
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
@@ -732,6 +750,10 @@ export default function ApiSettings() {
       setOpenRouterApiKey(s.openRouterApiKey ?? "");
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
       setOpenRouterModel(s.openRouterModel ?? "");
+      setPiProviderId(s.piProviderId ?? "");
+      setPiModel(s.piModel ?? "");
+      setPiApiKey(s.piApiKey ?? "");
+      setPiBaseUrl(s.piBaseUrl ?? "");
       setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
       setOpenRouterMaxBudgetUsd(typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "");
       setServerTools(s.openRouterServerTools);
@@ -834,6 +856,10 @@ export default function ApiSettings() {
         openRouterApiKey,
         openRouterBaseUrl,
         openRouterModel,
+        piProviderId,
+        piModel,
+        piApiKey,
+        piBaseUrl,
         openRouterLogsRoot,
         // Send `null` to clear, or the parsed number otherwise. We
         // intentionally avoid `undefined`: JSON.stringify would strip it and
@@ -936,6 +962,7 @@ export default function ApiSettings() {
           { kind: "openrouter" as AgentProviderKind, label: "OpenRouter", icon: <Network size={14} />, acpId: "" },
           { kind: "codex" as AgentProviderKind, label: "Codex", icon: <Terminal size={14} />, acpId: "" },
           { kind: "cline" as AgentProviderKind, label: "Cline", icon: <Boxes size={14} />, acpId: "" },
+          { kind: "pi" as AgentProviderKind, label: "pi", icon: <Boxes size={14} />, acpId: "" },
           // One tab per configured ACP vendor rather than a single "ACP" tab:
           // a user picks OpenCode here the same way they pick it in New Chat,
           // and the page has nothing to say about the protocol in the abstract.
@@ -1768,6 +1795,107 @@ export default function ApiSettings() {
         </>
       )}
 
+      {activeProvider === "pi" && (
+        <>
+          <ReferenceLinksSection provider="pi" />
+
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Key size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Provider &amp; Credentials</span>
+            </div>
+            <div style={subtitleStyle}>
+              pi runs <strong>inside Callboard</strong> — no CLI to install, no account to sign into. It brings its own coding tools and talks directly to the
+              model provider you pick here, using your key. Credentials are handed to the runtime per session and never written to your own{" "}
+              <code style={{ fontSize: 11 }}>~/.pi/agent/auth.json</code>.
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="piProviderId" style={labelStyle}>
+                Provider
+              </label>
+              <input
+                id="piProviderId"
+                type="text"
+                list="pi-provider-ids"
+                value={piProviderId}
+                onChange={(e) => setPiProviderId(e.target.value)}
+                onFocus={() => {
+                  if (piProviders.length === 0) {
+                    getPiProviders()
+                      .then(({ providers }) => setPiProviders(providers))
+                      .catch(() => {});
+                  }
+                }}
+                placeholder="openrouter"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <datalist id="pi-provider-ids">
+                {piProviders.map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
+              <div style={helpStyle}>
+                Which model provider the pi runtime talks to. Blank means <code style={{ fontSize: 11 }}>openrouter</code> — pi is the agent underneath
+                OpenRouter&rsquo;s Ori, and its bundled catalog carries ~300 OpenRouter models offline. The list comes from the installed package.
+              </div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="piApiKey" style={labelStyle}>
+                API Key
+              </label>
+              <SecretField id="piApiKey" value={piApiKey} onChange={setPiApiKey} placeholder="sk-or-v1-..." />
+              <div style={helpStyle}>
+                Optional. Left blank, pi falls back to its own environment lookup (<code style={{ fontSize: 11 }}>OPENROUTER_API_KEY</code>, …). A key set here
+                <strong> wins</strong> over one in the environment, so a shell variable cannot silently take over a chat you configured differently.
+              </div>
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="piBaseUrl" style={labelStyle}>
+                Base URL
+              </label>
+              <input
+                id="piBaseUrl"
+                type="text"
+                value={piBaseUrl}
+                onChange={(e) => setPiBaseUrl(e.target.value)}
+                placeholder="(the provider&rsquo;s own endpoint)"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>
+                Optional override for a self-hosted or proxying endpoint. Applied on top of the provider above, so its model catalog is kept — only the URL
+                moves. Not needed for OpenRouter, which is a provider here rather than a mode.
+              </div>
+            </div>
+          </div>
+
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Cpu size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Model</span>
+            </div>
+            <div style={subtitleStyle}>Default model for new pi chats. Each chat can override it in the New Chat panel or the composer.</div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="piModel" style={labelStyle}>
+                Default Model
+              </label>
+              <PiModelSelector id="piModel" value={piModel} onChange={setPiModel} placeholder="google/gemini-3.6-flash" providerId={piProviderId} />
+              <div style={helpStyle}>
+                Type to filter — this catalog is large (~300 models on OpenRouter), so the list narrows as you type rather than showing everything. Free text is
+                accepted for a slug newer than the bundled catalog; pi falls back to its own default if it does not recognise one.
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       {activeProvider === "cline" && (
         <>
           <ReferenceLinksSection provider="cline" />
@@ -1928,6 +2056,14 @@ export default function ApiSettings() {
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
           An ACP agent&rsquo;s own credentials live in its CLI, so the only thing to set here is whether Callboard also hands it an OpenRouter key. Pick the
           model per chat in the New Chat panel or the composer, and set what it may do under Permissions.
+        </div>
+      ) : activeProvider === "pi" ? (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>
+          These are read when a pi chat starts, so they take effect for new sessions; resume an existing chat to pick them up. The runtime is embedded, so
+          nothing is spawned and no environment is rewritten — a blank field falls through to whatever the backend process already has, and an explicit key here
+          takes priority over one in the environment. What the agent is allowed to do is set under Permissions, and Callboard asks before every tool call it has
+          not been told to allow. Note that <strong>third-party MCP servers do not apply to pi chats</strong>: pi has no MCP client, so a pi chat sees
+          Callboard&rsquo;s own tools and pi&rsquo;s seven built-ins, and nothing else.
         </div>
       ) : activeProvider === "cline" ? (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>

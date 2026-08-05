@@ -58,6 +58,7 @@ import {
   listIgnoredEntries,
   pruneWorktrees,
   resolveCommit,
+  resolveRepoCommonRoot,
   resolveWorktreeToMainRepo,
   worktreeContainsSubmodules,
 } from "../utils/git.js";
@@ -93,6 +94,56 @@ function isWithin(parent: string, child: string): boolean {
   const p = resolve(parent);
   const c = resolve(child);
   return c.startsWith(p.endsWith("/") ? p : `${p}/`);
+}
+
+/**
+ * Does the record's `repoPath` name the same repository git says `cwd` belongs
+ * to — even if it spells it as one of that repository's other worktrees?
+ *
+ * The strict comparison is `samePath`, and it stays the answer for every record
+ * written from now on. The second clause exists only for records already on
+ * disk. Before {@link resolveRepoCommonRoot}, a chat started with `useWorktree`
+ * from inside a worktree recorded *that worktree* as `repoPath`, while git
+ * registered the new worktree against the repository's common dir. The record
+ * and reality then named two different directories of the **same repository**,
+ * and the gate below refused it forever — the directory could only be removed
+ * by hand.
+ *
+ * ## Why these records are tolerated and not migrated
+ *
+ * A migration would have to write a stored field from an inference, and the two
+ * populations it would have to cover argue against it:
+ *
+ * - **The directory is still there.** Then git can be asked directly, which is
+ *   what this function does — at the moment the answer is used, from the
+ *   directory itself. A rewrite would cache that same observation with nothing
+ *   gained and a stale value possible.
+ * - **The directory is gone.** Then there is nothing to ask, and `cwd-missing`
+ *   already blocks the record whatever `repoPath` says. Rewriting it would be
+ *   pure guesswork about a directory nobody can observe, on records whose whole
+ *   documented purpose is to outlive their directories. (This is not
+ *   hypothetical: the one such record on the author's machine is exactly this —
+ *   `cwd` removed by hand, `repoPath` naming a worktree that still exists.)
+ *
+ * So nothing here writes. The record keeps the provenance it was written with,
+ * and the truth is re-derived from disk each time it matters.
+ *
+ * ## What this does NOT loosen
+ *
+ * The tolerance is one specific equivalence — *the recorded path is another
+ * checkout of this same repository, and git says so right now*. It requires the
+ * recorded directory to still exist and to answer with the same common dir; a
+ * record naming a different repository, or one naming a directory that is gone,
+ * is refused exactly as before. Every other gate — ownership, the identity
+ * token, submodules, the ref-count, live sessions, uncommitted changes,
+ * untracked files, unreachable commits — is untouched and still AND-ed.
+ */
+function repoPathNamesSameRepo(recorded: string, resolvedMainRepo: string): boolean {
+  if (samePath(recorded, resolvedMainRepo)) return true;
+  // Only reachable for a mismatching record, so the git subprocess is paid for
+  // by the legacy population and never by a listing of correct records.
+  const commonRoot = resolveRepoCommonRoot(recorded);
+  return commonRoot !== null && samePath(commonRoot, resolvedMainRepo);
 }
 
 // ── Evaluation context ──────────────────────────────────────────────
@@ -226,7 +277,7 @@ export function evaluateWorktreeRemoval(workspace: Workspace, ctx: RemovalContex
     const resolution = resolveWorktreeToMainRepo(cwd);
     if (!resolution.isWorktree) {
       add("not-a-worktree-on-disk", `${cwd} is no longer a git worktree`);
-    } else if (workspace.repoPath && !samePath(resolution.mainRepoPath, workspace.repoPath)) {
+    } else if (workspace.repoPath && !repoPathNamesSameRepo(workspace.repoPath, resolution.mainRepoPath)) {
       add("not-a-worktree-on-disk", `${cwd} is a worktree of ${resolution.mainRepoPath}, not of the recorded ${workspace.repoPath}`);
     } else {
       switch (verifyWorktreeToken(cwd, workspace.id)) {
@@ -314,8 +365,12 @@ export function evaluateWorktreeRemoval(workspace: Workspace, ctx: RemovalContex
  * > run from here (only from the archive path, after a directory has already
  * > been moved into the trash).
  *
- * Pure filesystem reads — `existsSync` plus, at most, parsing one `.git` file.
- * No `git` subprocess, so a listing pays effectively nothing for it.
+ * Filesystem reads — `existsSync` plus, at most, parsing one `.git` file — so a
+ * listing pays effectively nothing for it. The one exception is a record whose
+ * `repoPath` disagrees with the directory, where {@link repoPathNamesSameRepo}
+ * spends a `git rev-parse` establishing whether the two spell the same
+ * repository. That is the legacy population only; a record written by the
+ * current write path settles on a string comparison.
  */
 export function describeWorkspaceDirectory(workspace: Workspace): WorkspaceDirectory {
   const cwd = resolve(workspace.cwd);
@@ -348,7 +403,7 @@ export function describeWorkspaceDirectory(workspace: Workspace): WorkspaceDirec
         `untouched and Callboard will not remove it (the not-a-worktree-on-disk gate blocks that); the record is what is out of date.`,
     };
   }
-  if (workspace.repoPath && !samePath(resolution.mainRepoPath, workspace.repoPath)) {
+  if (workspace.repoPath && !repoPathNamesSameRepo(workspace.repoPath, resolution.mainRepoPath)) {
     return {
       state: "not-a-worktree",
       detail: `${cwd} is a worktree of ${resolution.mainRepoPath}, not of the recorded ${workspace.repoPath} — the record describes a different directory than the one on disk`,
@@ -534,7 +589,15 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
     result.worktree.blockers = [{ code: "no-repo-path", detail: `No main repo recorded for ${cwd}` }];
     return result;
   }
-  const repoPath = resolve(workspace.repoPath);
+  // The repository git registers this worktree under, which for a legacy record
+  // is not necessarily the one the record names (see
+  // {@link repoPathNamesSameRepo}). Everything below acts through it — the
+  // prune, the re-inspection, and the trash manifest's restore recipe — and all
+  // three have to name a directory that will still be there afterwards. A
+  // sibling worktree would not: it is removable in its own right, and a restore
+  // recipe pointing at one breaks the moment it is. Falls back to the record
+  // when git cannot answer, which is where it stood before.
+  const repoPath = resolveRepoCommonRoot(cwd) ?? resolve(workspace.repoPath);
 
   // What is about to travel into the trash with the tracked files. Captured
   // before the move, while the directory is still there to ask about.

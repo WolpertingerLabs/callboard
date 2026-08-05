@@ -487,7 +487,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id]);
 
-  const chatProvider = useMemo((): "claude-code" | "openrouter" | "codex" | "acp" => {
+  // Every kind a chat can actually be on. `cline` and `pi` were missing until
+  // Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
+  // and their header rendered a "CC" badge — the one place in the UI that names
+  // the harness, naming the wrong one.
+  const chatProvider = useMemo((): "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "pi" => {
     if (!id) return newChatProvider ?? "claude-code";
     if (chat?.metadata) {
       try {
@@ -495,6 +499,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (meta.provider === "openrouter") return "openrouter";
         if (meta.provider === "codex") return "codex";
         if (meta.provider === "acp") return "acp";
+        if (meta.provider === "cline") return "cline";
+        if (meta.provider === "pi") return "pi";
       } catch {
         // ignore — fall through
       }
@@ -529,6 +535,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // `seedSession`, so the route would 400. Hiding the button is the honest
   // surface for that; a fork that renders and then loses all context is worse
   // than no fork button.
+  // Null only for ACP, which `ForkProvider` deliberately excludes. Every other
+  // kind is a valid fork source *and* target as of Phase 5 of the pi landing.
   const forkSourceProvider: ForkProvider | null = chatProvider === "acp" ? null : chatProvider;
 
   // Human-readable harness name for status text ("Claude is thinking...").
@@ -539,11 +547,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       ? "OpenRouter"
       : chatProvider === "codex"
         ? "Codex"
-        : chatProvider === "acp"
-          ? // The vendor's own label when the server has told us one; otherwise a
-            // neutral noun rather than a guessed capitalization of the id.
-            (acpLabels[acpProviderId] ?? "The agent")
-          : "Claude";
+        : chatProvider === "cline"
+          ? "Cline"
+          : chatProvider === "pi"
+            ? "pi"
+            : chatProvider === "acp"
+              ? // The vendor's own label when the server has told us one; otherwise a
+                // neutral noun rather than a guessed capitalization of the id.
+                (acpLabels[acpProviderId] ?? "The agent")
+              : "Claude";
 
   // Fork the conversation at a message: the backend copies session history
   // up to and including that message into a new chat, which we navigate to.
@@ -3567,6 +3579,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         chatId={id}
         permissions={effectivePermissions}
         onPermissionsChange={setChatPermissions}
+        provider={chatProvider}
       />
 
       <ForkHandoffModal

@@ -614,7 +614,7 @@ chatsRouter.post("/:id/fork", (req, res) => {
           required: ["timestamp"],
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
-            provider: { type: "string", enum: ["claude-code", "openrouter", "codex"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity)." },
+            provider: { type: "string", enum: ["claude-code", "openrouter", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
             effort: { type: "string", description: "Reasoning effort for the new chat (openrouter / codex only)." }
           }

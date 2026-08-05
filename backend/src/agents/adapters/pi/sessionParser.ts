@@ -1,0 +1,356 @@
+/**
+ * Reading pi's own session files — the read half of Decision 1.
+ *
+ * Callboard does **not** keep a shadow transcript for pi, unlike Cline. The
+ * plan's reasoning holds up: `parseSessionEntries(content)` is synchronous and
+ * takes a string, which is exactly the shape `SessionProvider`'s synchronous
+ * methods need, and the format is versioned with a migrator
+ * (`CURRENT_SESSION_VERSION = 3`). One store, no drift between what pi resumes
+ * from and what callboard renders.
+ *
+ * ## `SessionManager.list()` is async, so it is not used
+ *
+ * The obvious API for discovery is `SessionManager.list(cwd, sessionDir)`, which
+ * returns `SessionInfo[]` complete with `firstMessage` and `allMessagesText`.
+ * It returns a **`Promise`**, and every `SessionProvider` method is synchronous.
+ * There is no awaiting it from inside `discoverSessions()`.
+ *
+ * So this module re-derives the same two fields from the sync primitives:
+ * `readFileSync` + `parseSessionEntries`. {@link derivePreview} is
+ * `SessionInfo.firstMessage`; {@link deriveSearchText} is `allMessagesText`.
+ * The cost is real and is discussed on {@link deriveSearchText}.
+ *
+ * ## Entry types this must survive
+ *
+ * A pi session is an append-only **tree**: every entry carries `id` and
+ * `parentId`, and the live conversation is the path from the current leaf back
+ * to the root. Nine entry types exist (`message`, `thinking_level_change`,
+ * `model_change`, `compaction`, `branch_summary`, `custom`, `custom_message`,
+ * `label`, `session_info`), and pi injects several of its own into any session
+ * callboard writes — the spike watched `model_change` and
+ * `thinking_level_change` appear in a hand-written file after one resume. A
+ * parser that switches exhaustively on today's list will break on a pi that adds
+ * a tenth, so unknown types are skipped rather than treated as an error.
+ *
+ * @see plans/pi-adapter.md (Decision 1)
+ * @see plans/pi-spike-findings.md (§5 — the format, round-tripped)
+ */
+import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
+import { join } from "node:path";
+import { parseSessionEntries, type FileEntry, type SessionEntry, type SessionHeader } from "@earendil-works/pi-coding-agent";
+import type { ParsedMessage } from "shared/types/index.js";
+import { createLogger } from "../../../utils/logger.js";
+import { resolvePiSessionsRoot } from "./paths.js";
+
+const log = createLogger("pi-session-parser");
+
+/** One session file on disk, as discovery sees it. */
+export interface PiSessionFile {
+  sessionId: string;
+  filePath: string;
+  stat: Stats;
+}
+
+/** Header + entries of one session file. */
+export interface PiSessionContents {
+  header: SessionHeader | null;
+  entries: SessionEntry[];
+}
+
+/**
+ * Read and parse one session file.
+ *
+ * Never throws: a session directory can contain a half-written file (pi flushes
+ * lazily — nothing lands on disk until the first assistant message), a file from
+ * a future version, or plain garbage. A chat list that 500s because one file is
+ * malformed is worse than one that omits it.
+ */
+export function readPiSession(filePath: string): PiSessionContents {
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, "utf8");
+  } catch (err) {
+    log.warn(`Could not read pi session ${filePath}: ${(err as Error).message}`);
+    return { header: null, entries: [] };
+  }
+
+  let parsed: FileEntry[];
+  try {
+    parsed = parseSessionEntries(raw);
+  } catch (err) {
+    log.warn(`Could not parse pi session ${filePath}: ${(err as Error).message}`);
+    return { header: null, entries: [] };
+  }
+
+  const header = (parsed.find((e) => e.type === "session") as SessionHeader | undefined) ?? null;
+  const entries = parsed.filter((e): e is SessionEntry => e.type !== "session");
+  return { header, entries };
+}
+
+/** The `cwd` a session was started in, or `""` when the header is missing. */
+export function readPiSessionCwd(filePath: string): string {
+  return readPiSession(filePath).header?.cwd ?? "";
+}
+
+/**
+ * Every session file under the root, newest first.
+ *
+ * Reads **only the directory**, never a file: the session id comes from the
+ * filename (`<ISO>_<id>.jsonl`) and the timestamps from `stat`. `discoverSessions`
+ * is called on every chat-list render, so opening N files here would be the
+ * difference between a listing and a scan.
+ */
+export function listPiSessions(root: string = resolvePiSessionsRoot()): PiSessionFile[] {
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    // No pi chats yet — an absent directory is the normal state, not an error.
+    return [];
+  }
+
+  const files: PiSessionFile[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const filePath = join(root, name);
+    let stat: Stats;
+    try {
+      stat = statSync(filePath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) continue;
+    files.push({ sessionId: sessionIdFromFileName(name), filePath, stat });
+  }
+
+  return files.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
+}
+
+/**
+ * `<ISO>_<id>.jsonl` → `<id>`; `<id>.jsonl` → `<id>`.
+ *
+ * Splits on the **first** underscore, because a callboard chat id is a UUID and
+ * pi ids are hex — neither contains one, but a user-chosen id might, and the
+ * timestamp prefix never does.
+ */
+export function sessionIdFromFileName(name: string): string {
+  const base = name.replace(/\.jsonl$/, "");
+  const underscore = base.indexOf("_");
+  return underscore === -1 ? base : base.slice(underscore + 1);
+}
+
+// ── Projection into callboard's neutral format ──────────────────────
+
+/**
+ * Project a session file into {@link ParsedMessage}s.
+ *
+ * Entries are taken in **file order** rather than by walking the tree from the
+ * leaf. That is a deliberate divergence from `buildSessionContext()`, which pi
+ * uses to build what the *model* sees: it follows one branch and drops entries
+ * that a compaction summarized away. Callboard is rendering a *transcript* —
+ * everything that happened, including branches the user navigated away from and
+ * turns that were later compacted. Hiding them would make the UI disagree with
+ * the file the user can open.
+ */
+export function parsePiSession(filePath: string): ParsedMessage[] {
+  const { entries } = readPiSession(filePath);
+  const out: ParsedMessage[] = [];
+  for (const entry of entries) out.push(...projectEntry(entry));
+  return out;
+}
+
+function projectEntry(entry: SessionEntry): ParsedMessage[] {
+  const timestamp = entry.timestamp;
+
+  switch (entry.type) {
+    case "message":
+      return projectMessage(entry.message as PiAgentMessage, timestamp);
+
+    case "compaction":
+      // The boundary itself, so the UI can show where history was summarized —
+      // the same shape `AgentEvent.compaction_boundary` carries at run time.
+      return [{ role: "system", type: "system", subtype: "compact_boundary", content: entry.summary ?? "", timestamp }];
+
+    case "branch_summary":
+      return [{ role: "system", type: "system", subtype: "compact_boundary", content: entry.summary ?? "", timestamp }];
+
+    case "custom_message": {
+      // Extension-injected context. `display: false` means pi hides it in its own
+      // UI; callboard honours that rather than surfacing plumbing.
+      if (!entry.display) return [];
+      const text = extractText(entry.content);
+      return text ? [{ role: "user", type: "text", content: text, timestamp }] : [];
+    }
+
+    // Tree/plumbing entries with nothing to render. Listed rather than left to
+    // the default so adding a case is a deliberate act.
+    case "thinking_level_change":
+    case "model_change":
+    case "custom":
+    case "label":
+    case "session_info":
+      return [];
+
+    default:
+      // A pi that adds a tenth entry type renders nothing rather than throwing.
+      return [];
+  }
+}
+
+/** The message shapes that appear inside a `message` entry. */
+interface PiAgentMessage {
+  role?: string;
+  content?: unknown;
+  toolName?: string;
+  toolCallId?: string;
+  isError?: boolean;
+  model?: string;
+  customType?: string;
+  display?: boolean;
+}
+
+function projectMessage(message: PiAgentMessage, timestamp: string): ParsedMessage[] {
+  switch (message?.role) {
+    case "user": {
+      const text = extractText(message.content);
+      return text ? [{ role: "user", type: "text", content: text, timestamp }] : [];
+    }
+
+    case "assistant": {
+      const out: ParsedMessage[] = [];
+      // Order within the message is preserved: reasoning, prose and tool calls
+      // interleave, and re-grouping them would misrepresent the turn.
+      for (const block of asBlocks(message.content)) {
+        const type = (block as { type?: string }).type;
+        if (type === "thinking") {
+          const thinking = String((block as { thinking?: unknown }).thinking ?? "");
+          if (thinking) out.push({ role: "assistant", type: "thinking", content: thinking, timestamp, ...(message.model && { model: message.model }) });
+        } else if (type === "text") {
+          const text = String((block as { text?: unknown }).text ?? "");
+          if (text) out.push({ role: "assistant", type: "text", content: text, timestamp, ...(message.model && { model: message.model }) });
+        } else if (type === "toolCall") {
+          const call = block as { id?: string; name?: string; arguments?: unknown };
+          out.push({
+            role: "assistant",
+            type: "tool_use",
+            content: renderJson(call.arguments),
+            toolName: call.name || "tool",
+            ...(call.id && { toolUseId: call.id }),
+            timestamp,
+          });
+        }
+      }
+      return out;
+    }
+
+    case "toolResult":
+      return [
+        {
+          // Claude-shaped convention the other parsers follow: a tool result is
+          // carried on a user-role message. `handoff.ts` depends on it.
+          role: "user",
+          type: "tool_result",
+          content: extractText(message.content),
+          ...(message.toolName && { toolName: message.toolName }),
+          ...(message.toolCallId && { toolUseId: message.toolCallId }),
+          ...(message.isError && { subtype: "error" }),
+          timestamp,
+        },
+      ];
+
+    default:
+      // `bashExecution`, `custom` and anything pi adds later. A user-run bash
+      // command is real conversation content, so render its text if it has any.
+      {
+        const text = extractText(message?.content);
+        return text ? [{ role: "system", type: "system", content: text, timestamp }] : [];
+      }
+  }
+}
+
+function asBlocks(content: unknown): unknown[] {
+  return Array.isArray(content) ? content : [];
+}
+
+/** Join the text blocks of a pi content value. Tolerates the bare-string form. */
+export function extractText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b): b is { type?: string; text?: unknown } => !!b && typeof b === "object")
+    .filter((b) => b.type === "text")
+    .map((b) => String(b.text ?? ""))
+    .join("");
+}
+
+function renderJson(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// ── The two fields `SessionInfo` would have given us ────────────────
+
+/**
+ * First user message — `SessionInfo.firstMessage`, re-derived.
+ *
+ * Stops at the first match instead of projecting the whole file, so a preview of
+ * a long session costs one parse and a short scan rather than a full projection.
+ */
+export function derivePreview(filePath: string): string | null {
+  const { entries } = readPiSession(filePath);
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as PiAgentMessage;
+    if (message?.role !== "user") continue;
+    const text = extractText(message.content).trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+/**
+ * All conversational text in one string — `SessionInfo.allMessagesText`,
+ * re-derived, for `grep` in {@link SessionProvider.searchSessions}.
+ *
+ * **This is the expensive one, and it is worth being explicit about.** Unlike
+ * discovery (a `readdir`) and resolution (a filename compare), grep genuinely has
+ * to open and parse every candidate file. A pi session is JSONL with the full
+ * text of every turn plus tool arguments and results, so a busy chat is
+ * comfortably in the hundreds of KB. `searchSessions` already narrows by folder
+ * and date *before* reaching for this — see `PiSessionProvider.searchSessions`,
+ * where the ordering of the filters is load-bearing rather than incidental — so
+ * the full cost is only paid by a grep with no other filter.
+ *
+ * Measured on this branch, not estimated: a **1.69 MB** session of **2,601
+ * entries** costs **6.8 ms** through this function (5.6 ms of that is
+ * `readFileSync` + `parseSessionEntries`). So an unscoped grep over a
+ * 200-session directory of that size is **~1.4 s**.
+ *
+ * That is acceptable for today's volumes and would not be at ten times the
+ * count. It is worth stating plainly rather than discovering later: search is
+ * the one operation in this provider that is linear in *bytes on disk* rather
+ * than in *number of chats*.
+ *
+ * `SessionInfo` would not have helped even if it were reachable —
+ * `SessionManager.list()` reads and parses every file too, it just does it
+ * behind a `Promise`. If this becomes a problem the answer is an index, not a
+ * different pi API.
+ */
+export function deriveSearchText(filePath: string): string {
+  const { entries } = readPiSession(filePath);
+  const parts: string[] = [];
+  for (const entry of entries) {
+    if (entry.type === "message") {
+      const text = extractText((entry.message as PiAgentMessage)?.content);
+      if (text) parts.push(text);
+    } else if (entry.type === "compaction" || entry.type === "branch_summary") {
+      if (entry.summary) parts.push(entry.summary);
+    }
+  }
+  return parts.join("\n");
+}

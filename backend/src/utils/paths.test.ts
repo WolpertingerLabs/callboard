@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterAll, afterEach, beforeEach } from "vitest";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isIgnoredProjectFolder, projectDirToFolder, saveIgnoredProjectDirPrefixes } from "./paths.js";
@@ -717,11 +718,37 @@ describe("projectDirToFolder", () => {
 });
 
 describe("isIgnoredProjectFolder", () => {
+  // Every scratch dir this suite has ever made, in creation order. `afterEach`
+  // removes each one as its test ends; `afterAll` asserts the list is gone from
+  // disk. Only these exact paths are ever removed — other suites (and other
+  // developers) have directories in the same temp dir at the same time.
+  const scratchDirs: string[] = [];
+  let originalDataDir: string | undefined;
+
   beforeEach(() => {
     // Point the prefix-config at a throwaway dir so we never touch the real
     // ~/.callboard config, then prime the in-memory cache with known prefixes.
-    process.env.CALLBOARD_DATA_DIR = join(tmpdir(), `cb-paths-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    originalDataDir = process.env.CALLBOARD_DATA_DIR;
+    const scratch = mkdtempSync(join(tmpdir(), "cb-paths-test-"));
+    scratchDirs.push(scratch);
+    process.env.CALLBOARD_DATA_DIR = scratch;
     saveIgnoredProjectDirPrefixes(["-tmp", "-private-"]);
+  });
+
+  // Runs whether the test passed or threw — a cleanup on the success path only
+  // moves the leak to the failure path, which is where the runs pile up.
+  afterEach(() => {
+    if (originalDataDir === undefined) delete process.env.CALLBOARD_DATA_DIR;
+    else process.env.CALLBOARD_DATA_DIR = originalDataDir;
+    rmSync(scratchDirs[scratchDirs.length - 1], { recursive: true, force: true });
+  });
+
+  // The cleanup is only as good as the thing that checks it. This suite leaked
+  // three empty dirs per run for as long as nobody looked; a future edit that
+  // reintroduces that fails here instead of passing quietly.
+  afterAll(() => {
+    expect(scratchDirs.length).toBeGreaterThan(0);
+    expect(scratchDirs.filter((dir) => existsSync(dir))).toEqual([]);
   });
 
   it("slugifies a raw folder path before matching ignore prefixes", () => {

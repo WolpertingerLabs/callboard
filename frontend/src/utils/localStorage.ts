@@ -49,6 +49,7 @@ interface LocalStorageData {
    * model values so switching the toggle restores each one's prior selection.
    * Empty/absent means "use the global default from Settings → API". */
   defaultClineModel?: string;
+  defaultPiModel?: string;
   /** User's last-selected OpenRouter reasoning effort in the New Chat panel.
    * Stored even when the provider is Claude Code so toggling back to OR
    * restores the prior selection. */
@@ -121,7 +122,7 @@ export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   setStorageData(data);
 }
 
-const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex", "acp", "cline"]);
+const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex", "acp", "cline", "pi"]);
 
 export function getDefaultProvider(): AgentProviderKind {
   const data = getStorageData();
@@ -198,6 +199,21 @@ export function getDefaultClineModel(): string {
 export function saveDefaultClineModel(model: string): void {
   const data = getStorageData();
   data.defaultClineModel = model;
+  setStorageData(data);
+}
+
+/**
+ * Last per-chat pi model, remembered across New Chat panels the same way the
+ * ACP one is. Empty means "use the default from Settings → API".
+ */
+export function getDefaultPiModel(): string {
+  const data = getStorageData();
+  return typeof data.defaultPiModel === "string" ? data.defaultPiModel : "";
+}
+
+export function saveDefaultPiModel(model: string): void {
+  const data = getStorageData();
+  data.defaultPiModel = model;
   setStorageData(data);
 }
 

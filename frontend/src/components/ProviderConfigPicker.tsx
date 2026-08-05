@@ -4,6 +4,7 @@ import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
 import AcpModelSelector from "./AcpModelSelector";
 import ClineModelSelector from "./ClineModelSelector";
+import PiModelSelector from "./PiModelSelector";
 
 export type ProviderConfigPickerMode = "panel" | "inline";
 
@@ -65,6 +66,11 @@ interface ProviderConfigPickerProps {
    * needed.
    */
   clineProviderId?: string;
+  // Per-chat pi model, within the provider configured in Settings → API. Same
+  // contract as `clineModel`; kept separate so switching the toggle restores
+  // each provider's prior selection.
+  piModel?: string;
+  onPiModelChange?: (model: string) => void;
   // `null` while /system-info is in flight — OR is treated as available until
   // we know otherwise (the disabled gate only kicks in on an explicit false).
   openRouterConfigured: boolean | null;
@@ -127,6 +133,8 @@ export default function ProviderConfigPicker({
   acpModel,
   onAcpModelChange,
   clineModel,
+  piModel,
+  onPiModelChange,
   onClineModelChange,
   clineProviderId,
   openRouterConfigured,
@@ -145,7 +153,7 @@ export default function ProviderConfigPicker({
   const showCodexKnobs = provider === "codex" && onCodexModelChange !== undefined;
   // Reasoning effort is shared by the two reasoning-capable providers
   // (OpenRouter → OR `reasoning.effort`, Codex → `modelReasoningEffort`).
-  const showEffort = showOrKnobs || provider === "codex" || provider === "cline";
+  const showEffort = showOrKnobs || provider === "codex" || provider === "cline" || provider === "pi";
 
   // The reasoning-effort selector, shared by the OR and Codex control rows. Only
   // one provider's row renders at a time, so the element id never collides.
@@ -386,6 +394,38 @@ export default function ProviderConfigPicker({
       </div>
     ) : null;
 
+  // pi — effort plus a per-chat model. Unlike the Cline field this is a
+  // filtering combobox: pi's OpenRouter catalog answers with ~300 models, and a
+  // plain input with a datalist that long is a scroll rather than a picker.
+  const piControls =
+    provider === "pi" ? (
+      <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
+        {effortControl}
+        {onPiModelChange !== undefined && (
+          <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
+            <label
+              htmlFor={inline ? "inlinePiModel" : "newChatPiModel"}
+              style={{ display: "block", fontSize: inline ? 11 : 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: inline ? 4 : 6 }}
+            >
+              Model
+            </label>
+            <PiModelSelector
+              id={inline ? "inlinePiModel" : "newChatPiModel"}
+              value={piModel ?? ""}
+              onChange={onPiModelChange}
+              placeholder={inline ? "(default)" : "(leave empty to use the default from Settings → API)"}
+              compact={inline}
+            />
+            {!inline && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                Optional — a model id within your configured pi provider. Type to filter; free text is accepted for slugs newer than the catalog.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    ) : null;
+
   return (
     <>
       {showProviderToggle && (
@@ -484,6 +524,29 @@ export default function ProviderConfigPicker({
             >
               Cline
             </button>
+            <button
+              type="button"
+              onClick={() => onProviderChange("pi")}
+              // No `configured` gate, for the same reason as Cline: pi is an
+              // embedded runtime, and it falls back to the backend's own
+              // environment credentials. A genuinely missing key surfaces as the
+              // provider's own error on the first turn.
+              title="Use the pi agent runtime for this chat"
+              style={{
+                flex: "1 1 84px",
+                padding: inline ? "6px 10px" : "8px 12px",
+                fontSize: inline ? 12 : 13,
+                fontWeight: 500,
+                borderRadius: 6,
+                border: provider === "pi" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: provider === "pi" ? "var(--accent)" : "var(--surface)",
+                color: provider === "pi" ? "var(--text-on-accent)" : "var(--text)",
+                cursor: "pointer",
+                transition: "all 0.15s",
+              }}
+            >
+              pi
+            </button>
             {(acpProviders ?? []).map((vendor) => {
               // Selected only when BOTH the kind and the id match — two ACP
               // vendors must never light up together.
@@ -579,6 +642,7 @@ export default function ProviderConfigPicker({
       {codexControls}
       {acpControls}
       {clineControls}
+      {piControls}
     </>
   );
 }

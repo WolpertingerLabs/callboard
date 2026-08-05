@@ -119,6 +119,10 @@
      OpenRouter, emerald Codex and blue ACP fills leave free — four badges have
      to be told apart by colour, not only by their two letters. */
   --badge-provider-cline-bg: #b45309;
+  /* rose-700. White sits on it at 6.28:1. The last hue family left once violet
+     (OpenRouter), emerald (Codex), blue (ACP) and amber (Cline) are taken —
+     five badges have to be told apart by colour, not only by their letters. */
+  --badge-provider-pi-bg: #be123c;
   --badge-provider-text: var(--text-on-accent);
   --badge-env-text: #3fb950;
   --badge-env-bg: rgba(63, 185, 80, 0.12);
@@ -322,6 +326,10 @@
      OpenRouter, emerald Codex and blue ACP fills leave free — four badges have
      to be told apart by colour, not only by their two letters. */
   --badge-provider-cline-bg: #b45309;
+  /* rose-700. White sits on it at 6.28:1. The last hue family left once violet
+     (OpenRouter), emerald (Codex), blue (ACP) and amber (Cline) are taken —
+     five badges have to be told apart by colour, not only by their letters. */
+  --badge-provider-pi-bg: #be123c;
   --badge-provider-text: var(--text-on-accent);
   /* green-800, matching --success: the stdio badge is this colour on a 10%
      tint of it, which left green-600 at 2.83:1. The border keeps green-600 —

@@ -353,8 +353,20 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
   return res.json();
 }
 
-/** The harnesses a chat can run on, and so can be forked into. */
-export type ForkProvider = "claude-code" | "codex" | "openrouter";
+/**
+ * The harnesses a conversation can be forked or handed off into.
+ *
+ * Every `RoutableProviderKind` **except `acp`** — see the fork route's own
+ * guard in `routes/chats.ts` for the two independent reasons ACP is excluded
+ * (the kind names a wire format rather than a harness, and ACP session state
+ * lives inside the agent's process where no client can seed it).
+ *
+ * `cline` and `pi` were missing until Phase 5 of the pi landing. Both session
+ * providers implement `forkSession` and `seedSession`, and both round-trip a
+ * real handoff — Callboard had built the capability into two harnesses and
+ * offered it into neither.
+ */
+export type ForkProvider = "claude-code" | "codex" | "openrouter" | "cline" | "pi";
 
 /**
  * Fork a chat at a message: creates a new chat whose history is a copy of
@@ -1358,6 +1370,41 @@ export async function getClineProviders(): Promise<{ providers: string[] }> {
 export async function getClineModels(providerId: string): Promise<{ providerId: string; models: ClineModelInfo[] }> {
   const res = await fetch(`${BASE}/cline/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
   await assertOk(res, "Failed to get Cline models");
+  return res.json();
+}
+
+/** One model the configured pi provider will route to. */
+export interface PiModelInfo {
+  value: string;
+  displayName: string;
+  description: string;
+}
+
+/**
+ * Provider ids the embedded pi runtime ships a model catalog for.
+ *
+ * Answered offline from a catalog bundled inside the package, so this is
+ * populated before any key is entered — unlike the Cline equivalent, which can
+ * need the network for some providers.
+ */
+export async function getPiProviders(): Promise<{ providers: string[] }> {
+  const res = await fetch(`${BASE}/pi/providers`, { credentials: "include" });
+  await assertOk(res, "Failed to get pi providers");
+  return res.json();
+}
+
+/**
+ * Models for one pi provider.
+ *
+ * Large: OpenRouter alone answers with ~300 entries, which is why
+ * {@link PiModelSelector} filters rather than listing. An empty list means the
+ * catalog could not be read, not that the provider has no models — every model
+ * field accepts free text, so the picker degrades to an input rather than
+ * blocking.
+ */
+export async function getPiModels(providerId: string): Promise<{ providerId: string; models: PiModelInfo[] }> {
+  const res = await fetch(`${BASE}/pi/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get pi models");
   return res.json();
 }
 

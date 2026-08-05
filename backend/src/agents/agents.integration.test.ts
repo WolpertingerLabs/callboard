@@ -186,3 +186,52 @@ describe("factory registry — every routable kind is reachable", () => {
     }
   });
 });
+
+/**
+ * The fork/handoff contract, checked across every routable kind at once.
+ *
+ * `ForkProvider` (frontend) and the fork route's guard (backend) are two
+ * spellings of one promise: *this kind can be handed a conversation it did not
+ * produce*. They drift silently — a provider can implement `seedSession` and
+ * never be offered, which is exactly what happened to Cline and pi until Phase
+ * 5 — so the property is asserted here rather than in either place alone.
+ */
+describe("cross-harness fork and handoff — the target contract", () => {
+  /** Mirrors `ForkProvider` in `frontend/src/api.ts`. Keep the two in step. */
+  const FORK_TARGETS = ROUTABLE_PROVIDER_KINDS.filter((kind) => kind !== "acp");
+
+  it("offers every routable kind except acp", () => {
+    // If a kind is added to the union and forgotten here, this says so.
+    expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "cline", "codex", "openrouter", "pi"]);
+  });
+
+  it("every offered target can be seeded with a conversation it did not produce", () => {
+    for (const kind of FORK_TARGETS) {
+      const provider = getSessionProvider(kind);
+      expect(provider, `${kind} has no SessionProvider`).toBeDefined();
+      expect(typeof provider?.seedSession, `${kind} is offered as a handoff target but implements no seedSession — the fork route would 400`).toBe("function");
+    }
+  });
+
+  /**
+   * ACP's exclusion is deliberate and load-bearing: its session state lives
+   * inside the agent's process, and nothing in the protocol lets a client hand
+   * an agent a conversation it did not have. A seeded transcript would render
+   * correctly and lose all context on the next message.
+   */
+  it("does not offer acp, and acp implements neither operation", () => {
+    expect(FORK_TARGETS).not.toContain("acp");
+    const acp = getSessionProvider("acp");
+    expect(acp).toBeDefined();
+    expect(acp?.seedSession).toBeUndefined();
+    expect(acp?.forkSession).toBeUndefined();
+  });
+
+  it("every kind with a native fork also has a parser to fork from", () => {
+    for (const kind of ROUTABLE_PROVIDER_KINDS) {
+      const provider = getSessionProvider(kind);
+      if (!provider?.forkSession) continue;
+      expect(typeof provider.parseSessionMessages, `${kind} implements forkSession but cannot read its own sessions`).toBe("function");
+    }
+  });
+});

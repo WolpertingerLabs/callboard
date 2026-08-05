@@ -3,6 +3,7 @@ import ModalOverlay from "./ModalOverlay";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
 import OpenRouterModelSelector from "./OpenRouterModelSelector";
+import PiModelSelector from "./PiModelSelector";
 import type { ForkProvider } from "../api";
 
 interface Props {
@@ -19,6 +20,8 @@ const LABELS: Record<ForkProvider, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   openrouter: "OpenRouter",
+  cline: "Cline",
+  pi: "pi",
 };
 
 /**
@@ -79,6 +82,32 @@ export default function ForkHandoffModal({ target, from, onCancel, onConfirm }: 
           {target === "claude-code" && <ClaudeModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
           {target === "codex" && <CodexModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
           {target === "openrouter" && <OpenRouterModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
+          {target === "pi" && <PiModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
+          {/* Cline has no selector of its own: its catalog is per-provider and
+              the provider is a global setting, so there is no list to offer
+              here. Free text, same as the Model Aliases column. */}
+          {target === "cline" && (
+            <input
+              id="fork-handoff-model"
+              type="text"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="Default model"
+              autoComplete="off"
+              spellCheck={false}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 13,
+                fontFamily: "monospace",
+                boxSizing: "border-box",
+              }}
+            />
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>

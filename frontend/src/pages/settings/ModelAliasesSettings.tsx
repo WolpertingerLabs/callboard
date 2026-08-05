@@ -7,6 +7,7 @@ import ClaudeModelSelector from "../../components/ClaudeModelSelector";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
+import PiModelSelector from "../../components/PiModelSelector";
 
 /**
  * Settings → Model Aliases.
@@ -28,9 +29,10 @@ interface AliasRow {
   codex: string;
   acp: string;
   cline: string;
+  pi: string;
 }
 
-const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "", cline: "" });
+const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "", cline: "", pi: "" });
 
 function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
   return (aliases ?? []).map((a) => ({
@@ -41,6 +43,7 @@ function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
     codex: a.targets.codex ?? "",
     acp: a.targets.acp ?? "",
     cline: a.targets.cline ?? "",
+    pi: a.targets.pi ?? "",
   }));
 }
 
@@ -54,6 +57,7 @@ function toAliases(rows: AliasRow[]): ModelAlias[] {
       if (r.codex.trim()) targets.codex = r.codex.trim();
       if (r.acp.trim()) targets.acp = r.acp.trim();
       if (r.cline.trim()) targets.cline = r.cline.trim();
+      if (r.pi.trim()) targets.pi = r.pi.trim();
       const alias: ModelAlias = { name: r.name.trim(), targets };
       if (r.description.trim()) alias.description = r.description.trim();
       return alias;
@@ -134,7 +138,7 @@ export default function ModelAliasesSettings() {
   // A named row with no target at all is a likely mistake — flag it even though
   // toAliases() would silently drop it.
   const targetlessNames = rows
-    .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim() && !r.cline.trim())
+    .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim() && !r.cline.trim() && !r.pi.trim())
     .map((r) => r.name.trim());
 
   const handleSave = async () => {
@@ -281,6 +285,14 @@ export default function ModelAliasesSettings() {
                     spellCheck={false}
                     style={inputStyle}
                   />
+                </div>
+                {/* A real selector, unlike Cline's: pi's catalog is bundled with
+                    the package and answered offline, so it is available here
+                    without knowing which provider is configured — and at ~300
+                    models it needs the filtering more than any other column. */}
+                <div style={{ minWidth: 0 }}>
+                  <label style={colLabel}>pi</label>
+                  <PiModelSelector value={row.pi} onChange={(v) => update(i, { pi: v })} placeholder="google/gemini-3.6-flash" compact />
                 </div>
               </div>
             </div>

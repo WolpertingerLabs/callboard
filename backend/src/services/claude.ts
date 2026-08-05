@@ -1,4 +1,4 @@
-import { getAgentProvider } from "../agents/factory.js";
+import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
 import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter/optionsAdapter.js";
@@ -1056,7 +1056,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // paired provider can't use it, so this second guard is defense-in-depth.
       // ...and cline (→ Cline `thinking` / `reasoningEffort`), whose vocabulary is
       // callboard's `EffortLevel` minus `"none"` — see cline/optionsAdapter.
-      ...(opts.effort && (opts.provider === "openrouter" || opts.provider === "codex" || opts.provider === "cline") && { effort: opts.effort }),
+      ...(opts.effort &&
+        (opts.provider === "openrouter" || opts.provider === "codex" || opts.provider === "cline" || opts.provider === "pi") && { effort: opts.effort }),
       // Pin the per-chat model alongside provider/effort. Meaningful for both
       // user-facing providers: openrouter chats prefer it over the global
       // agentSettings.openRouterModel (OR config block below); claude-code
@@ -1066,8 +1067,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // applied via `session/set_config_option` once the session exists.
       // ...and for cline, where it names a model within the configured Cline
       // provider and is passed on `CoreSessionConfig.modelId`.
+      // ...and for pi, where it names a model within the configured pi provider
+      // and is resolved through `ModelRegistry.find()`.
       ...(opts.model &&
-        (opts.provider === "openrouter" || opts.provider === "acp" || opts.provider === "cline" || (opts.provider ?? "claude-code") === "claude-code") && {
+        (opts.provider === "openrouter" ||
+          opts.provider === "acp" ||
+          opts.provider === "cline" ||
+          opts.provider === "pi" ||
+          (opts.provider ?? "claude-code") === "claude-code") && {
           model: opts.model,
         }),
       // Pin model routing (OpenRouter-only). When on, the classifier below picks
@@ -1744,6 +1751,58 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         `model=${clineModel ?? "(provider default)"}, effort=${chatEffort ?? "(default)"}, ` +
         `baseUrl=${agentSettings.clineBaseUrl?.trim() || "(default)"}, ` +
         `apiKey=${agentSettings.clineApiKey?.trim() ? `…${agentSettings.clineApiKey.trim().slice(-4)}` : "(from environment)"}`,
+    );
+  }
+
+  // pi chats. Same shape as the Cline block above — pi also runs in this process
+  // and takes its credentials as config fields — with one difference that is not
+  // cosmetic: **pi resumes by file path, not by session id**.
+  //
+  // `queryOpts.options.resume` carries the id, as it does for every other
+  // harness. Handing that to pi would silently start a fresh session with the
+  // chat's history gone, so the id is resolved to a path here and travels in its
+  // own explicitly named field. `PiAdapter.assertPiResumePath` throws if a value
+  // that is not an absolute `.jsonl` path ever reaches it.
+  if (providerKind === "pi") {
+    const piModel = resolveSessionModel(
+      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
+      agentSettings.piModel,
+      "pi",
+      agentSettings,
+    );
+    const chatEffort = initialMetadata.effort as EffortLevel | undefined;
+
+    // id → path. A chat whose session file has been removed resolves to nothing;
+    // that is a real (if rare) state — the history is genuinely gone — so it
+    // starts fresh with a warning rather than failing the turn outright. The
+    // thing that must never happen quietly is the *type* confusion above, and
+    // that is what throws.
+    let piResumePath: string | undefined;
+    if (resumeSessionId) {
+      const resolved = getSessionProvider("pi")?.resolveSession(resumeSessionId) ?? null;
+      if (resolved) {
+        piResumePath = resolved.logPath;
+      } else {
+        log.warn(`pi chat ${opts.chatId ?? "(new)"} references session ${resumeSessionId} but no session file exists — starting a fresh session`);
+      }
+    }
+
+    queryOpts.options.pi = {
+      ...(agentSettings.piProviderId?.trim() && { providerId: agentSettings.piProviderId.trim() }),
+      ...(piModel && { model: piModel }),
+      ...(agentSettings.piApiKey?.trim() && { apiKey: agentSettings.piApiKey.trim() }),
+      ...(agentSettings.piBaseUrl?.trim() && { baseUrl: agentSettings.piBaseUrl.trim() }),
+      ...(chatEffort && { effort: chatEffort }),
+      ...(piResumePath && { resumeSessionPath: piResumePath }),
+      // The accessor, not its value — both permission passes must read the
+      // policy at the same moment. See the Cline block above.
+      getPermissions: getDefaultPermissions,
+    };
+    log.info(
+      `pi chat config — trackingId=${trackingId}, provider=${agentSettings.piProviderId?.trim() || "(openrouter)"}, ` +
+        `model=${piModel ?? "(provider default)"}, effort=${chatEffort ?? "(default)"}, ` +
+        `resume=${piResumePath ? "path resolved" : resumeSessionId ? "UNRESOLVED — fresh session" : "new"}, ` +
+        `apiKey=${agentSettings.piApiKey?.trim() ? `…${agentSettings.piApiKey.trim().slice(-4)}` : "(from environment)"}`,
     );
   }
 
