@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
+import { blockImageUrl } from "./imageBlocks.js";
 import { extractTextContent } from "./sessionParser.js";
 import { serverToolToMessages } from "./serverTools.js";
 
@@ -332,14 +333,16 @@ function unwrapUserText(raw: string): { text: string; imageIds: string[] } {
   let recognized = false;
   for (const block of parsed) {
     if (!block || typeof block !== "object") return { text: raw, imageIds: [] };
-    const b = block as { type?: unknown; text?: unknown; image_url?: unknown };
+    const b = block as { type?: unknown; text?: unknown; imageUrl?: unknown; image_url?: unknown };
     if (b.type === "input_text" && typeof b.text === "string") {
       if (b.text.length > 0) textParts.push(b.text);
       recognized = true;
       continue;
     }
-    if (b.type === "input_image" && typeof b.image_url === "string") {
-      const id = storeDataUriImage(b.image_url);
+    if (b.type === "input_image") {
+      const url = blockImageUrl(b);
+      if (url === null) return { text: raw, imageIds: [] };
+      const id = storeDataUriImage(url);
       if (id) imageIds.push(id);
       recognized = true;
       continue;

@@ -42,6 +42,7 @@ import type {
 import { createLogger } from "../../../utils/logger.js";
 import { isIgnoredProjectFolder } from "../../../utils/paths.js";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
+import { orImageBlock } from "./imageBlocks.js";
 import { readFirstUserPrompt, readOpenRouterSession } from "./sessionParser.js";
 import { readOpenRouterTranscript } from "./transcriptParser.js";
 
@@ -458,6 +459,6 @@ export class OpenRouterSessionProvider implements SessionProvider {
 function userBlocks(turn: HandoffTurn): unknown[] {
   return [
     ...(turn.text ? [{ type: "input_text", text: turn.text }] : []),
-    ...(turn.images ?? []).map((img) => ({ type: "input_image", image_url: `data:${img.mimeType};base64,${img.base64}` })),
+    ...(turn.images ?? []).map((img) => orImageBlock(`data:${img.mimeType};base64,${img.base64}`)),
   ];
 }
