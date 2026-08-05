@@ -104,6 +104,10 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     clineApiKey,
     clineBaseUrl,
     clineMaxIterations,
+    piProviderId,
+    piModel,
+    piApiKey,
+    piBaseUrl,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -401,6 +405,15 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(clineApiKey !== undefined && { clineApiKey: normalize(clineApiKey) }),
       ...(clineBaseUrl !== undefined && { clineBaseUrl: normalize(clineBaseUrl) }),
       ...(clineMaxIterations !== undefined && { clineMaxIterations: normalizeCount(clineMaxIterations) }),
+      // pi's credentials live here and nowhere else. Omitting these silently
+      // drops the key the Settings form sent, and the pi block in claude.ts
+      // then starts a session with no `apiKey` — pi falls through to its own
+      // auth.json / $OPENROUTER_API_KEY lookup and ends the turn with
+      // "No API key found for openrouter" before a single token streams.
+      ...(piProviderId !== undefined && { piProviderId: normalize(piProviderId) }),
+      ...(piModel !== undefined && { piModel: normalize(piModel) }),
+      ...(piApiKey !== undefined && { piApiKey: normalize(piApiKey) }),
+      ...(piBaseUrl !== undefined && { piBaseUrl: normalize(piBaseUrl) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });
