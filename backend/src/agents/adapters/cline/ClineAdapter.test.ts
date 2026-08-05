@@ -41,15 +41,27 @@ afterEach(async () => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-async function drain(script: FakeClineScript, options: Record<string, unknown> = {}): Promise<{ events: AgentEvent[]; fake: FakeClineCore }> {
-  core.current = new FakeClineCore(script);
+/**
+ * One turn against whatever fake is currently installed.
+ *
+ * Separate from {@link drain} because `getClineCore()` memoizes its instance:
+ * two turns in one test necessarily share a fake, which is exactly what a chat's
+ * second message needs to be tested against.
+ */
+async function runTurn(prompt = "do the thing", options: Record<string, unknown> = {}): Promise<AgentEvent[]> {
   const adapter = new ClineAdapter();
   const query = adapter.query({
-    prompt: "do the thing",
+    prompt,
     options: { cwd: "/repo", cline: { getPermissions: () => ALL_ALLOW, model: "claude-sonnet-4-6" }, ...options },
   });
   const events: AgentEvent[] = [];
   for await (const event of query) events.push(event);
+  return events;
+}
+
+async function drain(script: FakeClineScript, options: Record<string, unknown> = {}): Promise<{ events: AgentEvent[]; fake: FakeClineCore }> {
+  core.current = new FakeClineCore(script);
+  const events = await runTurn("do the thing", options);
   return { events, fake: core.current };
 }
 
@@ -146,12 +158,69 @@ describe("the gate, as the runtime sees it", () => {
   });
 });
 
-describe("lifecycle", () => {
-  it("resumes an existing session with send(), not start()", async () => {
-    const { fake } = await drain({ text: "again" }, { resume: "existing-session" });
-    expect(fake.startCalls).toHaveLength(0);
-    expect(fake.sendCalls[0]).toMatchObject({ sessionId: "existing-session", prompt: "do the thing" });
+/**
+ * The bug these exist for: sessions were started non-interactive, so the runtime
+ * shut each one down as its first turn ended and every follow-up message came
+ * back `Model provider error — session not found: <id>`.
+ */
+describe("the second message", () => {
+  it("starts sessions interactive, so a follow-up resumes with send()", async () => {
+    core.current = new FakeClineCore({ text: "first" });
+    const sessionId = ((await runTurn("hi"))[0] as { sessionId: string }).sessionId;
+    expect((core.current.startCalls[0] as any).interactive).toBe(true);
+
+    const second = await runTurn("and again", { resume: sessionId });
+
+    expect(core.current.sendCalls).toMatchObject([{ sessionId, prompt: "and again" }]);
+    expect(core.current.startCalls).toHaveLength(1);
+    expect(second.at(-1)).toMatchObject({ type: "result", status: "success" });
   });
+
+  /**
+   * Residency is a process fact; a chat is a durable one. A backend restart —
+   * or the Stop button, which calls `stop()` — leaves a chat whose session the
+   * runtime no longer holds, and sending into it must still work.
+   */
+  it("restarts a session the runtime has dropped, carrying the conversation over", async () => {
+    core.current = new FakeClineCore({ text: "first" });
+    const sessionId = ((await runTurn("hi"))[0] as { sessionId: string }).sessionId;
+    await core.current.stop(sessionId);
+
+    const second = await runTurn("and again", { resume: sessionId });
+
+    expect(core.current.sendCalls).toHaveLength(1); // tried the cheap path first
+    const restart = core.current.startCalls[1] as any;
+    expect(restart.config.sessionId).toBe(sessionId);
+    expect(restart.prompt).toBe("and again");
+    expect(restart.initialMessages).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "first" },
+    ]);
+    expect(second.at(-1)).toMatchObject({ type: "result", status: "success" });
+  });
+
+  /**
+   * Cline's store lives under `~/.cline` and callboard does not own it. When it
+   * has nothing — cleared by the user, or a session seeded by handoff that has
+   * never run — the transcript callboard *does* own answers instead, and the
+   * turn's own prompt is not replayed into the history alongside it.
+   */
+  it("falls back to callboard's transcript when Cline has nothing to give", async () => {
+    core.current = new FakeClineCore({ text: "first" });
+    const sessionId = ((await runTurn("hi"))[0] as { sessionId: string }).sessionId;
+    await core.current.stop(sessionId);
+    core.current.messages.clear();
+
+    await runTurn("and again", { resume: sessionId });
+
+    expect((core.current.startCalls[1] as any).initialMessages).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "first" },
+    ]);
+  });
+});
+
+describe("lifecycle", () => {
 
   /**
    * `dispose()` is instance-wide and irreversible — one chat closing must not

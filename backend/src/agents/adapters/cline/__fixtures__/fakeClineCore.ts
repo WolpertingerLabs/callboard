@@ -7,7 +7,7 @@
  * write a developer's own Cline history — the same class of bug the ACP suite
  * shipped once (#302).
  *
- * It reproduces the three behaviours the adapter actually depends on:
+ * It reproduces the four behaviours the adapter actually depends on:
  *
  *  1. `subscribe()` is **process-wide** — every listener sees every session's
  *     events, which is what makes the adapter's `sessionId` filter load-bearing.
@@ -15,8 +15,12 @@
  *     that stops reading when the promise settles must still drain the queue.
  *  3. `capabilities.requestToolApproval` decides whether a scripted tool call
  *     runs, so a test can prove the gate is wired rather than assuming it.
+ *  4. **`send()` only reaches a resident session**, and a non-interactive one
+ *     stops being resident as soon as its first turn ends. The fixture shipped
+ *     without this and the suite passed while every follow-up message in a real
+ *     Cline chat failed with `session not found`.
  */
-import type { AgentEvent as ClineAgentEvent, CoreSessionEvent, ToolApprovalRequest } from "@cline/sdk";
+import { SessionNotFoundError, type AgentEvent as ClineAgentEvent, type CoreSessionEvent, type Message, type ToolApprovalRequest } from "@cline/sdk";
 
 export interface ScriptedToolCall {
   toolName: string;
@@ -54,6 +58,10 @@ export class FakeClineCore {
   readonly sendCalls: unknown[] = [];
   readonly stopped: string[] = [];
   disposed = false;
+  /** Sessions the runtime still holds — the ones `send()` can reach. */
+  readonly resident = new Set<string>();
+  /** Persisted conversations, keyed by session, as `readMessages` returns them. */
+  readonly messages = new Map<string, Message[]>();
 
   constructor(private readonly script: FakeClineScript = {}) {}
 
@@ -70,13 +78,28 @@ export class FakeClineCore {
 
   async start(input: any): Promise<{ sessionId: string }> {
     this.startCalls.push(input);
-    await this.run(input.config.sessionId, input.capabilities?.requestToolApproval);
-    return { sessionId: input.config.sessionId };
+    const sessionId = input.config.sessionId;
+    this.resident.add(sessionId);
+    this.messages.set(sessionId, [...(input.initialMessages ?? []), { role: "user", content: input.prompt }] as Message[]);
+    try {
+      await this.run(sessionId, input.capabilities?.requestToolApproval);
+    } finally {
+      // The runtime shuts a non-interactive session down as soon as its one run
+      // finishes; an interactive one stays until it is stopped.
+      if (input.interactive !== true) this.resident.delete(sessionId);
+    }
+    return { sessionId };
   }
 
   async send(input: any): Promise<void> {
     this.sendCalls.push(input);
+    if (!this.resident.has(input.sessionId)) throw new SessionNotFoundError(input.sessionId);
+    this.messages.get(input.sessionId)?.push({ role: "user", content: input.prompt } as Message);
     await this.run(input.sessionId, undefined);
+  }
+
+  async readMessages(sessionId: string): Promise<Message[]> {
+    return this.messages.get(sessionId) ?? [];
   }
 
   private async run(sessionId: string, approve?: (req: ToolApprovalRequest) => Promise<{ approved: boolean; reason?: string }>): Promise<void> {
@@ -128,6 +151,7 @@ export class FakeClineCore {
       this.emit(sessionId, { type: "usage", inputTokens: 0, outputTokens: 0, ...this.script.usage } as ClineAgentEvent);
     }
     if (this.script.failWith) throw this.script.failWith;
+    if (this.script.text) this.messages.get(sessionId)?.push({ role: "assistant", content: this.script.text } as Message);
     this.emit(sessionId, {
       type: "done",
       reason: this.script.finishReason ?? "completed",
@@ -138,6 +162,7 @@ export class FakeClineCore {
 
   async stop(sessionId: string): Promise<void> {
     this.stopped.push(sessionId);
+    this.resident.delete(sessionId);
   }
 
   async dispose(): Promise<void> {

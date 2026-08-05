@@ -242,6 +242,45 @@ export function writeSeedMessages(sessionId: string, messages: Message[]): boole
  * after which Cline owns the history — so deleting it would buy nothing and
  * would make a fork of the seeded chat lose its inherited context.
  */
+/**
+ * Project transcript lines back into Cline messages.
+ *
+ * Two callers, one shape: a fork's seed (`ClineSessionProvider.forkSession`) and
+ * the history a resumed turn restarts a lost session with
+ * (`ClineAgentQuery`) both need "this conversation, as messages".
+ *
+ * Deliberately conversational-only: tool calls are folded away rather than
+ * replayed. `handoff.ts` gives the full reasoning — replaying a tool call means
+ * seeding the model with function calls whose ids and names belong to a run that
+ * did not happen in this session, which providers reject or misread. A fork
+ * within one harness *could* in principle preserve them, but the transcript
+ * stores normalized events rather than Cline's own message shape, so
+ * reconstructing faithful `tool-call` / `tool-result` pairs is not available
+ * from what is on disk. Text is.
+ */
+export function transcriptLinesToMessages(lines: ClineTranscriptLine[]): Message[] {
+  const messages: Message[] = [];
+  let pendingAssistant: string[] = [];
+
+  const flush = (): void => {
+    const text = pendingAssistant.join("").trim();
+    if (text) messages.push({ role: "assistant", content: text });
+    pendingAssistant = [];
+  };
+
+  for (const line of lines) {
+    if (line.type === "user_message") {
+      flush();
+      if (line.content.trim()) messages.push({ role: "user", content: line.content });
+      continue;
+    }
+    if (line.type !== "event") continue;
+    if (line.event?.type === "text") pendingAssistant.push(line.event.content);
+  }
+  flush();
+  return messages;
+}
+
 export function readSeededMessages(sessionId: string): Message[] | undefined {
   const path = clineSeedPath(sessionId);
   if (!path || !existsSync(path)) return undefined;

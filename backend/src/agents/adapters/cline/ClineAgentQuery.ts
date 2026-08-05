@@ -19,6 +19,21 @@
  * | `stop(sessionId)` | one session | ends it; it cannot be resumed |
  * | `dispose()` | the instance | ends everything |
  *
+ * ## Residency, and the follow-up message
+ *
+ * `send()` only reaches a session the runtime still holds in memory, and
+ * `interactive` decides whether it holds one at all: a non-interactive session is
+ * shut down the moment its first turn finishes. Sessions here are started
+ * `interactive: true` for that reason — a chat is by definition more than one
+ * turn.
+ *
+ * That still leaves residency as a *process* fact while a chat is a *durable*
+ * one. A backend restart clears every session; `close()` clears this one. So the
+ * resume path treats a missing session as ordinary and restarts it under the same
+ * id with the recovered conversation — see {@link recoverHistory}. Both halves are
+ * needed: without `interactive` every second message fails, and without the
+ * restart every message after a restart or a Stop does.
+ *
  * ## Push → pull
  *
  * `subscribe()` is a callback firing on a process-wide bus, and `AgentQuery` is
@@ -37,14 +52,15 @@
  * @see plans/cline-adapter.md
  * @see plans/cline-spike-findings.md (§5 — abort ≠ stop ≠ dispose)
  */
-import { ClineCore, type CoreSessionEvent } from "@cline/sdk";
+import { ClineCore, isSessionNotFoundError, type CoreSessionEvent, type Message } from "@cline/sdk";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { buildTerminalResult, recordTerminalSignal, translateClineEvent, unwrapSessionEvent, type ClineTurnAccounting } from "./messageAdapter.js";
 import { buildClineStartConfig, type ClineRunOptions } from "./optionsAdapter.js";
 import { buildClineToolPolicies, buildRequestToolApproval, type ClinePermissionContext } from "./permissionAdapter.js";
 import { getClineModels, type ClineModelOption } from "./modelCatalog.js";
-import { ClineTranscriptWriter, readSeededMessages } from "./transcript.js";
+import { findClineTranscript, readClineTranscriptLines } from "./sessionParser.js";
+import { ClineTranscriptWriter, readSeededMessages, transcriptLinesToMessages } from "./transcript.js";
 import { resolveClinePrompt } from "./promptAdapter.js";
 import { buildClineTools } from "./toolAdapter.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
@@ -115,6 +131,51 @@ class EventQueue<T> {
   }
 }
 
+// ── Recovering a session that is no longer resident ─────────────────
+
+/**
+ * The conversation to restart a lost session with.
+ *
+ * Two stores, preferred in that order for a reason:
+ *
+ * 1. **Cline's own persisted messages.** Full fidelity — tool calls and results
+ *    included, in the shape `initialMessages` expects, written by the engine
+ *    that produced them.
+ * 2. **Callboard's transcript.** Text only (see {@link transcriptLinesToMessages}
+ *    for why tool calls are folded away), but it is the store callboard owns and
+ *    guarantees, so it still answers when `~/.cline` does not — a session seeded
+ *    by handoff and never yet run, or a user who cleared Cline's history.
+ *
+ * Empty from both is a real answer, not an error: the turn then starts a session
+ * with no prior context. The user's history is still rendered from callboard's
+ * transcript either way, so the failure mode is a model that has forgotten the
+ * conversation, which beats a message that cannot be sent at all.
+ */
+async function recoverHistory(core: ClineCore, sessionId: string, currentPrompt: string): Promise<Message[]> {
+  try {
+    const persisted = await core.readMessages(sessionId);
+    if (persisted.length > 0) return persisted;
+  } catch (err) {
+    log.warn(`could not read Cline's messages for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const entry = findClineTranscript(sessionId);
+  if (!entry) return [];
+  const lines = readClineTranscriptLines(entry.filePath);
+  // This turn's own prompt is already in the transcript — it is written before
+  // the turn runs, so the reader can pair a reply with what it replied to. It is
+  // the file's *last* `user_message` by construction (one per turn, and this is
+  // the current turn), and `start()` takes the prompt separately, so leaving it
+  // in the history would send it twice.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line?.type !== "user_message") continue;
+    if (line.content === currentPrompt) lines.splice(i, 1);
+    break;
+  }
+  return transcriptLinesToMessages(lines);
+}
+
 // ── Query ───────────────────────────────────────────────────────────
 
 export interface ClineAgentQueryOptions {
@@ -183,21 +244,42 @@ export class ClineAgentQuery implements AgentQuery {
     // already buffered is still yielded.
     let turnSettled = false;
     let turnError: unknown;
-    const turn = (async () => {
-      if (resume) {
-        await core.send({ sessionId, prompt, ...(userImages.length > 0 && { userImages }) });
-        return;
-      }
-      await core.start({
+    const start = (initialMessages: Message[] | undefined): Promise<unknown> =>
+      core.start({
         config: buildClineStartConfig({ cline: this.opts.cline, cwd, sessionId, extraTools }),
         prompt,
         ...(userImages.length > 0 && { userImages }),
+        // Load-bearing, not cosmetic. A non-interactive session is shut down and
+        // dropped from the runtime's session map the moment its first turn
+        // finishes, so every follow-up `send()` failed with "session not found".
+        // Interactive is what a chat is: the session stays resident, keeping its
+        // conversation and its runtime, until something ends it.
+        interactive: true,
         // A seeded session (cross-harness handoff) has prior turns waiting on
         // disk; an ordinary new chat has none and this is empty.
-        initialMessages: readSeededMessages(sessionId),
+        initialMessages,
         capabilities: { requestToolApproval: buildRequestToolApproval(permissionCtx) },
         toolPolicies: buildClineToolPolicies(extraToolNames),
       });
+
+    const turn = (async () => {
+      if (!resume) {
+        await start(readSeededMessages(sessionId));
+        return;
+      }
+      try {
+        await core.send({ sessionId, prompt, ...(userImages.length > 0 && { userImages }) });
+      } catch (err) {
+        if (!isSessionNotFoundError(err)) throw err;
+        // Residency is per-process and per-session: a backend restart clears
+        // every one of them, and `close()` (the Stop button, stream recovery)
+        // ends this one. The chat outlives all three, so a follow-up whose
+        // session is gone is an ordinary state to be in, not a failure — it
+        // restarts the session under the same id with the conversation so far.
+        const history = await recoverHistory(core, sessionId, prompt);
+        log.info(`session ${sessionId} is no longer resident — restarting it with ${history.length} recovered message(s)`);
+        await start(history.length > 0 ? history : undefined);
+      }
     })()
       .catch((err) => {
         turnError = err;

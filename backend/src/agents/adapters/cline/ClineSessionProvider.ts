@@ -53,7 +53,7 @@ import type { HandoffTurn } from "../../handoff.js";
 import { createLogger } from "../../../utils/logger.js";
 import { isIgnoredProjectFolder } from "../../../utils/paths.js";
 import { findClineTranscript, listClineTranscripts, parseClineTranscript, readClineTranscriptCwd, readClineTranscriptPreview, readClineTranscriptLines } from "./sessionParser.js";
-import { clineSeedPath, clineTranscriptPath, isSafePathSegment, writeSeedMessages, type ClineTranscriptLine } from "./transcript.js";
+import { clineSeedPath, clineTranscriptPath, isSafePathSegment, transcriptLinesToMessages, writeSeedMessages, type ClineTranscriptLine } from "./transcript.js";
 import { getClineCore } from "./ClineAgentQuery.js";
 
 const log = createLogger("cline-session-provider");
@@ -337,39 +337,4 @@ function handoffTurnToMessage(turn: HandoffTurn): Message {
       ...turn.images.map((img) => ({ type: "image" as const, data: img.base64, mediaType: img.mimeType })),
     ],
   };
-}
-
-/**
- * Project transcript lines back into Cline messages, for a fork's seed.
- *
- * Deliberately conversational-only: tool calls are folded away rather than
- * replayed. `handoff.ts` gives the full reasoning — replaying a tool call means
- * seeding the model with function calls whose ids and names belong to a run that
- * did not happen in this session, which providers reject or misread. A fork
- * within one harness *could* in principle preserve them, but the transcript
- * stores normalized events rather than Cline's own message shape, so
- * reconstructing faithful `tool-call` / `tool-result` pairs is not available
- * from what is on disk. Text is.
- */
-function transcriptLinesToMessages(lines: ClineTranscriptLine[]): Message[] {
-  const messages: Message[] = [];
-  let pendingAssistant: string[] = [];
-
-  const flush = (): void => {
-    const text = pendingAssistant.join("").trim();
-    if (text) messages.push({ role: "assistant", content: text });
-    pendingAssistant = [];
-  };
-
-  for (const line of lines) {
-    if (line.type === "user_message") {
-      flush();
-      if (line.content.trim()) messages.push({ role: "user", content: line.content });
-      continue;
-    }
-    if (line.type !== "event") continue;
-    if (line.event?.type === "text") pendingAssistant.push(line.event.content);
-  }
-  flush();
-  return messages;
 }
