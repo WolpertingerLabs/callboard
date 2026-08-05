@@ -408,7 +408,7 @@ describe("readOpenRouterTranscript — robustness", () => {
     // data URIs are interned via the image store.
     const userText = JSON.stringify([
       { type: "input_text", text: "can you see this image" },
-      { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+      { type: "input_image", imageUrl: "data:image/png;base64,iVBORw0KGgo=" },
     ]);
     const sessionDir = writeTranscript([
       { v: 1, sessionId: "sess", ts: "2026-05-27T11:00:00Z", kind: "user", text: userText },
@@ -422,6 +422,24 @@ describe("readOpenRouterTranscript — robustness", () => {
         imageIds: ["img-image-png-iVBO"],
       },
     ]);
+  });
+
+  it("still reads snake_case image_url blocks from transcripts written before the SDK 1.x move", () => {
+    // Blocks were written as `image_url` until @openrouter/sdk 1.x made the
+    // camelCase `imageUrl` the only spelling that survives request
+    // validation. Old logs keep the old key forever — dropping support would
+    // re-render those turns as a wall of raw base64.
+    const userText = JSON.stringify([
+      { type: "input_text", text: "legacy turn" },
+      { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+    ]);
+    const sessionDir = writeTranscript([
+      { v: 1, sessionId: "sess", ts: "t", kind: "user", text: userText },
+    ]);
+    expect(readOpenRouterTranscript(sessionDir)![0]).toMatchObject({
+      content: "legacy turn",
+      imageIds: ["img-image-png-iVBO"],
+    });
   });
 
   it("joins multiple input_text blocks with newlines and collects every input_image into imageIds", () => {

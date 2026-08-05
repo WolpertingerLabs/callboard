@@ -569,7 +569,7 @@ describe("translateOptions — prompt translation", () => {
       {
         content: [
           { type: "input_text", text: "describe this" },
-          { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+          { type: "input_image", imageUrl: "data:image/png;base64,AAAA", detail: "auto" },
         ],
       },
     ]);
@@ -596,7 +596,7 @@ describe("translateOptions — prompt translation", () => {
     }
     expect(items).toEqual([
       {
-        content: [{ type: "input_image", image_url: "https://x/y.png" }],
+        content: [{ type: "input_image", imageUrl: "https://x/y.png", detail: "auto" }],
       },
     ]);
   });

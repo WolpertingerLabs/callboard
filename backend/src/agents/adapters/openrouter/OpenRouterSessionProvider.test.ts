@@ -848,7 +848,7 @@ describe("seedSession images", () => {
     const state = JSON.parse(readFileSync(join(TMP_LOGS, SEED_ID, "state.json"), "utf-8"));
     expect(state.messages[0].content).toEqual([
       { type: "input_text", text: "look" },
-      { type: "input_image", image_url: `data:image/png;base64,${PNG_B64}` },
+      { type: "input_image", imageUrl: `data:image/png;base64,${PNG_B64}`, detail: "auto" },
     ]);
   });
 
@@ -865,7 +865,7 @@ describe("seedSession images", () => {
       .find((r) => r.kind === "user");
     expect(JSON.parse(userRecord.text)).toEqual([
       { type: "input_text", text: "look" },
-      { type: "input_image", image_url: `data:image/png;base64,${PNG_B64}` },
+      { type: "input_image", imageUrl: `data:image/png;base64,${PNG_B64}`, detail: "auto" },
     ]);
   });
 

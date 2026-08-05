@@ -31,6 +31,7 @@ import {
 } from "@wolpertingerlabs/openrouter-agent-harness";
 import { resolveOpenRouterLogsRoot } from "./logsRoot.js";
 import { formatLogFields } from "./logFields.js";
+import { orImageBlock, type OrImageBlock } from "./imageBlocks.js";
 import {
   applyModelSlugPolicy,
   applyPluginPolicy,
@@ -725,13 +726,13 @@ function collectMcpTools(mcpServers: ClaudeShapedOptions["mcpServers"]): {
  */
 function claudeImageToOrBlock(
   source: { type?: unknown; media_type?: unknown; data?: unknown; url?: unknown } | undefined,
-): { type: "input_image"; image_url: string } | null {
+): OrImageBlock | null {
   if (!source) return null;
   if (source.type === "base64" && typeof source.media_type === "string" && typeof source.data === "string") {
-    return { type: "input_image", image_url: `data:${source.media_type};base64,${source.data}` };
+    return orImageBlock(`data:${source.media_type};base64,${source.data}`);
   }
   if (source.type === "url" && typeof source.url === "string") {
-    return { type: "input_image", image_url: source.url };
+    return orImageBlock(source.url);
   }
   return null;
 }

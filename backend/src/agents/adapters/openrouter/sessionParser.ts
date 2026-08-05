@@ -307,7 +307,7 @@ function readLatestResponseMeta(reqDir: string, requestIdFromDirName: string): R
  * timestamp }`) into the ResponseMeta we attach onto ParsedMessages.
  *
  * The inner `response` is a raw `OpenResponsesResult` from `@openrouter/sdk`
- * (see `@openrouter/sdk/models/openresponsesresult.d.ts`) — we read it as
+ * (see `@openrouter/sdk/esm/models/openresponsesresult.d.ts`) — we read it as
  * loosely-typed JSON so the parser doesn't take a hard dep on the SDK
  * runtime schema and stays forward-compatible with shape additions.
  *

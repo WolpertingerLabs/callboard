@@ -116,6 +116,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@openrouter/sdk": "^1.2.7",
     "@types/eslint__js": "^8.42.3",
     "@vitest/coverage-v8": "^4.1.9",
     "concurrently": "^9.0.0",
@@ -131,6 +132,7 @@
     "vitest": "^4.0.18"
   },
   "overrides": {
-    "shell-quote": "1.8.4"
+    "shell-quote": "1.8.4",
+    "@openrouter/sdk": "^1.2.7"
   }
 }
