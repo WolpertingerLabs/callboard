@@ -27,7 +27,9 @@ import {
   getDefaultAcpProviderId,
   saveDefaultAcpProviderId,
   getDefaultAcpModel,
+  getDefaultPiModel,
   saveDefaultAcpModel,
+  saveDefaultPiModel,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -116,6 +118,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // own configured model alone; there is no callboard-side global ACP default,
   // because one kind covers many vendors whose catalogs share nothing.
   const [acpModel, setAcpModel] = useState<string>(getDefaultAcpModel);
+  const [piModel, setPiModel] = useState<string>(getDefaultPiModel);
   // `null` until the /system-info fetch returns. We use this tri-state to
   // avoid destroying a user's saved "openrouter" preference during the
   // first-paint race: if they click Create before the fetch resolves we
@@ -169,7 +172,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
   // Each provider carries its own model selection; forward the matching one.
   // ACP's is the vendor's own model id, applied after the session attaches.
-  const modelForProvider = (p: AgentProviderKind): string => (p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? acpModel : claudeModel);
+  const modelForProvider = (p: AgentProviderKind): string =>
+    p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? acpModel : p === "pi" ? piModel : claudeModel;
 
   const confirmRemoveRecentDir = () => {
     removeRecentDirectory(confirmModal.path);
@@ -196,6 +200,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
     saveDefaultAcpModel(acpModel);
+    saveDefaultPiModel(piModel);
     // Runtime guard: only downgrade to claude-code when we KNOW the chosen
     // provider is not configured. While still loading (null), trust the user's
     // choice — sendMessage rejects loudly if creds are missing, so we get a
@@ -239,6 +244,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
     saveDefaultAcpModel(acpModel);
+    saveDefaultPiModel(piModel);
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -474,6 +480,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
               onAcpModelChange={setAcpModel}
+              piModel={piModel}
+              onPiModelChange={setPiModel}
               effort={effort}
               onEffortChange={setEffort}
               model={model}
@@ -530,7 +538,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                 {permissionsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 <span>Permissions: {getPermissionsSummary(defaultPermissions)}</span>
               </button>
-              {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} />}
+              {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} provider={provider} />}
             </div>
 
             {/* Behavior Section — collapsible, default closed */}
@@ -705,6 +713,8 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
               onAcpModelChange={setAcpModel}
+              piModel={piModel}
+              onPiModelChange={setPiModel}
               effort={effort}
               onEffortChange={setEffort}
               model={model}

@@ -1351,6 +1351,41 @@ export async function getClineModels(providerId: string): Promise<{ providerId: 
   return res.json();
 }
 
+/** One model the configured pi provider will route to. */
+export interface PiModelInfo {
+  value: string;
+  displayName: string;
+  description: string;
+}
+
+/**
+ * Provider ids the embedded pi runtime ships a model catalog for.
+ *
+ * Answered offline from a catalog bundled inside the package, so this is
+ * populated before any key is entered — unlike the Cline equivalent, which can
+ * need the network for some providers.
+ */
+export async function getPiProviders(): Promise<{ providers: string[] }> {
+  const res = await fetch(`${BASE}/pi/providers`, { credentials: "include" });
+  await assertOk(res, "Failed to get pi providers");
+  return res.json();
+}
+
+/**
+ * Models for one pi provider.
+ *
+ * Large: OpenRouter alone answers with ~300 entries, which is why
+ * {@link PiModelSelector} filters rather than listing. An empty list means the
+ * catalog could not be read, not that the provider has no models — every model
+ * field accepts free text, so the picker degrades to an input rather than
+ * blocking.
+ */
+export async function getPiModels(providerId: string): Promise<{ providerId: string; models: PiModelInfo[] }> {
+  const res = await fetch(`${BASE}/pi/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get pi models");
+  return res.json();
+}
+
 export interface AcpProviderInfo {
   id: string;
   label: string;

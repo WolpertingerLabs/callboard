@@ -9,7 +9,6 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
   addUsage,
   buildTerminalResult,
-  createPiEventTranslator,
   extractText,
   extractThinking,
   PI_ADAPTER,
@@ -32,49 +31,40 @@ describe("tool events", () => {
    * logging artifact. Emitting `tool_use` here would render "running bash" for a
    * tool that is about to be denied and never runs.
    */
-  it("emits nothing on tool_execution_start, because it precedes the gate", () => {
-    expect(translatePiEvent(ev({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "ls" } }))).toEqual([]);
-  });
-
-  it("emits tool_use and tool_result together on tool_execution_end", () => {
-    const translate = createPiEventTranslator();
-    translate(ev({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "ls" } }));
-    const events = translate(
-      ev({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: { content: [{ type: "text", text: "file.txt" }] } }),
-    );
-    expect(events).toEqual([
-      { type: "tool_use", toolName: "bash", input: { command: "ls" }, callId: "c1" },
-      { type: "tool_result", callId: "c1", content: "file.txt" },
+  /**
+   * Phase 4 reversed Phase 1's deferral. `Chat.tsx` computes `isRunning` as
+   * `toolResult === null && streaming`, so a `tool_use` emitted alongside its
+   * result is never running — a long `bash` under pi rendered nothing at all,
+   * which is the #317/#318 dead-chat failure. Emitting at start gives the UI a
+   * bubble to show, and #318's elapsed clock works unchanged.
+   */
+  it("emits tool_use at tool_execution_start, so a running tool has a bubble", () => {
+    expect(translatePiEvent(ev({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "npm install" } }))).toEqual([
+      { type: "tool_use", toolName: "bash", input: { command: "npm install" }, callId: "c1" },
     ]);
   });
 
-  /**
-   * Found by running a real turn: every `tool_use.input` arrived as `{}`.
-   * `emitToolExecutionEnd` in pi-agent-core sends only
-   * `{ toolCallId, toolName, result, isError }` — the arguments live on the
-   * START event alone. Without carrying them forward the UI renders "read" with
-   * no path.
-   */
-  it("carries args forward from the start event, which is the only one that has them", () => {
-    const translate = createPiEventTranslator();
-    translate(ev({ type: "tool_execution_start", toolCallId: "c9", toolName: "read", args: { path: "README.md" } }));
-    const [use] = translate(ev({ type: "tool_execution_end", toolCallId: "c9", toolName: "read", result: { content: [] } }));
+  it("takes args from the start event, the only one that carries them", () => {
+    // `emitToolExecutionEnd` in pi-agent-core sends
+    // `{ toolCallId, toolName, result, isError }` and no args.
+    const [use] = translatePiEvent(ev({ type: "tool_execution_start", toolCallId: "c9", toolName: "read", args: { path: "README.md" } }));
     expect(use).toMatchObject({ type: "tool_use", input: { path: "README.md" } });
   });
 
-  it("keeps concurrent tool calls' args apart", () => {
-    const translate = createPiEventTranslator();
-    translate(ev({ type: "tool_execution_start", toolCallId: "a", toolName: "read", args: { path: "a.txt" } }));
-    translate(ev({ type: "tool_execution_start", toolCallId: "b", toolName: "read", args: { path: "b.txt" } }));
-    const [useB] = translate(ev({ type: "tool_execution_end", toolCallId: "b", toolName: "read", result: { content: [] } }));
-    const [useA] = translate(ev({ type: "tool_execution_end", toolCallId: "a", toolName: "read", result: { content: [] } }));
-    expect(useB).toMatchObject({ input: { path: "b.txt" } });
-    expect(useA).toMatchObject({ input: { path: "a.txt" } });
+  it("emits only tool_result at tool_execution_end", () => {
+    expect(
+      translatePiEvent(ev({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: { content: [{ type: "text", text: "done" }] } })),
+    ).toEqual([{ type: "tool_result", callId: "c1", content: "done" }]);
   });
 
-  it("falls back to an empty input when no start event was seen", () => {
-    const [use] = createPiEventTranslator()(ev({ type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: { content: [] } }));
-    expect(use).toMatchObject({ type: "tool_use", input: {} });
+  it("pairs start and end on one callId, so no bubble is left unresolved", () => {
+    const [use] = translatePiEvent(ev({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {} }));
+    const [result] = translatePiEvent(ev({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: { content: [] } }));
+    expect((use as { callId: string }).callId).toBe((result as { callId: string }).callId);
+  });
+
+  it("defaults a missing tool name rather than rendering undefined", () => {
+    expect(translatePiEvent(ev({ type: "tool_execution_start", toolCallId: "c1" }))[0]).toMatchObject({ toolName: "unknown_tool", input: {} });
   });
 
   /**
@@ -82,26 +72,20 @@ describe("tool events", () => {
    * deferred to `tool_execution_end`, a blocked call produces a matched
    * use/result pair in one step — never a `tool_use` with no `tool_result`.
    */
-  it("renders a blocked tool as an attempted call with an error result", () => {
-    const events = translatePiEvent(
-      ev({
-        type: "tool_execution_end",
-        toolCallId: "c1",
-        toolName: "bash",
-        args: { command: "echo pwned > PWNED.txt" },
-        result: { content: [{ type: "text", text: "DENIED by Callboard axis codeExecution" }], details: {} },
-        isError: true,
-      }),
-    );
-    expect(events[0]).toMatchObject({ type: "tool_use", toolName: "bash" });
-    expect(events[1]).toEqual({
-      type: "tool_result",
-      callId: "c1",
-      content: "DENIED by Callboard axis codeExecution",
-      isError: true,
-    });
-    // The pair shares a callId, so nothing is left unresolved in the UI.
-    expect((events[0] as { callId: string }).callId).toBe((events[1] as { callId: string }).callId);
+  it("closes a blocked tool with an error result, so its bubble resolves", () => {
+    // The denial case Phase 1's deferral protected against: `tool_execution_end`
+    // always follows a start, so the bubble always closes rather than spinning.
+    expect(
+      translatePiEvent(
+        ev({
+          type: "tool_execution_end",
+          toolCallId: "c1",
+          toolName: "bash",
+          result: { content: [{ type: "text", text: "DENIED by Callboard axis codeExecution" }], details: {} },
+          isError: true,
+        }),
+      ),
+    ).toEqual([{ type: "tool_result", callId: "c1", content: "DENIED by Callboard axis codeExecution", isError: true }]);
   });
 
   it("passes tool_execution_update through as adapter_specific", () => {

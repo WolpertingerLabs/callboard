@@ -18,6 +18,18 @@
  *   a dedicated case. That is the design working — the fallback is what makes a
  *   vendor a data entry — but it only works if it probes the keys real agents
  *   send, which is why `filePath` is in the path list below.
+ * - **pi** — seven lowercase built-ins (`read`, `bash`, `edit`, `write`,
+ *   `grep`, `find`, `ls`) with plain `path` / `command` / `pattern` inputs, plus
+ *   bare-named in-process callboard tools. Its keys read off the shipped
+ *   typebox schemas, not guessed: `read {path, offset, limit}`,
+ *   `bash {command, timeout}`, `edit {path, edits[{oldText,newText}]}`,
+ *   `write {path, content}`, `grep {pattern, path, glob, …}`,
+ *   `find {pattern, path, limit}`, `ls {path, limit}`.
+ *
+ *   Most of those would land on `fallbackSummary` and come out roughly right by
+ *   accident. They get dedicated cases anyway — that accident is exactly what
+ *   #318 found broken for OpenCode, and `edit` in particular has no fallback
+ *   that can say how many edits it made.
  *
  * This module parses all three conventions down to a bare tool name, renders
  * a short display name, and produces the one-line contextual summary shown in
@@ -98,6 +110,24 @@ function summarizeCodexChanges(changes: CodexFileChange[]): string {
 }
 
 /**
+ * pi's `edit` takes `{ path, edits: [{ oldText, newText }] }` — a change *list*,
+ * like Codex's `Edit`, but keyed differently and scoped to one file.
+ *
+ * The file alone is what the path probe would give; the count is the part that
+ * says whether this was a one-line tweak or a rewrite. An `edit` with no list
+ * belongs to some other harness and gets the plain path.
+ */
+function summarizePiEdits(input: Record<string, unknown>): string {
+  const count = Array.isArray(input.edits) ? input.edits.length : 0;
+  // No edit list ⇒ not pi's shape (OpenCode's `edit`, say). Defer to the shared
+  // path probe rather than inventing a count.
+  if (count === 0) return path2(input);
+  const suffix = path2(input);
+  if (!suffix) return ` - ${count} edit${count === 1 ? "" : "s"}`;
+  return count > 1 ? `${suffix} (${count} edits)` : suffix;
+}
+
+/**
  * Last-resort summary for tools without a dedicated case (unknown MCP tools,
  * future harness tools): probe common input fields in priority order.
  */
@@ -164,9 +194,29 @@ export function getToolSummary(toolName: string, content: string): string {
       case "monitor":
         return input.command ? ` - ${truncate(input.command)}` : "";
 
+      // ---- Lowercase file tools: pi AND the ACP vendors ---------------------
+      // These names collide. pi's inputs are `path`; OpenCode's are `filePath`.
+      // `path2` probes both (plus Claude's `file_path`), so one case serves
+      // every harness that names its tools this way — which is the point of
+      // having a shared formatter rather than a per-provider one.
+      case "read":
+      case "write":
+      case "ls":
+        return path2(input);
+      case "edit":
+        // pi sends `{ path, edits: [...] }`; OpenCode sends
+        // `{ filePath, oldString, newString }`. Only the first has a count
+        // worth showing, and `summarizePiEdits` falls through to the shared
+        // path probe when there is no edit list.
+        return summarizePiEdits(input);
+      case "find":
+        return input.pattern ? ` - ${truncate(String(input.pattern))}` : path2(input);
+
       // ---- Search / navigation ----------------------------------------------
+      // pi's is the bare `grep`, with the same `pattern` key as the other two.
       case "Grep":
       case "grep_files":
+      case "grep":
         return input.pattern ? ` - '${input.pattern}'` : "";
       case "Glob":
       case "glob":

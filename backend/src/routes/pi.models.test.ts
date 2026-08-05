@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
+/* eslint-disable @typescript-eslint/no-explicit-any -- route bodies are free-form JSON; each case asserts its own shape. */
 
 const dataDir = mkdtempSync(join(tmpdir(), "cb-pi-route-"));
 process.env.CALLBOARD_DATA_DIR = dataDir;
@@ -22,7 +23,6 @@ const { piRouter } = await import("./pi.js");
 afterAll(() => rmSync(dataDir, { recursive: true, force: true }));
 
 function handlerFor(path: string): (req: Request, res: Response) => Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const layer = (piRouter as any).stack.find((l: any) => l.route?.path === path && l.route.methods.get);
   if (!layer) throw new Error(`no GET handler for ${path}`);
   return layer.route.stack[0].handle;
@@ -30,18 +30,19 @@ function handlerFor(path: string): (req: Request, res: Response) => Promise<void
 
 interface CapturedResponse {
   status: number;
-  body: Record<string, never> & { [key: string]: unknown };
+  /** Whatever the handler passed to `res.json()`; each case narrows what it reads. */
+  body: Record<string, any>;
 }
 
 async function get(path: string, query: Record<string, unknown> = {}): Promise<CapturedResponse> {
   let status = 200;
-  let body: unknown = null;
+  let body: Record<string, any> = {};
   const res = {
     status(code: number) {
       status = code;
       return this;
     },
-    json(payload: unknown) {
+    json(payload: Record<string, any>) {
       body = payload;
       return this;
     },

@@ -4,6 +4,15 @@ interface PermissionSettingsProps {
   permissions: DefaultPermissions;
   onChange: (permissions: DefaultPermissions) => void;
   title?: string;
+  /**
+   * Which harness these permissions will govern, when that is known.
+   *
+   * Only used to say when an axis governs *nothing* on the chosen harness. An
+   * axis that silently does nothing is the decorative-gate failure
+   * `adapters/acp/vendors.ts` names as disqualifying — it just wears a different
+   * costume when the control is real and the tool behind it is absent.
+   */
+  provider?: string;
 }
 
 function PermissionRow({
@@ -67,7 +76,7 @@ function PermissionRow({
   );
 }
 
-export default function PermissionSettings({ permissions, onChange, title }: PermissionSettingsProps) {
+export default function PermissionSettings({ permissions, onChange, title, provider }: PermissionSettingsProps) {
   const updatePermission = (category: keyof DefaultPermissions, level: PermissionLevel) => {
     onChange({
       ...permissions,
@@ -127,6 +136,16 @@ export default function PermissionSettings({ permissions, onChange, title }: Per
         permissions={permissions}
         onUpdate={updatePermission}
       />
+
+      {/* pi ships seven built-in tools — read, bash, edit, write, grep, find,
+          ls — and none of them reaches the network. Leaving the control looking
+          functional would be a gate that governs nothing. */}
+      {provider === "pi" && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "6px 0 2px", lineHeight: 1.5 }}>
+          <strong style={{ color: "var(--warning)" }}>Not used by pi.</strong> pi has no built-in web tool, so this axis governs nothing on a pi chat. It still
+          applies to any Callboard tool categorised as web access.
+        </div>
+      )}
 
       <div
         style={{
