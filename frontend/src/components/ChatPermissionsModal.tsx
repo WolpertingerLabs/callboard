@@ -11,9 +11,11 @@ interface ChatPermissionsModalProps {
   chatId: string | undefined;
   permissions: DefaultPermissions;
   onPermissionsChange: (permissions: DefaultPermissions) => void;
+  /** The chat's harness, so an axis it does not use can say so. */
+  provider?: string;
 }
 
-export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissions, onPermissionsChange }: ChatPermissionsModalProps) {
+export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissions, onPermissionsChange, provider }: ChatPermissionsModalProps) {
   const [localPermissions, setLocalPermissions] = useState<DefaultPermissions>(permissions);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +98,7 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
           permissions={localPermissions}
           onChange={setLocalPermissions}
           title={chatId ? "Permissions for This Chat" : "Default Permissions for New Chat"}
+          provider={provider}
         />
 
         {/* Info text */}

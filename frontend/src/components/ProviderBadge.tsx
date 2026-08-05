@@ -1,6 +1,6 @@
 interface ProviderBadgeProps {
   // Chat provider from metadata. "openrouter" → "OR", "codex" → "CX",
-  // "cline" → "CL", "acp" → the vendor's tag. Anything else (including undefined/null, which is
+  // "cline" → "CL", "pi" → "PI", "acp" → the vendor's tag. Anything else (including undefined/null, which is
   // how Claude Code chats are stored — only the alternative providers are
   // persisted to metadata) renders as the "CC" default.
   provider?: string | null;
@@ -31,7 +31,7 @@ const ACP_VENDOR_TAGS: Record<string, { tag: string; label: string }> = {
 };
 
 // Small tag marking which provider a chat runs on: "OR" for OpenRouter,
-// "CX" for Codex, "CL" for Cline, the vendor's own tag for an ACP agent,
+// "CX" for Codex, "CL" for Cline, "PI" for pi, the vendor's own tag for an ACP agent,
 // "CC" (Claude Code) otherwise. Shared by the chat header, the chat list, and the folder list so
 // the indicator is consistent everywhere.
 export default function ProviderBadge({ provider, acpProviderId, compact }: ProviderBadgeProps) {
@@ -39,18 +39,21 @@ export default function ProviderBadge({ provider, acpProviderId, compact }: Prov
   const isCodex = provider === "codex";
   const isAcp = provider === "acp";
   const isCline = provider === "cline";
+  const isPi = provider === "pi";
   const vendor = isAcp && acpProviderId ? ACP_VENDOR_TAGS[acpProviderId] : undefined;
 
-  const label = isOpenRouter ? "OR" : isCodex ? "CX" : isCline ? "CL" : isAcp ? (vendor?.tag ?? "ACP") : "CC";
+  const label = isOpenRouter ? "OR" : isCodex ? "CX" : isCline ? "CL" : isPi ? "PI" : isAcp ? (vendor?.tag ?? "ACP") : "CC";
   const title = isOpenRouter
     ? "This chat is routed through OpenRouter"
     : isCodex
       ? "This chat runs on OpenAI Codex"
       : isCline
         ? "This chat runs on the Cline agent runtime"
-        : isAcp
-          ? `This chat runs on ${vendor?.label ?? "an ACP agent"}`
-          : "This chat runs on Claude Code";
+        : isPi
+          ? "This chat runs on the pi agent runtime"
+          : isAcp
+            ? `This chat runs on ${vendor?.label ?? "an ACP agent"}`
+            : "This chat runs on Claude Code";
 
   const palette = isOpenRouter
     ? { background: "var(--badge-provider-openrouter-bg)", color: "var(--badge-provider-text)" }
@@ -58,6 +61,8 @@ export default function ProviderBadge({ provider, acpProviderId, compact }: Prov
       ? { background: "var(--badge-provider-codex-bg)", color: "var(--badge-provider-text)" }
       : isCline
         ? { background: "var(--badge-provider-cline-bg)", color: "var(--badge-provider-text)" }
+        : isPi
+          ? { background: "var(--badge-provider-pi-bg)", color: "var(--badge-provider-text)" }
         : isAcp
           ? { background: "var(--badge-provider-acp-bg)", color: "var(--badge-provider-text)" }
           : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" };

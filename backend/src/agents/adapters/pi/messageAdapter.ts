@@ -22,27 +22,30 @@
  * [tool_execution_end]   bash   isError=true, "DENIED by Callboard axis codeExecution"
  * ```
  *
- * `tool_execution_start` fires **before** the permission gate. Emitting
- * callboard's `tool_use` on it would render "running bash" for a tool that is
- * about to be denied and never runs — a spinner that resolves into a denial, or
- * worse, one left spinning if the shapes do not pair up.
+ * `tool_execution_start` fires **before** the permission gate.
  *
- * So `tool_use` is emitted from `tool_execution_end` instead, immediately before
- * the `tool_result` that end also carries. Both events still reach the UI, still
- * paired by `callId`, and a denied tool renders as an attempted call with an
- * error result rather than as work in progress. The cost is that a long-running
- * *allowed* tool shows nothing until it finishes; `tool_execution_update` is
- * passed through as `adapter_specific` so a future UI can restore progress
- * without re-introducing the false start.
+ * Phase 1 read that as a reason to *defer* `tool_use` to `tool_execution_end`,
+ * so a tool about to be denied would never render as running. **Phase 4 reversed
+ * it**, because deferring turns out to cause the worse failure — the one #317
+ * and #318 are about. `Chat.tsx` computes `isRunning` as
+ * `toolResult === null && streaming`, so a `tool_use` that arrives in the same
+ * breath as its `tool_result` is *never* running: a 90-second `npm install`
+ * under pi rendered nothing at all, not even a spinner. That is a chat that
+ * looks dead, which is precisely what #318 exists to prevent.
  *
- * **`tool_execution_end` does not carry `args`.** Only `tool_execution_start`
- * and `tool_execution_update` do — `emitToolExecutionEnd` in `pi-agent-core`
- * sends `{ toolCallId, toolName, result, isError }` and nothing else. Found by
- * running a real turn and watching every `tool_use.input` arrive as `{}`, which
- * would leave the UI rendering "read" with no path. So the translator is
- * **stateful**: it remembers the arguments from the start event and attaches
- * them to the deferred `tool_use`. That is what {@link createPiEventTranslator}
- * exists for; `translatePiEvent` is the stateless core, kept exported for tests.
+ * Emitting at `tool_execution_start` puts pi on the same footing as every other
+ * harness — Claude Code emits `tool_use` and *then* calls `canUseTool` too — and
+ * lets `ToolCallBubble`'s elapsed clock (#318) work unchanged. The denial case
+ * the deferral protected against is not a real cost: `tool_execution_end` always
+ * follows a start, so the pair always closes, and "the agent tried `bash` and
+ * was denied" is what the transcript *should* say. While an axis set to `ask`
+ * has a prompt open, the bubble shows as running with a permission request beside
+ * it, which is exactly the Claude Code behaviour users already know.
+ *
+ * It is also simpler: `tool_execution_end` carries `{ toolCallId, toolName,
+ * result, isError }` and **no `args`** (`emitToolExecutionEnd` in
+ * `pi-agent-core`), so deferring required carrying the arguments forward in a
+ * stateful translator. Emitting at start reads them where they natively are.
  *
  * ## Usage lands on `message_end`, and `turn_end` has none
  *
@@ -114,7 +117,7 @@ interface PiMessageLike {
  * `PiAgentQuery` calls after the stream ends. Same shape as the Cline and ACP
  * adapters.
  */
-export function translatePiEvent(event: AgentSessionEvent, pendingArgs?: Map<string, unknown>): AgentEvent[] {
+export function translatePiEvent(event: AgentSessionEvent): AgentEvent[] {
   switch (event.type) {
     case "message_end": {
       const message = (event as { message?: PiMessageLike }).message;
@@ -140,12 +143,17 @@ export function translatePiEvent(event: AgentSessionEvent, pendingArgs?: Map<str
     }
 
     case "tool_execution_start": {
-      // Deliberately emits nothing. See the header: this precedes the permission
-      // gate. But it is the ONLY event carrying the arguments, so they are
-      // stashed here for the `tool_use` that `tool_execution_end` will produce.
-      const e = event as unknown as { toolCallId?: string; args?: unknown };
-      if (pendingArgs && e.toolCallId) pendingArgs.set(e.toolCallId, e.args ?? {});
-      return [];
+      // The only event carrying `args`, and — since Phase 4 — where `tool_use`
+      // is emitted, so the UI has a bubble to show as running. See the header.
+      const e = event as unknown as { toolCallId?: string; toolName?: string; args?: unknown };
+      return [
+        {
+          type: "tool_use",
+          toolName: e.toolName ?? "unknown_tool",
+          input: e.args ?? {},
+          callId: e.toolCallId ?? "",
+        },
+      ];
     }
 
     case "tool_execution_end": {
@@ -155,19 +163,10 @@ export function translatePiEvent(event: AgentSessionEvent, pendingArgs?: Map<str
         result?: { content?: unknown; details?: unknown };
         isError?: boolean;
       };
-      const callId = e.toolCallId ?? "";
-      const input = pendingArgs?.get(callId) ?? {};
-      pendingArgs?.delete(callId);
       return [
         {
-          type: "tool_use",
-          toolName: e.toolName ?? "unknown_tool",
-          input,
-          callId,
-        },
-        {
           type: "tool_result",
-          callId,
+          callId: e.toolCallId ?? "",
           content: extractText(e.result?.content) || renderUnknown(e.result?.content),
           ...(e.isError ? { isError: true } : {}),
         },
@@ -175,10 +174,12 @@ export function translatePiEvent(event: AgentSessionEvent, pendingArgs?: Map<str
     }
 
     case "tool_execution_update":
-      // Progress from a long-running tool. No slot in the core union, and the
-      // reason a deferred `tool_use` is affordable — a future UI can render
-      // progress from here without re-introducing a start event that precedes
-      // the gate.
+      // Streaming output from a long-running tool (bash chunks, mostly). The
+      // core union has no per-tool progress slot and adding a stream `type`
+      // would need a capability gate for one incremental nicety, so this rides
+      // through as `adapter_specific`. The dead-chat problem is already solved
+      // by the running bubble plus #318's elapsed clock; this is the raw
+      // material if a future UI wants live output inside it.
       return [{ type: "adapter_specific", adapter: PI_ADAPTER, payload: event }];
 
     case "compaction_start":
@@ -213,19 +214,6 @@ export function translatePiEvent(event: AgentSessionEvent, pendingArgs?: Map<str
     default:
       return [];
   }
-}
-
-/**
- * A stateful translator for one turn.
- *
- * Carries the `tool_execution_start` arguments forward to the `tool_use` that
- * `tool_execution_end` produces — see the header. One per query; the map is
- * bounded by the number of tool calls in flight, and entries are deleted as
- * their end events arrive.
- */
-export function createPiEventTranslator(): (event: AgentSessionEvent) => AgentEvent[] {
-  const pendingArgs = new Map<string, unknown>();
-  return (event) => translatePiEvent(event, pendingArgs);
 }
 
 /**

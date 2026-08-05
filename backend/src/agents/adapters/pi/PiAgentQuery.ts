@@ -61,7 +61,7 @@ import { join } from "node:path";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
-import { buildTerminalResult, createPiEventTranslator, recordTerminalSignal, type PiTurnAccounting } from "./messageAdapter.js";
+import { buildTerminalResult, recordTerminalSignal, translatePiEvent, type PiTurnAccounting } from "./messageAdapter.js";
 import { buildPiServicesOptions, buildPiSessionOptions, resolvePiAgentDir, DEFAULT_PI_PROVIDER_ID, type PiRunOptions } from "./optionsAdapter.js";
 import { buildPermissionExtension, buildToolFilters, type PiPermissionContext } from "./permissionAdapter.js";
 import { findPiModel, getPiModels, type PiModelOption } from "./modelCatalog.js";
@@ -184,9 +184,6 @@ export class PiAgentQuery implements AgentQuery {
     const unsubscribe = session.subscribe((event) => queue.push(event));
 
     const accounting: PiTurnAccounting = {};
-    // Stateful: `tool_execution_end` carries no args, so the translator carries
-    // them forward from the start event. One per turn.
-    const translate = createPiEventTranslator();
 
     // Settled when the turn's own promise resolves or rejects, so the loop below
     // knows the stream has no more to give. Events are drained first: the queue
@@ -212,7 +209,7 @@ export class PiAgentQuery implements AgentQuery {
         const next = await queue.next();
         if (next.done) break;
         recordTerminalSignal(accounting, next.value);
-        for (const translated of translate(next.value)) yield translated;
+        for (const translated of translatePiEvent(next.value)) yield translated;
       }
     } finally {
       unsubscribe();
@@ -253,6 +250,22 @@ export class PiAgentQuery implements AgentQuery {
 
     const apiKey = this.opts.pi.apiKey?.trim();
     const providerId = this.opts.pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID;
+
+    // A base-URL override, for a self-hosted or proxying endpoint.
+    //
+    // `registerProvider` *composes* with the built-in provider rather than
+    // replacing it — measured: registering `openrouter` with only a `baseUrl`
+    // moved the URL and left all 303 catalog models intact. That is what makes
+    // this safe to apply unconditionally when the setting is present, and it is
+    // the reason the field is wired rather than dropped: Phase 3 removed
+    // `piThinkingLevel` for being unread, and a `piBaseUrl` the adapter ignored
+    // would have been the same dead control in a different place.
+    const baseUrl = this.opts.pi.baseUrl?.trim();
+    if (baseUrl) {
+      runtime.registerProvider(providerId, { baseUrl });
+      log.debug(`pi provider "${providerId}" pointed at ${baseUrl}`);
+    }
+
     if (apiKey) {
       await runtime.setRuntimeApiKey(providerId, apiKey);
     } else {

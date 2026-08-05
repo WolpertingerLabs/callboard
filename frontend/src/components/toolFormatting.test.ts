@@ -204,3 +204,54 @@ describe("getToolSummary — generic fallback for unknown tools", () => {
     expect(getToolSummary("some_unknown_tool", j({ flag: true, count: 3 }))).toBe("");
   });
 });
+
+describe("getToolSummary — pi built-ins", () => {
+  // Keys read off pi's shipped typebox schemas, not guessed:
+  // read {path, offset, limit} · bash {command, timeout} ·
+  // edit {path, edits[{oldText,newText}]} · write {path, content} ·
+  // grep {pattern, path, glob, …} · find {pattern, path, limit} · ls {path, limit}
+  it("names the file for read", () => {
+    expect(getToolSummary("read", JSON.stringify({ path: "src/index.ts", offset: 0, limit: 200 }))).toBe(" - index.ts");
+  });
+
+  it("names the file for write", () => {
+    expect(getToolSummary("write", JSON.stringify({ path: "/repo/notes.md", content: "hi" }))).toBe(" - notes.md");
+  });
+
+  it("names the directory for ls", () => {
+    expect(getToolSummary("ls", JSON.stringify({ path: "src/components", limit: 50 }))).toBe(" - components");
+  });
+
+  it("shows the command for bash", () => {
+    expect(getToolSummary("bash", JSON.stringify({ command: "npm install", timeout: 120 }))).toBe(" - npm install");
+  });
+
+  it("quotes the pattern for grep", () => {
+    expect(getToolSummary("grep", JSON.stringify({ pattern: "TODO", path: "src" }))).toBe(" - 'TODO'");
+  });
+
+  it("shows the pattern for find", () => {
+    expect(getToolSummary("find", JSON.stringify({ pattern: "*.test.ts", path: "src" }))).toBe(" - *.test.ts");
+  });
+
+  // The one case with no honest fallback: `edit` carries a change LIST, so the
+  // file alone would hide whether this was a one-line tweak or a rewrite.
+  it("counts the edits for a multi-edit", () => {
+    const input = { path: "src/app.ts", edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }] };
+    expect(getToolSummary("edit", JSON.stringify(input))).toBe(" - app.ts (2 edits)");
+  });
+
+  it("does not say '(1 edits)' for a single edit", () => {
+    const input = { path: "src/app.ts", edits: [{ oldText: "a", newText: "b" }] };
+    expect(getToolSummary("edit", JSON.stringify(input))).toBe(" - app.ts");
+  });
+
+  it("still says something when edit carries no path", () => {
+    expect(getToolSummary("edit", JSON.stringify({ edits: [{ oldText: "a", newText: "b" }] }))).toBe(" - 1 edit");
+  });
+
+  it("returns empty rather than undefined for an input it cannot read", () => {
+    expect(getToolSummary("read", JSON.stringify({}))).toBe("");
+    expect(getToolSummary("edit", JSON.stringify({}))).toBe("");
+  });
+});
