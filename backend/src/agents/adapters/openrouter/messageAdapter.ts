@@ -85,6 +85,13 @@ function logEvent(event: AgentCoreEvent): void {
     case "reasoning_delta":
       log.debug(`event reasoning_delta — chars=${event.content.length}`);
       break;
+    case "message_item_start":
+      log.debug(
+        `event message_item_start — kind=${event.kind}, itemId=${event.itemId}, ` +
+          `outputIndex=${event.outputIndex ?? "n/a"}, phase=${event.phase ?? "n/a"}, ` +
+          `sessionId=${event.sessionId ?? "n/a"}`,
+      );
+      break;
     case "tool_call":
       log.debug(`event tool_call — name=${event.name}, callId=${event.callId}`);
       break;
@@ -181,6 +188,26 @@ export function translateEvent(event: AgentCoreEvent): AgentEvent | AgentEvent[]
   switch (event.type) {
     case "session_started":
       return { type: "session_started", sessionId: event.sessionId };
+    case "message_item_start":
+      // Boundary marker: a NEW discrete `message` (text) or `reasoning`
+      // (thinking) output item begins here, BEFORE any of its deltas. Forward
+      // it verbatim so the consumer FLUSHES the current live bubble and STARTS
+      // a fresh, discrete one — coordinator message, worker message, worker
+      // reasoning, etc. each become their own successive chat message. PURELY
+      // ADDITIVE: the text_delta/reasoning_delta events that follow are
+      // untouched (no trim, no separators, no combining). Tool / server-tool
+      // items don't emit this — they flush via their own tool_call /
+      // server_tool events — so a new message/reasoning item is signalled ONLY
+      // here. `phase`, `outputIndex`, and `sessionId` are passed through only
+      // when present (sessionId labels coordinator vs worker provenance).
+      return {
+        type: "message_item_start",
+        kind: event.kind,
+        itemId: event.itemId,
+        ...(event.outputIndex !== undefined && { outputIndex: event.outputIndex }),
+        ...(event.phase !== undefined && { phase: event.phase }),
+        ...(event.sessionId !== undefined && { sessionId: event.sessionId }),
+      };
     case "text_delta":
       return { type: "text", content: event.content };
     case "reasoning_delta":
