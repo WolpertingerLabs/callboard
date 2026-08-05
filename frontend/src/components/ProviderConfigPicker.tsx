@@ -3,6 +3,7 @@ import OpenRouterModelSelector from "./OpenRouterModelSelector";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
 import AcpModelSelector from "./AcpModelSelector";
+import ClineModelSelector from "./ClineModelSelector";
 import PiModelSelector from "./PiModelSelector";
 
 export type ProviderConfigPickerMode = "panel" | "inline";
@@ -57,6 +58,14 @@ interface ProviderConfigPickerProps {
   // the field hides.
   clineModel?: string;
   onClineModelChange?: (model: string) => void;
+  /**
+   * Which Cline provider the catalog is scoped to, from `/api/system-info`.
+   * Empty falls back to `anthropic`, the adapter's own default. This is what
+   * makes the picker offer OpenRouter models when the user has selected that
+   * provider — Cline ships `openrouter` as a provider id, so no special case is
+   * needed.
+   */
+  clineProviderId?: string;
   // Per-chat pi model, within the provider configured in Settings → API. Same
   // contract as `clineModel`; kept separate so switching the toggle restores
   // each provider's prior selection.
@@ -127,6 +136,7 @@ export default function ProviderConfigPicker({
   piModel,
   onPiModelChange,
   onClineModelChange,
+  clineProviderId,
   openRouterConfigured,
   openRouterMaxBudgetUsd,
   onOpenApiSettings,
@@ -366,29 +376,17 @@ export default function ProviderConfigPicker({
             >
               Model
             </label>
-            <input
+            <ClineModelSelector
               id={inline ? "inlineClineModel" : "newChatClineModel"}
-              type="text"
               value={clineModel ?? ""}
-              onChange={(e) => onClineModelChange(e.target.value)}
+              onChange={onClineModelChange}
+              providerId={clineProviderId ?? ""}
               placeholder={inline ? "(default)" : "(leave empty to use the default from Settings → API)"}
-              autoComplete="off"
-              spellCheck={false}
-              style={{
-                width: "100%",
-                padding: inline ? "6px 8px" : "8px 12px",
-                fontSize: inline ? 12 : 13,
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--surface)",
-                color: "var(--text)",
-                fontFamily: "monospace",
-                boxSizing: "border-box",
-              }}
             />
             {!inline && (
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                Optional — a model id within your configured Cline provider. Free text: the provider validates it.
+                Suggestions come from your configured Cline provider
+                {clineProviderId ? ` (${clineProviderId})` : ""}. Free text is accepted — the provider validates the model.
               </div>
             )}
           </div>

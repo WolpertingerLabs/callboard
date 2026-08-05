@@ -1306,6 +1306,16 @@ export interface SystemInfo {
    * on servers older than the ACP picker; treat that as "no ACP vendors".
    */
   acpProviders?: AcpProviderInfo[];
+  /**
+   * Which Cline provider new chats run on, from Settings → API.
+   *
+   * The model picker needs it to know which catalog to offer — Cline's list is
+   * per-provider, so selecting `openrouter` here is what surfaces OpenRouter's
+   * models in the picker. There is no `clineConfigured` companion: the SDK is
+   * embedded and falls back to the backend's own environment credentials, so
+   * there is no state in which the provider could honestly be disabled.
+   */
+  clineProviderId?: string;
 }
 
 /** The models callboard has seen an ACP vendor advertise. */

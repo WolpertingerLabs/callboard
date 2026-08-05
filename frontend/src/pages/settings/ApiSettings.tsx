@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, Plus, Trash2, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
-import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog, getAcpModels, getClineProviders, getClineModels, getPiProviders } from "../../api";
+import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog, getAcpModels, getClineProviders, getPiProviders } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
 import type { AgentSettings, OpenRouterModelInfo, OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
 import { OR_SERVER_TOOLS, OR_PLUGINS, OR_SAMPLING_PARAMS, validateServerTools, validateParamProfile } from "shared/types/index.js";
 import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
+import ClineModelSelector from "../../components/ClineModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import ParamFieldForm from "../../components/ParamFieldForm";
 import { getDefaultProvider, getDefaultAcpProviderId } from "../../utils/localStorage";
@@ -703,7 +704,6 @@ export default function ApiSettings() {
   const [clineBaseUrl, setClineBaseUrl] = useState("");
   const [clineMaxIterations, setClineMaxIterations] = useState("");
   const [clineProviders, setClineProviders] = useState<string[]>([]);
-  const [clineModels, setClineModels] = useState<{ value: string; displayName: string }[]>([]);
   const [piProviderId, setPiProviderId] = useState("");
   const [piModel, setPiModel] = useState("");
   const [piApiKey, setPiApiKey] = useState("");
@@ -1982,37 +1982,19 @@ export default function ApiSettings() {
               <label htmlFor="clineModel" style={labelStyle}>
                 Default Model
               </label>
-              <input
+              {/* The same combobox the New Chat panel uses, scoped to the
+                  provider selected above — so changing the provider re-scopes
+                  the suggestions immediately, including to OpenRouter's list. */}
+              <ClineModelSelector
                 id="clineModel"
-                type="text"
-                list="cline-model-ids"
                 value={clineModel}
-                onChange={(e) => setClineModel(e.target.value)}
-                onFocus={() => {
-                  // Fetched on focus rather than on load: the catalog is
-                  // per-provider and some providers fetch it over the network, so
-                  // there is no reason to pay for it until the field is used.
-                  if (clineModels.length === 0) {
-                    getClineModels(clineProviderId.trim() || "anthropic")
-                      .then(({ models }) => setClineModels(models))
-                      .catch(() => {});
-                  }
-                }}
-                placeholder="claude-sonnet-4-6"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
+                onChange={setClineModel}
+                providerId={clineProviderId.trim() || "anthropic"}
+                placeholder="claude-sonnet-5"
               />
-              <datalist id="cline-model-ids">
-                {clineModels.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.displayName}
-                  </option>
-                ))}
-              </datalist>
               <div style={helpStyle}>
-                Free text accepted — the provider validates the model. An empty suggestion list means the provider could not be reached, not that it has no
-                models.
+                Free text accepted — the provider validates the model. Leave empty and Cline uses its own default for the provider. An empty suggestion list
+                means the provider could not be reached, not that it has no models.
               </div>
             </div>
 

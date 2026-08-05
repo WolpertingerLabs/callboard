@@ -135,3 +135,59 @@ describe("PUT /api/agent-settings — proxy fields survive unrelated saves", () 
     expect(saved.proxyMode).toBeUndefined();
   });
 });
+
+/**
+ * The Cline tab saved nothing at all, and nothing said so.
+ *
+ * This handler destructures an explicit allowlist off `req.body` and only
+ * persists when one of the fields it recognises changed. The Cline adapter
+ * shipped with its settings in the type, in the service, and in the UI form —
+ * but never added here. So typing a provider, key and model into Settings → API
+ * and pressing Save returned 200, showed "Saved!", and wrote nothing.
+ *
+ * It is invisible by construction: an unknown key is silently ignored rather
+ * than rejected, so neither the type system nor the response could catch it.
+ * Hence a round-trip test per field.
+ */
+describe("PUT /api/agent-settings — Cline fields round-trip", () => {
+  it("persists every field the Cline settings tab sends", async () => {
+    const res = await put({
+      clineProviderId: "openrouter",
+      clineModel: "openai/gpt-5.4",
+      clineApiKey: "sk-or-test",
+      clineBaseUrl: "https://example.invalid/v1",
+      clineMaxIterations: 40,
+    });
+    expect(res.code).toBe(200);
+
+    const saved = onDisk();
+    expect(saved.clineProviderId).toBe("openrouter");
+    expect(saved.clineModel).toBe("openai/gpt-5.4");
+    expect(saved.clineApiKey).toBe("sk-or-test");
+    expect(saved.clineBaseUrl).toBe("https://example.invalid/v1");
+    expect(saved.clineMaxIterations).toBe(40);
+  });
+
+  it("saves the Cline tab on its own, without another field to piggyback on", () => {
+    // The failure mode this pins: the dirty check gates the write, so a body
+    // containing ONLY cline fields has to be enough to trigger a persist.
+    return put({ clineProviderId: "anthropic" }).then(() => {
+      expect(onDisk().clineProviderId).toBe("anthropic");
+    });
+  });
+
+  it("clears a field when the user empties it", async () => {
+    await put({ clineApiKey: "sk-or-test" });
+    expect(onDisk().clineApiKey).toBe("sk-or-test");
+    await put({ clineApiKey: "" });
+    expect(onDisk().clineApiKey).toBeUndefined();
+  });
+
+  it("leaves Cline settings alone when an unrelated tab is saved", async () => {
+    await put({ clineProviderId: "openrouter", clineModel: "openai/gpt-5.4" });
+    await put({ openRouterApiKey: "sk-or-other" });
+    const saved = onDisk();
+    expect(saved.clineProviderId).toBe("openrouter");
+    expect(saved.clineModel).toBe("openai/gpt-5.4");
+  });
+});

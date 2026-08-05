@@ -57,6 +57,7 @@ import { openRouterRouter } from "./routes/openrouter.js";
 import { codexRouter } from "./routes/codex.js";
 import { acpRouter } from "./routes/acp.js";
 import { clineRouter } from "./routes/cline.js";
+import { DEFAULT_CLINE_PROVIDER_ID } from "./agents/adapters/cline/optionsAdapter.js";
 import { piRouter } from "./routes/pi.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
@@ -425,9 +426,16 @@ app.get(
     // Codex options adapter resolve from. Keys themselves are never exposed.
     let claudeCodeUseOpenRouter = false;
     let codexUseOpenRouter = false;
+    // Which Cline provider new chats run on. The model picker needs it to know
+    // WHICH catalog to offer: Cline's model list is per-provider, so a user who
+    // set the provider to `openrouter` should be offered OpenRouter's ~270
+    // models and one on `anthropic` should not. Blank means the adapter's own
+    // default (`anthropic`) — see cline/optionsAdapter.
+    let clineProviderId = DEFAULT_CLINE_PROVIDER_ID;
     try {
       const s = getAgentSettings();
       openRouterConfigured = Boolean(s.openRouterApiKey?.trim());
+      clineProviderId = s.clineProviderId?.trim() || DEFAULT_CLINE_PROVIDER_ID;
       claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
       codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
       if (typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd)) {
@@ -507,6 +515,11 @@ app.get(
       // install. Availability here means "the binary resolves", never
       // "authenticated" — see adapters/acp/availability.ts.
       acpProviders,
+      // The Cline provider new chats use. There is deliberately no
+      // `clineConfigured` flag to match `codexConfigured`: Cline is an embedded
+      // SDK that falls back to the backend's own environment credentials, so
+      // there is no state in which the picker could honestly be disabled.
+      clineProviderId,
     });
   },
 );
