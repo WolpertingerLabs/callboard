@@ -209,6 +209,60 @@ export function resolveWorktreeToMainRepo(folder: string): WorktreeResolution {
   return { mainRepoPath: folder, isWorktree: false };
 }
 
+/**
+ * The repository `dir` belongs to, as **git** reckons it — never the checkout
+ * the caller happens to be standing in.
+ *
+ * Git has no notion of a nested worktree. `git worktree add` run from inside a
+ * linked worktree registers the new worktree against the repository's *common
+ * dir*, so it is a sibling of the one it was created from and belongs to the
+ * main checkout. A caller that recorded its own cwd as the parent repo named a
+ * directory git had never registered anything under — the removal gate then
+ * compared the record against reality, disagreed, and refused forever.
+ *
+ * `--git-common-dir` is the question that has one answer from every worktree of
+ * a repository. What it returns, verified rather than assumed:
+ *
+ *   main checkout      <root>/.git          → <root>
+ *   linked worktree    <mainRoot>/.git      → <mainRoot>   (same answer)
+ *   bare repository    <path>/bare.git      → <path>/bare.git
+ *
+ * Hence the `basename === ".git"` test rather than a trailing-".git" string
+ * strip: a bare repo is conventionally *named* `something.git`, and stripping
+ * that would name a working root that does not exist.
+ *
+ * Returns null when git cannot answer — not a repository, no git on PATH, a
+ * version too old for `--path-format` even after the fallback. Callers treat
+ * that as "no better answer than what I was given" and must not invent one.
+ */
+export function resolveRepoCommonRoot(dir: string): string | null {
+  if (!dir || !existsSync(dir)) return null;
+
+  const ask = (args: string[]): string | null => {
+    try {
+      const out = execFileSync("git", ["rev-parse", ...args, "--git-common-dir"], {
+        cwd: dir,
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 5000,
+      }).trim();
+      return out || null;
+    } catch {
+      return null;
+    }
+  };
+
+  // `--path-format=absolute` landed in git 2.31. Without it the answer may be
+  // relative to `dir` (`.git`, or `../main/.git` from a worktree), which
+  // `resolve` handles — so the fallback is a spelling difference, not a
+  // different answer.
+  const raw = ask(["--path-format=absolute"]) ?? ask([]);
+  if (!raw) return null;
+
+  const commonDir = resolve(dir, raw);
+  return basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
+}
+
 // Cache for worktree resolution to avoid repeated filesystem reads
 const worktreeResolutionCache = new Map<string, { result: WorktreeResolution; cachedAt: number }>();
 const WORKTREE_CACHE_TTL = 300000; // 5 minutes
@@ -812,7 +866,20 @@ export interface ResolveBranchOptions {
  * to make, and is deliberately not reported here.
  */
 export interface ResolvedWorktree {
-  /** The main checkout the worktree belongs to (resolveBranch's input folder). */
+  /**
+   * The repository the worktree belongs to — git's **common dir** working root
+   * ({@link resolveRepoCommonRoot}), NOT resolveBranch's input folder.
+   *
+   * They differ whenever a chat is started with `useWorktree` from inside a
+   * worktree, which is routine. Git registers every worktree against the common
+   * dir, so a worktree asked for from `repo.feat-a` belongs to `repo` — and a
+   * record naming `repo.feat-a` describes a repository git never registered it
+   * under. Phase 2's `not-a-worktree-on-disk` gate then refuses it forever and
+   * the directory can only be removed by hand.
+   *
+   * Falls back to the input folder only when git cannot answer at all, which is
+   * the pre-existing behaviour and no worse than it.
+   */
   repoPath: string;
   /** True only when this call ran `git worktree add`. */
   created: boolean;
@@ -876,11 +943,18 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
   // Worktree path
   if (targetBranch && useWorktree) {
     const ensured = ensureWorktreeDetailed(folder, targetBranch, !!newBranch, baseBranch);
+    // Asked of the resulting directory, not of `folder`: it is the one whose
+    // ownership the record is about, and after `git worktree add` it answers
+    // with the same common dir `folder` would. Asking it directly also covers
+    // the reuse paths above, where `ensureWorktreeDetailed` may hand back a
+    // worktree of some *other* repository that happens to sit at the derived
+    // path. `folder` remains the fallback when git cannot answer.
+    const repoPath = resolveRepoCommonRoot(ensured.path) ?? resolveRepoCommonRoot(folder) ?? folder;
     return {
       ok: true,
       folder: ensured.path,
       worktree: {
-        repoPath: folder,
+        repoPath,
         created: ensured.created,
         isMainCheckout: ensured.isMainCheckout,
         mode: newBranch ? "branch-off" : "checkout-branch",
