@@ -496,3 +496,58 @@ verification:
 4. **Images.** `PromptOptions.images` takes pi-ai `ImageContent`; the conversion from Callboard's attachment shape is unexercised.
 5. **Zod → typebox for `customTools`.** The spike passed a hand-written JSON-Schema-shaped object straight to `defineTool()` and pi accepted it. Whether that holds for Callboard's full Zod tool surface — unions, refinements, optionals — is `toolAdapter.ts`'s real risk and is untested.
 6. **Concurrency.** Every run was a single session in a fresh process. Two pi chats sharing one `ModelRuntime`, and the process-wide jiti extension cache (§2, which masked a reload in-process), both need a look before Phase 1 memoizes anything.
+
+## 11. Skills — measured later, wiring callboard's custom skills into pi
+
+Added after Phase 5, when `noSkills: true` turned out to be leaving a shipped pi
+capability unused. Nothing here contradicts §2; it refines it in three places
+the spike had no reason to look at.
+
+**`additionalSkillPaths` is the skills analogue of `extensionFactories`, and it
+survives the blanket disable.** `dist/core/resource-loader.js` keeps the caller's
+explicit paths on *both* sides of the flag, and drops only discovery:
+
+```js
+const skillPaths = this.noSkills
+    ? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
+    : this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
+```
+
+`loadSkills` is then called with `includeDefaults: false`, so nothing is scanned
+that the caller did not name. Measured: with `noSkills: true` and callboard's
+directory passed, the session listed callboard's skill and not the scratch repo's.
+
+**Either trust or `noSkills` alone keeps a repo's skills out.** The spike said
+project-local skills "are also trust-gated", which is true and slightly
+undersells it — the four cells were never run. They are:
+
+| `projectTrusted` | `noSkills` | repo's `.pi/skills` |
+|---|---|---|
+| true | false | **loaded** — the only exposed cell |
+| true | true | not loaded |
+| false | false | not loaded |
+| false | true | not loaded — what the adapter ships |
+
+So `noSkills` is defence in depth beside `resolveProjectTrust`, exactly as
+`noExtensions` is, rather than the single lock. A first draft of the test asserted
+"dropping `noSkills` re-admits the repo's skill" and **failed**, which is how the
+matrix got run at all.
+
+**Not loaded is not the same as unreachable, and only the first is a trust
+boundary.** A live control with callboard's skill absent confirmed the model
+never produces the callboard word — but it *did* produce the project one, by
+running `ls`/`find` and reading `.pi/skills/…/SKILL.md` itself. That is ordinary
+file reading inside the opened workspace, gated by the `fileRead`/`codeExecution`
+axes like any read of `NOTES.md`, and unlike an extension nothing executes. The
+property the adapter enforces is that repository skills never enter the system
+prompt unasked; it is not, and cannot be, that markdown in the workspace is
+invisible.
+
+**Two smaller shape facts.** pi reads the frontmatter `name` verbatim and has no
+namespacing — its validator rejects `:` outright (`^[a-z0-9-]+$`) — so callboard
+skills surface as `<name>` on pi where Claude and OpenRouter show
+`callboard:<name>`. And `loadSkillsFromDir` treats direct `.md` children of a
+scanned root as skill candidates, so pointing pi at the Claude *plugin* root
+would pull `README.md` into discovery (observed: scanned, and saved only by
+having no frontmatter description). The adapter passes the `skills/` directory
+itself for that reason.

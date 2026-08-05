@@ -38,6 +38,7 @@ import {
 import type { EffortLevel } from "shared/types/index.js";
 import { DATA_DIR } from "../../../utils/paths.js";
 import { createLogger } from "../../../utils/logger.js";
+import { customSkillsService } from "../../../services/custom-skills-service.js";
 import { PI_EXTENSION_NAME, type PiPermissionExtension } from "./permissionAdapter.js";
 
 const log = createLogger("pi-options");
@@ -124,6 +125,28 @@ export interface BuildPiServicesInput {
   extension: PiPermissionExtension;
   /** Directory pi reads global config from. Defaults to {@link resolvePiAgentDir}. */
   agentDir?: string;
+  /**
+   * Skill roots to load despite `noSkills`. Defaults to
+   * {@link resolveCallboardSkillPaths}; tests pass their own.
+   */
+  skillPaths?: string[];
+}
+
+/**
+ * Callboard's own custom-skills directory, as a `additionalSkillPaths` list.
+ *
+ * Empty when the user has authored no skills, so a session with none adds
+ * nothing to pi's resource surface.
+ */
+export function resolveCallboardSkillPaths(): string[] {
+  try {
+    const dir = customSkillsService.getSkillsDir();
+    return dir ? [dir] : [];
+  } catch (err) {
+    // Never fatal: a chat without custom skills is degraded, not broken.
+    log.warn(`Failed to resolve callboard custom-skills directory for pi: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
 }
 
 /**
@@ -151,9 +174,67 @@ export interface BuildPiServicesInput {
  * `noContextFiles` is deliberately **left off** — AGENTS.md and CLAUDE.md are
  * data the model reads, not code pi executes, and they are the whole point of
  * pointing an agent at a repository.
+ *
+ * ## Callboard's own skills, without reopening the hole
+ *
+ * `noSkills: true` stays exactly as it is. It is not relaxed, and flipping it to
+ * `false` to get custom skills would be the skills-shaped version of dropping
+ * `noExtensions` — it would re-admit `.pi/skills/` from the opened repository,
+ * which is trust-gated content for the same reason extensions are.
+ *
+ * Instead `additionalSkillPaths` carries callboard's *own* skills directory
+ * through the blanket disable, precisely as `extensionFactories` carries the
+ * permission gate through `noExtensions`. The seam is real rather than
+ * incidental — `resource-loader.js` branches on the flag and keeps the
+ * additional paths on both sides:
+ *
+ * ```js
+ * const skillPaths = this.noSkills
+ *     ? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
+ *     : this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
+ * ```
+ *
+ * `enabledSkills` — the discovered project-local and user set — is what the
+ * flag drops, and `loadSkills` is then called with `includeDefaults: false`, so
+ * nothing is scanned that callboard did not name. `customSkills.test.ts` asserts
+ * both halves against real pi, with a control proving the project skill is
+ * genuinely discoverable and the negative assertion therefore has teeth.
+ *
+ * One correction to the note above, measured rather than assumed: project-local
+ * skills are gated by trust *and* by this flag, and **either alone suffices**.
+ * The full matrix, pinned in `customSkills.test.ts`:
+ *
+ * | projectTrusted | noSkills | repo's `.pi/skills` |
+ * |---|---|---|
+ * | true  | false | **loaded** — the only exposed cell |
+ * | true  | true  | not loaded |
+ * | false | false | not loaded |
+ * | false | true  | not loaded — what this adapter ships |
+ *
+ * So `noSkills` here is defence in depth, exactly as `noExtensions` is beside
+ * `resolveProjectTrust`, rather than the single lock. Both are kept: neither is
+ * load-bearing alone, and that is the point.
+ *
+ * **What this does and does not claim.** The property is that a repository's
+ * skills are never *loaded*: they do not enter the system prompt, and — unlike
+ * `.pi/extensions/` — nothing is executed. It is not a claim that the files are
+ * unreachable. A model can still `read` a markdown file inside the workspace it
+ * was pointed at, and a live run was observed doing exactly that when asked to
+ * find a skill (see `PiAdapter.live.test.ts`). That read is governed by the
+ * `fileRead` axis like any other, which is the correct boundary for content the
+ * model chooses to open. Silent injection into the prompt is the trust boundary;
+ * legibility of a file in the open workspace is not.
+ *
+ * **Where pi differs from the other harnesses.** On Claude and OpenRouter these
+ * skills arrive as a synthetic `callboard` *plugin* and are invoked as
+ * `callboard:<name>`. pi has no plugin concept and no namespacing: it reads the
+ * frontmatter `name` verbatim, and its validator rejects `:` outright
+ * (`^[a-z0-9-]+$`), so a pi chat sees the bare `<name>`. That is a naming
+ * difference in the UI, not a difference in which skills load.
  */
 export function buildPiServicesOptions(input: BuildPiServicesInput): CreateAgentSessionServicesOptions {
   const agentDir = input.agentDir ?? resolvePiAgentDir();
+  const skillPaths = input.skillPaths ?? resolveCallboardSkillPaths();
   return {
     cwd: input.cwd,
     agentDir,
@@ -167,6 +248,9 @@ export function buildPiServicesOptions(input: BuildPiServicesInput): CreateAgent
       noPromptTemplates: true,
       noThemes: true,
       extensionFactories: [{ name: PI_EXTENSION_NAME, factory: input.extension, hidden: true }],
+      // Omitted entirely when empty: pi records a diagnostic for a named path
+      // that does not exist, and "user has no custom skills" is not a fault.
+      ...(skillPaths.length > 0 ? { additionalSkillPaths: skillPaths } : {}),
     },
   };
 }

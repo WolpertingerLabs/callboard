@@ -7,12 +7,17 @@
  *   ├── .claude-plugin/plugin.json        ← synthetic "callboard" plugin manifest
  *   └── skills/<name>/SKILL.md            ← standard skill frontmatter + body
  *
- * Both chat paths consume this with their existing plugin-skill machinery:
- * claude.ts#buildPluginOptions appends the directory as a `{ type:"local" }`
- * plugin descriptor, which the Claude SDK loads natively and the OpenRouter
- * adapter picks up via extractPluginDirs → loadPlugins. Skills are therefore
- * invoked as `callboard:<name>` on both providers, and the namespace
- * guarantees we never shadow framework, user, or project skills.
+ * The plugin-shaped chat paths consume this with their existing plugin-skill
+ * machinery: claude.ts#buildPluginOptions appends the directory as a
+ * `{ type:"local" }` plugin descriptor, which the Claude SDK loads natively and
+ * the OpenRouter adapter picks up via extractPluginDirs → loadPlugins. Skills
+ * are therefore invoked as `callboard:<name>` on both providers, and the
+ * namespace guarantees we never shadow framework, user, or project skills.
+ *
+ * pi has no plugin concept, so it takes the same skills through
+ * {@link CustomSkillsService.getSkillsDir} instead — see that method, and
+ * `agents/adapters/pi/optionsAdapter.ts` for why the injection is deliberately
+ * narrower there.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, renameSync, statSync } from "fs";
 import { join } from "path";
@@ -229,6 +234,31 @@ class CustomSkillsService {
       return null;
     }
     return PLUGIN_DIR;
+  }
+
+  /**
+   * The bare skills root, for harnesses that load skills from a directory
+   * rather than from a Claude plugin manifest. Null when no skills exist.
+   *
+   * pi is the one such consumer today: it has no plugin concept at all, and its
+   * `additionalSkillPaths` takes skill roots. Handing it {@link getPluginDir}
+   * instead would *appear* to work — its discovery recurses into subdirectories
+   * looking for `SKILL.md` and would find `skills/<name>/SKILL.md` — but it also
+   * treats direct `.md` children of the scanned root as skills, so the plugin
+   * root's own files become candidate skills (measured: `README.md` is scanned
+   * and only escapes because it has no frontmatter description). Pointing pi at
+   * the directory that contains *only* skills is the intentional version of
+   * that, rather than the accidental one.
+   *
+   * Same directory, same files, same source of truth as the plugin path — this
+   * is a second door onto it, not a second copy.
+   *
+   * No `ensurePluginManifest()` here, unlike {@link getPluginDir}: a non-empty
+   * {@link listSkills} already implies this directory exists and holds them, and
+   * pi has no use for the Claude manifest that call would write.
+   */
+  getSkillsDir(): string | null {
+    return this.listSkills().length === 0 ? null : SKILLS_DIR;
   }
 
   /** `callboard:<name>` invocation strings for slash-command listings. */
