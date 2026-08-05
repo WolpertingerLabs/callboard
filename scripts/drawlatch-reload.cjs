@@ -9,19 +9,25 @@
  *   node scripts/drawlatch-reload.cjs prod
  *
  * ── local ─────────────────────────────────────────────────────────────
- * Builds drawlatch from the sibling ../drawlatch checkout, packs it, points
- * callboard at that tarball, and adds bundleDependencies so the local
- * drawlatch is embedded in callboard's global tarball.
+ * Builds drawlatch from the sibling ../drawlatch checkout, packs it, and points
+ * callboard at that tarball by absolute `file:` path. `npm install -g` reads the
+ * tarball straight off disk and installs drawlatch's own dependencies normally,
+ * so the local build lands in the global install without being bundled.
  *
- * Problem this solves: `npm install -g <tarball>` resolves dependencies from
- * npm. If drawlatch points to a local file: path or an unpublished version,
- * the global install fails — so we bundle it.
+ * Do NOT reach for `bundleDependencies` here, however tempting. A tarball with
+ * bundleDependencies makes npm mis-handle any *other* dependency that ships an
+ * npm-shrinkwrap.json — @earendil-works/pi-coding-agent does — and silently drop
+ * that package's entire direct-dependency set from the reified tree ("invalid or
+ * damaged lockfile detected" / "unrecognized node in tree" in the npm debug log).
+ * The install reports success; pi then dies at spawn time with
+ * ERR_MODULE_NOT_FOUND for chalk. The tree check at the end of this script exists
+ * to catch that class of failure at reload time instead.
  *
  * Requires the ../drawlatch sibling directory to exist.
  *
  * ── prod ──────────────────────────────────────────────────────────────
  * Leaves drawlatch as a published semver range so the global install pulls
- * it from the npm registry. Does NOT build or bundle local drawlatch. If the
+ * it from the npm registry. Does NOT build local drawlatch. If the
  * working tree currently points drawlatch at a local file: path, it is
  * temporarily pinned to `^<../drawlatch version>` for the build (and restored
  * afterward); if no ../drawlatch checkout exists to read a version from, it
@@ -41,6 +47,7 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const DRAWLATCH_DIR = path.resolve(ROOT, "../drawlatch");
 const PKG = "@wolpertingerlabs/drawlatch";
+const PKG_SELF = "@wolpertingerlabs/callboard";
 
 const mode = process.argv[2] || "local";
 if (mode !== "local" && mode !== "prod") {
@@ -116,12 +123,15 @@ const origBackend = fs.readFileSync(path.resolve(ROOT, "backend/package.json"), 
 console.log(`=== callboard reload (mode: ${mode}) ===`);
 
 let dlTgz = null;
+let treeCheckFailed = false;
 
 try {
   if (mode === "local") {
     // 1. Build & pack drawlatch from the sibling checkout
     if (!fs.existsSync(DRAWLATCH_DIR)) {
-      console.error(`Error: local mode needs a drawlatch checkout at ${DRAWLATCH_DIR}.\n` + `Use "npm run reload:prod" to build against the published drawlatch instead.`);
+      console.error(
+        `Error: local mode needs a drawlatch checkout at ${DRAWLATCH_DIR}.\n` + `Use "npm run reload:prod" to build against the published drawlatch instead.`,
+      );
       process.exit(1);
     }
     console.log("\n=== Building and packing local drawlatch ===");
@@ -131,14 +141,12 @@ try {
     dlTgz = `/tmp/wolpertingerlabs-drawlatch-${dlVersion}.tgz`;
     console.log(`  Packed drawlatch ${dlVersion} -> ${dlTgz}`);
 
-    // 2. Point callboard at the drawlatch tarball & add bundleDependencies
-    console.log("\n=== Configuring callboard for bundled pack ===");
+    // 2. Point callboard at the drawlatch tarball (absolute file: path)
+    console.log("\n=== Configuring callboard for local drawlatch ===");
     const rootPkg = readPkg("package.json");
     rootPkg.dependencies[PKG] = `file:${dlTgz}`;
-    rootPkg.bundleDependencies = [PKG];
     writePkg("package.json", rootPkg);
     console.log(`  Root drawlatch -> file:${dlTgz}`);
-    console.log(`  Added bundleDependencies: [${PKG}]`);
 
     // Backend doesn't matter for the global install (it's a workspace),
     // but keep it consistent so npm install doesn't complain
@@ -185,7 +193,17 @@ try {
   run("npm pack --pack-destination /tmp");
   globalInstall(cbTgz);
 
-  // 4. Cleanup tarballs
+  // 4. Verify what npm actually reified. `npm install` exits 0 on trees with
+  //    holes in them (see the check's header), and the daemon only discovers
+  //    the hole when it spawns the agent whose dependency went missing.
+  console.log("\n=== Verifying the global install tree ===");
+  try {
+    run(`node "${path.join(__dirname, "check-install-tree.cjs")}"`);
+  } catch {
+    treeCheckFailed = true;
+  }
+
+  // 5. Cleanup tarballs
   for (const f of [dlTgz, cbTgz]) {
     if (!f) continue;
     try {
@@ -195,9 +213,13 @@ try {
     }
   }
 
-  // 5. Restart
-  run("callboard restart");
-  run("callboard status");
+  // 6. Restart — but never onto a tree we know is broken
+  if (treeCheckFailed) {
+    console.error("\nGlobal install tree is broken (see above) — leaving the running daemon alone.");
+  } else {
+    run("callboard restart");
+    run("callboard status");
+  }
 } finally {
   // Restore original package.json files exactly as they were
   console.log("\n=== Restoring package.json files ===");
@@ -207,4 +229,10 @@ try {
 
   // Reinstall with original deps (skip prepare to avoid redundant build)
   run("npm install --ignore-scripts");
+}
+
+// Surface a broken install as a failed reload, after the restore above has run.
+if (treeCheckFailed) {
+  console.error(`\nReload finished with a broken global install.\nRecover with:  npm uninstall -g ${PKG_SELF} && npm run reload:${mode}`);
+  process.exit(1);
 }

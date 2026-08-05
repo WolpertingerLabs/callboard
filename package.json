@@ -81,6 +81,7 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm test && npm run build && npm run deps:check",
     "deps:check": "node scripts/check-published-deps.mjs",
+    "install:check": "node scripts/check-install-tree.cjs",
     "publish:dry-run": "npm publish --dry-run",
     "reload": "node scripts/drawlatch-reload.cjs local",
     "reload:local": "node scripts/drawlatch-reload.cjs local",
@@ -129,9 +130,6 @@
     "typescript-eslint": "^8.54.0",
     "vitest": "^4.0.18"
   },
-  "bundleDependencies": [
-    "@wolpertingerlabs/drawlatch"
-  ],
   "overrides": {
     "shell-quote": "1.8.4"
   }
