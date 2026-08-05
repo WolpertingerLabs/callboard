@@ -535,13 +535,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // `seedSession`, so the route would 400. Hiding the button is the honest
   // surface for that; a fork that renders and then loses all context is worse
   // than no fork button.
-  // Null for any kind `ForkProvider` does not name. ACP cannot be a fork source
-  // at all (`AcpSessionProvider` implements neither operation); cline and pi
-  // both *can* on the backend, but the fork route's target list is a separate
-  // contract that this phase does not widen — offering a target the API would
-  // refuse is worse than not offering it.
-  const forkSourceProvider: ForkProvider | null =
-    chatProvider === "claude-code" || chatProvider === "codex" || chatProvider === "openrouter" ? chatProvider : null;
+  // Null only for ACP, which `ForkProvider` deliberately excludes. Every other
+  // kind is a valid fork source *and* target as of Phase 5 of the pi landing.
+  const forkSourceProvider: ForkProvider | null = chatProvider === "acp" ? null : chatProvider;
 
   // Human-readable harness name for status text ("Claude is thinking...").
   // ACP shows the vendor, not the protocol: "OpenCode is thinking" is what the
