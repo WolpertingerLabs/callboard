@@ -191,3 +191,52 @@ describe("PUT /api/agent-settings — Cline fields round-trip", () => {
     expect(saved.clineModel).toBe("openai/gpt-5.4");
   });
 });
+
+/**
+ * pi had the same hole, and the Cline fix above did not close it — the
+ * allowlist gained `cline*` and left `pi*` behind.
+ *
+ * The symptom is one step further downstream than Cline's and reads as a model
+ * failure rather than a settings one: the key never lands on disk, the pi block
+ * in `claude.ts` omits `apiKey` from the session options, and pi falls through
+ * to its own `auth.json` / `$OPENROUTER_API_KEY` lookup. The chat then ends on
+ * "No API key found for openrouter" with nothing streamed, so it presents as
+ * "pi doesn't respond" — not as "Settings didn't save".
+ */
+describe("PUT /api/agent-settings — pi fields round-trip", () => {
+  it("persists every field the pi settings tab sends", async () => {
+    const res = await put({
+      piProviderId: "openrouter",
+      piModel: "~anthropic/claude-haiku-latest",
+      piApiKey: "sk-or-test",
+      piBaseUrl: "https://example.invalid/v1",
+    });
+    expect(res.code).toBe(200);
+
+    const saved = onDisk();
+    expect(saved.piProviderId).toBe("openrouter");
+    expect(saved.piModel).toBe("~anthropic/claude-haiku-latest");
+    expect(saved.piApiKey).toBe("sk-or-test");
+    expect(saved.piBaseUrl).toBe("https://example.invalid/v1");
+  });
+
+  it("saves the pi tab on its own, without another field to piggyback on", async () => {
+    await put({ piApiKey: "sk-or-solo" });
+    expect(onDisk().piApiKey).toBe("sk-or-solo");
+  });
+
+  it("clears a field when the user empties it", async () => {
+    await put({ piApiKey: "sk-or-test" });
+    expect(onDisk().piApiKey).toBe("sk-or-test");
+    await put({ piApiKey: "" });
+    expect(onDisk().piApiKey).toBeUndefined();
+  });
+
+  it("leaves pi settings alone when an unrelated tab is saved", async () => {
+    await put({ piProviderId: "openrouter", piModel: "~anthropic/claude-haiku-latest" });
+    await put({ openRouterApiKey: "sk-or-other" });
+    const saved = onDisk();
+    expect(saved.piProviderId).toBe("openrouter");
+    expect(saved.piModel).toBe("~anthropic/claude-haiku-latest");
+  });
+});
