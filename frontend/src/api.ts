@@ -353,8 +353,20 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
   return res.json();
 }
 
-/** The harnesses a chat can run on, and so can be forked into. */
-export type ForkProvider = "claude-code" | "codex" | "openrouter";
+/**
+ * The harnesses a conversation can be forked or handed off into.
+ *
+ * Every `RoutableProviderKind` **except `acp`** — see the fork route's own
+ * guard in `routes/chats.ts` for the two independent reasons ACP is excluded
+ * (the kind names a wire format rather than a harness, and ACP session state
+ * lives inside the agent's process where no client can seed it).
+ *
+ * `cline` and `pi` were missing until Phase 5 of the pi landing. Both session
+ * providers implement `forkSession` and `seedSession`, and both round-trip a
+ * real handoff — Callboard had built the capability into two harnesses and
+ * offered it into neither.
+ */
+export type ForkProvider = "claude-code" | "codex" | "openrouter" | "cline" | "pi";
 
 /**
  * Fork a chat at a message: creates a new chat whose history is a copy of

@@ -1,6 +1,11 @@
 # pi as a native Callboard agent provider
 
-> **Read `plans/pi-spike-findings.md` first.** It records what
+> **Status: shipped.** All five phases landed (#320, #321, #322, #323, #324 and
+> this one). This document is now a **record of what was built**, not a forecast.
+> Where a section describes something that changed during implementation, the
+> change is stated inline rather than left for the reader to reconstruct.
+>
+> **Read `plans/pi-spike-findings.md` alongside it.** It records what
 > `@earendil-works/pi-coding-agent` **0.83.0** actually ships — measured against
 > the installed package and a live run — and it corrects fourteen assumptions in
 > the surface table below (project trust is never resolved by
@@ -8,8 +13,11 @@
 > and `loadExtensionFromFactory` are not exported; usage lands on `message_end`
 > and not `turn_end`; cancel is `stopReason === "aborted"`, not `willRetry`).
 > The table below was read off 0.80.2. **Where the two documents disagree, the
-> findings win.** The scope and phasing here still stand; specific lines in the
-> adapter files do not.
+> findings win.**
+>
+> The standing proof that all of it is still true is
+> `backend/src/agents/adapters/pi/PiAdapter.live.test.ts` — opt-in, eleven cases,
+> run it after any version bump.
 
 ## Context
 
@@ -48,9 +56,13 @@ Verified by reading the **shipped `.d.ts` files** of 0.80.2 (installed by Ori at
 
 ### The two traps to close first
 
-**1. pi does not ask.** Same shape as Cline's default-auto-approve, confirmed the same way — by running it. Left alone, Callboard would render its four-axis permission UI over a harness that never prompts, the decorative-gate failure `acp/vendors.ts` documents as disqualifying. The gate is a `tool_call` handler that awaits `canUseTool` and returns `{ block: true, reason }`, installed via `loadExtensionFromFactory(factory, cwd, eventBus, runtime)` — an **inline factory, no file on disk**. It must be fail-closed: any tool name Callboard cannot categorize blocks rather than runs.
+**1. pi does not ask.** Same shape as Cline's default-auto-approve, confirmed the same way — by running it. Left alone, Callboard would render its four-axis permission UI over a harness that never prompts, the decorative-gate failure `acp/vendors.ts` documents as disqualifying. The gate is a `tool_call` handler that awaits `canUseTool` and returns `{ block: true, reason }`. It must be fail-closed: any tool name Callboard cannot categorize blocks rather than runs.
 
-**2. Project trust is arbitrary code execution, and it fires before any tool gate.** pi discovers project-local extensions, skills and prompt templates from the repo it opens (`hasTrustRequiringProjectResources`, `ProjectTrustStore`, `ProjectTrustEvent`, CLI `--approve/-a`). An extension is TypeScript that pi loads through jiti at session start — it runs *before* the first model call, so no `tool_call` handler can catch it. Callboard opens whatever repository the user points it at, including ones cloned by an agent. **The adapter must register a `project_trust` handler that denies by default**, and only project-local resources the user has explicitly trusted may load. This has no Cline analogue; it is the single most important line in the adapter.
+*As built:* installed through `resourceLoaderOptions.extensionFactories`, **not** `loadExtensionFromFactory` — that function exists in pi's `dist/` but is not re-exported, and the package's `exports` map refuses deep imports. And "fail-closed" resolved to the **strictest axis**, not `null`: `decidePermission(null, …)` returns `"ask"` unconditionally without consulting settings, which would hang an unattended job step on a prompt nobody answers. An uncategorizable name gets `codeExecution`, as the ACP and Cline categorizers already do.
+
+**2. Project trust is arbitrary code execution, and it fires before any tool gate.** pi discovers project-local extensions, skills and prompt templates from the repo it opens (`hasTrustRequiringProjectResources`, `ProjectTrustStore`, `ProjectTrustEvent`, CLI `--approve/-a`). An extension is TypeScript that pi loads through jiti at session start — it runs *before* the first model call, so no `tool_call` handler can catch it. Callboard opens whatever repository the user points it at, including ones cloned by an agent. **The adapter must deny project trust by default**, and only project-local resources the user has explicitly trusted may load. This has no Cline analogue; it is the single most important line in the adapter.
+
+*As built:* there is no `project_trust` handler, because that event is emitted by `resolveProjectTrusted()` and the SDK path never calls it — a handler would have been dead code that read like a working mitigation. The real denial is three settings on `createAgentSessionServices`: `SettingsManager.create(cwd, agentDir, { projectTrusted: false })`, `resourceLoaderReloadOptions.resolveProjectTrust: async () => false`, and `resourceLoaderOptions.noExtensions: true`. `permissionAdapter.assertPiTrustDenied` and `projectTrust.test.ts` (with a control case, and a source guard against re-importing `createAgentSession`) are what keep them there.
 
 ## Design
 
@@ -86,7 +98,11 @@ New files under `backend/src/agents/adapters/pi/`:
 
 - **`PiAdapter.ts`** — `AgentProvider` with `kind = "pi"`. Config-free construction; per-call config rides in on `AgentQueryRequest.options.pi`, populated by `claude.ts:sendMessage` from `getAgentSettings()`, alongside the existing OpenRouter/Codex/Cline blocks.
 - **`PiAgentQuery.ts`** — bridges `session.subscribe()` (push) to `AsyncIterable<AgentEvent>` (pull) via a bounded queue. Follow `OpenRouterAgentQuery`/`ClineAgentQuery`: `query()` returns synchronously, async setup on first iteration, `close()` → `abort()` → `dispose()`.
-- **`messageAdapter.ts`** — pi events → `AgentEvent`. `message_update` → text/thinking deltas; `tool_execution_start/update/end` → `tool_use`/`tool_result`; usage → `TokenUsage` (`cost` → `costUsd`); `agent_end` → `AgentResultStatus`, with `willRetry: true` explicitly **not** terminal; `auto_retry_*` and `compaction_*` → `adapter_specific` so a long retry or compaction does not read as a dead chat (#317/#318).
+- **`messageAdapter.ts`** — pi events → `AgentEvent`. `usage` → `TokenUsage` (`usage.cost.total` → `costUsd`, from `message_end`; `turn_end` carries none); `agent_end` with `willRetry: true` explicitly **not** terminal; `auto_retry_*` and `compaction_*` → `adapter_specific` so a long retry or compaction does not read as a dead chat (#317/#318).
+
+  **As built, on tool timing.** `tool_use` is emitted from **`tool_execution_start`** and `tool_result` from `tool_execution_end`. Phase 1 originally deferred *both* to the end event, reasoning that `tool_execution_start` fires before the `tool_call` gate and would render a tool as running that was about to be denied. Phase 4 reversed that: `Chat.tsx` computes `isRunning` as `toolResult === null && streaming`, so a `tool_use` arriving alongside its result is never running — a long `bash` under pi rendered nothing at all, which is the #317/#318 dead-chat failure in a worse form than the OpenCode case that prompted the original fix. The denial worry turned out to be unfounded: `tool_execution_end` always follows a start, so the pair always closes, and Claude Code emits `tool_use` before calling `canUseTool` too. Emitting at the start event also removed the stateful arg-carrying the deferral required, since `tool_execution_end` carries no `args`.
+
+  `message_update` deltas are dropped: callboard's `text` is a whole unit and the SSE layer does its own chunking. `tool_execution_update` rides through as `adapter_specific` — raw material for live tool output, unused by the UI today.
 - **`optionsAdapter.ts`** — Callboard options → `CreateAgentSessionOptions`: `cwd`, `model` (via `ModelRegistry.find(provider, modelId)`), `thinkingLevel` from `EffortLevel`, `tools`/`excludeTools` from the permission axes, `customTools`, `agentDir`, `sessionManager`. Reuse `resolveSessionModel` from `services/agent-settings.ts` so per-chat models and cross-harness aliases resolve identically to Codex/ACP/Cline.
 - **`permissionAdapter.ts`** — three parts:
   - `categorizePiToolName()` → `read`/`grep`/`find`/`ls` → `fileRead`; `edit`/`write` → `fileWrite`; `bash` → `codeExecution`; unknown → `null` (which the gate reads as *block*, not *allow*). Note there is **no built-in web tool**, so the `webAccess` axis governs nothing on pi until one is added — say so in the UI rather than showing an inert control.
@@ -135,9 +151,17 @@ Mechanical, and the exact set the Cline landing touched:
 - `components/ProviderConfigPicker.tsx` — pi button, model sub-picker fed by `/api/pi/models`, effort control (pattern: the `codexControls`/`clineControls` blocks).
 - `components/ProviderBadge.tsx` — `"PI"` tag; add `--badge-provider-pi-bg` to **both** `:root` and `[data-theme="light"]` in `frontend/src/index.css`.
 - `components/toolFormatting.ts` — formatting for `read`/`bash`/`edit`/`write`/`grep`/`find`/`ls`, read off pi's shipped input types rather than guessed.
-- `pages/settings/ApiSettings.tsx` — pi section (provider, key, base URL, default model, thinking level), reference links, and an explicit note that third-party MCP servers do not apply to pi chats in v1.
+- `pages/settings/ApiSettings.tsx` — pi section (provider, key, base URL, default model), reference links, and an explicit note that third-party MCP servers do not apply to pi chats in v1.
 - `pages/settings/ModelAliasesSettings.tsx` — pi column.
 - `utils/localStorage.ts` — `KNOWN_PROVIDERS` += `"pi"`.
+
+**As built, three departures.**
+
+- **The model picker is a filtering combobox, not the Cline field.** `/api/pi/models` answers with ~300 models for OpenRouter, and the Cline `<input list>` + `<datalist>` is a scroll at that size. `PiModelSelector` reuses the `AcpModelSelector` shape (subsequence filter, capped at 50, keyboard nav) and *states* the cap — "Showing 50 of 303 — keep typing to narrow" — because silence reads as "that is all of them".
+- **No thinking-level field in Settings.** Reasoning effort is per-chat for every harness (`ProviderRunConfig.effort`, persisted to chat metadata by `routes/stream.ts`) and no other provider keeps a settings-level default. Adding one only for pi would have shipped a field nothing reads. `piBaseUrl` was kept on the same principle but resolved the other way: it is *wired*, through `ModelRuntime.registerProvider`, rather than removed.
+- **The `webAccess` axis carries a visible note.** pi ships no web tool, so the axis governs nothing on a pi chat. `PermissionSettings` takes an optional `provider` and says so under the row. An axis that silently does nothing is the decorative-gate failure in a different costume.
+
+Three pre-existing gaps surfaced here, all affecting **Cline** as well as pi and all fixed: `Chat.tsx`'s `chatProvider` never handled `"cline"` (so a Cline chat's badge said **CC** and its status line said "Claude is thinking"); `handoff.ts`'s `PROVIDER_LABELS` had no `cline` entry; and `toolFormatting`'s lowercase file cases had to use the shared path probe rather than pi's `path` alone, or they would have shadowed OpenCode's camelCase `filePath` and regressed #318.
 
 ## Phase 5 — Tests
 
@@ -147,6 +171,15 @@ Unit tests beside each adapter file, mirroring the Cline/Codex suites: `messageA
 - `backend/src/agents/agents.integration.test.ts` — extend the cross-provider matrix.
 - `PiAdapter.live.test.ts` — opt-in, real key, modelled on `AcpAdapter.opencode.live.test.ts` and `ClineAdapter`'s live path. This is the file that proves the gate is real.
 - Guard: set `CALLBOARD_DATA_DIR` in every test that touches sessions — the ACP suite once wrote fake sessions into the developer's real chat list (#302).
+
+**As built.**
+
+- `fakePiSession.ts` stands in for the **session only**. `ModelRuntime`, `SessionManager` and the bundled catalog stay real, because `modelCatalog.test.ts` and `routes/pi.models.test.ts` exist to prove pi answers ~300 models offline with no key — a fixture that stubbed the catalog would delete the only evidence for that. This is the opposite balance from `fakeClineCore.ts`, which must replace the whole SDK because Cline persists under `~/.cline` with no public redirect.
+- `PiAgentQuery.test.ts` drives the query end to end against the fixture with everything below the session real, including the trust denial and the permission extension.
+- `handoff.roundtrip.test.ts` runs the route's own pipeline through the **real** pi *and* Cline providers — seed, read back, fork, read back — because a stub that returns `{ logPath }` proves the route calls `seedSession`, not that the file it wrote can be read.
+- **`ForkProvider` admits `cline` and `pi`.** Both implement `forkSession` and `seedSession` and both round-trip; the union simply had never been widened, so Callboard had built cross-harness handoff into two harnesses and offered it into neither. ACP stays excluded, for the two reasons `ports/AgentProvider.ts` now spells out.
+
+**Still unverified**, and listed as such rather than quietly asserted: a real `willRetry: true` (needs a provider 429/5xx on demand — the *handling* is covered by the fixture), `streamingBehavior: "steer"` (the adapter never sends it; `AgentQuery` has no mid-turn input surface), real compaction including the `overflow` reason (needs a filled 1M-token window), and two concurrent live chats on different keys. The per-query `ModelRuntime` that makes the last one safe *is* asserted.
 
 ## Verification
 

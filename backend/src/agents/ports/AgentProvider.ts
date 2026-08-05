@@ -74,10 +74,34 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
  * `POST /api/chats/:id/fork` accepting `{"provider":"acp"}` would have stamped a
  * chat with a kind and no vendor. It is admitted now because the promise now
  * holds: `POST /api/stream` takes `acpProviderId`, validates it against the
- * configured presets, and refuses `"acp"` without one. Forking *into* ACP is
- * still rejected, by `AcpSessionProvider` implementing neither `forkSession` nor
- * `seedSession` — an honest 400 rather than a chat that renders and then loses
- * its context.
+ * configured presets, and refuses `"acp"` without one.
+ *
+ * ## Forking and handoff: which kinds are excluded, and why
+ *
+ * Membership here says a chat can *run* on the kind. Being a fork or handoff
+ * *target* is a narrower promise — the target has to accept a conversation it
+ * did not produce — and exactly one kind fails it:
+ *
+ * - **`acp` is excluded.** Two independent reasons, either sufficient. The kind
+ *   names a wire format rather than a harness, so a fork could only stamp a chat
+ *   with a kind and no vendor; and ACP session state lives inside the agent's
+ *   process, with nothing in the protocol letting a client hand an agent a
+ *   conversation it did not have. A seeded transcript would render correctly and
+ *   lose every bit of context on the next message. `routes/chats.ts` refuses it
+ *   on the kind itself rather than relying on `AcpSessionProvider` implementing
+ *   neither method, so adding a transcript writer later cannot silently start
+ *   minting wedged chats. An honest 400 beats a fork that renders and then
+ *   forgets.
+ * - **Every other kind is included**, `cline` and `pi` among them since Phase 5
+ *   of the pi landing. Both session providers implement `forkSession` *and*
+ *   `seedSession`, and both round-trip a real handoff — seed, read back, fork,
+ *   read back again, with the carried content intact at every hop. They were
+ *   absent from the frontend's `ForkProvider` union for no reason beyond nobody
+ *   having widened it, which meant Callboard had built cross-harness handoff
+ *   into two harnesses and offered it into neither.
+ *
+ * The frontend mirror of this is `ForkProvider` in `frontend/src/api.ts`; the
+ * enforcing guard is in `routes/chats.ts`.
  */
 export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline", "pi"] as const;
 

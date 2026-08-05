@@ -71,6 +71,36 @@ vi.mock("../agents/factory.js", () => ({
       getSessionPreview: () => "preview",
     },
     {
+      // Cline and pi both implement seedSession AND forkSession for real —
+      // `agents/handoff.roundtrip.test.ts` drives the actual providers. Here
+      // they are stubs like the rest, so these cases assert the ROUTE offers
+      // them rather than re-proving the providers work.
+      kind: "cline",
+      forkSession: (...args: unknown[]) => {
+        calls.forkSession.push(args);
+        return { logPath: "/tmp/fork-cline.jsonl" };
+      },
+      seedSession: (...args: unknown[]) => {
+        calls.seedSession.push(args);
+        return { logPath: "/tmp/seed-cline.jsonl" };
+      },
+      parseSessionMessages: () => sourceMessages,
+      getSessionPreview: () => "preview",
+    },
+    {
+      kind: "pi",
+      forkSession: (...args: unknown[]) => {
+        calls.forkSession.push(args);
+        return { logPath: "/tmp/fork-pi.jsonl" };
+      },
+      seedSession: (...args: unknown[]) => {
+        calls.seedSession.push(args);
+        return { logPath: "/tmp/seed-pi.jsonl" };
+      },
+      parseSessionMessages: () => sourceMessages,
+      getSessionPreview: () => "preview",
+    },
+    {
       // AcpSessionProvider IS registered in the real getSessionProviders(), so
       // the route's `find(p => p.kind === targetKind)` guard succeeds for "acp".
       // Stubbed here WITH a seedSession the real one does not have, on purpose:
@@ -320,5 +350,55 @@ describe("POST /api/chats/:id/fork model and effort", () => {
     const res = await fork({ provider: "claude-code" });
     expect(res.meta).not.toHaveProperty("modelRouting");
     expect(res.meta).not.toHaveProperty("modelRoutingRankId");
+  });
+});
+
+/**
+ * The two targets Phase 5 admitted.
+ *
+ * Both providers implement `seedSession` and `forkSession`, and both round-trip
+ * a real handoff (`agents/handoff.roundtrip.test.ts` drives the actual files).
+ * What was missing was the *offer*: `ForkProvider` never named them, so the
+ * capability existed and the UI refused it. These cases pin the route half.
+ */
+describe("POST /api/chats/:id/fork — cline and pi are handoff targets", () => {
+  it.each([
+    ["cline", "Cline"],
+    ["pi", "pi"],
+  ])("hands a claude-code chat off to %s", async (kind, label) => {
+    setParent({});
+    const res = await fork({ provider: kind });
+    expect(res.code).toBe(201);
+    expect(calls.seedSession).toHaveLength(1);
+    expect(res.meta.provider).toBe(kind);
+    expect(res.meta.chatRole).toBe("engine-switch");
+    expect(res.meta.title).toBe(`→ ${label}: Parent`);
+  });
+
+  it.each(["cline", "pi"])("takes the high-fidelity native path for a same-harness %s fork", async (kind) => {
+    setParent({ provider: kind });
+    const res = await fork();
+    expect(res.code).toBe(201);
+    // Both have a native fork, so neither should fall through to the flattened
+    // seed path the way Codex does.
+    expect(calls.forkSession).toHaveLength(1);
+    expect(calls.seedSession).toHaveLength(0);
+    expect(res.meta.chatRole).toBe("fork");
+  });
+
+  it.each(["cline", "pi"])("hands a %s chat back out to another harness", async (kind) => {
+    setParent({ provider: kind });
+    const res = await fork({ provider: "codex" });
+    expect(res.code).toBe(201);
+    expect(calls.seedSession).toHaveLength(1);
+    expect(res.meta.provider).toBe("codex");
+  });
+
+  it.each(["cline", "pi"])("passes the preamble and carried history to %s's writer", async (kind) => {
+    setParent({});
+    await fork({ provider: kind });
+    const [turns] = calls.seedSession[0] as [Array<{ text: string }>, unknown];
+    expect(turns[0].text).toContain("conversation_handoff");
+    expect(turns.map((t) => t.text)).toContain("carried question");
   });
 });

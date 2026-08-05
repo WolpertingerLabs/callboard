@@ -97,6 +97,8 @@ const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
   { kind: "claude-code", label: "Claude Code" },
   { kind: "codex", label: "Codex" },
   { kind: "openrouter", label: "OpenRouter" },
+  { kind: "cline", label: "Cline" },
+  { kind: "pi", label: "pi" },
 ];
 
 /**
