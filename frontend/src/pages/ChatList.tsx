@@ -25,11 +25,20 @@ import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import CardPicker from "../components/board/CardPicker";
 import { useChatSearch } from "../hooks/useChatSearch";
-import { DEFAULT_CHAT_FILTERS, hasActiveFilters, type ChatFilters } from "../types/chatFilters";
+import {
+  DEFAULT_CHAT_FILTERS,
+  DEFAULT_CHAT_VIEW_OPTIONS,
+  activeViewOptionCount,
+  hasActiveFilters,
+  type ChatFilters,
+  type ChatViewOptions,
+} from "../types/chatFilters";
 import {
   initializeSuggestedDirectories,
   getShowTriggeredChats,
   saveShowTriggeredChats,
+  getChatsCardsOnly,
+  saveChatsCardsOnly,
   getChatListLayout,
   saveChatListLayout,
   type SidebarViewMode,
@@ -71,12 +80,15 @@ export default function ChatList({
   // fetched subtrees are snapshots and go stale when the list refreshes.
   const [listVersion, setListVersion] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [bookmarkFilter, setBookmarkFilter] = useState(false);
-  // Server-side filter: only chats on an open card (and their descendants).
-  // Session-only, like the bookmark filter — not persisted across reloads.
-  const [cardsOnly, setCardsOnly] = useState(false);
-  const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
-  const [treeLayout, setTreeLayout] = useState(() => getChatListLayout() === "tree");
+  // Scope + layout, all edited together in the filters modal. Three of the four
+  // are remembered across reloads; `bookmarked` stays session-only, the way it
+  // has always behaved.
+  const [viewOptions, setViewOptions] = useState<ChatViewOptions>(() => ({
+    ...DEFAULT_CHAT_VIEW_OPTIONS,
+    showTriggered: getShowTriggeredChats(),
+    cardsOnly: getChatsCardsOnly(),
+    treeLayout: getChatListLayout() === "tree",
+  }));
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
@@ -157,46 +169,43 @@ export default function ChatList({
   // Determine if any filter is active (advanced filters, content search, or bookmarks)
   const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
 
-  const load = useCallback(
-    async (filterOverride?: boolean) => {
-      const useFilter = filterOverride !== undefined ? filterOverride : bookmarkFilter;
-      // When advanced filters or content search are active, fetch all chats
-      // to avoid missing matches due to pagination
-      const shouldFetchAll = anyFilterActive || useFilter;
-      const limit = shouldFetchAll ? 9999 : Math.max(20, loadedCountRef.current);
-      // When triggered chats are hidden, tell the API to exclude them so we
-      // always get LIMIT real chats back (not LIMIT minus triggered ones)
-      const excludeTriggered = !showTriggered;
-      // Tree layout needs every member of a parentage tree the page touches,
-      // even those outside the pagination window
-      const includeLineage = treeLayout || undefined;
-      const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, undefined, includeLineage, cardsOnly || undefined);
+  const load = useCallback(async () => {
+    const { bookmarked, showTriggered, treeLayout, cardsOnly } = viewOptions;
+    // When advanced filters or content search are active, fetch all chats
+    // to avoid missing matches due to pagination
+    const shouldFetchAll = anyFilterActive || bookmarked;
+    const limit = shouldFetchAll ? 9999 : Math.max(20, loadedCountRef.current);
+    // When triggered chats are hidden, tell the API to exclude them so we
+    // always get LIMIT real chats back (not LIMIT minus triggered ones)
+    const excludeTriggered = !showTriggered;
+    // Tree layout needs every member of a parentage tree the page touches,
+    // even those outside the pagination window
+    const includeLineage = treeLayout || undefined;
+    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, includeLineage, cardsOnly || undefined);
+    loadGenRef.current += 1;
+    setListVersion((v) => v + 1);
+    setChats(response.chats);
+    setHasMore(shouldFetchAll ? false : response.hasMore);
+    if (!shouldFetchAll) loadedCountRef.current = response.windowRows;
+
+    // If the response was stale (cached), immediately fetch fresh data
+    if (response.stale) {
+      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, includeLineage, cardsOnly || undefined);
       loadGenRef.current += 1;
       setListVersion((v) => v + 1);
-      setChats(response.chats);
-      setHasMore(shouldFetchAll ? false : response.hasMore);
-      if (!shouldFetchAll) loadedCountRef.current = response.windowRows;
+      setChats(freshResponse.chats);
+      setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
+      if (!shouldFetchAll) loadedCountRef.current = freshResponse.windowRows;
+    }
 
-      // If the response was stale (cached), immediately fetch fresh data
-      if (response.stale) {
-        const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false, includeLineage, cardsOnly || undefined);
-        loadGenRef.current += 1;
-        setListVersion((v) => v + 1);
-        setChats(freshResponse.chats);
-        setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
-        if (!shouldFetchAll) loadedCountRef.current = freshResponse.windowRows;
-      }
+    setIsInitialLoading(false);
 
-      setIsInitialLoading(false);
-
-      // Initialize suggested directories from first three chat directories if none exist
-      if (!useFilter) {
-        const chatDirectories = response.chats.map((chat) => chat.displayFolder || chat.folder);
-        initializeSuggestedDirectories(chatDirectories);
-      }
-    },
-    [bookmarkFilter, anyFilterActive, showTriggered, treeLayout, cardsOnly],
-  );
+    // Initialize suggested directories from first three chat directories if none exist
+    if (!bookmarked) {
+      const chatDirectories = response.chats.map((chat) => chat.displayFolder || chat.folder);
+      initializeSuggestedDirectories(chatDirectories);
+    }
+  }, [viewOptions, anyFilterActive]);
 
   const loadMore = async () => {
     if (isLoadingMore || !hasMore) return;
@@ -204,18 +213,18 @@ export default function ChatList({
     setIsLoadingMore(true);
     try {
       const gen = loadGenRef.current;
-      const excludeTriggered = !showTriggered;
+      const excludeTriggered = !viewOptions.showTriggered;
       // Offset advances by the server-reported window size (rows in tree
       // layout, chats in flat) — lineage-appended relatives sit outside
       // the pagination window
       const response = await listChats(
         20,
         loadedCountRef.current,
-        bookmarkFilter || undefined,
+        viewOptions.bookmarked || undefined,
         excludeTriggered || undefined,
         undefined,
-        treeLayout || undefined,
-        cardsOnly || undefined,
+        viewOptions.treeLayout || undefined,
+        viewOptions.cardsOnly || undefined,
       );
       // A refresh (layout/filter toggle, SSE event, poll) replaced the list
       // while this page was in flight — its offset no longer lines up (and
@@ -318,7 +327,7 @@ export default function ChatList({
   const handleToggleBookmark = async (chat: Chat, bookmarked: boolean) => {
     try {
       await toggleBookmark(chat.id, bookmarked);
-      if (bookmarkFilter && !bookmarked) {
+      if (viewOptions.bookmarked && !bookmarked) {
         // When filter is active and unbookmarking, remove from list
         setChats((prev) => prev.filter((c) => c.id !== chat.id));
       } else {
@@ -432,26 +441,17 @@ export default function ChatList({
     };
   };
 
-  const handleToggleBookmarkFilter = () => {
-    const newFilter = !bookmarkFilter;
-    setBookmarkFilter(newFilter);
-    load(newFilter);
-  };
-
-  // No explicit reload: `load` closes over cardsOnly, so flipping it recreates
-  // the callback and the effect that depends on it refetches.
-  const handleToggleCardsOnly = () => setCardsOnly((prev) => !prev);
-
-  const handleToggleTriggered = () => {
-    const newValue = !showTriggered;
-    setShowTriggered(newValue);
-    saveShowTriggeredChats(newValue);
-  };
-
-  const handleToggleTreeLayout = () => {
-    const newValue = !treeLayout;
-    setTreeLayout(newValue);
-    saveChatListLayout(newValue ? "tree" : "flat");
+  /**
+   * Commit both halves of the filters modal. No explicit reload: `load` closes
+   * over `viewOptions`, so changing it recreates the callback and the effect
+   * that depends on it refetches.
+   */
+  const handleApplyFilters = (nextFilters: ChatFilters, nextView: ChatViewOptions) => {
+    setFilters(nextFilters);
+    setViewOptions(nextView);
+    saveShowTriggeredChats(nextView.showTriggered);
+    saveChatsCardsOnly(nextView.cardsOnly);
+    saveChatListLayout(nextView.treeLayout ? "tree" : "flat");
   };
 
   // Client-side filtering for advanced filters and content search
@@ -499,9 +499,9 @@ export default function ChatList({
     return result;
   }, [chats, filters, matchingChatIds]);
 
-  // Count triggered chats currently in the response (visible when showTriggered is ON)
+  // Count triggered chats currently in the response (visible when "Show triggered chats" is ON)
   const triggeredCount = useMemo(() => {
-    if (!showTriggered) return 0;
+    if (!viewOptions.showTriggered) return 0;
     return chats.filter((c) => {
       try {
         return JSON.parse(c.metadata || "{}").triggered;
@@ -509,10 +509,10 @@ export default function ChatList({
         return false;
       }
     }).length;
-  }, [chats, showTriggered]);
+  }, [chats, viewOptions.showTriggered]);
 
   // Determine the empty state message
-  const isFiltered = bookmarkFilter || cardsOnly || hasActiveFilters(filters) || matchingChatIds !== null;
+  const isFiltered = activeViewOptionCount(viewOptions) > 0 || hasActiveFilters(filters) || matchingChatIds !== null;
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
   if (sidebarCollapsed) {
@@ -643,16 +643,9 @@ export default function ChatList({
       />
 
       <ChatFilterBar
-        bookmarkFilter={bookmarkFilter}
-        onToggleBookmark={handleToggleBookmarkFilter}
-        cardsOnly={cardsOnly}
-        onToggleCardsOnly={handleToggleCardsOnly}
-        showTriggered={showTriggered}
-        onToggleTriggered={handleToggleTriggered}
-        treeLayout={treeLayout}
-        onToggleTreeLayout={handleToggleTreeLayout}
         filters={filters}
-        onFiltersChange={setFilters}
+        viewOptions={viewOptions}
+        onApply={handleApplyFilters}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onSearchSubmit={handleSearchSubmit}
@@ -711,7 +704,7 @@ export default function ChatList({
             {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
           </p>
         )}
-        {treeLayout ? (
+        {viewOptions.treeLayout ? (
           <ChatTreeList
             chats={filteredChats}
             refreshToken={listVersion}
@@ -737,7 +730,7 @@ export default function ChatList({
           ))
         )}
 
-        {showTriggered && triggeredCount > 0 && (
+        {viewOptions.showTriggered && triggeredCount > 0 && (
           <div
             style={{
               padding: "8px 20px",

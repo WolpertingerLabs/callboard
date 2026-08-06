@@ -1,12 +1,14 @@
-import { useState, type CSSProperties } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
+import { Bookmark, Zap, LayoutGrid, ListTree } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
-import type { ChatFilters } from "../types/chatFilters";
+import { DEFAULT_CHAT_VIEW_OPTIONS, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
 interface ChatFilterModalProps {
-  isOpen: boolean;
   onClose: () => void;
   filters: ChatFilters;
-  onApply: (filters: ChatFilters) => void;
+  viewOptions: ChatViewOptions;
+  /** Both halves are staged locally and committed together on Apply. */
+  onApply: (filters: ChatFilters, viewOptions: ChatViewOptions) => void;
 }
 
 function isValidRegex(pattern: string): boolean {
@@ -50,12 +52,81 @@ const labelStyle: CSSProperties = {
   marginBottom: 4,
 };
 
-export default function ChatFilterModal({ isOpen, onClose, filters, onApply }: ChatFilterModalProps) {
-  const [local, setLocal] = useState<ChatFilters>(filters);
+const sectionHeadingStyle: CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: 0.6,
+  textTransform: "uppercase",
+  color: "var(--text-muted)",
+  marginBottom: 10,
+};
 
-  // Reset local state when modal opens with new filters
-  // (useEffect not needed since we only render when isOpen is true)
-  if (!isOpen) return null;
+/** One switch row: icon, label, one line of why-you'd-want-it, and the switch. */
+function SwitchRow({ icon, label, hint, checked, onChange }: { icon: ReactNode; label: string; hint: string; checked: boolean; onChange: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        width: "100%",
+        padding: "8px 10px",
+        borderRadius: 8,
+        border: "none",
+        background: checked ? "var(--accent-bg)" : "transparent",
+        cursor: "pointer",
+        textAlign: "left",
+        transition: "background 0.15s",
+      }}
+    >
+      <span style={{ display: "flex", color: checked ? "var(--accent-text)" : "var(--text-muted)", flexShrink: 0, transition: "color 0.15s" }}>{icon}</span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: "block", fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{label}</span>
+        <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>{hint}</span>
+      </span>
+      <span
+        style={{
+          position: "relative",
+          width: 36,
+          height: 20,
+          borderRadius: 999,
+          flexShrink: 0,
+          background: checked ? "var(--accent)" : "var(--border)",
+          transition: "background 0.15s",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: 2,
+            left: checked ? 18 : 2,
+            width: 16,
+            height: 16,
+            borderRadius: "50%",
+            background: "var(--toggle-knob)",
+            transition: "left 0.15s",
+          }}
+        />
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Staged editor for the sidebar's filters AND view options — nothing takes
+ * effect until Apply, so a half-typed regex never reshuffles the list.
+ *
+ * The caller mounts this only while it is open, which is what makes the
+ * `useState(prop)` seeding correct: every open starts from the live values, so
+ * Cancel genuinely discards instead of leaving edits staged for next time.
+ */
+export default function ChatFilterModal({ onClose, filters, viewOptions, onApply }: ChatFilterModalProps) {
+  const [local, setLocal] = useState<ChatFilters>(filters);
+  const [localView, setLocalView] = useState<ChatViewOptions>(viewOptions);
+
+  const toggleView = (key: keyof ChatViewOptions) => setLocalView((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const update = <K extends keyof ChatFilters>(key: K, field: Partial<ChatFilters[K]>) => {
     setLocal((prev) => ({
@@ -65,7 +136,7 @@ export default function ChatFilterModal({ isOpen, onClose, filters, onApply }: C
   };
 
   const handleApply = () => {
-    onApply(local);
+    onApply(local, localView);
     onClose();
   };
 
@@ -77,6 +148,7 @@ export default function ChatFilterModal({ isOpen, onClose, filters, onApply }: C
       dateMax: { value: "", active: false },
     };
     setLocal(reset);
+    setLocalView(DEFAULT_CHAT_VIEW_OPTIONS);
   };
 
   const includeRegexValid = !local.directoryInclude.value || isValidRegex(local.directoryInclude.value);
@@ -92,9 +164,53 @@ export default function ChatFilterModal({ isOpen, onClose, filters, onApply }: C
           width: "90%",
           maxWidth: 480,
           border: "1px solid var(--border)",
+          // The View section doubles this modal's height — on a phone in
+          // landscape it would otherwise run off the bottom with Apply
+          // unreachable.
+          maxHeight: "85vh",
+          overflowY: "auto",
         }}
       >
         <h2 style={{ margin: "0 0 20px 0", fontSize: 18 }}>Chat Filters</h2>
+
+        {/* View — what the sidebar is scoped to and how it's laid out. Server
+            side (or layout), unlike the client-side field filters below. */}
+        <div style={{ marginBottom: 20 }}>
+          <div style={sectionHeadingStyle}>View</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <SwitchRow
+              icon={<LayoutGrid size={16} />}
+              label="Cards only"
+              hint="Chats on an open card, plus their descendants"
+              checked={localView.cardsOnly}
+              onChange={() => toggleView("cardsOnly")}
+            />
+            <SwitchRow
+              icon={<Bookmark size={16} fill={localView.bookmarked ? "currentColor" : "none"} />}
+              label="Bookmarked only"
+              hint="Chats you've starred"
+              checked={localView.bookmarked}
+              onChange={() => toggleView("bookmarked")}
+            />
+            <SwitchRow
+              icon={<Zap size={16} fill={localView.showTriggered ? "currentColor" : "none"} />}
+              label="Show triggered chats"
+              hint="Include runs started by cron, triggers and jobs"
+              checked={localView.showTriggered}
+              onChange={() => toggleView("showTriggered")}
+            />
+            <SwitchRow
+              icon={<ListTree size={16} />}
+              label="Tree layout"
+              hint="Group chats under the chat that spawned them"
+              checked={localView.treeLayout}
+              onChange={() => toggleView("treeLayout")}
+            />
+          </div>
+        </div>
+
+        <div style={{ height: 1, background: "var(--border)", margin: "0 0 20px 0" }} />
+        <div style={sectionHeadingStyle}>Filters</div>
 
         {/* Directory Include Regex */}
         <div style={{ marginBottom: 16 }}>
