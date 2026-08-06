@@ -71,6 +71,9 @@ export default function ChatList({
   const [listVersion, setListVersion] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
+  // Server-side filter: only chats on an open card (and their descendants).
+  // Session-only, like the bookmark filter — not persisted across reloads.
+  const [cardsOnly, setCardsOnly] = useState(false);
   const [showTriggered, setShowTriggered] = useState(() => getShowTriggeredChats());
   const [treeLayout, setTreeLayout] = useState(() => getChatListLayout() === "tree");
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
@@ -153,7 +156,7 @@ export default function ChatList({
       // Tree layout needs every member of a parentage tree the page touches,
       // even those outside the pagination window
       const includeLineage = treeLayout || undefined;
-      const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, undefined, includeLineage);
+      const response = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, undefined, includeLineage, cardsOnly || undefined);
       loadGenRef.current += 1;
       setListVersion((v) => v + 1);
       setChats(response.chats);
@@ -162,7 +165,7 @@ export default function ChatList({
 
       // If the response was stale (cached), immediately fetch fresh data
       if (response.stale) {
-        const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false, includeLineage);
+        const freshResponse = await listChats(limit, 0, useFilter || undefined, excludeTriggered || undefined, false, includeLineage, cardsOnly || undefined);
         loadGenRef.current += 1;
         setListVersion((v) => v + 1);
         setChats(freshResponse.chats);
@@ -178,7 +181,7 @@ export default function ChatList({
         initializeSuggestedDirectories(chatDirectories);
       }
     },
-    [bookmarkFilter, anyFilterActive, showTriggered, treeLayout],
+    [bookmarkFilter, anyFilterActive, showTriggered, treeLayout, cardsOnly],
   );
 
   const loadMore = async () => {
@@ -198,6 +201,7 @@ export default function ChatList({
         excludeTriggered || undefined,
         undefined,
         treeLayout || undefined,
+        cardsOnly || undefined,
       );
       // A refresh (layout/filter toggle, SSE event, poll) replaced the list
       // while this page was in flight — its offset no longer lines up (and
@@ -369,6 +373,10 @@ export default function ChatList({
     load(newFilter);
   };
 
+  // No explicit reload: `load` closes over cardsOnly, so flipping it recreates
+  // the callback and the effect that depends on it refetches.
+  const handleToggleCardsOnly = () => setCardsOnly((prev) => !prev);
+
   const handleToggleTriggered = () => {
     const newValue = !showTriggered;
     setShowTriggered(newValue);
@@ -439,7 +447,7 @@ export default function ChatList({
   }, [chats, showTriggered]);
 
   // Determine the empty state message
-  const isFiltered = bookmarkFilter || hasActiveFilters(filters) || matchingChatIds !== null;
+  const isFiltered = bookmarkFilter || cardsOnly || hasActiveFilters(filters) || matchingChatIds !== null;
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
   if (sidebarCollapsed) {
@@ -572,6 +580,8 @@ export default function ChatList({
       <ChatFilterBar
         bookmarkFilter={bookmarkFilter}
         onToggleBookmark={handleToggleBookmarkFilter}
+        cardsOnly={cardsOnly}
+        onToggleCardsOnly={handleToggleCardsOnly}
         showTriggered={showTriggered}
         onToggleTriggered={handleToggleTriggered}
         treeLayout={treeLayout}
