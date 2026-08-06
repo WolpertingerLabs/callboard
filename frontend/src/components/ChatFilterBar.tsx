@@ -1,43 +1,32 @@
 import { useState } from "react";
-import { Bookmark, SlidersHorizontal, Search, Loader2, Zap, ListTree, LayoutGrid } from "lucide-react";
+import { SlidersHorizontal, Search, Loader2 } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
-import { hasActiveFilters, type ChatFilters } from "../types/chatFilters";
+import { activeFilterCount, activeViewOptionCount, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
 interface ChatFilterBarProps {
-  bookmarkFilter: boolean;
-  onToggleBookmark: () => void;
-  cardsOnly: boolean;
-  onToggleCardsOnly: () => void;
-  showTriggered: boolean;
-  onToggleTriggered: () => void;
-  treeLayout: boolean;
-  onToggleTreeLayout: () => void;
   filters: ChatFilters;
-  onFiltersChange: (filters: ChatFilters) => void;
+  viewOptions: ChatViewOptions;
+  onApply: (filters: ChatFilters, viewOptions: ChatViewOptions) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onSearchSubmit: () => void;
   isSearching: boolean;
 }
 
-export default function ChatFilterBar({
-  bookmarkFilter,
-  onToggleBookmark,
-  cardsOnly,
-  onToggleCardsOnly,
-  showTriggered,
-  onToggleTriggered,
-  treeLayout,
-  onToggleTreeLayout,
-  filters,
-  onFiltersChange,
-  searchQuery,
-  onSearchChange,
-  onSearchSubmit,
-  isSearching,
-}: ChatFilterBarProps) {
+/**
+ * Sidebar filter bar: one button that opens the filters modal, and the content
+ * search box.
+ *
+ * Scope and layout toggles (bookmarks, triggered chats, cards-only, tree
+ * layout) used to sit here as a row of icon buttons. They live in the modal
+ * now — a rail of same-sized icons gave no clue what any of them did, and the
+ * row grew every time a new dimension appeared. The badge keeps the one thing
+ * the rail was actually good at: telling you at a glance that the list you're
+ * looking at is narrowed.
+ */
+export default function ChatFilterBar({ filters, viewOptions, onApply, searchQuery, onSearchChange, onSearchSubmit, isSearching }: ChatFilterBarProps) {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
-  const filtersActive = hasActiveFilters(filters);
+  const activeCount = activeFilterCount(filters) + activeViewOptionCount(viewOptions);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -57,104 +46,48 @@ export default function ChatFilterBar({
           gap: 8,
         }}
       >
-        {/* Bookmark toggle */}
-        <button
-          onClick={onToggleBookmark}
-          style={{
-            background: bookmarkFilter ? "var(--accent)" : "var(--bg-secondary)",
-            color: bookmarkFilter ? "var(--text-on-accent)" : "var(--text)",
-            padding: "8px",
-            borderRadius: 6,
-            border: bookmarkFilter ? "none" : "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            flexShrink: 0,
-          }}
-          title={bookmarkFilter ? "Show all chats" : "Show bookmarked chats"}
-        >
-          <Bookmark size={16} fill={bookmarkFilter ? "currentColor" : "none"} />
-        </button>
-
-        {/* Cards-only toggle — chats on an open card, plus their descendants */}
-        <button
-          onClick={onToggleCardsOnly}
-          style={{
-            background: cardsOnly ? "var(--accent)" : "var(--bg-secondary)",
-            color: cardsOnly ? "var(--text-on-accent)" : "var(--text)",
-            padding: "8px",
-            borderRadius: 6,
-            border: cardsOnly ? "none" : "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            flexShrink: 0,
-          }}
-          title={cardsOnly ? "Show all chats" : "Show only chats on open cards"}
-        >
-          <LayoutGrid size={16} />
-        </button>
-
-        {/* Triggered chats toggle */}
-        <button
-          onClick={onToggleTriggered}
-          style={{
-            background: showTriggered ? "var(--accent)" : "var(--bg-secondary)",
-            color: showTriggered ? "var(--text-on-accent)" : "var(--text)",
-            padding: "8px",
-            borderRadius: 6,
-            border: showTriggered ? "none" : "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            flexShrink: 0,
-          }}
-          title={showTriggered ? "Hide triggered chats" : "Show triggered chats"}
-        >
-          <Zap size={16} fill={showTriggered ? "currentColor" : "none"} />
-        </button>
-
-        {/* Tree layout toggle — group chats by parentage tree */}
-        <button
-          onClick={onToggleTreeLayout}
-          style={{
-            background: treeLayout ? "var(--accent)" : "var(--bg-secondary)",
-            color: treeLayout ? "var(--text-on-accent)" : "var(--text)",
-            padding: "8px",
-            borderRadius: 6,
-            border: treeLayout ? "none" : "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            flexShrink: 0,
-          }}
-          title={treeLayout ? "Flat chat list" : "Group chats by parentage tree"}
-        >
-          <ListTree size={16} />
-        </button>
-
-        {/* Filter button */}
+        {/* Filters + view options */}
         <button
           onClick={() => setFilterModalOpen(true)}
           style={{
-            background: filtersActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: filtersActive ? "var(--text-on-accent)" : "var(--text)",
+            position: "relative",
+            background: activeCount > 0 ? "var(--accent)" : "var(--bg-secondary)",
+            color: activeCount > 0 ? "var(--text-on-accent)" : "var(--text)",
             padding: "8px",
             borderRadius: 6,
-            border: filtersActive ? "none" : "1px solid var(--border)",
+            border: activeCount > 0 ? "none" : "1px solid var(--border)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             cursor: "pointer",
             flexShrink: 0,
           }}
-          title="Advanced filters"
+          title={activeCount > 0 ? `Filters and view (${activeCount} active)` : "Filters and view"}
         >
           <SlidersHorizontal size={16} />
+          {activeCount > 0 && (
+            <span
+              style={{
+                position: "absolute",
+                top: -5,
+                right: -5,
+                minWidth: 16,
+                height: 16,
+                padding: "0 4px",
+                borderRadius: 999,
+                background: "var(--surface)",
+                color: "var(--accent-text)",
+                border: "1px solid var(--border)",
+                fontSize: 10,
+                fontWeight: 700,
+                lineHeight: "14px",
+                textAlign: "center",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {activeCount}
+            </span>
+          )}
         </button>
 
         {/* Search input with search button on the right */}
@@ -221,7 +154,8 @@ export default function ChatFilterBar({
         }
       `}</style>
 
-      <ChatFilterModal isOpen={filterModalOpen} onClose={() => setFilterModalOpen(false)} filters={filters} onApply={onFiltersChange} />
+      {/* Mounted only while open so each open re-seeds from the live values. */}
+      {filterModalOpen && <ChatFilterModal onClose={() => setFilterModalOpen(false)} filters={filters} viewOptions={viewOptions} onApply={onApply} />}
     </>
   );
 }

@@ -22,6 +22,8 @@ interface LocalStorageData {
   useWorktree?: boolean;
   autoCreateBranch?: boolean;
   showTriggeredChats?: boolean;
+  /** Sidebar scoped to chats on an open card (and their descendants). */
+  chatsCardsOnly?: boolean;
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
@@ -377,6 +379,17 @@ export function getShowTriggeredChats(): boolean {
 export function saveShowTriggeredChats(value: boolean): void {
   const data = getStorageData();
   data.showTriggeredChats = value;
+  setStorageData(data);
+}
+
+export function getChatsCardsOnly(): boolean {
+  const data = getStorageData();
+  return data.chatsCardsOnly ?? false;
+}
+
+export function saveChatsCardsOnly(value: boolean): void {
+  const data = getStorageData();
+  data.chatsCardsOnly = value;
   setStorageData(data);
 }
 
