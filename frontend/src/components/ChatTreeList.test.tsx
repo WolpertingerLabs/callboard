@@ -70,8 +70,7 @@ function renderTree(props: { chats?: Chat[]; refreshToken: number }) {
         onChatClick={() => {}}
         onDelete={() => {}}
         onToggleBookmark={() => {}}
-        onCreateCard={() => {}}
-        onAddToCard={() => {}}
+        cardMenuFor={() => ({})}
         sessionStatusFor={() => undefined}
       />
     </MemoryRouter>,
@@ -104,8 +103,7 @@ describe("ChatTreeList refresh", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
-          onCreateCard={() => {}}
-          onAddToCard={() => {}}
+          cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
         />
       </MemoryRouter>,
@@ -125,8 +123,7 @@ describe("ChatTreeList refresh", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
-          onCreateCard={() => {}}
-          onAddToCard={() => {}}
+          cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
         />
       </MemoryRouter>,
@@ -152,8 +149,7 @@ describe("ChatTreeList refresh", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
-          onCreateCard={() => {}}
-          onAddToCard={() => {}}
+          cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
         />
       </MemoryRouter>,

@@ -20,10 +20,7 @@ import {
   Activity,
   SlidersHorizontal,
   Workflow,
-  LayoutGrid,
   Loader2,
-  CircleCheck,
-  RotateCcw,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -43,11 +40,7 @@ import {
   getMcpTools,
   deleteDraft,
   forkChat,
-  listCards,
-  createCard,
   getCard,
-  updateCard,
-  assignChatToCard,
   handshakeHeaders,
   type CardSummary,
   type Chat as ChatType,
@@ -74,7 +67,6 @@ import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import ForkHandoffModal from "../components/ForkHandoffModal";
-import CardPicker from "../components/board/CardPicker";
 import BranchSelector from "../components/BranchSelector";
 import CardAssociationSelector, { type CardAssociationConfig } from "../components/CardAssociationSelector";
 import GitDiffView from "../components/GitDiffView";
@@ -334,9 +326,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [chatPermissions, setChatPermissions] = useState<DefaultPermissions | null>(null);
-  // "Add to card…" picker — cards are fetched lazily when the picker opens.
-  const [showCardPicker, setShowCardPicker] = useState(false);
-  const [pickerCards, setPickerCards] = useState<CardSummary[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -481,7 +470,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // fails; the menu then falls back to membership-only actions rather than
   // rendering a guessed lifecycle.
   const [chatCard, setChatCard] = useState<CardSummary | null>(null);
-  const [cardBusy, setCardBusy] = useState(false);
   const metadataVersion = useMetadataVersion();
 
   useEffect(() => {
@@ -503,32 +491,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       cancelled = true;
     };
   }, [chatCardId, metadataVersion]);
-
-  /** Close or reopen the chat's card without leaving the chat view. */
-  const handleToggleCardLifecycle = useCallback(() => {
-    if (!chatCardId || !chatCard || cardBusy) return;
-    setCardBusy(true);
-    updateCard(chatCardId, { lifecycle: chatCard.lifecycle === "open" ? "closed" : "open" })
-      .then((res) => setChatCard(res.card))
-      .catch(() => {})
-      .finally(() => setCardBusy(false));
-  }, [chatCardId, chatCard, cardBusy]);
-
-  const openCardPicker = useCallback(() => {
-    setShowCardPicker(true);
-    listCards()
-      .then((res) => setPickerCards(res.cards))
-      .catch(() => setPickerCards([]));
-  }, []);
-
-  const handleCardAssigned = useCallback(() => {
-    setShowCardPicker(false);
-    if (id) {
-      getChat(id)
-        .then((updated) => setChat(updated))
-        .catch(() => {});
-    }
-  }, [id]);
 
   // Every kind a chat can actually be on. `cline` and `pi` were missing until
   // Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
@@ -3572,71 +3534,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                             ? "Change the Codex model / reasoning effort for this chat"
                             : "Change the Anthropic model for this chat",
                   },
-                  // Card (ticket) membership — existing chats only; new chats
-                  // get their card via the board's "New chat on card" action.
-                  ...(id
-                    ? [
-                        chatCardId
-                          ? {
-                              key: "card",
-                              icon: <LayoutGrid size={16} />,
-                              label: "Remove from card",
-                              onClick: () => {
-                                assignChatToCard(id, null)
-                                  .then(handleCardAssigned)
-                                  .catch(() => {});
-                              },
-                              active: true,
-                              title: "This chat is on a card — click to remove it (board view only)",
-                            }
-                          : {
-                              key: "card",
-                              icon: <LayoutGrid size={16} />,
-                              label: "Add to card…",
-                              onClick: openCardPicker,
-                              title: "Group this chat under a card (ticket) on the board",
-                            },
-                      ]
-                    : []),
-                  // Card lifecycle — only once the card record has loaded, so
-                  // the label can never claim the wrong direction.
-                  ...(id && chatCardId && chatCard
-                    ? [
-                        {
-                          key: "card-lifecycle",
-                          icon: chatCard.lifecycle === "open" ? <CircleCheck size={16} /> : <RotateCcw size={16} />,
-                          label: chatCard.lifecycle === "open" ? "Close card" : "Reopen card",
-                          onClick: handleToggleCardLifecycle,
-                          disabled: cardBusy,
-                          title:
-                            chatCard.lifecycle === "open"
-                              ? `Close "${chatCard.title}" — it moves to the board's Closed strip`
-                              : `Reopen "${chatCard.title}" — it returns to the board`,
-                        },
-                      ]
-                    : []),
+                  // Card actions deliberately live in the sidebar row menu, not
+                  // here: this menu is about sending the next message.
                 ]
               : []
           }
         />
       </div>
-
-      {showCardPicker && id && (
-        <CardPicker
-          cards={pickerCards}
-          onSelect={(cardId) =>
-            assignChatToCard(id, cardId)
-              .then(handleCardAssigned)
-              .catch(() => setShowCardPicker(false))
-          }
-          onCreate={(title) =>
-            createCard({ title }, id)
-              .then(handleCardAssigned)
-              .catch(() => setShowCardPicker(false))
-          }
-          onClose={() => setShowCardPicker(false)}
-        />
-      )}
 
       <DraftModal
         isOpen={showDraftModal}
