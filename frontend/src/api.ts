@@ -210,6 +210,8 @@ export async function listChats(
   excludeTriggered?: boolean,
   cached?: boolean,
   includeLineage?: boolean,
+  /** Only chats on an OPEN card, plus every descendant of those chats. */
+  cardsOnly?: boolean,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -218,6 +220,7 @@ export async function listChats(
   if (excludeTriggered) params.append("excludeTriggered", "true");
   if (cached === false) params.append("cached", "false");
   if (includeLineage) params.append("includeLineage", "true");
+  if (cardsOnly) params.append("cardsOnly", "true");
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");

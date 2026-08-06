@@ -8,7 +8,7 @@ import { getGitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
-import { getCard } from "../services/card-store.js";
+import { getCard, listCards } from "../services/card-store.js";
 import { setChatCardMembership } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
@@ -212,12 +212,13 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
+  /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'When true, return only chats that belong to an OPEN card, plus every descendant of those chats in the parentage tree. Chats on closed cards, card-less chats, and sessions with no stored record are excluded.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields" } */
   try {
     // Check cache (stale-while-revalidate)
     const bypassCache = req.query.cached === "false";
-    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}`;
+    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}`;
     const now = Date.now();
 
     if (!bypassCache) {
@@ -266,6 +267,52 @@ chatsRouter.get("/", (req, res) => {
     const bookmarkedFilter = req.query.bookmarked === "true";
     const excludeTriggered = req.query.excludeTriggered === "true";
     const includeLineage = req.query.includeLineage === "true";
+    const cardsOnly = req.query.cardsOnly === "true";
+
+    // Lineage index over file-storage chats — built for the tree view (row
+    // pagination + the lineage-append pass below) and for the cards-only
+    // filter, which walks it to pull in the descendants of card members.
+    // One metadata parse per chat, memoized root resolution.
+    const lineageIndex = includeLineage || cardsOnly ? buildLineageIndex(fileChats) : null;
+
+    /**
+     * Chat ids the cards-only filter admits: every chat on an OPEN card, plus
+     * every descendant of those chats. Descendants normally inherit
+     * `metadata.cardId` at creation, but not always — a child spawned before
+     * its parent was filed, or onto a different card, would otherwise drop out
+     * of the view its parent is in. Null when the filter is off.
+     */
+    let cardScopedChatIds: Set<string> | null = null;
+    if (cardsOnly && lineageIndex) {
+      const openCardIds = new Set(
+        listCards()
+          .filter((c) => c.lifecycle === "open")
+          .map((c) => c.id),
+      );
+      cardScopedChatIds = new Set<string>();
+      const stack: string[] = [];
+      for (const chat of fileChats) {
+        let meta: any = {};
+        try {
+          meta = JSON.parse(chat?.metadata || "{}");
+        } catch {
+          continue;
+        }
+        // Unassign merges `cardId: null`, so membership is a string check.
+        if (typeof meta.cardId === "string" && openCardIds.has(meta.cardId) && !cardScopedChatIds.has(chat.id)) {
+          cardScopedChatIds.add(chat.id);
+          stack.push(chat.id);
+        }
+      }
+      while (stack.length > 0) {
+        const currentId = stack.pop()!;
+        for (const child of lineageIndex.childrenByParent.get(currentId) || []) {
+          if (cardScopedChatIds.has(child.id)) continue;
+          cardScopedChatIds.add(child.id);
+          stack.push(child.id);
+        }
+      }
+    }
 
     // Build set of bookmarked session IDs when filtering
     let bookmarkedSessionIds: Set<string> | null = null;
@@ -286,10 +333,21 @@ chatsRouter.get("/", (req, res) => {
     // flag lives in chat file metadata). For bookmarks, fetch all. For excludeTriggered,
     // over-fetch to ensure we get enough non-triggered results. includeLineage also
     // needs the full session list so out-of-window tree relatives can be augmented.
-    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage;
+    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || cardsOnly;
     const fetchLimit = needsPostFilter ? 9999 : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
-    const { sessions: paginatedSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
+    const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
+
+    // Card membership is decided from the file record alone, so the
+    // cards-only filter runs BEFORE augmentation — augmentSession reads the
+    // session log for a preview, which is the expensive part. A session with
+    // no stored record can't carry membership and is dropped here.
+    const paginatedSessions = cardScopedChatIds
+      ? discoveredSessions.filter((s) => {
+          const fileChat = fileChatsBySessionId.get(s.sessionId);
+          return !!fileChat && cardScopedChatIds!.has(fileChat.id);
+        })
+      : discoveredSessions;
 
     const augmentSession = (s: (typeof paginatedSessions)[0]) => {
       // Try to find by session ID (may not exist in file storage - that's fine)
@@ -363,21 +421,19 @@ chatsRouter.get("/", (req, res) => {
       }
     };
 
-    // Lineage index over file-storage chats — built only when the tree
-    // view asks for lineage; shared by row-based pagination and the
-    // lineage-append pass below. One metadata parse per chat, memoized
-    // root resolution.
-    const lineageIndex = includeLineage ? buildLineageIndex(fileChats) : null;
-
     /**
      * Slice a recency-ordered, already-filtered list into the requested
      * page. Without includeLineage, limit/offset count chats. With
      * includeLineage they count sidebar tree ROWS: chats sharing a
      * parentage root fold into one row, so a page always contributes
      * `limit` visible rows no matter how many chats fold together.
+     *
+     * Gated on includeLineage, not on the index existing: the cards-only
+     * filter builds the same index for its descendant walk, and folding
+     * rows for a flat-layout request would silently drop chats from the page.
      */
     const paginateWindow = <T>(items: T[], chatIdOf: (item: T) => string): { page: T[]; total: number; windowRows: number } => {
-      if (!lineageIndex) {
+      if (!includeLineage || !lineageIndex) {
         const page = items.slice(offset, offset + limit);
         return { page, total: items.length, windowRows: page.length };
       }
@@ -412,9 +468,10 @@ chatsRouter.get("/", (req, res) => {
       // so the window is filled from what's left.
       const augmented = paginatedSessions.map(augmentSession).filter((c) => !isTriggered(c));
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
-    } else if (includeLineage) {
-      // Sessions were over-fetched for lineage lookup — paginate manually
-      // (by row), augmenting only the windowed sessions.
+    } else if (includeLineage || cardsOnly) {
+      // Sessions were over-fetched (for lineage lookup, or so the cards-only
+      // filter could run across the whole list) — paginate manually, by row
+      // for the tree view, augmenting only the windowed sessions.
       const window = paginateWindow(paginatedSessions, (s) => fileChatsBySessionId.get(s.sessionId)?.id ?? s.sessionId);
       chatsFromLogs = window.page.map(augmentSession);
       ({ total, windowRows } = window);
@@ -430,7 +487,7 @@ chatsRouter.get("/", (req, res) => {
     // members (ancestors and descendants outside the pagination window) so
     // the sidebar tree view can group and expand reliably. Appended chats
     // are flagged and do not count toward pagination.
-    if (lineageIndex && fileChats.length > 0) {
+    if (includeLineage && lineageIndex && fileChats.length > 0) {
       const { byId: fileById, childrenByParent, parentIdOf, rootKeyOf } = lineageIndex;
 
       // Union of full tree memberships (root + all descendants) for every
@@ -462,6 +519,9 @@ chatsRouter.get("/", (req, res) => {
       const appended: any[] = [];
       for (const id of relatedIds) {
         if (pageIds.has(id)) continue;
+        // An ancestor on a closed card (or no card) is outside the cards-only
+        // view — appending it would smuggle back exactly what the filter drops.
+        if (cardScopedChatIds && !cardScopedChatIds.has(id)) continue;
         const fc = fileById.get(id);
         if (!fc) continue;
         const session = sessionByChatId.get(id);

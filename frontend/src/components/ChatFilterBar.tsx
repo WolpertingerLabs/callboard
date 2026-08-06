@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Bookmark, SlidersHorizontal, Search, Loader2, Zap, ListTree } from "lucide-react";
+import { Bookmark, SlidersHorizontal, Search, Loader2, Zap, ListTree, LayoutGrid } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
 import { hasActiveFilters, type ChatFilters } from "../types/chatFilters";
 
 interface ChatFilterBarProps {
   bookmarkFilter: boolean;
   onToggleBookmark: () => void;
+  cardsOnly: boolean;
+  onToggleCardsOnly: () => void;
   showTriggered: boolean;
   onToggleTriggered: () => void;
   treeLayout: boolean;
@@ -21,6 +23,8 @@ interface ChatFilterBarProps {
 export default function ChatFilterBar({
   bookmarkFilter,
   onToggleBookmark,
+  cardsOnly,
+  onToggleCardsOnly,
   showTriggered,
   onToggleTriggered,
   treeLayout,
@@ -71,6 +75,26 @@ export default function ChatFilterBar({
           title={bookmarkFilter ? "Show all chats" : "Show bookmarked chats"}
         >
           <Bookmark size={16} fill={bookmarkFilter ? "currentColor" : "none"} />
+        </button>
+
+        {/* Cards-only toggle — chats on an open card, plus their descendants */}
+        <button
+          onClick={onToggleCardsOnly}
+          style={{
+            background: cardsOnly ? "var(--accent)" : "var(--bg-secondary)",
+            color: cardsOnly ? "var(--text-on-accent)" : "var(--text)",
+            padding: "8px",
+            borderRadius: 6,
+            border: cardsOnly ? "none" : "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+          title={cardsOnly ? "Show all chats" : "Show only chats on open cards"}
+        >
+          <LayoutGrid size={16} />
         </button>
 
         {/* Triggered chats toggle */}

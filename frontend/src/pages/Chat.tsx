@@ -22,6 +22,8 @@ import {
   Workflow,
   LayoutGrid,
   Loader2,
+  CircleCheck,
+  RotateCcw,
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -43,6 +45,8 @@ import {
   forkChat,
   listCards,
   createCard,
+  getCard,
+  updateCard,
   assignChatToCard,
   handshakeHeaders,
   type CardSummary,
@@ -56,7 +60,7 @@ import {
   type AppPluginsData,
   type McpToolsResponse,
 } from "../api";
-import { useIsSessionActive } from "../contexts/SessionContext";
+import { useIsSessionActive, useMetadataVersion } from "../contexts/SessionContext";
 import { newChatTrackingId } from "../utils/ids";
 import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "../utils/inFlightMessages";
 import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
@@ -470,6 +474,45 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       return undefined;
     }
   }, [id, chat?.metadata]);
+
+  // The card record itself — needed for its lifecycle (the chat's metadata
+  // only stores the id). Refetched on every metadata event so a close/reopen
+  // done on the board shows up here too. Null while loading or when the fetch
+  // fails; the menu then falls back to membership-only actions rather than
+  // rendering a guessed lifecycle.
+  const [chatCard, setChatCard] = useState<CardSummary | null>(null);
+  const [cardBusy, setCardBusy] = useState(false);
+  const metadataVersion = useMetadataVersion();
+
+  useEffect(() => {
+    if (!chatCardId) {
+      setChatCard(null);
+      return;
+    }
+    let cancelled = false;
+    getCard(chatCardId)
+      .then((res) => {
+        if (!cancelled) setChatCard(res.card);
+      })
+      .catch(() => {
+        // A deleted card leaves a dangling id behind — drop it rather than
+        // showing a stale pill.
+        if (!cancelled) setChatCard(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatCardId, metadataVersion]);
+
+  /** Close or reopen the chat's card without leaving the chat view. */
+  const handleToggleCardLifecycle = useCallback(() => {
+    if (!chatCardId || !chatCard || cardBusy) return;
+    setCardBusy(true);
+    updateCard(chatCardId, { lifecycle: chatCard.lifecycle === "open" ? "closed" : "open" })
+      .then((res) => setChatCard(res.card))
+      .catch(() => {})
+      .finally(() => setCardBusy(false));
+  }, [chatCardId, chatCard, cardBusy]);
 
   const openCardPicker = useCallback(() => {
     setShowCardPicker(true);
@@ -2504,6 +2547,41 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 for chats linked into a cross-engine chat tree. Renders
                 nothing when the chat has no lineage and no descendants. */}
             {id && <ChatTreeIndicator key={id} chatId={id} folder={chat?.folder} compact={isMobile} />}
+            {/* Card pill — which ticket this chat sits on, and whether it's
+                still open. Closing/reopening lives in the composer menu; this
+                is what makes that state visible without opening it. */}
+            {id && chatCard && (
+              <div
+                onClick={() => navigate("/board")}
+                style={{
+                  fontSize: 11,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  color: chatCard.lifecycle === "closed" ? "var(--text-muted)" : "var(--text)",
+                  fontWeight: 500,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 3,
+                  flexShrink: 0,
+                  maxWidth: isMobile ? 90 : 200,
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                  textOverflow: "ellipsis",
+                  cursor: "pointer",
+                  ...(chatCard.lifecycle === "closed" && { textDecoration: "line-through" }),
+                }}
+                title={
+                  chatCard.lifecycle === "closed"
+                    ? `On the closed card "${chatCard.title}". Click to open the board.`
+                    : `On the card "${chatCard.title}". Click to open the board.`
+                }
+              >
+                <span>{chatCard.emoji}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{chatCard.title}</span>
+              </div>
+            )}
             {/* Spend indicator — shown for OR chats whenever any cost data is
                 available. Derived from the live messages array so it updates
                 incrementally without waiting for a run to complete.
@@ -3518,6 +3596,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                               onClick: openCardPicker,
                               title: "Group this chat under a card (ticket) on the board",
                             },
+                      ]
+                    : []),
+                  // Card lifecycle — only once the card record has loaded, so
+                  // the label can never claim the wrong direction.
+                  ...(id && chatCardId && chatCard
+                    ? [
+                        {
+                          key: "card-lifecycle",
+                          icon: chatCard.lifecycle === "open" ? <CircleCheck size={16} /> : <RotateCcw size={16} />,
+                          label: chatCard.lifecycle === "open" ? "Close card" : "Reopen card",
+                          onClick: handleToggleCardLifecycle,
+                          disabled: cardBusy,
+                          title:
+                            chatCard.lifecycle === "open"
+                              ? `Close "${chatCard.title}" — it moves to the board's Closed strip`
+                              : `Reopen "${chatCard.title}" — it returns to the board`,
+                        },
                       ]
                     : []),
                 ]

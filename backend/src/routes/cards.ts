@@ -15,6 +15,7 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setChatCardMembership, unassignAllChatsFromCard } from "../services/card-membership.js";
 import { listRuns } from "../services/job-store.js";
+import { clearChatListCache } from "../services/chat-list-cache.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -142,6 +143,10 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
   try {
     const card = updateCard(req.params.id, patch);
     if (!card) return res.status(404).json({ error: "Card not found" });
+    // A lifecycle flip changes which chats the sidebar's cards-only filter
+    // admits, and that list is cached by query string — drop it so the next
+    // poll reflects the close/reopen instead of serving the old membership.
+    if (patch.lifecycle !== undefined) clearChatListCache();
     sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
     res.json({ card: summarize([card])[0] });
   } catch (err: any) {
