@@ -9,6 +9,7 @@ import {
   deleteDraft,
   listCards,
   createCard,
+  updateCard,
   assignChatToCard,
   type Chat,
   type QueueItem,
@@ -16,7 +17,7 @@ import {
 } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
-import ChatListItem from "../components/ChatListItem";
+import ChatListItem, { type ChatCardMenu } from "../components/ChatListItem";
 import ChatTreeList from "../components/ChatTreeList";
 import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
@@ -87,7 +88,10 @@ export default function ChatList({
   });
   // Card-picker modal state for the per-chat "Add to card…" action.
   const [pickerChat, setPickerChat] = useState<Chat | null>(null);
-  const [pickerCards, setPickerCards] = useState<CardSummary[]>([]);
+  // Every card, kept loaded rather than fetched when the picker opens: the row
+  // menu needs each filed chat's card lifecycle to label Close vs Reopen, and
+  // the sidebar is the one place all card actions live now.
+  const [cards, setCards] = useState<CardSummary[]>([]);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
@@ -95,6 +99,16 @@ export default function ChatList({
   const isAgentsActive = location.pathname.startsWith("/agents");
   const [drafts, setDrafts] = useState<QueueItem[]>([]);
   const [stagingCollapsed, setStagingCollapsed] = useState(false);
+
+  const loadCards = useCallback(async () => {
+    try {
+      const res = await listCards();
+      setCards(res.cards);
+    } catch {
+      // Non-critical: the row menu simply omits the lifecycle entry (it never
+      // guesses a label) until a later refresh lands.
+    }
+  }, []);
 
   const loadDrafts = useCallback(async () => {
     try {
@@ -222,11 +236,13 @@ export default function ChatList({
   useEffect(() => {
     load();
     loadDrafts();
+    loadCards();
     onRefresh(() => {
       load();
       loadDrafts();
+      loadCards();
     });
-  }, [onRefresh, load, loadDrafts]);
+  }, [onRefresh, load, loadDrafts, loadCards]);
 
   // Refetch chat list when sessions start or stop (debounced to avoid rapid-fire
   // during new-chat migration: temp ID stop → real ID start).
@@ -240,12 +256,17 @@ export default function ChatList({
     return () => clearTimeout(timer);
   }, [activeSessions, load]);
 
-  // Refetch when chat metadata changes (status, summon, title) via SSE
+  // Refetch when chat metadata changes (status, summon, title) via SSE. Card
+  // events ride the same signal, so the row menu's lifecycle labels follow a
+  // close/reopen done on the board.
   useEffect(() => {
     if (metadataVersion === 0) return; // skip initial
-    const timer = setTimeout(() => load(), 300);
+    const timer = setTimeout(() => {
+      load();
+      loadCards();
+    }, 300);
     return () => clearTimeout(timer);
-  }, [metadataVersion, load]);
+  }, [metadataVersion, load, loadCards]);
 
   // While any session is active, periodically refetch the chat list to pick up
   // title changes, timestamp updates, and reordering.
@@ -320,8 +341,8 @@ export default function ChatList({
     }
   };
 
-  /** Optimistically stamp a chat's card membership into local state. */
-  const applyCardId = (chatId: string, cardId: string) => {
+  /** Optimistically stamp a chat's card membership into local state; null unassigns. */
+  const applyCardId = (chatId: string, cardId: string | null) => {
     setChats((prev) =>
       prev.map((c) => {
         if (c.id !== chatId) return c;
@@ -334,6 +355,19 @@ export default function ChatList({
         }
       }),
     );
+  };
+
+  const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
+
+  /** The card a chat is filed under, when it has one and we've loaded it. */
+  const cardOf = (chat: Chat): CardSummary | undefined => {
+    try {
+      const meta = JSON.parse(chat.metadata || "{}");
+      // Unassign merges `cardId: null`, so membership is a string check.
+      return typeof meta.cardId === "string" && meta.cardId ? cardsById.get(meta.cardId) : undefined;
+    } catch {
+      return undefined;
+    }
   };
 
   /** Title for a card promoted from a chat — same derivation as the board's old inbox promote. */
@@ -350,6 +384,10 @@ export default function ChatList({
     try {
       const res = await createCard({ title: chatCardTitle(chat) }, chat.id);
       applyCardId(chat.id, res.card.id);
+      // Seed the new card locally too — without it the row's menu knows the
+      // chat is filed but not the card's lifecycle, so "Close card" would be
+      // missing until the next poll.
+      setCards((prev) => [...prev, res.card]);
     } catch (err) {
       console.error("Failed to create card from chat:", err);
     }
@@ -357,14 +395,41 @@ export default function ChatList({
 
   const handleAddToCard = (chat: Chat) => {
     setPickerChat(chat);
-    setPickerCards([]);
-    listCards()
-      .then((res) => setPickerCards(res.cards))
-      .catch((err) => {
-        // Close rather than show a misleading "No open cards yet" empty state.
-        console.error("Failed to load cards:", err);
-        setPickerChat(null);
-      });
+    // Cards are already loaded; refresh in the background so the picker can't
+    // offer a card that was closed elsewhere since the last poll.
+    loadCards();
+  };
+
+  const handleRemoveFromCard = async (chat: Chat) => {
+    try {
+      await assignChatToCard(chat.id, null);
+      applyCardId(chat.id, null);
+    } catch (err) {
+      console.error("Failed to remove chat from card:", err);
+    }
+  };
+
+  const handleToggleCardLifecycle = async (chat: Chat) => {
+    const card = cardOf(chat);
+    if (!card) return;
+    try {
+      const res = await updateCard(card.id, { lifecycle: card.lifecycle === "open" ? "closed" : "open" });
+      setCards((prev) => prev.map((c) => (c.id === res.card.id ? res.card : c)));
+    } catch (err) {
+      console.error("Failed to change card lifecycle:", err);
+    }
+  };
+
+  /** Every card action for one row's kebab menu. */
+  const cardMenuFor = (chat: Chat): ChatCardMenu => {
+    const card = cardOf(chat);
+    return {
+      ...(card && { card: { title: card.title, lifecycle: card.lifecycle } }),
+      onCreate: () => handleCreateCard(chat),
+      onAdd: () => handleAddToCard(chat),
+      onRemove: () => handleRemoveFromCard(chat),
+      onToggleLifecycle: () => handleToggleCardLifecycle(chat),
+    };
   };
 
   const handleToggleBookmarkFilter = () => {
@@ -654,8 +719,7 @@ export default function ChatList({
             onChatClick={handleChatClick}
             onDelete={handleDelete}
             onToggleBookmark={handleToggleBookmark}
-            onCreateCard={handleCreateCard}
-            onAddToCard={handleAddToCard}
+            cardMenuFor={cardMenuFor}
             sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           />
         ) : (
@@ -667,8 +731,7 @@ export default function ChatList({
               onClick={() => handleChatClick(chat)}
               onDelete={() => handleDelete(chat)}
               onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
-              onCreateCard={() => handleCreateCard(chat)}
-              onAddToCard={() => handleAddToCard(chat)}
+              cardMenu={cardMenuFor(chat)}
               sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
             />
           ))
@@ -722,7 +785,7 @@ export default function ChatList({
 
       {pickerChat && (
         <CardPicker
-          cards={pickerCards}
+          cards={cards}
           onSelect={async (cardId) => {
             try {
               await assignChatToCard(pickerChat.id, cardId);
@@ -737,6 +800,7 @@ export default function ChatList({
             try {
               const res = await createCard({ title }, pickerChat.id);
               applyCardId(pickerChat.id, res.card.id);
+              setCards((prev) => [...prev, res.card]);
               setPickerChat(null);
             } catch (err) {
               // Keep the picker open so the failure is visible and retryable.

@@ -1,5 +1,21 @@
 import { useEffect, useState } from "react";
-import { Globe, Monitor, X, Bookmark, Bot, Zap, GitBranch, Bell, Workflow, EllipsisVertical, SquarePlus, FolderInput } from "lucide-react";
+import {
+  Globe,
+  Monitor,
+  X,
+  Bookmark,
+  Bot,
+  Zap,
+  GitBranch,
+  Bell,
+  Workflow,
+  EllipsisVertical,
+  SquarePlus,
+  FolderInput,
+  FolderMinus,
+  CircleCheck,
+  RotateCcw,
+} from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -7,23 +23,40 @@ import ProviderBadge from "./ProviderBadge";
 import FolderPathPill from "./FolderPathPill";
 import MenuRow from "./MenuRow";
 
+/**
+ * Every card (ticket) action for one chat. The sidebar row menu is the single
+ * home for these — the chat view's composer menu is about sending messages,
+ * not filing tickets.
+ *
+ * Which entries render is decided by the chat's own `metadata.cardId`, so a
+ * card-less chat offers create/add and a filed chat offers close-reopen/remove.
+ * `card` is the resolved record, needed only for the lifecycle label; when it
+ * hasn't loaded (or the id dangles past a deleted card) that one entry is
+ * omitted rather than guessed.
+ */
+export interface ChatCardMenu {
+  card?: { title: string; lifecycle: "open" | "closed" };
+  onCreate?: () => void;
+  onAdd?: () => void;
+  onRemove?: () => void;
+  onToggleLifecycle?: () => void;
+}
+
 interface Props {
   chat: Chat;
   isActive?: boolean;
   onClick: () => void;
   onDelete: () => void;
   onToggleBookmark?: (bookmarked: boolean) => void;
-  /** Promote this card-less chat to a brand-new card. Hidden when the chat already has a card. */
-  onCreateCard?: () => void;
-  /** Open a picker to file this card-less chat onto an existing card. Hidden when the chat already has a card. */
-  onAddToCard?: () => void;
+  /** Card actions for the row menu. Omit to render no card entries at all. */
+  cardMenu?: ChatCardMenu;
   sessionStatus?: { active: boolean; type: string };
 }
 
 /** Rough popup height used to decide whether the menu opens downward or upward. */
 const MENU_ESTIMATED_HEIGHT = 210;
 
-export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, onCreateCard, onAddToCard, sessionStatus }: Props) {
+export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, cardMenu, sessionStatus }: Props) {
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
   // position:fixed, anchored to the button's viewport rect at open time.
@@ -385,25 +418,51 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                     }}
                   />
                 )}
-                {!hasCard && onCreateCard && (
+                {!hasCard && cardMenu?.onCreate && (
                   <MenuRow
                     icon={<SquarePlus size={16} />}
                     label="Create card"
                     title="Promote this chat to a new card"
                     onClick={() => {
                       setMenuPos(null);
-                      onCreateCard();
+                      cardMenu.onCreate!();
                     }}
                   />
                 )}
-                {!hasCard && onAddToCard && (
+                {!hasCard && cardMenu?.onAdd && (
                   <MenuRow
                     icon={<FolderInput size={16} />}
                     label="Add to card…"
                     title="Add this chat to an existing card"
                     onClick={() => {
                       setMenuPos(null);
-                      onAddToCard();
+                      cardMenu.onAdd!();
+                    }}
+                  />
+                )}
+                {hasCard && cardMenu?.card && cardMenu.onToggleLifecycle && (
+                  <MenuRow
+                    icon={cardMenu.card.lifecycle === "open" ? <CircleCheck size={16} /> : <RotateCcw size={16} />}
+                    label={cardMenu.card.lifecycle === "open" ? "Close card" : "Reopen card"}
+                    title={
+                      cardMenu.card.lifecycle === "open"
+                        ? `Close "${cardMenu.card.title}" — it moves to the board's Closed strip`
+                        : `Reopen "${cardMenu.card.title}" — it returns to the board`
+                    }
+                    onClick={() => {
+                      setMenuPos(null);
+                      cardMenu.onToggleLifecycle!();
+                    }}
+                  />
+                )}
+                {hasCard && cardMenu?.onRemove && (
+                  <MenuRow
+                    icon={<FolderMinus size={16} />}
+                    label="Remove from card"
+                    title="Take this chat off its card (the card itself is kept)"
+                    onClick={() => {
+                      setMenuPos(null);
+                      cardMenu.onRemove!();
                     }}
                   />
                 )}

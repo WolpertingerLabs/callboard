@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, ListTree, Loader2 } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
-import ChatListItem from "./ChatListItem";
+import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ProviderBadge from "./ProviderBadge";
 
 /**
@@ -31,8 +31,8 @@ interface Props {
   onChatClick: (chat: Chat) => void;
   onDelete: (chat: Chat) => void;
   onToggleBookmark: (chat: Chat, bookmarked: boolean) => void;
-  onCreateCard: (chat: Chat) => void;
-  onAddToCard: (chat: Chat) => void;
+  /** Card (ticket) actions for a row's kebab menu — same shape the flat list uses. */
+  cardMenuFor: (chat: Chat) => ChatCardMenu;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
 }
 
@@ -185,17 +185,7 @@ function TreeNodeRow({
   );
 }
 
-export default function ChatTreeList({
-  chats,
-  refreshToken,
-  activeChatId,
-  onChatClick,
-  onDelete,
-  onToggleBookmark,
-  onCreateCard,
-  onAddToCard,
-  sessionStatusFor,
-}: Props) {
+export default function ChatTreeList({ chats, refreshToken, activeChatId, onChatClick, onDelete, onToggleBookmark, cardMenuFor, sessionStatusFor }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [trees, setTrees] = useState<Record<string, ChatTreeResponse>>({});
@@ -319,8 +309,7 @@ export default function ChatTreeList({
               onClick={() => onChatClick(chat)}
               onDelete={() => onDelete(chat)}
               onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
-              onCreateCard={() => onCreateCard(chat)}
-              onAddToCard={() => onAddToCard(chat)}
+              cardMenu={cardMenuFor(chat)}
               sessionStatus={sessionStatusFor(chat.id)}
             />
           );
@@ -365,8 +354,7 @@ export default function ChatTreeList({
                   onClick={() => onChatClick(chat)}
                   onDelete={() => onDelete(chat)}
                   onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
-                  onCreateCard={() => onCreateCard(chat)}
-                  onAddToCard={() => onAddToCard(chat)}
+                  cardMenu={cardMenuFor(chat)}
                   sessionStatus={sessionStatusFor(chat.id)}
                 />
               </div>
