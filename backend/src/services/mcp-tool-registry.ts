@@ -402,10 +402,29 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "wait",
     qualifiedName: "mcp__callboard-tools__wait",
-    description: "Pause execution for a specified number of seconds (1-300).",
+    description: "Pause execution for a specified number of seconds (1-300). Shown to the user as a live countdown they can end early.",
     parameters: [
       { name: "seconds", type: "number", description: "Number of seconds to wait (1-300)", required: true },
       { name: "flavor", type: "string", description: "Fun flavor description of what you're doing while waiting", required: false },
+      { name: "reason", type: "string", description: "Actual reason for waiting (for your own logging)", required: false },
+      {
+        name: "require_condition",
+        type: "string",
+        description: "Poll for an external condition this wait cannot observe itself; resolve it with wait_condition_met",
+        required: false,
+      },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "wait_condition_met",
+    qualifiedName: "mcp__callboard-tools__wait_condition_met",
+    description: "Close the condition watch opened by wait(require_condition) — confirm the external condition is satisfied, or abandon the watch.",
+    parameters: [
+      { name: "satisfied", type: "boolean", description: "true when the condition is now met; false to abandon the watch", required: true },
+      { name: "evidence", type: "string", description: "Brief note on how you verified it, recorded for the user", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",

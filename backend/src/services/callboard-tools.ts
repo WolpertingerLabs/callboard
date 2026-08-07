@@ -28,6 +28,8 @@ import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CA
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
+import { startActivity, endActivity, openOrContinueWatch, closeWatch } from "./chat-activity.js";
+import type { ConditionWatch } from "shared/types/index.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
@@ -118,6 +120,28 @@ const MIME_MAP: Record<string, { mime: string; category: string }> = {
 
 function error(message: string) {
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
+}
+
+/**
+ * What to tell the model after a `wait` returns.
+ *
+ * The early-release wording carries real weight: a model that is told only
+ * "you waited 42 of 300 seconds" reliably concludes it should wait out the
+ * remainder, which defeats the entire point of the button. It has to be told
+ * why the wait ended and what to do instead.
+ */
+function buildWaitNote(opts: { endedEarly: boolean; hasCondition: boolean }): string {
+  if (opts.endedEarly) {
+    return opts.hasCondition
+      ? "The user ended this wait early — they can see the condition you were polling for, and believe it is now satisfied. " +
+          "Check it now. If it holds, call wait_condition_met. Do not simply wait again."
+      : "The user ended this wait early — they believe whatever you were waiting for has already happened. " +
+          "Re-check your assumption and proceed. Do not simply wait again.";
+  }
+  return opts.hasCondition
+    ? "The interval elapsed. Now check the condition yourself. If it is satisfied, call wait_condition_met; " +
+        "if not, call wait again with the same require_condition to keep polling."
+    : "The interval elapsed.";
 }
 
 // ─── notify_user channel routing ────────────────────────────────────
@@ -1498,25 +1522,161 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "wait",
-        "Pause execution for the specified number of seconds (1-300). Useful for waiting between polling operations, giving other processes time to complete, or adding delays between actions. Include a fun, cute flavor description of what you're 'doing' while you wait.",
+        "Pause execution for the specified number of seconds (1-300). Useful for waiting between polling operations, giving other processes time to complete, or adding delays between actions. " +
+          "Include a fun, cute flavor description of what you're 'doing' while you wait — it is shown to the user alongside a live countdown, and the user can end the wait early if they " +
+          "can see the thing you are waiting for has already happened.",
         {
           seconds: z.number().min(1).max(300).describe("Number of seconds to wait (1-300)"),
           flavor: z.string().describe("A fun, cute flavor description of what you're doing while waiting (e.g. 'Contemplating the meaning of semicolons')"),
           reason: z.string().optional().describe("Optional actual reason for waiting (for your own logging)"),
+          require_condition: z
+            .string()
+            .optional()
+            .describe(
+              "Poll for an external condition this wait cannot observe itself (a CI run finishing, a deploy going green, a file appearing). " +
+                "Describe the condition. After the sleep you MUST check it yourself — this tool only sleeps and tracks the attempts. " +
+                "If the condition is satisfied, call wait_condition_met. If it is not, call wait again with the SAME require_condition to keep polling. " +
+                "Your turn will be nudged if it ends with the condition unresolved.",
+            ),
         },
         async (args) => {
           const seconds = Math.min(Math.max(1, Math.round(args.seconds)), 300);
+          const chatId = getChatId?.();
 
-          await new Promise<void>((resolve) => setTimeout(resolve, seconds * 1000));
+          // ── Condition watch bookkeeping ──
+          // Opened before the sleep so the countdown the user sees carries the
+          // condition and its attempt number, not just the flavor text.
+          let watch: ConditionWatch | undefined;
+          if (args.require_condition && chatId) {
+            watch = openOrContinueWatch(chatId, args.require_condition);
+            if (watch.attempts > watch.maxAttempts) {
+              // Refuse rather than sleep. A loop that has not converged in
+              // this many attempts is not going to, and silently stalling
+              // again would just burn another interval before the agent
+              // discovered the same thing.
+              closeWatch(chatId, false);
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({
+                      waited: 0,
+                      refused: true,
+                      condition: args.require_condition,
+                      attempts: watch.attempts - 1,
+                      maxAttempts: watch.maxAttempts,
+                      note:
+                        `This condition has already been polled ${watch.maxAttempts} times without being met, so the watch has been closed and no further wait was performed. ` +
+                        `Stop polling. Either take a different approach to verifying it, or call summon_user to ask the user to check.`,
+                    }),
+                  },
+                ],
+              };
+            }
+          }
+
+          // ── The sleep ──
+          // Resolves on whichever comes first: the timer, or the user ending
+          // the wait from the UI. `release` is handed to the registry so the
+          // route can reach it; the activity is torn down in the finally so a
+          // throw cannot leave a phantom countdown running.
+          let releasedBy: string | undefined;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let release!: (reason: string) => void;
+          const startedAt = Date.now();
+
+          // The executor runs synchronously, so `release` is assigned before
+          // startActivity below ever sees it.
+          const sleep = new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, seconds * 1000);
+            release = (reason: string) => {
+              releasedBy = reason;
+              if (timer) clearTimeout(timer);
+              resolve();
+            };
+          });
+
+          const activity = chatId
+            ? startActivity(
+                chatId,
+                {
+                  kind: "wait",
+                  label: args.flavor,
+                  ...(args.reason && { detail: args.reason }),
+                  expiresAt: startedAt + seconds * 1000,
+                  interruptible: true,
+                  ...(watch && { condition: { text: watch.text, attempt: watch.attempts, maxAttempts: watch.maxAttempts } }),
+                },
+                release,
+              )
+            : undefined;
+
+          try {
+            await sleep;
+          } finally {
+            if (timer) clearTimeout(timer);
+            if (activity) endActivity(activity.id);
+          }
+
+          const waited = Math.round((Date.now() - startedAt) / 1000);
+          const endedEarly = releasedBy !== undefined;
 
           return {
             content: [
               {
                 type: "text" as const,
                 text: JSON.stringify({
-                  waited: seconds,
+                  waited,
+                  ...(endedEarly && { requested: seconds, endedEarly: true, releasedBy }),
                   flavor: args.flavor,
                   ...(args.reason && { reason: args.reason }),
+                  ...(watch && {
+                    condition: watch.text,
+                    attempt: watch.attempts,
+                    maxAttempts: watch.maxAttempts,
+                  }),
+                  note: buildWaitNote({ endedEarly, hasCondition: !!watch }),
+                }),
+              },
+            ],
+          };
+        },
+      ),
+
+      defineTool(
+        "wait_condition_met",
+        "Close the condition watch opened by wait(require_condition): confirm the external condition you were polling for is now satisfied. " +
+          "Call this as soon as your check succeeds, instead of calling wait again. Pass satisfied: false to abandon the watch when you have given up " +
+          "on the condition or are taking a different approach — either way the watch closes and the user's UI stops showing it. " +
+          "This does NOT end your session and is unrelated to objective_complete; it only resolves the polling loop.",
+        {
+          satisfied: z.boolean().describe("true when the condition you were waiting for is now met; false to abandon the watch"),
+          evidence: z.string().optional().describe("Brief note on how you verified it (or why you are abandoning), recorded for the user"),
+        },
+        async (args) => {
+          const chatId = getChatId?.();
+          if (!chatId) return error("Chat context not available");
+
+          const watch = closeWatch(chatId, args.satisfied);
+          if (!watch) {
+            return error(
+              "No open condition watch — this session is not polling for anything. A watch is opened by calling wait with require_condition; " +
+                "there is nothing to resolve until then.",
+            );
+          }
+
+          log.info(`Condition "${watch.text}" on ${chatId} resolved after ${watch.attempts} attempt(s): ${args.satisfied ? "met" : "abandoned"}`);
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  condition: watch.text,
+                  attempts: watch.attempts,
+                  satisfied: args.satisfied,
+                  ...(args.evidence && { evidence: args.evidence }),
                 }),
               },
             ],
