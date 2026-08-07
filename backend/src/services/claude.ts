@@ -22,7 +22,8 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
-import { clearActivitiesForChat, migrateActivities } from "./chat-activity.js";
+import { clearActivitiesForChat, migrateActivities, getWatch } from "./chat-activity.js";
+import { decideNudge } from "./nudge-decision.js";
 import { buildModelRoutingToolsSpec, takePendingModelSwitch, clearPendingModelSwitch } from "./model-routing-tools.js";
 import { classifyAndResolve, getUsableRoutingConfig } from "./model-routing.js";
 import { getRun as getJobRun } from "./job-store.js";
@@ -2261,25 +2262,38 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         }
 
         // ── Nudge decision ──
-        // Only nudge when explicit completion is required and the run ended
-        // normally: user aborts, provider errors, /clear, and hard caps
-        // (max_turns / max_budget) all end the session as before.
-        if (!requireCompletion) break;
-        if (abortController.signal.aborted || errorDetail !== undefined || endReason) break;
-        if (typeof prompt === "string" && prompt.trim().toLowerCase() === "/clear") break;
-        if (isObjectiveSatisfied()) break;
-        if (nudgesUsed >= maxNudges) {
-          endReason = "objective_incomplete";
-          log.warn(`Session ${trackingId} ended without ${completionToolName} after ${nudgesUsed} nudge(s) — giving up`);
+        // A turn can end owing two different things: the session-terminal
+        // objective (requireExplicitCompletion) and a loop-scoped condition
+        // watch left open by wait(require_condition). User aborts, provider
+        // errors, /clear and hard caps still end the session as before.
+        // See nudge-decision.ts — the logic is pure so it can be tested.
+        const watch = getWatch(trackingId);
+        const decision = decideNudge({
+          requireCompletion,
+          objectiveSatisfied: isObjectiveSatisfied(),
+          watchOpen: watch !== undefined,
+          ...(watch && { watchText: watch.text, watchAttempts: watch.attempts, watchMaxAttempts: watch.maxAttempts }),
+          nudgesUsed,
+          maxNudges,
+          aborted: abortController.signal.aborted,
+          errored: errorDetail !== undefined,
+          endReason,
+          isClear: typeof prompt === "string" && prompt.trim().toLowerCase() === "/clear",
+          completionToolName,
+          isJobStepSession,
+        });
+
+        if (decision.action === "break") break;
+        if (decision.action === "giveUp") {
+          endReason = decision.endReason;
+          log.warn(`Session ${trackingId} ended owing [${decision.obligations.join(", ")}] after ${nudgesUsed} nudge(s) — giving up`);
           break;
         }
-        nudgesUsed++;
-        log.info(`Session ${trackingId} stream ended without ${completionToolName} — nudging (${nudgesUsed}/${maxNudges})`);
 
-        const nudgeText =
-          `Your previous turn ended without calling the ${completionToolName} tool, but this session requires explicit completion. ` +
-          `If the objective is fully achieved, call ${completionToolName} now${isJobStepSession ? "" : " (optionally with a message and result data)"}. ` +
-          `Otherwise, continue working toward the objective.`;
+        nudgesUsed++;
+        log.info(`Session ${trackingId} stream ended owing [${decision.obligations.join(", ")}] — nudging (${nudgesUsed}/${maxNudges})`);
+
+        const nudgeText = decision.text;
         emitter.emit("event", {
           type: "nudge",
           content: nudgeText,
