@@ -23,6 +23,7 @@ export type {
   CardRollupState,
   CardPendingKind,
   CardMemberChat,
+  CardChatActivity,
   CardMemberRun,
   CardSummary,
   CardListResponse,

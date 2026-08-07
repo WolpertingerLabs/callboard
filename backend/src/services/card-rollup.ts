@@ -9,15 +9,24 @@
  * Pure over its inputs — session-registry lookups are injected so tests
  * can run without the registry (production deps in ROLLUP_DEPS).
  */
-import type { Card, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
+import type { Card, CardChatActivity, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
 import { getSessionProviders } from "../agents/factory.js";
+import { listActivities } from "./chat-activity.js";
+import { listPendingForParent } from "./session-callbacks.js";
 
 export interface RollupDeps {
   isSessionActive: (chatId: string, sessionId: string) => boolean;
   /** The kind of input a chat is blocked on, or undefined when not waiting. */
   pendingKindOf: (chatId: string, sessionId: string) => CardPendingKind | undefined;
+  /**
+   * The long-running tool call a chat is inside, or undefined. Double-keyed
+   * like the lookups above: an activity may have been opened under either id.
+   */
+  activityOf: (chatId: string, sessionId: string) => CardChatActivity | undefined;
+  /** Outstanding onComplete callbacks this chat is the parent of. */
+  awaitingChildrenOf: (chatId: string) => number;
   /**
    * First-user-message preview for a chat whose metadata carries no title —
    * the same fallback the sidebar shows, so untitled chats never render as
@@ -47,6 +56,18 @@ export const ROLLUP_DEPS: RollupDeps = {
     const pending = getPendingRequest(chatId) ?? getPendingRequest(sessionId);
     return pending ? PENDING_KIND_BY_EVENT[pending.eventType] : undefined;
   },
+  activityOf: (chatId, sessionId) => {
+    const open = listActivities(chatId).concat(listActivities(sessionId));
+    const first = open[0];
+    if (!first) return undefined;
+    return {
+      kind: first.kind,
+      label: first.label,
+      ...(first.expiresAt !== undefined && { expiresAt: first.expiresAt }),
+      ...(first.condition && { condition: first.condition.text }),
+    };
+  },
+  awaitingChildrenOf: (chatId) => listPendingForParent(chatId).length,
   previewOf: (sessionId) => {
     const cached = previewCache.get(sessionId);
     if (cached !== undefined) return cached;
@@ -91,6 +112,8 @@ function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberC
   const pendingKind = deps.pendingKindOf(chat.id, chat.session_id);
   const status = pendingKind ? "waiting" : deps.isSessionActive(chat.id, chat.session_id) ? "ongoing" : "stopped";
   const lastReadAt = typeof meta.lastReadAt === "string" ? meta.lastReadAt : undefined;
+  const activity = deps.activityOf(chat.id, chat.session_id);
+  const awaitingChildren = deps.awaitingChildrenOf(chat.id);
   return {
     chatId: chat.id,
     title: title || null,
@@ -106,6 +129,8 @@ function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberC
     ...(typeof meta.provider === "string" && meta.provider && { provider: meta.provider }),
     ...(typeof meta.agentAlias === "string" && meta.agentAlias && { agentAlias: meta.agentAlias }),
     ...(typeof meta.jobRunId === "string" && meta.jobRunId && { jobRunId: meta.jobRunId }),
+    ...(activity && { activity }),
+    ...(awaitingChildren > 0 && { awaitingChildren }),
     createdAt: chat.created_at,
     updatedAt: chat.updated_at,
   };
@@ -118,6 +143,12 @@ function toMemberRun(run: JobRunListItem): CardMemberRun {
     jobName: run.jobName,
     ...(run.title && { title: run.title }),
     status: run.status,
+    // Already computed upstream and previously dropped here, which is why a
+    // sleeping or event-waiting run could only ever show a raw status string.
+    ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
+    ...(run.currentStepName && { currentStepName: run.currentStepName }),
+    ...(run.currentStepType && { currentStepType: run.currentStepType }),
+    ...(run.activeChildRunId && { activeChildRunId: run.activeChildRunId }),
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
     ...(run.endedAt && { endedAt: run.endedAt }),
