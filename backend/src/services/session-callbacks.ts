@@ -210,6 +210,19 @@ export function getReadyForParent(parentChatId: string): PendingCallback[] {
   return readStore().callbacks.filter((cb) => cb.parentChatId === parentChatId && cb.status === "ready");
 }
 
+/**
+ * Every outstanding callback this chat is the parent of — the children it is
+ * still expecting to hear back from, in either state ("waiting" for a child
+ * still running, "ready" for one that finished but has not been delivered).
+ *
+ * This is the read that makes onComplete visible. Without it a parent that
+ * spawned three children and ended its turn renders as idle and finished,
+ * which is exactly the state a user is most likely to misread as "done".
+ */
+export function listPendingForParent(parentChatId: string): PendingCallback[] {
+  return readStore().callbacks.filter((cb) => cb.parentChatId === parentChatId);
+}
+
 /** Remove callbacks by id. */
 export function removeCallbacks(ids: string[]): void {
   if (!ids.length) return;

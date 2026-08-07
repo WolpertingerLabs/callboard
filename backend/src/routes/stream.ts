@@ -17,6 +17,9 @@ import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
 import { getCard } from "../services/card-store.js";
 import { captureWorktreeWorkspace } from "../services/workspace-store.js";
+import { listActivities, getWatch, releaseActivity } from "../services/chat-activity.js";
+import { listPendingForParent } from "../services/session-callbacks.js";
+import type { ChatActivityResponse } from "shared/types/index.js";
 
 const log = createLogger("stream");
 
@@ -632,6 +635,59 @@ streamRouter.get("/:id/pending", (req, res) => {
       ...pending.eventData,
     },
   });
+});
+
+/**
+ * What this chat is currently blocked on.
+ *
+ * Deliberately REST rather than a new SSE event. `createSSEHandler` collapses
+ * everything it does not explicitly handle into a bare `message_update` with
+ * no payload, so activity data cannot ride on the `tool_use` frame — and a new
+ * frame type would need the capability gate that no emit site consults yet.
+ * It does not need to: a countdown is client-side arithmetic once the client
+ * knows `startedAt` and `expiresAt`, and the bare `message_update` the tool
+ * call already emits is a sufficient nudge to refetch. This also makes
+ * refresh, reconnect and a second tab work through one code path — the same
+ * one `/pending` uses.
+ */
+streamRouter.get("/:id/activity", (req, res) => {
+  // #swagger.tags = ['Stream']
+  // #swagger.summary = 'Get in-flight activity'
+  // #swagger.description = 'What this chat is currently blocked on: long-running tool calls (a wait countdown, a delegated session), any open condition watch, and the number of spawned children it is awaiting. Used for the live activity dock, and on reconnect after a page refresh.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
+  /* #swagger.responses[200] = { description: "Open activities, the condition watch if any, and the awaited-children count" } */
+  const chatId = req.params.id;
+  res.json({
+    activities: listActivities(chatId),
+    conditionWatch: getWatch(chatId) ?? null,
+    awaitingChildren: listPendingForParent(chatId).length,
+  } satisfies ChatActivityResponse);
+});
+
+/**
+ * End an interruptible activity early on the user's behalf.
+ *
+ * Only `wait` qualifies. The other kinds are the agent awaiting work it
+ * delegated, where returning early would hand the caller an empty result while
+ * the delegate kept running — so the registry refuses them and this 404s.
+ */
+streamRouter.post("/:id/activity/:activityId/release", (req, res) => {
+  // #swagger.tags = ['Stream']
+  // #swagger.summary = 'End an activity early'
+  // #swagger.description = 'End an interruptible in-flight activity (currently only a wait) before its timer elapses, so the agent resumes immediately. The agent is told it was cut short and by whom. Activities representing delegated work are not interruptible and are refused.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
+  /* #swagger.parameters['activityId'] = { in: 'path', required: true, type: 'string', description: 'Activity ID from GET /:id/activity' } */
+  /* #swagger.responses[200] = { description: "{ ok: true, kind } when the activity was released" } */
+  /* #swagger.responses[404] = { description: "No such activity, or it is not interruptible" } */
+  const outcome = releaseActivity(req.params.id, req.params.activityId, "user");
+  if (!outcome.ok) {
+    return res.status(404).json({
+      error: outcome.reason === "not_interruptible" ? "That activity cannot be ended early — the agent is waiting on work it delegated" : "No such activity",
+      reason: outcome.reason,
+    });
+  }
+  log.info(`Activity ${req.params.activityId} on ${req.params.id} ended early by user`);
+  res.json({ ok: true, kind: outcome.kind });
 });
 
 // Respond to a pending permission/question/plan request
