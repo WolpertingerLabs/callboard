@@ -20,7 +20,13 @@ afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-const IDLE_DEPS: RollupDeps = { isSessionActive: () => false, pendingKindOf: () => undefined, previewOf: () => null };
+const IDLE_DEPS: RollupDeps = {
+  isSessionActive: () => false,
+  pendingKindOf: () => undefined,
+  activityOf: () => undefined,
+  awaitingChildrenOf: () => 0,
+  previewOf: () => null,
+};
 
 function card(overrides: Partial<Card> = {}): Card {
   return {
@@ -215,5 +221,85 @@ describe("session-log preview fallback", () => {
 
   it("title stays null when no source has one", () => {
     expect(rollupOf([card()], [chat()], []).memberChats[0].title).toBeNull();
+  });
+});
+
+describe("in-flight activity", () => {
+  it("carries the activity onto the member chat", () => {
+    const deps: RollupDeps = {
+      ...IDLE_DEPS,
+      activityOf: () => ({ kind: "wait", label: "Counting sheep", expiresAt: 1_760_000_000_000, condition: "CI finishes" }),
+    };
+    expect(rollupOf([card()], [chat()], [], deps).memberChats[0].activity).toEqual({
+      kind: "wait",
+      label: "Counting sheep",
+      expiresAt: 1_760_000_000_000,
+      condition: "CI finishes",
+    });
+  });
+
+  it("omits the activity key entirely when nothing is in flight", () => {
+    expect(rollupOf([card()], [chat()], []).memberChats[0]).not.toHaveProperty("activity");
+  });
+
+  it("is double-keyed, so an activity opened under the session id is still found", () => {
+    // Same rule as isSessionActive/pendingKindOf: a tool may have registered
+    // against either id depending on when in the run it fired.
+    const deps: RollupDeps = {
+      ...IDLE_DEPS,
+      activityOf: (chatId, sessionId) => (sessionId === "sess-1" ? { kind: "wait", label: "via session id" } : undefined),
+    };
+    expect(rollupOf([card()], [chat()], [], deps).memberChats[0].activity?.label).toBe("via session id");
+  });
+
+  it("reports awaited children, and omits the key at zero", () => {
+    const deps: RollupDeps = { ...IDLE_DEPS, awaitingChildrenOf: () => 3 };
+    expect(rollupOf([card()], [chat()], [], deps).memberChats[0].awaitingChildren).toBe(3);
+    expect(rollupOf([card()], [chat()], []).memberChats[0]).not.toHaveProperty("awaitingChildren");
+  });
+
+  it("does not change the rollup state — a waiting chat is still active", () => {
+    // Deliberate: CardRollupState is a wire enum and the exhaustive Records in
+    // CardTile key off it. Activity refines the *label*, not the state.
+    const deps: RollupDeps = {
+      ...IDLE_DEPS,
+      isSessionActive: () => true,
+      activityOf: () => ({ kind: "wait", label: "Counting sheep", expiresAt: 1_760_000_000_000 }),
+    };
+    expect(rollupOf([card()], [chat()], [], deps).rollup).toBe("active");
+  });
+});
+
+describe("job run timing fields", () => {
+  it("carries nextWakeAt and step identity through to the member run", () => {
+    const summary = rollupOf(
+      [card()],
+      [],
+      [
+        run({
+          status: "sleeping",
+          nextWakeAt: "2026-08-07T12:04:30.000Z",
+          currentStepName: "Check CI",
+          currentStepType: "poll",
+        }),
+      ],
+    );
+    expect(summary.memberRuns[0]).toMatchObject({
+      status: "sleeping",
+      nextWakeAt: "2026-08-07T12:04:30.000Z",
+      currentStepName: "Check CI",
+      currentStepType: "poll",
+    });
+  });
+
+  it("carries the child run a waiting_child step is blocked on", () => {
+    const summary = rollupOf([card()], [], [run({ status: "waiting_child", activeChildRunId: "run-child" })]);
+    expect(summary.memberRuns[0].activeChildRunId).toBe("run-child");
+  });
+
+  it("omits the timing keys when the run has none", () => {
+    const memberRun = rollupOf([card()], [], [run()]).memberRuns[0];
+    expect(memberRun).not.toHaveProperty("nextWakeAt");
+    expect(memberRun).not.toHaveProperty("activeChildRunId");
   });
 });

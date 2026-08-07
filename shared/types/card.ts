@@ -99,8 +99,34 @@ export interface CardMemberChat {
   /** Configured agent running this chat — new chats on the card inherit its context. */
   agentAlias?: string;
   jobRunId?: string;
+  /**
+   * What this chat is blocked on right now, when it is blocked on a
+   * long-running tool call. Absent when nothing is in flight — an `ongoing`
+   * chat is usually just working, not waiting.
+   */
+  activity?: CardChatActivity;
+  /**
+   * Outstanding `onComplete` callbacks this chat is the parent of. Absent
+   * (never 0) when it is awaiting nothing. A chat can be `stopped` and still
+   * have a non-zero count: it finished its turn and is waiting to be woken by
+   * a child, which is exactly the state that used to read as simply done.
+   */
+  awaitingChildren?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * The board's compact view of an in-flight activity — enough to label a tile
+ * and drive a countdown, without the fields only the chat view uses.
+ */
+export interface CardChatActivity {
+  kind: string;
+  label: string;
+  /** Epoch ms; the tile derives its countdown from this. */
+  expiresAt?: number;
+  /** The condition being polled, when this is a `wait(require_condition)`. */
+  condition?: string;
 }
 
 /** Compact member job-run row. */
@@ -110,6 +136,17 @@ export interface CardMemberRun {
   jobName: string;
   title?: string;
   status: string;
+  /**
+   * ISO timestamp of the next timer wake (poll interval, retry, timeout).
+   * Carried through from `JobRunListItem` so a `sleeping` run can say *when*
+   * it wakes rather than only that it is asleep.
+   */
+  nextWakeAt?: string;
+  /** Display name of the current step, so a waiting run can say what it is on. */
+  currentStepName?: string;
+  currentStepType?: string;
+  /** Child run the active "job" step is waiting on, when status is waiting_child. */
+  activeChildRunId?: string;
   createdAt: string;
   updatedAt: string;
   endedAt?: string;

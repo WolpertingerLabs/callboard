@@ -1,4 +1,9 @@
 import type {
+  ActivityKind,
+  ActivityCondition,
+  ChatActivity,
+  ConditionWatch,
+  ChatActivityResponse,
   SlashCommand,
   PluginCommand,
   PluginManifest,
@@ -91,6 +96,11 @@ import type {
 } from "shared/types/index.js";
 
 export type {
+  ActivityKind,
+  ActivityCondition,
+  ChatActivity,
+  ConditionWatch,
+  ChatActivityResponse,
   SlashCommand,
   PluginCommand,
   PluginManifest,
@@ -413,6 +423,35 @@ export async function getPending(id: string): Promise<any | null> {
   await assertOk(res, "Failed to get pending action");
   const data = await res.json();
   return data.pending;
+}
+
+/**
+ * What the chat is currently blocked on: long-running tool calls, any open
+ * condition watch, and how many spawned children it is awaiting.
+ *
+ * Polled on mount and on reconnect rather than pushed, because a countdown is
+ * client-side arithmetic — the client needs the deadline, not a tick stream.
+ * See the route handler for why this isn't an SSE frame.
+ */
+export async function getActivity(id: string): Promise<ChatActivityResponse> {
+  const res = await fetch(`${BASE}/chats/${id}/activity`);
+  await assertOk(res, "Failed to get chat activity");
+  return res.json();
+}
+
+/**
+ * End an interruptible activity (a `wait`) early, so the agent resumes now.
+ *
+ * Throws on refusal — a 404 here means the wait already elapsed on its own, or
+ * the activity represents delegated work that cannot be cut short.
+ */
+export async function releaseActivity(id: string, activityId: string): Promise<{ ok: boolean; kind: string }> {
+  const res = await fetch(`${BASE}/chats/${encodeURIComponent(id)}/activity/${encodeURIComponent(activityId)}/release`, {
+    method: "POST",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to end the wait");
+  return res.json();
 }
 
 /**

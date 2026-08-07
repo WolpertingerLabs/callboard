@@ -23,12 +23,15 @@ export type {
   CardRollupState,
   CardPendingKind,
   CardMemberChat,
+  CardChatActivity,
   CardMemberRun,
   CardSummary,
   CardListResponse,
   CardResponse,
 } from "./card.js";
 export { CARD_CATEGORY_MAX } from "./card.js";
+
+export type { ActivityKind, ActivityCondition, ChatActivity, ConditionWatch, ChatActivityResponse } from "./activity.js";
 export { WORKSPACE_NAME_MAX } from "./workspace.js";
 
 export type {

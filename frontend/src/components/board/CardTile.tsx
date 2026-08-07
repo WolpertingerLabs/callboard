@@ -1,6 +1,7 @@
+import { useState, useEffect } from "react";
 import type { CardSummary, CardRollupState } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
-import { needsYouLabel } from "./pendingLabels";
+import { needsYouLabel, activeLabel } from "./pendingLabels";
 import { MessageSquare, Pin } from "lucide-react";
 
 interface CardTileProps {
@@ -28,6 +29,19 @@ export default function CardTile({ card, onClick }: CardTileProps) {
   const rollupColor = ROLLUP_COLORS[card.rollup];
   const live = card.rollup !== "idle" && !closed;
   const activeRun = card.memberRuns.find((r) => !r.endedAt);
+
+  // Tick only while this tile actually has something counting down, so a board
+  // of idle cards re-renders no more than it did before.
+  const hasCountdown =
+    !closed &&
+    (card.memberChats.some((c) => c.activity?.expiresAt !== undefined) ||
+      card.memberRuns.some((r) => r.nextWakeAt && (r.status === "sleeping" || r.status === "waiting_event")));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasCountdown) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasCountdown]);
 
   return (
     <div
@@ -100,7 +114,13 @@ export default function CardTile({ card, onClick }: CardTileProps) {
               ...(live && { boxShadow: `0 0 5px ${rollupColor}` }),
             }}
           />
-          {closed ? "Closed" : card.rollup === "needs_you" ? needsYouLabel(card) : ROLLUP_LABELS[card.rollup]}
+          {closed
+            ? "Closed"
+            : card.rollup === "needs_you"
+              ? needsYouLabel(card)
+              : card.rollup === "idle"
+                ? ROLLUP_LABELS.idle
+                : activeLabel(card, now)}
         </span>
         {activeRun && !closed && (
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={activeRun.jobName}>
