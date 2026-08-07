@@ -18,6 +18,7 @@ import {
   getWatch,
   hasOpenConditionWatch,
   closeWatch,
+  exhaustWatch,
   MAX_CONDITION_ATTEMPTS,
   __resetActivityState,
 } from "./chat-activity.js";
@@ -196,6 +197,29 @@ describe("condition watches", () => {
     // decision, so that the tool can explain itself rather than silently stall.
     watch = openOrContinueWatch("chat-1", "CI finishes");
     expect(watch.attempts).toBe(MAX_CONDITION_ATTEMPTS + 1);
+  });
+
+  it("freezes an exhausted watch instead of granting more attempts", () => {
+    for (let i = 0; i < MAX_CONDITION_ATTEMPTS + 1; i++) openOrContinueWatch("chat-1", "CI finishes");
+    const spent = exhaustWatch("chat-1");
+
+    // Clamped: the attempt that tripped the cap was refused, not spent.
+    expect(spent).toMatchObject({ attempts: MAX_CONDITION_ATTEMPTS, exhausted: true });
+    // Re-naming the same condition must not mint a fresh budget.
+    expect(openOrContinueWatch("chat-1", "CI finishes")).toMatchObject({ attempts: MAX_CONDITION_ATTEMPTS, exhausted: true });
+    // Not an open obligation, so it stops nudging.
+    expect(hasOpenConditionWatch("chat-1")).toBe(false);
+  });
+
+  it("still admits a different condition after one is exhausted", () => {
+    openOrContinueWatch("chat-1", "CI finishes");
+    exhaustWatch("chat-1");
+    expect(openOrContinueWatch("chat-1", "deploy goes green")).toMatchObject({ attempts: 1, text: "deploy goes green" });
+    expect(hasOpenConditionWatch("chat-1")).toBe(true);
+  });
+
+  it("exhaustWatch is a no-op when there is no watch", () => {
+    expect(exhaustWatch("chat-nothing")).toBeUndefined();
   });
 
   it("closes a watch, and reports nothing to close on a second call", () => {

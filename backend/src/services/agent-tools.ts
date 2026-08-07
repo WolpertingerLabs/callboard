@@ -12,6 +12,7 @@
  */
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
+import { withActivity } from "./chat-activity.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir, getAgentWorkspacePath } from "./agent-file-service.js";
 import { scaffoldWorkspace, compileSystemPrompt } from "./claude-compiler.js";
@@ -163,23 +164,46 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
               });
             });
 
-            // 8. Collect text output and wait for completion
+            // 8. Collect text output and wait for completion.
+            //    This tool always blocks — there is no async variant — so
+            //    without an activity the calling chat looks idle for up to ten
+            //    minutes. Not interruptible: the target agent keeps working,
+            //    and releasing would return an empty response for a live run.
             const responseTexts: string[] = [];
-            await new Promise<void>((resolve, reject) => {
-              const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety timeout
+            const callerChatId = getChatId?.();
+            const awaitTarget = async () =>
+              new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety timeout
 
-              emitter.on("event", (event: any) => {
-                if (event.type === "text" && event.content) {
-                  responseTexts.push(event.content);
-                } else if (event.type === "done") {
-                  clearTimeout(timeout);
-                  resolve();
-                } else if (event.type === "error") {
-                  clearTimeout(timeout);
-                  reject(new Error(event.content || "Target agent session errored"));
-                }
+                emitter.on("event", (event: any) => {
+                  if (event.type === "text" && event.content) {
+                    responseTexts.push(event.content);
+                  } else if (event.type === "done") {
+                    clearTimeout(timeout);
+                    resolve();
+                  } else if (event.type === "error") {
+                    clearTimeout(timeout);
+                    reject(new Error(event.content || "Target agent session errored"));
+                  }
+                });
               });
-            });
+
+            if (callerChatId) {
+              await withActivity(
+                callerChatId,
+                {
+                  kind: "await_agent",
+                  label: targetConfig.name || args.targetAlias,
+                  detail: "waiting for their reply",
+                  expiresAt: Date.now() + 600_000,
+                  interruptible: false,
+                  childChatId: chatId,
+                },
+                awaitTarget,
+              );
+            } else {
+              await awaitTarget();
+            }
 
             // 9. Log activity
             log.info(`Agent ${agentAlias} talked to ${args.targetAlias}, session ${chatId}`);

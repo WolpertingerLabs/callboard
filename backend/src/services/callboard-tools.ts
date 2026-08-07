@@ -28,7 +28,7 @@ import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CA
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
-import { startActivity, endActivity, openOrContinueWatch, closeWatch } from "./chat-activity.js";
+import { startActivity, endActivity, withActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
 import type { ConditionWatch } from "shared/types/index.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
@@ -1299,23 +1299,46 @@ export function buildCallboardToolsSpec(
               };
             }
 
-            // 7. Wait for completion and collect response
+            // 7. Wait for completion and collect response.
+            //    Registered as an activity so the caller's chat does not sit
+            //    silently for up to ten minutes. Not interruptible: the child
+            //    keeps running, so releasing would return an empty response
+            //    for work that is still in progress.
             const responseTexts: string[] = [];
-            await new Promise<void>((resolve, reject) => {
-              const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety
+            const callerChatId = getChatId?.();
+            const awaitChild = async () =>
+              new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety
 
-              emitter.on("event", (event: any) => {
-                if (event.type === "text" && event.content) {
-                  responseTexts.push(event.content);
-                } else if (event.type === "done") {
-                  clearTimeout(timeout);
-                  resolve();
-                } else if (event.type === "error") {
-                  clearTimeout(timeout);
-                  reject(new Error(event.content || "Session errored"));
-                }
+                emitter.on("event", (event: any) => {
+                  if (event.type === "text" && event.content) {
+                    responseTexts.push(event.content);
+                  } else if (event.type === "done") {
+                    clearTimeout(timeout);
+                    resolve();
+                  } else if (event.type === "error") {
+                    clearTimeout(timeout);
+                    reject(new Error(event.content || "Session errored"));
+                  }
+                });
               });
-            });
+
+            if (callerChatId) {
+              await withActivity(
+                callerChatId,
+                {
+                  kind: "await_chat",
+                  label: chat.title || args.chatId,
+                  detail: "waiting for the reply",
+                  expiresAt: Date.now() + 600_000,
+                  interruptible: false,
+                  childChatId: args.chatId,
+                },
+                awaitChild,
+              );
+            } else {
+              await awaitChild();
+            }
 
             log.info(`Continued chat ${args.chatId} (sync, complete)`);
 
@@ -1549,12 +1572,16 @@ export function buildCallboardToolsSpec(
           let watch: ConditionWatch | undefined;
           if (args.require_condition && chatId) {
             watch = openOrContinueWatch(chatId, args.require_condition);
-            if (watch.attempts > watch.maxAttempts) {
+            if (watch.exhausted || watch.attempts > watch.maxAttempts) {
               // Refuse rather than sleep. A loop that has not converged in
               // this many attempts is not going to, and silently stalling
               // again would just burn another interval before the agent
               // discovered the same thing.
-              closeWatch(chatId, false);
+              //
+              // The watch is marked exhausted rather than closed: closing it
+              // would let this same condition be re-opened for a fresh budget,
+              // which is exactly what the cap exists to prevent.
+              const spent = exhaustWatch(chatId) ?? watch;
               return {
                 content: [
                   {
@@ -1563,11 +1590,12 @@ export function buildCallboardToolsSpec(
                       waited: 0,
                       refused: true,
                       condition: args.require_condition,
-                      attempts: watch.attempts - 1,
-                      maxAttempts: watch.maxAttempts,
+                      attempts: spent.attempts,
+                      maxAttempts: spent.maxAttempts,
                       note:
-                        `This condition has already been polled ${watch.maxAttempts} times without being met, so the watch has been closed and no further wait was performed. ` +
-                        `Stop polling. Either take a different approach to verifying it, or call summon_user to ask the user to check.`,
+                        `This condition has already been polled ${spent.maxAttempts} times without being met, so no further wait was performed — and calling wait again with the same condition will keep being refused. ` +
+                        `Stop polling. Either take a different approach to verifying it, or call summon_user to ask the user to check. ` +
+                        `If you are done with it either way, call wait_condition_met with satisfied: false.`,
                     }),
                   },
                 ],

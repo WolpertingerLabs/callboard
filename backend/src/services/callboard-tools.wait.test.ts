@@ -135,7 +135,7 @@ describe("wait with require_condition", () => {
     expect(result.note).toMatch(/do not simply wait again/i);
   });
 
-  it("refuses to sleep once the attempt cap is exhausted, and closes the watch", async () => {
+  it("refuses to sleep once the attempt cap is exhausted", async () => {
     // Burn the budget directly rather than sleeping through 20 intervals.
     for (let i = 0; i < MAX_CONDITION_ATTEMPTS; i++) openOrContinueWatch(CHAT_ID, "CI finishes");
 
@@ -144,10 +144,47 @@ describe("wait with require_condition", () => {
     expect(result).toMatchObject({ waited: 0, refused: true, attempts: MAX_CONDITION_ATTEMPTS });
     expect(result.note).toMatch(/stop polling/i);
     expect(result.note).toMatch(/summon_user/);
-    // Closed, so the UI stops showing a watch nothing is servicing.
+    // No longer an open obligation, so it stops nudging — but the record is
+    // retained (see the re-open test below).
     expect(hasOpenConditionWatch(CHAT_ID)).toBe(false);
     // And no activity was opened, because no sleep happened.
     expect(listActivities(CHAT_ID)).toEqual([]);
+  });
+
+  it("keeps refusing the same condition, so the cap cannot be reset by re-naming it", async () => {
+    // The hole this closes: deleting the watch on refusal would let an agent
+    // that ignores the instruction call wait again and receive a full fresh
+    // budget, making the cap decorative.
+    for (let i = 0; i < MAX_CONDITION_ATTEMPTS; i++) openOrContinueWatch(CHAT_ID, "CI finishes");
+    await tool("wait").handler({ seconds: 60, flavor: "Watching", require_condition: "CI finishes" });
+
+    const retry = payload(await tool("wait").handler({ seconds: 60, flavor: "Watching", require_condition: "CI finishes" }));
+
+    expect(retry).toMatchObject({ waited: 0, refused: true, attempts: MAX_CONDITION_ATTEMPTS });
+    expect(retry.note).toMatch(/keep being refused/i);
+    expect(listActivities(CHAT_ID)).toEqual([]);
+  });
+
+  it("still allows a genuinely different condition after one is exhausted", async () => {
+    vi.useFakeTimers();
+    for (let i = 0; i < MAX_CONDITION_ATTEMPTS; i++) openOrContinueWatch(CHAT_ID, "CI finishes");
+    await tool("wait").handler({ seconds: 60, flavor: "Watching", require_condition: "CI finishes" });
+
+    const call = tool("wait").handler({ seconds: 5, flavor: "Watching", require_condition: "deploy goes green" });
+    expect(listActivities(CHAT_ID)[0].condition).toMatchObject({ text: "deploy goes green", attempt: 1 });
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = payload(await call);
+    expect(result.refused).toBeUndefined();
+    expect(result).toMatchObject({ condition: "deploy goes green", attempt: 1 });
+  });
+
+  it("lets the agent clear an exhausted watch by abandoning it", async () => {
+    for (let i = 0; i < MAX_CONDITION_ATTEMPTS; i++) openOrContinueWatch(CHAT_ID, "CI finishes");
+    await tool("wait").handler({ seconds: 60, flavor: "Watching", require_condition: "CI finishes" });
+
+    const closed = payload(await tool("wait_condition_met").handler({ satisfied: false }));
+    expect(closed).toMatchObject({ success: true, satisfied: false });
+    expect(getWatch(CHAT_ID)).toBeUndefined();
   });
 });
 

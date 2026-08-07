@@ -73,6 +73,14 @@ export interface ConditionWatch {
   firstStartedAt: number;
   /** Epoch ms of the most recent cycle. */
   lastCheckedAt?: number;
+  /**
+   * Set once the attempt cap is spent. The record is kept rather than deleted
+   * so re-naming the same condition cannot mint a fresh budget — the cap has
+   * to survive the agent ignoring it, or it is not a cap. An exhausted watch
+   * is not an open obligation, so it does not nudge; naming a *different*
+   * condition supersedes it as normal.
+   */
+  exhausted?: boolean;
 }
 
 /** Response shape of `GET /chats/:id/activity`. */

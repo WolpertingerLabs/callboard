@@ -201,6 +201,9 @@ export function openOrContinueWatch(chatId: string, text: string, maxAttempts: n
   const existing = watches.get(chatId);
 
   if (existing && existing.text === text) {
+    // An exhausted watch is returned as-is: no further attempts are granted,
+    // and the count stays put so the refusal can report the real total.
+    if (existing.exhausted) return existing;
     const updated: ConditionWatch = { ...existing, attempts: existing.attempts + 1, lastCheckedAt: now };
     watches.set(chatId, updated);
     return updated;
@@ -224,8 +227,34 @@ export function getWatch(chatId: string): ConditionWatch | undefined {
   return watches.get(chatId);
 }
 
+/**
+ * Whether this chat owes an answer on a condition.
+ *
+ * An exhausted watch is deliberately NOT open: it is retained only to deny a
+ * fresh budget to the same condition, and nudging about something the agent
+ * has already been told to stop polling would be a loop of its own.
+ */
 export function hasOpenConditionWatch(chatId: string): boolean {
-  return watches.has(chatId);
+  const watch = watches.get(chatId);
+  return watch !== undefined && !watch.exhausted;
+}
+
+/**
+ * Spend the last attempt: mark the watch exhausted, keeping the record.
+ *
+ * Deleting it instead would let the agent re-open the identical condition and
+ * receive a full budget again — the failure mode the cap exists to prevent.
+ */
+export function exhaustWatch(chatId: string): ConditionWatch | undefined {
+  const watch = watches.get(chatId);
+  if (!watch) return undefined;
+  // Clamp: the attempt that tripped the cap was refused, not spent, so
+  // reporting it would overstate how many times the condition was polled —
+  // and would keep climbing on every subsequent refusal.
+  const updated: ConditionWatch = { ...watch, attempts: Math.min(watch.attempts, watch.maxAttempts), exhausted: true };
+  watches.set(chatId, updated);
+  log.warn(`Condition watch on ${chatId} exhausted after ${updated.attempts} attempt(s): "${watch.text}"`);
+  return updated;
 }
 
 /**

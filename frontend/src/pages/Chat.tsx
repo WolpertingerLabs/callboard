@@ -1367,6 +1367,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setStreaming(false);
     clearInFlightMessages();
     setPendingAction(null);
+    setActivity({ activities: [], conditionWatch: null, awaitingChildren: 0 });
     setNetworkError(null);
     setChat(null);
     setMessages([]);
@@ -1424,6 +1425,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       clearInFlightMessages();
     }
     setPendingAction(null);
+    // Cleared alongside pendingAction, not left to the refetch: the dock is
+    // per-chat and its End-wait button is actionable, so carrying the previous
+    // chat's countdown across a navigation is a live control pointed at the
+    // wrong session.
+    setActivity({ activities: [], conditionWatch: null, awaitingChildren: 0 });
     setNetworkError(null);
     setInfo(null); // Clear new-chat info when transitioning to existing mode
     setViewMode("chat"); // Reset to chat view when switching chats
