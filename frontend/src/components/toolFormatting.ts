@@ -293,6 +293,29 @@ export function getToolSummary(toolName: string, content: string): string {
       case "read_canvas":
         return input.canvas_id ? ` - ${input.canvas_id}` : "";
 
+      // ---- long-running / delegating callboard tools -----------------------
+      // These are the calls that leave something running (or the agent
+      // blocked), so the summary names the thing being waited on rather than
+      // the parameters — it is the header a user scans when asking "what is
+      // this chat stuck on?".
+      case "wait":
+        // The condition outranks the flavour text: "waiting for CI" is the
+        // answer to that question; "Contemplating semicolons" is decoration.
+        if (input.require_condition) return ` - ${truncate(String(input.require_condition))}`;
+        if (input.seconds) return ` - ${String(input.seconds)}s${input.flavor ? `, ${truncate(String(input.flavor))}` : ""}`;
+        return input.flavor ? ` - ${truncate(String(input.flavor))}` : "";
+      case "wait_condition_met":
+        return input.satisfied === false ? " - abandoned" : " - condition met";
+      case "start_chat_session":
+        return input.prompt ? ` - ${truncate(String(input.prompt))}` : input.folder ? ` - ${basename(String(input.folder))}` : "";
+      case "continue_chat":
+        return input.chatId ? ` - ${String(input.chatId)}` : "";
+      case "talk_to_agent":
+      case "deploy_agent":
+        return input.targetAlias ? ` - @${String(input.targetAlias)}` : "";
+      case "spawn_job":
+        return input.jobId ? ` - ${String(input.jobId)}` : "";
+
       default:
         return fallbackSummary(input);
     }

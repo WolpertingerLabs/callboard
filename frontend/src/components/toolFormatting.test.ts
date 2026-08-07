@@ -255,3 +255,49 @@ describe("getToolSummary — pi built-ins", () => {
     expect(getToolSummary("edit", JSON.stringify({}))).toBe("");
   });
 });
+
+describe("getToolSummary — long-running / delegating callboard tools", () => {
+  // These summaries answer "what is this chat stuck on?", so the thing being
+  // waited on has to outrank the decorative parameters.
+  it("prefers the condition over the flavour text for a polling wait", () => {
+    const input = { seconds: 180, flavor: "Contemplating semicolons", require_condition: "CI on PR #340 finishes" };
+    expect(getToolSummary("wait", JSON.stringify(input))).toBe(" - CI on PR #340 finishes");
+  });
+
+  it("falls back to duration and flavour for a plain wait", () => {
+    const input = { seconds: 30, flavor: "Contemplating semicolons" };
+    expect(getToolSummary("wait", JSON.stringify(input))).toBe(" - 30s, Contemplating semicolons");
+  });
+
+  it("summarises a wait with only flavour", () => {
+    expect(getToolSummary("wait", JSON.stringify({ flavor: "Counting sheep" }))).toBe(" - Counting sheep");
+  });
+
+  it("distinguishes a met condition from an abandoned one", () => {
+    expect(getToolSummary("wait_condition_met", JSON.stringify({ satisfied: true }))).toBe(" - condition met");
+    expect(getToolSummary("wait_condition_met", JSON.stringify({ satisfied: false }))).toBe(" - abandoned");
+  });
+
+  it("names the target for agent-directed tools", () => {
+    expect(getToolSummary("talk_to_agent", JSON.stringify({ targetAlias: "reviewer" }))).toBe(" - @reviewer");
+    expect(getToolSummary("deploy_agent", JSON.stringify({ targetAlias: "builder" }))).toBe(" - @builder");
+  });
+
+  it("summarises session and job spawns", () => {
+    expect(getToolSummary("start_chat_session", JSON.stringify({ prompt: "Fix the flaky test", folder: "/repo" }))).toBe(" - Fix the flaky test");
+    expect(getToolSummary("start_chat_session", JSON.stringify({ folder: "/home/me/repo" }))).toBe(" - repo");
+    expect(getToolSummary("continue_chat", JSON.stringify({ chatId: "abc123" }))).toBe(" - abc123");
+    expect(getToolSummary("spawn_job", JSON.stringify({ jobId: "deploy-prod" }))).toBe(" - deploy-prod");
+  });
+
+  it("resolves through the MCP name conventions too", () => {
+    const input = JSON.stringify({ require_condition: "deploy goes green" });
+    expect(getToolSummary("mcp__callboard-tools__wait", input)).toBe(" - deploy goes green");
+    expect(getToolSummary("callboard-tools__wait", input)).toBe(" - deploy goes green");
+  });
+
+  it("returns empty rather than undefined for inputs it cannot read", () => {
+    expect(getToolSummary("wait", JSON.stringify({}))).toBe("");
+    expect(getToolSummary("talk_to_agent", JSON.stringify({}))).toBe("");
+  });
+});
