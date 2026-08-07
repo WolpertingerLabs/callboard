@@ -28,6 +28,8 @@ import {
   getChat,
   getMessages,
   getPending,
+  getActivity,
+  releaseActivity,
   getSystemInfo,
   getAgentSettings,
   respondToChat,
@@ -43,6 +45,7 @@ import {
   getCard,
   handshakeHeaders,
   type CardSummary,
+  type ChatActivityResponse,
   type Chat as ChatType,
   type ForkProvider,
   type ParsedMessage,
@@ -63,6 +66,7 @@ import ToolCallBubble from "../components/ToolCallBubble";
 import PromptInput from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
+import ActivityDock from "../components/ActivityDock";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
@@ -254,6 +258,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // confirmation deadline passes), so it never claims a cancel it hasn't got.
   const [stopping, setStopping] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  // What this chat is blocked on right now — a wait countdown, a delegated
+  // session, an open condition watch. Fetched rather than streamed: the
+  // countdown is derived from `expiresAt` client-side, so the dock only needs
+  // to learn when something starts or ends. See the route handler for why.
+  const [activity, setActivity] = useState<ChatActivityResponse>({ activities: [], conditionWatch: null, awaitingChildren: 0 });
   const globalSessionActive = useIsSessionActive(id);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [showDraftModal, setShowDraftModal] = useState(false);
@@ -331,6 +340,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
   const currentIdRef = useRef<string | undefined>(id);
+
+  /**
+   * Re-read what the chat is blocked on. Best-effort: a failure here must
+   * never break the transcript, so it falls back to "nothing in flight"
+   * rather than surfacing an error the user can do nothing about.
+   */
+  const refreshActivity = useCallback((chatId: string) => {
+    getActivity(chatId)
+      .then((next) => {
+        if (currentIdRef.current !== chatId) return;
+        setActivity(next);
+      })
+      .catch(() => {
+        if (currentIdRef.current !== chatId) return;
+        setActivity({ activities: [], conditionWatch: null, awaitingChildren: 0 });
+      });
+  }, []);
+
+  const handleReleaseActivity = useCallback(
+    async (activityId: string) => {
+      if (!id) return;
+      try {
+        await releaseActivity(id, activityId);
+      } catch {
+        // A 404 means the wait already elapsed on its own — the refresh below
+        // reconciles either way, so there is nothing to tell the user.
+      }
+      refreshActivity(id);
+    },
+    [id, refreshActivity],
+  );
+
   const handleSendRef = useRef<(prompt: string) => void>(() => {});
   const planApprovedRef = useRef(false);
   const tempChatIdRef = useRef<string | null>(null);
@@ -930,6 +971,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               if (event.type === "message_complete") {
                 if (currentIdRef.current !== streamChatId) return;
                 setCompacting(false);
+                // The server clears activities on teardown; re-read so the dock
+                // empties with the run rather than on the next poll.
+                refreshActivity(streamChatId!);
                 // Mark that this stream session is complete so the auto-connect
                 // effect doesn't reconnect while the CLI watcher catches up.
                 streamCompletedRef.current = true;
@@ -1104,6 +1148,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     setMessages(msgArray);
                     settleInFlightMessages(msgArray);
                   });
+                  // A tool starting or finishing collapses to a bare
+                  // message_update, which is exactly the nudge the dock needs:
+                  // it rides the same debounce rather than adding its own.
+                  refreshActivity(streamChatId!);
                 }, 250);
 
                 // Check if this is the first response and we should refresh chat list
@@ -1279,6 +1327,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           setStreaming(true);
         }
       });
+      refreshActivity(id);
     };
 
     document.addEventListener("visibilitychange", handleVisibilityResume);
@@ -1418,6 +1467,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     });
     // Mark chat as read (fire-and-forget — best-effort background update)
     markAsRead(id!).catch(() => {});
+    refreshActivity(id!);
     Promise.all([getMessages(id!), getPending(id!)]).then(([msgs, pending]) => {
       if (currentIdRef.current !== id) return;
       const messageArray = Array.isArray(msgs) ? msgs : [];
@@ -3504,6 +3554,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>
             </div>
           </>
+        )}
+        {id && (
+          <ActivityDock
+            activities={activity.activities}
+            conditionWatch={activity.conditionWatch}
+            awaitingChildren={activity.awaitingChildren}
+            onRelease={handleReleaseActivity}
+          />
         )}
         <PromptInput
           onSend={handleSend}
