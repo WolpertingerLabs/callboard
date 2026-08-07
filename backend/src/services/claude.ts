@@ -22,6 +22,7 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
+import { clearActivitiesForChat, migrateActivities } from "./chat-activity.js";
 import { buildModelRoutingToolsSpec, takePendingModelSwitch, clearPendingModelSwitch } from "./model-routing-tools.js";
 import { classifyAndResolve, getUsableRoutingConfig } from "./model-routing.js";
 import { getRun as getJobRun } from "./job-store.js";
@@ -477,6 +478,7 @@ export function stopSession(chatId: string): boolean {
     });
     sessionRegistry.unregister(chatId);
     pendingRequests.delete(chatId);
+    clearActivitiesForChat(chatId);
     return true;
   }
   return false;
@@ -560,6 +562,7 @@ export async function stopSessionAndWait(chatId: string, timeoutMs: number = SES
   if (sessionRegistry.get(chatId)?.emitter === emitter) {
     sessionRegistry.unregister(chatId);
     pendingRequests.delete(chatId);
+    clearActivitiesForChat(chatId);
   }
   return "stopped";
 }
@@ -2022,6 +2025,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   pendingRequests.set(trackingId, pending);
                 }
 
+                // Same promotion for in-flight activities and any condition
+                // watch: an activity opened under the temp id would otherwise
+                // be unreachable by the route the UI polls.
+                migrateActivities(oldTrackingId, trackingId);
+
                 emitter.emit("event", {
                   type: "chat_created",
                   content: "",
@@ -2360,6 +2368,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       if (sessionRegistry.get(trackingId)?.emitter === emitter) {
         sessionRegistry.unregister(trackingId);
         pendingRequests.delete(trackingId);
+        clearActivitiesForChat(trackingId);
       }
     }
   })();
