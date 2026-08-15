@@ -647,14 +647,6 @@ export const PAIRINGS: Pairing[] = [
   // token; `--danger-solid` derives from `--danger`, so a theme still drives it.
   { id: "on-danger", where: "confirm-delete button", fg: v("text-on-danger"), bg: v("danger-solid"), backdrop: v("bg"), kind: "text" },
   {
-    id: "provider-badge-openrouter",
-    where: "OpenRouter provider badge",
-    fg: v("badge-provider-text"),
-    bg: v("badge-provider-openrouter-bg"),
-    backdrop: v("bg-sidebar"),
-    kind: "text",
-  },
-  {
     id: "provider-badge-codex",
     where: "Codex provider badge",
     fg: v("badge-provider-text"),

@@ -23,7 +23,7 @@ import type { AgentProviderKind } from "../ports/AgentProvider.js";
  * The `satisfies` clause makes the list itself type-checked: a name that is not
  * a real kind is a compile error, so this cannot drift into fiction.
  */
-const ALL_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline", "pi", "mock"] as const satisfies readonly AgentProviderKind[];
+const ALL_KINDS = ["claude-code", "codex", "acp", "cline", "pi", "mock"] as const satisfies readonly AgentProviderKind[];
 
 /**
  * Compile-time completeness for {@link ALL_KINDS}.
@@ -57,19 +57,6 @@ describe("TOOL_CATEGORIZERS", () => {
     }
   });
 
-  /**
-   * The regression this whole change exists for.
-   *
-   * Under the old ternary, `openrouter` got `categorizeClaudeTool`, and `bash`
-   * — a name that map has never heard of — fell through its unknown default to
-   * `fileWrite`. A user with `{fileWrite: "allow", codeExecution: "ask"}` had
-   * OR's shell tool run with no prompt.
-   */
-  it("does not route OpenRouter through Claude's map", () => {
-    expect(getToolCategorizer("openrouter")("bash")).toBe("codeExecution");
-    expect(getToolCategorizer("claude-code")("bash")).toBe("fileWrite");
-  });
-
   it("routes ACP through the ACP categorizer", () => {
     // ACP's tokenizer resolves an unknown, non-identifier label to the
     // strictest gate; Claude's map would have said fileWrite.
@@ -90,12 +77,12 @@ describe("TOOL_CATEGORIZERS", () => {
   });
 
   /**
-   * Cline's names collide with nothing in Claude's PascalCase map and nothing in
-   * OpenRouter's snake_case one, so routing it through either would send every
-   * tool to an unknown-name default. `run_commands` is the one that matters:
-   * Claude's map defaults unknown names to `fileWrite`, which is precisely the
-   * `codeExecution`-bypass-wearing-a-`fileWrite`-label shape of the OpenRouter
-   * regression above.
+   * Cline's snake_case names collide with nothing in Claude's PascalCase map, so
+   * routing it through that one would send every tool to an unknown-name
+   * default. `run_commands` is the one that matters: Claude's map defaults
+   * unknown names to `fileWrite`, which is precisely the
+   * `codeExecution`-bypass-wearing-a-`fileWrite`-label shape of the regression
+   * this registry was built to make unrepresentable.
    */
   it("routes Cline through the Cline categorizer", () => {
     const cline = getToolCategorizer("cline");
@@ -103,43 +90,23 @@ describe("TOOL_CATEGORIZERS", () => {
     expect(cline("read_files")).toBe("fileRead");
     expect(cline("editor")).toBe("fileWrite");
     expect(cline("fetch_web_content")).toBe("webAccess");
-    // Cline's `skills` INVOKES a skill with arguments, unlike OpenRouter's
-    // same-named tool which only returns SKILL.md. It is execution.
+    // Cline's `skills` INVOKES a skill with arguments rather than just reading
+    // SKILL.md back. It is execution.
     expect(cline("skills")).toBe("codeExecution");
     // A subagent inherits run_commands, so delegating is at least as privileged.
     expect(cline("spawn_agent")).toBe("codeExecution");
   });
 
   /**
-   * Same reasoning as the OpenRouter totality test below: Cline reaches
+   * `null` from a categorizer means "ask", and Cline reaches
    * `requestToolApproval` for every tool (that is what `buildClineToolPolicies`
-   * forces), so a null anywhere in this map would hang an unattended run on its
-   * first bookkeeping call.
+   * forces) — so a null anywhere in this map would hang an unattended run, whose
+   * all-"allow" policy exists precisely so it needs no human, on its first
+   * bookkeeping call.
    */
   it("never returns null on the Cline path", () => {
     const categorize = getToolCategorizer("cline");
     const names = ["run_commands", "read_files", "ask_question", "submit_and_exit", "render_file", "some_unknown_future_tool", ""];
-    for (const name of names) {
-      expect(categorize(name), `${name || "(empty)"} categorized to null (= "ask")`).not.toBeNull();
-    }
-  });
-
-  /**
-   * `null` from a categorizer means "ask" — `decidePermission` returns "ask"
-   * for a null category regardless of the user's settings. Callboard's
-   * unattended runners (job steps, deployed agents) hardcode all-four-"allow"
-   * precisely so they need no human, and an agent job step has no timeout, so a
-   * categorizer that returns null for a tool an unattended run reaches will
-   * hang that run until it is aborted.
-   *
-   * OpenRouter's map must therefore be total. Claude's is deliberately NOT
-   * asserted here: it returns null for `AskUserQuestion`/`ExitPlanMode`, which
-   * `buildCanUseTool` special-cases into answerable question/plan flows rather
-   * than a permission prompt.
-   */
-  it("never returns null on the OpenRouter path", () => {
-    const categorize = getToolCategorizer("openrouter");
-    const names = ["bash", "read_file", "task_create", "ask_user_question", "datetime", "some_unknown_future_tool", ""];
     for (const name of names) {
       expect(categorize(name), `${name || "(empty)"} categorized to null (= "ask")`).not.toBeNull();
     }

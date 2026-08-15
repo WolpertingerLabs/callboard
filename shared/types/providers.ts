@@ -11,19 +11,17 @@
 /**
  * Provider kinds the UI is allowed to surface. The full backend
  * `AgentProviderKind` union (in `backend/src/agents/ports/AgentProvider.ts`)
- * also includes adapters not exposed to end users (`mock`) and `"openrouter"`,
- * whose harness is retired: its adapter still runs already-existing chats, but
- * nothing may pick it. Mirrors `ROUTABLE_PROVIDER_KINDS`.
+ * also includes adapters not exposed to end users (`mock`). Mirrors
+ * `ROUTABLE_PROVIDER_KINDS`.
  */
 export type UiAgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi";
 
 /**
  * Reasoning-effort levels. Named for OpenRouter's `reasoning.effort` field,
- * where they originated, and reused by every reasoning-capable harness. OR
- * translates them to each model provider's native parameter (Anthropic
- * `thinking.budget_tokens`, OpenAI `reasoning_effort`, Gemini
- * `thinkingConfig.thinkingLevel`, Qwen `thinking_budget`, xAI
- * `reasoning_effort`). Non-reasoning models silently ignore it.
+ * where they originated, and reused by every reasoning-capable harness — each
+ * adapter translates them onto its own knob (Codex `modelReasoningEffort`,
+ * Cline `thinking`/`reasoningEffort`, pi `thinkingLevel`). Non-reasoning models
+ * silently ignore it.
  *
  * `undefined` (no value persisted) means "don't send a reasoning payload";
  * `"none"` means "explicitly request no reasoning". Both produce the same

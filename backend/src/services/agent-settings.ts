@@ -164,16 +164,6 @@ export function getAgentSettings(): AgentSettings {
   return loadSettings();
 }
 
-/**
- * Whether the OpenRouter provider is usable — i.e. an API key is configured.
- * Drives provider selection for quick completions (title / branch / theme
- * generation) and the New Chat panel's provider toggle.
- */
-export function isOpenRouterConfigured(settings?: AgentSettings): boolean {
-  const s = settings ?? loadSettings();
-  return Boolean(s.openRouterApiKey?.trim());
-}
-
 /** True when a URL string points at OpenRouter's host. */
 function isOpenRouterUrl(url: string | undefined): boolean {
   return typeof url === "string" && /(^|\/\/|\.)openrouter\.ai(\/|$|:)/i.test(url);
@@ -259,15 +249,6 @@ export function resolveSessionModel(
   const pc = perChat?.trim() ? perChat.trim() : undefined;
   const def = providerDefault?.trim() ? providerDefault.trim() : undefined;
   return resolveModelAlias(pc, provider, settings) ?? resolveModelAlias(def, provider, settings);
-}
-
-/**
- * @deprecated Use {@link resolveModelAlias} with an explicit provider. Kept as a
- * thin shim (openrouter provider) so existing OpenRouter call sites and tests
- * keep working.
- */
-export function resolveOpenRouterModel(value: string | undefined, settings?: AgentSettings): string | undefined {
-  return resolveModelAlias(value, "openrouter", settings);
 }
 
 /**

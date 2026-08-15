@@ -607,12 +607,12 @@ const GATE_OPS = new Set(["eq", "neq", "contains", "exists", "not_exists", "gt",
 /**
  * Providers a step-level `model` is honored on.
  *
- * `"openrouter"` is admitted but no longer *advertised* — the error message
- * names only the provider a new definition should use. The harness cannot be
- * selected any more, but validation also runs at run start
- * (`job-runner.ts` → `validateJobDefinition`), so dropping it here would turn
- * every persisted OR step into a failed run rather than a legacy one that still
- * works. See plans/remove-openrouter-engine.md.
+ * `"openrouter"` is admitted but not *advertised* — the error message names only
+ * the provider a new definition should use. The harness is gone, so a step that
+ * names it cannot run; it is kept here so the failure lands at session start
+ * with a message that says the harness was removed, rather than at validation
+ * with a misleading "model is only valid with provider claude-code".
+ * See plans/remove-openrouter-engine.md.
  */
 const MODEL_CAPABLE_PROVIDERS = ["claude-code", "openrouter"];
 const MODEL_PROVIDER_ERROR = 'model is only valid with provider "claude-code"';

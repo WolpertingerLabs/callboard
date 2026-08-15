@@ -111,17 +111,4 @@ describe("session integration surface", () => {
     customSkillsService.createSkill({ name: "my-skill", description: "d", content: "c" });
     expect(customSkillsService.listSlashCommands()).toEqual(["callboard:my-skill"]);
   });
-
-  it("is discoverable by the OR harness plugin loader exactly as chats consume it", async () => {
-    customSkillsService.createSkill({
-      name: "greet",
-      description: "Greet someone by name",
-      content: "Say hello to $ARGUMENTS.",
-    });
-    const { loadPlugins } = await import("@wolpertingerlabs/openrouter-agent-harness");
-    const loaded = await loadPlugins({ pluginDirs: [customSkillsService.getPluginDir()!] });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0].manifest.name).toBe(CUSTOM_SKILLS_PLUGIN_NAME);
-    expect(loaded[0].skillRoots.length).toBeGreaterThan(0);
-  });
 });

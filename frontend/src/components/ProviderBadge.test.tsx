@@ -40,8 +40,8 @@ describe("ProviderBadge", () => {
   });
 
   it("still renders the other providers unchanged", () => {
-    const { rerender } = render(<ProviderBadge provider="openrouter" />);
-    expect(screen.getByText("OR")).toBeTruthy();
+    const { rerender } = render(<ProviderBadge provider="cline" />);
+    expect(screen.getByText("CL")).toBeTruthy();
     rerender(<ProviderBadge provider={undefined} />);
     expect(screen.getByText("CC")).toBeTruthy();
   });

@@ -31,7 +31,6 @@ import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { startActivity, endActivity, withActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
 import type { ConditionWatch } from "shared/types/index.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
-import { buildModelRoutingConfigTools } from "./model-routing-config-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
 import { buildWorkspaceTools } from "./workspace-tools.js";
 import { createLogger } from "../utils/logger.js";
@@ -77,7 +76,7 @@ function getSendMessage(): MessageSender {
 
 function readSessionMessages(sessionId: string, limit: number = 50): string[] {
   // Route through the session-provider abstraction so this works for any
-  // provider's transcript format (Claude Code JSONL, OpenRouter transcript,
+  // provider's transcript format (Claude Code JSONL, Codex rollout,
   // etc.) instead of hand-parsing one provider's on-disk schema.
   const provider = getSessionProviders().find((p) => p.resolveSession(sessionId));
   if (!provider) return [];
@@ -1424,7 +1423,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_chat_tree",
-        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, openrouter). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats.",
+        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, cline, pi, acp). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats.",
         {
           chatId: z.string().optional().describe("Chat ID to get the tree for (default: the current chat)"),
         },
@@ -1724,12 +1723,6 @@ export function buildCallboardToolsSpec(
             ...(getChatId && { getChatId }),
           })
         : []),
-
-      // ── Model Routing config: view/edit the global routing setup ────
-      // Available in every session (the config is global, not per-chat).
-      // Distinct from reclassify_model (model-routing-tools.ts), which is
-      // per-chat and only injected for routed chats.
-      ...buildModelRoutingConfigTools(),
 
       // ── Model aliases: view/edit the cross-harness alias registry ───
       // Global (not per-chat). `model: "<alias>"` resolves to a different

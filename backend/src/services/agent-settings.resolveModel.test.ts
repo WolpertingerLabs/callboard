@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveModelAlias, resolveOpenRouterModel, resolveSessionModel } from "./agent-settings.js";
+import { resolveModelAlias, resolveSessionModel } from "./agent-settings.js";
 import type { AgentSettings, ModelAlias } from "shared";
 
 const withAliases = (modelAliases?: ModelAlias[]): AgentSettings => ({
@@ -119,19 +119,5 @@ describe("resolveSessionModel", () => {
 
   it("passes a real slug override through, trimming whitespace", () => {
     expect(resolveSessionModel("  openai/gpt-4o ", "x", "openrouter", s)).toBe("openai/gpt-4o");
-  });
-});
-
-describe("resolveOpenRouterModel (back-compat shim)", () => {
-  it("resolves via the openrouter provider", () => {
-    expect(resolveOpenRouterModel("planner", withAliases([planner]))).toBe("anthropic/claude-opus-4.8");
-  });
-
-  it("still resolves a legacy openRouterModelAliases map", () => {
-    expect(resolveOpenRouterModel("low coder", legacy({ "low coder": "deepseek/deepseek-chat" }))).toBe("deepseek/deepseek-chat");
-  });
-
-  it("passes non-alias values through", () => {
-    expect(resolveOpenRouterModel("openai/gpt-4o", legacy({ "low coder": "deepseek/deepseek-chat" }))).toBe("openai/gpt-4o");
   });
 });

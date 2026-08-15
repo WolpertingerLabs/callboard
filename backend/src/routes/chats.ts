@@ -674,9 +674,9 @@ chatsRouter.post("/:id/fork", (req, res) => {
           required: ["timestamp"],
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
-            provider: { type: "string", enum: ["claude-code", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused. A chat on the retired openrouter harness can be forked, but not forked INTO." },
+            provider: { type: "string", enum: ["claude-code", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
-            effort: { type: "string", description: "Reasoning effort for the new chat (codex only, or a same-harness fork of a legacy openrouter chat)." }
+            effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." }
           }
         }
       }
@@ -698,12 +698,17 @@ chatsRouter.post("/:id/fork", (req, res) => {
     meta = JSON.parse(chat.metadata || "{}");
   } catch {}
 
+  // Chats stamped with the removed OpenRouter harness are refused by name
+  // before the guard below can silently call them claude-code chats — there are
+  // ~426 of them, and the fallback would send the fork looking for a session log
+  // nothing can read. An explicit 400 beats a fork that appears to work.
+  if (meta.provider === "openrouter") {
+    return res.status(400).json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be forked." });
+  }
+
   // The SOURCE kind comes off persisted metadata, so it is read with the
-  // internal guard, not the routable one: `"openrouter"` is no longer offered
-  // but ~426 chats are stamped with it, and narrowing with `isRoutableProvider`
-  // here would quietly call them claude-code chats and then fail to find their
-  // session log. Forking *out of* an OR chat keeps working; the target guard
-  // below is what refuses forking *into* it.
+  // internal guard rather than the routable one: a kind that is implemented but
+  // not yet offered must still be forkable out of.
   const providerKind: InternalProviderKind = isInternalProvider(meta.provider) ? meta.provider : "claude-code";
   const provider = getSessionProviders().find((p) => p.kind === providerKind);
   if (!provider) {
@@ -808,21 +813,14 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // than writing it (an explicit value there is redundant, and resolving an
     // absent provider already lands on claude-code).
     ...(targetKind !== "claude-code" && { provider: targetKind }),
-    // Effort is meaningful only to the reasoning-capable harnesses. `openrouter`
-    // is unreachable as a *chosen* target and only appears here on a same-harness
-    // fork of a legacy OR chat, which inherits its effort like any other.
-    ...(effort && (targetKind === "openrouter" || targetKind === "codex") && { effort }),
+    // Effort is meaningful only to the reasoning-capable harnesses.
+    ...(effort && targetKind === "codex" && { effort }),
     // Model is honored by all three: `stream.ts` persists `metadata.model`
     // for any provider, and each harness's config block reads it (Codex's
     // per-chat override wins over the global codexModel default). Note
-    // sendMessage's *new-chat* block guards model to openrouter/claude-code —
+    // sendMessage's *new-chat* block guards which kinds may carry a model —
     // that guard doesn't apply here, since this route writes metadata itself.
     ...(model && { model }),
-    // Model routing is an OpenRouter-only feature keyed to OR rank ids — carry
-    // it only when the target is still OpenRouter, which now means only on a
-    // same-harness fork of a legacy OR chat.
-    ...(meta.modelRouting && targetKind === "openrouter" && { modelRouting: true }),
-    ...(meta.modelRouting && targetKind === "openrouter" && meta.modelRoutingRankId && { modelRoutingRankId: meta.modelRoutingRankId }),
     // A fork stays on the original's card. Unassign merges `cardId: null`,
     // so a string check (not key presence) decides whether to inherit.
     ...(typeof meta.cardId === "string" && meta.cardId && { cardId: meta.cardId }),

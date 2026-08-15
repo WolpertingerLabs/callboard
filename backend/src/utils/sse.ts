@@ -103,7 +103,7 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
     } else if (event.type === "cleared") {
       sendSSE(res, { type: "cleared" });
     } else if (event.type === "budget") {
-      // Mid-run spend beacon (OpenRouter per-turn cost). Must be forwarded
+      // Mid-run spend beacon (per-turn cost). Must be forwarded
       // with its payload — collapsing it into the bare message_update below
       // would discard the cost numbers the spend indicator needs.
       sendSSE(res, {

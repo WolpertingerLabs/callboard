@@ -2,7 +2,7 @@ import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
-import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
+import type { EffortLevel } from "shared/types/index.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
@@ -197,11 +197,10 @@ streamRouter.post("/new/message", async (req, res) => {
     // the global Settings → API field.
     const safeModel: string | undefined = typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined;
 
-    // `modelRouting` / `modelRoutingRankId` are still accepted in the body and
-    // deliberately ignored. Routing was an OpenRouter-only opt-in and OpenRouter
-    // is no longer a selectable harness, so no new chat can ever turn it on;
-    // ignoring beats a 400 for a field old clients may still send. The feature
-    // itself goes in Phase 3 of plans/remove-openrouter-engine.md.
+    // `modelRouting` / `modelRoutingRankId` may still arrive from an older client
+    // bundle and are deliberately ignored: model routing was an OpenRouter-only
+    // opt-in and the harness is gone. Ignoring beats a 400 for a field nothing
+    // can act on either way.
 
     const safeCardId: string | undefined = typeof cardId === "string" && cardId && getCard(cardId)?.lifecycle === "open" ? cardId : undefined;
 

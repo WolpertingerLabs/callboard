@@ -206,17 +206,17 @@ describe("cross-harness fork and handoff — the target contract", () => {
   });
 
   /**
-   * The retired OpenRouter harness runs the chats already stamped with it and
-   * nothing else. Asserted here rather than left implicit in the list above,
-   * because "absent from ROUTABLE" and "absent from INTERNAL" are one edit apart
-   * and the second one silently breaks ~426 existing chats.
+   * The OpenRouter harness is gone from both lists and from the session-provider
+   * registry. Asserted rather than left implicit, because the value is still
+   * written into ~426 chat records: a guard that quietly admitted it again would
+   * route those chats at an adapter that no longer exists.
    */
-  it("keeps openrouter runnable but unofferable", () => {
+  it("does not admit the removed openrouter kind anywhere", () => {
     expect(ROUTABLE_PROVIDER_KINDS).not.toContain("openrouter");
     expect(isRoutableProvider("openrouter")).toBe(false);
-    expect(INTERNAL_PROVIDER_KINDS).toContain("openrouter");
-    expect(isInternalProvider("openrouter")).toBe(true);
-    expect(getSessionProvider("openrouter"), "the adapter must stay registered until Phase 3").toBeDefined();
+    expect(INTERNAL_PROVIDER_KINDS).not.toContain("openrouter");
+    expect(isInternalProvider("openrouter")).toBe(false);
+    expect(getSessionProvider("openrouter" as never)).toBeUndefined();
   });
 
   it("every offered target can be seeded with a conversation it did not produce", () => {

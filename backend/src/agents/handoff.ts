@@ -18,7 +18,7 @@
  * `ParsedMessage` carries enough to replay tool calls structurally (name,
  * JSON input, result text, call id), but tool *names* don't survive the trip:
  * Claude's `Bash`/`Read` have no counterpart in Codex's `shell`/`apply_patch`
- * or OpenRouter's `bash`. Replaying them verbatim would seed the target with
+ * or Cline's `run_commands`. Replaying them verbatim would seed the target with
  * function calls naming tools that aren't in its tool list — at best confusing
  * the model, at worst rejected by the API.
  *
@@ -40,9 +40,9 @@ const log = createLogger("handoff");
 
 /**
  * An image carried into the seeded session, resolved from callboard's image
- * store. Held as raw base64 (no `data:` prefix) because the three harnesses
- * disagree on the wrapper — Claude wants a `source` object, Codex and
- * OpenRouter want a data URI — but all three want the same bytes.
+ * store. Held as raw base64 (no `data:` prefix) because the harnesses disagree
+ * on the wrapper — Claude wants a `source` object, Codex wants a data URI — but
+ * all of them want the same bytes.
  */
 export interface HandoffImage {
   mimeType: string;
@@ -105,7 +105,6 @@ const MAX_HANDOFF_IMAGE_BYTES = 6 * 1024 * 1024;
 const PROVIDER_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
-  openrouter: "OpenRouter",
   cline: "Cline",
   pi: "pi",
   // One label for the whole ACP family. The vendor is in `acpProviderId`, not in

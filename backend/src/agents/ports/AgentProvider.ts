@@ -57,7 +57,7 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * travels in a separate `providerId` (see {@link AcpAdapter}) and the union
  * stays closed at one entry for the whole family.
  */
-export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "pi" | "mock";
+export type AgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi" | "mock";
 
 /**
  * The provider kinds a **request** may ask for — the user-selectable harnesses.
@@ -75,14 +75,6 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
  * chat with a kind and no vendor. It is admitted now because the promise now
  * holds: `POST /api/stream` takes `acpProviderId`, validates it against the
  * configured presets, and refuses `"acp"` without one.
- *
- * `"openrouter"` is absent for the opposite reason: not "not offerable yet" but
- * "no longer offered". The OpenRouter harness is being retired in favour of
- * running OpenRouter *credentials* through the native harnesses
- * (`claudeCodeUseOpenRouter`, `codexUseOpenRouter`, `clineProviderId`, …), so no
- * new chat may select it. It stays in {@link INTERNAL_PROVIDER_KINDS} because
- * the adapter is still registered and chats already stamped with it still run.
- * See plans/remove-openrouter-engine.md.
  *
  * ## Forking and handoff: which kinds are excluded, and why
  *
@@ -108,9 +100,6 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
  *   having widened it, which meant Callboard had built cross-harness handoff
  *   into two harnesses and offered it into neither.
  *
- * An OpenRouter chat can still be forked *out of* — the fork route reads the
- * source kind with {@link isInternalProvider} — it just cannot be forked *into*.
- *
  * The frontend mirror of this is `ForkProvider` in `frontend/src/api.ts`; the
  * enforcing guard is in `routes/chats.ts`.
  */
@@ -122,24 +111,19 @@ export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
 /**
  * The provider kinds `sendMessage` will actually route and persist.
  *
- * A superset of {@link ROUTABLE_PROVIDER_KINDS}: everything a user may request,
- * plus the kinds reachable only from inside the process. Still excludes
- * `"mock"`, which is never a chat's persisted provider.
+ * Everything a user may request, plus any kind reachable only from inside the
+ * process. Still excludes `"mock"`, which is never a chat's persisted provider.
  *
- * The extra member is `"openrouter"`, and it is here for the mirror image of the
- * reason `"acp"` was once missing from the routable list. ACP was *implemented*
- * before it was *offered*; OpenRouter is *withdrawn from offer* while still
- * implemented. Its adapter is registered, ~426 chat records name it, and those
- * chats must keep running and keep rendering — so `sendMessage` still routes it,
- * while no request may ask for it.
- *
- * Keep using {@link isRoutableProvider} for anything that came from a request
- * and {@link isInternalProvider} for chat metadata and internal callers. The two
- * lists differ again, so mixing them up now has consequences: a persisted
- * provider narrowed with the routable guard silently degrades to
- * `"claude-code"`.
+ * Identical to {@link ROUTABLE_PROVIDER_KINDS} today — the two lists last
+ * differed while a kind was *implemented before being offered* (`"acp"`) and
+ * again while one was *withdrawn from offer while still implemented*
+ * (`"openrouter"`, until its adapter was deleted). Kept as its own list because
+ * the next adapter will land in exactly that state again, and because the call
+ * sites already encode which question they are asking: use
+ * {@link isRoutableProvider} for anything that came from a request and
+ * {@link isInternalProvider} for chat metadata and internal callers.
  */
-export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS, "openrouter"] as const;
+export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS] as const;
 
 /** A provider kind that can back a real chat, offered to users or not. */
 export type InternalProviderKind = (typeof INTERNAL_PROVIDER_KINDS)[number];

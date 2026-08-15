@@ -107,7 +107,6 @@
      it, and never use it as ink. violet-600 rather than violet-500 so that
      white clears 4.5:1 (5.70 vs 4.23); the light palette already uses it. */
   --badge-worktree: #7c3aed;
-  --badge-provider-openrouter-bg: var(--badge-worktree);
   --badge-provider-codex-bg: #047857;
   /* blue-700. A fill only, like the two above: --badge-provider-text (white)
      sits on it at 6.70:1, and it is never used as ink. Chosen for hue distance
@@ -314,7 +313,6 @@
   --badge-info-bg: rgba(37, 99, 235, 0.1);
   --badge-trigger: #7c3aed;
   --badge-worktree: #7c3aed;
-  --badge-provider-openrouter-bg: var(--badge-worktree);
   --badge-provider-codex-bg: #047857;
   /* blue-700. A fill only, like the two above: --badge-provider-text (white)
      sits on it at 6.70:1, and it is never used as ink. Chosen for hue distance

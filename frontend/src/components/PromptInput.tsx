@@ -15,7 +15,7 @@ interface Props {
   onSetValue?: (setValue: (value: string) => void) => void;
   /**
    * Optional extra entries for the hamburger menu next to the Send button.
-   * Used by Chat.tsx to mount the OpenRouter model/effort picker per the
+   * Used by Chat.tsx to mount the per-chat model/effort picker per the
    * design note: model selection should be toggle-able, not always-visible
    * in the message area. Save-as-draft is a built-in entry (when onSaveDraft
    * is provided); these render below it.
@@ -332,7 +332,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
                   }}
                 >
                   {/* Built-in save-draft entry, followed by caller-supplied
-                      entries (e.g. the OpenRouter model/effort picker). */}
+                      entries (e.g. the per-chat model/effort picker). */}
                   {onSaveDraft && (
                     <MenuRow
                       icon={<Edit size={16} />}

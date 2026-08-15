@@ -382,16 +382,6 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
 export type ForkProvider = "claude-code" | "codex" | "cline" | "pi";
 
 /**
- * The harnesses a conversation can be forked *out of*.
- *
- * A superset of {@link ForkProvider} by exactly `"openrouter"`, which is a
- * source but never a target: the OR harness is retired, so no new chat may land
- * on it, but the chats already stamped with it still run and still fork. Mirrors
- * the backend's `INTERNAL_PROVIDER_KINDS` / `ROUTABLE_PROVIDER_KINDS` split.
- */
-export type ForkSourceProvider = ForkProvider | "openrouter";
-
-/**
  * Fork a chat at a message: creates a new chat whose history is a copy of
  * this one up to and including the message at `timestamp`. The forked chat
  * is not auto-started — the user sends the next message themselves.
@@ -1320,8 +1310,6 @@ export interface SystemInfo {
   environment: string;
   account?: SystemInfoAccount;
   models?: SystemInfoModel[];
-  /** True when the user has an OPENROUTER_API_KEY configured in Settings → API. */
-  openRouterConfigured?: boolean;
   /** True when the native Claude Code harness is routed through OpenRouter (toggle on + key set). */
   claudeCodeUseOpenRouter?: boolean;
   /** True when the native Codex harness is routed through OpenRouter (toggle on + key set). */
@@ -1330,13 +1318,6 @@ export interface SystemInfo {
   claudeCodeOpenRouterDetected?: boolean;
   /** True when the ambient env already points Codex at OpenRouter (OPENAI base / config.toml). Defaults the toggle on. */
   codexOpenRouterDetected?: boolean;
-  /**
-   * Effective per-session OpenRouter spend cap, in USD. The backend resolves
-   * the user's override (if any) against the OR library's own default ($1.00)
-   * and surfaces the resolved value here so the UI can display "Spend cap:
-   * $X.XX per session" without duplicating the default.
-   */
-  openRouterMaxBudgetUsd?: number;
   /**
    * True when the Codex provider has usable credentials — an `OPENAI_API_KEY`
    * in Settings → API (api-key mode), a parseable `$CODEX_HOME/auth.json` from

@@ -47,7 +47,7 @@ describe("isCallboardTool", () => {
   it("matches all three provider conventions", () => {
     expect(isCallboardTool("mcp__callboard-tools__render_file", "render_file")).toBe(true); // Claude
     expect(isCallboardTool("callboard-tools__render_file", "render_file")).toBe(true); // Codex
-    expect(isCallboardTool("render_file", "render_file")).toBe(true); // OpenRouter (bare)
+    expect(isCallboardTool("render_file", "render_file")).toBe(true); // pi (bare)
   });
 
   it("rejects other servers and other tools", () => {
@@ -85,10 +85,9 @@ describe("getToolSummary — Claude Code tools (existing behavior preserved)", (
     expect(getToolSummary("mcp__callboard-tools__render_file", j({ file_path: "/tmp/demo.html" }))).toBe(" - demo.html");
   });
 
-  it("handles OpenRouter server tools with lost input", () => {
+  it("handles hosted web tools with lost input", () => {
     expect(getToolSummary("web_search", j({}))).toBe(" - web search");
     expect(getToolSummary("web_search", j({ query: "latest node" }))).toBe(" - 'latest node'");
-    expect(getToolSummary("datetime", j({}))).toBe(" - current date/time");
     expect(getToolSummary("web_fetch", j({ url: "https://x.dev/a" }))).toBe(" - x.dev");
   });
 
@@ -99,7 +98,7 @@ describe("getToolSummary — Claude Code tools (existing behavior preserved)", (
   });
 });
 
-describe("getToolSummary — OpenRouter harness tools", () => {
+describe("getToolSummary — snake_case harness tools", () => {
   it("summarizes file tools by path basename", () => {
     expect(getToolSummary("read_file", j({ path: "/a/b/index.ts" }))).toBe(" - index.ts");
     expect(getToolSummary("write_file", j({ path: "out.md", content: "x" }))).toBe(" - out.md");

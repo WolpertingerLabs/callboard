@@ -1,5 +1,3 @@
-import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "./openrouterCatalog.js";
-import type { ModelRoutingConfig } from "./modelRouting.js";
 import type { ModelAlias } from "./modelAlias.js";
 
 export interface AgentSettings {
@@ -108,8 +106,8 @@ export interface AgentSettings {
 
   // ── Claude Code → OpenRouter endpoint routing ─────────────────────
   // Run the NATIVE Claude Code harness but point it at OpenRouter's
-  // Anthropic-compatible gateway (https://openrouter.ai/api). Distinct from
-  // the standalone OpenRouter provider below, which runs its own harness.
+  // Anthropic-compatible gateway (https://openrouter.ai/api). This is what
+  // replaced the standalone OpenRouter harness: the credentials, not the engine.
 
   /**
    * When true, route the native Claude Code harness through OpenRouter. Hard-codes
@@ -220,21 +218,6 @@ export interface AgentSettings {
   /** Model for opus-tier utility completions. No caller asks for this tier today. */
   openRouterUtilityOpusModel?: string;
 
-  /** Default model alias for new OR chats. Defaults to `~anthropic/claude-sonnet-latest`. */
-  openRouterModel?: string;
-
-  /** Absolute path to write OR session logs into. Defaults to `~/.openrouter-agent-harness/logs`. */
-  openRouterLogsRoot?: string;
-
-  /**
-   * Per-session OpenRouter spend cap in USD. When omitted, the OR library's
-   * own default (currently $1.00) applies — which historically surprised
-   * users with an unexplained "Agent reached the maximum budget limit." after
-   * a couple dozen turns. Surfacing this knob lets users opt into a higher
-   * ceiling for long-running coding sessions.
-   */
-  openRouterMaxBudgetUsd?: number;
-
   /**
    * @deprecated Superseded by the cross-harness {@link modelAliases} registry.
    * Retained for backward compatibility: on load, each `{name → slug}` entry is
@@ -259,41 +242,6 @@ export interface AgentSettings {
    * {@link ModelAlias} and resolveModelAlias.
    */
   modelAliases?: ModelAlias[];
-
-  /**
-   * OpenRouter server tools (executed on OR's servers) to enable, with their
-   * params. `undefined` ⇒ inherit the harness's three defaults
-   * (datetime/web_search/web_fetch); an explicit empty array ⇒ all server
-   * tools disabled. Each entry is validated against the `OR_SERVER_TOOLS`
-   * catalog. See {@link OpenRouterServerToolConfig}.
-   */
-  openRouterServerTools?: OpenRouterServerToolConfig[];
-
-  /**
-   * Global default OpenRouter generation parameters + plugins, applied to
-   * every OR chat. Merged with any matching per-model profile (per-model
-   * wins). camelCase keys validated against `OR_SAMPLING_PARAMS`/`OR_PLUGINS`.
-   */
-  openRouterModelParamsDefault?: OpenRouterParamProfile;
-
-  /**
-   * Per-model OpenRouter parameter overrides, keyed by the RESOLVED model slug
-   * (after alias expansion), e.g. "openrouter/pareto-code". Lets model-specific
-   * plugin params (pareto-router's minCodingScore, fusion's analysisModels)
-   * attach only to the model they affect. Merged over
-   * {@link openRouterModelParamsDefault} at run time.
-   */
-  openRouterModelParamProfiles?: Record<string, OpenRouterParamProfile>;
-
-  /**
-   * Model Routing (OpenRouter-only). When present and `enabled`, new OpenRouter
-   * chats can opt into classifier-driven model selection: a cheap classifier
-   * model picks a task CLASS from the first prompt, which combines with the
-   * chat's chosen RANK (tier) to select the model via a class×rank matrix. See
-   * {@link ModelRoutingConfig}. Absent/`enabled:false` ⇒ feature unavailable
-   * (current behavior — chats use their fixed selected/default model).
-   */
-  modelRouting?: ModelRoutingConfig;
 
   // ── Codex (alternative provider, subscription-auth) ───────────────
   // Populated when the user enables the OpenAI Codex provider in

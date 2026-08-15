@@ -99,7 +99,6 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.146.0",
     "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.40",
-    "@wolpertingerlabs/openrouter-agent-harness": "github:WolpertingerLabs/openrouter-agent-harness",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
@@ -116,7 +115,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
-    "@openrouter/sdk": "^1.2.7",
     "@types/eslint__js": "^8.42.3",
     "@vitest/coverage-v8": "^4.1.9",
     "concurrently": "^9.0.0",
@@ -132,7 +130,6 @@
     "vitest": "^4.0.18"
   },
   "overrides": {
-    "shell-quote": "1.8.4",
-    "@openrouter/sdk": "^1.2.7"
+    "shell-quote": "1.8.4"
   }
 }

@@ -64,15 +64,6 @@ vi.mock("../agents/factory.js", () => ({
       getSessionPreview: () => "preview",
     },
     {
-      // The retired OpenRouter harness. Stubbed WITHOUT forkSession or
-      // seedSession so the "harness can't be seeded" rejection branch stays
-      // covered — a legacy OR chat is now the only way to reach it, since no
-      // request may name the kind.
-      kind: "openrouter",
-      parseSessionMessages: () => sourceMessages,
-      getSessionPreview: () => "preview",
-    },
-    {
       // Cline and pi both implement seedSession AND forkSession for real —
       // `agents/handoff.roundtrip.test.ts` drives the actual providers. Here
       // they are stubs like the rest, so these cases assert the ROUTE offers
@@ -297,7 +288,7 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     expect(calls.seedSession).toHaveLength(0);
   });
 
-  it("refuses openrouter as a target — the harness is no longer offered", async () => {
+  it("refuses openrouter as a target — the harness was removed", async () => {
     // Not a "can't be seeded" rejection: `"openrouter"` left
     // ROUTABLE_PROVIDER_KINDS, so the request never gets as far as looking for a
     // provider. Nothing is written either way.
@@ -308,14 +299,15 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     expect(calls.seedSession).toHaveLength(0);
   });
 
-  it("rejects a target harness that cannot be seeded", async () => {
-    // Reached via a legacy OpenRouter chat forking within its own harness: the
-    // SOURCE kind is read with the internal guard, so `targetKind` lands on a
-    // provider that implements neither operation. An honest 400 beats a throw.
+  it("refuses a chat stamped with the removed openrouter harness as a SOURCE", async () => {
+    // ~426 chat records still name it. Without the by-name refusal the internal
+    // guard would drop them to "claude-code" and the fork would go looking for a
+    // Claude session log that was never written. A named 400 says what happened.
     setParent({ provider: "openrouter" });
     const res = await fork();
     expect(res.code).toBe(400);
     expect(res.meta.error).toContain("OpenRouter");
+    expect(res.meta.error).toContain("removed");
     expect(calls.seedSession).toHaveLength(0);
   });
 
@@ -362,7 +354,7 @@ describe("POST /api/chats/:id/fork model and effort", () => {
     expect(res.meta.model).toBe("claude-opus-5");
   });
 
-  it("drops OpenRouter model routing when leaving OpenRouter", async () => {
+  it("never carries model routing onto a fork — the feature is gone with its harness", async () => {
     setParent({ provider: "codex", modelRouting: true, modelRoutingRankId: "rank-1" });
     const res = await fork({ provider: "claude-code" });
     expect(res.meta).not.toHaveProperty("modelRouting");

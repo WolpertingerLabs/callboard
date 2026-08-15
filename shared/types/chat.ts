@@ -144,7 +144,7 @@ export interface FolderSummary {
   hasSummon?: boolean;
   /** Custom title set by agent on most recent chat */
   chatTitle?: string;
-  /** Provider of the most recent chat ("openrouter"); absent means Claude Code. */
+  /** Provider of the most recent chat ("codex", "cline", …); absent means Claude Code. */
   mostRecentChatProvider?: string;
   /**
    * Which ACP vendor runs the most recent chat, when its provider is `"acp"`.
@@ -203,7 +203,7 @@ export interface ChatTreeNode {
   title: string | null;
   /** Free-form role label (e.g. "subagent", "monitor", "router", "fork"). */
   role?: string;
-  /** "claude-code" | "openrouter" | "codex" | "acp" */
+  /** "claude-code" | "codex" | "acp" | "cline" | "pi" */
   provider: string;
   /** Which ACP vendor, when `provider` is `"acp"`. Absent otherwise. */
   acpProviderId?: string;

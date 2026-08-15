@@ -10,7 +10,7 @@
  * The plugin-shaped chat paths consume this with their existing plugin-skill
  * machinery: claude.ts#buildPluginOptions appends the directory as a
  * `{ type:"local" }` plugin descriptor, which the Claude SDK loads natively and
- * the OpenRouter adapter picks up via extractPluginDirs → loadPlugins. Skills
+ * the plugin-aware adapters pick up via extractPluginDirs → loadPlugins. Skills
  * are therefore invoked as `callboard:<name>` on both providers, and the
  * namespace guarantees we never shadow framework, user, or project skills.
  *

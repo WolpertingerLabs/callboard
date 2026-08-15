@@ -1075,15 +1075,12 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   }
 
   const provider = sessionFields?.provider ?? defaults.provider ?? "claude-code";
-  // `provider` is typed to the selectable kinds, but a job definition authored
-  // before the OpenRouter harness was withdrawn can still name it, and those
-  // runs keep working — the adapter is still registered. So the two OR-only
-  // rules below test the widened value rather than pretending the case is gone.
-  const isLegacyOpenRouter = (provider as string) === "openrouter";
-  // Per-step model wins; the job-level default model only applies to OR steps
-  // (it's documented as an OR slug — claude-code steps inherit the global
-  // Settings → API model unless the step sets one explicitly).
-  const model = sessionFields?.model ?? (isLegacyOpenRouter ? defaults.model : undefined);
+  // Per-step model only. The job-level default model was documented as an
+  // OpenRouter slug and applied only to OR steps; with that harness removed
+  // there is nothing left it could legitimately configure, and claude-code steps
+  // inherit the global Settings → API model unless the step sets one. A step
+  // still naming `provider: "openrouter"` is refused by `sendMessage`.
+  const model = sessionFields?.model;
 
   const promptIterable = (async function* () {
     yield { type: "user" as const, message: { role: "user" as const, content: prompt } };
@@ -1105,7 +1102,6 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     triggeredBy: "job",
     provider,
     ...(model && { model }),
-    ...(sessionFields?.effort && isLegacyOpenRouter && { effort: sessionFields.effort }),
     jobContext: {
       runId,
       stepId,

@@ -94,18 +94,23 @@ export interface StreamEvent {
    * Cumulative USD spent in the run so far, when the adapter reports one.
    * Attached to `done` events (forwarded as `message_complete` over SSE) so
    * the chat UI can show a final spend total, and to mid-run `budget` events
-   * (one per OpenRouter turn boundary, cumulative — not the turn's
-   * increment) so the spend indicator moves while the agent works. Currently
-   * populated for OpenRouter chats; Claude Code chats report per-message
-   * rather than per-run costs and may surface 0 for
+   * (one per turn boundary, cumulative — not the turn's increment) so spend
+   * tracking advances while the agent works. Populated by whichever adapters
+   * report a run cost (ACP does, from `usage_update.cost`); Claude Code chats
+   * report per-message rather than per-run costs and may surface 0 for
    * subscription-authenticated sessions.
    */
   costUsd?: number;
   /**
-   * Active per-session spend cap in USD when one applies. Mirrored from the
-   * OpenRouter adapter on `done` and `budget` events so the UI can render
-   * "$0.42 of $5.00" and the max_budget end-of-session message can quote the
-   * cap the user actually configured. Undefined for Claude Code chats.
+   * Active per-session spend cap in USD when one applies, attached to `done` and
+   * `budget` events so a client can render "$0.42 of $5.00" and quote the cap in
+   * its max_budget end-of-session message.
+   *
+   * No adapter in this build sets it — the only harness with a callboard-managed
+   * spend cap was OpenRouter's, and it was removed. The field stays because this
+   * file is a published interface (see the rules at the top): a tab running an
+   * older bundle against this daemon, or a new bundle against an older daemon,
+   * must keep agreeing on what the key means.
    */
   maxBudgetUsd?: number;
   /**

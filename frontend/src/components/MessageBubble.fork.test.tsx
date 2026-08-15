@@ -74,9 +74,9 @@ describe("MessageBubble fork affordance", () => {
     expect(screen.getByText("Fork here")).toBeTruthy();
     expect(screen.getByText("Codex")).toBeTruthy();
     expect(screen.queryByText("Claude Code")).toBeNull();
-    // The OpenRouter harness is retired: a chat can be forked out of one, never
-    // into one, so it is not a menu entry (backend mirror: it is absent from
-    // ROUTABLE_PROVIDER_KINDS and the fork route 400s on it).
+    // The OpenRouter harness was removed outright, so it is not a menu entry
+    // (backend mirror: it is absent from ROUTABLE_PROVIDER_KINDS and the fork
+    // route 400s on a chat stamped with it).
     expect(screen.queryByText("OpenRouter")).toBeNull();
   });
 

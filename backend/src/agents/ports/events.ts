@@ -35,9 +35,13 @@ export type AgentEvent =
       input: unknown;
       callId: string;
       /**
-       * Where the tool executed: "openrouter_server" for OpenRouter server
-       * tools (datetime / web_search / web_fetch) run on OR's servers,
-       * "local" (or absent) for tools run by the agent process.
+       * Where the tool executed: "local" (or absent) for tools run by the agent
+       * process, "openrouter_server" for tools run on the provider's own servers.
+       *
+       * No adapter emits the second value today — the OpenRouter harness that did
+       * has been removed. The member survives because the paired wire field in
+       * `shared/types/stream.ts` is a published interface that never drops a
+       * value, and this is the internal type that feeds it.
        */
       toolSource?: "local" | "openrouter_server";
     }

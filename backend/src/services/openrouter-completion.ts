@@ -15,7 +15,7 @@
  *
  * The result shape mirrors {@link ./quick-completion.ts}'s
  * `QuickCompletionResult` exactly, so the helpers built on it (titles, branch
- * names, themes, the model-routing classifier) do not care which backend ran.
+ * names, themes) do not care which backend ran.
  */
 import { getAgentSettings } from "./agent-settings.js";
 import { resolveOpenRouterApiUrl } from "./openrouter-endpoint.js";

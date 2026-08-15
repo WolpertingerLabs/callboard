@@ -11,8 +11,8 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { OpenRouterServerToolConfig, OpenRouterParamProfile, ModelRoutingConfig, ModelAlias } from "shared/types/index.js";
-import { validateServerTools, validateParamProfile, validateModelRoutingConfig, validateModelAliases } from "shared/types/index.js";
+import type { ModelAlias } from "shared/types/index.js";
+import { validateModelAliases } from "shared/types/index.js";
 import {
   getAgentSettings,
   updateAgentSettings,
@@ -82,15 +82,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterUtilityHaikuModel,
     openRouterUtilitySonnetModel,
     openRouterUtilityOpusModel,
-    openRouterModel,
-    openRouterLogsRoot,
-    openRouterMaxBudgetUsd,
     openRouterModelAliases,
     modelAliases,
-    openRouterServerTools,
-    openRouterModelParamsDefault,
-    openRouterModelParamProfiles,
-    modelRouting,
     codexAuthMode,
     codexApiKey,
     codexBaseUrl,
@@ -121,8 +114,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
 
   // Numeric counterpart — accepts numbers or numeric strings, clears on
   // empty or non-finite input (NaN, Infinity). Negative inputs are clamped
-  // to 0, which the OR library treats as "stop immediately" (a useful
-  // boundary condition for a kill-switch rather than a 400).
+  // to 0 rather than 400ing: every consumer treats 0 as a meaningful floor.
   const normalizeNumber = (v: unknown): number | undefined => {
     if (v === undefined || v === null) return undefined;
     if (typeof v === "string" && v.trim() === "") return undefined;
@@ -229,75 +221,6 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     normalizedModelAliases = value.length > 0 ? value : undefined;
   }
 
-  // Validate the OpenRouter server-tools list. An explicit empty array is
-  // meaningful ("disable all server tools") and must be preserved — only an
-  // absent field leaves the setting untouched, so this stays in the
-  // conditional spread below rather than coercing [] to undefined.
-  let normalizedServerTools: OpenRouterServerToolConfig[] | undefined;
-  if (openRouterServerTools !== undefined) {
-    if (!Array.isArray(openRouterServerTools)) {
-      res.status(400).json({ error: "openRouterServerTools must be an array of server-tool configs" });
-      return;
-    }
-    const { value, errors } = validateServerTools(openRouterServerTools);
-    if (errors.length > 0) {
-      res.status(400).json({ error: errors.join("; ") });
-      return;
-    }
-    normalizedServerTools = value;
-  }
-
-  // Validate the global model-param default profile. An empty validated
-  // profile ({}) clears the override (persisted as undefined).
-  let normalizedParamsDefault: OpenRouterParamProfile | undefined;
-  if (openRouterModelParamsDefault !== undefined) {
-    const { value, errors } = validateParamProfile(openRouterModelParamsDefault);
-    if (errors.length > 0) {
-      res.status(400).json({ error: errors.join("; ") });
-      return;
-    }
-    normalizedParamsDefault = Object.keys(value).length > 0 ? value : undefined;
-  }
-
-  // Validate each per-model param profile, prefixing errors with the slug.
-  // Slugs whose validated profile is empty are dropped; an all-empty record
-  // clears the setting (persisted as undefined).
-  let normalizedParamProfiles: Record<string, OpenRouterParamProfile> | undefined;
-  if (openRouterModelParamProfiles !== undefined) {
-    if (typeof openRouterModelParamProfiles !== "object" || openRouterModelParamProfiles === null || Array.isArray(openRouterModelParamProfiles)) {
-      res.status(400).json({ error: "openRouterModelParamProfiles must be an object mapping model slugs to param profiles" });
-      return;
-    }
-    const cleaned: Record<string, OpenRouterParamProfile> = {};
-    const errors: string[] = [];
-    for (const [slug, profile] of Object.entries(openRouterModelParamProfiles as Record<string, OpenRouterParamProfile>)) {
-      const { value, errors: pErrors } = validateParamProfile(profile);
-      errors.push(...pErrors.map((e) => `${slug}: ${e}`));
-      if (Object.keys(value).length > 0) cleaned[slug] = value;
-    }
-    if (errors.length > 0) {
-      res.status(400).json({ error: errors.join("; ") });
-      return;
-    }
-    normalizedParamProfiles = Object.keys(cleaned).length > 0 ? cleaned : undefined;
-  }
-
-  // Validate the model-routing config. Errors 400 before anything is written.
-  // `null` explicitly clears the config; a valid object is normalized/cleaned.
-  let normalizedModelRouting: ModelRoutingConfig | undefined | null;
-  if (modelRouting !== undefined) {
-    if (modelRouting === null) {
-      normalizedModelRouting = null;
-    } else {
-      const { value, errors } = validateModelRoutingConfig(modelRouting);
-      if (errors.length > 0) {
-        res.status(400).json({ error: errors.join("; ") });
-        return;
-      }
-      normalizedModelRouting = value;
-    }
-  }
-
   // Codex enum fields — validate against the allowed values; an unrecognized
   // value clears the override (falls back to the default at consume time).
   const normalizeCodexAuthMode = (v: unknown): "subscription" | "api-key" | undefined => (v === "subscription" || v === "api-key" ? v : undefined);
@@ -381,9 +304,6 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(openRouterUtilityHaikuModel !== undefined && { openRouterUtilityHaikuModel: normalize(openRouterUtilityHaikuModel) }),
       ...(openRouterUtilitySonnetModel !== undefined && { openRouterUtilitySonnetModel: normalize(openRouterUtilitySonnetModel) }),
       ...(openRouterUtilityOpusModel !== undefined && { openRouterUtilityOpusModel: normalize(openRouterUtilityOpusModel) }),
-      ...(openRouterModel !== undefined && { openRouterModel: normalize(openRouterModel) }),
-      ...(openRouterLogsRoot !== undefined && { openRouterLogsRoot: normalize(openRouterLogsRoot) }),
-      ...(openRouterMaxBudgetUsd !== undefined && { openRouterMaxBudgetUsd: normalizeNumber(openRouterMaxBudgetUsd) }),
       ...(openRouterModelAliases !== undefined && { openRouterModelAliases: normalizedAliases }),
       // Writing the unified registry retires the deprecated OR-only map (its
       // entries are already folded into the openrouter targets on load). Skip
@@ -392,10 +312,6 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
         modelAliases: normalizedModelAliases,
         ...(openRouterModelAliases === undefined && { openRouterModelAliases: undefined }),
       }),
-      ...(openRouterServerTools !== undefined && { openRouterServerTools: normalizedServerTools }),
-      ...(openRouterModelParamsDefault !== undefined && { openRouterModelParamsDefault: normalizedParamsDefault }),
-      ...(openRouterModelParamProfiles !== undefined && { openRouterModelParamProfiles: normalizedParamProfiles }),
-      ...(modelRouting !== undefined && { modelRouting: normalizedModelRouting ?? undefined }),
       ...(codexAuthMode !== undefined && { codexAuthMode: normalizeCodexAuthMode(codexAuthMode) }),
       ...(codexApiKey !== undefined && { codexApiKey: normalize(codexApiKey) }),
       ...(codexBaseUrl !== undefined && { codexBaseUrl: normalize(codexBaseUrl) }),

@@ -1,7 +1,6 @@
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
-import type { EffortLevel } from "../agents/adapters/openrouter/optionsAdapter.js";
-import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "../agents/adapters/openrouter/optionsAdapter.js";
+import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
 import { getToolCategorizer } from "../agents/permissions/categorizers.js";
@@ -14,7 +13,6 @@ import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
-import { serverToolToWire, resolveModelParams } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
 import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-service.js";
@@ -24,8 +22,6 @@ import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
 import { clearActivitiesForChat, migrateActivities, getWatch } from "./chat-activity.js";
 import { decideNudge } from "./nudge-decision.js";
-import { buildModelRoutingToolsSpec, takePendingModelSwitch, clearPendingModelSwitch } from "./model-routing-tools.js";
-import { classifyAndResolve, getUsableRoutingConfig } from "./model-routing.js";
 import { getRun as getJobRun } from "./job-store.js";
 import {
   isStreamClosedToolFailure,
@@ -61,14 +57,30 @@ const log = createLogger("claude");
 
 export type { StreamEvent };
 
+/** Thrown for a chat pinned to a harness this build no longer implements. */
+export class RetiredProviderError extends Error {}
+
 /**
  * Narrow a free-form metadata.provider value to a usable AgentProviderKind,
  * falling back to "claude-code" on anything unrecognized. Logs a warn for
  * malformed values so corrupted metadata is observable instead of silent.
+ *
+ * `"openrouter"` is the one value that refuses instead of falling back. Its
+ * harness was removed, ~426 chat records still name it, and the fallback would
+ * hand those chats to Claude Code — which would then try to resume a session id
+ * only the OR harness could resolve. That fails somewhere deep in the SDK, after
+ * the UI has already started a run. A named refusal at the boundary is the whole
+ * difference between "this chat can't run any more" and a confusing half-start.
  */
 function resolveProviderKind(value: unknown): AgentProviderKind {
   if (typeof value !== "string" || value === "") return "claude-code";
-  // Chat metadata, not a request body — so the internal list, which includes
+  if (value === "openrouter") {
+    throw new RetiredProviderError(
+      "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be resumed. " +
+        "Start a new chat — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
+    );
+  }
+  // Chat metadata, not a request body — so the internal list, which may include
   // kinds that have no picker yet. A chat already pinned to one of those must
   // keep routing there.
   if (isInternalProvider(value)) return value;
@@ -453,7 +465,7 @@ export function respondToPermission(
  *
  * Three things have to happen, in this order:
  *  1. `abort()` — the signal every adapter threads into its harness (SDK
- *     subprocess, `codex exec` spawn, OpenRouter fetch) and that the query
+ *     subprocess, `codex exec` spawn, ACP transport) and that the query
  *     loop, nudge/recovery continuations and pending permission requests all
  *     check. This is the cooperative half.
  *  2. `closeQuery()` — hard-terminate the provider run. A run parked in a tool
@@ -706,89 +718,6 @@ export function buildCanUseTool(
   };
 }
 
-/**
- * Host handler for the OpenRouter library's `ask_user_question` tool.
- *
- * The OR tool calls this with a single question + lettered options and awaits a
- * {@link OrUserQuestionResponse}. We reuse callboard's existing question flow:
- * emit the same `user_question` SSE event the Claude path uses (so the
- * FeedbackPanel renders it) and register a pending request keyed by the current
- * tracking id, so the `/permission-response` endpoint → respondToPermission
- * resolves it. The frontend returns answers keyed by question text with the
- * chosen option's *label*; we map that back to the option id the library wants.
- *
- * The OR library single-question shape can't express Claude's multi-question /
- * multi-select form — we wrap the one question into a length-1 questions array.
- * The library enforces its own timeout (≤10 min), so no timeout is added here;
- * abort cleanup resolves the promise so the run can't hang on a stale pending.
- */
-type OrUserQuestionRequest = {
-  questionId: string;
-  question: string;
-  options: Array<{ id: string; label: string; preview?: string }>;
-  allowFreeText?: boolean;
-};
-type OrUserQuestionResponse = {
-  questionId: string;
-  selectedOptionId?: string;
-  freeTextAnswer?: string;
-};
-
-export function buildOnAskUserQuestion(emitter: EventEmitter, getTrackingId: () => string, signal: AbortSignal) {
-  return (req: OrUserQuestionRequest): Promise<OrUserQuestionResponse> =>
-    new Promise<OrUserQuestionResponse>((resolve) => {
-      const questions = [
-        {
-          question: req.question,
-          multiSelect: false,
-          options: req.options.map((o) => ({
-            label: o.label,
-            ...(o.preview !== undefined && { description: o.preview }),
-          })),
-        },
-      ];
-
-      emitter.emit("event", { type: "user_question", content: "", questions } as StreamEvent);
-
-      const trackingId = getTrackingId();
-      let settled = false;
-      const finish = (response: OrUserQuestionResponse): void => {
-        if (settled) return;
-        settled = true;
-        pendingRequests.delete(trackingId);
-        resolve(response);
-      };
-
-      pendingRequests.set(trackingId, {
-        toolName: "ask_user_question",
-        input: { questions },
-        eventType: "user_question",
-        eventData: { questions },
-        resolve: (result: PermissionResult) => {
-          if (result.behavior !== "allow") {
-            // Denied/aborted — return no selection; the library surfaces this
-            // as an answerless result and the model can decide how to proceed.
-            finish({ questionId: req.questionId });
-            return;
-          }
-          const answers = ((result.updatedInput as Record<string, unknown> | undefined)?.answers ?? {}) as Record<string, string>;
-          const chosen = answers[req.question];
-          const matched = req.options.find((o) => o.label === chosen);
-          if (matched) {
-            finish({ questionId: req.questionId, selectedOptionId: matched.id });
-          } else if (typeof chosen === "string") {
-            // "Other"/free-text answer (or label drift) — hand the raw text back.
-            finish({ questionId: req.questionId, freeTextAnswer: chosen });
-          } else {
-            finish({ questionId: req.questionId });
-          }
-        },
-      });
-
-      signal.addEventListener("abort", () => finish({ questionId: req.questionId }), { once: true });
-    });
-}
-
 interface SendMessageOptions {
   prompt: string | any;
   imageMetadata?: PromptImageMetadata[];
@@ -818,8 +747,7 @@ interface SendMessageOptions {
   /**
    * Which agent provider runs this chat. Only honored for new chats —
    * existing chats route by the `provider` field already in their metadata.
-   * Defaults to `"claude-code"` when omitted; `"openrouter"` is rejected at
-   * the sendMessage boundary if OPENROUTER_API_KEY isn't configured.
+   * Defaults to `"claude-code"` when omitted.
    */
   provider?: AgentProviderKind;
   /**
@@ -834,8 +762,8 @@ interface SendMessageOptions {
   acpProviderId?: string;
   /**
    * Reasoning-effort level. Honored for new chats on the reasoning-capable
-   * providers — `provider: "openrouter"` (→ OR `reasoning.effort`) and
-   * `provider: "codex"` (→ Codex `modelReasoningEffort`) — written into chat
+   * providers — `provider: "codex"` (→ Codex `modelReasoningEffort`),
+   * `"cline"` and `"pi"` — written into chat
    * metadata so existing-chat follow-ups reuse the same setting without the
    * caller threading it through. Omitted entirely when undefined (preserves each
    * model's default). Ignored when paired with `claude-code`.
@@ -845,10 +773,6 @@ interface SendMessageOptions {
    * Model for this chat. Only honored for new chats — written into chat
    * metadata so existing-chat follow-ups reuse it.
    *
-   * For `provider: "openrouter"`: an OR slug (e.g. "anthropic/claude-opus-4.7")
-   * or an alias like "~anthropic/claude-sonnet-latest". Falls back to the
-   * global `agentSettings.openRouterModel` when omitted.
-   *
    * For `provider: "claude-code"` (or omitted provider): an Anthropic model
    * alias ("opus", "sonnet", "haiku", "opusplan") or full model ID (e.g.
    * "claude-sonnet-4-6"), passed to the SDK as `options.model`. When omitted,
@@ -856,16 +780,6 @@ interface SendMessageOptions {
    * override from Settings → API.
    */
   model?: string;
-  /**
-   * Model routing (OpenRouter-only). When true AND provider is "openrouter" AND
-   * the global model-routing config is enabled/usable, a classifier picks the
-   * model for this new chat from the first prompt (and a `reclassify_model` tool
-   * is exposed to the agent). Only honored for new chats — persisted into
-   * metadata so follow-ups keep routing. Default: false (current behavior).
-   */
-  modelRouting?: boolean;
-  /** The chosen model-routing rank/tier id (paired with modelRouting). */
-  modelRoutingRankId?: string;
   /**
    * When true, the session is not considered done until it explicitly calls
    * a completion tool: objective_complete (injected for this run) for normal
@@ -949,17 +863,6 @@ interface SendMessageOptions {
 const DEFAULT_MAX_NUDGES = 3;
 
 /**
- * Render the CONFIGURED OpenRouter plugin ids for the chat-config log line — the
- * user's intent, before the `webAccess` gate runs. The effective set is logged by
- * the OR adapter's `translateOptions`, which is where the narrowing happens.
- */
-function formatConfiguredPlugins(modelParams: Record<string, unknown> | undefined): string {
-  const plugins = modelParams?.plugins;
-  if (!Array.isArray(plugins) || plugins.length === 0) return "(none)";
-  return `[${plugins.map((p) => String((p as { id?: unknown }).id)).join(",")}]`;
-}
-
-/**
  * Unified message sending function.
  * Handles both existing chats (provide chatId) and new chats (provide folder).
  * For new chats, creates the chat record when session_id arrives from the SDK
@@ -968,6 +871,17 @@ function formatConfiguredPlugins(modelParams: Record<string, unknown> | undefine
 export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
   const isNewChat = !opts.chatId;
+  // A job step or cron action authored before the OpenRouter harness was removed
+  // can still name it, and `opts.provider` is no longer typed to admit the value.
+  // Refuse it here rather than letting it fall off the internal allowlist, which
+  // would leave the metadata `provider` unwritten and quietly start a Claude Code
+  // session in its place — a run that reports success on the wrong engine.
+  if ((opts.provider as string) === "openrouter") {
+    throw new RetiredProviderError(
+      "This job or cron action targets the OpenRouter agent harness, which has been removed. " +
+        "Re-point it at another harness — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
+    );
+  }
   log.debug(`sendMessage — isNewChat=${isNewChat}, folder=${opts.folder || "n/a"}, chatId=${opts.chatId || "n/a"}`);
 
   // Resolve chat context: existing chat or new chat setup
@@ -1004,9 +918,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       opts.requireExplicitCompletion = true;
     }
     stopSession(opts.chatId);
-    // Drop any model switch left pending from a prior run of this chat — a new
-    // message starts fresh; the loop below re-reads the model from metadata.
-    clearPendingModelSwitch(opts.chatId);
   } else if (opts.folder) {
     // New chat flow — store the actual working directory (may be a worktree).
     // The SDK creates logs keyed by this path, so we must preserve it exactly.
@@ -1053,20 +964,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // could not reconstruct the adapter. Only meaningful when paired with
       // provider "acp".
       ...(opts.provider === "acp" && opts.acpProviderId && { acpProviderId: opts.acpProviderId }),
-      // Pin reasoning-effort alongside the provider. Meaningful for the two
-      // reasoning-capable providers — openrouter (→ OR `reasoning.effort`) and
-      // codex (→ Codex `modelReasoningEffort`); their config blocks below pull it
-      // out of metadata. The stream.ts boundary already drops `effort` when the
-      // paired provider can't use it, so this second guard is defense-in-depth.
+      // Pin reasoning-effort alongside the provider. Meaningful for the
+      // reasoning-capable providers — codex (→ Codex `modelReasoningEffort`) and
+      // pi; their config blocks below pull it out of metadata. The stream.ts
+      // boundary already drops `effort` when the paired provider can't use it, so
+      // this second guard is defense-in-depth.
       // ...and cline (→ Cline `thinking` / `reasoningEffort`), whose vocabulary is
       // callboard's `EffortLevel` minus `"none"` — see cline/optionsAdapter.
-      ...(opts.effort &&
-        (opts.provider === "openrouter" || opts.provider === "codex" || opts.provider === "cline" || opts.provider === "pi") && { effort: opts.effort }),
-      // Pin the per-chat model alongside provider/effort. Meaningful for both
-      // user-facing providers: openrouter chats prefer it over the global
-      // agentSettings.openRouterModel (OR config block below); claude-code
-      // chats pass it to the SDK as options.model. Ignored for other
-      // providers (codex/mock).
+      ...(opts.effort && (opts.provider === "codex" || opts.provider === "cline" || opts.provider === "pi") && { effort: opts.effort }),
+      // Pin the per-chat model alongside provider/effort. claude-code chats pass
+      // it to the SDK as options.model. Ignored for codex/mock.
       // ...and for acp, where it names one of the vendor's own models and is
       // applied via `session/set_config_option` once the session exists.
       // ...and for cline, where it names a model within the configured Cline
@@ -1074,18 +981,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // ...and for pi, where it names a model within the configured pi provider
       // and is resolved through `ModelRegistry.find()`.
       ...(opts.model &&
-        (opts.provider === "openrouter" ||
-          opts.provider === "acp" ||
-          opts.provider === "cline" ||
-          opts.provider === "pi" ||
-          (opts.provider ?? "claude-code") === "claude-code") && {
+        (opts.provider === "acp" || opts.provider === "cline" || opts.provider === "pi" || (opts.provider ?? "claude-code") === "claude-code") && {
           model: opts.model,
         }),
-      // Pin model routing (OpenRouter-only). When on, the classifier below picks
-      // the model for this chat and a reclassify_model tool is exposed. Follow-up
-      // messages inherit the flag + chosen rank so re-classification keeps working.
-      ...(opts.modelRouting && opts.provider === "openrouter" && { modelRouting: true }),
-      ...(opts.modelRouting && opts.provider === "openrouter" && opts.modelRoutingRankId && { modelRoutingRankId: opts.modelRoutingRankId }),
       // Pin the explicit-completion requirement so follow-up messages to
       // this chat keep nudging for objective_complete without every caller
       // having to re-thread the flag.
@@ -1116,9 +1014,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // Resolve which agent provider runs this chat. Existing chats with no
   // `provider` in metadata fall back to "claude-code" (preserves all current
-  // behavior). New chats default to "claude-code" too; the OpenRouter route
-  // is wired up but unreachable until the New Chat UI starts writing
-  // `provider: "openrouter"` into metadata (PR D).
+  // behavior). New chats default to "claude-code" too.
   //
   // Validate explicitly rather than casting — `??` only triggers on
   // null/undefined, so a corrupted metadata value like `provider: ""` or
@@ -1206,11 +1102,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // and that is a correctness requirement rather than tidiness. This used to be
   // `providerKind === "acp" ? categorizeAcpToolName : categorizeClaudeTool`,
   // whose `else` branch is not a neutral default but a *real provider's map*:
-  // every non-ACP kind inherited Claude Code's PascalCase table. OpenRouter's
-  // tool names are all snake_case, so they matched nothing and fell through
-  // `categorizeClaudeTool`'s `return "fileWrite"` — including `bash`, which
-  // meant OR's shell tool was gated on the `fileWrite` axis and auto-allowed
-  // under the common `{fileWrite: "allow", codeExecution: "ask"}` policy.
+  // every non-ACP kind inherited Claude Code's PascalCase table. The
+  // since-removed OpenRouter harness named its tools in snake_case, so they
+  // matched nothing and fell through `categorizeClaudeTool`'s
+  // `return "fileWrite"` — including `bash`, which meant its shell tool was
+  // gated on the `fileWrite` axis and auto-allowed under the common
+  // `{fileWrite: "allow", codeExecution: "ask"}` policy.
   //
   // `TOOL_CATEGORIZERS` is a `Record<AgentProviderKind, …>`, so a new provider
   // kind with no categorizer is a compile error instead of a silent adoption of
@@ -1285,41 +1182,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }
     } catch (err: any) {
       log.error(`Failed to build objective-tools server: ${err.message}`);
-    }
-  }
-
-  // ── Model routing (OpenRouter-only) ──
-  // For NEW routed chats, classify the first prompt to pick the model before the
-  // OpenRouter config block below reads initialMetadata.model. The switch is
-  // pinned into metadata so subsequent turns reuse it without re-classifying.
-  // The reclassify_model tool (injected below) handles mid-conversation changes.
-  if (isNewChat && providerKind === "openrouter" && initialMetadata.modelRouting) {
-    const promptText = typeof prompt === "string" ? prompt : null;
-    if (promptText) {
-      try {
-        const decision = await classifyAndResolve(promptText, initialMetadata.modelRoutingRankId);
-        if (decision) {
-          initialMetadata.modelRoutingClassId = decision.classId;
-          if (decision.model) initialMetadata.model = decision.model;
-        }
-      } catch (err: any) {
-        log.warn(`Model routing classification failed: ${err.message} — using default model`);
-      }
-    }
-  }
-
-  // ── Model routing tools: injected only for routed OpenRouter chats ──
-  if (providerKind === "openrouter" && initialMetadata.modelRouting && getUsableRoutingConfig()) {
-    try {
-      const spec = buildModelRoutingToolsSpec(() => trackingId);
-      const server = agentProvider.buildToolServer(spec);
-      if (server) {
-        mcpServers["model-routing"] = server;
-        allowedTools.push("mcp__model-routing__*");
-        log.info("Injected model-routing MCP server (reclassify_model)");
-      }
-    } catch (err: any) {
-      log.error(`Failed to build model-routing server: ${err.message}`);
     }
   }
 
@@ -1441,8 +1303,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // the CLI's --model flag and takes precedence over the global
   // ANTHROPIC_MODEL env override from Settings → API. When unset, no model is
   // passed so the existing env-var / subscription default behavior is
-  // unchanged. OR chats route their model through options.openRouter.model
-  // instead (below).
+  // unchanged.
   // A cross-harness alias (e.g. "planner") is resolved to its claude-code target
   // here — an Anthropic alias/ID like "opus" or a full model id. A raw value
   // with no matching alias passes through unchanged, so the built-in names
@@ -1494,107 +1355,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     },
   };
 
-  // For OpenRouter chats, surface the per-provider settings the OR adapter's
-  // optionsAdapter looks for. Dormant until PR D writes provider:"openrouter"
-  // into chat metadata — included now so PR D is a UI/settings PR with no
-  // additional backend wiring required.
-  if (providerKind === "openrouter") {
-    const apiKey = agentSettings.openRouterApiKey?.trim();
-    if (!apiKey) {
-      const message = "OpenRouter chat selected but OPENROUTER_API_KEY is not configured in Settings → API.";
-      log.error(message);
-      throw new Error(message);
-    }
-    // Reasoning effort is per-chat (not a global setting) — it lives in
-    // chat metadata and is recovered on every message in the chat. The
-    // initialMetadata read above covers both the new-chat case (just
-    // written) and the existing-chat case (loaded from disk).
-    const chatEffort = initialMetadata.effort as EffortLevel | undefined;
-    // Per-chat model override (from tool params, persisted to metadata) takes
-    // precedence over the global default. Covers new chats (just written above)
-    // and resumed chats (loaded from disk). Metadata stores the user-facing
-    // value — possibly a custom alias like "low coder" — resolved to a real
-    // slug here on every session start, so re-pointing an alias in Settings
-    // applies to existing chats too.
-    const requestedModel = (initialMetadata.model as string | undefined) || agentSettings.openRouterModel;
-    // Per-chat override wins; either it or the global OR default may be a
-    // cross-harness alias. A per-chat alias with no openrouter target falls back
-    // to the configured OR default rather than the library default.
-    const chatModel = resolveSessionModel(initialMetadata.model as string | undefined, agentSettings.openRouterModel, "openrouter", agentSettings);
-    // Server tools: map the persisted list to the harness's verbatim wire shape.
-    // Left undefined when the setting is absent (harness injects its defaults);
-    // an explicit empty array is preserved (disable all server tools).
-    //
-    // This is the user's INTENT only. OR's server tools execute on OpenRouter's
-    // servers and surface as `openrouter:*` output items rather than tool calls,
-    // so `canUseTool` never sees them and the categorizer's `webAccess` entries
-    // for web_search/web_fetch are unreachable. The `webAccess` axis is applied
-    // to this list in the OR adapter, via the `getPermissions` accessor below —
-    // see adapters/openrouter/serverToolPolicy.ts.
-    const serverTools = agentSettings.openRouterServerTools?.map(serverToolToWire);
-    // Generation params: merge the global default with the resolved model's
-    // per-model override profile, then flatten to the harness's modelParams bag.
-    //
-    // Also INTENT only, on the same axis: the `plugins` array inside this bag is
-    // a second route to OpenRouter's servers that `canUseTool` never sees (`web`
-    // and `fusion` are web access, and a plugin runs once per request whether the
-    // model asked or not). The OR adapter narrows it via the same
-    // `getPermissions` accessor — see adapters/openrouter/serverToolPolicy.ts.
-    const modelParams = resolveModelParams(
-      agentSettings.openRouterModelParamsDefault,
-      chatModel ? agentSettings.openRouterModelParamProfiles?.[chatModel] : undefined,
-    );
-    queryOpts.options.openRouter = {
-      apiKey,
-      ...(agentSettings.openRouterBaseUrl && { baseUrl: agentSettings.openRouterBaseUrl }),
-      ...(chatModel && { model: chatModel }),
-      ...(agentSettings.openRouterLogsRoot && { logsRoot: agentSettings.openRouterLogsRoot }),
-      ...(chatEffort && { effort: chatEffort }),
-      ...(typeof agentSettings.openRouterMaxBudgetUsd === "number" &&
-        Number.isFinite(agentSettings.openRouterMaxBudgetUsd) && {
-          maxBudgetUsd: agentSettings.openRouterMaxBudgetUsd,
-        }),
-      ...(serverTools && { serverTools }),
-      ...(modelParams && { modelParams }),
-      // The accessor, not its value — same reasoning as the ACP block below.
-      // It is read when the request body is assembled, so tightening webAccess
-      // mid-conversation takes effect on the next message rather than being
-      // frozen at whatever the policy was when this options blob was built.
-      getPermissions: getDefaultPermissions,
-      appTitle: "callboard",
-    };
-    log.info(
-      `OpenRouter chat config — trackingId=${trackingId}, model=${chatModel ?? "(default)"}` +
-        `${requestedModel && requestedModel !== chatModel ? ` (alias "${requestedModel}")` : ""}, ` +
-        `effort=${chatEffort ?? "(unset)"}, ` +
-        // Both webAccess-gated channels as CONFIGURED, alongside the axis that
-        // narrows them. The effective sets (and anything the policy withheld) are
-        // logged by the OR adapter's optionsAdapter, which is where the
-        // intersections happen.
-        `serverToolsConfigured=${serverTools ? `[${serverTools.map((t) => t.type).join(",")}]` : "(harness defaults)"}, ` +
-        `pluginsConfigured=${formatConfiguredPlugins(modelParams)}, ` +
-        `webAccess=${getDefaultPermissions()?.webAccess ?? "(none — treated as restrictive)"}, ` +
-        `maxBudgetUsd=${queryOpts.options.openRouter.maxBudgetUsd ?? "(library default)"}, ` +
-        `baseUrl=${queryOpts.options.openRouter.baseUrl ?? "(default)"}, ` +
-        `logsRoot=${queryOpts.options.openRouter.logsRoot ?? "(default)"}, ` +
-        `apiKeyTail=…${apiKey.slice(-4)}`,
-    );
-    // Wire the host handler for the OR ask_user_question tool, reusing the same
-    // emitter + tracking-id getter the Claude permission flow uses so the
-    // question UI and answer path behave identically across providers.
-    queryOpts.options.onAskUserQuestion = buildOnAskUserQuestion(emitter, () => trackingId, abortController.signal);
-    // Same shared ask-override cell buildCanUseTool (above) closes over. On
-    // the Claude path the SDK runs our hook callbacks, which stash into it
-    // directly; on the OR path the adapter runs plugin hooks itself, so it
-    // needs the cell to honor a PreToolUse "ask" decision. The harness fires
-    // PreToolUse hooks before canUseTool, so the stash-then-prompt sequencing
-    // matches the Claude path exactly.
-    queryOpts.options.hookAskOverride = hookAskOverride;
-  }
-
   // For Codex chats, surface the per-provider settings the Codex adapter's
-  // optionsAdapter looks for (the `codex` extras sub-object). Mirrors the
-  // OpenRouter block above. Auth defaults to subscription (ChatGPT login via
+  // optionsAdapter looks for (the `codex` extras sub-object). Auth defaults to
+  // subscription (ChatGPT login via
   // $CODEX_HOME/auth.json — no key passed); api-key mode forwards the key/base
   // url. CODEX_HOME itself rides in via the subprocess env that
   // getApiEnvOverrides() already injected above, so it isn't repeated here.
@@ -1637,9 +1400,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       "codex",
       agentSettings,
     );
-    // Per-chat reasoning effort (the OR-style control), persisted to metadata the
-    // same way OR's is — maps onto Codex's modelReasoningEffort in the
-    // optionsAdapter.
+    // Per-chat reasoning effort, read back out of metadata — maps onto Codex's
+    // modelReasoningEffort in the optionsAdapter.
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
     // Permissions collapse onto Codex's sandbox + approval policy at thread
     // start (Codex has no per-call canUseTool hook). Surface them so the
@@ -1840,30 +1602,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       let sessionId: string | null = null;
       let endReason: string | undefined;
       // When the provider terminates the run with status "error" (e.g. an
-      // OpenRouter API error response — bad key, insufficient credits, rate
+      // upstream API error response — bad key, insufficient credits, rate
       // limit, invalid model), the human-readable message rides in the result
       // event's `reason`. Captured here so it can be surfaced to the user as a
       // hard error rather than discarded behind a generic end-of-session note.
       let errorDetail: string | undefined;
       // Cumulative USD spend reported by the underlying adapter on the
-      // terminal `result` event. The OR adapter accumulates this across all
-      // turns of the streaming-input run; the Claude adapter reports per-
-      // message totals. Either way, the latest value is the run total to
-      // surface to the UI for the spend indicator + max_budget message.
+      // terminal `result` event. Adapters differ on how they accumulate it, but
+      // either way the latest value is the run total to surface to the UI for
+      // the spend indicator + max_budget message.
       let lastCostUsd: number | undefined;
-
-      // The configured OR budget cap, resolved once so the mid-run `budget`
-      // events (from per-turn cost beacons) and the final `done` advertise
-      // the same ceiling. Surfaced on every `done` for OR chats so the UI
-      // can show "$0.84 of $1.00" even on successful completions, not just
-      // when max_budget fires. For Claude Code chats there's no equivalent
-      // cap to surface — stays undefined.
-      const orBudget =
-        providerKind === "openrouter"
-          ? typeof agentSettings.openRouterMaxBudgetUsd === "number" && Number.isFinite(agentSettings.openRouterMaxBudgetUsd)
-            ? agentSettings.openRouterMaxBudgetUsd
-            : OR_LIBRARY_DEFAULT_MAX_BUDGET_USD
-          : undefined;
 
       // Whether the chat record exists yet — for new chats it's created on
       // the first session_started; nudge re-queries then take the
@@ -2163,12 +1911,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               // the freshest spend on hand.
               //
               // Keyed on the payload rather than on the adapter. `turn_cost` was
-              // OpenRouter's alone when it was written, but nothing about it is
-              // OpenRouter-shaped — it is a number in USD — and the ACP adapter
-              // now emits it too, from ACP's own `usage_update.cost`. Gating on
-              // the emitter's name would have meant a second identical branch.
-              // `maxBudgetUsd` stays OR-specific: it is callboard's spend cap for
-              // that provider, and there is no equivalent to quote for the others.
+              // one adapter's alone when it was written, but nothing about it is
+              // adapter-shaped — it is a number in USD — and the ACP adapter emits
+              // it too, from ACP's own `usage_update.cost`. Gating on the
+              // emitter's name would have meant a second identical branch.
+              //
+              // No `maxBudgetUsd` rides along: the field is a per-session spend
+              // CAP, and the only harness that had one was OpenRouter's. It stays
+              // on the wire type (published interface) with no producer today.
               const payload = event.payload as { kind?: string; costUsd?: number } | null;
               if (payload?.kind === "turn_cost" && typeof payload.costUsd === "number") {
                 lastCostUsd = payload.costUsd;
@@ -2176,7 +1926,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   type: "budget",
                   content: "",
                   costUsd: payload.costUsd,
-                  ...(event.adapter === "openrouter" && typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
                 } as StreamEvent);
               }
               break;
@@ -2234,28 +1983,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           errorDetail = 'The session transport failed ("Stream closed") before a session was established.';
         }
 
-        // ── Model switch (reclassify_model) ──
-        // If the agent called reclassify_model this turn and it picked a new
-        // model, resume the SAME session on that model right away — the agent
-        // continues its work without the user sending another message. Skipped
-        // on abort / provider error / hard caps (those end the session as usual).
-        if (providerKind === "openrouter" && !abortController.signal.aborted && errorDetail === undefined && !endReason && queryOpts.options.openRouter) {
-          const sw = takePendingModelSwitch(trackingId);
-          if (sw) {
-            log.info(`Session ${trackingId} — reclassify_model switch → resuming on model=${sw.model} (class=${sw.classId})`);
-            queryOpts.options.openRouter.model = sw.model;
-            queryOpts.options.resume = sessionId ?? resumeSessionId;
-            const contText =
-              `You switched the active model (classification: ${sw.classId}). ` +
-              `This turn is now running on the newly selected model — continue working on the task.`;
-            queryOpts.prompt = (async function* () {
-              yield { type: "user" as const, message: { role: "user" as const, content: contText } };
-            })();
-            sessionId = null;
-            continue;
-          }
-        }
-
         // ── Nudge decision ──
         // A turn can end owing two different things: the session-terminal
         // objective (requireExplicitCompletion) and a loop-scoped condition
@@ -2309,7 +2036,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       }
 
       // A stopped run only reaches here when the provider's stream ended
-      // quietly instead of throwing AbortError (OpenRouter and Codex both do:
+      // quietly instead of throwing AbortError (Codex does:
       // the abort lands as a terminal stream event, and the loop's
       // `signal.aborted` guard breaks before that event is classified). Without
       // this the run would report as a normal completion — the frontend would
@@ -2337,16 +2064,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "cleared", content: "Conversation was cleared" } as StreamEvent);
       }
 
-      // `orBudget` (hoisted above the event loop, shared with the mid-run
-      // `budget` emissions) rides on the `done` here so the final spend
-      // display always quotes the same cap the live indicator used.
       log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}, costUsd=${lastCostUsd ?? "n/a"}`);
       emitter.emit("event", {
         type: "done",
         content: "",
         ...(endReason && { reason: endReason }),
         ...(typeof lastCostUsd === "number" && { costUsd: lastCostUsd }),
-        ...(typeof orBudget === "number" && { maxBudgetUsd: orBudget }),
         // Whether the explicit-completion requirement was satisfied — only
         // attached when the requirement was on for this run.
         ...(requireCompletion && { objectiveComplete: isObjectiveSatisfied() }),

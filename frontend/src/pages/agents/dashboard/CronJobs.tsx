@@ -366,10 +366,10 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     // hydrate the matching per-provider field so the picker shows it under
     // the right toggle (and the other field starts clean).
     //
-    // A cron stored on the retired OpenRouter harness has no toggle to land on,
+    // A cron stored on the removed OpenRouter harness has no toggle to land on,
     // so editing one re-targets it to Claude Code and drops its model — an OR
-    // slug means nothing there. It keeps running on OR until someone edits it;
-    // saving is what converts it.
+    // slug means nothing there. Until someone saves it, firing the cron fails
+    // with a named error; saving is what converts it.
     const stored = job.action?.provider ?? "claude-code";
     const jobProvider: AgentProviderKind = (stored as string) === "openrouter" ? "claude-code" : stored;
     setEditProvider(jobProvider);
@@ -660,10 +660,12 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
                 Default Claude Code crons (the majority today) skip the badge
                 to keep the row uncluttered.
 
-                Read through a widened `string`: crons stored on the retired
-                OpenRouter harness still exist and still run, and a row that
-                showed no badge for one would be claiming it runs on Claude
-                Code. Displaying a legacy value is not the same as offering it. */}
+                Read through a widened `string`: crons stored on the removed
+                OpenRouter harness still exist on disk, and a row that showed no
+                badge for one would be claiming it runs on Claude Code. Such a
+                cron now fails at fire time with a named error — showing what it
+                is actually configured for is what makes that legible. Editing it
+                re-targets it to Claude Code. */}
             {actionProvider !== "openrouter" && actionProvider !== "codex" && job.action?.model && (
               <span
                 title={`Claude Code · ${job.action.model}`}

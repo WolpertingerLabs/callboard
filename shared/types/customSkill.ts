@@ -1,8 +1,8 @@
 /**
  * Custom skill created in Callboard settings, stored as a Claude-convention
  * skill directory at ~/.callboard/custom-skills/skills/<name>/SKILL.md inside
- * a synthetic "callboard" plugin so both the Claude Code and OpenRouter chat
- * paths load it through their existing plugin-skill machinery.
+ * a synthetic "callboard" plugin so every plugin-aware chat path loads it
+ * through its existing plugin-skill machinery.
  */
 export interface CustomSkill {
   /** Skill name — kebab-case slug, doubles as the directory name. Invoked as `callboard:<name>`. */

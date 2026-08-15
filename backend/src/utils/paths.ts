@@ -96,11 +96,10 @@ export function isIgnoredProjectDir(dirName: string): boolean {
  * configured ignore prefixes.
  *
  * Use this when you hold a raw folder path rather than an already-slugified
- * project-dir name — e.g. the OpenRouter provider, whose sessions record their
- * `cwd` verbatim in session.json instead of a slugified directory. The Claude
- * provider's dirs are pre-slugified on disk, so it calls {@link isIgnoredProjectDir}
- * directly; this keeps both providers checking the same prefixes against the
- * same representation.
+ * project-dir name — the shape every provider that records its `cwd` verbatim
+ * hands you (Codex among them). The Claude provider's dirs are pre-slugified on
+ * disk, so it calls {@link isIgnoredProjectDir} directly; this keeps every
+ * provider checking the same prefixes against the same representation.
  */
 export function isIgnoredProjectFolder(folderPath: string): boolean {
   if (typeof folderPath !== "string" || folderPath.length === 0) return false;

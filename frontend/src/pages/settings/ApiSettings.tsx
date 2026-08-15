@@ -474,7 +474,7 @@ function OpenRouterRoutingSection({
               OpenRouter API Key<span style={envLabelStyle}>{keyEnvLabel}</span>
             </label>
             <SecretField id={`${harness}-or-key`} value={apiKey} onChange={onApiKeyChange} placeholder="sk-or-..." />
-            <div style={helpStyle}>Create one at openrouter.ai/keys. Stored separately from the standalone OpenRouter provider key.</div>
+            <div style={helpStyle}>Create one at openrouter.ai/keys. Stored separately from the account-wide OpenRouter key.</div>
           </div>
           <div style={{ ...helpStyle, lineHeight: 1.5 }}>{caveats}</div>
         </>

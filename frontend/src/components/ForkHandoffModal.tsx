@@ -3,26 +3,23 @@ import ModalOverlay from "./ModalOverlay";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
 import PiModelSelector from "./PiModelSelector";
-import type { ForkProvider, ForkSourceProvider } from "../api";
+import type { ForkProvider } from "../api";
 
 interface Props {
   /** Target harness, or null when the modal is closed. */
   target: ForkProvider | null;
   /**
-   * The chat's own harness, named in the explanation. Widened past
-   * {@link ForkProvider} because a retired harness can still be forked *out of*
-   * — see {@link ForkSourceProvider}. `null` for a chat that cannot be forked at
-   * all (ACP).
+   * The chat's own harness, named in the explanation. `null` for a chat that
+   * cannot be forked at all (ACP).
    */
-  from: ForkSourceProvider | null;
+  from: ForkProvider | null;
   onCancel: () => void;
   onConfirm: (opts: { model?: string }) => void;
 }
 
-const LABELS: Record<ForkSourceProvider, string> = {
+const LABELS: Record<ForkProvider, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
-  openrouter: "OpenRouter",
   cline: "Cline",
   pi: "pi",
 };
