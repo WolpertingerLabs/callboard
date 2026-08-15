@@ -50,11 +50,28 @@ These were settled before work started. Do not relitigate them mid-phase.
    *resolution*, but it is user data, and dropping the column silently discards
    slugs users typed. Cost of keeping: one union member.
 
-## Phase 1 — Stop offering it
+## Phase 1 — Stop offering it — **DONE** (`04d171e`)
 
 Goal: OpenRouter disappears from every user-facing surface that lets you *pick*
 a harness. The adapter still exists and existing chats still run. Tree compiles,
 tests green.
+
+Four things the plan got wrong, corrected in the implementation — later phases
+should read these as fact:
+
+1. `INTERNAL_PROVIDER_KINDS` was `[...ROUTABLE_PROVIDER_KINDS]`, so "leave it
+   alone" was not achievable; it is now `[...ROUTABLE, "openrouter"]`. **The
+   guard you use on a persisted provider value matters**: `isRoutableProvider`
+   silently degrades a legacy OR chat to `claude-code`. Use `isInternalProvider`
+   for anything read out of chat metadata or a job definition.
+2. The `SettingsTab` widening in 2d below was a Phase 1 requirement — the page
+   stops compiling once `"openrouter"` leaves `UiAgentProviderKind`. **Already
+   done**; Phase 2 only fills in the section body.
+3. `job-store`'s model-validity checks run again at run start, so `"openrouter"`
+   is still *accepted* there (just no longer advertised in the error message).
+   Removing it would fail every persisted OR job at run time.
+4. The composer popover and its fork menu entry are hidden for a legacy OR chat,
+   and editing a legacy OR cron job re-targets it to Claude Code.
 
 The mechanism is the existing `ROUTABLE_PROVIDER_KINDS` /
 `INTERNAL_PROVIDER_KINDS` split in `backend/src/agents/ports/AgentProvider.ts` —
