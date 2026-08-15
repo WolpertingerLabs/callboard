@@ -38,7 +38,7 @@ function loadSettings(): AgentSettings {
     if (!raw.proxyMode) {
       raw.proxyMode = "local";
     }
-    return migrateOpenRouterRoutingModels(migrateModelAliases(raw));
+    return migrateOpenRouterUtilityCompletions(migrateOpenRouterRoutingModels(migrateModelAliases(raw)));
   } catch (err: any) {
     log.warn(`Failed to load agent settings: ${err.message}`);
     return { proxyMode: "local" };
@@ -126,6 +126,30 @@ export function migrateOpenRouterRoutingModels(settings: AgentSettings): AgentSe
   }
 
   return next;
+}
+
+/**
+ * Turn on {@link AgentSettings.openRouterUtilityCompletions} for users who
+ * already had an OpenRouter key when the flag was introduced.
+ *
+ * Utility completions (chat titles, branch names, themes) used to pick their
+ * backend implicitly: an OpenRouter key existed, so OpenRouter ran them. The
+ * replacement is an explicit opt-in, which is the right default for a metered
+ * credential — but applied bare it would silently STOP generating titles for
+ * everyone relying on the old implicit behavior, with no error and no setting
+ * visibly changed. So existing key-holders are opted in once, on load.
+ *
+ * The guard is the flag's ABSENCE, not its falsity: a user who later unticks the
+ * toggle stores `false`, and that is a decision, not a missing value. Pure and
+ * idempotent — after the first save the flag is present either way.
+ */
+export function migrateOpenRouterUtilityCompletions(settings: AgentSettings): AgentSettings {
+  if (settings.openRouterUtilityCompletions !== undefined) return settings;
+  if (!settings.openRouterApiKey?.trim()) return settings;
+  // debug, not info: settings are re-read constantly and this transform applies
+  // on every read until the next save persists the flag.
+  log.debug("Enabling OpenRouter utility completions for an existing OpenRouter key (preserving pre-upgrade behavior)");
+  return { ...settings, openRouterUtilityCompletions: true };
 }
 
 function saveSettings(settings: AgentSettings): void {

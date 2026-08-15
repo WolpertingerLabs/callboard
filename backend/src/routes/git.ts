@@ -8,7 +8,6 @@ import {
   validateFolderPath,
 } from "../utils/git.js";
 import { generateBranchName } from "../services/quick-completion.js";
-import { isRoutableProvider } from "../agents/ports/AgentProvider.js";
 
 export const gitRouter = Router();
 
@@ -153,8 +152,7 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
           type: "object",
           required: ["prompt"],
           properties: {
-            prompt: { type: "string", description: "Natural language description to generate a branch name from" },
-            provider: { type: "string", enum: ["claude-code", "codex"], description: "Optional chat harness to generate the branch name on. Omit to use the default fallback (OpenRouter credentials if configured, else Claude Code)." }
+            prompt: { type: "string", description: "Natural language description to generate a branch name from" }
           }
         }
       }
@@ -163,16 +161,11 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
   /* #swagger.responses[200] = { description: "Generated branch name" } */
   /* #swagger.responses[400] = { description: "Missing prompt" } */
   /* #swagger.responses[500] = { description: "Failed to generate branch name" } */
-  const { prompt, provider } = req.body;
+  const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
-  // Forward the chat's harness when the request carries one (validated), so the
-  // branch name is generated on the same provider; otherwise quick-completion's
-  // default fallback resolution applies.
-  const qcProvider = isRoutableProvider(provider) ? provider : undefined;
-
   try {
-    const branchName = await generateBranchName(prompt, qcProvider);
+    const branchName = await generateBranchName(prompt);
     if (!branchName) {
       return res.status(500).json({ error: "Failed to generate branch name" });
     }

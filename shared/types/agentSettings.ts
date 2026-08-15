@@ -161,16 +161,64 @@ export interface AgentSettings {
   /** CLAUDE_CODE_SUBAGENT_MODEL while routing through OpenRouter. */
   claudeCodeOpenRouterSubagentModel?: string;
 
-  // ── OpenRouter (alternative provider) ─────────────────────────────
-  // Populated when the user enables the OpenRouter provider in
-  // Settings → API. Empty values mean "OpenRouter unavailable" — the
-  // New Chat panel's provider toggle (PR D) is disabled in that state.
+  // ── OpenRouter (a service, not a harness) ─────────────────────────
+  // OpenRouter stopped being a selectable agent harness; the credential below
+  // stayed, because two things that are not the harness still need it: the
+  // utility completions (chat titles, branch names, themes) and the
+  // account-wide fallback key for ACP agents. Settings → API's OpenRouter tab
+  // is therefore a credential page, not a provider page.
 
-  /** OPENROUTER_API_KEY — required to enable the OpenRouter provider. */
+  /**
+   * OPENROUTER_API_KEY — the account-wide OpenRouter credential.
+   *
+   * Two consumers, both outside any harness:
+   *  - utility completions, when {@link openRouterUtilityCompletions} is on
+   *    (see services/openrouter-completion.ts);
+   *  - ACP agents, as the fallback when {@link acpOpenRouterApiKey} is blank
+   *    (see services/claude.ts).
+   *
+   * Note this is NOT the key used to route a native harness through OpenRouter
+   * — those modes each carry their own (`claudeCodeOpenRouterApiKey`,
+   * `codexOpenRouterApiKey`), so a user can scope keys per use.
+   */
   openRouterApiKey?: string;
 
-  /** OPENROUTER_BASE_URL — override the OR API endpoint. */
+  /**
+   * OPENROUTER_BASE_URL — override the OpenRouter API endpoint this key talks
+   * to (proxy, regional mirror). Read by the model catalog and the utility
+   * completion client through one shared resolver, so the two cannot disagree
+   * about where the key belongs. Blank ⇒ `https://openrouter.ai/api/v1`.
+   */
   openRouterBaseUrl?: string;
+
+  /**
+   * Use OpenRouter for utility completions — the one-shot calls that generate
+   * chat titles, git branch names and themes. Off (or absent) ⇒ they run on the
+   * Claude Code SDK, which needs no extra configuration.
+   *
+   * Explicit opt-in on purpose. The old behavior was "an OpenRouter key exists,
+   * so use it", which silently moved every title/branch/theme call onto a
+   * metered account the moment a key was saved for something else entirely.
+   * Existing key-holders are migrated to `true` on load exactly once, so the
+   * upgrade changes nobody's behavior — see migrateOpenRouterUtilityCompletions.
+   */
+  openRouterUtilityCompletions?: boolean;
+
+  // ── OpenRouter utility completion models ──────────────────────────
+  // One slug per tier the utility callers ask for: titles and branch names run
+  // on haiku, theme generation on sonnet. Blank ⇒ `~anthropic/claude-<tier>-
+  // latest`, OpenRouter's own server-resolved aliases, so the cheap tier stays
+  // cheap without anyone maintaining a version number here. Naming matches the
+  // `claudeCodeOpenRouter*Model` convention above.
+
+  /** Model for haiku-tier utility completions (chat titles, branch names). */
+  openRouterUtilityHaikuModel?: string;
+
+  /** Model for sonnet-tier utility completions (theme generation). */
+  openRouterUtilitySonnetModel?: string;
+
+  /** Model for opus-tier utility completions. No caller asks for this tier today. */
+  openRouterUtilityOpusModel?: string;
 
   /** Default model alias for new OR chats. Defaults to `~anthropic/claude-sonnet-latest`. */
   openRouterModel?: string;

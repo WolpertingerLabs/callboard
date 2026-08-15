@@ -98,11 +98,25 @@ being *offered*. Run it in reverse.
 Keep in this phase: the settings page's OpenRouter tab (Phase 2 rewrites it),
 `ProviderBadge`, and everything under `adapters/openrouter/`.
 
-## Phase 2 — OpenRouter becomes a service, not an engine
+## Phase 2 — OpenRouter becomes a service, not an engine — **DONE**
 
 Goal: chat titles, branch names and themes keep working on OpenRouter
 credentials, with no harness involved. **Must land before Phase 3**, because the
 current OR utility path runs through `OpenRouterAdapter`.
+
+Two things later phases should read as fact:
+
+1. The shared base-URL resolution landed as its own module,
+   `backend/src/services/openrouter-endpoint.ts` (`OPENROUTER_DEFAULT_BASE_URL`
+   + `resolveOpenRouterApiUrl`), rather than as an export of
+   `openrouter-models.ts` — neither the catalog nor the completion client owns
+   the other, and the completion client has no business importing a module whose
+   side effect is a startup cache.
+2. `model-routing.ts` now calls `runOpenRouterCompletion` **directly** rather
+   than going through `quickCompletion`. It needs a caller-supplied classifier
+   slug, which the tier-based `QuickModel` option cannot express; routing is
+   gated on OpenRouter being configured anyway. Phase 3 deletes the file, so
+   this is a one-line import to remove, not a dependency to unwind.
 
 ### 2a. Settings fields (`shared/types/agentSettings.ts`)
 

@@ -10,16 +10,19 @@
  *   2. The `reclassify_model` callboard tool — re-run on agent-supplied text and
  *      switch the model for the next turn.
  *
- * The classification call reuses {@link quickCompletion} on the OpenRouter
- * provider with the user's configured classifier model. We ask for the bare
- * class id (with a JSON fallback), then match it against the configured classes;
- * anything unmatched falls back to `defaultClassId`. This mirrors the existing
- * forced-`return_result` structured-output pattern (no native JSON mode exists).
+ * The classification call goes straight to OpenRouter via
+ * {@link runOpenRouterCompletion} with the user's configured classifier model —
+ * routing is gated on OpenRouter being configured, so the credential is always
+ * there, and a classifier is exactly the one-shot this client exists for. (It
+ * used to borrow quickCompletion with a provider override; that option went away
+ * with the harness.) We ask for the bare class id (with a JSON fallback), then
+ * match it against the configured classes; anything unmatched falls back to
+ * `defaultClassId`.
  */
 import { resolveRoutedModel } from "shared/types/index.js";
 import type { ModelRoutingConfig } from "shared/types/index.js";
 import { getAgentSettings, resolveOpenRouterModel, isOpenRouterConfigured } from "./agent-settings.js";
-import { quickCompletion } from "./quick-completion.js";
+import { runOpenRouterCompletion } from "./openrouter-completion.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("model-routing");
@@ -103,17 +106,19 @@ export async function classifyAndResolve(prompt: string, rankId: string | undefi
   if (!config) return null;
 
   const effectiveRankId = rankId ?? config.defaultRankId ?? config.ranks[0]?.id;
-  const classifierModel = resolveOpenRouterModel(config.classifierModel, getAgentSettings());
+  // An alias with no `openrouter` target resolves to undefined; the configured
+  // value is then the best guess and OpenRouter's own error is more useful than
+  // ours. Same fallback the matrix cell below applies.
+  const classifierModel = resolveOpenRouterModel(config.classifierModel, getAgentSettings()) ?? config.classifierModel;
 
   let classId: string | undefined;
   let matched = false;
   try {
     const truncated = prompt.length > 2000 ? prompt.slice(0, 2000) + "…" : prompt;
-    const result = await quickCompletion({
+    const result = await runOpenRouterCompletion({
       prompt: truncated,
       systemPrompt: buildClassifierSystemPrompt(config),
-      provider: "openrouter",
-      openRouterModel: classifierModel,
+      model: classifierModel,
       effort: "low",
     });
     classId = matchClassId(config, result.text);

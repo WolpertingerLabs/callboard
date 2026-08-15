@@ -1,14 +1,12 @@
 import { useEffect, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, Plus, Trash2, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, ExternalLink } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog, getAcpModels, getClineProviders, getPiProviders } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
-import type { AgentSettings, OpenRouterModelInfo, OpenRouterServerToolConfig, OpenRouterParamProfile } from "shared/types/index.js";
-import { OR_SERVER_TOOLS, OR_PLUGINS, OR_SAMPLING_PARAMS, validateServerTools, validateParamProfile } from "shared/types/index.js";
+import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
 import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import ClineModelSelector from "../../components/ClineModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
-import ParamFieldForm from "../../components/ParamFieldForm";
 import { getDefaultProvider, getDefaultAcpProviderId } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
 
@@ -514,123 +512,6 @@ function latestAnthropicRoleSlug(models: OpenRouterModelInfo[], role: "opus" | "
   return best?.id;
 }
 
-// ── OpenRouter param-profile editing helpers ────────────────────────────────
-
-const toggleRowStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  gap: 10,
-  padding: "8px 0",
-  borderBottom: "1px solid var(--border)",
-};
-
-const tagStyle: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 600,
-  color: "var(--text-muted)",
-  border: "1px solid var(--border)",
-  borderRadius: 4,
-  padding: "1px 5px",
-  marginLeft: 6,
-};
-
-/** Read the params bag for a plugin entry (the object minus its `id`). */
-function pluginParams(entry: { id: string } & Record<string, unknown>): Record<string, unknown> {
-  const { id: _id, ...rest } = entry;
-  return rest;
-}
-
-/**
- * Editor for one {@link OpenRouterParamProfile}: sampling params (via
- * ParamFieldForm) plus a per-plugin toggle that reveals the plugin's own
- * ParamFieldForm. Stored plugin shape is `{ id, ...camelCaseParams }`;
- * `nestUnder` params (file-parser's `pdf.engine`) are nested by ParamFieldForm.
- */
-function ParamProfileEditor({
-  profile,
-  onChange,
-  unsupportedKeys,
-}: {
-  profile: OpenRouterParamProfile;
-  onChange: (next: OpenRouterParamProfile) => void;
-  unsupportedKeys?: Set<string>;
-}) {
-  const plugins = profile.plugins ?? [];
-  const pluginById = new Map(plugins.map((p) => [p.id, p]));
-
-  const setSamplingParams = (params: Record<string, unknown>) => {
-    onChange({ ...profile, params: Object.keys(params).length > 0 ? params : undefined });
-  };
-
-  const togglePlugin = (id: string, on: boolean) => {
-    const next = on ? [...plugins.filter((p) => p.id !== id), { id }] : plugins.filter((p) => p.id !== id);
-    onChange({ ...profile, plugins: next.length > 0 ? next : undefined });
-  };
-
-  const setPluginParams = (id: string, params: Record<string, unknown>) => {
-    const next = plugins.map((p) => (p.id === id ? { id, ...params } : p));
-    onChange({ ...profile, plugins: next });
-  };
-
-  return (
-    <div>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", margin: "6px 0 8px" }}>Sampling parameters</div>
-      <ParamFieldForm specs={OR_SAMPLING_PARAMS} value={profile.params ?? {}} onChange={setSamplingParams} unsupportedKeys={unsupportedKeys} />
-
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", margin: "12px 0 4px" }}>Plugins</div>
-      {OR_PLUGINS.map((plugin) => {
-        const entry = pluginById.get(plugin.id);
-        const enabled = entry !== undefined;
-        return (
-          <div key={plugin.id} style={toggleRowStyle}>
-            <input type="checkbox" checked={enabled} onChange={(e) => togglePlugin(plugin.id, e.target.checked)} style={{ marginTop: 2, flexShrink: 0 }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
-                {plugin.label}
-                {plugin.deprecated && <span style={tagStyle}>deprecated</span>}
-              </div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{plugin.description}</div>
-              {plugin.modelHint && (
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                  Meaningful with <code style={{ fontSize: 11 }}>{plugin.modelHint}</code>.
-                </div>
-              )}
-              {enabled && plugin.params.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <ParamFieldForm specs={plugin.params} value={pluginParams(entry)} onChange={(p) => setPluginParams(plugin.id, p)} />
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** True when a profile carries no sampling params and no plugins. */
-function isEmptyProfile(p: OpenRouterParamProfile | undefined): boolean {
-  if (!p) return true;
-  const hasParams = p.params !== undefined && Object.keys(p.params).length > 0;
-  const hasPlugins = p.plugins !== undefined && p.plugins.length > 0;
-  return !hasParams && !hasPlugins;
-}
-
-/**
- * Compute the set of sampling `supportedParamKey`s a given model does NOT
- * advertise. An empty/unknown `supportedParameters` list (model not in the
- * catalog) ⇒ no keys flagged (we don't gray out when we can't tell).
- */
-function computeUnsupportedKeys(model: OpenRouterModelInfo | undefined): Set<string> {
-  const out = new Set<string>();
-  if (!model || !Array.isArray(model.supportedParameters) || model.supportedParameters.length === 0) return out;
-  const supported = new Set(model.supportedParameters);
-  for (const spec of OR_SAMPLING_PARAMS) {
-    if (spec.supportedParamKey && !supported.has(spec.supportedParamKey)) out.add(spec.supportedParamKey);
-  }
-  return out;
-}
-
 export default function ApiSettings() {
   // Top-level integration toggle — picks which provider's settings are shown.
   // Seeded from the user's New Chat default so the page opens on the provider
@@ -669,26 +550,16 @@ export default function ApiSettings() {
   const [claudeCodeOpenRouterSonnetModel, setClaudeCodeOpenRouterSonnetModel] = useState("");
   const [claudeCodeOpenRouterHaikuModel, setClaudeCodeOpenRouterHaikuModel] = useState("");
   const [claudeCodeOpenRouterSubagentModel, setClaudeCodeOpenRouterSubagentModel] = useState("");
-  // OpenRouter (alternative provider) overrides.
+  // OpenRouter as a service: the account key, plus the utility completions it
+  // can pay for (chat titles, branch names, themes). Not a harness — see the
+  // SettingsTab doc-comment.
   const [openRouterApiKey, setOpenRouterApiKey] = useState("");
   const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState("");
-  const [openRouterModel, setOpenRouterModel] = useState("");
-  const [openRouterLogsRoot, setOpenRouterLogsRoot] = useState("");
-  // Stored as a string in form state so the input can be cleared (empty
-  // string → "use library default"). Validation/parse happens on save.
-  const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState("");
-  // Custom model aliases, edited as ordered rows; converted to the
-  // Record<alias, modelId> shape on save. Blank rows are dropped on save.
-  // OpenRouter server tools. `undefined` = unowned (toggles show harness
-  // defaults); any user edit transitions to an explicit array we own — even
-  // `[]`, which means "all server tools disabled".
-  const [serverTools, setServerTools] = useState<OpenRouterServerToolConfig[] | undefined>(undefined);
-  // Global default sampling params + plugins.
-  const [modelParamsDefault, setModelParamsDefault] = useState<OpenRouterParamProfile>({});
-  // Per-model overrides, edited as ordered rows; converted to a
-  // Record<slug, profile> on save. Blank-slug rows are dropped.
-  const [modelParamRows, setModelParamRows] = useState<{ slug: string; profile: OpenRouterParamProfile }[]>([]);
-  // Catalog models (for supportedParameters lookups in per-model overrides).
+  const [openRouterUtilityCompletions, setOpenRouterUtilityCompletions] = useState(false);
+  const [openRouterUtilityHaikuModel, setOpenRouterUtilityHaikuModel] = useState("");
+  const [openRouterUtilitySonnetModel, setOpenRouterUtilitySonnetModel] = useState("");
+  const [openRouterUtilityOpusModel, setOpenRouterUtilityOpusModel] = useState("");
+  // Catalog models, for the role-model placeholders on the routed-harness tabs.
   const [orModels, setOrModels] = useState<OpenRouterModelInfo[]>([]);
   // Codex (alternative provider, subscription-auth) overrides.
   const [codexAuthMode, setCodexAuthMode] = useState<"subscription" | "api-key">("subscription");
@@ -720,9 +591,6 @@ export default function ApiSettings() {
   const [piApiKey, setPiApiKey] = useState("");
   const [piBaseUrl, setPiBaseUrl] = useState("");
   const [piProviders, setPiProviders] = useState<string[]>([]);
-  // Collapse state for the bulky sections.
-  const [showDefaults, setShowDefaults] = useState(false);
-  const [expandedTool, setExpandedTool] = useState<string | null>(null);
 
   const loadAll = async () => {
     setLoading(true);
@@ -760,16 +628,14 @@ export default function ApiSettings() {
       setClaudeCodeOpenRouterSubagentModel(s.claudeCodeOpenRouterSubagentModel ?? "");
       setOpenRouterApiKey(s.openRouterApiKey ?? "");
       setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
-      setOpenRouterModel(s.openRouterModel ?? "");
+      setOpenRouterUtilityCompletions(Boolean(s.openRouterUtilityCompletions));
+      setOpenRouterUtilityHaikuModel(s.openRouterUtilityHaikuModel ?? "");
+      setOpenRouterUtilitySonnetModel(s.openRouterUtilitySonnetModel ?? "");
+      setOpenRouterUtilityOpusModel(s.openRouterUtilityOpusModel ?? "");
       setPiProviderId(s.piProviderId ?? "");
       setPiModel(s.piModel ?? "");
       setPiApiKey(s.piApiKey ?? "");
       setPiBaseUrl(s.piBaseUrl ?? "");
-      setOpenRouterLogsRoot(s.openRouterLogsRoot ?? "");
-      setOpenRouterMaxBudgetUsd(typeof s.openRouterMaxBudgetUsd === "number" ? String(s.openRouterMaxBudgetUsd) : "");
-      setServerTools(s.openRouterServerTools);
-      setModelParamsDefault(s.openRouterModelParamsDefault ?? {});
-      setModelParamRows(Object.entries(s.openRouterModelParamProfiles ?? {}).map(([slug, profile]) => ({ slug, profile })));
       setCodexAuthMode(s.codexAuthMode ?? "subscription");
       setCodexApiKey(s.codexApiKey ?? "");
       setCodexBaseUrl(s.codexBaseUrl ?? "");
@@ -811,41 +677,6 @@ export default function ApiSettings() {
     setSaving(true);
     setError("");
 
-    // ── Client-side validation of the OpenRouter tool/param settings ──
-    // Mirrors the backend's write-time rules so the user sees problems before
-    // the save round-trips. Any error aborts the save (like alias validation).
-    const orErrors: string[] = [];
-    let cleanedServerTools: OpenRouterServerToolConfig[] | undefined;
-    if (serverTools !== undefined) {
-      const { value, errors } = validateServerTools(serverTools);
-      orErrors.push(...errors);
-      cleanedServerTools = value; // may be [] (explicitly "all disabled")
-    }
-
-    const { value: cleanedDefault, errors: defaultErrors } = validateParamProfile(modelParamsDefault);
-    orErrors.push(...defaultErrors);
-
-    const cleanedProfiles: Record<string, OpenRouterParamProfile> = {};
-    const seenSlugs = new Set<string>();
-    for (const row of modelParamRows) {
-      const slug = row.slug.trim();
-      if (slug === "") continue; // blank rows dropped on save
-      if (seenSlugs.has(slug)) {
-        orErrors.push(`Duplicate per-model override for "${slug}"`);
-        continue;
-      }
-      seenSlugs.add(slug);
-      const { value, errors } = validateParamProfile(row.profile);
-      orErrors.push(...errors.map((e) => `${slug}: ${e}`));
-      if (!isEmptyProfile(value)) cleanedProfiles[slug] = value;
-    }
-
-    if (orErrors.length > 0) {
-      setError(orErrors.join("; "));
-      setSaving(false);
-      return;
-    }
-
     try {
       const updated = await updateAgentSettings({
         apiBaseUrl,
@@ -866,30 +697,14 @@ export default function ApiSettings() {
         claudeCodeOpenRouterSubagentModel,
         openRouterApiKey,
         openRouterBaseUrl,
-        openRouterModel,
+        openRouterUtilityCompletions,
+        openRouterUtilityHaikuModel,
+        openRouterUtilitySonnetModel,
+        openRouterUtilityOpusModel,
         piProviderId,
         piModel,
         piApiKey,
         piBaseUrl,
-        openRouterLogsRoot,
-        // Send `null` to clear, or the parsed number otherwise. We
-        // intentionally avoid `undefined`: JSON.stringify would strip it and
-        // the route's `!== undefined` partial-update guard would leave the
-        // prior saved value intact, making the input unable to clear an
-        // override.
-        openRouterMaxBudgetUsd: (openRouterMaxBudgetUsd.trim() === "" ? null : Number(openRouterMaxBudgetUsd)) as number | undefined,
-        // Server tools: send the explicit array (including `[]` = all disabled)
-        // once owned; `undefined` while unowned so the harness keeps its
-        // defaults. JSON.stringify drops `undefined`, so the route's
-        // partial-update guard correctly leaves the field untouched.
-        openRouterServerTools: cleanedServerTools,
-        // Param profiles: always send the cleaned value (even an empty `{}`
-        // profile / empty record) so the route can clear a previously-saved
-        // override. The backend coerces an empty validated profile/record to
-        // undefined on store; sending `undefined` here would instead leave the
-        // prior value intact (JSON.stringify drops it).
-        openRouterModelParamsDefault: cleanedDefault,
-        openRouterModelParamProfiles: cleanedProfiles,
         // Codex provider settings. Auth mode + sandbox mode are enums with a
         // defined default, so they're always sent; the key/url/model/home are
         // free-text overrides that fall back to the ambient env when empty.
@@ -914,10 +729,6 @@ export default function ApiSettings() {
         clineMaxIterations: clineMaxIterations.trim() ? Number(clineMaxIterations.trim()) || undefined : undefined,
       });
       setSettings(updated);
-      // Re-sync the OR tool/param state from the saved value.
-      setServerTools(updated.openRouterServerTools);
-      setModelParamsDefault(updated.openRouterModelParamsDefault ?? {});
-      setModelParamRows(Object.entries(updated.openRouterModelParamProfiles ?? {}).map(([slug, profile]) => ({ slug, profile })));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       // Re-fetch system info so the Account / Models display reflects new overrides.
@@ -1306,14 +1117,15 @@ export default function ApiSettings() {
         <>
           <ReferenceLinksSection provider="openrouter" />
 
-          {/* OpenRouter */}
+          {/* OpenRouter — the credential itself */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
               <Network size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenRouter</span>
             </div>
             <div style={subtitleStyle}>
-              Provide a key to enable OpenRouter as an option when starting a new chat. OpenRouter routes through 300+ models with a single key.
+              An OpenRouter account key, used by the features below rather than by a harness of its own. To run a coding harness on OpenRouter, turn on
+              &ldquo;Route through OpenRouter&rdquo; on the Claude Code or Codex tab — each keeps its own key.
             </div>
 
             <div style={fieldWrap}>
@@ -1321,7 +1133,9 @@ export default function ApiSettings() {
                 API Key<span style={envLabelStyle}>OPENROUTER_API_KEY</span>
               </label>
               <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={setOpenRouterApiKey} placeholder="sk-or-..." />
-              <div style={helpStyle}>Required. When set, the New Chat panel exposes an OpenRouter provider toggle.</div>
+              <div style={helpStyle}>
+                Create one at openrouter.ai/keys. Also handed to ACP agents when the key on their own tab is blank, so a single key can cover both.
+              </div>
             </div>
 
             <div style={fieldWrap}>
@@ -1333,248 +1147,89 @@ export default function ApiSettings() {
                 type="text"
                 value={openRouterBaseUrl}
                 onChange={(e) => setOpenRouterBaseUrl(e.target.value)}
-                placeholder="https://my-llm-host.internal/v1"
+                placeholder="https://openrouter.ai/api/v1"
                 autoComplete="off"
                 spellCheck={false}
                 style={inputStyle}
               />
-              <div style={helpStyle}>Optional. Override the OpenRouter API endpoint (proxies / regional mirrors).</div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="openRouterModel" style={labelStyle}>
-                Default Model
-              </label>
-              <OpenRouterModelSelector
-                id="openRouterModel"
-                value={openRouterModel}
-                onChange={setOpenRouterModel}
-                placeholder="~anthropic/claude-sonnet-latest"
-              />
-              <div style={helpStyle}>
-                Start typing to filter tool-calling models by slug. Common aliases: <code style={{ fontSize: 11 }}>~anthropic/claude-sonnet-latest</code>,{" "}
-                <code style={{ fontSize: 11 }}>openai/gpt-4o</code>, <code style={{ fontSize: 11 }}>google/gemini-2.0-flash</code>.
-              </div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label style={labelStyle}>Model Aliases</label>
-              <div style={{ ...helpStyle, marginTop: 0 }}>
-                Model aliases now live in their own <strong>Settings → Model Aliases</strong> tab and work across all three harnesses (Claude Code, OpenRouter,
-                Codex), not just OpenRouter. Any aliases you had here were carried over automatically.
-              </div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="openRouterMaxBudgetUsd" style={labelStyle}>
-                Max budget per session (USD)
-              </label>
-              <input
-                id="openRouterMaxBudgetUsd"
-                type="number"
-                min="0"
-                step="0.01"
-                value={openRouterMaxBudgetUsd}
-                onChange={(e) => setOpenRouterMaxBudgetUsd(e.target.value)}
-                placeholder="1.00"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
-              <div style={helpStyle}>
-                Cumulative spend cap for an OpenRouter chat session. Defaults to <code style={{ fontSize: 11 }}>$1.00</code> when empty — raise this for
-                long-running coding sessions to avoid the &ldquo;Agent reached the maximum budget limit&rdquo; cutoff. Applies per streaming session, not per
-                message.
-              </div>
-            </div>
-
-            <div style={fieldWrap}>
-              <label htmlFor="openRouterLogsRoot" style={labelStyle}>
-                Logs Root
-              </label>
-              <input
-                id="openRouterLogsRoot"
-                type="text"
-                value={openRouterLogsRoot}
-                onChange={(e) => setOpenRouterLogsRoot(e.target.value)}
-                placeholder="~/.openrouter-agent-harness/logs"
-                autoComplete="off"
-                spellCheck={false}
-                style={inputStyle}
-              />
-              <div style={helpStyle}>Optional. Override where OR session state is written. Defaults to ~/.openrouter-agent-harness/logs.</div>
+              <div style={helpStyle}>Optional. Override the OpenRouter API endpoint (proxies / regional mirrors). Used for both the model catalog and the completions below.</div>
             </div>
           </div>
 
-          {/* OpenRouter — Server Tools */}
+          {/* OpenRouter — utility completions */}
           <div style={sectionStyle}>
             <div style={headerStyle}>
               <Cpu size={16} style={{ color: "var(--accent-text)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Server Tools</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Utility completions</span>
             </div>
             <div style={subtitleStyle}>
-              OpenRouter-hosted tools the model can call. Until you change a toggle, new sessions use the harness defaults (date/time, web search, web fetch).
-              Changing any toggle takes ownership — your exact selection is then used verbatim, including disabling everything.
+              Callboard makes a few small model calls of its own: naming a chat, naming a branch, generating a theme. They run on Claude Code by default and
+              need no configuration; point them at OpenRouter to bill them to your OpenRouter credits instead.
             </div>
-            {serverTools !== undefined && serverTools.length === 0 && (
-              <div style={{ ...helpStyle, marginTop: 0, marginBottom: 8, color: "var(--text)" }}>All server tools disabled.</div>
-            )}
-            {OR_SERVER_TOOLS.map((tool) => {
-              const owned = serverTools !== undefined;
-              const entry = owned ? serverTools.find((t) => t.type === tool.type) : undefined;
-              const enabled = owned ? entry !== undefined : tool.defaultOn;
-              const hasParams = tool.params.length > 0;
-              const expanded = expandedTool === tool.type;
 
-              // Toggling takes ownership: seed the explicit array from the
-              // current effective set, then add/remove this tool.
-              const toggle = (on: boolean) => {
-                const base: OpenRouterServerToolConfig[] = owned ? serverTools : OR_SERVER_TOOLS.filter((t) => t.defaultOn).map((t) => ({ type: t.type }));
-                const next = on ? [...base.filter((t) => t.type !== tool.type), { type: tool.type }] : base.filter((t) => t.type !== tool.type);
-                setServerTools(next);
-              };
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: openRouterUtilityCompletions ? 14 : 0 }}>
+              <input
+                type="checkbox"
+                checked={openRouterUtilityCompletions}
+                onChange={(e) => setOpenRouterUtilityCompletions(e.target.checked)}
+                style={{ flexShrink: 0 }}
+              />
+              <span style={{ fontSize: 13, color: "var(--text)" }}>Use OpenRouter for chat titles, branch names and themes</span>
+            </label>
 
-              const setToolParams = (params: Record<string, unknown>) => {
-                const base = owned ? serverTools : OR_SERVER_TOOLS.filter((t) => t.defaultOn).map((t) => ({ type: t.type }));
-                const next = base.map((t) => (t.type === tool.type ? { type: tool.type, ...(Object.keys(params).length > 0 ? { params } : {}) } : t));
-                setServerTools(next);
-              };
-
-              return (
-                <div key={tool.type} style={toggleRowStyle}>
-                  <input type="checkbox" checked={enabled} onChange={(e) => toggle(e.target.checked)} style={{ marginTop: 2, flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
-                        {tool.label}
-                        {tool.defaultOn && <span style={tagStyle}>default</span>}
-                      </div>
-                      {enabled && hasParams && (
-                        <button
-                          type="button"
-                          onClick={() => setExpandedTool(expanded ? null : tool.type)}
-                          style={{
-                            background: "transparent",
-                            border: "none",
-                            color: "var(--text-muted)",
-                            cursor: "pointer",
-                            fontSize: 12,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 4,
-                            flexShrink: 0,
-                          }}
-                        >
-                          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Configure
-                        </button>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{tool.description}</div>
-                    {enabled && hasParams && expanded && (
-                      <div style={{ marginTop: 8 }}>
-                        <ParamFieldForm specs={tool.params} value={entry?.params ?? {}} onChange={setToolParams} />
-                      </div>
-                    )}
+            {openRouterUtilityCompletions && (
+              <>
+                {!openRouterApiKey.trim() && (
+                  <div style={{ ...helpStyle, marginTop: 0, marginBottom: 12, color: "var(--warning)" }}>
+                    No API key above — these calls fall back to Claude Code until one is saved.
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                )}
 
-          {/* OpenRouter — Default Model Parameters */}
-          <div style={sectionStyle}>
-            <button
-              type="button"
-              onClick={() => setShowDefaults((v) => !v)}
-              style={{
-                ...headerStyle,
-                width: "100%",
-                background: "transparent",
-                border: "none",
-                cursor: "pointer",
-                padding: 0,
-                color: "var(--text)",
-              }}
-            >
-              {showDefaults ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Default Model Parameters</span>
-            </button>
-            <div style={subtitleStyle}>
-              Sampling knobs and plugins applied to every OpenRouter session. Leave a field blank to use the model/provider default — blanks are never sent.
-              Per-model overrides below take precedence.
-            </div>
-            {showDefaults && <ParamProfileEditor profile={modelParamsDefault} onChange={setModelParamsDefault} />}
-          </div>
-
-          {/* OpenRouter — Per-Model Overrides */}
-          <div style={sectionStyle}>
-            <div style={headerStyle}>
-              <Cpu size={16} style={{ color: "var(--accent-text)" }} />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Per-Model Parameter Overrides</span>
-            </div>
-            <div style={subtitleStyle}>
-              Override the default parameters for specific models. Knobs a model doesn&rsquo;t advertise are grayed out. The Pareto router plugin is meaningful
-              with <code style={{ fontSize: 11 }}>openrouter/pareto-code</code>.
-            </div>
-            {modelParamRows.map((row, i) => {
-              const model = orModels.find((m) => m.id === row.slug.trim());
-              const unsupportedKeys = computeUnsupportedKeys(model);
-              return (
-                <div key={i} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <OpenRouterModelSelector
-                        value={row.slug}
-                        onChange={(v) => setModelParamRows((rows) => rows.map((r, j) => (j === i ? { ...r, slug: v } : r)))}
-                        placeholder="openai/gpt-4o"
-                        excludeAliases
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setModelParamRows((rows) => rows.filter((_, j) => j !== i))}
-                      title="Remove override"
-                      style={{
-                        background: "transparent",
-                        border: "1px solid var(--border)",
-                        borderRadius: 8,
-                        color: "var(--text-muted)",
-                        cursor: "pointer",
-                        padding: 8,
-                        display: "flex",
-                        alignItems: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                  <ParamProfileEditor
-                    profile={row.profile}
-                    onChange={(profile) => setModelParamRows((rows) => rows.map((r, j) => (j === i ? { ...r, profile } : r)))}
-                    unsupportedKeys={unsupportedKeys}
+                <div style={fieldWrap}>
+                  <label htmlFor="openRouterUtilityHaikuModel" style={labelStyle}>
+                    Haiku tier
+                  </label>
+                  <OpenRouterModelSelector
+                    id="openRouterUtilityHaikuModel"
+                    value={openRouterUtilityHaikuModel}
+                    onChange={setOpenRouterUtilityHaikuModel}
+                    placeholder="~anthropic/claude-haiku-latest"
                   />
+                  <div style={helpStyle}>Chat titles and branch names. Keep this one cheap and fast — it runs on every new chat.</div>
                 </div>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() => setModelParamRows((rows) => [...rows, { slug: "", profile: {} }])}
-              style={{
-                background: "transparent",
-                border: "1px dashed var(--border)",
-                borderRadius: 8,
-                color: "var(--text-muted)",
-                cursor: "pointer",
-                padding: "8px 12px",
-                fontSize: 12,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <Plus size={14} /> Add model override
-            </button>
+
+                <div style={fieldWrap}>
+                  <label htmlFor="openRouterUtilitySonnetModel" style={labelStyle}>
+                    Sonnet tier
+                  </label>
+                  <OpenRouterModelSelector
+                    id="openRouterUtilitySonnetModel"
+                    value={openRouterUtilitySonnetModel}
+                    onChange={setOpenRouterUtilitySonnetModel}
+                    placeholder="~anthropic/claude-sonnet-latest"
+                  />
+                  <div style={helpStyle}>Theme generation, which asks for ~90 colour values in two modes and wants the better model.</div>
+                </div>
+
+                <div style={fieldWrap}>
+                  <label htmlFor="openRouterUtilityOpusModel" style={labelStyle}>
+                    Opus tier
+                  </label>
+                  <OpenRouterModelSelector
+                    id="openRouterUtilityOpusModel"
+                    value={openRouterUtilityOpusModel}
+                    onChange={setOpenRouterUtilityOpusModel}
+                    placeholder="~anthropic/claude-opus-latest"
+                  />
+                  <div style={helpStyle}>Nothing asks for this tier today; it exists so a future caller has somewhere to point.</div>
+                </div>
+
+                <div style={{ ...helpStyle, marginTop: 0 }}>
+                  Leave a field blank to use OpenRouter&rsquo;s own <code style={{ fontSize: 11 }}>~anthropic/claude-&lt;tier&gt;-latest</code> alias, which
+                  resolves server-side to the current model of that tier.
+                </div>
+              </>
+            )}
           </div>
         </>
       )}

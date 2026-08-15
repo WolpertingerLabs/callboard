@@ -122,13 +122,8 @@ streamRouter.post("/new/message", async (req, res) => {
 
     // Auto-generate branch name from the prompt if requested
     if (autoCreateBranch && !newBranch) {
-      // Generate the branch name on the chat's requested harness so it matches
-      // the provider the chat will actually run on (quick-completion falls back
-      // internally for codex / unconfigured providers). Validate the free-form
-      // request value rather than trusting it blindly.
-      const branchProvider = isRoutableProvider(provider) ? provider : undefined;
       try {
-        const generated = await generateBranchName(prompt, branchProvider);
+        const generated = await generateBranchName(prompt);
         if (generated) {
           newBranch = generated;
           log.debug(`Auto-generated branch name: ${newBranch}`);
