@@ -11,7 +11,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { getAgentProvider, getSessionProvider, setAgentProviderForTesting } from "./factory.js";
-import { ROUTABLE_PROVIDER_KINDS } from "./ports/AgentProvider.js";
+import {
+  INTERNAL_PROVIDER_KINDS,
+  isInternalProvider,
+  isRetiredProvider,
+  isRoutableProvider,
+  RETIRED_PROVIDER_KINDS,
+  ROUTABLE_PROVIDER_KINDS,
+} from "./ports/AgentProvider.js";
 import { MockAgentProvider } from "./adapters/mock/MockAgentProvider.js";
 import type { AgentEvent } from "./ports/events.js";
 import { decidePermission, ToolPermissionPolicy } from "./permissions/ToolPermissionPolicy.js";
@@ -202,7 +209,39 @@ describe("cross-harness fork and handoff — the target contract", () => {
 
   it("offers every routable kind except acp", () => {
     // If a kind is added to the union and forgotten here, this says so.
-    expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "cline", "codex", "openrouter", "pi"]);
+    expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "cline", "codex", "pi"]);
+  });
+
+  /**
+   * The OpenRouter harness is gone from both lists and from the session-provider
+   * registry. Asserted rather than left implicit, because the value is still
+   * written into 155 chat records: a guard that quietly admitted it again would
+   * route those chats at an adapter that no longer exists.
+   */
+  it("does not admit the removed openrouter kind anywhere", () => {
+    expect(ROUTABLE_PROVIDER_KINDS).not.toContain("openrouter");
+    expect(isRoutableProvider("openrouter")).toBe(false);
+    expect(INTERNAL_PROVIDER_KINDS).not.toContain("openrouter");
+    expect(isInternalProvider("openrouter")).toBe(false);
+    expect(getSessionProvider("openrouter" as never)).toBeUndefined();
+  });
+
+  /**
+   * ...but it is not merely *unknown*, and that distinction is the whole reason
+   * the third list exists. `isInternalProvider` answers false for `"openrouter"`
+   * and for a typo alike, while the two demand opposite handling: a typo falls
+   * back to Claude Code with a warning, a retired harness refuses by name
+   * (`resolveProviderKind` / `sendMessage` in services/claude.ts) because the
+   * chat it names has a transcript nothing left in the process can read.
+   */
+  it("recognises the removed kind as retired rather than unknown", () => {
+    expect(RETIRED_PROVIDER_KINDS).toContain("openrouter");
+    expect(isRetiredProvider("openrouter")).toBe(true);
+    // Live kinds are never retired, or the refusal would take out working chats.
+    for (const kind of INTERNAL_PROVIDER_KINDS) expect(isRetiredProvider(kind)).toBe(false);
+    // Neither is a typo — that path degrades, it does not refuse.
+    expect(isRetiredProvider("open-router")).toBe(false);
+    expect(isRetiredProvider(undefined)).toBe(false);
   });
 
   it("every offered target can be seeded with a conversation it did not produce", () => {

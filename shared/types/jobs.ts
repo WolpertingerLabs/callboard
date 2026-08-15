@@ -37,14 +37,14 @@ interface JobSessionFields {
   folder?: string;
   provider?: UiAgentProviderKind;
   /**
-   * Model for the step's provider — an OR slug/alias for "openrouter", an
-   * Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or full ID
-   * for "claude-code", a Codex slug for "codex". A cross-harness model alias
-   * (e.g. "planner") also works with any provider and resolves to that
-   * provider's configured target. Omit to use the provider's configured default.
+   * Model for the step's provider — an Anthropic model alias ("opus", "sonnet",
+   * "haiku", "opusplan") or full ID for "claude-code", a Codex slug for
+   * "codex". A cross-harness model alias (e.g. "planner") also works with any
+   * provider and resolves to that provider's configured target. Omit to use the
+   * provider's configured default.
    */
   model?: string;
-  /** OpenRouter reasoning effort — only valid with provider "openrouter". */
+  /** Reasoning effort. Honored on the reasoning-capable harnesses. */
   effort?: EffortLevel;
   /** Run the session as a configured agent (identity prompt + workspace). */
   agentAlias?: string;

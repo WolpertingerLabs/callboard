@@ -16,7 +16,7 @@ export interface PendingAction {
 interface Props {
   action: PendingAction;
   onRespond: (allow: boolean, updatedInput?: Record<string, unknown>) => void;
-  /** Display name of the harness running this chat (e.g. "Claude", "OpenRouter", "Codex") */
+  /** Display name of the harness running this chat (e.g. "Claude", "Codex", "OpenCode") */
   agentName?: string;
 }
 

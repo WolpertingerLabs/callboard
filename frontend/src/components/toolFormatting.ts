@@ -5,10 +5,11 @@
  *
  * - **Claude Code** — native PascalCase tools (`Read`, `Bash`, `Edit`, …) and
  *   MCP tools as `mcp__<server>__<tool>` (e.g. `mcp__callboard-tools__create_canvas`).
- * - **OpenRouter** (openrouter-agent-harness) — snake_case coding tools
- *   (`bash`, `read_file`, `edit_file`, `grep_files`, …), bare-named in-process
- *   callboard tools (`render_file`, `create_canvas`, …), and external MCP
- *   tools as `<server>__<tool>`.
+ * - **OpenRouter** — removed as a harness, but its snake_case names (`bash`,
+ *   `read_file`, `edit_file`, `grep_files`, …) are kept in the table below: they
+ *   are not OR-specific spellings, and the ACP vendors and Cline reach several of
+ *   the same cases. Bare-named in-process callboard tools (`render_file`,
+ *   `create_canvas`, …) are still produced by pi.
  * - **Codex** — normalized `Bash` / `Edit` / `WebSearch` names (but `Edit`
  *   carries a change-list input, not `{file_path, old_string, new_string}`),
  *   and MCP tools as `<server>__<tool>` (e.g. `callboard-tools__render_file`).
@@ -31,9 +32,9 @@
  *   #318 found broken for OpenCode, and `edit` in particular has no fallback
  *   that can say how many edits it made.
  *
- * This module parses all three conventions down to a bare tool name, renders
- * a short display name, and produces the one-line contextual summary shown in
- * the tool-call header (" - package.json", " - 'npm test'", …).
+ * This module parses every one of those conventions down to a bare tool name,
+ * renders a short display name, and produces the one-line contextual summary
+ * shown in the tool-call header (" - package.json", " - 'npm test'", …).
  */
 
 export interface ParsedToolName {
@@ -52,7 +53,7 @@ export function parseToolName(raw: string): ParsedToolName {
     if (sep > 0) return { server: rest.slice(0, sep), tool: rest.slice(sep + 2) };
     return { tool: rest };
   }
-  // Codex / OR external-MCP convention: <server>__<tool>
+  // Codex / bare external-MCP convention: <server>__<tool>
   const sep = raw.indexOf("__");
   if (sep > 0) return { server: raw.slice(0, sep), tool: raw.slice(sep + 2) };
   return { tool: raw };
@@ -71,7 +72,7 @@ export function getToolDisplayName(raw: string): string {
 /**
  * True when `raw` refers to the given callboard-tools tool under any provider
  * convention: `mcp__callboard-tools__<tool>` (Claude), `callboard-tools__<tool>`
- * (Codex), or bare `<tool>` (OpenRouter in-process tools carry no server prefix).
+ * (Codex), or bare `<tool>` (pi's in-process tools carry no server prefix).
  */
 export function isCallboardTool(raw: string, tool: string): boolean {
   const parsed = parseToolName(raw);
@@ -159,18 +160,17 @@ export function getToolSummary(toolName: string, content: string): string {
     const { tool } = parseToolName(toolName);
 
     switch (tool) {
-      // ---- OpenRouter server tools (executed on OR's servers) -------------
+      // ---- Server-side / hosted tools --------------------------------------
+      // `web_search` is Codex's and Cursor's; `web_fetch` is an ACP vendor name.
       // The model's input usually isn't preserved (content is "{}"), so fall
       // back to a generic label when the recoverable fields are absent.
-      case "datetime":
-        return " - current date/time";
       case "web_search":
         return input.query ? ` - '${input.query}'` : " - web search";
       case "web_fetch":
         if (input.url) return ` - ${hostnameOf(input.url)}`;
         return input.title ? ` - ${input.title}` : " - web fetch";
 
-      // ---- File reads/writes (Claude PascalCase + OR harness snake_case) --
+      // ---- File reads/writes (Claude PascalCase + snake_case harnesses) ---
       case "Read":
       case "read_file":
       case "Write":
@@ -228,7 +228,7 @@ export function getToolSummary(toolName: string, content: string): string {
       case "WebSearch":
         return input.query ? ` - '${input.query}'` : "";
 
-      // ---- Agents / tasks (Claude Task + OR harness equivalents) ------------
+      // ---- Agents / tasks (Claude Task + snake_case equivalents) ------------
       case "Task":
       case "spawn_subagent":
         return input.description ? ` - ${truncate(input.description)}` : "";

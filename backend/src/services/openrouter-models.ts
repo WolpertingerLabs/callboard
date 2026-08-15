@@ -10,11 +10,10 @@
  */
 import type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "shared/types/index.js";
 import { getAgentSettings } from "./agent-settings.js";
+import { resolveOpenRouterApiUrl } from "./openrouter-endpoint.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("openrouter-models");
-
-const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
 interface OpenRouterModelsCache {
   models: OpenRouterModelInfo[];
@@ -32,14 +31,10 @@ interface RawOpenRouterModel {
 let cache: OpenRouterModelsCache | null = null;
 let fetchPromise: Promise<OpenRouterModelsCache> | null = null;
 
-function resolveModelsUrl(): string {
-  const configured = getAgentSettings().openRouterBaseUrl?.trim();
-  const base = (configured || DEFAULT_BASE_URL).replace(/\/+$/, "");
-  return `${base}/models`;
-}
-
 async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
-  const url = resolveModelsUrl();
+  // Shared with the utility completion client — see openrouter-endpoint.ts for
+  // why the catalog and the completions must resolve the same host.
+  const url = resolveOpenRouterApiUrl("/models");
   log.info(`Fetching OpenRouter models from ${url}...`);
 
   try {

@@ -604,6 +604,18 @@ export class JobValidationError extends Error {
 
 const STEP_TYPES = new Set(["agent", "approval", "poll", "wait_event", "gate", "notify", "parallel", "job"]);
 const GATE_OPS = new Set(["eq", "neq", "contains", "exists", "not_exists", "gt", "lt"]);
+/**
+ * Providers a step-level `model` is honored on.
+ *
+ * `"openrouter"` is admitted but not *advertised* — the error message names only
+ * the provider a new definition should use. The harness is gone, so a step that
+ * names it cannot run; it is kept here so the failure lands at session start
+ * with a message that says the harness was removed, rather than at validation
+ * with a misleading "model is only valid with provider claude-code".
+ * See plans/remove-openrouter-engine.md.
+ */
+const MODEL_CAPABLE_PROVIDERS = ["claude-code", "openrouter"];
+const MODEL_PROVIDER_ERROR = 'model is only valid with provider "claude-code"';
 
 /**
  * Control-flow successors of a step — the targets it can transition to,
@@ -835,8 +847,8 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
         if (!step.prompt || typeof step.prompt !== "string") errors.push(`step "${step.id}": agent steps require a prompt`);
         else checkTemplate(step.id, "prompt", step.prompt);
         checkStepOutputs(step.id, step.outputs);
-        if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
-          errors.push(`step "${step.id}": model is only valid with provider "openrouter" or "claude-code"`);
+        if (step.model && step.provider && !MODEL_CAPABLE_PROVIDERS.includes(step.provider))
+          errors.push(`step "${step.id}": ${MODEL_PROVIDER_ERROR}`);
         if (step.retry && (!Number.isInteger(step.retry.attempts) || step.retry.attempts < 1)) {
           errors.push(`step "${step.id}": retry.attempts must be a positive integer`);
         }
@@ -853,8 +865,8 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
         checkStepOutputs(step.id, step.outputs);
         if (!(step.intervalMinutes >= 1)) errors.push(`step "${step.id}": intervalMinutes must be >= 1`);
         if (!Number.isInteger(step.maxAttempts) || step.maxAttempts < 1) errors.push(`step "${step.id}": maxAttempts must be a positive integer`);
-        if (step.model && step.provider && !["openrouter", "claude-code"].includes(step.provider))
-          errors.push(`step "${step.id}": model is only valid with provider "openrouter" or "claude-code"`);
+        if (step.model && step.provider && !MODEL_CAPABLE_PROVIDERS.includes(step.provider))
+          errors.push(`step "${step.id}": ${MODEL_PROVIDER_ERROR}`);
         checkTarget(step.id, "onTimeout", step.onTimeout, true);
         break;
       case "wait_event":
@@ -917,8 +929,8 @@ export function validateJobDefinition(input: JobDefinitionInput & { id: string }
           if (!branch.prompt || typeof branch.prompt !== "string") errors.push(`${label}: agent branches require a prompt`);
           else checkTemplate(step.id, `${label} prompt`, branch.prompt);
           checkStepOutputs(step.id, branch.outputs);
-          if (branch.model && branch.provider && !["openrouter", "claude-code"].includes(branch.provider)) {
-            errors.push(`${label}: model is only valid with provider "openrouter" or "claude-code"`);
+          if (branch.model && branch.provider && !MODEL_CAPABLE_PROVIDERS.includes(branch.provider)) {
+            errors.push(`${label}: ${MODEL_PROVIDER_ERROR}`);
           }
         });
         break;

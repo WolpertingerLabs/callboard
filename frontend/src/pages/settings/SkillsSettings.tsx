@@ -143,7 +143,7 @@ export default function SkillsSettings() {
           )}
         </div>
         <div style={{ ...helpStyle, marginBottom: 16 }}>
-          Reusable instructions your chat sessions can invoke on both Claude Code and OpenRouter chats. Each skill is available as{" "}
+          Reusable instructions your chat sessions can invoke. Each skill is available as{" "}
           <code>callboard:&lt;name&gt;</code> from the next message after saving. Agents can also list, read, and edit these skills mid-chat with the{" "}
           <code>list_custom_skills</code>, <code>read_custom_skill</code>, and <code>write_custom_skill</code> tools.
         </div>

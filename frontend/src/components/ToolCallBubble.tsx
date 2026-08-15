@@ -82,7 +82,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
 
   // Special case: render_file renders as MediaRenderer. Matched by bare tool
   // name so all providers hit it (Claude: mcp__callboard-tools__render_file,
-  // Codex: callboard-tools__render_file, OpenRouter: render_file).
+  // Codex: callboard-tools__render_file, pi: render_file).
   const renderFileData = useMemo(() => {
     if (toolUse.toolName && isCallboardTool(toolUse.toolName, "render_file") && toolResult) {
       try {

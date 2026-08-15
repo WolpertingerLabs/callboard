@@ -57,7 +57,7 @@ export interface AgentQuery extends AsyncIterable<AgentEvent> {
  * travels in a separate `providerId` (see {@link AcpAdapter}) and the union
  * stays closed at one entry for the whole family.
  */
-export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "pi" | "mock";
+export type AgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi" | "mock";
 
 /**
  * The provider kinds a **request** may ask for — the user-selectable harnesses.
@@ -103,7 +103,7 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
  * The frontend mirror of this is `ForkProvider` in `frontend/src/api.ts`; the
  * enforcing guard is in `routes/chats.ts`.
  */
-export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline", "pi"] as const;
+export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "codex", "acp", "cline", "pi"] as const;
 
 /** A provider kind a request may ask for (i.e. not test-only, and fully specifiable). */
 export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
@@ -111,17 +111,17 @@ export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
 /**
  * The provider kinds `sendMessage` will actually route and persist.
  *
- * A superset of {@link ROUTABLE_PROVIDER_KINDS}: everything a user may request,
- * plus the kinds reachable only from inside the process. Still excludes
- * `"mock"`, which is never a chat's persisted provider.
+ * Everything a user may request, plus any kind reachable only from inside the
+ * process. Still excludes `"mock"`, which is never a chat's persisted provider.
  *
- * **Currently identical to the routable list**, now that `"acp"` is offered. The
- * split is kept deliberately rather than collapsed: it is the mechanism that let
- * ACP be *implemented* before it was *offered*, one full phase apart, and the
- * next adapter to land will want the same runway. Keep using
+ * Identical to {@link ROUTABLE_PROVIDER_KINDS} today — the two lists last
+ * differed while a kind was *implemented before being offered* (`"acp"`) and
+ * again while one was *withdrawn from offer while still implemented*
+ * (`"openrouter"`, until its adapter was deleted). Kept as its own list because
+ * the next adapter will land in exactly that state again, and because the call
+ * sites already encode which question they are asking: use
  * {@link isRoutableProvider} for anything that came from a request and
- * {@link isInternalProvider} for chat metadata and internal callers, so the two
- * separate again cleanly when they next differ.
+ * {@link isInternalProvider} for chat metadata and internal callers.
  */
 export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS] as const;
 
@@ -141,6 +141,40 @@ export function isRoutableProvider(value: unknown): value is RoutableProviderKin
 /** As {@link isRoutableProvider}, but also admits kinds with no user-facing surface yet. */
 export function isInternalProvider(value: unknown): value is InternalProviderKind {
   return typeof value === "string" && (INTERNAL_PROVIDER_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * Harness kinds this build once implemented and no longer does.
+ *
+ * The third state a persisted `metadata.provider` can be in, and the one the
+ * two guards above cannot express: not routable, not internal, and *not
+ * unknown either*. `isInternalProvider` returning false is the same answer for
+ * `"openrouter"` as for a typo, and the two want opposite handling — a typo
+ * degrades to Claude Code with a warning, a retired harness must refuse by
+ * name, because the chat it names has a real transcript nothing left in the
+ * process can read.
+ *
+ * Kinds listed here are therefore *permanently* absent from
+ * {@link AgentProviderKind}: this list is the only remaining place the string
+ * is spelled, and callers ask {@link isRetiredProvider} rather than comparing
+ * against a literal. As of this writing 155 chat records under
+ * `~/.callboard/chats/` name `"openrouter"` (the plan's "~426" counted every
+ * file *mentioning* the string, most of them via a `lastBranch` of
+ * `refactor/remove-openrouter-engine`).
+ *
+ * Not a superset of the live kinds and never widened into one: a retired kind
+ * can never be routed, resumed or forked, so nothing may treat membership here
+ * as "supported but hidden". That is what {@link INTERNAL_PROVIDER_KINDS} is
+ * for.
+ */
+export const RETIRED_PROVIDER_KINDS = ["openrouter"] as const;
+
+/**
+ * Type guard: a persisted provider value naming a harness this build removed.
+ * See {@link RETIRED_PROVIDER_KINDS}.
+ */
+export function isRetiredProvider(value: unknown): value is (typeof RETIRED_PROVIDER_KINDS)[number] {
+  return typeof value === "string" && (RETIRED_PROVIDER_KINDS as readonly string[]).includes(value);
 }
 
 export interface AgentProvider {

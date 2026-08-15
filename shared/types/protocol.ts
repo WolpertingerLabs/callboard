@@ -76,10 +76,12 @@ export const CLIENT_CAP_VALUES: readonly ClientCapability[] = Object.values(CLIE
  * transport — and only the middle one crosses the SSE wire this handshake is
  * attached to:
  *
- * - `tool_source` — produced by the OpenRouter adapter, but it reaches the UI
- *   over **REST**: both SSE handlers collapse `tool_use`/`tool_result` into a
- *   bare `{type:"message_update"}` with no payload, and the field is read off
- *   the persisted transcript by `GET /messages`.
+ * - `tool_source` — no adapter produces it any more (the OpenRouter harness
+ *   that did was removed), and where it does appear, on transcripts written
+ *   before that, it reaches the UI over **REST**: both SSE handlers collapse
+ *   `tool_use`/`tool_result` into a bare `{type:"message_update"}` with no
+ *   payload, and the field is read off the persisted transcript by
+ *   `GET /messages`.
  * - `budget_events` — forwarded over SSE with its payload, by both handlers.
  * - `plan_review` — forwarded over SSE as a pending request, and also served
  *   over REST by `getPending` when a tab resumes.

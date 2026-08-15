@@ -13,6 +13,7 @@ import type { Card, CardChatActivity, CardMemberChat, CardMemberRun, CardPending
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
 import { getSessionProviders } from "../agents/factory.js";
+import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { listActivities } from "./chat-activity.js";
 import { listPendingForParent } from "./session-callbacks.js";
 
@@ -170,6 +171,13 @@ export function buildCardSummaries(cards: Card[], allChats: Chat[], allRuns: Job
     const meta = parseMeta(chat);
     const cardId = metaCardId(meta);
     if (!cardId) continue;
+    // Membership comes off the file record, so this scan — unlike the sidebar,
+    // which is driven by filesystem discovery — sees chats whose harness was
+    // removed. Left in, they would count toward chatCount, could push a card to
+    // "needs_you" or unread, and would open to an empty transcript: a board that
+    // disagrees with the chat list about how many chats a card has. Discovery
+    // has already dropped them everywhere else; drop them here too.
+    if (isRetiredProvider(meta.provider)) continue;
     const members = chatsByCard.get(cardId) ?? [];
     members.push(toMemberChat(chat, meta, deps));
     chatsByCard.set(cardId, members);

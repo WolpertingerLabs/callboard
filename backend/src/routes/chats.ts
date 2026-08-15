@@ -12,7 +12,7 @@ import { getCard, listCards } from "../services/card-store.js";
 import { setChatCardMembership } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
-import { isRoutableProvider, type RoutableProviderKind } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
@@ -50,6 +50,15 @@ function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string
 
   gitInfoCache.set(folder, { ...gitInfo, cachedAt: now });
   return gitInfo;
+}
+
+/** The `provider` a chat record names, or undefined when absent/unparseable. */
+function readProvider(chat: { metadata?: string | null }): unknown {
+  try {
+    return JSON.parse(chat.metadata || "{}").provider;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -525,6 +534,15 @@ chatsRouter.get("/", (req, res) => {
         const fc = fileById.get(id);
         if (!fc) continue;
         const session = sessionByChatId.get(id);
+        // This is the one path in the list route that can emit a chat
+        // filesystem discovery did not return, so it is also the one that has
+        // to re-apply discovery's verdict. A chat on a removed harness has a
+        // record but no readable session — appending it would put a row in the
+        // sidebar that renders as live and opens to an empty transcript. Its
+        // surviving descendants are discovery-backed and stay; they simply fold
+        // under a dangling root, which is the deleted-parent case rootKeyOf and
+        // the client's lineageOf already agree on.
+        if (isRetiredProvider(readProvider(fc))) continue;
         // Chats without a session log yet (e.g. freshly spawned) fall back
         // to the bare file record.
         const augmented = session ? augmentSession(session) : { ...fc, displayFolder: fc.folder };
@@ -674,9 +692,9 @@ chatsRouter.post("/:id/fork", (req, res) => {
           required: ["timestamp"],
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
-            provider: { type: "string", enum: ["claude-code", "openrouter", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
+            provider: { type: "string", enum: ["claude-code", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
-            effort: { type: "string", description: "Reasoning effort for the new chat (openrouter / codex only)." }
+            effort: { type: "string", description: "Reasoning effort for the new chat (codex only)." }
           }
         }
       }
@@ -698,7 +716,18 @@ chatsRouter.post("/:id/fork", (req, res) => {
     meta = JSON.parse(chat.metadata || "{}");
   } catch {}
 
-  const providerKind: RoutableProviderKind = isRoutableProvider(meta.provider) ? meta.provider : "claude-code";
+  // Chats stamped with a removed harness are refused by name before the guard
+  // below can silently call them claude-code chats — 155 records name the
+  // OpenRouter one, and the fallback would send the fork looking for a session
+  // log nothing can read. An explicit 400 beats a fork that appears to work.
+  if (isRetiredProvider(meta.provider)) {
+    return res.status(400).json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be forked." });
+  }
+
+  // The SOURCE kind comes off persisted metadata, so it is read with the
+  // internal guard rather than the routable one: a kind that is implemented but
+  // not yet offered must still be forkable out of.
+  const providerKind: InternalProviderKind = isInternalProvider(meta.provider) ? meta.provider : "claude-code";
   const provider = getSessionProviders().find((p) => p.kind === providerKind);
   if (!provider) {
     return res.status(400).json({ error: "Forking is not supported for this chat's provider" });
@@ -709,7 +738,7 @@ chatsRouter.post("/:id/fork", (req, res) => {
   if (req.body.provider !== undefined && !isRoutableProvider(req.body.provider)) {
     return res.status(400).json({ error: `Unknown target provider "${req.body.provider}"` });
   }
-  const targetKind: RoutableProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
+  const targetKind: InternalProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
   // Forking INTO ACP is refused on the kind itself, and this guard is the
   // route's own invariant rather than a consequence of some provider's missing
   // method. Two independent reasons, either one sufficient:
@@ -802,18 +831,14 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // than writing it (an explicit value there is redundant, and resolving an
     // absent provider already lands on claude-code).
     ...(targetKind !== "claude-code" && { provider: targetKind }),
-    // Effort is meaningful only to the two reasoning-capable harnesses.
-    ...(effort && (targetKind === "openrouter" || targetKind === "codex") && { effort }),
+    // Effort is meaningful only to the reasoning-capable harnesses.
+    ...(effort && targetKind === "codex" && { effort }),
     // Model is honored by all three: `stream.ts` persists `metadata.model`
     // for any provider, and each harness's config block reads it (Codex's
     // per-chat override wins over the global codexModel default). Note
-    // sendMessage's *new-chat* block guards model to openrouter/claude-code —
+    // sendMessage's *new-chat* block guards which kinds may carry a model —
     // that guard doesn't apply here, since this route writes metadata itself.
     ...(model && { model }),
-    // Model routing is an OpenRouter-only feature keyed to OR rank ids —
-    // carry it only when the target is still OpenRouter.
-    ...(meta.modelRouting && targetKind === "openrouter" && { modelRouting: true }),
-    ...(meta.modelRouting && targetKind === "openrouter" && meta.modelRoutingRankId && { modelRoutingRankId: meta.modelRoutingRankId }),
     // A fork stays on the original's card. Unassign merges `cardId: null`,
     // so a string check (not key presence) decides whether to inherit.
     ...(typeof meta.cardId === "string" && meta.cardId && { cardId: meta.cardId }),

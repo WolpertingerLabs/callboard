@@ -31,7 +31,6 @@ import {
   getActivity,
   releaseActivity,
   getSystemInfo,
-  getAgentSettings,
   respondToChat,
   stopChat,
   uploadImages,
@@ -82,11 +81,10 @@ import {
   getDefaultPermissions as getLocalDefaultPermissions,
   getDefaultCreateCard,
   saveDefaultCreateCard,
+  type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
-import ModelRouterField from "../components/ModelRouterField";
-import type { ModelRoutingConfig } from "shared/types/index.js";
 import { getActivePlugins } from "../utils/plugins";
 
 interface ToolGroup {
@@ -210,14 +208,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const agentAlias = (location.state as any)?.agentAlias as string | undefined;
   // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
   // by chat metadata server-side; this value is only honored on creation.
-  const newChatProvider = (location.state as any)?.provider as "claude-code" | "openrouter" | "codex" | "acp" | undefined;
+  const newChatProvider = (location.state as any)?.provider as "claude-code" | "codex" | "acp" | undefined;
   const newChatAcpProviderId = (location.state as any)?.acpProviderId as string | undefined;
-  // OpenRouter reasoning-effort for NEW chats, set by NewChatPanel. Like the
-  // provider, only honored on creation and persisted into chat metadata; the
+  // Reasoning effort for NEW chats, set by NewChatPanel. Like the provider,
+  // only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
   const newChatEffort = (location.state as any)?.effort as "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | undefined;
-  // OpenRouter model slug for NEW chats, set by NewChatPanel. Like the
-  // provider/effort, only honored on creation and persisted into chat metadata.
+  // Model for NEW chats, set by NewChatPanel — the harness's own model id. Like
+  // the provider/effort, only honored on creation and persisted into metadata.
   const newChatModel = (location.state as any)?.model as string | undefined;
   // Explicit-completion requirement for NEW chats, set by NewChatPanel. Only
   // honored on creation — persisted into chat metadata, so follow-up messages
@@ -231,11 +229,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Card (ticket) membership for new chats started from the board's
   // "New chat on card" action — the backend stamps metadata.cardId.
   const newChatCardId = (location.state as any)?.cardId as string | undefined;
-  // Model routing (OpenRouter-only) for NEW chats, set by NewChatPanel. Only
-  // honored on creation — the classifier picks the model server-side and it's
-  // persisted into chat metadata so follow-ups keep routing.
-  const newChatModelRouting = (location.state as any)?.modelRouting as boolean | undefined;
-  const newChatModelRoutingRankId = (location.state as any)?.modelRoutingRankId as string | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
   // passed via router state so they survive the component remount.
@@ -283,15 +276,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [compacting, setCompacting] = useState(false);
-  // Cumulative USD spend in the most recently completed run, when the
-  // adapter reports one. Currently OpenRouter only — the Claude adapter
-  // doesn't return per-run cost we can sum into a session total. Reset
-  // every time we land on a new chat so cross-chat values don't leak.
+  // Cumulative USD spend in the most recently completed run, when the adapter
+  // reports one. Reset every time we land on a new chat so cross-chat values
+  // don't leak.
   const [_lastRunCostUsd, setLastRunCostUsd] = useState<number | null>(null);
-  // Effective per-session spend cap advertised by the adapter alongside the
-  // last cost. Used to render "$0.42 of $5.00" and to quote the cap in the
-  // max_budget end-of-session message.
-  const [effectiveMaxBudgetUsd, setEffectiveMaxBudgetUsd] = useState<number | null>(null);
   const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
   // Card association for NEW chats: create a card alongside the chat, join an
   // existing open card (seeded from the board's "New chat on card" action), or
@@ -459,28 +447,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // repopulate; without the reset, switching chats would show the prior
     // chat's spend until a new run completes.
     setLastRunCostUsd(null);
-    setEffectiveMaxBudgetUsd(null);
   }, [id]);
 
   // Resolve which agent provider runs this chat — drives the header badge.
   // New chats inherit `newChatProvider` from the NewChatPanel; existing chats
   // pull it off their stored metadata. Defaults to "claude-code" (no badge).
-  // Sum of costUsd across all assistant messages in this session. Derived
-  // directly from `messages` so it updates live as messages arrive — no
-  // longer depends on waiting for a message_complete event. Returns null
-  // when no message carries cost data (Claude Code sessions, empty chats).
-  const sessionTotalCost = useMemo((): number | null => {
-    let total = 0;
-    let found = false;
-    for (const m of messages) {
-      if (m.role === "assistant" && m.costUsd != null) {
-        total += m.costUsd;
-        found = true;
-      }
-    }
-    return found ? total : null;
-  }, [messages]);
-
   // When this chat is a job-run step session, the run id from metadata —
   // enables the "Job" view-mode tab showing the run's progress.
   const chatJobRunId = useMemo((): string | undefined => {
@@ -537,12 +508,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
   // and their header rendered a "CC" badge — the one place in the UI that names
   // the harness, naming the wrong one.
-  const chatProvider = useMemo((): "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "pi" => {
+  const chatProvider = useMemo((): "claude-code" | "codex" | "acp" | "cline" | "pi" => {
     if (!id) return newChatProvider ?? "claude-code";
     if (chat?.metadata) {
       try {
         const meta = JSON.parse(chat.metadata);
-        if (meta.provider === "openrouter") return "openrouter";
         if (meta.provider === "codex") return "codex";
         if (meta.provider === "acp") return "acp";
         if (meta.provider === "cline") return "cline";
@@ -553,6 +523,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
     return "claude-code";
   }, [id, newChatProvider, chat?.metadata]);
+
+  // The raw `metadata.provider`, before `chatProvider` collapses anything it
+  // does not recognize to "claude-code". Only the badge wants this: it is the
+  // one control that names the harness rather than driving it, so it is the one
+  // that must not round a retired harness off to a live one.
+  const rawChatProvider = useMemo((): string | null => {
+    if (!id || !chat?.metadata) return null;
+    try {
+      const value = JSON.parse(chat.metadata).provider;
+      return typeof value === "string" && value ? value : null;
+    } catch {
+      return null;
+    }
+  }, [id, chat?.metadata]);
+
+  // Harnesses this build removed — see RETIRED_PROVIDER_KINDS on the backend.
+  // Such a chat still opens (its record and transcript exist), but nothing can
+  // resume it: POST /message answers 410. So the model/effort popover is hidden
+  // rather than offering Anthropic models for a chat that never ran on one.
+  const isRetiredHarness = rawChatProvider === "openrouter";
 
   // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
   // derived from `chatProvider`, because the kind alone does not name a harness.
@@ -581,27 +571,33 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // `seedSession`, so the route would 400. Hiding the button is the honest
   // surface for that; a fork that renders and then loses all context is worse
   // than no fork button.
-  // Null only for ACP, which `ForkProvider` deliberately excludes. Every other
-  // kind is a valid fork source *and* target as of Phase 5 of the pi landing.
-  const forkSourceProvider: ForkProvider | null = chatProvider === "acp" ? null : chatProvider;
+  // Null for ACP and for a retired harness — the latter because forking copies
+  // the source's session log, and nothing left in the process can read one the
+  // removed engine wrote. `POST /api/chats/:id/fork` refuses it by name with a
+  // 400; hiding the entry is the same answer given before the user asks.
+  // Otherwise every kind is both a valid fork source and a valid target (see
+  // `ForkProvider`).
+  const forkSourceProvider: ForkProvider | null = chatProvider === "acp" || isRetiredHarness ? null : chatProvider;
+
+  // The harness whose model/effort controls the composer popover renders. Null
+  // for a retired harness, which has no controls worth opening.
+  const composerProvider: AgentProviderKind | null = isRetiredHarness ? null : chatProvider;
 
   // Human-readable harness name for status text ("Claude is thinking...").
   // ACP shows the vendor, not the protocol: "OpenCode is thinking" is what the
   // user picked, and "ACP is thinking" names a wire format.
   const providerDisplayName =
-    chatProvider === "openrouter"
-      ? "OpenRouter"
-      : chatProvider === "codex"
-        ? "Codex"
-        : chatProvider === "cline"
-          ? "Cline"
-          : chatProvider === "pi"
-            ? "pi"
-            : chatProvider === "acp"
-              ? // The vendor's own label when the server has told us one; otherwise a
-                // neutral noun rather than a guessed capitalization of the id.
-                (acpLabels[acpProviderId] ?? "The agent")
-              : "Claude";
+    chatProvider === "codex"
+      ? "Codex"
+      : chatProvider === "cline"
+        ? "Cline"
+        : chatProvider === "pi"
+          ? "pi"
+          : chatProvider === "acp"
+            ? // The vendor's own label when the server has told us one; otherwise a
+              // neutral noun rather than a guessed capitalization of the id.
+              (acpLabels[acpProviderId] ?? "The agent")
+            : "Claude";
 
   // Fork the conversation at a message: the backend copies session history
   // up to and including that message into a new chat, which we navigate to.
@@ -658,9 +654,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return "";
   }, [id, newChatModel, chat?.metadata]);
 
-  // Current per-chat OpenRouter reasoning effort (from metadata). `undefined`
-  // = no override; chat falls back to each model's default. Only meaningful
-  // when chatProvider === "openrouter".
+  // Current per-chat reasoning effort (from metadata). `undefined` = no
+  // override; the chat falls back to each model's default. Only meaningful on a
+  // reasoning-capable harness.
   const currentEffort = useMemo((): EffortLevel | undefined => {
     if (!id) return (location.state as any)?.effort as EffortLevel | undefined;
     if (chat?.metadata) {
@@ -709,38 +705,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Whether the composer-side model/effort popover is open.
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
 
-  // Model Routing (OpenRouter-only). Loaded from agent settings so the composer
-  // popover can offer the "use model router" toggle when composing a NEW chat.
-  // Only meaningful for new OpenRouter chats — routing is decided at creation.
-  const [routingConfig, setRoutingConfig] = useState<ModelRoutingConfig | null>(null);
-  const [pendingModelRouting, setPendingModelRouting] = useState<boolean>(newChatModelRouting === true);
-  const [pendingModelRoutingRankId, setPendingModelRoutingRankId] = useState<string>(newChatModelRoutingRankId ?? "");
-  const routingAvailable = !id && chatProvider === "openrouter" && !!routingConfig?.enabled && routingConfig.ranks.length > 0;
-  useEffect(() => {
-    let cancelled = false;
-    getAgentSettings()
-      .then((s) => {
-        if (cancelled) return;
-        const cfg = s.modelRouting ?? null;
-        setRoutingConfig(cfg);
-        if (cfg && !pendingModelRoutingRankId) {
-          const ranks = [...cfg.ranks].sort((a, b) => a.order - b.order);
-          setPendingModelRoutingRankId(cfg.defaultRankId || ranks[0]?.id || "");
-        }
-        // Default the router ON for a new chat when routing is enabled globally
-        // and the New Chat panel didn't explicitly pass a choice — matches the
-        // panel's default so routing engages once configured (opt-out per chat).
-        if (cfg?.enabled && newChatModelRouting === undefined) {
-          setPendingModelRouting(true);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Clear any pending change when navigating to a different chat — selection
   // is per-chat, not global. Keyed on location.key rather than id: /chat/new
   // and /chat/:id render this same Chat instance, so navigating between them
@@ -750,24 +714,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setPendingModel(null);
     setPendingEffort(null);
     setModelPopoverOpen(false);
-  }, [location.key]);
-
-  // Re-sync the router toggle from navigation state on every navigation, for
-  // the same reason: the useState initializers above captured only the first
-  // mount's nav state. Without this, the routing default set while viewing any
-  // chat (the settings-fetch effect above) survives into a later /chat/new
-  // visit and overrides the New Chat panel's explicit "Manual" choice — the
-  // router then runs even though the user picked a model.
-  useEffect(() => {
-    if (id) return; // routing is decided at creation; only new chats read this
-    setPendingModelRouting(newChatModelRouting !== undefined ? newChatModelRouting === true : !!routingConfig?.enabled);
-    if (newChatModelRoutingRankId) {
-      setPendingModelRoutingRankId(newChatModelRoutingRankId);
-    } else if (routingConfig) {
-      const ranks = [...routingConfig.ranks].sort((a, b) => a.order - b.order);
-      setPendingModelRoutingRankId(routingConfig.defaultRankId || ranks[0]?.id || "");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
   // Resolve effective permissions for this chat
@@ -977,15 +923,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // Mark that this stream session is complete so the auto-connect
                 // effect doesn't reconnect while the CLI watcher catches up.
                 streamCompletedRef.current = true;
-                // Capture run cost + the effective per-session cap. The
-                // adapter omits these fields on chats that don't track spend
-                // (currently anything other than OpenRouter), so guard the
-                // setters individually.
+                // Capture run cost. Adapters that don't track spend omit the
+                // field, so the setter is guarded rather than assumed.
                 if (typeof event.costUsd === "number") {
                   setLastRunCostUsd(event.costUsd);
-                }
-                if (typeof event.maxBudgetUsd === "number") {
-                  setEffectiveMaxBudgetUsd(event.maxBudgetUsd);
                 }
 
                 // Check if the conversation ended right after a plan approval.
@@ -1111,17 +1052,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
               if (event.type === "budget") {
                 if (currentIdRef.current !== streamChatId) return;
-                // Mid-run spend beacon (OpenRouter per-turn cost). Updates the
-                // same state message_complete populates, so the spend badge's
-                // "of $X.XX" cap appears on the first turn boundary instead of
-                // waiting for the run to finish. The badge's spent figure
-                // itself derives from per-message costUsd (sessionTotalCost),
-                // which already updates live via message refetches.
+                // Mid-run spend beacon (per-turn cost). Updates the same state
+                // message_complete populates, so spend tracking advances at the
+                // first turn boundary instead of waiting for the run to finish.
                 if (typeof event.costUsd === "number") {
                   setLastRunCostUsd(event.costUsd);
-                }
-                if (typeof event.maxBudgetUsd === "number") {
-                  setEffectiveMaxBudgetUsd(event.maxBudgetUsd);
                 }
                 continue;
               }
@@ -1880,16 +1815,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatProvider === "acp" && newChatAcpProviderId) {
             requestBody.acpProviderId = newChatAcpProviderId;
           }
-          if (newChatEffort && (newChatProvider === "openrouter" || newChatProvider === "codex")) {
+          if (newChatEffort && newChatProvider === "codex") {
             requestBody.effort = newChatEffort;
           }
-          // Model applies to both providers — an OR slug/alias or an
-          // Anthropic model alias/ID for claude-code. Prefer the composer's
+          // Model applies to every provider — an Anthropic model alias/ID for
+          // claude-code, that harness's own id otherwise. Prefer the composer's
           // staged pick (pendingModel) over the New Chat panel's forwarded
-          // value, so switching to a manual model in the composer's Manual/Router
-          // switcher actually takes effect. `pendingModel === ""` is a deliberate
-          // "use the global default"; `null` means "no composer edit" → fall
-          // back to the panel value.
+          // value, so a model chosen in the composer actually takes effect.
+          // `pendingModel === ""` is a deliberate "use the global default";
+          // `null` means "no composer edit" → fall back to the panel value.
           const newChatSelectedModel = pendingModel ?? newChatModel;
           if (newChatSelectedModel) {
             requestBody.model = newChatSelectedModel;
@@ -1911,16 +1845,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               requestBody.cardCategory = cardConfig.category.trim();
             }
           }
-          // Model routing — OpenRouter-only opt-in. Reflects the composer's
-          // "use model router" toggle (initialized from the New Chat panel's
-          // choice). Server drops it on any other provider.
-          if (pendingModelRouting && chatProvider === "openrouter") {
-            requestBody.modelRouting = true;
-            if (pendingModelRoutingRankId) {
-              requestBody.modelRoutingRankId = pendingModelRoutingRankId;
-            }
-          }
-
           res = await fetch("/api/chats/new/message", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...handshakeHeaders() },
@@ -1970,7 +1894,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // Per-chat reasoning effort. Same tri-state semantics as model:
           // `null` skips the field; `undefined` sends "" (clear override);
           // an EffortLevel sends the level.
-          if (pendingEffort !== null && (chatProvider === "openrouter" || chatProvider === "codex")) {
+          if (pendingEffort !== null && chatProvider === "codex") {
             body.effort = pendingEffort ?? "";
           }
 
@@ -2053,8 +1977,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatModel,
       newChatRequireCompletion,
       pendingModel,
-      pendingModelRouting,
-      pendingModelRoutingRankId,
       chatProvider,
       readSSE,
       activePluginIds,
@@ -2556,11 +2478,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 {!isMobile && "worktree"}
               </div>
             )}
-            {/* Provider badge — "OR" for OpenRouter, "CC" for Claude Code.
-                Model + effort selection has moved out of the header and into
+            {/* Provider badge — "CC" for Claude Code, "CX" for Codex, and so
+                on. Fed the RAW metadata provider, not `chatProvider`: a chat on
+                a removed harness must not be badged as the harness it fell back
+                to. Model + effort selection has moved out of the header and into
                 the composer's hamburger menu (see PromptInput's `menuItems`
                 prop below). */}
-            <ProviderBadge provider={chatProvider} acpProviderId={acpProviderId} />
+            <ProviderBadge provider={rawChatProvider ?? chatProvider} acpProviderId={acpProviderId} />
             {/* Parentage-tree indicator — parent breadcrumb + tree dropdown
                 for chats linked into a cross-engine chat tree. Renders
                 nothing when the chat has no lineage and no descendants. */}
@@ -2600,45 +2524,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{chatCard.title}</span>
               </div>
             )}
-            {/* Spend indicator — shown for OR chats whenever any cost data is
-                available. Derived from the live messages array so it updates
-                incrementally without waiting for a run to complete.
-                When a per-session budget cap is configured, the badge shows
-                "total / cap" and escalates colour as the cap is approached
-                (>=80% warns, >=100% errors). Without a cap it shows just the
-                running total in a neutral style. Click navigates to Settings → API. */}
-            {chatProvider === "openrouter" &&
-              sessionTotalCost !== null &&
-              (() => {
-                const hasCap = effectiveMaxBudgetUsd !== null;
-                const overCap = hasCap && sessionTotalCost >= effectiveMaxBudgetUsd!;
-                const nearCap = hasCap && !overCap && sessionTotalCost / Math.max(effectiveMaxBudgetUsd!, 0.0001) >= 0.8;
-                const costStr = sessionTotalCost >= 0.01 ? `$${sessionTotalCost.toFixed(2)}` : `$${sessionTotalCost.toFixed(4)}`;
-                const label = hasCap ? `${costStr} / $${effectiveMaxBudgetUsd!.toFixed(2)}` : costStr;
-                const titleStr = hasCap
-                  ? `Session spent ${costStr} of the $${effectiveMaxBudgetUsd!.toFixed(2)} per-session cap. Click to adjust in Settings → API.`
-                  : `Session total cost: ${costStr}. Click to configure a budget cap in Settings → API.`;
-                return (
-                  <div
-                    onClick={() => navigate("/settings/api")}
-                    style={{
-                      fontSize: 11,
-                      padding: "2px 6px",
-                      borderRadius: 4,
-                      background: overCap ? "var(--error, #c53030)" : nearCap ? "var(--warning, #d97706)" : "var(--surface)",
-                      color: overCap || nearCap ? "var(--text-on-accent, #fff)" : "var(--text-muted)",
-                      border: "1px solid var(--border)",
-                      fontWeight: 500,
-                      flexShrink: 0,
-                      cursor: "pointer",
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                    title={titleStr}
-                  >
-                    {label}
-                  </div>
-                );
-              })()}
           </div>
           <div
             title={!id ? folder : chat?.folder}
@@ -3480,7 +3365,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           state, so unmounting it would silently wipe whatever the user was
           typing when the panel appeared. */}
       <div style={{ position: "relative", display: pendingAction ? "none" : undefined }}>
-        {modelPopoverOpen && (
+        {modelPopoverOpen && composerProvider && (
           <>
             {/* Click-away overlay */}
             <div onClick={() => setModelPopoverOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
@@ -3512,14 +3397,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               {/* Every model prop shares the same pending-model cell — only the
                     control matching the chat's pinned provider renders. */}
               <ProviderConfigPicker
-                provider={chatProvider}
+                provider={composerProvider}
                 onProviderChange={() => {}}
                 showProviderToggle={false}
                 mode="inline"
                 effort={pendingEffort !== null ? pendingEffort : currentEffort}
                 onEffortChange={(v) => setPendingEffort(v === currentEffort ? null : v)}
-                model={pendingModel ?? currentModel}
-                onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 claudeModel={pendingModel ?? currentModel}
                 onClaudeModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 codexModel={pendingModel ?? currentModel}
@@ -3533,29 +3416,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // catalog rather than another vendor's.
                 acpProviderId={acpProviderId}
                 codexConfigured={true}
-                openRouterConfigured={true}
-                openRouterMaxBudgetUsd={null}
                 claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
                 codexUseOpenRouter={codexUseOpenRouter}
                 onOpenApiSettings={() => navigate("/settings/api")}
-                // New OpenRouter chats can route — swap the plain model field
-                // for the Manual/Router switcher so the two are mutually
-                // exclusive (routing is decided at creation, hence !id only).
-                openRouterModelSlot={
-                  routingAvailable ? (
-                    <ModelRouterField
-                      mode="inline"
-                      routingConfig={routingConfig}
-                      useRouter={pendingModelRouting}
-                      onUseRouterChange={setPendingModelRouting}
-                      rankId={pendingModelRoutingRankId}
-                      onRankChange={setPendingModelRoutingRankId}
-                      model={pendingModel ?? currentModel}
-                      onModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
-                      idPrefix="composer"
-                    />
-                  ) : undefined
-                }
               />
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>Applies on your next message.</div>
             </div>
@@ -3577,26 +3440,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           commandDescriptions={pluginCommandDescriptions}
           onSetValue={setPromptInputSetValue}
           menuItems={
-            !streaming
+            !streaming && composerProvider
               ? [
-                  // Opens the model (+ effort for OR) popover above the
+                  // Opens the model (+ reasoning effort) popover above the
                   // composer. Hidden while streaming so the model can't
                   // change mid-run; the header shows the active provider
-                  // via ProviderBadge.
+                  // via ProviderBadge. Also hidden on a retired-harness chat,
+                  // which has no controls to open — see `composerProvider`.
                   {
                     key: "model",
                     icon: <SlidersHorizontal size={16} />,
-                    label: chatProvider === "claude-code" ? "Model" : "Model & reasoning effort",
+                    label: composerProvider === "claude-code" ? "Model" : "Model & reasoning effort",
                     onClick: () => setModelPopoverOpen(true),
                     active: pendingModel !== null || pendingEffort !== null,
                     title:
                       pendingModel !== null || pendingEffort !== null
                         ? "Model change pending — applies on next message"
-                        : chatProvider === "openrouter"
-                          ? "Change model / reasoning effort for this chat"
-                          : chatProvider === "codex"
-                            ? "Change the Codex model / reasoning effort for this chat"
-                            : "Change the Anthropic model for this chat",
+                        : composerProvider === "codex"
+                          ? "Change the Codex model / reasoning effort for this chat"
+                          : "Change the Anthropic model for this chat",
                   },
                   // Card actions deliberately live in the sidebar row menu, not
                   // here: this menu is about sending the next message.

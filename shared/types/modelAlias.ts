@@ -30,8 +30,17 @@ import type { UiAgentProviderKind } from "./providers.js";
  * documented edge and not a bug; the fix when a second lands is a per-vendor key
  * with this one as the fallback, which the normalizer's unknown-key handling
  * already leaves room for.
+ *
+ * **`"openrouter"` is spelled out rather than inherited from
+ * {@link UiAgentProviderKind}, and outlives the harness it was named for.** The
+ * OpenRouter engine was removed outright, so the target no longer *resolves* to
+ * anything — but the targets map is user data.
+ * Every alias anyone ever gave an OR slug carries one, and narrowing the union
+ * would make `validateModelAliases` treat that key as an unknown provider and
+ * strip it on the next settings write. Costs one union member; saves silently
+ * eating typed-in slugs.
  */
-export type HarnessProvider = UiAgentProviderKind;
+export type HarnessProvider = UiAgentProviderKind | "openrouter";
 
 export interface ModelAlias {
   /** Alias name, e.g. "planner". Unique case-insensitively across the registry. */

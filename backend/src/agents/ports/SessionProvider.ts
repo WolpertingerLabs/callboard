@@ -155,9 +155,9 @@ export interface SessionProvider {
    * new session keyed by `newSessionId`, so the new session can be resumed
    * independently of the original.
    *
-   * Optional — providers whose storage can't be truncated this way (e.g.
-   * OpenRouter's response-chained state) simply don't implement it, and
-   * the fork route rejects the request.
+   * Optional — providers whose storage can't be truncated this way (a
+   * response-chained transcript, or state held inside the agent's own process)
+   * simply don't implement it, and the fork route rejects the request.
    *
    * Returns the new session log path, or null if the source session is
    * missing or no entries fall at/before the cutoff.

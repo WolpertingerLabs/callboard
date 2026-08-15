@@ -6,7 +6,7 @@
  * injected config.toml provider block (covered in the codex optionsAdapter test).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { getApiEnvOverrides, migrateOpenRouterRoutingModels, OPENROUTER_ANTHROPIC_BASE_URL } from "./agent-settings.js";
+import { getApiEnvOverrides, migrateOpenRouterRoutingModels, migrateOpenRouterUtilityCompletions, OPENROUTER_ANTHROPIC_BASE_URL } from "./agent-settings.js";
 import type { AgentSettings } from "shared";
 
 /** Settings with Claude-Code-via-OpenRouter routing satisfied (toggle + key). */
@@ -272,5 +272,38 @@ describe("migrateOpenRouterRoutingModels", () => {
     });
     expect(migrated.codexOpenRouterModel).toBe("openai/gpt-5.5-codex");
     expect(migrated.codexModel).toBeUndefined();
+  });
+});
+
+/**
+ * The migration that keeps title generation working across the upgrade that
+ * turned "an OpenRouter key exists" into an explicit opt-in. Without it, every
+ * user relying on the old implicit behavior silently loses generated titles,
+ * branch names and themes — no error, no visible setting change.
+ */
+describe("migrateOpenRouterUtilityCompletions", () => {
+  it("opts an existing key-holder in", () => {
+    const migrated = migrateOpenRouterUtilityCompletions({ proxyMode: "local", openRouterApiKey: "sk-or-test" });
+    expect(migrated.openRouterUtilityCompletions).toBe(true);
+  });
+
+  it("leaves a user with no key alone — there is nothing to preserve", () => {
+    const bare: AgentSettings = { proxyMode: "local" };
+    expect(migrateOpenRouterUtilityCompletions(bare)).toEqual(bare);
+    const blank: AgentSettings = { proxyMode: "local", openRouterApiKey: "   " };
+    expect(migrateOpenRouterUtilityCompletions(blank)).toEqual(blank);
+  });
+
+  it("never re-enables a toggle the user turned off", () => {
+    // The guard is the flag's ABSENCE. A stored `false` is a decision, and a
+    // migration that re-ran on it would make the toggle impossible to switch off
+    // for anyone holding a key.
+    const off: AgentSettings = { proxyMode: "local", openRouterApiKey: "sk-or-test", openRouterUtilityCompletions: false };
+    expect(migrateOpenRouterUtilityCompletions(off)).toEqual(off);
+  });
+
+  it("is idempotent", () => {
+    const once = migrateOpenRouterUtilityCompletions({ proxyMode: "local", openRouterApiKey: "sk-or-test" });
+    expect(migrateOpenRouterUtilityCompletions(once)).toEqual(once);
   });
 });

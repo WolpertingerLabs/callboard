@@ -379,7 +379,7 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
  * real handoff — Callboard had built the capability into two harnesses and
  * offered it into neither.
  */
-export type ForkProvider = "claude-code" | "codex" | "openrouter" | "cline" | "pi";
+export type ForkProvider = "claude-code" | "codex" | "cline" | "pi";
 
 /**
  * Fork a chat at a message: creates a new chat whose history is a copy of
@@ -1310,8 +1310,6 @@ export interface SystemInfo {
   environment: string;
   account?: SystemInfoAccount;
   models?: SystemInfoModel[];
-  /** True when the user has an OPENROUTER_API_KEY configured in Settings → API. */
-  openRouterConfigured?: boolean;
   /** True when the native Claude Code harness is routed through OpenRouter (toggle on + key set). */
   claudeCodeUseOpenRouter?: boolean;
   /** True when the native Codex harness is routed through OpenRouter (toggle on + key set). */
@@ -1320,13 +1318,6 @@ export interface SystemInfo {
   claudeCodeOpenRouterDetected?: boolean;
   /** True when the ambient env already points Codex at OpenRouter (OPENAI base / config.toml). Defaults the toggle on. */
   codexOpenRouterDetected?: boolean;
-  /**
-   * Effective per-session OpenRouter spend cap, in USD. The backend resolves
-   * the user's override (if any) against the OR library's own default ($1.00)
-   * and surfaces the resolved value here so the UI can display "Spend cap:
-   * $X.XX per session" without duplicating the default.
-   */
-  openRouterMaxBudgetUsd?: number;
   /**
    * True when the Codex provider has usable credentials — an `OPENAI_API_KEY`
    * in Settings → API (api-key mode), a parseable `$CODEX_HOME/auth.json` from

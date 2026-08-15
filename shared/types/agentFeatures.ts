@@ -14,21 +14,21 @@ export interface CronAction {
    * Agent provider to run this action against. Omit (undefined) to use the
    * agent's default — typically Claude Code unless the agent has been
    * configured otherwise. Persisted as part of CronAction so each cron job
-   * can independently target Claude Code or OpenRouter.
+   * can independently target a different harness.
    */
   provider?: UiAgentProviderKind;
   /**
-   * Model for the action's provider — an OR slug/alias when {@link provider}
-   * is "openrouter", an Anthropic model alias ("opus", "sonnet", "haiku",
-   * "opusplan") or full model ID when "claude-code". Empty/undefined falls
-   * through to the provider's global default in Settings → API.
+   * Model for the action's provider — an Anthropic model alias ("opus",
+   * "sonnet", "haiku", "opusplan") or full model ID when "claude-code", that
+   * harness's own model id otherwise. Empty/undefined falls through to the
+   * provider's global default in Settings → API.
    */
   model?: string;
   /**
    * Reasoning-effort level. Honored by the reasoning-capable providers:
-   * "openrouter" (→ OR `reasoning.effort`) and "codex" (→ Codex
-   * `modelReasoningEffort`; the extra `"none"` level hides reasoning summaries
-   * there). Ignored for "claude-code". `undefined` uses the provider default.
+   * "codex" (→ Codex `modelReasoningEffort`; the extra `"none"` level hides
+   * reasoning summaries there), "cline" and "pi". Ignored for "claude-code".
+   * `undefined` uses the provider default.
    */
   effort?: EffortLevel;
   /**

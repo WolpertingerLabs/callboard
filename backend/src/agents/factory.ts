@@ -6,21 +6,18 @@
  * SessionProvider handles discovery (listing, reading, parsing old sessions).
  *
  * Both registries default to Claude Code implementations. Other adapters
- * (e.g. OpenRouter, Codex) register via the per-kind Map; callers that
+ * (e.g. Codex, Cline) register via the per-kind Map; callers that
  * omit `kind` keep the historical Claude-Code default so unmodified call
  * sites are unaffected.
  *
  * No DI container — manual construction is sufficient at this scale.
  *
  * @see plans/agent-abstraction-layer.md
- * @see plans/openrouter-adapter.md
  */
 import type { AgentProvider, AgentProviderKind } from "./ports/AgentProvider.js";
 import type { SessionProvider } from "./ports/SessionProvider.js";
 import { ClaudeCodeAdapter } from "./adapters/claude-code/ClaudeCodeAdapter.js";
 import { ClaudeCodeSessionProvider } from "./adapters/claude-code/ClaudeCodeSessionProvider.js";
-import { OpenRouterAdapter } from "./adapters/openrouter/OpenRouterAdapter.js";
-import { OpenRouterSessionProvider } from "./adapters/openrouter/OpenRouterSessionProvider.js";
 import { CodexAdapter } from "./adapters/codex/CodexAdapter.js";
 import { CodexSessionProvider } from "./adapters/codex/CodexSessionProvider.js";
 import { AcpAdapter } from "./adapters/acp/AcpAdapter.js";
@@ -70,8 +67,6 @@ function constructProvider(kind: AgentProviderKind, providerId?: string): AgentP
   switch (kind) {
     case "claude-code":
       return new ClaudeCodeAdapter();
-    case "openrouter":
-      return new OpenRouterAdapter();
     case "codex":
       return new CodexAdapter();
     case "cline":
@@ -136,13 +131,12 @@ let _sessionProviders: SessionProvider[] | null = null;
  * iterate over this array to merge results from all providers.
  *
  * Defaults to a single ClaudeCodeSessionProvider on first access. Other
- * providers (OpenRouter, Codex) are added here once their adapters land.
+ * providers are added here once their adapters land.
  */
 export function getSessionProviders(): readonly SessionProvider[] {
   if (!_sessionProviders) {
     _sessionProviders = [
       new ClaudeCodeSessionProvider(),
-      new OpenRouterSessionProvider(),
       new CodexSessionProvider(),
       new ClineSessionProvider(),
       new PiSessionProvider(),

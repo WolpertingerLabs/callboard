@@ -52,20 +52,18 @@ interface LocalStorageData {
    * Empty/absent means "use the global default from Settings → API". */
   defaultClineModel?: string;
   defaultPiModel?: string;
-  /** User's last-selected OpenRouter reasoning effort in the New Chat panel.
-   * Stored even when the provider is Claude Code so toggling back to OR
-   * restores the prior selection. */
+  /** User's last-selected reasoning effort in the New Chat panel. Shared by
+   * every reasoning-capable provider. Stored even when the provider is Claude
+   * Code so toggling back restores the prior selection. The key keeps its
+   * OpenRouter-era name so existing stored preferences survive. */
   defaultOpenRouterEffort?: EffortLevel;
-  /** User's last-selected OpenRouter model slug in the New Chat panel.
-   * Empty/absent means "use the global default from Settings → API". */
-  defaultOpenRouterModel?: string;
   /** User's last-selected Anthropic model (alias or full ID) for Claude Code
-   * chats in the New Chat panel. Stored separately from the OR model so
-   * toggling providers restores each one's prior selection. Empty/absent
-   * means "use the global default from Settings → API". */
+   * chats in the New Chat panel. Stored separately from the other providers'
+   * models so toggling providers restores each one's prior selection.
+   * Empty/absent means "use the global default from Settings → API". */
   defaultClaudeModel?: string;
   /** User's last-selected Codex model (e.g. "gpt-5.5") for Codex chats in the
-   * New Chat panel. Stored separately from the OR/Claude models so toggling
+   * New Chat panel. Stored separately from the Claude model so toggling
    * providers restores each one's prior selection. Empty/absent means "use the
    * global default from Settings → API". */
   defaultCodexModel?: string;
@@ -124,7 +122,7 @@ export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   setStorageData(data);
 }
 
-const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "openrouter", "codex", "acp", "cline", "pi"]);
+const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "codex", "acp", "cline", "pi"]);
 
 export function getDefaultProvider(): AgentProviderKind {
   const data = getStorageData();
@@ -132,6 +130,9 @@ export function getDefaultProvider(): AgentProviderKind {
   // Validate against the known set on read — protects against stale or
   // forward-compat values (e.g. an experimental "codex" written by a
   // future build then opened in an older one). Unknown → claude-code.
+  // This is also what retires a saved `"openrouter"` default: the harness is
+  // gone from the set, so the stored preference lapses to claude-code on the
+  // next read rather than needing a migration.
   return stored && KNOWN_PROVIDERS.has(stored) ? stored : "claude-code";
 }
 
@@ -222,11 +223,11 @@ export function saveDefaultPiModel(model: string): void {
 const KNOWN_EFFORTS: ReadonlySet<EffortLevel> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
 
 /**
- * Last-selected OpenRouter effort. Returns `undefined` when nothing has been
- * stored — the New Chat dropdown surfaces this as the "(unset)" option,
- * which leaves the `reasoning` payload off the OR API call entirely. Any
- * stored value not in {@link KNOWN_EFFORTS} (e.g. a forward-compat level
- * from a newer build) also degrades to `undefined`.
+ * Last-selected reasoning effort. Returns `undefined` when nothing has been
+ * stored — the New Chat dropdown surfaces this as the "(unset)" option, which
+ * leaves the reasoning payload off the harness call entirely. Any stored value
+ * not in {@link KNOWN_EFFORTS} (e.g. a forward-compat level from a newer build)
+ * also degrades to `undefined`.
  */
 export function getDefaultOpenRouterEffort(): EffortLevel | undefined {
   const data = getStorageData();
@@ -242,27 +243,6 @@ export function saveDefaultOpenRouterEffort(effort: EffortLevel | undefined): vo
     data.defaultOpenRouterEffort = effort;
   } else {
     return; // unknown value — leave existing state alone
-  }
-  setStorageData(data);
-}
-
-/**
- * Last-selected OpenRouter model slug. Returns `""` when nothing has been
- * stored — the New Chat selector treats empty as "use the global default
- * configured in Settings → API".
- */
-export function getDefaultOpenRouterModel(): string {
-  const data = getStorageData();
-  return typeof data.defaultOpenRouterModel === "string" ? data.defaultOpenRouterModel : "";
-}
-
-export function saveDefaultOpenRouterModel(model: string): void {
-  const data = getStorageData();
-  const trimmed = model.trim();
-  if (trimmed.length === 0) {
-    delete data.defaultOpenRouterModel;
-  } else {
-    data.defaultOpenRouterModel = trimmed;
   }
   setStorageData(data);
 }

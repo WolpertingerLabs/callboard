@@ -1,5 +1,3 @@
-import type { OpenRouterServerToolConfig, OpenRouterParamProfile } from "./openrouterCatalog.js";
-import type { ModelRoutingConfig } from "./modelRouting.js";
 import type { ModelAlias } from "./modelAlias.js";
 
 export interface AgentSettings {
@@ -108,8 +106,8 @@ export interface AgentSettings {
 
   // ── Claude Code → OpenRouter endpoint routing ─────────────────────
   // Run the NATIVE Claude Code harness but point it at OpenRouter's
-  // Anthropic-compatible gateway (https://openrouter.ai/api). Distinct from
-  // the standalone OpenRouter provider below, which runs its own harness.
+  // Anthropic-compatible gateway (https://openrouter.ai/api). This is what
+  // replaced the standalone OpenRouter harness: the credentials, not the engine.
 
   /**
    * When true, route the native Claude Code harness through OpenRouter. Hard-codes
@@ -161,31 +159,64 @@ export interface AgentSettings {
   /** CLAUDE_CODE_SUBAGENT_MODEL while routing through OpenRouter. */
   claudeCodeOpenRouterSubagentModel?: string;
 
-  // ── OpenRouter (alternative provider) ─────────────────────────────
-  // Populated when the user enables the OpenRouter provider in
-  // Settings → API. Empty values mean "OpenRouter unavailable" — the
-  // New Chat panel's provider toggle (PR D) is disabled in that state.
-
-  /** OPENROUTER_API_KEY — required to enable the OpenRouter provider. */
-  openRouterApiKey?: string;
-
-  /** OPENROUTER_BASE_URL — override the OR API endpoint. */
-  openRouterBaseUrl?: string;
-
-  /** Default model alias for new OR chats. Defaults to `~anthropic/claude-sonnet-latest`. */
-  openRouterModel?: string;
-
-  /** Absolute path to write OR session logs into. Defaults to `~/.openrouter-agent-harness/logs`. */
-  openRouterLogsRoot?: string;
+  // ── OpenRouter (a service, not a harness) ─────────────────────────
+  // OpenRouter stopped being a selectable agent harness; the credential below
+  // stayed, because two things that are not the harness still need it: the
+  // utility completions (chat titles, branch names, themes) and the
+  // account-wide fallback key for ACP agents. Settings → API's OpenRouter tab
+  // is therefore a credential page, not a provider page.
 
   /**
-   * Per-session OpenRouter spend cap in USD. When omitted, the OR library's
-   * own default (currently $1.00) applies — which historically surprised
-   * users with an unexplained "Agent reached the maximum budget limit." after
-   * a couple dozen turns. Surfacing this knob lets users opt into a higher
-   * ceiling for long-running coding sessions.
+   * OPENROUTER_API_KEY — the account-wide OpenRouter credential.
+   *
+   * Two consumers, both outside any harness:
+   *  - utility completions, when {@link openRouterUtilityCompletions} is on
+   *    (see services/openrouter-completion.ts);
+   *  - ACP agents, as the fallback when {@link acpOpenRouterApiKey} is blank
+   *    (see services/claude.ts).
+   *
+   * Note this is NOT the key used to route a native harness through OpenRouter
+   * — those modes each carry their own (`claudeCodeOpenRouterApiKey`,
+   * `codexOpenRouterApiKey`), so a user can scope keys per use.
    */
-  openRouterMaxBudgetUsd?: number;
+  openRouterApiKey?: string;
+
+  /**
+   * OPENROUTER_BASE_URL — override the OpenRouter API endpoint this key talks
+   * to (proxy, regional mirror). Read by the model catalog and the utility
+   * completion client through one shared resolver, so the two cannot disagree
+   * about where the key belongs. Blank ⇒ `https://openrouter.ai/api/v1`.
+   */
+  openRouterBaseUrl?: string;
+
+  /**
+   * Use OpenRouter for utility completions — the one-shot calls that generate
+   * chat titles, git branch names and themes. Off (or absent) ⇒ they run on the
+   * Claude Code SDK, which needs no extra configuration.
+   *
+   * Explicit opt-in on purpose. The old behavior was "an OpenRouter key exists,
+   * so use it", which silently moved every title/branch/theme call onto a
+   * metered account the moment a key was saved for something else entirely.
+   * Existing key-holders are migrated to `true` on load exactly once, so the
+   * upgrade changes nobody's behavior — see migrateOpenRouterUtilityCompletions.
+   */
+  openRouterUtilityCompletions?: boolean;
+
+  // ── OpenRouter utility completion models ──────────────────────────
+  // One slug per tier the utility callers ask for: titles and branch names run
+  // on haiku, theme generation on sonnet. Blank ⇒ `~anthropic/claude-<tier>-
+  // latest`, OpenRouter's own server-resolved aliases, so the cheap tier stays
+  // cheap without anyone maintaining a version number here. Naming matches the
+  // `claudeCodeOpenRouter*Model` convention above.
+
+  /** Model for haiku-tier utility completions (chat titles, branch names). */
+  openRouterUtilityHaikuModel?: string;
+
+  /** Model for sonnet-tier utility completions (theme generation). */
+  openRouterUtilitySonnetModel?: string;
+
+  /** Model for opus-tier utility completions. No caller asks for this tier today. */
+  openRouterUtilityOpusModel?: string;
 
   /**
    * @deprecated Superseded by the cross-harness {@link modelAliases} registry.
@@ -211,41 +242,6 @@ export interface AgentSettings {
    * {@link ModelAlias} and resolveModelAlias.
    */
   modelAliases?: ModelAlias[];
-
-  /**
-   * OpenRouter server tools (executed on OR's servers) to enable, with their
-   * params. `undefined` ⇒ inherit the harness's three defaults
-   * (datetime/web_search/web_fetch); an explicit empty array ⇒ all server
-   * tools disabled. Each entry is validated against the `OR_SERVER_TOOLS`
-   * catalog. See {@link OpenRouterServerToolConfig}.
-   */
-  openRouterServerTools?: OpenRouterServerToolConfig[];
-
-  /**
-   * Global default OpenRouter generation parameters + plugins, applied to
-   * every OR chat. Merged with any matching per-model profile (per-model
-   * wins). camelCase keys validated against `OR_SAMPLING_PARAMS`/`OR_PLUGINS`.
-   */
-  openRouterModelParamsDefault?: OpenRouterParamProfile;
-
-  /**
-   * Per-model OpenRouter parameter overrides, keyed by the RESOLVED model slug
-   * (after alias expansion), e.g. "openrouter/pareto-code". Lets model-specific
-   * plugin params (pareto-router's minCodingScore, fusion's analysisModels)
-   * attach only to the model they affect. Merged over
-   * {@link openRouterModelParamsDefault} at run time.
-   */
-  openRouterModelParamProfiles?: Record<string, OpenRouterParamProfile>;
-
-  /**
-   * Model Routing (OpenRouter-only). When present and `enabled`, new OpenRouter
-   * chats can opt into classifier-driven model selection: a cheap classifier
-   * model picks a task CLASS from the first prompt, which combines with the
-   * chat's chosen RANK (tier) to select the model via a class×rank matrix. See
-   * {@link ModelRoutingConfig}. Absent/`enabled:false` ⇒ feature unavailable
-   * (current behavior — chats use their fixed selected/default model).
-   */
-  modelRouting?: ModelRoutingConfig;
 
   // ── Codex (alternative provider, subscription-auth) ───────────────
   // Populated when the user enables the OpenAI Codex provider in

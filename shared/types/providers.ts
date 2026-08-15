@@ -11,16 +11,17 @@
 /**
  * Provider kinds the UI is allowed to surface. The full backend
  * `AgentProviderKind` union (in `backend/src/agents/ports/AgentProvider.ts`)
- * also includes adapters not exposed to end users (`mock`).
+ * also includes adapters not exposed to end users (`mock`). Mirrors
+ * `ROUTABLE_PROVIDER_KINDS`.
  */
-export type UiAgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" | "cline" | "pi";
+export type UiAgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi";
 
 /**
- * OpenRouter reasoning-effort levels. Maps onto the OR `reasoning.effort`
- * field which OR translates to each provider's native parameter (Anthropic
- * `thinking.budget_tokens`, OpenAI `reasoning_effort`, Gemini
- * `thinkingConfig.thinkingLevel`, Qwen `thinking_budget`, xAI
- * `reasoning_effort`). Non-reasoning models silently ignore it.
+ * Reasoning-effort levels. Named for OpenRouter's `reasoning.effort` field,
+ * where they originated, and reused by every reasoning-capable harness — each
+ * adapter translates them onto its own knob (Codex `modelReasoningEffort`,
+ * Cline `thinking`/`reasoningEffort`, pi `thinkingLevel`). Non-reasoning models
+ * silently ignore it.
  *
  * `undefined` (no value persisted) means "don't send a reasoning payload";
  * `"none"` means "explicitly request no reasoning". Both produce the same
@@ -50,13 +51,13 @@ export interface ProviderRunConfig {
    */
   acpProviderId?: string;
   /**
-   * Model for the chat's provider. For "openrouter": an OR slug (e.g.
-   * "anthropic/claude-opus-4.7") or a user-defined alias. For "claude-code":
-   * an Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or full
-   * model ID (e.g. "claude-sonnet-4-6"). Empty string = use the provider's
-   * global default (Settings → API).
+   * Model for the chat's provider. For "claude-code": an Anthropic model alias
+   * ("opus", "sonnet", "haiku", "opusplan") or full model ID (e.g.
+   * "claude-sonnet-4-6"). For every other kind: that harness's own model id.
+   * A cross-harness alias (see `modelAlias.ts`) works with any of them. Empty
+   * string = use the provider's global default (Settings → API).
    */
   model?: string;
-  /** OR-only. Ignored when provider is "claude-code". */
+  /** Reasoning-capable providers only. Ignored when provider is "claude-code". */
   effort?: EffortLevel;
 }

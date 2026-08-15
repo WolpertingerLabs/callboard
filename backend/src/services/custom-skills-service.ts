@@ -7,17 +7,22 @@
  *   ├── .claude-plugin/plugin.json        ← synthetic "callboard" plugin manifest
  *   └── skills/<name>/SKILL.md            ← standard skill frontmatter + body
  *
- * The plugin-shaped chat paths consume this with their existing plugin-skill
- * machinery: claude.ts#buildPluginOptions appends the directory as a
- * `{ type:"local" }` plugin descriptor, which the Claude SDK loads natively and
- * the OpenRouter adapter picks up via extractPluginDirs → loadPlugins. Skills
- * are therefore invoked as `callboard:<name>` on both providers, and the
+ * Two consumers, two doors onto the same files:
+ *
+ *   - **Claude Code.** `claude.ts#buildPluginOptions` appends the directory as a
+ *     `{ type:"local" }` descriptor in `options.plugins`, and the Claude Code
+ *     SDK loads it natively — no Callboard-side skill loader is involved.
+ *   - **pi**, which has no plugin concept, takes the bare skills root through
+ *     {@link CustomSkillsService.getSkillsDir} into `additionalSkillPaths` —
+ *     see that method, and `agents/adapters/pi/optionsAdapter.ts` for why the
+ *     injection is deliberately narrower there.
+ *
+ * Skills are invoked as `callboard:<name>` on the plugin path, and the
  * namespace guarantees we never shadow framework, user, or project skills.
  *
- * pi has no plugin concept, so it takes the same skills through
- * {@link CustomSkillsService.getSkillsDir} instead — see that method, and
- * `agents/adapters/pi/optionsAdapter.ts` for why the injection is deliberately
- * narrower there.
+ * Both doors are covered against their real loaders rather than against a
+ * mock — `custom-skills.plugin-load.test.ts` for the Claude side and
+ * `agents/adapters/pi/customSkills.test.ts` for pi's.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, renameSync, statSync } from "fs";
 import { join } from "path";

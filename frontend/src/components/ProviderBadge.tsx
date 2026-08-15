@@ -1,8 +1,9 @@
 interface ProviderBadgeProps {
-  // Chat provider from metadata. "openrouter" → "OR", "codex" → "CX",
-  // "cline" → "CL", "pi" → "PI", "acp" → the vendor's tag. Anything else (including undefined/null, which is
-  // how Claude Code chats are stored — only the alternative providers are
-  // persisted to metadata) renders as the "CC" default.
+  // Chat provider from metadata. "codex" → "CX",
+  // "cline" → "CL", "pi" → "PI", "acp" → the vendor's tag, a retired harness →
+  // its own tag (see RETIRED_PROVIDER_TAGS). Anything else (including
+  // undefined/null, which is how Claude Code chats are stored — only the
+  // alternative providers are persisted to metadata) renders as the "CC" default.
   provider?: string | null;
   // Which ACP vendor, for chats on the ACP kind — the `acpProviderId` in chat
   // metadata. Ignored for every other provider. Absent or unrecognized falls
@@ -30,21 +31,31 @@ const ACP_VENDOR_TAGS: Record<string, { tag: string; label: string }> = {
   opencode: { tag: "OC", label: "OpenCode" },
 };
 
-// Small tag marking which provider a chat runs on: "OR" for OpenRouter,
-// "CX" for Codex, "CL" for Cline, "PI" for pi, the vendor's own tag for an ACP agent,
-// "CC" (Claude Code) otherwise. Shared by the chat header, the chat list, and the folder list so
+// Harnesses callboard has removed. A chat stamped with one still has a record,
+// so it can still be reached — by direct URL, or as an ancestor in a chat tree —
+// and the badge is the only place the UI names the harness. Falling through to
+// the "CC" default would put "This chat runs on Claude Code" on a chat Claude
+// Code cannot resume, which is the one wrong answer available here. Mirrors
+// RETIRED_PROVIDER_KINDS in backend/src/agents/ports/AgentProvider.ts.
+const RETIRED_PROVIDER_TAGS: Record<string, { tag: string; label: string }> = {
+  openrouter: { tag: "OR", label: "the OpenRouter agent harness" },
+};
+
+// Small tag marking which provider a chat runs on: "CX" for Codex, "CL" for
+// Cline, "PI" for pi, the vendor's own tag for an ACP agent, "CC" (Claude Code)
+// otherwise. Shared by the chat header, the chat list, and the folder list so
 // the indicator is consistent everywhere.
 export default function ProviderBadge({ provider, acpProviderId, compact }: ProviderBadgeProps) {
-  const isOpenRouter = provider === "openrouter";
   const isCodex = provider === "codex";
   const isAcp = provider === "acp";
   const isCline = provider === "cline";
   const isPi = provider === "pi";
+  const retired = provider ? RETIRED_PROVIDER_TAGS[provider] : undefined;
   const vendor = isAcp && acpProviderId ? ACP_VENDOR_TAGS[acpProviderId] : undefined;
 
-  const label = isOpenRouter ? "OR" : isCodex ? "CX" : isCline ? "CL" : isPi ? "PI" : isAcp ? (vendor?.tag ?? "ACP") : "CC";
-  const title = isOpenRouter
-    ? "This chat is routed through OpenRouter"
+  const label = retired ? retired.tag : isCodex ? "CX" : isCline ? "CL" : isPi ? "PI" : isAcp ? (vendor?.tag ?? "ACP") : "CC";
+  const title = retired
+    ? `This chat ran on ${retired.label}, which has been removed — it cannot be resumed`
     : isCodex
       ? "This chat runs on OpenAI Codex"
       : isCline
@@ -55,14 +66,17 @@ export default function ProviderBadge({ provider, acpProviderId, compact }: Prov
             ? `This chat runs on ${vendor?.label ?? "an ACP agent"}`
             : "This chat runs on Claude Code";
 
-  const palette = isOpenRouter
-    ? { background: "var(--badge-provider-openrouter-bg)", color: "var(--badge-provider-text)" }
-    : isCodex
-      ? { background: "var(--badge-provider-codex-bg)", color: "var(--badge-provider-text)" }
-      : isCline
-        ? { background: "var(--badge-provider-cline-bg)", color: "var(--badge-provider-text)" }
-        : isPi
-          ? { background: "var(--badge-provider-pi-bg)", color: "var(--badge-provider-text)" }
+  // A retired harness falls through to the muted outline, sharing it with the
+  // Claude Code default: the filled badges read as "this is a harness you can
+  // run on", and dedicating a colour to one you cannot would say the opposite of
+  // what the title says. It reaches that branch on its own — a retired kind is
+  // none of the four filled ones — so there is nothing extra to test for here.
+  const palette = isCodex
+    ? { background: "var(--badge-provider-codex-bg)", color: "var(--badge-provider-text)" }
+    : isCline
+      ? { background: "var(--badge-provider-cline-bg)", color: "var(--badge-provider-text)" }
+      : isPi
+        ? { background: "var(--badge-provider-pi-bg)", color: "var(--badge-provider-text)" }
         : isAcp
           ? { background: "var(--badge-provider-acp-bg)", color: "var(--badge-provider-text)" }
           : { background: "var(--surface)", color: "var(--text-muted)", border: "1px solid var(--border)" };

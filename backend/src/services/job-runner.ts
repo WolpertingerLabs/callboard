@@ -1075,10 +1075,12 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   }
 
   const provider = sessionFields?.provider ?? defaults.provider ?? "claude-code";
-  // Per-step model wins; the job-level default model only applies to OR steps
-  // (it's documented as an OR slug — claude-code steps inherit the global
-  // Settings → API model unless the step sets one explicitly).
-  const model = sessionFields?.model ?? (provider === "openrouter" ? defaults.model : undefined);
+  // Per-step model only. The job-level default model was documented as an
+  // OpenRouter slug and applied only to OR steps; with that harness removed
+  // there is nothing left it could legitimately configure, and claude-code steps
+  // inherit the global Settings → API model unless the step sets one. A step
+  // still naming `provider: "openrouter"` is refused by `sendMessage`.
+  const model = sessionFields?.model;
 
   const promptIterable = (async function* () {
     yield { type: "user" as const, message: { role: "user" as const, content: prompt } };
@@ -1100,7 +1102,6 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     triggeredBy: "job",
     provider,
     ...(model && { model }),
-    ...(sessionFields?.effort && provider === "openrouter" && { effort: sessionFields.effort }),
     jobContext: {
       runId,
       stepId,

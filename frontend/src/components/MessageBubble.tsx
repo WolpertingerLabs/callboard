@@ -43,14 +43,21 @@ export const TEAM_COLORS = [
   "#0ea5e9", // Sky
 ] as const;
 
-// Small pill marking tools executed on OpenRouter's servers (datetime /
-// web_search / web_fetch) rather than by the local agent process. Renders
-// nothing for local tools so call sites can include it unconditionally.
+// Small pill marking tools executed on the provider's own servers rather than
+// by the local agent process. Renders nothing for local tools so call sites can
+// include it unconditionally.
+//
+// No harness callboard ships today emits `toolSource: "openrouter_server"` — the
+// only one that did was the removed OpenRouter harness. The renderer stays
+// because the wire field does (`shared/types/stream.ts` is a published
+// interface, and fields are never removed): a new bundle talking to an older
+// daemon still receives the value, and dropping the badge would silently
+// mislabel those calls as local.
 export function ToolSourceBadge({ toolSource }: { toolSource?: ParsedMessage["toolSource"] }) {
   if (toolSource !== "openrouter_server") return null;
   return (
     <span
-      title="Executed on OpenRouter's servers"
+      title="Executed on the provider's servers"
       style={{
         marginLeft: 6,
         padding: "1px 6px",
@@ -71,8 +78,8 @@ export function ToolSourceBadge({ toolSource }: { toolSource?: ParsedMessage["to
 }
 
 // Tool-call formatting (summaries, display names) lives in toolFormatting.ts —
-// it handles all three provider naming conventions (Claude Code, OpenRouter
-// harness, Codex). Re-exported here for existing import sites.
+// it handles every provider naming convention callboard sees (Claude Code,
+// Codex, ACP vendors, Cline, pi). Re-exported here for existing import sites.
 export { getToolSummary };
 
 const StatusIcon = ({ status }: { status: string }) => {
@@ -96,7 +103,6 @@ function MessageCopyButton({ text }: { text: string }) {
 const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
   { kind: "claude-code", label: "Claude Code" },
   { kind: "codex", label: "Codex" },
-  { kind: "openrouter", label: "OpenRouter" },
   { kind: "cline", label: "Cline" },
   { kind: "pi", label: "pi" },
 ];
@@ -560,8 +566,8 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
   }
 
   if (message.type === "system") {
-    // Provider/API failure persisted on the session record (e.g. an
-    // OpenRouter upstream error with provider attempts and routing detail).
+    // Provider/API failure persisted on the session record (e.g. an upstream
+    // gateway error with provider attempts and routing detail).
     // Rendered as a hard error block — unlike boundary markers, the user
     // needs to actually read this one.
     if (message.subtype === "session_error") {

@@ -36,7 +36,6 @@ const { buildCallboardToolsSpec } = await import("../../../services/callboard-to
 const { buildAgentToolsSpec } = await import("../../../services/agent-tools.js");
 const { buildObjectiveToolsSpec } = await import("../../../services/objective-tools.js");
 const { buildProxyToolsSpec } = await import("../../../services/proxy-tools.js");
-const { buildModelRoutingToolsSpec } = await import("../../../services/model-routing-tools.js");
 const { buildJobStepToolsSpec } = await import("../../../services/job-step-tools.js");
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
@@ -48,7 +47,6 @@ function realSpecs(): Array<[string, ToolServerSpec]> {
     ["agent-tools", buildAgentToolsSpec("agent", () => "chat-1")],
     ["objective-tools", buildObjectiveToolsSpec(() => "chat-1")],
     ["proxy-tools", buildProxyToolsSpec("key")],
-    ["model-routing-tools", buildModelRoutingToolsSpec(() => "chat-1")],
     ["job-step-tools", buildJobStepToolsSpec(() => undefined)],
   ];
 }

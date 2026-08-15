@@ -12,11 +12,13 @@
  * That shape has two problems, and only the first is aesthetic. The second is
  * the bug it shipped: **the fallback is a real provider's map, not a neutral
  * default.** Every non-ACP kind silently inherited Claude Code's PascalCase
- * table, so OpenRouter — whose tool names are all snake_case — matched nothing
- * and fell through `categorizeClaudeTool`'s `return "fileWrite"`. The
- * production log carries 641 `tool=bash, category=fileWrite, decision=allow`
- * lines: OR's shell tool, gated on the `fileWrite` axis, auto-allowed for every
- * user whose policy allowed writes but asked about execution.
+ * table, so the since-removed OpenRouter harness — whose tool names were all
+ * snake_case — matched nothing and fell through `categorizeClaudeTool`'s
+ * `return "fileWrite"`. The production log carries 641 `tool=bash,
+ * category=fileWrite, decision=allow` lines: its shell tool, gated on the
+ * `fileWrite` axis, auto-allowed for every user whose policy allowed writes but
+ * asked about execution. The harness is gone; the shape that let it happen is
+ * what this file exists to prevent recurring.
  *
  * A `Record<AgentProviderKind, …>` removes the failure mode by construction. A
  * new kind added to the union without an entry here is a **compile error**, not
@@ -47,10 +49,6 @@
  *    escalation path but the whole permission surface.
  *  - **claude-code** — one pass. The SDK calls `canUseTool`; nothing else
  *    decides.
- *  - **openrouter** — one pass. The harness wraps each client tool's execute
- *    with the single `canUseTool` callboard supplies (`wrapToolWithPermission`
- *    in the harness's `agent.ts`); the OR adapter has no resolve path of its
- *    own. Nothing to keep in sync.
  *  - **codex** — no passes at all; see below.
  *  - **mock** — no passes; it is a scripted event emitter.
  *
@@ -61,7 +59,6 @@ import type { AgentProviderKind } from "../ports/AgentProvider.js";
 import type { PermissionCategory } from "./ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../adapters/claude-code/permissionAdapter.js";
 import { categorizeAcpToolName } from "../adapters/acp/permissionAdapter.js";
-import { categorizeOpenRouterTool } from "../adapters/openrouter/permissionAdapter.js";
 import { categorizeClineToolName } from "../adapters/cline/permissionAdapter.js";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
 
@@ -96,7 +93,6 @@ const gateEverything: ToolCategorizer = () => "codeExecution";
  */
 export const TOOL_CATEGORIZERS: Record<AgentProviderKind, ToolCategorizer> = {
   "claude-code": categorizeClaudeTool,
-  openrouter: categorizeOpenRouterTool,
   acp: categorizeAcpToolName,
   cline: categorizeClineToolName,
   pi: categorizePiToolName,

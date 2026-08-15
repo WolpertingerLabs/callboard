@@ -1,5 +1,7 @@
 /**
- * generateThemeCSS's contrast gate, driven end to end through MockAgentProvider.
+ * generateThemeCSS's contrast gate, driven end to end — through
+ * MockAgentProvider for the Claude Code branch, and a mocked `fetch` for the
+ * OpenRouter one.
  *
  * The unit tests in theme-contrast.test.ts prove the measurement and the
  * correction; these prove the thing that actually protects users — that a
@@ -13,26 +15,26 @@ import { MockAgentProvider } from "../agents/adapters/mock/MockAgentProvider.js"
 
 vi.mock("./agent-settings.js", () => ({
   getClaudeCodeExecutablePath: () => undefined,
-  isOpenRouterConfigured: vi.fn(() => false),
-  getAgentSettings: vi.fn(() => ({ proxyMode: "local" })),
+  getApiEnvOverrides: vi.fn(() => ({}) as Record<string, string>),
+  getAgentSettings: vi.fn((): AgentSettings => ({ proxyMode: "local" })),
 }));
 
 import { generateThemeCSS } from "./quick-completion.js";
 import { THEME_VARIABLE_NAMES } from "./theme-variables.js";
 import { BUILTIN_PALETTE } from "./theme-contrast-palette.js";
 import { auditThemeVars, measureMode } from "./theme-contrast.js";
-import { getAgentSettings, isOpenRouterConfigured } from "./agent-settings.js";
+import { getAgentSettings } from "./agent-settings.js";
+import type { AgentSettings } from "shared";
 
-const mockIsOpenRouterConfigured = vi.mocked(isOpenRouterConfigured);
 const mockGetAgentSettings = vi.mocked(getAgentSettings);
 
 beforeEach(() => {
-  mockIsOpenRouterConfigured.mockReturnValue(false);
   mockGetAgentSettings.mockReturnValue({ proxyMode: "local" });
 });
 
 afterEach(() => {
   setAgentProviderForTesting(null);
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -241,5 +243,50 @@ describe("generateThemeCSS — contrast gate", () => {
     const { theme } = expectOk(await pending);
 
     expect(auditThemeVars(theme.dark, theme.light).failures).toEqual([]);
+  });
+});
+
+/**
+ * The same gate over the OpenRouter backend. Theme generation is the heaviest
+ * utility call — the sonnet tier, ~90 variables in two modes — so it is the one
+ * worth proving end to end on the client that replaced the harness.
+ */
+describe("generateThemeCSS — over the OpenRouter backend", () => {
+  /** Queue one chat-completions response per call, in order. */
+  function stubOpenRouter(...answers: string[]): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn();
+    for (const text of answers) {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ choices: [{ message: { content: text } }] }),
+        text: async () => "",
+      } as unknown as Response);
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  beforeEach(() => {
+    mockGetAgentSettings.mockReturnValue({ proxyMode: "local", openRouterApiKey: "sk-or-test", openRouterUtilityCompletions: true });
+  });
+
+  it("parses the model's JSON and runs it through the same contrast gate", async () => {
+    const fetchMock = stubOpenRouter(themeJson({}, { "status-triggered": "#f59e0b" }));
+
+    const { theme } = expectOk(await generateThemeCSS("Amber", "amber everything"));
+
+    // Corrected in flight, exactly as on the Claude Code branch.
+    expect(theme.light["status-triggered"]).not.toBe("#f59e0b");
+    expect(auditThemeVars(theme.dark, theme.light).failures).toEqual([]);
+    // Themes ask for the sonnet tier, not the haiku one the titles use.
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).model).toBe("~anthropic/claude-sonnet-latest");
+  });
+
+  it("still spends its retry when the first answer is not a theme", async () => {
+    stubOpenRouter("I'm afraid I can't do that.", themeJson());
+    const { theme } = expectOk(await generateThemeCSS("Recovered", "anything"));
+    expect(theme.name).toBe("Recovered");
   });
 });

@@ -86,7 +86,6 @@ import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
-import { OR_LIBRARY_DEFAULT_MAX_BUDGET_USD } from "./agents/adapters/openrouter/optionsAdapter.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 import { listAcpProviderAvailability } from "./agents/adapters/acp/availability.js";
 
@@ -409,15 +408,6 @@ app.get(
     // Include cached SDK info (account + models) if available
     const sdkInfo = await getSdkInfoAsync();
 
-    // Derive openRouterConfigured from settings so the frontend can enable
-    // the New Chat panel's OpenRouter toggle without exposing the key.
-    // `getAgentSettings` is imported statically at the top of this file.
-    let openRouterConfigured = false;
-    // Effective per-session cap, exposed so the New Chat panel can show
-    // "Spend cap: $X.XX per session" without the frontend duplicating the
-    // library's default. Falls back to the OR library's own default when no
-    // user override is configured.
-    let openRouterMaxBudgetUsd: number = OR_LIBRARY_DEFAULT_MAX_BUDGET_USD;
     // Whether each native harness is EFFECTIVELY routed through OpenRouter —
     // toggle on and credentials available, from settings or from the ambient
     // env. The model selectors and New Chat panel read these to switch their
@@ -434,15 +424,11 @@ app.get(
     let clineProviderId = DEFAULT_CLINE_PROVIDER_ID;
     try {
       const s = getAgentSettings();
-      openRouterConfigured = Boolean(s.openRouterApiKey?.trim());
       clineProviderId = s.clineProviderId?.trim() || DEFAULT_CLINE_PROVIDER_ID;
       claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
       codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
-      if (typeof s.openRouterMaxBudgetUsd === "number" && Number.isFinite(s.openRouterMaxBudgetUsd)) {
-        openRouterMaxBudgetUsd = s.openRouterMaxBudgetUsd;
-      }
     } catch {
-      // Settings unreadable — treat as unconfigured and use the library default.
+      // Settings unreadable — treat every routing mode as off.
     }
 
     // Whether the Codex provider has usable credentials (api key set, a
@@ -502,8 +488,6 @@ app.get(
       environment: process.env.NODE_ENV || "development",
       account: sdkInfo.account || undefined,
       models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
-      openRouterConfigured,
-      openRouterMaxBudgetUsd,
       claudeCodeUseOpenRouter,
       codexUseOpenRouter,
       claudeCodeOpenRouterDetected,

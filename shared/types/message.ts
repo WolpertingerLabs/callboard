@@ -5,10 +5,14 @@ export interface ParsedMessage {
   toolName?: string;
   toolUseId?: string;
   /**
-   * Where the tool executed: "local" for tools run by the agent process
-   * (Claude Code tools, MCP tools, OR function calls), "openrouter_server"
-   * for OpenRouter server tools (`openrouter:datetime`, `openrouter:web_search`,
-   * `openrouter:web_fetch`) executed on OpenRouter's servers. Absent ⇒ local.
+   * Where the tool executed: "local" for tools run by the agent process (Claude
+   * Code tools, MCP tools, a harness's own function calls), "openrouter_server"
+   * for tools executed on the provider's servers. Absent ⇒ local.
+   *
+   * Nothing writes the second value today — the OpenRouter harness that did was
+   * removed. It stays because the paired field in `shared/types/stream.ts` is a
+   * published interface, and because transcripts written before the removal
+   * still carry it.
    */
   toolSource?: "local" | "openrouter_server";
   isBuiltInCommand?: boolean;
@@ -37,12 +41,12 @@ export interface ParsedMessage {
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
-    /** Reasoning-trace tokens billed as output (OpenRouter only). */
+    /** Reasoning-trace tokens billed as output, when the adapter reports them. */
     reasoning_tokens?: number;
   };
-  /** USD cost for this response, when the adapter exposes it (OpenRouter). */
+  /** USD cost for this response, when the adapter exposes it. */
   costUsd?: number;
-  /** End-to-end duration of the assistant turn that produced this message, in ms (OpenRouter transcript). */
+  /** End-to-end duration of the assistant turn that produced this message, in ms, when the transcript records it. */
   durationMs?: number;
   /** API service tier, e.g. "standard" */
   serviceTier?: string;
@@ -66,11 +70,11 @@ export interface ParsedMessage {
   /**
    * Unique key identifying a single model generation within the responses
    * debug table. For Claude Code this equals `requestId` (every API call
-   * already has its own id). For OpenRouter the harness reuses the same
-   * `requestId` across all intra-cycle turns, so the transcript parser
-   * synthesises `generationKey` as `"<requestId>/<turnNumber>"` — giving
-   * each generation a distinct identity the debug panel can group on.
-   * Falls back to `requestId` when absent (all Claude rows, legacy OR rows).
+   * already has its own id). A harness that reuses one `requestId` across all
+   * intra-cycle turns needs its transcript parser to synthesise `generationKey`
+   * as `"<requestId>/<turnNumber>"` instead, giving each generation a distinct
+   * identity the debug panel can group on. Falls back to `requestId` when
+   * absent, which is every row this build produces.
    */
   generationKey?: string;
   /** Server-side tool usage counts */

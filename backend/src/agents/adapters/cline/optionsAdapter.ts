@@ -1,10 +1,9 @@
 /**
  * Options adapter: callboard run options → Cline `ClineCoreStartConfig`.
  *
- * Mirrors `adapters/codex/optionsAdapter.ts` and
- * `adapters/openrouter/optionsAdapter.ts` in role: `services/claude.ts` builds a
- * loosely-typed options bag, and exactly one module per adapter turns it into
- * that engine's config object. Everything Cline-shaped lives here so the query
+ * Mirrors `adapters/codex/optionsAdapter.ts` in role: `services/claude.ts`
+ * builds a loosely-typed options bag, and exactly one module per adapter turns
+ * it into that engine's config object. Everything Cline-shaped lives here so the query
  * stays about lifecycle.
  *
  * @see plans/cline-adapter.md
