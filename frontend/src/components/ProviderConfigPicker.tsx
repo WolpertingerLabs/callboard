@@ -13,25 +13,22 @@ interface ProviderConfigPickerProps {
   onProviderChange: (provider: AgentProviderKind) => void;
   effort: EffortLevel | undefined;
   onEffortChange: (effort: EffortLevel | undefined) => void;
-  // OpenRouter model. Empty string = "use global default from Settings → API".
-  // Free-form text; OR validates the slug server-side.
-  model: string;
-  onModelChange: (model: string) => void;
   // Anthropic model for Claude Code chats (alias like "opus" or full ID like
   // "claude-sonnet-4-6"). Empty string = "use global default from Settings →
-  // API". Kept separate from `model` so toggling providers restores each
-  // one's prior selection. Free-form text; the CLI validates server-side.
+  // API". Kept separate from each other provider's model so toggling providers
+  // restores each one's prior selection. Free-form text; the CLI validates
+  // server-side.
   claudeModel: string;
   onClaudeModelChange: (model: string) => void;
   // Codex model (e.g. "gpt-5.5"). Empty string = "use global default from
-  // Settings → API". Kept separate from `model`/`claudeModel` so toggling
-  // providers restores each one's prior selection. Optional — callers that
+  // Settings → API". Kept separate from `claudeModel` so toggling providers
+  // restores each one's prior selection. Optional — callers that
   // don't surface a Codex per-chat model omit it (the selector then hides).
   codexModel?: string;
   onCodexModelChange?: (model: string) => void;
   // `null`/undefined while /system-info is in flight (or when the caller
   // doesn't gate Codex) — Codex is treated as available until an explicit
-  // false disables the button (mirrors `openRouterConfigured`).
+  // false disables the button.
   codexConfigured?: boolean | null;
   // ACP vendors, from /api/system-info. One button each rather than an "ACP"
   // button plus a sub-picker: `acp` is a wire format, not a harness, and a user
@@ -71,20 +68,14 @@ interface ProviderConfigPickerProps {
   // each provider's prior selection.
   piModel?: string;
   onPiModelChange?: (model: string) => void;
-  // `null` while /system-info is in flight — OR is treated as available until
-  // we know otherwise (the disabled gate only kicks in on an explicit false).
-  openRouterConfigured: boolean | null;
-  // `null` while in flight or unreachable — the spend-cap line is suppressed.
-  // Only consulted in `panel` mode; `inline` mode hides the cap line for space.
-  openRouterMaxBudgetUsd: number | null;
   // Opens Settings → API (caller decides how to close any wrapping panel first).
   onOpenApiSettings: () => void;
   // Layout mode. `panel` (default) renders the original stacked vertical
   // layout used in NewChatPanel and the cron form. `inline` renders a
   // compact horizontal row suitable for the chat composer's expandable
-  // toggle panel — smaller labels, narrower controls, no spend-cap hint.
+  // toggle panel — smaller labels, narrower controls, no help text.
   mode?: ProviderConfigPickerMode;
-  // When false, the Claude Code vs. OpenRouter toggle is hidden entirely.
+  // When false, the provider toggle is hidden entirely.
   // Use for the chat composer, where the provider is already pinned for the
   // lifetime of the chat and only model/effort are mutable. Defaults true.
   showProviderToggle?: boolean;
@@ -94,10 +85,6 @@ interface ProviderConfigPickerProps {
   // True when the native Codex harness is routed through OpenRouter — the Codex
   // model picker then lists OpenRouter slugs (openai/* first).
   codexUseOpenRouter?: boolean;
-  // When provided (OpenRouter only), renders in place of the per-chat model
-  // field — used to swap in the Manual/Router model switcher. Sits beside the
-  // reasoning-effort selector so both share the OpenRouter control row.
-  openRouterModelSlot?: React.ReactNode;
 }
 
 /**
@@ -107,21 +94,18 @@ interface ProviderConfigPickerProps {
  *  - Chat.tsx composer — inline horizontal layout, provider toggle hidden
  *    (each chat is pinned to one provider at creation time).
  *
- * Reasoning effort renders for the two reasoning-capable providers —
- * OpenRouter (when configured) and Codex — and maps to each one's native
- * knob (OR `reasoning.effort`, Codex `modelReasoningEffort`). Each provider
- * also shows its own model control (OR slug, Anthropic alias/ID, or Codex
- * model); Claude Code has no effort. Each provider's model value lives in a
- * separate prop — switching the toggle swaps the controls while preserving
- * both values, so toggling back restores the prior selection.
+ * Reasoning effort renders for the reasoning-capable providers — Codex, Cline
+ * and pi — and maps to each one's native knob (Codex `modelReasoningEffort`,
+ * Cline `thinking`/`reasoningEffort`, pi `thinkingLevel`). Each provider also
+ * shows its own model control; Claude Code has no effort. Each provider's model
+ * value lives in a separate prop — switching the toggle swaps the controls while
+ * preserving every value, so toggling back restores the prior selection.
  */
 export default function ProviderConfigPicker({
   provider,
   onProviderChange,
   effort,
   onEffortChange,
-  model,
-  onModelChange,
   claudeModel,
   onClaudeModelChange,
   codexModel,
@@ -137,25 +121,22 @@ export default function ProviderConfigPicker({
   onPiModelChange,
   onClineModelChange,
   clineProviderId,
-  openRouterConfigured,
-  openRouterMaxBudgetUsd,
   onOpenApiSettings,
   mode = "panel",
   showProviderToggle = true,
   claudeCodeUseOpenRouter = false,
   codexUseOpenRouter = false,
-  openRouterModelSlot,
 }: ProviderConfigPickerProps) {
   const inline = mode === "inline";
-  const showOrKnobs = provider === "openrouter" && openRouterConfigured !== false;
   const showClaudeKnobs = provider === "claude-code";
   // Codex per-chat model only renders when the caller wired a change handler.
   const showCodexKnobs = provider === "codex" && onCodexModelChange !== undefined;
-  // Reasoning effort is shared by the two reasoning-capable providers
-  // (OpenRouter → OR `reasoning.effort`, Codex → `modelReasoningEffort`).
-  const showEffort = showOrKnobs || provider === "codex" || provider === "cline" || provider === "pi";
+  // Reasoning effort is shared by every reasoning-capable provider (Codex →
+  // `modelReasoningEffort`, Cline → `thinking`/`reasoningEffort`, pi →
+  // `thinkingLevel`).
+  const showEffort = provider === "codex" || provider === "cline" || provider === "pi";
 
-  // The reasoning-effort selector, shared by the OR and Codex control rows. Only
+  // The reasoning-effort selector, shared by each provider's control row. Only
   // one provider's row renders at a time, so the element id never collides.
   const effortControl = showEffort ? (
     <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "0 0 auto" : undefined, width: inline ? 90 : undefined }}>
@@ -201,46 +182,6 @@ export default function ProviderConfigPicker({
             : "Maps to each provider’s native thinking parameter. Non-reasoning models ignore this."}
         </div>
       )}
-    </div>
-  ) : null;
-
-  // `inline` mode lays the controls side-by-side; `panel` mode stacks them.
-  const orControls = showOrKnobs ? (
-    <div style={inline ? { display: "flex", gap: 8, alignItems: "flex-start" } : { display: "block" }}>
-      {effortControl}
-
-      {/* Per-chat model override — OpenRouter only. When the caller supplies a
-          slot (the Manual/Router switcher) it replaces the plain model field;
-          otherwise the field falls back to the global default from Settings → API. */}
-      <div style={{ marginBottom: inline ? 0 : 12, flex: inline ? "1 1 auto" : undefined, minWidth: inline ? 180 : 0 }}>
-        {openRouterModelSlot ?? (
-          <>
-            <label
-              htmlFor={inline ? "inlineModel" : "newChatModel"}
-              style={{
-                display: "block",
-                fontSize: inline ? 11 : 13,
-                fontWeight: 600,
-                color: "var(--text-muted)",
-                marginBottom: inline ? 4 : 6,
-              }}
-            >
-              Model
-            </label>
-            <OpenRouterModelSelector
-              id={inline ? "inlineModel" : "newChatModel"}
-              value={model}
-              onChange={onModelChange}
-              placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
-            />
-            {!inline && (
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                Optional — leave empty to use the global default from Settings → API.
-              </div>
-            )}
-          </>
-        )}
-      </div>
     </div>
   ) : null;
 
@@ -456,29 +397,6 @@ export default function ProviderConfigPicker({
             </button>
             <button
               type="button"
-              onClick={() => openRouterConfigured !== false && onProviderChange("openrouter")}
-              disabled={openRouterConfigured === false}
-              title={
-                openRouterConfigured === false ? "Configure your OpenRouter API key in Settings → API to enable this provider" : "Use OpenRouter for this chat"
-              }
-              style={{
-                flex: "1 1 84px",
-                padding: inline ? "6px 10px" : "8px 12px",
-                fontSize: inline ? 12 : 13,
-                fontWeight: 500,
-                borderRadius: 6,
-                border: provider === "openrouter" ? "1px solid var(--accent)" : "1px solid var(--border)",
-                background: provider === "openrouter" ? "var(--accent)" : "var(--surface)",
-                color: openRouterConfigured === false ? "var(--text-muted)" : provider === "openrouter" ? "var(--text-on-accent)" : "var(--text)",
-                cursor: openRouterConfigured === false ? "not-allowed" : "pointer",
-                opacity: openRouterConfigured === false ? 0.6 : 1,
-                transition: "all 0.15s",
-              }}
-            >
-              OpenRouter
-            </button>
-            <button
-              type="button"
               onClick={() => codexConfigured !== false && onProviderChange("codex")}
               disabled={codexConfigured === false}
               title={codexConfigured === false ? "Configure Codex in Settings → API to enable this provider" : "Use OpenAI Codex for this chat"}
@@ -501,7 +419,7 @@ export default function ProviderConfigPicker({
             <button
               type="button"
               onClick={() => onProviderChange("cline")}
-              // No `configured` gate, unlike the three above. Cline is an
+              // No `configured` gate, unlike Codex above. Cline is an
               // embedded SDK rather than a binary to install or an account to
               // sign into: it falls back to the backend's own environment
               // credentials, so there is no state in which the button would be
@@ -602,42 +520,9 @@ export default function ProviderConfigPicker({
               to enable.
             </div>
           )}
-          {openRouterConfigured === false && (
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-              Configure your{" "}
-              <a
-                href="/settings/api"
-                style={{ color: "var(--accent-text)", textDecoration: "underline" }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  onOpenApiSettings();
-                }}
-              >
-                OpenRouter API key
-              </a>{" "}
-              to enable.
-            </div>
-          )}
-          {!inline && provider === "openrouter" && openRouterConfigured !== false && openRouterMaxBudgetUsd !== null && (
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-              Spend cap: ${openRouterMaxBudgetUsd.toFixed(2)} per session.{" "}
-              <a
-                href="/settings/api"
-                style={{ color: "var(--accent-text)", textDecoration: "underline" }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  onOpenApiSettings();
-                }}
-              >
-                Adjust in Settings → API
-              </a>
-              .
-            </div>
-          )}
         </div>
       )}
 
-      {orControls}
       {claudeControls}
       {codexControls}
       {acpControls}

@@ -379,7 +379,17 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
  * real handoff — Callboard had built the capability into two harnesses and
  * offered it into neither.
  */
-export type ForkProvider = "claude-code" | "codex" | "openrouter" | "cline" | "pi";
+export type ForkProvider = "claude-code" | "codex" | "cline" | "pi";
+
+/**
+ * The harnesses a conversation can be forked *out of*.
+ *
+ * A superset of {@link ForkProvider} by exactly `"openrouter"`, which is a
+ * source but never a target: the OR harness is retired, so no new chat may land
+ * on it, but the chats already stamped with it still run and still fork. Mirrors
+ * the backend's `INTERNAL_PROVIDER_KINDS` / `ROUTABLE_PROVIDER_KINDS` split.
+ */
+export type ForkSourceProvider = ForkProvider | "openrouter";
 
 /**
  * Fork a chat at a message: creates a new chat whose history is a copy of

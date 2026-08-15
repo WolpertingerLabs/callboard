@@ -85,7 +85,18 @@ type ReferenceLink = {
   note?: string;
 };
 
-const providerReferenceLinks: Record<AgentProviderKind, ReferenceLink[]> = {
+/**
+ * Which section of this page is showing.
+ *
+ * Wider than {@link AgentProviderKind} by `"openrouter"`, which left that union
+ * when the OR harness was retired. The tab stays: the key still backs the
+ * account-wide ACP fallback and the model catalog, so this page is where an
+ * OpenRouter credential is configured — it is a service config, not a harness
+ * tab. See plans/remove-openrouter-engine.md.
+ */
+type SettingsTab = AgentProviderKind | "openrouter";
+
+const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
   "claude-code": [
     { label: "Claude usage", href: "https://claude.ai/settings/usage", note: "Subscription usage and usage credits" },
     { label: "Console billing", href: "https://console.anthropic.com/settings/billing", note: "Anthropic API credits and billing" },
@@ -281,7 +292,7 @@ function AcpProviderSection({
   );
 }
 
-function ReferenceLinksSection({ provider }: { provider: AgentProviderKind }) {
+function ReferenceLinksSection({ provider }: { provider: SettingsTab }) {
   const links = providerReferenceLinks[provider];
   return (
     <div style={{ ...sectionStyle, padding: "10px 12px", marginBottom: 12 }}>
@@ -624,7 +635,7 @@ export default function ApiSettings() {
   // Top-level integration toggle — picks which provider's settings are shown.
   // Seeded from the user's New Chat default so the page opens on the provider
   // they actually use; purely a view selector, not persisted back.
-  const [activeProvider, setActiveProvider] = useState<AgentProviderKind>(() => getDefaultProvider());
+  const [activeProvider, setActiveProvider] = useState<SettingsTab>(() => getDefaultProvider());
   // Which ACP vendor the "acp" tab is showing. `activeProvider` is a KIND, and
   // `acp` is one kind covering many CLIs, so the vendor needs its own slot —
   // the same split the chat metadata and the New Chat picker already make.
@@ -958,16 +969,16 @@ export default function ApiSettings() {
         }}
       >
         {[
-          { kind: "claude-code" as AgentProviderKind, label: "Claude Code", icon: <Bot size={14} />, acpId: "" },
-          { kind: "openrouter" as AgentProviderKind, label: "OpenRouter", icon: <Network size={14} />, acpId: "" },
-          { kind: "codex" as AgentProviderKind, label: "Codex", icon: <Terminal size={14} />, acpId: "" },
-          { kind: "cline" as AgentProviderKind, label: "Cline", icon: <Boxes size={14} />, acpId: "" },
-          { kind: "pi" as AgentProviderKind, label: "pi", icon: <Boxes size={14} />, acpId: "" },
+          { kind: "claude-code" as SettingsTab, label: "Claude Code", icon: <Bot size={14} />, acpId: "" },
+          { kind: "openrouter" as SettingsTab, label: "OpenRouter", icon: <Network size={14} />, acpId: "" },
+          { kind: "codex" as SettingsTab, label: "Codex", icon: <Terminal size={14} />, acpId: "" },
+          { kind: "cline" as SettingsTab, label: "Cline", icon: <Boxes size={14} />, acpId: "" },
+          { kind: "pi" as SettingsTab, label: "pi", icon: <Boxes size={14} />, acpId: "" },
           // One tab per configured ACP vendor rather than a single "ACP" tab:
           // a user picks OpenCode here the same way they pick it in New Chat,
           // and the page has nothing to say about the protocol in the abstract.
           ...(systemInfo?.acpProviders ?? []).map((v) => ({
-            kind: "acp" as AgentProviderKind,
+            kind: "acp" as SettingsTab,
             label: v.label,
             icon: <Plug size={14} />,
             acpId: v.id,

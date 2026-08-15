@@ -100,8 +100,6 @@ streamRouter.post("/new/message", async (req, res) => {
     cardId,
     createCard,
     cardCategory,
-    modelRouting,
-    modelRoutingRankId,
     clientTrackingId,
   } = req.body;
   log.debug(
@@ -191,25 +189,24 @@ streamRouter.post("/new/message", async (req, res) => {
     }
 
     // Effort forwarded only when paired with a reasoning-capable provider
-    // (openrouter → OR reasoning.effort, codex → modelReasoningEffort, cline →
-    // Cline `thinking`/`reasoningEffort`, pi → `thinkingLevel`). On a
-    // claude-code chat it would be
+    // (codex → modelReasoningEffort, cline → Cline `thinking`/`reasoningEffort`,
+    // pi → `thinkingLevel`). On a claude-code chat it would be
     // persisted to metadata for nothing and confuse future debugging.
-    const effortCapableProvider = safeProvider === "openrouter" || safeProvider === "codex" || safeProvider === "cline" || safeProvider === "pi";
+    const effortCapableProvider = safeProvider === "codex" || safeProvider === "cline" || safeProvider === "pi";
     const safeEffort: EffortLevel | undefined =
       effortCapableProvider && typeof effort === "string" && VALID_EFFORTS.has(effort) ? (effort as EffortLevel) : undefined;
 
-    // Per-chat model override — honored for both providers. For openrouter it's
-    // an OR slug/alias; for claude-code an Anthropic model alias or full ID.
+    // Per-chat model override — honored for every provider. For claude-code an
+    // Anthropic model alias or full ID; for codex/cline/pi that harness's slug.
     // Free-form text by design: the provider validates server-side, matching
     // the global Settings → API field.
     const safeModel: string | undefined = typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined;
 
-    // Model routing — OpenRouter-only opt-in. Honored only when the chat runs on
-    // OpenRouter; on any other provider the flag is dropped (default behavior).
-    const safeModelRouting = modelRouting === true && safeProvider === "openrouter";
-    const safeModelRoutingRankId: string | undefined =
-      safeModelRouting && typeof modelRoutingRankId === "string" && modelRoutingRankId.trim().length > 0 ? modelRoutingRankId.trim() : undefined;
+    // `modelRouting` / `modelRoutingRankId` are still accepted in the body and
+    // deliberately ignored. Routing was an OpenRouter-only opt-in and OpenRouter
+    // is no longer a selectable harness, so no new chat can ever turn it on;
+    // ignoring beats a 400 for a field old clients may still send. The feature
+    // itself goes in Phase 3 of plans/remove-openrouter-engine.md.
 
     const safeCardId: string | undefined = typeof cardId === "string" && cardId && getCard(cardId)?.lifecycle === "open" ? cardId : undefined;
 
@@ -232,8 +229,6 @@ streamRouter.post("/new/message", async (req, res) => {
       ...(safeAcpProviderId && { acpProviderId: safeAcpProviderId }),
       ...(safeEffort && { effort: safeEffort }),
       ...(safeModel && { model: safeModel }),
-      ...(safeModelRouting && { modelRouting: true }),
-      ...(safeModelRoutingRankId && { modelRoutingRankId: safeModelRoutingRankId }),
       ...(safeClientTrackingId && { clientTrackingId: safeClientTrackingId }),
       ...(workspaceId && { workspaceId }),
       // Boolean-validated at the route boundary; anything else is dropped

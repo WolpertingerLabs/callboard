@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
 import { Check, GitFork, RotateCw, Square, X } from "lucide-react";
-import type { ForkProvider, ParsedMessage } from "../api";
+import type { ForkProvider, ForkSourceProvider, ParsedMessage } from "../api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
 import JsonContentView from "./JsonContentView";
@@ -96,7 +96,6 @@ function MessageCopyButton({ text }: { text: string }) {
 const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
   { kind: "claude-code", label: "Claude Code" },
   { kind: "codex", label: "Codex" },
-  { kind: "openrouter", label: "OpenRouter" },
   { kind: "cline", label: "Cline" },
   { kind: "pi", label: "pi" },
 ];
@@ -109,7 +108,7 @@ const FORK_TARGETS: { kind: ForkProvider; label: string }[] = [
  * higher-fidelity path — the backend copies the native session log rather than
  * replaying a flattened transcript.
  */
-function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvider) => void; currentProvider: ForkProvider }) {
+function ForkButton({ onFork, currentProvider }: { onFork: (provider?: ForkProvider) => void; currentProvider: ForkSourceProvider }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -392,7 +391,7 @@ interface Props {
    */
   onFork?: (provider?: ForkProvider) => void;
   /** The harness this chat runs on — omitted from the "continue in" choices. */
-  forkCurrentProvider?: ForkProvider;
+  forkCurrentProvider?: ForkSourceProvider;
 }
 
 /** Format a millisecond delta as a human-readable duration */

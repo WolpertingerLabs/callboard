@@ -12,7 +12,7 @@ import { getCard, listCards } from "../services/card-store.js";
 import { setChatCardMembership } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
-import { isRoutableProvider, type RoutableProviderKind } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
@@ -674,9 +674,9 @@ chatsRouter.post("/:id/fork", (req, res) => {
           required: ["timestamp"],
           properties: {
             timestamp: { type: "string", description: "ISO timestamp of the message to fork at (history up to and including it is copied)" },
-            provider: { type: "string", enum: ["claude-code", "openrouter", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused." },
+            provider: { type: "string", enum: ["claude-code", "codex", "cline", "pi"], description: "Target harness. Omit to fork within the current harness of the chat (higher fidelity). Every routable kind except acp - see the route implementation for why acp is refused. A chat on the retired openrouter harness can be forked, but not forked INTO." },
             model: { type: "string", description: "Model for the new chat. Required-ish on a harness switch, where the source model id is meaningless to the target." },
-            effort: { type: "string", description: "Reasoning effort for the new chat (openrouter / codex only)." }
+            effort: { type: "string", description: "Reasoning effort for the new chat (codex only, or a same-harness fork of a legacy openrouter chat)." }
           }
         }
       }
@@ -698,7 +698,13 @@ chatsRouter.post("/:id/fork", (req, res) => {
     meta = JSON.parse(chat.metadata || "{}");
   } catch {}
 
-  const providerKind: RoutableProviderKind = isRoutableProvider(meta.provider) ? meta.provider : "claude-code";
+  // The SOURCE kind comes off persisted metadata, so it is read with the
+  // internal guard, not the routable one: `"openrouter"` is no longer offered
+  // but ~426 chats are stamped with it, and narrowing with `isRoutableProvider`
+  // here would quietly call them claude-code chats and then fail to find their
+  // session log. Forking *out of* an OR chat keeps working; the target guard
+  // below is what refuses forking *into* it.
+  const providerKind: InternalProviderKind = isInternalProvider(meta.provider) ? meta.provider : "claude-code";
   const provider = getSessionProviders().find((p) => p.kind === providerKind);
   if (!provider) {
     return res.status(400).json({ error: "Forking is not supported for this chat's provider" });
@@ -709,7 +715,7 @@ chatsRouter.post("/:id/fork", (req, res) => {
   if (req.body.provider !== undefined && !isRoutableProvider(req.body.provider)) {
     return res.status(400).json({ error: `Unknown target provider "${req.body.provider}"` });
   }
-  const targetKind: RoutableProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
+  const targetKind: InternalProviderKind = isRoutableProvider(req.body.provider) ? req.body.provider : providerKind;
   // Forking INTO ACP is refused on the kind itself, and this guard is the
   // route's own invariant rather than a consequence of some provider's missing
   // method. Two independent reasons, either one sufficient:
@@ -802,7 +808,9 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // than writing it (an explicit value there is redundant, and resolving an
     // absent provider already lands on claude-code).
     ...(targetKind !== "claude-code" && { provider: targetKind }),
-    // Effort is meaningful only to the two reasoning-capable harnesses.
+    // Effort is meaningful only to the reasoning-capable harnesses. `openrouter`
+    // is unreachable as a *chosen* target and only appears here on a same-harness
+    // fork of a legacy OR chat, which inherits its effort like any other.
     ...(effort && (targetKind === "openrouter" || targetKind === "codex") && { effort }),
     // Model is honored by all three: `stream.ts` persists `metadata.model`
     // for any provider, and each harness's config block reads it (Codex's
@@ -810,8 +818,9 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // sendMessage's *new-chat* block guards model to openrouter/claude-code —
     // that guard doesn't apply here, since this route writes metadata itself.
     ...(model && { model }),
-    // Model routing is an OpenRouter-only feature keyed to OR rank ids —
-    // carry it only when the target is still OpenRouter.
+    // Model routing is an OpenRouter-only feature keyed to OR rank ids — carry
+    // it only when the target is still OpenRouter, which now means only on a
+    // same-harness fork of a legacy OR chat.
     ...(meta.modelRouting && targetKind === "openrouter" && { modelRouting: true }),
     ...(meta.modelRouting && targetKind === "openrouter" && meta.modelRoutingRankId && { modelRoutingRankId: meta.modelRoutingRankId }),
     // A fork stays on the original's card. Unassign merges `cardId: null`,

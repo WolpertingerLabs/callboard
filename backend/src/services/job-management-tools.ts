@@ -56,7 +56,7 @@ const JOB_SCHEMA_DOC = `A job definition is JSON:
   "name": "Display Name",
   "description": "...",
   "inputs": [{ "key": "task", "label": "Task", "type": "string"|"text", "required": true, "default": "..." }],
-  "defaults": { "folder": "/abs/path", "provider": "claude-code"|"openrouter", "model": "or-slug", "agentAlias": "name" },
+  "defaults": { "folder": "/abs/path", "provider": "claude-code"|"codex", "model": "model-id", "agentAlias": "name" },
   "limits": { "maxTotalSessions": 50, "maxDurationHours": 168 },
   "steps": [ ...ordered steps... ],
   "outputs": { "<key>": "{{steps.<stepId>.outputs.<key>}}" } (optional — run-level outputs, resolved when a run succeeds; each referenced step must run on every successful path. A value that is exactly one {{ref}} keeps the referenced value's native type. Harvested by "job" steps in parent jobs.)
@@ -64,7 +64,7 @@ const JOB_SCHEMA_DOC = `A job definition is JSON:
 Each step has { "id": "slug", "type": ..., "next": "<stepId>|end" (optional — defaults to the following step) } plus type-specific fields.
 Prompt/message fields support {{inputs.<key>}}, {{steps.<stepId>.outputs.<key>}}, {{run.id}} templating.
 Step types:
-- "agent": spawn a session to do work. Fields: prompt (required), outputs (array of required output keys the session must report via its complete_job_step tool), folder, provider, model (openrouter only), effort, agentAlias, maxTurns, retry { attempts, backoffSeconds }, requireExplicitCompletion (boolean — re-prompt the session to keep working if it ends without calling complete_job_step, before retry/fail handling).
+- "agent": spawn a session to do work. Fields: prompt (required), outputs (array of required output keys the session must report via its complete_job_step tool), folder, provider, model (claude-code only), effort, agentAlias, maxTurns, retry { attempts, backoffSeconds }, requireExplicitCompletion (boolean — re-prompt the session to keep working if it ends without calling complete_job_step, before retry/fail handling).
 - "approval": pause until the user approves/rejects. Fields: message (required), notify (default true — sends an off-platform notification), timeoutHours, onReject ("fail" default or stepId), onTimeout.
 - "poll": re-check until done. Fields: prompt (required — checker must report verdict "done"|"not_yet"), intervalMinutes (required), maxAttempts (required), outputs, onTimeout, plus session fields like agent.
 - "wait_event": sleep until a drawlatch event matches. Fields: filter { source?, eventType?, conditions?: [{ field, operator: equals|contains|matches|exists|not_exists, value }] }, timeoutMinutes, onTimeout.

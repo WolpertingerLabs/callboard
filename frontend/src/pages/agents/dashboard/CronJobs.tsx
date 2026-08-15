@@ -203,30 +203,24 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   // preserved for crons created without picking. Empty model = use the
   // global default; undefined effort = use the model default.
   const [formProvider, setFormProvider] = useState<AgentProviderKind>("claude-code");
-  const [formModel, setFormModel] = useState<string>("");
   const [formClaudeModel, setFormClaudeModel] = useState<string>("");
   const [formCodexModel, setFormCodexModel] = useState<string>("");
   const [formEffort, setFormEffort] = useState<EffortLevel | undefined>(undefined);
 
-  // System-info fetch — drives whether the OpenRouter option is enabled in
-  // ProviderConfigPicker. Mirrors NewChatPanel's tri-state (`null` while in
-  // flight so the OR toggle stays clickable optimistically).
-  const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
+  // System-info fetch — drives whether the Codex option is enabled in
+  // ProviderConfigPicker (`null` while in flight so the toggle stays clickable
+  // optimistically) and whether the model pickers show OpenRouter slugs.
   const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
-  const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState<number | null>(null);
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
   useEffect(() => {
     getSystemInfo()
       .then((info) => {
-        setOpenRouterConfigured(info.openRouterConfigured ?? false);
         setCodexConfigured(info.codexConfigured ?? false);
-        setOpenRouterMaxBudgetUsd(typeof info.openRouterMaxBudgetUsd === "number" ? info.openRouterMaxBudgetUsd : null);
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
       })
       .catch(() => {
-        setOpenRouterConfigured(false);
         setCodexConfigured(false);
       });
   }, []);
@@ -252,7 +246,6 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [editRequireCompletion, setEditRequireCompletion] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editProvider, setEditProvider] = useState<AgentProviderKind>("claude-code");
-  const [editModel, setEditModel] = useState<string>("");
   const [editClaudeModel, setEditClaudeModel] = useState<string>("");
   const [editCodexModel, setEditCodexModel] = useState<string>("");
   const [editEffort, setEditEffort] = useState<EffortLevel | undefined>(undefined);
@@ -323,13 +316,12 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           // "agent default" — `provider: "claude-code"` with empty model and
           // undefined effort is the same as omitting the fields, and
           // omitting keeps stored JSON tidy. The model field holds whichever
-          // provider's selection applies: an OR slug/alias or an Anthropic
+          // provider's selection applies: a Codex slug or an Anthropic
           // alias/ID for claude-code.
-          ...((formProvider === "openrouter" || formProvider === "codex") && { provider: formProvider }),
-          ...(formProvider === "openrouter" && formModel.trim() && { model: formModel.trim() }),
+          ...(formProvider === "codex" && { provider: formProvider }),
           ...(formProvider === "claude-code" && formClaudeModel.trim() && { model: formClaudeModel.trim() }),
           ...(formProvider === "codex" && formCodexModel.trim() && { model: formCodexModel.trim() }),
-          ...((formProvider === "openrouter" || formProvider === "codex") && formEffort && { effort: formEffort }),
+          ...(formProvider === "codex" && formEffort && { effort: formEffort }),
           ...(formRequireCompletion && { requireExplicitCompletion: true }),
         },
         ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
@@ -348,7 +340,6 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormSkipIfRunning(false);
       setFormRequireCompletion(false);
       setFormProvider("claude-code");
-      setFormModel("");
       setFormClaudeModel("");
       setFormCodexModel("");
       setFormEffort(undefined);
@@ -374,10 +365,15 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     // The stored model belongs to whichever provider the action targets —
     // hydrate the matching per-provider field so the picker shows it under
     // the right toggle (and the other field starts clean).
-    const jobProvider = job.action?.provider ?? "claude-code";
+    //
+    // A cron stored on the retired OpenRouter harness has no toggle to land on,
+    // so editing one re-targets it to Claude Code and drops its model — an OR
+    // slug means nothing there. It keeps running on OR until someone edits it;
+    // saving is what converts it.
+    const stored = job.action?.provider ?? "claude-code";
+    const jobProvider: AgentProviderKind = (stored as string) === "openrouter" ? "claude-code" : stored;
     setEditProvider(jobProvider);
-    setEditModel(jobProvider === "openrouter" ? (job.action?.model ?? "") : "");
-    setEditClaudeModel(jobProvider === "claude-code" ? (job.action?.model ?? "") : "");
+    setEditClaudeModel(jobProvider === "claude-code" && (stored as string) !== "openrouter" ? (job.action?.model ?? "") : "");
     setEditCodexModel(jobProvider === "codex" ? (job.action?.model ?? "") : "");
     setEditEffort(job.action?.effort);
   };
@@ -400,11 +396,10 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         action: {
           type: "start_session",
           prompt: editPrompt.trim() || undefined,
-          ...((editProvider === "openrouter" || editProvider === "codex") && { provider: editProvider }),
-          ...(editProvider === "openrouter" && editModel.trim() && { model: editModel.trim() }),
+          ...(editProvider === "codex" && { provider: editProvider }),
           ...(editProvider === "claude-code" && editClaudeModel.trim() && { model: editClaudeModel.trim() }),
           ...(editProvider === "codex" && editCodexModel.trim() && { model: editCodexModel.trim() }),
-          ...((editProvider === "openrouter" || editProvider === "codex") && editEffort && { effort: editEffort }),
+          ...(editProvider === "codex" && editEffort && { effort: editEffort }),
           ...(editRequireCompletion && { requireExplicitCompletion: true }),
         },
         quietHours: editQHEnabled ? { enabled: true, start: editQHStart, end: editQHEnd } : { enabled: false, start: editQHStart, end: editQHEnd },
@@ -487,15 +482,11 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onProviderChange={setEditProvider}
               effort={editEffort}
               onEffortChange={setEditEffort}
-              model={editModel}
-              onModelChange={setEditModel}
               claudeModel={editClaudeModel}
               onClaudeModelChange={setEditClaudeModel}
               codexModel={editCodexModel}
               onCodexModelChange={setEditCodexModel}
               codexConfigured={codexConfigured}
-              openRouterConfigured={openRouterConfigured}
-              openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={() => {
@@ -585,6 +576,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     const TypeIcon = tConf.icon;
     const canToggle = job.status !== "completed";
     const isDimmed = job.status === "paused" || job.status === "completed";
+    // Widened to `string` on purpose — see the provider badge below.
+    const actionProvider: string = job.action?.provider ?? "claude-code";
 
     return (
       <div
@@ -665,8 +658,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             {/* Provider/model/effort badge — only rendered when the cron job
                 opts into a non-default provider or a non-default model.
                 Default Claude Code crons (the majority today) skip the badge
-                to keep the row uncluttered. */}
-            {job.action?.provider !== "openrouter" && job.action?.provider !== "codex" && job.action?.model && (
+                to keep the row uncluttered.
+
+                Read through a widened `string`: crons stored on the retired
+                OpenRouter harness still exist and still run, and a row that
+                showed no badge for one would be claiming it runs on Claude
+                Code. Displaying a legacy value is not the same as offering it. */}
+            {actionProvider !== "openrouter" && actionProvider !== "codex" && job.action?.model && (
               <span
                 title={`Claude Code · ${job.action.model}`}
                 style={{
@@ -689,9 +687,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
                 <span style={{ opacity: 0.7, fontFamily: "monospace" }}>{job.action.model}</span>
               </span>
             )}
-            {job.action?.provider === "openrouter" && (
+            {actionProvider === "openrouter" && (
               <span
-                title={`OpenRouter${job.action.model ? ` · ${job.action.model}` : ""}${job.action.effort ? ` · ${job.action.effort}` : ""}`}
+                title={`OpenRouter${job.action?.model ? ` · ${job.action.model}` : ""}${job.action.effort ? ` · ${job.action.effort}` : ""}`}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1009,15 +1007,11 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onProviderChange={setFormProvider}
               effort={formEffort}
               onEffortChange={setFormEffort}
-              model={formModel}
-              onModelChange={setFormModel}
               claudeModel={formClaudeModel}
               onClaudeModelChange={setFormClaudeModel}
               codexModel={formCodexModel}
               onCodexModelChange={setFormCodexModel}
               codexConfigured={codexConfigured}
-              openRouterConfigured={openRouterConfigured}
-              openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={() => {

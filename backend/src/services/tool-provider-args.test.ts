@@ -1,13 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { resolveProviderModelArgs } from "./tool-provider-args.js";
+import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 
 describe("resolveProviderModelArgs", () => {
   it("defaults provider to claude-code", () => {
     expect(resolveProviderModelArgs({})).toEqual({ ok: true, provider: "claude-code" });
   });
 
-  it("accepts a model with provider=openrouter", () => {
-    expect(resolveProviderModelArgs({ provider: "openrouter", model: "anthropic/claude-opus-4.7" })).toEqual({
+  it("does not offer openrouter as a provider", () => {
+    expect(providerModelSchema.provider.safeParse("openrouter").success).toBe(false);
+    expect(providerModelSchema.provider.safeParse("codex").success).toBe(true);
+    // Reaches the resolver only from an untyped MCP arg blob; the Zod schema
+    // rejects it before that, and the resolver has no OR-specific branch left.
+    expect(resolveProviderModelArgs({ provider: "openrouter" as never, model: "anthropic/claude-opus-4.7" })).toEqual({
       ok: true,
       provider: "openrouter",
       model: "anthropic/claude-opus-4.7",

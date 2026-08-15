@@ -1,13 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, getSystemInfo, getAgentSettings, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
-import type { ModelRoutingConfig } from "shared/types/index.js";
+import { listAgents, getAgentIdentityPrompt, getSystemInfo, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
 import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
 import ProviderConfigPicker from "./ProviderConfigPicker";
-import ModelRouterField from "./ModelRouterField";
 import {
   getDefaultPermissions,
   saveDefaultPermissions,
@@ -18,8 +16,6 @@ import {
   saveDefaultProvider,
   getDefaultOpenRouterEffort,
   saveDefaultOpenRouterEffort,
-  getDefaultOpenRouterModel,
-  saveDefaultOpenRouterModel,
   getDefaultClaudeModel,
   saveDefaultClaudeModel,
   getDefaultCodexModel,
@@ -89,27 +85,23 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // NOT persisted to localStorage — it's a per-chat decision (the nudge loop
   // is only wanted for specific tasks), so it resets to off each time.
   const [requireCompletion, setRequireCompletion] = useState(false);
-  // Provider selector — defaults to whatever the user last picked. OpenRouter
-  // can only be selected once OPENROUTER_API_KEY is configured in Settings → API.
+  // Provider selector — defaults to whatever the user last picked.
   const [provider, setProvider] = useState<AgentProviderKind>(getDefaultProvider);
-  // OpenRouter-only knob — surfaced under the provider tile when "openrouter"
-  // is selected. `undefined` means "don't send a reasoning payload" (preserves
+  // Reasoning-effort knob — surfaced under the provider tile for the harnesses
+  // that have one. `undefined` means "don't send a reasoning payload" (preserves
   // each model's default behavior). Persisted in localStorage independently
-  // of the provider so toggling back to OR restores the prior selection.
+  // of the provider so toggling back restores the prior selection.
   const [effort, setEffort] = useState<EffortLevel | undefined>(getDefaultOpenRouterEffort);
-  // OpenRouter model slug. Empty string = "use the global default from Settings → API".
-  // Persisted across reloads via localStorage, like provider/effort.
-  const [model, setModel] = useState<string>(getDefaultOpenRouterModel);
   // Anthropic model for Claude Code chats (alias or full ID). Empty string =
   // "use the global default from Settings → API". Stored separately from the
-  // OR model so toggling providers restores each one's prior selection.
+  // other providers' models so toggling restores each one's prior selection.
   const [claudeModel, setClaudeModel] = useState<string>(getDefaultClaudeModel);
   // Codex model. Empty string = "use the global default
-  // from Settings → API". Stored separately from the OR/Claude models so
+  // from Settings → API". Stored separately from the Claude model so
   // toggling providers restores each one's prior selection.
   const [codexModel, setCodexModel] = useState<string>(getDefaultCodexModel);
   // `null` until /system-info returns — Codex treated as available until an
-  // explicit false (same tri-state as openRouterConfigured below).
+  // explicit false.
   const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
   // ACP vendors from /system-info. Empty until it returns, and empty is the
   // honest default — unlike the two tri-states above, an unknown ACP list means
@@ -129,29 +121,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // selecting `openrouter` there offers OpenRouter's models here.
   const [clineProviderId, setClineProviderId] = useState<string>("");
   const [piModel, setPiModel] = useState<string>(getDefaultPiModel);
-  // `null` until the /system-info fetch returns. We use this tri-state to
-  // avoid destroying a user's saved "openrouter" preference during the
-  // first-paint race: if they click Create before the fetch resolves we
-  // optimistically honor their stored choice rather than silently
-  // downgrading to claude-code.
-  const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
-  // Effective per-session spend cap surfaced from /system-info. Shown
-  // alongside the OR provider tile so users see the ceiling BEFORE hitting
-  // "Agent reached the maximum budget limit." mid-session. `null` while the
-  // fetch is in flight or unreachable — the cap line is suppressed in that
-  // state rather than showing a confusing default.
-  const [openRouterMaxBudgetUsd, setOpenRouterMaxBudgetUsd] = useState<number | null>(null);
   // Whether each native harness is routed through OpenRouter — flips the model
   // pickers to OpenRouter's catalog. Sourced from /system-info.
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
-  // Model Routing (OpenRouter-only). Config is loaded from agent settings so we
-  // know whether the feature is enabled and which ranks/tiers to offer. The
-  // per-chat opt-in (`modelRouting`) resets to off each time the panel opens.
-  const [routingConfig, setRoutingConfig] = useState<ModelRoutingConfig | null>(null);
-  const [modelRouting, setModelRouting] = useState(false);
-  const [modelRoutingRankId, setModelRoutingRankId] = useState<string>("");
-  const routingAvailable = provider === "openrouter" && !!routingConfig?.enabled && routingConfig.ranks.length > 0;
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
   const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
@@ -172,7 +145,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // Downgrade to claude-code only when we KNOW the chosen alt-provider is
   // unconfigured (explicit false; `null` = still loading, trust the choice).
   const downgradeProvider = (p: AgentProviderKind): AgentProviderKind => {
-    if (p === "openrouter" && openRouterConfigured === false) return "claude-code";
     if (p === "codex" && codexConfigured === false) return "claude-code";
     // No installed vendor means the request would be rejected by the route, so
     // downgrade here for the same reason the other two do.
@@ -183,7 +155,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // Each provider carries its own model selection; forward the matching one.
   // ACP's is the vendor's own model id, applied after the session attaches.
   const modelForProvider = (p: AgentProviderKind): string =>
-    p === "openrouter" ? model : p === "codex" ? codexModel : p === "acp" ? acpModel : p === "cline" ? clineModel : p === "pi" ? piModel : claudeModel;
+    p === "codex" ? codexModel : p === "acp" ? acpModel : p === "cline" ? clineModel : p === "pi" ? piModel : claudeModel;
 
   const confirmRemoveRecentDir = () => {
     removeRecentDirectory(confirmModal.path);
@@ -198,14 +170,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     saveDefaultPermissions(defaultPermissions);
     addRecentDirectory(target);
     updateRecentDirs();
-    // Persist the user's INTENT (the radio's current value) rather than the
-    // runtime fallback. If OR is selected but later disabled, we'd rather
-    // remember "user prefers OR" so reconfiguring restores it, than silently
+    // Persist the user's INTENT (the toggle's current value) rather than the
+    // runtime fallback. If Codex is selected but later unconfigured, we'd rather
+    // remember "user prefers Codex" so reconfiguring restores it, than silently
     // overwrite their preference with claude-code. The runtime fallback is
     // ephemeral.
     saveDefaultProvider(provider);
     saveDefaultOpenRouterEffort(effort);
-    saveDefaultOpenRouterModel(model);
     saveDefaultClaudeModel(claudeModel);
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
@@ -219,7 +190,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     const effectiveProvider: AgentProviderKind = downgradeProvider(provider);
     // Each provider has its own model selection; forward the one matching
     // the effective provider. `effort` applies to the reasoning-capable
-    // providers (openrouter, codex).
+    // providers (codex, cline, pi).
     const trimmedModel = modelForProvider(effectiveProvider).trim();
 
     setFolder("");
@@ -231,13 +202,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         // The vendor travels with the kind — `provider: "acp"` alone does not
         // say which harness runs the chat, and the route rejects it without this.
         ...(effectiveProvider === "acp" && { acpProviderId }),
-        ...((effectiveProvider === "openrouter" || effectiveProvider === "codex") && effort && { effort }),
+        ...(effectiveProvider === "codex" && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
-        // Pass the router toggle as an explicit boolean (not only when true) so
-        // Chat.tsx can tell "user unchecked it" (false) apart from "panel didn't
-        // offer a choice" (undefined) — otherwise unchecking gets re-defaulted ON.
-        ...(effectiveProvider === "openrouter" && routingAvailable && { modelRouting, modelRoutingRankId }),
       },
     });
   };
@@ -250,7 +217,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // which path they created the chat from.
     saveDefaultProvider(provider);
     saveDefaultOpenRouterEffort(effort);
-    saveDefaultOpenRouterModel(model);
     saveDefaultClaudeModel(claudeModel);
     saveDefaultCodexModel(codexModel);
     saveDefaultAcpProviderId(acpProviderId);
@@ -287,10 +253,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         ...(effectiveProvider === "acp" && { acpProviderId }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
-        // Pass the router toggle as an explicit boolean (not only when true) so
-        // Chat.tsx can tell "user unchecked it" (false) apart from "panel didn't
-        // offer a choice" (undefined) — otherwise unchecking gets re-defaulted ON.
-        ...(effectiveProvider === "openrouter" && routingAvailable && { modelRouting, modelRoutingRankId }),
       },
     });
   };
@@ -333,52 +295,17 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     </div>
   );
 
-  // Fetch system info once to learn whether OpenRouter is configured. Until
-  // the fetch resolves, openRouterConfigured stays `null` and the UI treats
-  // OR as available — the actual gate is in the radio's disabled prop below.
-  // If OR was selected from localStorage but turns out to be unconfigured,
-  // we silently flip the in-memory state to claude-code without touching
-  // localStorage (the user's saved preference is preserved for the next time
-  // they re-enable OR).
-  // Load the model-routing config so the panel can offer the router toggle +
-  // rank selector when the feature is enabled. Best-effort — the toggle simply
-  // stays hidden if this fails.
-  useEffect(() => {
-    let cancelled = false;
-    getAgentSettings()
-      .then((s) => {
-        if (cancelled) return;
-        const cfg = s.modelRouting ?? null;
-        setRoutingConfig(cfg);
-        if (cfg) {
-          const ranks = [...cfg.ranks].sort((a, b) => a.order - b.order);
-          setModelRoutingRankId(cfg.defaultRankId || ranks[0]?.id || "");
-          // Default the per-chat router toggle ON when routing is enabled
-          // globally, so configuring it in Settings actually takes effect for
-          // new OpenRouter chats (opt-out per chat) rather than silently
-          // requiring the toggle to be flipped every time.
-          setModelRouting(cfg.enabled);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  // Fetch system info once to learn which harnesses are configured. Until the
+  // fetch resolves, codexConfigured stays `null` and the UI treats Codex as
+  // available — the actual gate is in the button's disabled prop. If Codex was
+  // selected from localStorage but turns out to be unconfigured, we silently
+  // flip the in-memory state to claude-code without touching localStorage (the
+  // user's saved preference survives for the next time they reconfigure it).
   useEffect(() => {
     let cancelled = false;
     getSystemInfo()
       .then((info) => {
         if (cancelled) return;
-        const ok = Boolean(info.openRouterConfigured);
-        setOpenRouterConfigured(ok);
-        if (typeof info.openRouterMaxBudgetUsd === "number") {
-          setOpenRouterMaxBudgetUsd(info.openRouterMaxBudgetUsd);
-        }
-        if (!ok && provider === "openrouter") {
-          setProvider("claude-code");
-        }
         const codexOk = Boolean(info.codexConfigured);
         setCodexConfigured(codexOk);
         if (!codexOk && provider === "codex") {
@@ -407,10 +334,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         // /system-info unreachable — assume unavailable and surface the
         // toggle as disabled rather than silently allowing a request that
         // will 500 on submit.
-        if (!cancelled) {
-          setOpenRouterConfigured(false);
-          setCodexConfigured(false);
-        }
+        if (!cancelled) setCodexConfigured(false);
       });
     return () => {
       cancelled = true;
@@ -504,36 +428,14 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onPiModelChange={setPiModel}
               effort={effort}
               onEffortChange={setEffort}
-              model={model}
-              onModelChange={setModel}
               claudeModel={claudeModel}
               onClaudeModelChange={setClaudeModel}
               codexModel={codexModel}
               onCodexModelChange={setCodexModel}
               codexConfigured={codexConfigured}
-              openRouterConfigured={openRouterConfigured}
-              openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={openApiSettings}
-              // When routing is available, swap the plain model field for the
-              // Manual/Router switcher so the two model sources stay mutually
-              // exclusive instead of a router silently overriding a visible model.
-              openRouterModelSlot={
-                routingAvailable ? (
-                  <ModelRouterField
-                    mode="panel"
-                    routingConfig={routingConfig}
-                    useRouter={modelRouting}
-                    onUseRouterChange={setModelRouting}
-                    rankId={modelRoutingRankId}
-                    onRankChange={setModelRoutingRankId}
-                    model={model}
-                    onModelChange={setModel}
-                    idPrefix="newChat"
-                  />
-                ) : undefined
-              }
             />
 
             {/* Permissions Section — collapsible, default closed */}
@@ -740,15 +642,11 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onPiModelChange={setPiModel}
               effort={effort}
               onEffortChange={setEffort}
-              model={model}
-              onModelChange={setModel}
               claudeModel={claudeModel}
               onClaudeModelChange={setClaudeModel}
               codexModel={codexModel}
               onCodexModelChange={setCodexModel}
               codexConfigured={codexConfigured}
-              openRouterConfigured={openRouterConfigured}
-              openRouterMaxBudgetUsd={openRouterMaxBudgetUsd}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}
               onOpenApiSettings={openApiSettings}

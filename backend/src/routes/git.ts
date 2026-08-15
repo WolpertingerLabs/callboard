@@ -154,7 +154,7 @@ gitRouter.post("/generate-branch-name", async (req, res) => {
           required: ["prompt"],
           properties: {
             prompt: { type: "string", description: "Natural language description to generate a branch name from" },
-            provider: { type: "string", enum: ["claude-code", "openrouter", "codex"], description: "Optional chat harness to generate the branch name on. Omit to use the default fallback (OpenRouter if configured, else Claude Code)." }
+            provider: { type: "string", enum: ["claude-code", "codex"], description: "Optional chat harness to generate the branch name on. Omit to use the default fallback (OpenRouter credentials if configured, else Claude Code)." }
           }
         }
       }

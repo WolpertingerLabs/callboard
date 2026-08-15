@@ -76,6 +76,14 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
  * holds: `POST /api/stream` takes `acpProviderId`, validates it against the
  * configured presets, and refuses `"acp"` without one.
  *
+ * `"openrouter"` is absent for the opposite reason: not "not offerable yet" but
+ * "no longer offered". The OpenRouter harness is being retired in favour of
+ * running OpenRouter *credentials* through the native harnesses
+ * (`claudeCodeUseOpenRouter`, `codexUseOpenRouter`, `clineProviderId`, …), so no
+ * new chat may select it. It stays in {@link INTERNAL_PROVIDER_KINDS} because
+ * the adapter is still registered and chats already stamped with it still run.
+ * See plans/remove-openrouter-engine.md.
+ *
  * ## Forking and handoff: which kinds are excluded, and why
  *
  * Membership here says a chat can *run* on the kind. Being a fork or handoff
@@ -100,10 +108,13 @@ export type AgentProviderKind = "claude-code" | "openrouter" | "codex" | "acp" |
  *   having widened it, which meant Callboard had built cross-harness handoff
  *   into two harnesses and offered it into neither.
  *
+ * An OpenRouter chat can still be forked *out of* — the fork route reads the
+ * source kind with {@link isInternalProvider} — it just cannot be forked *into*.
+ *
  * The frontend mirror of this is `ForkProvider` in `frontend/src/api.ts`; the
  * enforcing guard is in `routes/chats.ts`.
  */
-export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "openrouter", "codex", "acp", "cline", "pi"] as const;
+export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "codex", "acp", "cline", "pi"] as const;
 
 /** A provider kind a request may ask for (i.e. not test-only, and fully specifiable). */
 export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
@@ -115,15 +126,20 @@ export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];
  * plus the kinds reachable only from inside the process. Still excludes
  * `"mock"`, which is never a chat's persisted provider.
  *
- * **Currently identical to the routable list**, now that `"acp"` is offered. The
- * split is kept deliberately rather than collapsed: it is the mechanism that let
- * ACP be *implemented* before it was *offered*, one full phase apart, and the
- * next adapter to land will want the same runway. Keep using
- * {@link isRoutableProvider} for anything that came from a request and
- * {@link isInternalProvider} for chat metadata and internal callers, so the two
- * separate again cleanly when they next differ.
+ * The extra member is `"openrouter"`, and it is here for the mirror image of the
+ * reason `"acp"` was once missing from the routable list. ACP was *implemented*
+ * before it was *offered*; OpenRouter is *withdrawn from offer* while still
+ * implemented. Its adapter is registered, ~426 chat records name it, and those
+ * chats must keep running and keep rendering — so `sendMessage` still routes it,
+ * while no request may ask for it.
+ *
+ * Keep using {@link isRoutableProvider} for anything that came from a request
+ * and {@link isInternalProvider} for chat metadata and internal callers. The two
+ * lists differ again, so mixing them up now has consequences: a persisted
+ * provider narrowed with the routable guard silently degrades to
+ * `"claude-code"`.
  */
-export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS] as const;
+export const INTERNAL_PROVIDER_KINDS = [...ROUTABLE_PROVIDER_KINDS, "openrouter"] as const;
 
 /** A provider kind that can back a real chat, offered to users or not. */
 export type InternalProviderKind = (typeof INTERNAL_PROVIDER_KINDS)[number];

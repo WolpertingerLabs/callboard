@@ -51,10 +51,8 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
-  provider?: "claude-code" | "openrouter" | "codex";
+  provider?: "claude-code" | "codex";
   model?: string;
-  modelRouting?: boolean;
-  modelRoutingRankId?: string;
   requireExplicitCompletion?: boolean;
   parentChatId?: string;
   chatRole?: string;
@@ -866,8 +864,6 @@ export function buildCallboardToolsSpec(
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
               provider: providerModel.provider,
               ...(providerModel.model && { model: providerModel.model }),
-              ...(providerModel.modelRouting && { modelRouting: true }),
-              ...(providerModel.modelRoutingRankId && { modelRoutingRankId: providerModel.modelRoutingRankId }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
               ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
               ...(workspaceId && { workspaceId }),
@@ -1035,7 +1031,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "list_openrouter_models",
-        'List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug as the `model` param when starting an openrouter session. Also returns user-defined model aliases (e.g. "low coder" -> a real slug) — an alias is equally valid as the `model` param. The list is cached and refreshed on app start.',
+        'List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug wherever an OpenRouter model id is configured — the Claude Code / Codex / Cline / pi harnesses can each be pointed at OpenRouter credentials in Settings → API. Also returns user-defined model aliases (e.g. "low coder" -> a real slug), equally valid in those fields. The list is cached and refreshed on app start.',
         {
           limit: z.number().optional().describe("Max models to return (default: all). Aliases are always returned in full."),
         },

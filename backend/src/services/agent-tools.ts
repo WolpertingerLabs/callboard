@@ -48,7 +48,7 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
-  provider?: "claude-code" | "openrouter" | "codex";
+  provider?: "claude-code" | "codex";
   model?: string;
   parentChatId?: string;
   chatRole?: string;

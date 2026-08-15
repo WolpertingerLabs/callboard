@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { getAgentProvider, getSessionProvider, setAgentProviderForTesting } from "./factory.js";
-import { ROUTABLE_PROVIDER_KINDS } from "./ports/AgentProvider.js";
+import { INTERNAL_PROVIDER_KINDS, isInternalProvider, isRoutableProvider, ROUTABLE_PROVIDER_KINDS } from "./ports/AgentProvider.js";
 import { MockAgentProvider } from "./adapters/mock/MockAgentProvider.js";
 import type { AgentEvent } from "./ports/events.js";
 import { decidePermission, ToolPermissionPolicy } from "./permissions/ToolPermissionPolicy.js";
@@ -202,7 +202,21 @@ describe("cross-harness fork and handoff — the target contract", () => {
 
   it("offers every routable kind except acp", () => {
     // If a kind is added to the union and forgotten here, this says so.
-    expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "cline", "codex", "openrouter", "pi"]);
+    expect([...FORK_TARGETS].sort()).toEqual(["claude-code", "cline", "codex", "pi"]);
+  });
+
+  /**
+   * The retired OpenRouter harness runs the chats already stamped with it and
+   * nothing else. Asserted here rather than left implicit in the list above,
+   * because "absent from ROUTABLE" and "absent from INTERNAL" are one edit apart
+   * and the second one silently breaks ~426 existing chats.
+   */
+  it("keeps openrouter runnable but unofferable", () => {
+    expect(ROUTABLE_PROVIDER_KINDS).not.toContain("openrouter");
+    expect(isRoutableProvider("openrouter")).toBe(false);
+    expect(INTERNAL_PROVIDER_KINDS).toContain("openrouter");
+    expect(isInternalProvider("openrouter")).toBe(true);
+    expect(getSessionProvider("openrouter"), "the adapter must stay registered until Phase 3").toBeDefined();
   });
 
   it("every offered target can be seeded with a conversation it did not produce", () => {

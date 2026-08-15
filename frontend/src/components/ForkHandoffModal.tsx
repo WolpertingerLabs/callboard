@@ -2,21 +2,24 @@ import { useEffect, useState } from "react";
 import ModalOverlay from "./ModalOverlay";
 import ClaudeModelSelector from "./ClaudeModelSelector";
 import CodexModelSelector from "./CodexModelSelector";
-import OpenRouterModelSelector from "./OpenRouterModelSelector";
 import PiModelSelector from "./PiModelSelector";
-import type { ForkProvider } from "../api";
+import type { ForkProvider, ForkSourceProvider } from "../api";
 
 interface Props {
   /** Target harness, or null when the modal is closed. */
   target: ForkProvider | null;
-  /** Harness the conversation is leaving — named in the explanation. */
-  /** The chat's own harness. `null` for a chat that cannot be forked at all (ACP). */
-  from: ForkProvider | null;
+  /**
+   * The chat's own harness, named in the explanation. Widened past
+   * {@link ForkProvider} because a retired harness can still be forked *out of*
+   * — see {@link ForkSourceProvider}. `null` for a chat that cannot be forked at
+   * all (ACP).
+   */
+  from: ForkSourceProvider | null;
   onCancel: () => void;
   onConfirm: (opts: { model?: string }) => void;
 }
 
-const LABELS: Record<ForkProvider, string> = {
+const LABELS: Record<ForkSourceProvider, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   openrouter: "OpenRouter",
@@ -81,7 +84,6 @@ export default function ForkHandoffModal({ target, from, onCancel, onConfirm }: 
         <div style={{ marginBottom: 24 }}>
           {target === "claude-code" && <ClaudeModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
           {target === "codex" && <CodexModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
-          {target === "openrouter" && <OpenRouterModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
           {target === "pi" && <PiModelSelector id="fork-handoff-model" value={model} onChange={setModel} placeholder="Default model" />}
           {/* Cline has no selector of its own: its catalog is per-provider and
               the provider is a global setting, so there is no list to offer

@@ -64,8 +64,10 @@ vi.mock("../agents/factory.js", () => ({
       getSessionPreview: () => "preview",
     },
     {
-      // Deliberately stubbed WITHOUT seedSession (the real provider has one) so
-      // the "target harness can't be seeded" rejection branch stays covered.
+      // The retired OpenRouter harness. Stubbed WITHOUT forkSession or
+      // seedSession so the "harness can't be seeded" rejection branch stays
+      // covered — a legacy OR chat is now the only way to reach it, since no
+      // request may name the kind.
       kind: "openrouter",
       parseSessionMessages: () => sourceMessages,
       getSessionPreview: () => "preview",
@@ -295,11 +297,26 @@ describe("POST /api/chats/:id/fork cross-harness handoff", () => {
     expect(calls.seedSession).toHaveLength(0);
   });
 
-  it("rejects a target harness that cannot be seeded", async () => {
+  it("refuses openrouter as a target — the harness is no longer offered", async () => {
+    // Not a "can't be seeded" rejection: `"openrouter"` left
+    // ROUTABLE_PROVIDER_KINDS, so the request never gets as far as looking for a
+    // provider. Nothing is written either way.
     setParent({});
     const res = await fork({ provider: "openrouter" });
     expect(res.code).toBe(400);
+    expect(res.meta.error).toContain('Unknown target provider "openrouter"');
+    expect(calls.seedSession).toHaveLength(0);
+  });
+
+  it("rejects a target harness that cannot be seeded", async () => {
+    // Reached via a legacy OpenRouter chat forking within its own harness: the
+    // SOURCE kind is read with the internal guard, so `targetKind` lands on a
+    // provider that implements neither operation. An honest 400 beats a throw.
+    setParent({ provider: "openrouter" });
+    const res = await fork();
+    expect(res.code).toBe(400);
     expect(res.meta.error).toContain("OpenRouter");
+    expect(calls.seedSession).toHaveLength(0);
   });
 
   it("rejects a handoff when there is no history to carry", async () => {
