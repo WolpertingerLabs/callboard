@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { queueFileService } from "../services/queue-file-service.js";
 import { sendMessage } from "../services/claude.js";
+import { sendRetiredProviderError } from "../utils/route-errors.js";
 
 export const queueRouter = Router();
 
@@ -173,6 +174,10 @@ queueRouter.post("/:id/execute-now", async (req, res) => {
 
     res.json({ success: true, message: "Message execution started" });
   } catch (error: any) {
+    // Same 410-not-500 rule as POST /api/chats/:id/message: a draft saved
+    // against a chat on a removed harness is the one refusal this route can
+    // hit that is not a server fault.
+    if (sendRetiredProviderError(res, error)) return;
     res.status(500).json({ error: error.message });
   }
 });

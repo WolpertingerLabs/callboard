@@ -524,6 +524,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return "claude-code";
   }, [id, newChatProvider, chat?.metadata]);
 
+  // The raw `metadata.provider`, before `chatProvider` collapses anything it
+  // does not recognize to "claude-code". Only the badge wants this: it is the
+  // one control that names the harness rather than driving it, so it is the one
+  // that must not round a retired harness off to a live one.
+  const rawChatProvider = useMemo((): string | null => {
+    if (!id || !chat?.metadata) return null;
+    try {
+      const value = JSON.parse(chat.metadata).provider;
+      return typeof value === "string" && value ? value : null;
+    } catch {
+      return null;
+    }
+  }, [id, chat?.metadata]);
+
+  // Harnesses this build removed — see RETIRED_PROVIDER_KINDS on the backend.
+  // Such a chat still opens (its record and transcript exist), but nothing can
+  // resume it: POST /message answers 410. So the model/effort popover is hidden
+  // rather than offering Anthropic models for a chat that never ran on one.
+  const isRetiredHarness = rawChatProvider === "openrouter";
+
   // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
   // derived from `chatProvider`, because the kind alone does not name a harness.
   const acpProviderId = useMemo((): string => {
@@ -551,12 +571,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // `seedSession`, so the route would 400. Hiding the button is the honest
   // surface for that; a fork that renders and then loses all context is worse
   // than no fork button.
-  // Null only for ACP; every other kind is both a valid fork source and a valid
-  // target (see `ForkProvider`).
-  const forkSourceProvider: ForkProvider | null = chatProvider === "acp" ? null : chatProvider;
+  // Null for ACP and for a retired harness — the latter because forking copies
+  // the source's session log, and nothing left in the process can read one the
+  // removed engine wrote. `POST /api/chats/:id/fork` refuses it by name with a
+  // 400; hiding the entry is the same answer given before the user asks.
+  // Otherwise every kind is both a valid fork source and a valid target (see
+  // `ForkProvider`).
+  const forkSourceProvider: ForkProvider | null = chatProvider === "acp" || isRetiredHarness ? null : chatProvider;
 
-  // The harness whose model/effort controls the composer popover renders.
-  const composerProvider: AgentProviderKind | null = chatProvider;
+  // The harness whose model/effort controls the composer popover renders. Null
+  // for a retired harness, which has no controls worth opening.
+  const composerProvider: AgentProviderKind | null = isRetiredHarness ? null : chatProvider;
 
   // Human-readable harness name for status text ("Claude is thinking...").
   // ACP shows the vendor, not the protocol: "OpenCode is thinking" is what the
@@ -2453,11 +2478,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 {!isMobile && "worktree"}
               </div>
             )}
-            {/* Provider badge — "OR" for OpenRouter, "CC" for Claude Code.
-                Model + effort selection has moved out of the header and into
+            {/* Provider badge — "CC" for Claude Code, "CX" for Codex, and so
+                on. Fed the RAW metadata provider, not `chatProvider`: a chat on
+                a removed harness must not be badged as the harness it fell back
+                to. Model + effort selection has moved out of the header and into
                 the composer's hamburger menu (see PromptInput's `menuItems`
                 prop below). */}
-            <ProviderBadge provider={chatProvider} acpProviderId={acpProviderId} />
+            <ProviderBadge provider={rawChatProvider ?? chatProvider} acpProviderId={acpProviderId} />
             {/* Parentage-tree indicator — parent breadcrumb + tree dropdown
                 for chats linked into a cross-engine chat tree. Renders
                 nothing when the chat has no lineage and no descendants. */}

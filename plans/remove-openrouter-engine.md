@@ -263,7 +263,12 @@ Keep — **these two fail the engine-only test**, verify before touching:
 field on the config endpoint, which fed the now-deleted provider toggle. Remove
 both; the ACP section reads `settings.openRouterApiKey` directly.
 
-## Phase 4 — Verify the drop-old-chats decision
+## Phase 4 — Verify the drop-old-chats decision — **DONE**
+
+Outcome: the decision holds, with **two seams that did not implement it** and one
+frontend regression introduced by Phase 3. Details below the original text.
+
+Original scope:
 
 Not an implementation phase. The chat list is driven by
 `discoverSessionsPaginated()` over the registered session providers, with
@@ -284,3 +289,67 @@ cleanly, with no orphan rows. Confirm that holds at three seams:
 Roughly 426 of 7,656 chat records reference openrouter, and ~135 session logs
 exist under `~/.openrouter-agent-harness/logs/`. Deleting those files is optional
 housekeeping, explicitly **not** part of this work.
+
+### What the audit found
+
+**The 426 figure is wrong and was load-bearing.** It counted every chat file
+*mentioning* the string. Of 7,665 records, **155** carry
+`metadata.provider: "openrouter"`; the other 275 mentions are almost all a
+`lastBranch` of `refactor/remove-openrouter-engine` written by this very
+refactor's worktrees. Corrected at its three quoted sites (`claude.ts`,
+`routes/chats.ts`, `agents.integration.test.ts`).
+
+**The decision's premise is right; two structures did not follow it.** The rule
+is "filesystem discovery decides what is live", and three paths read chat
+*records* instead:
+
+1. `routes/cards.ts` passes `chatFileService.getAllChats()` to
+   `buildCardSummaries` — the rollup never consults discovery at all. The plan
+   predicted a card would *lose* OR members; the opposite was true. They stayed,
+   counted toward `chatCount`, and could carry `unread` — a board that disagrees
+   with the sidebar about how many chats a card has. **Fixed** in
+   `card-rollup.ts`.
+2. The lineage-append pass in `routes/chats.ts` reaches outside the pagination
+   window by file record and falls back to the bare record when no session is
+   discovered — so an OR *parent* of a surviving claude-code child was appended
+   to the sidebar as a live row. **Fixed**; the child stays and folds under a
+   dangling root, which is the deleted-parent case `rootKeyOf` and the client's
+   `lineageOf` already agree on.
+3. `buildChatTree` also walks records — deliberately, and **left alone**. It is
+   documented as a walk over stored records, and the tree is how you see where a
+   chat came from. It reports the real `provider`, which is now badged honestly.
+
+**Phase 3 regressed the frontend.** Collapsing `chatProvider` to the live kinds
+made a legacy OR chat render as a Claude Code chat: "CC" badge, "Claude is
+thinking", an Anthropic model popover, a fork entry the route 400s. The comment
+at `Chat.tsx` claiming the popover is hidden for a retired harness survived the
+behaviour it described. **Fixed** — `ProviderBadge` now tags a retired harness
+by name, and `composerProvider` / `forkSourceProvider` are null for one.
+
+**Clean, verified by fixture, nothing changed:** `card-membership.ts` (pure
+metadata, never resolves a session), `folder-service.ts` and `folder-summaries.ts`
+(discovery-driven, so OR chats vanish and `mostRecentChatProvider` can never name
+one), `utils/session-log.ts` and `utils/chat-lookup.ts` (both return
+null/`session_log_path: null` for an unresolvable session), the `cardsOnly` filter
+(drops sessions with no stored record *before* augmentation, so it was already
+correct), and `job-runner.ts` — a step naming the removed harness fails that step
+with the actionable message via `handleAttemptSpawnFailure`, and
+`readFinalAssistantText` degrades to `""` when no provider resolves the session.
+
+**Known items, both resolved.** `RetiredProviderError` now answers **410 Gone**
+(not 500) through a shared `utils/route-errors.ts`, applied to
+`POST /api/chats/:id/message` and to `POST /api/queue/:id/execute`, which had the
+same defect. The stranded `meta.provider === "openrouter"` in the effort branch
+is gone — it sat ahead of the refusal, so it really could write an effort value
+onto a chat that can never run.
+
+**Observed, deliberately not changed:** `GET /api/chats/:id/messages` resolves an
+unknown provider kind to `getSessionProviders()[0]`, so an OR chat's session ids
+are parsed by the Claude Code provider, find nothing, and return `[]`. The
+outcome is right (empty transcript, no crash) but it is right by accident rather
+than by rule. Out of scope for this phase.
+
+`RETIRED_PROVIDER_KINDS` / `isRetiredProvider` in `agents/ports/AgentProvider.ts`
+is the third state the two existing guards could not express: not routable, not
+internal, and *not unknown either* — `isInternalProvider` answers false for
+`"openrouter"` and for a typo alike, and the two want opposite handling.

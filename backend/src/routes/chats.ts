@@ -12,7 +12,7 @@ import { getCard, listCards } from "../services/card-store.js";
 import { setChatCardMembership } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
-import { isInternalProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
@@ -50,6 +50,15 @@ function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string
 
   gitInfoCache.set(folder, { ...gitInfo, cachedAt: now });
   return gitInfo;
+}
+
+/** The `provider` a chat record names, or undefined when absent/unparseable. */
+function readProvider(chat: { metadata?: string | null }): unknown {
+  try {
+    return JSON.parse(chat.metadata || "{}").provider;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -525,6 +534,15 @@ chatsRouter.get("/", (req, res) => {
         const fc = fileById.get(id);
         if (!fc) continue;
         const session = sessionByChatId.get(id);
+        // This is the one path in the list route that can emit a chat
+        // filesystem discovery did not return, so it is also the one that has
+        // to re-apply discovery's verdict. A chat on a removed harness has a
+        // record but no readable session — appending it would put a row in the
+        // sidebar that renders as live and opens to an empty transcript. Its
+        // surviving descendants are discovery-backed and stay; they simply fold
+        // under a dangling root, which is the deleted-parent case rootKeyOf and
+        // the client's lineageOf already agree on.
+        if (isRetiredProvider(readProvider(fc))) continue;
         // Chats without a session log yet (e.g. freshly spawned) fall back
         // to the bare file record.
         const augmented = session ? augmentSession(session) : { ...fc, displayFolder: fc.folder };
@@ -698,11 +716,11 @@ chatsRouter.post("/:id/fork", (req, res) => {
     meta = JSON.parse(chat.metadata || "{}");
   } catch {}
 
-  // Chats stamped with the removed OpenRouter harness are refused by name
-  // before the guard below can silently call them claude-code chats — there are
-  // ~426 of them, and the fallback would send the fork looking for a session log
-  // nothing can read. An explicit 400 beats a fork that appears to work.
-  if (meta.provider === "openrouter") {
+  // Chats stamped with a removed harness are refused by name before the guard
+  // below can silently call them claude-code chats — 155 records name the
+  // OpenRouter one, and the fallback would send the fork looking for a session
+  // log nothing can read. An explicit 400 beats a fork that appears to work.
+  if (isRetiredProvider(meta.provider)) {
     return res.status(400).json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be forked." });
   }
 

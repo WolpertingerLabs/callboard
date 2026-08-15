@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
+import { sendRetiredProviderError } from "../utils/route-errors.js";
 import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
 import type { EffortLevel } from "shared/types/index.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -332,8 +333,8 @@ streamRouter.post("/:id/message", async (req, res) => {
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
-            model: { type: "string", description: "Model to persist for this chat. OpenRouter chats: a model slug or alias. Claude Code chats: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID. Empty string clears the per-chat override and reverts to the global default." },
-            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "OpenRouter reasoning-effort level to persist for this chat. Only honored when the provider of the chat is openrouter; ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
+            model: { type: "string", description: "Model to persist for this chat. Claude Code chats: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID. Other harnesses: whatever model identifier that harness accepts. Empty string clears the per-chat override and reverts to the global default." },
+            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "Reasoning-effort level to persist for this chat. Only honored for harnesses that take one (codex, cline, pi); ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
             requireExplicitCompletion: { type: "boolean", description: "Override the explicit-completion requirement for this message only. Omit to inherit the persisted setting of the chat." }
           }
         }
@@ -371,19 +372,23 @@ streamRouter.post("/:id/message", async (req, res) => {
     }
 
     // Persist a per-chat model override before sendMessage re-reads
-    // initialMetadata from disk. Honored for both providers — OR chats store
-    // a slug/alias, claude-code chats an Anthropic model alias or full ID.
-    // An empty string clears the override so the chat falls back to the
-    // provider's global default (JSON.stringify drops undefined keys).
+    // initialMetadata from disk. Honored for every harness — each stores the
+    // identifier its own engine accepts. An empty string clears the override so
+    // the chat falls back to the provider's global default (JSON.stringify
+    // drops undefined keys).
     if (typeof model === "string") {
       const trimmed = model.trim();
       chatFileService.updateChatMetadata(req.params.id, { model: trimmed.length > 0 ? trimmed : undefined });
     }
 
-    // Same treatment for per-chat reasoning effort. Empty string clears the
-    // override (so the chat falls back to the model default); any other
-    // non-allowlisted value is silently dropped.
-    if (typeof effort === "string" && (meta.provider === "openrouter" || meta.provider === "codex" || meta.provider === "cline" || meta.provider === "pi")) {
+    // Same treatment for per-chat reasoning effort, for the harnesses that take
+    // one. Empty string clears the override (so the chat falls back to the model
+    // default); any other non-allowlisted value is silently dropped.
+    //
+    // `"openrouter"` was in this list until Phase 4 of the OR removal. It sits
+    // ahead of the `sendMessage` call that refuses such a chat, so it was still
+    // reachable — writing an effort value onto a chat that can never run again.
+    if (typeof effort === "string" && (meta.provider === "codex" || meta.provider === "cline" || meta.provider === "pi")) {
       const trimmed = effort.trim();
       if (trimmed.length === 0) {
         chatFileService.updateChatMetadata(req.params.id, { effort: undefined });
@@ -421,6 +426,13 @@ streamRouter.post("/:id/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
+    // A chat pinned to a removed harness is a client-state condition, not a
+    // server fault — see sendRetiredProviderError. Logged at warn for the same
+    // reason: nothing here needs fixing.
+    if (sendRetiredProviderError(res, err)) {
+      log.warn(`POST /${req.params.id}/message refused: ${err.message}`);
+      return;
+    }
     log.error(`POST /${req.params.id}/message failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }

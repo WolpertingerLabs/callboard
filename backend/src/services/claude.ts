@@ -1,5 +1,5 @@
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
-import { isInternalProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
@@ -65,16 +65,16 @@ export class RetiredProviderError extends Error {}
  * falling back to "claude-code" on anything unrecognized. Logs a warn for
  * malformed values so corrupted metadata is observable instead of silent.
  *
- * `"openrouter"` is the one value that refuses instead of falling back. Its
- * harness was removed, ~426 chat records still name it, and the fallback would
- * hand those chats to Claude Code — which would then try to resume a session id
- * only the OR harness could resolve. That fails somewhere deep in the SDK, after
- * the UI has already started a run. A named refusal at the boundary is the whole
+ * A retired kind refuses instead of falling back. `"openrouter"`'s harness was
+ * removed with 155 chat records still naming it, and the fallback would hand
+ * those chats to Claude Code — which would then try to resume a session id only
+ * the OR harness could resolve. That fails somewhere deep in the SDK, after the
+ * UI has already started a run. A named refusal at the boundary is the whole
  * difference between "this chat can't run any more" and a confusing half-start.
  */
 function resolveProviderKind(value: unknown): AgentProviderKind {
   if (typeof value !== "string" || value === "") return "claude-code";
-  if (value === "openrouter") {
+  if (isRetiredProvider(value)) {
     throw new RetiredProviderError(
       "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be resumed. " +
         "Start a new chat — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
@@ -876,7 +876,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // Refuse it here rather than letting it fall off the internal allowlist, which
   // would leave the metadata `provider` unwritten and quietly start a Claude Code
   // session in its place — a run that reports success on the wrong engine.
-  if ((opts.provider as string) === "openrouter") {
+  if (isRetiredProvider(opts.provider)) {
     throw new RetiredProviderError(
       "This job or cron action targets the OpenRouter agent harness, which has been removed. " +
         "Re-point it at another harness — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",

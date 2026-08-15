@@ -143,6 +143,40 @@ export function isInternalProvider(value: unknown): value is InternalProviderKin
   return typeof value === "string" && (INTERNAL_PROVIDER_KINDS as readonly string[]).includes(value);
 }
 
+/**
+ * Harness kinds this build once implemented and no longer does.
+ *
+ * The third state a persisted `metadata.provider` can be in, and the one the
+ * two guards above cannot express: not routable, not internal, and *not
+ * unknown either*. `isInternalProvider` returning false is the same answer for
+ * `"openrouter"` as for a typo, and the two want opposite handling — a typo
+ * degrades to Claude Code with a warning, a retired harness must refuse by
+ * name, because the chat it names has a real transcript nothing left in the
+ * process can read.
+ *
+ * Kinds listed here are therefore *permanently* absent from
+ * {@link AgentProviderKind}: this list is the only remaining place the string
+ * is spelled, and callers ask {@link isRetiredProvider} rather than comparing
+ * against a literal. As of this writing 155 chat records under
+ * `~/.callboard/chats/` name `"openrouter"` (the plan's "~426" counted every
+ * file *mentioning* the string, most of them via a `lastBranch` of
+ * `refactor/remove-openrouter-engine`).
+ *
+ * Not a superset of the live kinds and never widened into one: a retired kind
+ * can never be routed, resumed or forked, so nothing may treat membership here
+ * as "supported but hidden". That is what {@link INTERNAL_PROVIDER_KINDS} is
+ * for.
+ */
+export const RETIRED_PROVIDER_KINDS = ["openrouter"] as const;
+
+/**
+ * Type guard: a persisted provider value naming a harness this build removed.
+ * See {@link RETIRED_PROVIDER_KINDS}.
+ */
+export function isRetiredProvider(value: unknown): value is (typeof RETIRED_PROVIDER_KINDS)[number] {
+  return typeof value === "string" && (RETIRED_PROVIDER_KINDS as readonly string[]).includes(value);
+}
+
 export interface AgentProvider {
   readonly kind: AgentProviderKind;
   /**
