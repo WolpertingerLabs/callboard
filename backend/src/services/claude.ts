@@ -168,7 +168,7 @@ const pendingRequests = new Map<string, PendingRequest>();
  * Merges per-directory plugins with enabled app-wide plugins.
  * Per-directory plugins take precedence over app-wide plugins with the same name.
  */
-function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
+export function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
   const sdkPlugins: any[] = [];
   const includedNames = new Set<string>();
 
@@ -209,10 +209,15 @@ function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
     log.warn(`Failed to build app-wide plugin options: ${error}`);
   }
 
-  // Callboard custom skills — a synthetic plugin so both providers pick them
-  // up: the Claude SDK loads it natively, and the OR adapter reads this same
-  // descriptor array via extractPluginDirs → loadPlugins. Null when no
-  // custom skills exist.
+  // Callboard custom skills — a synthetic plugin, so the Claude Code SDK loads
+  // them through the same path as any other local plugin: this descriptor goes
+  // into `options.plugins` below, the CLI loads the directory, and the skills
+  // surface as `callboard:<name>`. Null when no custom skills exist.
+  //
+  // This is the only consumer of the descriptor. pi reaches the same skills by
+  // a different door — `customSkillsService.getSkillsDir()` into pi's
+  // `additionalSkillPaths` (agents/adapters/pi/optionsAdapter.ts) — because it
+  // has no plugin concept at all.
   try {
     const customSkillsDir = customSkillsService.getPluginDir();
     if (customSkillsDir && !includedNames.has(CUSTOM_SKILLS_PLUGIN_NAME)) {

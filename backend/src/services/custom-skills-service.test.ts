@@ -1,8 +1,13 @@
 /**
  * Unit tests for the custom-skills service — CRUD over the synthetic
- * "callboard" plugin directory, frontmatter round-trip, and (end-to-end, not
- * mocked) discoverability of the resulting directory through the OR harness's
- * plugin loader, which is exactly how the OpenRouter chat path consumes it.
+ * "callboard" plugin directory, frontmatter round-trip, and the two accessors
+ * a chat session calls.
+ *
+ * Scope note: everything here asserts that we wrote the files we intended to
+ * write, which says nothing about whether a loader accepts them — the format is
+ * not ours to define. That property is covered separately, against the real
+ * loaders: `custom-skills.plugin-load.test.ts` (Claude Code SDK) and
+ * `agents/adapters/pi/customSkills.test.ts` (pi's resource loader).
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
