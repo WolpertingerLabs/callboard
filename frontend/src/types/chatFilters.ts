@@ -38,6 +38,13 @@ export interface ChatViewOptions {
    * unlike {@link cardsOnly} it costs nothing and pages normally.
    */
   dimCardless: boolean;
+  /**
+   * Float chats on an open card above the rest, under "Active"/"Inactive"
+   * headers. Like {@link dimCardless} this is a render decision over the chats
+   * already loaded: it changes no request, so it pages normally and never
+   * removes a row.
+   */
+  sortByCardActive: boolean;
   /** Group chats by parentage tree instead of a flat list. */
   treeLayout: boolean;
 }
@@ -47,6 +54,7 @@ export const DEFAULT_CHAT_VIEW_OPTIONS: ChatViewOptions = {
   showTriggered: false,
   cardsOnly: false,
   dimCardless: false,
+  sortByCardActive: false,
   treeLayout: false,
 };
 

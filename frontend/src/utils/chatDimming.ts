@@ -17,6 +17,27 @@ export function chatCardId(chat: Pick<Chat, "metadata">): string | undefined {
   }
 }
 
+/**
+ * Whether the chat is filed under a card that is currently open.
+ *
+ * The shared question behind two features: the dim fades the rows this returns
+ * false for, and "Active cards first" files them under the Inactive header.
+ * A dangling id — the card was deleted — is a chat with no live card, same as
+ * never having had one, so it answers false like an unfiled chat.
+ *
+ * Says nothing about whether the cards have loaded: callers hold that flag
+ * (see {@link DimContext.cardsLoaded}) because they differ in what to do with
+ * it — the dim suppresses itself, the sectioning renders as if it were off.
+ */
+export function isChatCardActive(
+  chat: Pick<Chat, "metadata">,
+  cardsById: ReadonlyMap<string, Pick<CardSummary, "lifecycle">>,
+): boolean {
+  const id = chatCardId(chat);
+  if (!id) return false;
+  return cardsById.get(id)?.lifecycle === "open";
+}
+
 export interface DimContext {
   /** The view option. */
   dimCardless: boolean;
@@ -48,10 +69,5 @@ export function isChatDimmed(
   { dimCardless, cardsLoaded }: DimContext,
 ): boolean {
   if (!dimCardless || !cardsLoaded) return false;
-  const id = chatCardId(chat);
-  if (!id) return true;
-  const card = cardsById.get(id);
-  // A dangling id — the card was deleted — is a chat with no live card, same
-  // as never having had one.
-  return !card || card.lifecycle === "closed";
+  return !isChatCardActive(chat, cardsById);
 }

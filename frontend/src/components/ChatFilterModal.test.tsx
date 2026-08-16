@@ -24,7 +24,7 @@ function renderModal(viewOptions: Partial<ChatViewOptions> = {}) {
 describe("ChatFilterModal view options", () => {
   it("renders every scope and layout option", () => {
     renderModal();
-    for (const label of ["Cards only", "Dim inactive chats", "Bookmarked only", "Show triggered chats", "Tree layout"]) {
+    for (const label of ["Cards only", "Dim inactive chats", "Active cards first", "Bookmarked only", "Show triggered chats", "Tree layout"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
   });
@@ -88,8 +88,38 @@ describe("ChatFilterModal view options", () => {
     expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, dimCardless: true });
   });
 
+  /**
+   * Same reasoning as the dim switch, and the reason the two sit next to each
+   * other: "Cards only" has already narrowed the list to open cards, so there
+   * is no second bucket for "Active cards first" to make a header over.
+   */
+  it("makes the active-first switch inert while Cards only is on, and says why", () => {
+    const { onApply } = renderModal({ cardsOnly: true });
+
+    const sortSwitch = screen.getByText("Active cards first").closest("button")!;
+    expect(sortSwitch.disabled).toBe(true);
+    expect(screen.getByText(/Nothing to split/)).toBeTruthy();
+
+    fireEvent.click(sortSwitch);
+    fireEvent.click(screen.getByText("Apply"));
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardsOnly: true });
+  });
+
+  it("round-trips the active-first switch through Apply", () => {
+    const { onApply } = renderModal();
+
+    const sortSwitch = screen.getByText("Active cards first").closest("button")!;
+    expect(sortSwitch.disabled).toBe(false);
+
+    fireEvent.click(sortSwitch);
+    expect(onApply).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Apply"));
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, sortByCardActive: true });
+  });
+
   it("Reset All clears the view options too, not just the field filters", () => {
-    const { onApply } = renderModal({ cardsOnly: true, showTriggered: true, bookmarked: true, treeLayout: true });
+    const { onApply } = renderModal({ cardsOnly: true, showTriggered: true, bookmarked: true, sortByCardActive: true, treeLayout: true });
 
     fireEvent.click(screen.getByText("Reset All"));
     fireEvent.click(screen.getByText("Apply"));

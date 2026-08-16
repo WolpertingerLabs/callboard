@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Plus, Settings, Bot, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText } from "lucide-react";
 import {
@@ -19,6 +19,7 @@ import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
 import ChatListItem, { type ChatCardMenu } from "../components/ChatListItem";
 import ChatTreeList from "../components/ChatTreeList";
+import ChatSectionHeader from "../components/ChatSectionHeader";
 import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import NewChatPanel from "../components/NewChatPanel";
@@ -26,6 +27,7 @@ import ConfirmModal from "../components/ConfirmModal";
 import CardPicker from "../components/board/CardPicker";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
+import { activeSectionPredicate, sectionByActive } from "../utils/chatSections";
 import {
   DEFAULT_CHAT_FILTERS,
   DEFAULT_CHAT_VIEW_OPTIONS,
@@ -42,6 +44,8 @@ import {
   saveChatsCardsOnly,
   getChatsDimCardless,
   saveChatsDimCardless,
+  getChatsSortByCardActive,
+  saveChatsSortByCardActive,
   getChatListLayout,
   saveChatListLayout,
   type SidebarViewMode,
@@ -83,14 +87,15 @@ export default function ChatList({
   // fetched subtrees are snapshots and go stale when the list refreshes.
   const [listVersion, setListVersion] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  // Scope + layout, all edited together in the filters modal. Four of the five
-  // are remembered across reloads; `bookmarked` stays session-only, the way it
-  // has always behaved.
+  // Scope + layout, all edited together in the filters modal. All but one are
+  // remembered across reloads; `bookmarked` stays session-only, the way it has
+  // always behaved.
   const [viewOptions, setViewOptions] = useState<ChatViewOptions>(() => ({
     ...DEFAULT_CHAT_VIEW_OPTIONS,
     showTriggered: getShowTriggeredChats(),
     cardsOnly: getChatsCardsOnly(),
     dimCardless: getChatsDimCardless(),
+    sortByCardActive: getChatsSortByCardActive(),
     treeLayout: getChatListLayout() === "tree",
   }));
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
@@ -391,6 +396,13 @@ export default function ChatList({
    */
   const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsById, { dimCardless: viewOptions.dimCardless, cardsLoaded });
 
+  /**
+   * "Active cards first": the per-chat verdict the Active/Inactive split reads,
+   * or `undefined` for "render as if the option were off" — which `cardsLoaded`
+   * makes load-bearing, for the reason spelled out at the predicate itself.
+   */
+  const isCardActive = activeSectionPredicate(cardsById, { sortByCardActive: viewOptions.sortByCardActive, cardsLoaded });
+
   /** Title for a card promoted from a chat — same derivation as the board's old inbox promote. */
   const chatCardTitle = (chat: Chat): string => {
     try {
@@ -464,6 +476,7 @@ export default function ChatList({
     saveShowTriggeredChats(nextView.showTriggered);
     saveChatsCardsOnly(nextView.cardsOnly);
     saveChatsDimCardless(nextView.dimCardless);
+    saveChatsSortByCardActive(nextView.sortByCardActive);
     saveChatListLayout(nextView.treeLayout ? "tree" : "flat");
   };
 
@@ -512,6 +525,27 @@ export default function ChatList({
     return result;
   }, [chats, filters, matchingChatIds]);
 
+  /**
+   * "Active cards first" applied to the flat layout, or `null` for "render the
+   * list exactly as the option-off path does" — which covers the option being
+   * off, the cards not having loaded, and every chat landing in one bucket.
+   */
+  const flatSections = sectionByActive(filteredChats, (chat) => !!isCardActive?.(chat), !!isCardActive);
+
+  const renderChatRow = (chat: Chat) => (
+    <ChatListItem
+      key={chat.id}
+      chat={chat}
+      isActive={chat.id === activeChatId}
+      onClick={() => handleChatClick(chat)}
+      onDelete={() => handleDelete(chat)}
+      onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
+      cardMenu={cardMenuFor(chat)}
+      sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
+      dimmed={isDimmed(chat)}
+    />
+  );
+
   // Count triggered chats currently in the response (visible when "Show triggered chats" is ON)
   const triggeredCount = useMemo(() => {
     if (!viewOptions.showTriggered) return 0;
@@ -524,13 +558,18 @@ export default function ChatList({
     }).length;
   }, [chats, viewOptions.showTriggered]);
 
-  // Determine the empty state message. `dimCardless` is normalised away first:
-  // it fades rows and never removes one, so an empty list is never its doing
-  // and "No chats match the current filters" would be a lie. It still counts
-  // toward the filter button's badge, where "you have changed the view" is
-  // exactly what the badge means.
+  // Determine the empty state message. `dimCardless` and `sortByCardActive`
+  // are normalised away first: one fades rows and the other reorders them, and
+  // neither ever removes one, so an empty list is never their doing and "No
+  // chats match the current filters" would be a lie. They still count toward
+  // the filter button's badge, where "you have changed the view" is exactly
+  // what the badge means.
   const isFiltered =
-    activeViewOptionCount({ ...viewOptions, dimCardless: DEFAULT_CHAT_VIEW_OPTIONS.dimCardless }) > 0 ||
+    activeViewOptionCount({
+      ...viewOptions,
+      dimCardless: DEFAULT_CHAT_VIEW_OPTIONS.dimCardless,
+      sortByCardActive: DEFAULT_CHAT_VIEW_OPTIONS.sortByCardActive,
+    }) > 0 ||
     hasActiveFilters(filters) ||
     matchingChatIds !== null;
 
@@ -735,21 +774,19 @@ export default function ChatList({
             cardMenuFor={cardMenuFor}
             sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
             isDimmed={isDimmed}
+            // The predicate, not a pre-sorted list: the tree collapses a
+            // lineage group into one row and must file it whole.
+            isCardActive={isCardActive}
           />
-        ) : (
-          filteredChats.map((chat) => (
-            <ChatListItem
-              key={chat.id}
-              chat={chat}
-              isActive={chat.id === activeChatId}
-              onClick={() => handleChatClick(chat)}
-              onDelete={() => handleDelete(chat)}
-              onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
-              cardMenu={cardMenuFor(chat)}
-              sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
-              dimmed={isDimmed(chat)}
-            />
+        ) : flatSections ? (
+          flatSections.map((section) => (
+            <Fragment key={section.key}>
+              <ChatSectionHeader label={section.label} />
+              {section.items.map(renderChatRow)}
+            </Fragment>
           ))
+        ) : (
+          filteredChats.map(renderChatRow)
         )}
 
         {viewOptions.showTriggered && triggeredCount > 0 && (

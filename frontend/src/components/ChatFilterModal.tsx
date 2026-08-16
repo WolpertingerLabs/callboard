@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { Bookmark, Zap, LayoutGrid, ListTree, SunDim } from "lucide-react";
+import { ArrowUpNarrowWide, Bookmark, Zap, LayoutGrid, ListTree, SunDim } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import { DEFAULT_CHAT_VIEW_OPTIONS, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
@@ -211,6 +211,21 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
               hint={localView.cardsOnly ? "Nothing to dim — “Cards only” already shows open cards only" : "Fade chats with no card, or a closed one"}
               checked={localView.dimCardless}
               onChange={() => toggleView("dimCardless")}
+              disabled={localView.cardsOnly}
+            />
+            {/* Adjacent to the two options that decide it, for the same reason:
+                "Cards only" already shows open cards only, so there is nothing
+                left to split. */}
+            <SwitchRow
+              icon={<ArrowUpNarrowWide size={16} />}
+              label="Active cards first"
+              hint={
+                localView.cardsOnly
+                  ? "Nothing to split — “Cards only” already shows open cards only"
+                  : "Group chats on an open card above the rest, under headers"
+              }
+              checked={localView.sortByCardActive}
+              onChange={() => toggleView("sortByCardActive")}
               disabled={localView.cardsOnly}
             />
             <SwitchRow
