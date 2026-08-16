@@ -16,6 +16,8 @@ const ROLLUP_LABELS: Record<CardRollupState, string> = {
   idle: "Idle",
 };
 
+const DEFAULT_CARD_EMOJI = "🗂️";
+
 /** Rollup-state colors — themable via the --board-* section of index.css. */
 export const ROLLUP_COLORS: Record<CardRollupState, string> = {
   needs_you: "var(--board-rollup-needs-you)",
@@ -66,7 +68,7 @@ export default function CardTile({ card, onClick }: CardTileProps) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <span style={{ fontSize: 16, flexShrink: 0 }}>{card.emoji}</span>
+        {card.emoji !== DEFAULT_CARD_EMOJI && <span style={{ fontSize: 16, flexShrink: 0 }}>{card.emoji}</span>}
         <span
           style={{
             fontSize: 14,
