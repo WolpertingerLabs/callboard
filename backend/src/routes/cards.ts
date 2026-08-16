@@ -87,6 +87,70 @@ cardsRouter.post("/", (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Upper bound on one bulk lifecycle batch. Every id is a synchronous
+ * read-merge-write against its own file on the event loop thread, so an
+ * uncapped list is an unbounded stall for every other request.
+ */
+export const BULK_LIFECYCLE_MAX = 200;
+
+/**
+ * Bulk close/reopen for the board's multi-select.
+ *
+ * POST, not `PATCH /bulk`, and deliberately so: Express matches in
+ * registration order, so a `patch("/bulk")` sitting below `patch("/:id")`
+ * resolves to the single-card handler with `id="bulk"`, fails CARD_ID_RE in
+ * card-store, and answers 404 "Card not found" — a routing bug wearing a data
+ * bug's clothes. There is no `post("/:id")`, so this path cannot be shadowed
+ * no matter where it is registered or how the file is later reordered.
+ *
+ * Partial success is a 200 with a populated `failed[]`, not an error status:
+ * a missing id in the middle of a batch must not strand the rest, and the
+ * client still needs `updated` to merge into its state.
+ */
+cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
+  // #swagger.tags = ['Cards']
+  // #swagger.summary = 'Close or reopen many cards in one call; per-id failures are reported, not fatal'
+  /* #swagger.responses[200] = { description: "Updated card summaries plus per-id failures" } */
+  const { ids, lifecycle } = req.body ?? {};
+  if (!Array.isArray(ids) || ids.length === 0 || ids.some((id: unknown) => typeof id !== "string")) {
+    return res.status(400).json({ error: "ids must be a non-empty array of strings" });
+  }
+  if (ids.length > BULK_LIFECYCLE_MAX) {
+    return res.status(400).json({ error: `ids is limited to ${BULK_LIFECYCLE_MAX} entries` });
+  }
+  if (lifecycle !== "open" && lifecycle !== "closed") {
+    return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });
+  }
+  try {
+    const updated: Card[] = [];
+    const failed: { id: string; error: string }[] = [];
+    for (const id of ids as string[]) {
+      try {
+        const card = updateCard(id, { lifecycle });
+        if (card) updated.push(card);
+        else failed.push({ id, error: "Card not found" });
+      } catch (err: any) {
+        log.error(`Error updating card ${id} in bulk lifecycle: ${err}`);
+        failed.push({ id, error: err?.message ?? "Failed to update card" });
+      }
+    }
+    if (updated.length > 0) {
+      // Once for the batch, same reason as the single-card patch: a lifecycle
+      // flip moves which chats the sidebar's cards-only filter admits.
+      clearChatListCache();
+      // Also once for the batch, not once per card. The board refetches its
+      // whole card list on any metadata bump (300ms debounce), so N
+      // notifications would be N SSE frames driving one identical refetch.
+      sessionRegistry.notifyMetadata(updated[0].id, { cardEvent: "updated" });
+    }
+    res.json({ updated: summarize(updated), failed });
+  } catch (err: any) {
+    log.error(`Error in bulk lifecycle update: ${err}`);
+    res.status(500).json({ error: "Failed to update cards", details: err.message });
+  }
+});
+
 cardsRouter.get("/:id", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Get a card with live rollup'
