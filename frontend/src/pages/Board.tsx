@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import type { CardSummary, CardPatch, CardPayload } from "../api";
-import { listCards, createCard, updateCard, deleteCard } from "../api";
+import { listCards, createCard, updateCard, deleteCard, bulkSetCardLifecycle } from "../api";
 import { useMetadataVersion } from "../contexts/SessionContext";
 import { getBoardClosedExpanded, saveBoardClosedExpanded } from "../utils/localStorage";
 import { uniqueCategories } from "../utils/cardCategories";
 import CardTile from "../components/board/CardTile";
+import BoardSelectionBar from "../components/board/BoardSelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
 import NewCardModal from "../components/board/NewCardModal";
 import { Plus, ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide-react";
@@ -46,6 +47,18 @@ export default function Board() {
   const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [closedExpanded, setClosedExpanded] = useState(() => getBoardClosedExpanded());
   const [showNewCard, setShowNewCard] = useState(false);
+
+  // Multi-select. Deliberately NOT persisted: a stale selection restored
+  // across a reload is a way to act on the wrong cards.
+  const [rawSelectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  // Non-null IS "in selection mode", and it scopes the selection to one
+  // lifecycle. That scoping is what lets the action bar offer exactly one
+  // verb — "Close 5" — instead of "Close 3 / Reopen 2", which is a small
+  // puzzle every time. It costs little because closed cards already live in
+  // their own collapsed strip.
+  const [selectionLifecycle, setSelectionLifecycle] = useState<CardSummary["lifecycle"] | null>(null);
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const loadCards = useCallback(async () => {
     try {
@@ -89,7 +102,12 @@ export default function Board() {
   }, [loadCards]);
 
   const open = cards.filter((c) => c.lifecycle === "open");
-  const closed = cards.filter((c) => c.lifecycle === "closed");
+  // Sorted HERE rather than inline in the JSX, so the shift+click range order
+  // and the render order are the same array by construction. Deriving the
+  // order separately from what is on screen means shift+click eventually
+  // selects a range the user never saw, and that drift stays invisible until
+  // someone reorders a section.
+  const closed = cards.filter((c) => c.lifecycle === "closed").sort((a, b) => (b.closedAt ?? b.updatedAt).localeCompare(a.closedAt ?? a.updatedAt));
   // Datalist suggestions for the category inputs — includes closed cards so a
   // category doesn't vanish from autocomplete when its last open card closes.
   const knownCategories = uniqueCategories(cards);
@@ -135,6 +153,140 @@ export default function Board() {
         ];
 
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) : undefined;
+
+  // The one order that shift+click ranges are read from — flattened out of
+  // the very arrays rendered above, open sections first then the closed strip.
+  // Ranges cross section boundaries, matching Finder and Explorer.
+  const orderedIds = [...sections.flatMap((s) => s.cards.map((c) => c.id)), ...closed.map((c) => c.id)];
+
+  /**
+   * The selection, reconciled against the cards that actually exist — derived
+   * on every render rather than repaired in an effect after each fetch.
+   *
+   * The board polls every 15s, so a card another client deleted (or closed out
+   * from under an open-scoped selection) would otherwise leave a selected id
+   * with no tile behind it, and a count the user cannot reconcile with what is
+   * on screen. Deriving it means there is no second copy to fall out of step:
+   * the dead id is gone the moment the poll returns, and it can never reach the
+   * bulk call.
+   */
+  const selectedIds = new Set([...rawSelectedIds].filter((id) => cards.some((c) => c.id === id && c.lifecycle === selectionLifecycle)));
+  // Losing every selected card to that reconciliation also leaves selection
+  // mode — an action bar over an empty selection has nothing to act on.
+  const selectionMode = selectionLifecycle !== null && selectedIds.size > 0;
+
+  const exitSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelectionLifecycle(null);
+    setAnchorId(null);
+  }, []);
+
+  /**
+   * Long press or context menu. Idempotent — both triggers can fire for one gesture.
+   *
+   * Neither this nor toggleSelect re-checks the lifecycle scope. That rule is
+   * enforced in exactly one place, `selectionProps` below, which both disables
+   * an out-of-scope tile and withholds its gesture handler. A second copy of
+   * the check here would be unreachable, and unreachable guards are the kind
+   * that quietly stop matching the one that actually runs.
+   */
+  const enterSelection = (card: CardSummary) => {
+    setSelectionLifecycle(card.lifecycle);
+    // Built from the reconciled set, never from the raw one, so ids left over
+    // from a selection that has already lapsed cannot rejoin this gesture.
+    // The pressed tile starts selected, so the count is never 0 on entry.
+    setSelectedIds(new Set(selectedIds).add(card.id));
+    setAnchorId(card.id);
+  };
+
+  const toggleSelect = (card: CardSummary, e: React.MouseEvent) => {
+    const anchorIndex = anchorId ? orderedIds.indexOf(anchorId) : -1;
+    const targetIndex = orderedIds.indexOf(card.id);
+    if (e.shiftKey && anchorIndex !== -1 && targetIndex !== -1) {
+      const [lo, hi] = anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+      // No lifecycle filter is needed on the slice: orderedIds lists every open
+      // card before every closed one, and an out-of-scope tile is inert, so
+      // neither end of this range can be one. Nothing out of scope can lie
+      // between two cards that are both in it.
+      const next = new Set([...selectedIds, ...orderedIds.slice(lo, hi + 1)]);
+      setSelectedIds(next);
+      setSelectionLifecycle(card.lifecycle);
+      // The anchor stays put across successive shift+clicks, as in Finder.
+      return;
+    }
+
+    const next = new Set(selectedIds);
+    if (next.has(card.id)) next.delete(card.id);
+    else next.add(card.id);
+    setSelectedIds(next);
+    setSelectionLifecycle(card.lifecycle);
+    // Deselecting the last card leaves selection mode by derivation, since
+    // selectionMode requires a non-empty selection. The anchor has to go with
+    // it explicitly though: left behind, the next shift+click would extend a
+    // range from a card the user has already deselected.
+    setAnchorId(next.size === 0 ? null : card.id);
+  };
+
+  const selectionProps = (card: CardSummary) => {
+    const inScope = !selectionMode || selectionLifecycle === card.lifecycle;
+    return {
+      selectionMode,
+      selected: selectedIds.has(card.id),
+      selectable: inScope,
+      onToggleSelect: (e: React.MouseEvent) => toggleSelect(card, e),
+      onLongPress: inScope ? () => enterSelection(card) : undefined,
+    };
+  };
+
+  useEffect(() => {
+    if (!selectionMode) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (e.key === "Escape") {
+        exitSelection();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setSelectedIds(new Set(cards.filter((c) => c.lifecycle === selectionLifecycle).map((c) => c.id)));
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [selectionMode, selectionLifecycle, cards, exitSelection]);
+
+  /**
+   * No confirmation and no undo, by decision: close is reversible, its inverse
+   * is one gesture away, and the closed strip is on the same screen. A modal
+   * on a reversible bulk action only trains people to dismiss modals.
+   */
+  const runBulkLifecycle = async () => {
+    if (selectionLifecycle === null || selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    const target = selectionLifecycle === "open" ? "closed" : "open";
+    setBulkBusy(true);
+    try {
+      const res = await bulkSetCardLifecycle(ids, target);
+      const updatedById = new Map(res.updated.map((c) => [c.id, c]));
+      setCards((prev) => prev.map((c) => updatedById.get(c.id) ?? c));
+      const failed = res.failed ?? [];
+      if (failed.length > 0) {
+        // Exactly the failed ids stay selected: retrying those is the user's
+        // next move, so leaving them selected is the useful state.
+        setSelectedIds(new Set(failed.map((f) => f.id)));
+        setAnchorId(null);
+        setError(`${failed.length} of ${ids.length} cards could not be updated`);
+      } else {
+        setError(null);
+        exitSelection();
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to update cards");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   /** Resolves false when the patch was rejected, so callers can keep their editor open. */
   const patchCard = async (cardId: string, patch: CardPatch): Promise<boolean> => {
@@ -187,7 +339,9 @@ export default function Board() {
 
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "var(--bg)" }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? "14px 12px 48px" : "24px 24px 60px" }}>
+      {/* The fixed selection bar sits over the last row of tiles, so the page
+          has to give it room while it is up. */}
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? `14px 12px ${selectionMode ? 120 : 48}px` : `24px 24px ${selectionMode ? 132 : 60}px` }}>
         {/* Header — mobile gets the standard full-page back button (same
             convention as AgentList/Settings) since there's no sidebar. */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: isMobile ? 16 : 24 }}>
@@ -262,7 +416,7 @@ export default function Board() {
                     {sectionHeader(section.label, section.cards.length)}
                     <div style={grid}>
                       {section.cards.map((card) => (
-                        <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} />
+                        <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} {...selectionProps(card)} />
                       ))}
                     </div>
                   </div>
@@ -299,11 +453,9 @@ export default function Board() {
                 </button>
                 {closedExpanded && (
                   <div style={grid}>
-                    {closed
-                      .sort((a, b) => (b.closedAt ?? b.updatedAt).localeCompare(a.closedAt ?? a.updatedAt))
-                      .map((card) => (
-                        <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} />
-                      ))}
+                    {closed.map((card) => (
+                      <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} {...selectionProps(card)} />
+                    ))}
                   </div>
                 )}
               </div>
@@ -323,6 +475,21 @@ export default function Board() {
       )}
 
       {showNewCard && <NewCardModal categories={knownCategories} onCreate={createFromModal} onClose={() => setShowNewCard(false)} />}
+
+      {selectionMode && (
+        <BoardSelectionBar
+          count={selectedIds.size}
+          actions={[
+            {
+              key: "lifecycle",
+              label: selectionLifecycle === "open" ? `Close ${selectedIds.size}` : `Reopen ${selectedIds.size}`,
+              onRun: runBulkLifecycle,
+            },
+          ]}
+          onCancel={exitSelection}
+          busy={bulkBusy}
+        />
+      )}
     </div>
   );
 }

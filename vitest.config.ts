@@ -58,6 +58,10 @@ export default defineConfig({
           env: { NODE_ENV: "development" },
           include: ["frontend/**/*.{test,spec}.{ts,tsx}"],
           exclude: ["**/node_modules/**", "**/dist/**"],
+          // jsdom 25 has no PointerEvent, and its absence is silent rather
+          // than loud — see the file for why that turns pointer tests green
+          // for the wrong reason.
+          setupFiles: ["./vitest.setup.frontend.ts"],
         },
       },
     ],

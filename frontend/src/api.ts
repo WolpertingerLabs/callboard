@@ -331,6 +331,32 @@ export async function updateCard(id: string, patch: CardPatch): Promise<CardResp
   return res.json();
 }
 
+/**
+ * Per-id outcome of a bulk lifecycle change. The endpoint is deliberately
+ * partial rather than all-or-nothing: one card failing must not strand the
+ * other six, so the caller retries exactly the ids named here.
+ */
+export interface BulkLifecycleFailure {
+  id: string;
+  error: string;
+}
+
+export interface BulkLifecycleResponse {
+  updated: CardSummary[];
+  failed: BulkLifecycleFailure[];
+}
+
+/** Open or close many cards at once; see BulkLifecycleResponse on partial failure. */
+export async function bulkSetCardLifecycle(ids: string[], lifecycle: "open" | "closed"): Promise<BulkLifecycleResponse> {
+  const res = await fetch(`${BASE}/cards/bulk-lifecycle`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, lifecycle }),
+  });
+  await assertOk(res, "Failed to update cards");
+  return res.json();
+}
+
 /** Permanently delete a CLOSED card. Member chats are unassigned, not deleted. */
 export async function deleteCard(id: string): Promise<{ success: boolean }> {
   const res = await fetch(`${BASE}/cards/${id}`, { method: "DELETE" });
