@@ -10,8 +10,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import type { Chat, ChatTreeNode, ChatTreeResponse } from "../api";
+import type { Chat, CardSummary, ChatTreeNode, ChatTreeResponse } from "../api";
 import { getChatTree } from "../api";
+import { isChatDimmed } from "../utils/chatDimming";
 import ChatTreeList from "./ChatTreeList";
 
 vi.mock("../api", () => ({
@@ -157,5 +158,73 @@ describe("ChatTreeList refresh", () => {
 
     await expandGroup();
     await waitFor(() => expect(mockGetChatTree).toHaveBeenCalledTimes(2));
+  });
+});
+
+/**
+ * The tree layout renders `ChatListItem` from two places — a lone chat and a
+ * group's header row — and a dim wired into only one of them is invisible
+ * until you happen to look at a folder that has both.
+ *
+ * Driven by the real `isChatDimmed` rather than a hand-written predicate, so
+ * the first-paint case is the genuine one: `cards` is empty *and* the fetch has
+ * not returned, which is the state the sidebar is in on every mount.
+ */
+describe("ChatTreeList dimming", () => {
+  const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
+    ["open-card", { lifecycle: "open" }],
+    ["closed-card", { lifecycle: "closed" }],
+  ]);
+
+  // A group (root + child, so the header row is a ChatListItem) plus three lone
+  // rows: one on an open card, one on a closed card, one filed nowhere.
+  const MIXED = [
+    makeChat("root"),
+    makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
+    makeChat("solo-open", { cardId: "open-card" }),
+    makeChat("solo-closed", { cardId: "closed-card" }),
+    makeChat("solo-none"),
+  ];
+
+  function renderMixed(ctx: { dimCardless: boolean; cardsLoaded: boolean }, cards = CARDS) {
+    return render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={MIXED}
+          refreshToken={0}
+          onChatClick={() => {}}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+          isDimmed={(chat) => isChatDimmed(chat, cards, ctx)}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  /** Which rows came out faded, named by the preview text each row renders. */
+  const dimmedRows = (container: HTMLElement) =>
+    [...container.querySelectorAll(".chatlist-item-dimmed")].map((el) => el.textContent?.match(/chat [\w-]+/)?.[0]).sort();
+
+  it("dims no row before the first listCards returns", () => {
+    const { container } = renderMixed({ dimCardless: true, cardsLoaded: false }, new Map());
+    expect(dimmedRows(container)).toEqual([]);
+    // Control for the assertion itself: the very same rows, once loaded, are
+    // not all undimmed — so an empty result above is the flag, not the matcher.
+    cleanup();
+    expect(dimmedRows(renderMixed({ dimCardless: true, cardsLoaded: true }).container).length).toBeGreaterThan(0);
+  });
+
+  it("dims the card-less and closed-card rows in both render paths, and leaves the open-card row alone", () => {
+    const { container } = renderMixed({ dimCardless: true, cardsLoaded: true });
+    // "chat root" is the group header row (ChatListItem inside a group);
+    // "chat solo-*" are lone rows. Both paths appear here.
+    expect(dimmedRows(container)).toEqual(["chat root", "chat solo-closed", "chat solo-none"]);
+  });
+
+  it("dims nothing while the option is off", () => {
+    const { container } = renderMixed({ dimCardless: false, cardsLoaded: true });
+    expect(dimmedRows(container)).toEqual([]);
   });
 });

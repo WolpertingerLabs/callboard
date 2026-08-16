@@ -24,6 +24,8 @@ interface LocalStorageData {
   showTriggeredChats?: boolean;
   /** Sidebar scoped to chats on an open card (and their descendants). */
   chatsCardsOnly?: boolean;
+  /** Sidebar fades chats whose card is closed or absent, rather than hiding them. */
+  chatsDimCardless?: boolean;
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
@@ -366,6 +368,17 @@ export function getChatsCardsOnly(): boolean {
 export function saveChatsCardsOnly(value: boolean): void {
   const data = getStorageData();
   data.chatsCardsOnly = value;
+  setStorageData(data);
+}
+
+export function getChatsDimCardless(): boolean {
+  const data = getStorageData();
+  return data.chatsDimCardless ?? false;
+}
+
+export function saveChatsDimCardless(value: boolean): void {
+  const data = getStorageData();
+  data.chatsDimCardless = value;
   setStorageData(data);
 }
 

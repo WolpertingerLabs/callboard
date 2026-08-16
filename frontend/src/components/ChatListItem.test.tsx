@@ -127,6 +127,60 @@ describe("ChatListItem card menu", () => {
   });
 });
 
+/**
+ * `dimmed` arrives already decided (utils/chatDimming has that half); what is
+ * tested here is the veto — the row states that must stay at full opacity
+ * however card-less they are, because a faded row you are being asked to look
+ * at is the exact inverse of the option's purpose.
+ *
+ * Every case renders an undimmed control alongside, so an assertion that
+ * silently matched every row could not pass.
+ */
+describe("ChatListItem dimming", () => {
+  const DIM_CLASS = "chatlist-item-dimmed";
+  const row = (el: HTMLElement) => el.firstElementChild!;
+
+  it("fades a dimmed row and leaves an undimmed one alone", () => {
+    const { container: dim } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} dimmed />);
+    const { container: control } = render(<ChatListItem chat={makeChat({ id: "chat-2" })} onClick={() => {}} onDelete={() => {}} dimmed={false} />);
+
+    expect(row(dim).className).toContain(DIM_CLASS);
+    expect(row(control).className).not.toContain(DIM_CLASS);
+  });
+
+  it("never fades the active row", () => {
+    const { container: active } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} dimmed isActive />);
+    const { container: control } = render(<ChatListItem chat={makeChat({ id: "chat-2" })} onClick={() => {}} onDelete={() => {}} dimmed />);
+
+    expect(row(active).className).not.toContain(DIM_CLASS);
+    // The control proves `dimmed` was doing something in the first place.
+    expect(row(control).className).toContain(DIM_CLASS);
+  });
+
+  it("never fades a row holding a summon", () => {
+    const summoned = makeChat({
+      metadata: JSON.stringify({ title: "My Chat", summon: { message: "need a decision", urgency: "normal", createdAt: "2026-06-21T00:00:00.000Z" } }),
+    });
+    const { container: withSummon } = render(<ChatListItem chat={summoned} onClick={() => {}} onDelete={() => {}} dimmed />);
+    const { container: control } = render(<ChatListItem chat={makeChat({ id: "chat-2" })} onClick={() => {}} onDelete={() => {}} dimmed />);
+
+    expect(row(withSummon).className).not.toContain(DIM_CLASS);
+    expect(row(control).className).toContain(DIM_CLASS);
+  });
+
+  it("never fades a row with unread output", () => {
+    // hasUnread is updated_at > lastReadAt; the control chat below was read
+    // after its last update, so only the first row is unread.
+    const unread = makeChat({ metadata: JSON.stringify({ title: "My Chat", lastReadAt: "2026-06-20T00:00:00.000Z" }) });
+    const read = makeChat({ id: "chat-2", metadata: JSON.stringify({ title: "Other", lastReadAt: "2026-06-22T00:00:00.000Z" }) });
+    const { container: withUnread } = render(<ChatListItem chat={unread} onClick={() => {}} onDelete={() => {}} dimmed />);
+    const { container: control } = render(<ChatListItem chat={read} onClick={() => {}} onDelete={() => {}} dimmed />);
+
+    expect(row(withUnread).className).not.toContain(DIM_CLASS);
+    expect(row(control).className).toContain(DIM_CLASS);
+  });
+});
+
 describe("ChatListItem folder pill", () => {
   it("renders the last path segment", () => {
     render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);

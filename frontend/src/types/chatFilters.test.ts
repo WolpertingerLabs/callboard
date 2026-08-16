@@ -40,7 +40,9 @@ describe("activeViewOptionCount", () => {
 
   it("counts each option that differs from its default", () => {
     expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardsOnly: true })).toBe(1);
-    expect(activeViewOptionCount({ bookmarked: true, showTriggered: true, cardsOnly: true, treeLayout: true })).toBe(4);
+    // Spelled out rather than spread, so a new option that forgets its default
+    // shows up here as a type error instead of a silently uncounted badge.
+    expect(activeViewOptionCount({ bookmarked: true, showTriggered: true, cardsOnly: true, dimCardless: true, treeLayout: true })).toBe(5);
   });
 
   it("counts showTriggered as active only when ON — hidden is the default", () => {

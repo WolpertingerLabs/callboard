@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { Bookmark, Zap, LayoutGrid, ListTree } from "lucide-react";
+import { Bookmark, Zap, LayoutGrid, ListTree, SunDim } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import { DEFAULT_CHAT_VIEW_OPTIONS, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
@@ -62,11 +62,27 @@ const sectionHeadingStyle: CSSProperties = {
 };
 
 /** One switch row: icon, label, one line of why-you'd-want-it, and the switch. */
-function SwitchRow({ icon, label, hint, checked, onChange }: { icon: ReactNode; label: string; hint: string; checked: boolean; onChange: () => void }) {
+function SwitchRow({
+  icon,
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled,
+}: {
+  icon: ReactNode;
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: () => void;
+  /** Inert because another option has already decided this one. The hint says which. */
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onChange}
+      disabled={disabled}
       style={{
         display: "flex",
         alignItems: "center",
@@ -75,8 +91,9 @@ function SwitchRow({ icon, label, hint, checked, onChange }: { icon: ReactNode; 
         padding: "8px 10px",
         borderRadius: 8,
         border: "none",
-        background: checked ? "var(--accent-bg)" : "transparent",
-        cursor: "pointer",
+        background: checked && !disabled ? "var(--accent-bg)" : "transparent",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.5 : 1,
         textAlign: "left",
         transition: "background 0.15s",
       }}
@@ -184,6 +201,17 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
               hint="Chats on an open card, plus their descendants"
               checked={localView.cardsOnly}
               onChange={() => toggleView("cardsOnly")}
+            />
+            {/* Directly under "Cards only" rather than last in the block: it is
+                the option that makes this one inert, and a disabled switch whose
+                reason is three rows away reads as a bug. */}
+            <SwitchRow
+              icon={<SunDim size={16} />}
+              label="Dim inactive chats"
+              hint={localView.cardsOnly ? "Nothing to dim — “Cards only” already shows open cards only" : "Fade chats with no card, or a closed one"}
+              checked={localView.dimCardless}
+              onChange={() => toggleView("dimCardless")}
+              disabled={localView.cardsOnly}
             />
             <SwitchRow
               icon={<Bookmark size={16} fill={localView.bookmarked ? "currentColor" : "none"} />}

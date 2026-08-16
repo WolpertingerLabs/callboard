@@ -34,6 +34,8 @@ interface Props {
   /** Card (ticket) actions for a row's kebab menu — same shape the flat list uses. */
   cardMenuFor: (chat: Chat) => ChatCardMenu;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
+  /** "Dim inactive chats" verdict per row — same predicate the flat list uses. */
+  isDimmed?: (chat: Chat) => boolean;
 }
 
 interface LineageInfo {
@@ -185,7 +187,17 @@ function TreeNodeRow({
   );
 }
 
-export default function ChatTreeList({ chats, refreshToken, activeChatId, onChatClick, onDelete, onToggleBookmark, cardMenuFor, sessionStatusFor }: Props) {
+export default function ChatTreeList({
+  chats,
+  refreshToken,
+  activeChatId,
+  onChatClick,
+  onDelete,
+  onToggleBookmark,
+  cardMenuFor,
+  sessionStatusFor,
+  isDimmed,
+}: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [trees, setTrees] = useState<Record<string, ChatTreeResponse>>({});
@@ -311,6 +323,7 @@ export default function ChatTreeList({ chats, refreshToken, activeChatId, onChat
               onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
               cardMenu={cardMenuFor(chat)}
               sessionStatus={sessionStatusFor(chat.id)}
+              dimmed={isDimmed?.(chat)}
             />
           );
         }
@@ -356,6 +369,7 @@ export default function ChatTreeList({ chats, refreshToken, activeChatId, onChat
                   onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
                   cardMenu={cardMenuFor(chat)}
                   sessionStatus={sessionStatusFor(chat.id)}
+                  dimmed={isDimmed?.(chat)}
                 />
               </div>
             </div>
