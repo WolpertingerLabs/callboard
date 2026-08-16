@@ -2,11 +2,20 @@ import { useState, useEffect } from "react";
 import type { CardSummary, CardRollupState } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { needsYouLabel, activeLabel } from "./pendingLabels";
-import { MessageSquare, Pin } from "lucide-react";
+import { useLongPress } from "../../hooks/useLongPress";
+import { MessageSquare, Pin, Check } from "lucide-react";
 
 interface CardTileProps {
   card: CardSummary;
   onClick: () => void;
+  /** Every prop below is optional: with none passed the tile behaves exactly as it did before multi-select existed. */
+  selectionMode?: boolean;
+  selected?: boolean;
+  /** False for tiles outside the selection's lifecycle scope — rendered inert and dimmed. */
+  selectable?: boolean;
+  /** Receives the event so the board can read shift/meta/ctrl for range and toggle. */
+  onToggleSelect?: (e: React.MouseEvent) => void;
+  onLongPress?: () => void;
 }
 
 const ROLLUP_LABELS: Record<CardRollupState, string> = {
@@ -24,7 +33,7 @@ export const ROLLUP_COLORS: Record<CardRollupState, string> = {
   idle: "var(--board-rollup-idle)",
 };
 
-export default function CardTile({ card, onClick }: CardTileProps) {
+export default function CardTile({ card, onClick, selectionMode = false, selected = false, selectable = true, onToggleSelect, onLongPress }: CardTileProps) {
   const closed = card.lifecycle === "closed";
   const rollupColor = ROLLUP_COLORS[card.rollup];
   const live = card.rollup !== "idle" && !closed;
@@ -43,96 +52,201 @@ export default function CardTile({ card, onClick }: CardTileProps) {
     return () => clearInterval(timer);
   }, [hasCountdown]);
 
+  const [hovered, setHovered] = useState(false);
+  const [checkboxFocused, setCheckboxFocused] = useState(false);
+
+  const gestures = useLongPress({ onLongPress: () => onLongPress?.() });
+  // Only mounted when the board asked for the gesture. Otherwise the
+  // contextmenu handler's preventDefault would silently take the browser's own
+  // menu away from a tile that has no selection behaviour to offer instead.
+  const gestureProps = onLongPress ? gestures.handlers : {};
+
+  const inert = selectionMode && !selectable;
+  // Discoverability is the checkbox — Ctrl+click is invisible, and nobody
+  // long-presses a surface that has never shown them it can be selected.
+  const showCheckbox = Boolean(onToggleSelect) && selectable && (selectionMode || hovered || checkboxFocused);
+
+  const handleClick = (e: React.MouseEvent) => {
+    // A long press or a context menu has already acted on this gesture; the
+    // click browsers emit afterwards must not act on it a second time.
+    if (onLongPress && gestures.consumeClickSuppression()) return;
+    const modified = e.metaKey || e.ctrlKey || e.shiftKey;
+    if (selectionMode || (modified && onToggleSelect)) {
+      onToggleSelect?.(e);
+      return;
+    }
+    onClick();
+  };
+
   return (
     <div
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") onClick();
-      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      {...gestureProps}
       style={{
+        position: "relative",
         background: "var(--board-tile-bg)",
-        border: `1px solid ${live ? rollupColor : "var(--board-tile-border)"}`,
+        border: `1px solid ${selected ? "var(--accent)" : live ? rollupColor : "var(--board-tile-border)"}`,
         borderRadius: 10,
-        padding: "12px 14px",
-        cursor: "pointer",
         display: "flex",
-        flexDirection: "column",
-        gap: 6,
         minWidth: 0,
-        opacity: closed ? 0.65 : 1,
-        boxShadow: "var(--shadow-sm)",
+        // A selected tile is never dimmed. An opacity dim composites the whole
+        // tile, so the selection ring on a closed card would fade along with
+        // the text under it and the weakest glyph would set the contrast floor.
+        opacity: selected ? 1 : inert ? 0.35 : closed ? 0.65 : 1,
+        boxShadow: selected ? "0 0 0 2px var(--accent)" : "var(--shadow-sm)",
+        // Deliberately NOT `touch-action: none`: owning the gesture that way
+        // breaks board scrolling and suppresses the pointercancel that tells
+        // us a press became a scroll.
+        userSelect: "none",
+        WebkitTouchCallout: "none",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <span style={{ fontSize: 16, flexShrink: 0 }}>{card.emoji}</span>
-        <span
+      {onToggleSelect && (
+        // Always mounted, revealed by opacity rather than by mounting, so it
+        // stays reachable by Tab — a checkbox that only appears on :hover is a
+        // checkbox keyboard users never find. pointerEvents keeps the
+        // invisible state from swallowing clicks aimed at the emoji.
+        <button
+          role="checkbox"
+          aria-checked={selected}
+          aria-label={`Select ${card.title}`}
+          onClick={onToggleSelect}
+          // Out of tab order too, not merely invisible: a focusable button
+          // still fires on Enter however transparent it is, which would let a
+          // keyboard user select a card the mouse cannot reach.
+          disabled={inert}
+          onFocus={() => setCheckboxFocused(true)}
+          onBlur={() => setCheckboxFocused(false)}
           style={{
-            fontSize: 14,
-            fontWeight: 600,
-            color: "var(--board-tile-title-text)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            flex: 1,
-            minWidth: 0,
+            position: "absolute",
+            top: 12,
+            left: 14,
+            zIndex: 1,
+            width: 18,
+            height: 18,
+            padding: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 4,
+            border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+            background: selected ? "var(--accent)" : "var(--board-tile-bg)",
+            color: "var(--text-on-accent)",
+            cursor: "pointer",
+            opacity: showCheckbox ? 1 : 0,
+            pointerEvents: showCheckbox ? "auto" : "none",
           }}
         >
-          {card.title}
-        </span>
-        {card.pinned && <Pin size={12} style={{ color: "var(--accent-text)", flexShrink: 0 }} />}
-        {card.unread && (
-          <span title="Unread activity" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />
-        )}
-      </div>
-
-      {(card.status || card.statusEmoji) && (
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--board-tile-meta-text)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-          title={card.status}
-        >
-          {card.statusEmoji ? `${card.statusEmoji} ` : ""}
-          {card.status}
-        </div>
+          {/* A checkmark, not just a colour — colour alone is not a state. */}
+          {selected && <Check size={12} strokeWidth={3} />}
+        </button>
       )}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--board-tile-meta-text)", minWidth: 0 }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 5, color: rollupColor, fontWeight: 600, flexShrink: 0 }}>
+      <button
+        onClick={handleClick}
+        disabled={inert}
+        aria-pressed={selectionMode ? selected : undefined}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          padding: "12px 14px",
+          background: "transparent",
+          border: "none",
+          borderRadius: 10,
+          textAlign: "left",
+          font: "inherit",
+          color: "inherit",
+          cursor: inert ? "default" : "pointer",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          {/* Fixed box so swapping the emoji for the checkbox shifts nothing. */}
           <span
             style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: rollupColor,
-              ...(live && { boxShadow: `0 0 5px ${rollupColor}` }),
+              fontSize: 16,
+              flexShrink: 0,
+              width: 18,
+              height: 18,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              visibility: showCheckbox ? "hidden" : "visible",
             }}
-          />
-          {closed
-            ? "Closed"
-            : card.rollup === "needs_you"
-              ? needsYouLabel(card)
-              : card.rollup === "idle"
-                ? ROLLUP_LABELS.idle
-                : activeLabel(card, now)}
-        </span>
-        {activeRun && !closed && (
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={activeRun.jobName}>
-            {activeRun.jobName}
+          >
+            {card.emoji}
           </span>
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--board-tile-title-text)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            {card.title}
+          </span>
+          {card.pinned && <Pin size={12} style={{ color: "var(--accent-text)", flexShrink: 0 }} />}
+          {card.unread && (
+            <span title="Unread activity" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />
+          )}
+        </div>
+
+        {(card.status || card.statusEmoji) && (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--board-tile-meta-text)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              width: "100%",
+            }}
+            title={card.status}
+          >
+            {card.statusEmoji ? `${card.statusEmoji} ` : ""}
+            {card.status}
+          </div>
         )}
-        <span style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: "auto", flexShrink: 0 }}>
-          <MessageSquare size={11} />
-          {card.chatCount}
-        </span>
-        <span style={{ flexShrink: 0 }}>{formatRelativeTime(card.lastActivityAt)}</span>
-      </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--board-tile-meta-text)", minWidth: 0, width: "100%" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, color: rollupColor, fontWeight: 600, flexShrink: 0 }}>
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: rollupColor,
+                ...(live && { boxShadow: `0 0 5px ${rollupColor}` }),
+              }}
+            />
+            {closed
+              ? "Closed"
+              : card.rollup === "needs_you"
+                ? needsYouLabel(card)
+                : card.rollup === "idle"
+                  ? ROLLUP_LABELS.idle
+                  : activeLabel(card, now)}
+          </span>
+          {activeRun && !closed && (
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={activeRun.jobName}>
+              {activeRun.jobName}
+            </span>
+          )}
+          <span style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: "auto", flexShrink: 0 }}>
+            <MessageSquare size={11} />
+            {card.chatCount}
+          </span>
+          <span style={{ flexShrink: 0 }}>{formatRelativeTime(card.lastActivityAt)}</span>
+        </div>
+      </button>
     </div>
   );
 }
