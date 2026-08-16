@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, ListTree, Loader2 } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
+import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
+import { sectionByActive } from "../utils/chatSections";
 
 /**
  * Tree-layout rendering of the sidebar chat list.
@@ -36,11 +38,27 @@ interface Props {
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
   /** "Dim inactive chats" verdict per row — same predicate the flat list uses. */
   isDimmed?: (chat: Chat) => boolean;
+  /**
+   * "Active cards first": whether a chat is on an open card. A predicate rather
+   * than a pre-sorted list of chats, because a lineage group collapses into one
+   * row and can straddle both buckets — a partitioned array would interleave
+   * its members and file the group by whichever one happened to sort first.
+   * Absent means the option is off (or the cards have not loaded): no headers,
+   * original order.
+   */
+  isCardActive?: (chat: Chat) => boolean;
 }
 
 interface LineageInfo {
   rootKey: string;
   hasLineage: boolean;
+}
+
+/** One visible entry: a lone chat, or a lineage group fronted by `chat`. */
+interface Row {
+  chat: Chat;
+  rootKey: string;
+  isGroup: boolean;
 }
 
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
@@ -197,6 +215,7 @@ export default function ChatTreeList({
   cardMenuFor,
   sessionStatusFor,
   isDimmed,
+  isCardActive,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -217,7 +236,7 @@ export default function ChatTreeList({
       if (info.hasLineage) groupLineage.set(info.rootKey, true);
     }
     const seen = new Set<string>();
-    const result: { chat: Chat; rootKey: string; isGroup: boolean }[] = [];
+    const result: Row[] = [];
     for (const chat of chats) {
       const { rootKey, hasLineage } = infoById.get(chat.id)!;
       if (seen.has(rootKey)) continue;
@@ -309,13 +328,63 @@ export default function ChatTreeList({
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
 
-  return (
-    <>
-      {rows.map(({ chat, rootKey, isGroup }) => {
-        if (!isGroup) {
-          return (
+  // Each group is filed by its header row's chat — the one actually rendered
+  // and labelled — so a group whose members straddle both buckets still
+  // appears exactly once. Cheap enough to redo per render; `rows` above is the
+  // memoized part.
+  const sections = sectionByActive(rows, (row) => !!isCardActive?.(row.chat), !!isCardActive);
+
+  const renderRow = ({ chat, rootKey, isGroup }: Row) => {
+    if (!isGroup) {
+      return (
+        <ChatListItem
+          key={chat.id}
+          chat={chat}
+          isActive={chat.id === activeChatId}
+          onClick={() => onChatClick(chat)}
+          onDelete={() => onDelete(chat)}
+          onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
+          cardMenu={cardMenuFor(chat)}
+          sessionStatus={sessionStatusFor(chat.id)}
+          dimmed={isDimmed?.(chat)}
+        />
+      );
+    }
+
+    const isExpanded = expanded.has(rootKey);
+    const isLoading = loading.has(rootKey);
+    const tree = trees[rootKey];
+
+    return (
+      <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
+        <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
+          <button
+            onClick={() => toggleExpand(rootKey, chat.id)}
+            title={isExpanded ? "Collapse chat tree" : "Expand chat tree"}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 2,
+              padding: "0 2px 0 8px",
+              background: "none",
+              border: "none",
+              borderBottom: "1px solid var(--chatlist-item-border)",
+              color: "var(--chatlist-icon)",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            {isLoading ? (
+              <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
+            ) : isExpanded ? (
+              <ChevronDown size={13} />
+            ) : (
+              <ChevronRight size={13} />
+            )}
+            <ListTree size={12} />
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <ChatListItem
-              key={chat.id}
               chat={chat}
               isActive={chat.id === activeChatId}
               onClick={() => onChatClick(chat)}
@@ -325,62 +394,29 @@ export default function ChatTreeList({
               sessionStatus={sessionStatusFor(chat.id)}
               dimmed={isDimmed?.(chat)}
             />
-          );
-        }
-
-        const isExpanded = expanded.has(rootKey);
-        const isLoading = loading.has(rootKey);
-        const tree = trees[rootKey];
-
-        return (
-          <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
-            <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
-              <button
-                onClick={() => toggleExpand(rootKey, chat.id)}
-                title={isExpanded ? "Collapse chat tree" : "Expand chat tree"}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 2,
-                  padding: "0 2px 0 8px",
-                  background: "none",
-                  border: "none",
-                  borderBottom: "1px solid var(--chatlist-item-border)",
-                  color: "var(--chatlist-icon)",
-                  cursor: "pointer",
-                  flexShrink: 0,
-                }}
-              >
-                {isLoading ? (
-                  <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
-                ) : isExpanded ? (
-                  <ChevronDown size={13} />
-                ) : (
-                  <ChevronRight size={13} />
-                )}
-                <ListTree size={12} />
-              </button>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <ChatListItem
-                  chat={chat}
-                  isActive={chat.id === activeChatId}
-                  onClick={() => onChatClick(chat)}
-                  onDelete={() => onDelete(chat)}
-                  onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
-                  cardMenu={cardMenuFor(chat)}
-                  sessionStatus={sessionStatusFor(chat.id)}
-                  dimmed={isDimmed?.(chat)}
-                />
-              </div>
-            </div>
-            {isExpanded && tree && (
-              <div style={{ borderBottom: "1px solid var(--chatlist-item-border)" }}>
-                <TreeNodeRow node={tree.tree} depth={0} activeChatId={activeChatId} onNavigate={handleNavigate} />
-              </div>
-            )}
           </div>
-        );
-      })}
-    </>
-  );
+        </div>
+        {isExpanded && tree && (
+          <div style={{ borderBottom: "1px solid var(--chatlist-item-border)" }}>
+            <TreeNodeRow node={tree.tree} depth={0} activeChatId={activeChatId} onNavigate={handleNavigate} />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (sections) {
+    return (
+      <>
+        {sections.map((section) => (
+          <Fragment key={section.key}>
+            <ChatSectionHeader label={section.label} />
+            {section.items.map(renderRow)}
+          </Fragment>
+        ))}
+      </>
+    );
+  }
+
+  return <>{rows.map(renderRow)}</>;
 }

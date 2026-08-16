@@ -12,7 +12,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Chat, CardSummary, ChatTreeNode, ChatTreeResponse } from "../api";
 import { getChatTree } from "../api";
-import { isChatDimmed } from "../utils/chatDimming";
+import { isChatCardActive, isChatDimmed } from "../utils/chatDimming";
 import ChatTreeList from "./ChatTreeList";
 
 vi.mock("../api", () => ({
@@ -226,5 +226,88 @@ describe("ChatTreeList dimming", () => {
   it("dims nothing while the option is off", () => {
     const { container } = renderMixed({ dimCardless: false, cardsLoaded: true });
     expect(dimmedRows(container)).toEqual([]);
+  });
+});
+
+/**
+ * "Active cards first" in the tree layout.
+ *
+ * The case this exists for: a lineage group collapses into ONE row but its
+ * members can straddle both buckets. Handing this component a pre-partitioned
+ * array of chats would split a group's members across two sections and file
+ * the group by whichever one sorted first, so it takes the predicate and
+ * sections its own rows — by the header row's chat, the one on screen.
+ */
+describe("ChatTreeList active-first sections", () => {
+  const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([["open-card", { lifecycle: "open" }]]);
+
+  /**
+   * Section headers and row previews in DOM order. Order is the whole
+   * assertion here — a fixture that starts in bucket order would pass with the
+   * partition deleted, so every fixture below starts inactive-first.
+   */
+  // Lowercase-only id class, because textContent runs a row's preview straight
+  // into its timestamp ("chat solo-noneJul 28…") with no separator.
+  const outline = (container: HTMLElement) => container.textContent?.match(/Inactive|Active|chat [a-z0-9-]+/g) ?? [];
+
+  function renderSectioned(chats: Chat[], sectioned = true) {
+    return render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={chats}
+          refreshToken={0}
+          onChatClick={() => {}}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+          isCardActive={sectioned ? (chat) => isChatCardActive(chat, CARDS) : undefined}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  // A group whose header row is on an open card but whose child is filed
+  // nowhere — the straddle — plus a lone row on each side of the split. Listed
+  // inactive-first so any reordering is visible.
+  const STRADDLING = [
+    makeChat("solo-none"),
+    makeChat("root", { cardId: "open-card" }),
+    makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
+    makeChat("solo-open", { cardId: "open-card" }),
+  ];
+
+  it("files a group that straddles both buckets once, in its header row's section", () => {
+    const { container } = renderSectioned(STRADDLING);
+    // "chat child-1" is absent throughout: it is folded into the group's one
+    // row, which sits under Active with its parent — not pulled out into
+    // Inactive on its own account.
+    expect(outline(container)).toEqual(["Active", "chat root", "chat solo-open", "Inactive", "chat solo-none"]);
+  });
+
+  it("follows the header row when the straddle points the other way", () => {
+    // Same group, card membership swapped: the header row is now card-less and
+    // the child is on the open card. The group goes wherever its header row
+    // goes, so the whole group is Inactive.
+    const { container } = renderSectioned([
+      makeChat("solo-open", { cardId: "open-card" }),
+      makeChat("root"),
+      makeChat("child-1", { parentChatId: "root", rootChatId: "root", cardId: "open-card" }),
+    ]);
+    expect(outline(container)).toEqual(["Active", "chat solo-open", "Inactive", "chat root"]);
+  });
+
+  it("renders no headers and the original order without the predicate", () => {
+    // What the sidebar passes while the option is off — and, load-bearingly,
+    // while the first listCards is still in flight: every chat looks card-less
+    // then, so sectioning would file the list under Inactive and then move the
+    // rows when the fetch lands.
+    const { container } = renderSectioned(STRADDLING, false);
+    expect(outline(container)).toEqual(["chat solo-none", "chat root", "chat solo-open"]);
+  });
+
+  it("renders no headers when every row falls in one bucket", () => {
+    const { container } = renderSectioned([makeChat("solo-none"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" })]);
+    expect(outline(container)).toEqual(["chat solo-none", "chat root"]);
   });
 });

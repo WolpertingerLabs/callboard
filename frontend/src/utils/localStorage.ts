@@ -26,6 +26,8 @@ interface LocalStorageData {
   chatsCardsOnly?: boolean;
   /** Sidebar fades chats whose card is closed or absent, rather than hiding them. */
   chatsDimCardless?: boolean;
+  /** Sidebar splits into Active/Inactive sections, chats on an open card first. */
+  chatsSortByCardActive?: boolean;
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
@@ -379,6 +381,17 @@ export function getChatsDimCardless(): boolean {
 export function saveChatsDimCardless(value: boolean): void {
   const data = getStorageData();
   data.chatsDimCardless = value;
+  setStorageData(data);
+}
+
+export function getChatsSortByCardActive(): boolean {
+  const data = getStorageData();
+  return data.chatsSortByCardActive ?? false;
+}
+
+export function saveChatsSortByCardActive(value: boolean): void {
+  const data = getStorageData();
+  data.chatsSortByCardActive = value;
   setStorageData(data);
 }
 
