@@ -11,7 +11,8 @@ import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
-import type { StreamEvent } from "shared/types/index.js";
+import type { StreamEvent, TaskListItem } from "shared/types/index.js";
+import { TASK_LIST_TOOLS } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
@@ -583,6 +584,34 @@ export async function stopSessionAndWait(chatId: string, timeoutMs: number = SES
     clearActivitiesForChat(chatId);
   }
   return "stopped";
+}
+
+/**
+ * An agent's running task list → the wire, as a `tool_use` rather than a
+ * StreamEvent type of its own.
+ *
+ * `shared/types/stream.ts` is a published interface and its rule 3 says a new
+ * `type` value must be capability-gated, because an old client hits its `switch`
+ * default and drops the event whole. Gating would buy nothing here:
+ * `createSSEHandler` collapses `tool_use` into a bare `message_update` and the
+ * browser answers by refetching the transcript, so no list payload rides the
+ * wire in either design. What this event is actually for is being that nudge —
+ * without it a list arriving between two tool calls waits for the next event
+ * before the user sees it, and a list arriving alone waits forever.
+ *
+ * `TodoWrite` / `{todos}` rather than the emitting engine's own names because
+ * that pair is the one shape every callboard bundle ever shipped already renders
+ * as a list. A tab on an older bundle talking to this daemon is therefore no
+ * worse off than a current one, which is the test the wire rules ask for. The
+ * *persisted* transcript keeps each engine's native vocabulary; only the
+ * ephemeral nudge is normalized.
+ */
+export function taskListStreamEvent(items: TaskListItem[]): StreamEvent {
+  return {
+    type: "tool_use",
+    content: JSON.stringify({ todos: items }),
+    toolName: TASK_LIST_TOOLS.claudeCode,
+  };
 }
 
 /**
@@ -1898,6 +1927,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               } as StreamEvent);
               break;
 
+            case "task_list":
+              emitter.emit("event", taskListStreamEvent(event.items));
+              break;
+
             case "tool_result":
               // Watch for the "Stream closed" transport-failure signature.
               // The failing result is still emitted (the transcript shows
@@ -1952,6 +1985,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               }
               break;
             }
+
+            default:
+              // Compile-time exhaustiveness. A new AgentEvent member with no
+              // branch here doesn't crash, it goes *quiet* — which is how
+              // Codex's and ACP's task lists were produced, translated, and
+              // then dropped without anything failing. `never` makes the
+              // omission a build error instead of a silence.
+              ((_exhaustive: never) => _exhaustive)(event);
           }
 
           // A flagged transport failure ends this query immediately — no

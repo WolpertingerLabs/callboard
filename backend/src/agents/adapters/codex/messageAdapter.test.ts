@@ -266,19 +266,6 @@ describe("translateCodexEvent — tool items (started → tool_use, completed �
 });
 
 describe("translateCodexEvent — adapter_specific escape hatches", () => {
-  it("todo_list rides through as adapter_specific (no core event fits a plan list)", () => {
-    expect(
-      translateCodexEvent({
-        type: "item.completed",
-        item: { id: "t1", type: "todo_list", items: [{ text: "step 1", completed: true }] },
-      }),
-    ).toEqual({
-      type: "adapter_specific",
-      adapter: "codex",
-      payload: { kind: "todo_list", items: [{ text: "step 1", completed: true }] },
-    });
-  });
-
   it("non-fatal item error → adapter_specific item_error (the turn continues)", () => {
     expect(
       translateCodexEvent({

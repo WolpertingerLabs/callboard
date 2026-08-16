@@ -17,6 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import { TASK_LIST_TOOLS } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { isSafePathSegment, resolveAcpSessionsRoot, type AcpTranscriptEntry, type AcpTranscriptHeader, type AcpTranscriptLine } from "./transcript.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -203,6 +204,8 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   // whatever assistant message happens to be last in the file.
   let turnModel: string | undefined;
   let turnStart = 0;
+  /** Counter behind the synthetic plan `toolUseId` — stable across re-parses of one file. */
+  let planCount = 0;
   /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
   let cumulativeCostUsd: number | null = null;
   /** Spend attributable to the turn in progress, differenced on arrival. */
@@ -302,6 +305,32 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
       case "tool_result":
         flush();
         messages.push({ role: "user", type: "tool_result", content: event.content, toolUseId: event.callId, timestamp });
+        break;
+
+      case "task_list":
+        // Rendered as a `tool_use` because that is the carrier the task-list
+        // renderer already has, and `ParsedMessage.type` is a published
+        // interface — a new value there would leave every older bundle showing
+        // nothing at all. Codex settles the question anyway: its plan reaches
+        // callboard as a real `update_plan` function_call in a rollout we do
+        // not author, so `tool_use` is the shape one renderer has to accept
+        // regardless. `plan` is ACP's own `sessionUpdate` name, kept so the
+        // transcript says which engine's vocabulary the payload is in.
+        //
+        // The synthetic `toolUseId` is load-bearing: no tool ran, so there is
+        // no call id, and an id-less `tool_use` makes the frontend's grouping
+        // fall back to trusting adjacency — which would let a plan swallow the
+        // next real tool's result.
+        flush();
+        messages.push({
+          role: "assistant",
+          type: "tool_use",
+          toolName: TASK_LIST_TOOLS.acp,
+          content: JSON.stringify({ entries: event.items }),
+          toolUseId: `${TASK_LIST_TOOLS.acp}-${planCount++}`,
+          timestamp,
+          ...(turnModel && { model: turnModel }),
+        });
         break;
 
       case "result":

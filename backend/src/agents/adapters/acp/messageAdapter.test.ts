@@ -174,13 +174,20 @@ describe("translateAcpUpdate — deferred tool arguments", () => {
 });
 
 describe("translateAcpUpdate — the escape hatch", () => {
-  it.each(["plan", "plan_update", "plan_removed", "current_mode_update", "config_option_update", "session_info_update", "usage_update"])(
-    "rides %s through as adapter_specific",
-    (kind) => {
-      const [event] = tr(asUpdate({ sessionUpdate: kind, some: "payload" }));
-      expect(event).toMatchObject({ type: "adapter_specific", adapter: "acp", payload: { kind, some: "payload" } });
-    },
-  );
+  // The plan updates are absent on purpose: they translate to `task_list` now.
+  // See `../listTracking.test.ts` for the cross-engine table that covers them.
+  it.each(["current_mode_update", "config_option_update", "session_info_update", "usage_update"])("rides %s through as adapter_specific", (kind) => {
+    const [event] = tr(asUpdate({ sessionUpdate: kind, some: "payload" }));
+    expect(event).toMatchObject({ type: "adapter_specific", adapter: "acp", payload: { kind, some: "payload" } });
+  });
+
+  it("rides a plan_update with no plan content through rather than inventing an empty list", () => {
+    // `plan_update` is UNSTABLE in the SDK, so its shape is the one most likely
+    // to change under us. An empty `task_list` would read as "the agent cleared
+    // its plan", which is a specific claim this update did not make.
+    const [event] = tr(asUpdate({ sessionUpdate: "plan_update", some: "payload" }));
+    expect(event).toMatchObject({ type: "adapter_specific", adapter: "acp", payload: { kind: "plan_update", some: "payload" } });
+  });
 
   it("rides an unknown sessionUpdate through instead of dropping it", () => {
     const [event] = tr(asUpdate({ sessionUpdate: "from_the_future", data: 7 }));

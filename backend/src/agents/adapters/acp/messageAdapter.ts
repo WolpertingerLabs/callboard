@@ -28,7 +28,8 @@
  * | `tool_call`                 | `tool_use`, deferred until its arguments arrive (+ `tool_result` if born terminal) |
  * | `tool_call_update`          | a deferred `tool_use`, and `tool_result` once terminal |
  * | `available_commands_update` | `slash_commands`                            |
- * | `plan` / `plan_update` / `plan_removed` | `adapter_specific`               |
+ * | `plan` / `plan_update` (items) / `plan_removed` | `task_list`             |
+ * | `plan_update` (file / markdown) | `adapter_specific`                      |
  * | `current_mode_update`       | `adapter_specific`                          |
  * | `config_option_update`      | `adapter_specific`                          |
  * | `session_info_update`       | `adapter_specific`                          |
@@ -55,8 +56,18 @@
  * @see plans/acp-adapter.md
  * @see ../codex/messageAdapter.ts (the same job for a different wire format)
  */
-import type { AvailableCommand, ContentBlock, SessionUpdate, ToolCallContent, ToolCallStatus, Usage } from "@agentclientprotocol/sdk";
-import type { AgentEvent, TokenUsage } from "../../ports/events.js";
+import type {
+  AvailableCommand,
+  ContentBlock,
+  PlanEntry,
+  PlanEntryStatus,
+  PlanItems,
+  SessionUpdate,
+  ToolCallContent,
+  ToolCallStatus,
+  Usage,
+} from "@agentclientprotocol/sdk";
+import type { AgentEvent, TaskListItem, TokenUsage } from "../../ports/events.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("acp-events");
@@ -278,6 +289,8 @@ function translateKnownUpdate(kind: string, update: SessionUpdate, buffer: AcpTo
     case "plan":
     case "plan_update":
     case "plan_removed":
+      return translatePlan(kind, update);
+
     case "current_mode_update":
     case "config_option_update":
     case "session_info_update":
@@ -290,6 +303,68 @@ function translateKnownUpdate(kind: string, update: SessionUpdate, buffer: AcpTo
       log.debug(`unrecognized sessionUpdate "${kind}" — riding through as adapter_specific`);
       return [adapterSpecific(kind, stripDiscriminator(update))];
   }
+}
+
+/** The three statuses ACP's `PlanEntryStatus` allows. Anything else is not a plan entry. */
+const PLAN_ENTRY_STATUSES: ReadonlySet<string> = new Set<PlanEntryStatus>(["pending", "in_progress", "completed"]);
+
+/**
+ * The three plan updates → one {@link AgentEvent} `task_list` each.
+ *
+ * ACP has two generations of this signal and they do not share a shape:
+ *
+ *  - **`plan`** is the stable one: `{entries}`, a *complete* list every time
+ *    ("the client replaces the entire plan with each update" — schema.json).
+ *    Its `PlanEntry` is already `{content, status}` in callboard's own
+ *    vocabulary, so translation is a filter, not a mapping.
+ *  - **`plan_update` / `plan_removed`** are marked UNSTABLE in the SDK and are
+ *    keyed by `planId`, so a session may carry several plans at once. Only the
+ *    `items` form has entries; `file` and `markdown` plans are a URI and a blob
+ *    of prose, neither of which is a checklist, so those ride through as
+ *    `adapter_specific` rather than being flattened into rows they are not.
+ *
+ * `plan_removed` becomes an empty snapshot. That is the whole reason `task_list`
+ * is defined as replace-not-merge: a removal has to be able to say "there is no
+ * list now", and a delta-shaped event could only ever add.
+ *
+ * **No plan registry.** Several concurrent `planId`s would need one to render a
+ * union, and nothing ships the experimental multi-plan form today — every
+ * agent callboard has been measured against sends the stable single `plan`. The
+ * honest reading of one plan at a time is that the newest snapshot wins, which
+ * is what emitting each update as its own snapshot already does.
+ */
+function translatePlan(kind: string, update: SessionUpdate): AgentEvent[] {
+  if (kind === "plan_removed") return [{ type: "task_list", items: [] }];
+
+  if (kind === "plan") {
+    return [{ type: "task_list", items: planEntries((update as Extract<SessionUpdate, { sessionUpdate: "plan" }>).entries) }];
+  }
+
+  const plan = (update as Extract<SessionUpdate, { sessionUpdate: "plan_update" }>).plan;
+  if (!plan || typeof plan !== "object" || (plan as { type?: unknown }).type !== "items") {
+    return [adapterSpecific(kind, stripDiscriminator(update))];
+  }
+  return [{ type: "task_list", items: planEntries((plan as PlanItems).entries) }];
+}
+
+/**
+ * `PlanEntry[]` → `TaskListItem[]`, dropping entries a vendor sent malformed.
+ *
+ * Dropped rather than defaulted: a row with no text is not a task, and guessing
+ * a status would put a step in the wrong column of a list the user reads to
+ * know what the agent is doing.
+ */
+function planEntries(entries: readonly PlanEntry[] | null | undefined): TaskListItem[] {
+  if (!Array.isArray(entries)) return [];
+  const items: TaskListItem[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const { content, status } = entry as { content?: unknown; status?: unknown };
+    if (typeof content !== "string" || !content.trim()) continue;
+    if (typeof status !== "string" || !PLAN_ENTRY_STATUSES.has(status)) continue;
+    items.push({ content, status: status as TaskListItem["status"] });
+  }
+  return items;
 }
 
 /**

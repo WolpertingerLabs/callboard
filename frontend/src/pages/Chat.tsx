@@ -83,6 +83,7 @@ import {
 } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { getActivePlugins } from "../utils/plugins";
+import { isTaskListTool } from "shared/types/index.js";
 
 interface ToolGroup {
   kind: "tool_group";
@@ -2252,16 +2253,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setAutoScroll(true);
   }, []);
 
-  // Check if there are any TodoWrite tool calls in the conversation
+  // Check if the conversation has a task list, from whichever engine ran it
   const hasTodoList = useMemo(() => {
-    return messages.some((message) => message.type === "tool_use" && message.toolName === "TodoWrite");
+    return messages.some((message) => message.type === "tool_use" && isTaskListTool(message.toolName, message.content));
   }, [messages]);
 
   const handleTodoListClick = useCallback(() => {
-    // Find the latest TodoWrite tool call and its result
+    // Find the latest task list — the newest snapshot is the current state
     let latestTodoIndex = -1;
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].type === "tool_use" && messages[i].toolName === "TodoWrite") {
+      if (messages[i].type === "tool_use" && isTaskListTool(messages[i].toolName, messages[i].content)) {
         latestTodoIndex = i;
         break;
       }

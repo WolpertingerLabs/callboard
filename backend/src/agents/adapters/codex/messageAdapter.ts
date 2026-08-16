@@ -6,7 +6,7 @@
  * yields a JSONL stream of {@link ThreadEvent}s (one per line) over the
  * `runStreamed().events` async generator. This adapter projects that stream
  * onto the callboard-neutral {@link AgentEvent} union the frontend already
- * consumes (text / thinking / tool_use / tool_result / result).
+ * consumes (text / thinking / tool_use / tool_result / task_list / result).
  *
  * Shape decisions are pinned to the Step-1 spike capture
  * (`plans/codex-spike-findings.md` §4), which corrects the plan's guessed
@@ -59,9 +59,7 @@ const log = createLogger("codex-events");
  * iterates the *real* event stream rather than poking SDK callbacks, so the
  * translation is exercised exactly as it runs in production.
  */
-export async function* translateCodexEvents(
-  events: AsyncIterable<ThreadEvent>,
-): AsyncIterable<AgentEvent> {
+export async function* translateCodexEvents(events: AsyncIterable<ThreadEvent>): AsyncIterable<AgentEvent> {
   log.debug("translateCodexEvents start");
   let eventCount = 0;
   try {
@@ -81,9 +79,7 @@ export async function* translateCodexEvents(
     // process spawn — see CodexAgentQuery.close). Re-throw so the service
     // layer's existing abort handling runs; lower-level abort detection
     // (signal.aborted) short-circuits before this in the query loop.
-    log.error(
-      `Codex event stream threw after ${eventCount} events: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`,
-    );
+    log.error(`Codex event stream threw after ${eventCount} events: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`);
     throw err;
   }
   log.debug(`translateCodexEvents end — eventCount=${eventCount}`);
@@ -189,10 +185,6 @@ function translateItemCompleted(item: ThreadItem): AgentEvent | null {
     case "web_search":
       return toolResult(item.id, item.query, false);
     case "todo_list":
-      // No core AgentEvent fits a running plan list; ride it through as
-      // adapter_specific so the service layer can ignore it (today) without
-      // losing the data (spike §4 — "could map to a status/plan event or
-      // ignore").
       return todoEvent(item);
     case "error":
       // Non-fatal item-level error. Surface as adapter_specific rather than a
@@ -224,11 +216,23 @@ function mcpResult(item: McpToolCallItem): AgentEvent {
   return toolResult(item.id, content, item.status === "failed");
 }
 
+/**
+ * The running to-do list → {@link AgentEvent} `task_list`.
+ *
+ * **The SDK's shape is lossier than Codex's own.** `TodoItem` is
+ * `{text, completed}` — a boolean — while the `update_plan` call Codex writes
+ * into its rollout carries a three-valued `status` (`pending` / `in_progress` /
+ * `completed`, all three observed in real rollouts). The step Codex is working
+ * on right now is therefore reachable from the transcript but not from this
+ * stream, so `completed: false` widens to `pending` and nothing here invents an
+ * in-progress row. A live list may show one fewer highlighted step than the
+ * same list does after a reload; that is the SDK's information, not ours to
+ * guess at.
+ */
 function todoEvent(item: TodoListItem): AgentEvent {
   return {
-    type: "adapter_specific",
-    adapter: "codex",
-    payload: { kind: "todo_list", items: item.items },
+    type: "task_list",
+    items: item.items.map((todo) => ({ content: todo.text, status: todo.completed ? "completed" : "pending" })),
   };
 }
 
@@ -294,9 +298,7 @@ function logEvent(event: ThreadEvent): void {
       log.debug("event turn.started");
       break;
     case "turn.completed":
-      log.debug(
-        `event turn.completed — inputTokens=${event.usage?.input_tokens ?? "n/a"}, outputTokens=${event.usage?.output_tokens ?? "n/a"}`,
-      );
+      log.debug(`event turn.completed — inputTokens=${event.usage?.input_tokens ?? "n/a"}, outputTokens=${event.usage?.output_tokens ?? "n/a"}`);
       break;
     case "turn.failed":
       log.error(`event turn.failed — ${event.error.message}`);

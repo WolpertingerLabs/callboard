@@ -72,13 +72,11 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
   const [resultExpanded, setResultExpanded] = useState(false);
   const elapsed = useRunningElapsed(isRunning, toolUse.timestamp);
 
-  // Special case: TodoWrite renders as TodoList component
-  const todoItems = useMemo(() => {
-    if (toolUse.toolName === "TodoWrite") {
-      return parseTodoItems(toolUse.content);
-    }
-    return null;
-  }, [toolUse]);
+  // Special case: an agent's running task list renders as TodoList. Matched by
+  // tool name AND payload shape so every engine that has a list hits it (Claude:
+  // TodoWrite, Codex: update_plan, ACP: plan) — the same cross-provider parity
+  // render_file and the canvas tools get below, for the same reason.
+  const todoItems = useMemo(() => parseTodoItems(toolUse), [toolUse]);
 
   // Special case: render_file renders as MediaRenderer. Matched by bare tool
   // name so all providers hit it (Claude: mcp__callboard-tools__render_file,

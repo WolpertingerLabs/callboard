@@ -16,6 +16,10 @@
  * @see plans/agent-abstraction-layer.md
  */
 
+import type { TaskListItem } from "shared/types/index.js";
+
+export type { TaskListItem };
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -52,6 +56,24 @@ export type AgentEvent =
       isError?: boolean;
       /** Mirrors the paired tool_use's provenance. Absent ⇒ local. */
       toolSource?: "local" | "openrouter_server";
+    }
+  | {
+      /**
+       * The agent's running task list, as it stands right now.
+       *
+       * A **complete snapshot**, never a delta — every engine that has this
+       * concept resends the whole list on every change (ACP says so in the
+       * schema: "the client replaces the entire plan with each update"), and an
+       * empty `items` means the list was cleared. Consumers replace, they do
+       * not merge.
+       *
+       * Not a `tool_use`, because for ACP no tool was called: a plan arrives as
+       * a session update. Claude Code is the exception that keeps emitting
+       * `tool_use` — its list genuinely *is* the `TodoWrite` tool, and its
+       * transcript is written by the CLI rather than by us.
+       */
+      type: "task_list";
+      items: TaskListItem[];
     }
   | { type: "slash_commands"; commands: string[] }
   | { type: "compaction_boundary"; content?: string }
