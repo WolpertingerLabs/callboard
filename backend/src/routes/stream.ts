@@ -59,7 +59,7 @@ streamRouter.post("/new/message", async (req, res) => {
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the tree node of the new chat, e.g. subagent, monitor, engine-switch. Only used with parentChatId." },
             cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
-            createCard: { type: "boolean", description: "Create a new open card and attach the chat to it. Ignored when cardId resolves to an existing open card. The card title follows the auto-generated title of the chat." },
+            createCard: { type: "boolean", description: "Whether to create a new open card and attach the chat to it. Defaults to TRUE: a chat that names no cardId and no parentChatId gets its own card. Pass false to opt out. Ignored when cardId or parentChatId is supplied (an explicit card wins; children inherit their card of the parent). The card title follows the auto-generated title of the chat." },
             cardCategory: { type: "string", description: "Optional category for the auto-created card (used with createCard; max 64 chars). The board groups open cards by category." },
             acpProviderId: { type: "string", description: "Which ACP vendor runs the chat. Required when provider is \'acp\', ignored otherwise. Must name a configured preset (see GET /api/system-info acpProviders)." },
             clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match new-<alphanumeric/_/->, max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
@@ -241,11 +241,23 @@ streamRouter.post("/new/message", async (req, res) => {
       // user can file it from the sidebar's chat menu) rather than failing
       // the send or stamping a chat onto a card hidden in the Closed strip.
       ...(safeCardId && { cardId: safeCardId }),
-      // Auto-create a card only when no explicit card was requested at all —
-      // a stale (closed/deleted) cardId drops the association entirely
-      // rather than surprising the user with a brand-new card.
-      ...(createCard === true &&
-        !cardId && {
+      // Auto-create a card for every top-level chat. The policy lives here
+      // rather than in the client: the composer no longer sends the flag at
+      // all, and a tab running an older bundle that still sends it must not
+      // get different behavior (see the wire rules in shared/types/stream.ts).
+      //
+      // Three ways out, each of them something the caller said explicitly:
+      //   - `createCard: false` — the API-client opt-out, and the only one.
+      //   - any `cardId` in the body, including a stale (closed/deleted) one:
+      //     that drops the association entirely rather than surprising the
+      //     caller with a brand-new card, which is why this tests the raw
+      //     field and not `safeCardId`.
+      //   - a `parentChatId` — children inherit their parent's card and must
+      //     never mint their own. sendMessage enforces the same rule on the
+      //     path every spawn takes; this is the HTTP-facing half of it.
+      ...(createCard !== false &&
+        !cardId &&
+        !(typeof parentChatId === "string" && parentChatId) && {
           createCard: true,
           ...(typeof cardCategory === "string" && cardCategory.trim() && { cardCategory: cardCategory.trim() }),
         }),

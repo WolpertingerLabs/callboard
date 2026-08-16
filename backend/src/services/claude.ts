@@ -828,6 +828,10 @@ interface SendMessageOptions {
    * cardId wins). The card is created alongside the chat record with a
    * prompt-derived placeholder title, replaced by the LLM-generated chat
    * title when that succeeds — one title call covers both.
+   *
+   * Ignored outright for `triggered` runs and for anything with a
+   * `parentChatId`: cards are per top-level chat, and a card per subagent
+   * would silently flood a board nothing drains automatically.
    */
   createCard?: boolean;
   /**
@@ -1727,9 +1731,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                 // branch resolution or session startup fails). An explicit or
                 // inherited cardId in metadata wins over auto-creation. The
                 // placeholder title is replaced by the generated chat title below.
+                //
+                // Only ever for a top-level, human-started chat. Triggered runs
+                // (cron, triggers, jobs) and agent-spawned children reach this
+                // line too, and a card each would flood a board that has no
+                // automatic drain — silently, since nothing errors. The route
+                // already declines to ask for one, but the rule belongs here as
+                // well: this is the path EVERY spawn takes, and `executeAgent`
+                // and the MCP tools bypass the route entirely.
+                //
+                // Parentage is checked on both `opts` and the metadata: the
+                // metadata field is only written when `resolveParentage`
+                // succeeds, so a child whose parent has no stored record (a temp
+                // tracking id) would otherwise read as top-level and get a card.
                 let autoCreatedCardId: string | undefined;
                 let autoCardPlaceholderTitle: string | undefined;
-                if (opts.createCard && !initialMetadata.cardId) {
+                if (opts.createCard && !initialMetadata.cardId && !opts.triggered && !opts.parentChatId && !initialMetadata.parentChatId) {
                   try {
                     const promptText = typeof prompt === "string" ? prompt.replace(/\s+/g, " ").trim() : "";
                     let placeholder = promptText.slice(0, 120);

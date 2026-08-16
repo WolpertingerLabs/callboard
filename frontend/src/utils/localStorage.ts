@@ -34,10 +34,6 @@ interface LocalStorageData {
   chatListLayout?: "flat" | "tree";
   /** Whether the board's Closed section is expanded. */
   boardClosedExpanded?: boolean;
-  /** User's last-used "Create card" choice in the New Chat card selector —
-   * persisted so the toggle defaults to their previous decision. Not applied
-   * when a chat is seeded onto an existing card (that path joins, not creates). */
-  defaultCreateCard?: boolean;
   folderMaxAgeDays?: number;
   folderShowSizes?: boolean;
   /** User's last-selected provider in the New Chat panel — persisted so the
@@ -449,17 +445,6 @@ export function getSidebarViewMode(): SidebarViewMode {
 export function saveSidebarViewMode(mode: SidebarViewMode): void {
   const data = getStorageData();
   data.sidebarViewMode = mode;
-  setStorageData(data);
-}
-
-export function getDefaultCreateCard(): boolean {
-  const data = getStorageData();
-  return data.defaultCreateCard ?? false;
-}
-
-export function saveDefaultCreateCard(value: boolean): void {
-  const data = getStorageData();
-  data.defaultCreateCard = value;
   setStorageData(data);
 }
 

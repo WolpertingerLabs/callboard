@@ -71,7 +71,6 @@ import SlashCommandsModal from "../components/SlashCommandsModal";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import ForkHandoffModal from "../components/ForkHandoffModal";
 import BranchSelector from "../components/BranchSelector";
-import CardAssociationSelector, { type CardAssociationConfig } from "../components/CardAssociationSelector";
 import GitDiffView from "../components/GitDiffView";
 import ChatDebugPanel from "../components/ChatDebugPanel";
 import JobRunPanel from "../components/JobRunPanel";
@@ -79,8 +78,6 @@ import {
   addRecentDirectory,
   getMaxTurns,
   getDefaultPermissions as getLocalDefaultPermissions,
-  getDefaultCreateCard,
-  saveDefaultCreateCard,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -281,30 +278,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // don't leak.
   const [_lastRunCostUsd, setLastRunCostUsd] = useState<number | null>(null);
   const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
-  // Card association for NEW chats: create a card alongside the chat, join an
-  // existing open card (seeded from the board's "New chat on card" action), or
-  // neither (default).
-  const [cardConfig, setCardConfig] = useState<CardAssociationConfig>({
-    // Default the "Create card" toggle to the user's last-used choice, unless
-    // this chat is seeded onto an existing card (that path joins, not creates).
-    createCard: newChatCardId ? false : getDefaultCreateCard(),
-    cardId: newChatCardId ?? null,
-    category: "",
-  });
-  // Re-seed on every new-chat navigation: Chat is rendered unkeyed in
-  // SplitLayout, so /chat/new → /chat/new navigations don't remount it and a
-  // mount-time seed alone would leak the previous selection into an
-  // unrelated new chat. location.key changes on each navigation.
-  useEffect(() => {
-    if (id) return;
-    setCardConfig({ createCard: newChatCardId ? false : getDefaultCreateCard(), cardId: newChatCardId ?? null, category: "" });
-  }, [id, location.key]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Persist the "Create card" choice so it defaults to the user's last decision
-  // on the next new chat. Category stays per-chat (not persisted).
-  const handleCardConfigChange = useCallback((config: CardAssociationConfig) => {
-    setCardConfig(config);
-    saveDefaultCreateCard(config.createCard);
-  }, []);
+  // Card association is no longer a composer choice: the server gives every
+  // top-level chat a card on its own (backend/src/routes/stream.ts). The one
+  // thing the client still decides is JOINING an existing card, and that comes
+  // from router state (`newChatCardId`), not from any UI here.
   const [branchChangeConfirm, setBranchChangeConfirm] = useState<{
     isOpen: boolean;
     prompt: string;
@@ -1837,13 +1814,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               requestBody.chatRole = newChatRole;
             }
           }
-          if (cardConfig.cardId) {
-            requestBody.cardId = cardConfig.cardId;
-          } else if (cardConfig.createCard) {
-            requestBody.createCard = true;
-            if (cardConfig.category.trim()) {
-              requestBody.cardCategory = cardConfig.category.trim();
-            }
+          // Board's "New chat on card" action — join that card instead of
+          // getting a fresh one. No `createCard` is sent either way: the server
+          // creates one for every top-level chat that names no card.
+          if (newChatCardId) {
+            requestBody.cardId = newChatCardId;
           }
           res = await fetch("/api/chats/new/message", {
             method: "POST",
@@ -1982,7 +1957,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       activePluginIds,
       chat,
       branchConfig,
-      cardConfig,
+      newChatCardId,
       activeDraftId,
     ],
   );
@@ -3337,14 +3312,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           </button>
         )}
       </div>
-
-      {/* Card association - shown above the git section for new chats.
-          Not gated on is_git_repo: cards are unrelated to git. */}
-      {!id && !pendingAction && (
-        <div style={{ padding: "0 16px" }}>
-          <CardAssociationSelector value={cardConfig} onChange={handleCardConfigChange} />
-        </div>
-      )}
 
       {/* Branch selector for git repos - shown above prompt for new chats */}
       {!id && info?.is_git_repo && !pendingAction && (
