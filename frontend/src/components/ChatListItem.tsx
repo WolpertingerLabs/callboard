@@ -51,12 +51,18 @@ interface Props {
   /** Card actions for the row menu. Omit to render no card entries at all. */
   cardMenu?: ChatCardMenu;
   sessionStatus?: { active: boolean; type: string };
+  /**
+   * The list's verdict on "this chat's card is closed or absent" (see
+   * `utils/chatDimming`). A *request* to fade, not the last word — the
+   * exemptions below can veto it.
+   */
+  dimmed?: boolean;
 }
 
 /** Rough popup height used to decide whether the menu opens downward or upward. */
 const MENU_ESTIMATED_HEIGHT = 210;
 
-export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, cardMenu, sessionStatus }: Props) {
+export default function ChatListItem({ chat, isActive, onClick, onDelete, onToggleBookmark, cardMenu, sessionStatus, dimmed }: Props) {
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
   // position:fixed, anchored to the button's viewport rect at open time.
@@ -130,11 +136,32 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
 
   const displayName = title || (preview ? (preview.length > 60 ? preview.slice(0, 60) + "..." : preview) : folderName);
 
+  /**
+   * The dim, with the rows that need you taken back out of it.
+   *
+   * A faded row that is holding a permission prompt, has a summon on it, or has
+   * unread output is the precise inverse of what this option is for — the point
+   * is to make live work stand out, and those three are the loudest live work
+   * there is. The exemption lives here rather than in the list because these
+   * are already parsed out of the chat's metadata a few lines up.
+   *
+   * What the fade costs, measured rather than assumed: `opacity` composites the
+   * whole row against `--bg-sidebar`, so it drags every pairing in the row down
+   * together. `--chatlist-item-dimmed-opacity` is set per theme to keep the row
+   * *title* above 4.5:1 (5.31:1 dark, 5.20:1 light). The row's secondary text
+   * and badges do not clear AA when faded and cannot be made to: timestamps
+   * start at 5.75:1 / 5.63:1, so AA caps any dim at 0.85 / 0.90 opacity, which
+   * is not a visible dim. That is a property of fading with opacity, not of
+   * these two values.
+   */
+  const faded = !!dimmed && !isActive && !summon && !hasUnread;
+
   return (
     <div
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      className={faded ? "chatlist-item-dimmed" : undefined}
       style={{
         padding: "10px 14px",
         borderBottom: "1px solid var(--chatlist-item-border)",

@@ -15,6 +15,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { BUILTIN_PALETTE } from "./theme-contrast-palette.js";
 import { THEME_VARIABLE_NAMES } from "./theme-variables.js";
+import { composite, contrastRatio, effectiveVars, resolveColor } from "./theme-contrast.js";
 
 const INDEX_CSS = join(dirname(fileURLToPath(import.meta.url)), "../../../frontend/src/index.css");
 
@@ -102,8 +103,14 @@ const css = readFileSync(INDEX_CSS, "utf8");
 const DARK = declarations(css, ":root");
 const LIGHT = declarations(css, '[data-theme="light"]');
 
-/** Typography and geometry: theme-adjacent, but not part of the palette. */
-const NON_VISUAL = ["font-mono", "radius", "safe-bottom"];
+/**
+ * Typography, geometry and one opacity: theme-adjacent, but not part of the
+ * palette. The shared property is that none of them names a colour, so there is
+ * nothing for a theme author to pick and nothing for the pairing table to
+ * measure — `--chatlist-item-dimmed-opacity` is a scalar the browser multiplies
+ * a whole row by, not a foreground or a background.
+ */
+const NON_VISUAL = ["font-mono", "radius", "safe-bottom", "chatlist-item-dimmed-opacity"];
 /** A value that defers to another variable rather than choosing anything itself. */
 const isDerived = (value: string) => /var\(|color-mix\(/.test(value);
 
@@ -213,6 +220,56 @@ describe("THEME_VARIABLE_NAMES", () => {
 
   it("has no duplicates", () => {
     expect(new Set(THEME_VARIABLE_NAMES).size).toBe(THEME_VARIABLE_NAMES.length);
+  });
+});
+
+/**
+ * `--chatlist-item-dimmed-opacity` is the one palette-adjacent token the pairing
+ * table structurally cannot measure: it is a scalar the browser multiplies a
+ * whole row by, not a foreground on a background. So it gets its own
+ * measurement, taken the same way — composite, then ratio — rather than a
+ * judgement about what looks faded.
+ *
+ * What is pinned is the row *title* (`--chatlist-item-title-text`), the body
+ * text of a chat row. The row's secondary text is deliberately not pinned here:
+ * `--text-muted` on `--bg-sidebar` is 5.75:1 dark / 5.63:1 light before any
+ * fade, so AA caps *any* opacity dim at 0.85 / 0.90 — not a visible dim. That
+ * is a property of fading with opacity, and the honest place to record it is
+ * here, next to the number it constrains, rather than in a commit message.
+ */
+describe("the dimmed chat row", () => {
+  const DIMMED_TITLE_RATIOS: Record<"dark" | "light", number> = { dark: 5.31, light: 5.2 };
+
+  for (const mode of ["dark", "light"] as const) {
+    it(`keeps a faded row's title above AA in ${mode}`, () => {
+      const opacity = Number((mode === "dark" ? DARK : LIGHT)["chatlist-item-dimmed-opacity"]);
+      expect(Number.isFinite(opacity), "opacity parses as a number").toBe(true);
+
+      const vars = effectiveVars(undefined, mode);
+      const backdrop = resolveColor("var(--bg-sidebar)", vars)!;
+      // The row paints no background of its own (--chatlist-item-bg is
+      // transparent), so `opacity` composites the title straight onto the
+      // sidebar at that alpha.
+      const title = composite(resolveColor("var(--chatlist-item-title-text)", vars)!, backdrop);
+      const ratio = contrastRatio(composite({ ...title, a: opacity }, backdrop), backdrop);
+
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+      // Pinned so a change to --text, --bg-sidebar or the opacity itself has to
+      // restate the measurement rather than drift past it.
+      expect(Number(ratio.toFixed(2))).toBe(DIMMED_TITLE_RATIOS[mode]);
+    });
+  }
+
+  it("is measuring the fade, not reporting the undimmed row", () => {
+    // At opacity 1 this same computation is 14.97:1 / 12.92:1 — a test that had
+    // quietly stopped applying the alpha would still pass the AA assertion
+    // above, and only this one would notice.
+    for (const mode of ["dark", "light"] as const) {
+      const vars = effectiveVars(undefined, mode);
+      const backdrop = resolveColor("var(--bg-sidebar)", vars)!;
+      const title = composite(resolveColor("var(--chatlist-item-title-text)", vars)!, backdrop);
+      expect(contrastRatio(title, backdrop)).toBeGreaterThan(DIMMED_TITLE_RATIOS[mode] * 2);
+    }
   });
 });
 

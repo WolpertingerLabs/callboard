@@ -32,6 +32,12 @@ export interface ChatViewOptions {
   showTriggered: boolean;
   /** Only chats on an open card, plus their descendants. */
   cardsOnly: boolean;
+  /**
+   * Fade — never hide — chats whose card is closed or absent. Purely a render
+   * modifier over the cards the list already holds: it changes no request, so
+   * unlike {@link cardsOnly} it costs nothing and pages normally.
+   */
+  dimCardless: boolean;
   /** Group chats by parentage tree instead of a flat list. */
   treeLayout: boolean;
 }
@@ -40,6 +46,7 @@ export const DEFAULT_CHAT_VIEW_OPTIONS: ChatViewOptions = {
   bookmarked: false,
   showTriggered: false,
   cardsOnly: false,
+  dimCardless: false,
   treeLayout: false,
 };
 

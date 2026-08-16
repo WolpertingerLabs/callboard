@@ -25,6 +25,7 @@ import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import CardPicker from "../components/board/CardPicker";
 import { useChatSearch } from "../hooks/useChatSearch";
+import { chatCardId, isChatDimmed } from "../utils/chatDimming";
 import {
   DEFAULT_CHAT_FILTERS,
   DEFAULT_CHAT_VIEW_OPTIONS,
@@ -39,6 +40,8 @@ import {
   saveShowTriggeredChats,
   getChatsCardsOnly,
   saveChatsCardsOnly,
+  getChatsDimCardless,
+  saveChatsDimCardless,
   getChatListLayout,
   saveChatListLayout,
   type SidebarViewMode,
@@ -80,13 +83,14 @@ export default function ChatList({
   // fetched subtrees are snapshots and go stale when the list refreshes.
   const [listVersion, setListVersion] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  // Scope + layout, all edited together in the filters modal. Three of the four
+  // Scope + layout, all edited together in the filters modal. Four of the five
   // are remembered across reloads; `bookmarked` stays session-only, the way it
   // has always behaved.
   const [viewOptions, setViewOptions] = useState<ChatViewOptions>(() => ({
     ...DEFAULT_CHAT_VIEW_OPTIONS,
     showTriggered: getShowTriggeredChats(),
     cardsOnly: getChatsCardsOnly(),
+    dimCardless: getChatsDimCardless(),
     treeLayout: getChatListLayout() === "tree",
   }));
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
@@ -104,6 +108,11 @@ export default function ChatList({
   // menu needs each filed chat's card lifecycle to label Close vs Reopen, and
   // the sidebar is the one place all card actions live now.
   const [cards, setCards] = useState<CardSummary[]>([]);
+  // Whether the first listCards has come back. Only the dim reads it, and only
+  // because an empty `cards` is indistinguishable from "none of these chats has
+  // a card" — see utils/chatDimming. Stays false if the fetch fails, which is
+  // the right way round: nothing dims rather than everything.
+  const [cardsLoaded, setCardsLoaded] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
@@ -116,6 +125,7 @@ export default function ChatList({
     try {
       const res = await listCards();
       setCards(res.cards);
+      setCardsLoaded(true);
     } catch {
       // Non-critical: the row menu simply omits the lifecycle entry (it never
       // guesses a label) until a later refresh lands.
@@ -370,14 +380,16 @@ export default function ChatList({
 
   /** The card a chat is filed under, when it has one and we've loaded it. */
   const cardOf = (chat: Chat): CardSummary | undefined => {
-    try {
-      const meta = JSON.parse(chat.metadata || "{}");
-      // Unassign merges `cardId: null`, so membership is a string check.
-      return typeof meta.cardId === "string" && meta.cardId ? cardsById.get(meta.cardId) : undefined;
-    } catch {
-      return undefined;
-    }
+    const id = chatCardId(chat);
+    return id ? cardsById.get(id) : undefined;
   };
+
+  /**
+   * "Dim inactive chats": fade rows whose card is closed or absent. Purely a
+   * render decision over cards already on the page — no request changes, which
+   * is why it is a view option and not a filter.
+   */
+  const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsById, { dimCardless: viewOptions.dimCardless, cardsLoaded });
 
   /** Title for a card promoted from a chat — same derivation as the board's old inbox promote. */
   const chatCardTitle = (chat: Chat): string => {
@@ -451,6 +463,7 @@ export default function ChatList({
     setViewOptions(nextView);
     saveShowTriggeredChats(nextView.showTriggered);
     saveChatsCardsOnly(nextView.cardsOnly);
+    saveChatsDimCardless(nextView.dimCardless);
     saveChatListLayout(nextView.treeLayout ? "tree" : "flat");
   };
 
@@ -511,8 +524,15 @@ export default function ChatList({
     }).length;
   }, [chats, viewOptions.showTriggered]);
 
-  // Determine the empty state message
-  const isFiltered = activeViewOptionCount(viewOptions) > 0 || hasActiveFilters(filters) || matchingChatIds !== null;
+  // Determine the empty state message. `dimCardless` is normalised away first:
+  // it fades rows and never removes one, so an empty list is never its doing
+  // and "No chats match the current filters" would be a lie. It still counts
+  // toward the filter button's badge, where "you have changed the view" is
+  // exactly what the badge means.
+  const isFiltered =
+    activeViewOptionCount({ ...viewOptions, dimCardless: DEFAULT_CHAT_VIEW_OPTIONS.dimCardless }) > 0 ||
+    hasActiveFilters(filters) ||
+    matchingChatIds !== null;
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
   if (sidebarCollapsed) {
@@ -714,6 +734,7 @@ export default function ChatList({
             onToggleBookmark={handleToggleBookmark}
             cardMenuFor={cardMenuFor}
             sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
+            isDimmed={isDimmed}
           />
         ) : (
           filteredChats.map((chat) => (
@@ -726,6 +747,7 @@ export default function ChatList({
               onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
               cardMenu={cardMenuFor(chat)}
               sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
+              dimmed={isDimmed(chat)}
             />
           ))
         )}

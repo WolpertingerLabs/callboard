@@ -149,6 +149,14 @@
   --chatlist-item-title-text: var(--text);
   --chatlist-item-path-text: var(--text-muted);
   --chatlist-item-time-text: var(--text-muted);
+  /* Fade applied to a chat row whose card is closed or absent ("Dim inactive
+     chats"). Per mode, and measured rather than chosen: opacity composites the
+     whole row against --bg-sidebar, so the row title (--chatlist-item-title-text
+     = --text) drops below AA at 0.492 here, and at 0.652 in light. These two
+     values clear 4.5:1 with margin — 5.31:1 dark, 5.20:1 light — which is the
+     only reason they differ. What opacity costs the row's *secondary* text is
+     documented at the dim in ChatListItem; no value fixes that half. */
+  --chatlist-item-dimmed-opacity: 0.55;
   --chatlist-icon: var(--text-muted);
   --chatlist-icon-active: var(--accent-text);
   --chatlist-icon-delete: var(--text-muted);
@@ -358,6 +366,10 @@
   --chatlist-item-title-text: var(--text);
   --chatlist-item-path-text: var(--text-muted);
   --chatlist-item-time-text: var(--text-muted);
+  /* Higher than dark's 0.55, and not a preference: #1e293b loses contrast
+     against a near-white sidebar faster than #e6edf3 does against a dark one.
+     AA bottoms out at 0.652 here; 0.7 measures 5.20:1. */
+  --chatlist-item-dimmed-opacity: 0.7;
   --chatlist-icon: var(--text-muted);
   --chatlist-icon-active: var(--accent-text);
   --chatlist-icon-delete: var(--text-muted);
@@ -439,6 +451,15 @@ textarea {
 a {
   color: var(--accent-text);
   text-decoration: none;
+}
+
+/* A sidebar chat row faded by the "Dim inactive chats" view option. A class
+   rather than an inline style so the opacity stays a themed token: `opacity:
+   var(--x)` set through React's style prop is legal CSS but is what jsdom
+   turns into NaN, which would make every test of this feature assert on a
+   value the browser never sees. */
+.chatlist-item-dimmed {
+  opacity: var(--chatlist-item-dimmed-opacity);
 }
 
 /* Markdown message styling */
