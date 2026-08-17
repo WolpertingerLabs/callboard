@@ -82,6 +82,59 @@ describe("transcript round-trip", () => {
     expect(answers[1].usage).toEqual({ input_tokens: 150, output_tokens: 25 });
   });
 
+  /**
+   * Cline's cache counters are cumulative like its token and cost ones, so they
+   * get the same differencing. Attaching the raw totals would show the whole
+   * chat's cache traffic against every single response.
+   */
+  it("differences the cumulative cache counters too", () => {
+    const w = new ClineTranscriptWriter("sess1", "/repo");
+    w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
+    w.writeUserMessage("first question");
+    w.writeEvent({ type: "session_started", sessionId: "sess1" });
+    w.writeEvent({ type: "text", content: "first answer" });
+    w.writeEvent({ type: "result", status: "success", usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 900, cacheWriteTokens: 40 } });
+    w.writeUserMessage("second question");
+    w.writeEvent({ type: "session_started", sessionId: "sess1" });
+    w.writeEvent({ type: "text", content: "second answer" });
+    w.writeEvent({ type: "result", status: "success", usage: { inputTokens: 250, outputTokens: 45, cacheReadTokens: 2600, cacheWriteTokens: 40 } });
+
+    const answers = provider.parseSessionMessages(["sess1"]).filter((m) => m.role === "assistant");
+    expect(answers[0].usage).toEqual({ input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 900, cache_creation_input_tokens: 40 });
+    // 2600 − 900 read this turn, and nothing newly written: a real zero, which
+    // is a different claim from the absent field the next case checks.
+    expect(answers[1].usage).toEqual({ input_tokens: 150, output_tokens: 25, cache_read_input_tokens: 1700, cache_creation_input_tokens: 0 });
+  });
+
+  it("leaves the cache columns unset when the runtime reported no cache figures", () => {
+    writeSession("sess1");
+    const answer = provider.parseSessionMessages(["sess1"]).find((m) => m.role === "assistant")!;
+    // Not `cache_read_input_tokens: 0` — the panel renders a measured zero and
+    // an unreported figure differently, and this run measured nothing.
+    expect(answer.usage).toEqual({ input_tokens: 100, output_tokens: 20 });
+  });
+
+  it("carries Cline's own finish reason, and gives each turn a grouping key", () => {
+    const w = new ClineTranscriptWriter("sess1", "/repo");
+    w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
+    w.writeUserMessage("first question");
+    w.writeEvent({ type: "session_started", sessionId: "sess1" });
+    w.writeEvent({ type: "text", content: "first answer" });
+    w.writeEvent({ type: "result", status: "success", stopReason: "completed", usage: { inputTokens: 100, outputTokens: 20 } });
+    w.writeUserMessage("second question");
+    w.writeEvent({ type: "session_started", sessionId: "sess1" });
+    w.writeEvent({ type: "text", content: "second answer" });
+    w.writeEvent({ type: "result", status: "max_turns", stopReason: "max_iterations", usage: { inputTokens: 250, outputTokens: 45 } });
+
+    const answers = provider.parseSessionMessages(["sess1"]).filter((m) => m.role === "assistant");
+    // Verbatim, NOT translated into Anthropic's `end_turn`: Cline reports why
+    // its agent loop finished, which is not why the model stopped generating.
+    expect(answers.map((m) => m.stopReason)).toEqual(["completed", "max_iterations"]);
+    expect(answers.map((m) => m.generationKey)).toEqual(["cline:sess1/0", "cline:sess1/1"]);
+    // Cline mints no request id that reaches callboard, and none is invented.
+    expect(answers.every((m) => m.requestId === undefined)).toBe(true);
+  });
+
   it("survives a half-written final line", () => {
     writeSession("sess1");
     // What a crash mid-append leaves behind. Normal, not corruption.

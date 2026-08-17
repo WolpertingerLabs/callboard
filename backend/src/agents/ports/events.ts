@@ -25,6 +25,32 @@ export interface TokenUsage {
   outputTokens: number;
   /** USD cost for this turn, when the adapter exposes it. */
   costUsd?: number;
+  /**
+   * Prompt-cache reads and writes, when the engine reports them.
+   *
+   * Optional rather than defaulted to zero, and that distinction is the whole
+   * point: `undefined` means *this engine does not report the number*, `0`
+   * means *it reported none*. The responses debug panel renders the first as a
+   * dash and the second as a measured zero, so collapsing them here would put a
+   * fabricated measurement in a diagnostics table. OpenAI, for instance, bills
+   * no cache writes and reports none — that column must stay blank for Codex,
+   * not read as "0 tokens written".
+   *
+   * Deliberately NOT folded into `inputTokens`: they are billed differently,
+   * `costUsd` already accounts for them, and inflating the input count would
+   * make the token figure disagree with the cost figure beside it.
+   *
+   * Whether these are per-turn or cumulative-for-the-session is the emitting
+   * adapter's choice and must match `inputTokens`/`outputTokens` — Cline sends
+   * running totals and differences them on read; ACP and pi send per-turn.
+   */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  /**
+   * Reasoning-trace tokens, when the engine breaks them out. A **subset** of
+   * `outputTokens`, not an addition to it.
+   */
+  reasoningTokens?: number;
 }
 
 export type AgentResultStatus = "success" | "max_turns" | "max_budget" | "error";
@@ -86,6 +112,19 @@ export type AgentEvent =
       usage?: TokenUsage;
       /** Wall-clock duration in milliseconds, if reported. */
       durationMs?: number;
+      /**
+       * The engine's own stop/finish token, **verbatim**, when it reports one.
+       *
+       * Distinct from `status`, which is callboard's four-value classification
+       * for control flow. This is the raw label the responses debug panel shows
+       * in its Stop column and filters on, so it is not narrowed to a union:
+       * each engine owns its vocabulary and a value this build has not seen
+       * should still render. ACP sends ACP's (`end_turn`, `max_tokens`,
+       * `refusal`, …); Cline sends its loop-level finish reason (`completed`,
+       * `max_iterations`, …). Absent when the engine reports nothing — Codex's
+       * rollout has no stop reason anywhere in it.
+       */
+      stopReason?: string;
     }
   | {
       /** Escape hatch for adapter-native events the core union doesn't cover. */

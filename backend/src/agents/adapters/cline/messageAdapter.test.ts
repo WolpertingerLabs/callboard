@@ -125,7 +125,12 @@ describe("terminal accounting", () => {
     recordTerminalSignal(acc, { type: "usage", inputTokens: 1, outputTokens: 1, totalInputTokens: 20, totalOutputTokens: 9, totalCost: 0.2 } as never);
     recordTerminalSignal(acc, { type: "done", reason: "completed", text: "", iterations: 2 } as never);
 
-    expect(buildTerminalResult(acc)).toEqual({ type: "result", status: "success", usage: { inputTokens: 20, outputTokens: 9, costUsd: 0.2 } });
+    expect(buildTerminalResult(acc)).toEqual({
+      type: "result",
+      status: "success",
+      usage: { inputTokens: 20, outputTokens: 9, costUsd: 0.2 },
+      stopReason: "completed",
+    });
   });
 
   /**
@@ -137,7 +142,31 @@ describe("terminal accounting", () => {
     const acc = {};
     recordTerminalSignal(acc, { type: "error", error: new Error("429"), recoverable: true, iteration: 1 } as never);
     recordTerminalSignal(acc, { type: "done", reason: "completed", text: "", iterations: 3 } as never);
-    expect(buildTerminalResult(acc)).toEqual({ type: "result", status: "success" });
+    expect(buildTerminalResult(acc)).toEqual({ type: "result", status: "success", stopReason: "completed" });
+  });
+
+  it("carries the cumulative cache totals, not the per-turn ones", () => {
+    // The reader differences these against the previous turn. Falling back to
+    // the event's per-turn `cacheReadTokens` when the total is missing would
+    // silently mix the two scales and produce a plausible wrong number, so the
+    // cache fields take the totals or nothing.
+    const acc = {};
+    recordTerminalSignal(acc, {
+      type: "usage",
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 5,
+      totalInputTokens: 10,
+      totalOutputTokens: 5,
+      totalCacheReadTokens: 900,
+      totalCacheWriteTokens: 40,
+    } as never);
+    expect(buildTerminalResult(acc).usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheReadTokens: 900, cacheWriteTokens: 40 });
+
+    const noTotals = {};
+    recordTerminalSignal(noTotals, { type: "usage", inputTokens: 1, outputTokens: 1, cacheReadTokens: 5, totalInputTokens: 10, totalOutputTokens: 5 } as never);
+    expect(buildTerminalResult(noTotals).usage).toEqual({ inputTokens: 10, outputTokens: 5 });
   });
 
   it("reports an unrecoverable error even without a done event", () => {
@@ -157,6 +186,6 @@ describe("terminal accounting", () => {
   it("carries max_iterations through as max_turns", () => {
     const acc = {};
     recordTerminalSignal(acc, { type: "done", reason: "max_iterations", text: "", iterations: 40 } as never);
-    expect(buildTerminalResult(acc)).toEqual({ type: "result", status: "max_turns", reason: "max_iterations" });
+    expect(buildTerminalResult(acc)).toEqual({ type: "result", status: "max_turns", reason: "max_iterations", stopReason: "max_iterations" });
   });
 });

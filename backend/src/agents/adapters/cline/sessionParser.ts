@@ -123,6 +123,22 @@ export function readClineTranscriptCwd(filePath: string): string {
 }
 
 /**
+ * The responses debug panel's row-grouping identity for one Cline turn.
+ *
+ * Cline mints no per-request id that reaches callboard — its `usage` and `done`
+ * events carry none — so `requestId` stays unset and the Req ID column shows a
+ * dash rather than something callboard invented. `generationKey` is the field
+ * for exactly this case: a grouping identity, not a datum. One row per turn is
+ * the truth about Cline, since a turn is the granularity at which its cumulative
+ * counters can be differenced at all.
+ *
+ * @see ../acp/sessionParser.ts (`turnGenerationKey` — the same job, same reasons)
+ */
+export function turnGenerationKey(sessionId: string, turnIndex: number): string {
+  return `cline:${sessionId}/${turnIndex}`;
+}
+
+/**
  * Project a transcript onto the neutral {@link ParsedMessage} list the chat
  * viewer renders.
  *
@@ -150,6 +166,11 @@ export function parseClineTranscript(filePath: string): ParsedMessage[] {
   const lines = readClineTranscriptLines(filePath);
   const messages: ParsedMessage[] = [];
   const model = readModelFromLines(lines);
+  // Namespaces the positional generation key. A chat's messages are the
+  // concatenation of *several* transcripts (`ClineSessionProvider.getMessages`
+  // walks every session id on the chat), so a bare turn index would make turn 0
+  // of one file and turn 0 of the next collapse into a single debug-panel row.
+  const sessionId = lines.find((l) => l.type === "session_meta")?.sessionId ?? filePath;
 
   let pendingText: { content: string[]; timestamp: string } | null = null;
   let pendingThinking: { content: string[]; timestamp: string } | null = null;
@@ -176,41 +197,82 @@ export function parseClineTranscript(filePath: string): ParsedMessage[] {
   // Where the current turn's output begins, so a terminal `result` annotates the
   // reply *it* closed rather than whatever assistant message is last in the file.
   let turnStart = 0;
+  /**
+   * Which turn of this transcript is in flight, for {@link turnGenerationKey}.
+   * Counts turns, not messages, so it is stable across re-parses of one file.
+   */
+  let turnIndex = 0;
   /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
   let cumulativeCostUsd: number | null = null;
   /** Latest cumulative token counts, differenced the same way. */
   let cumulativeInput = 0;
   let cumulativeOutput = 0;
+  /**
+   * Cache counters, differenced the same way — but `null` until the first turn
+   * that reports one, because Cline's cache totals are optional where its
+   * input/output totals are required. An absent figure has to stay absent: the
+   * debug panel renders `undefined` as a dash and `0` as a measured zero, and a
+   * baseline of 0 for an engine that reported nothing would manufacture the
+   * second from the first.
+   */
+  let cumulativeCacheRead: number | null = null;
+  let cumulativeCacheWrite: number | null = null;
+
+  /**
+   * One cumulative counter's step since the previous turn.
+   *
+   * A figure that went *backwards* (a resumed session whose runtime restarted
+   * its counters) is treated as a fresh baseline rather than a negative charge.
+   */
+  const step = (total: number, previous: number | null): number => (previous === null || total < previous ? total : total - previous);
 
   const closeTurn = (event: Extract<AgentEvent, { type: "result" }>): void => {
     const usage = event.usage;
     let turnCostUsd: number | null = null;
     let turnInput: number | null = null;
     let turnOutput: number | null = null;
+    let turnCacheRead: number | null = null;
+    let turnCacheWrite: number | null = null;
 
     if (usage) {
-      // A figure that went *backwards* (a resumed session whose runtime restarted
-      // its counters) is treated as a fresh baseline rather than a negative
-      // charge. Zero is a real answer and is reported, not suppressed.
+      // Zero is a real answer and is reported, not suppressed.
       if (typeof usage.costUsd === "number" && Number.isFinite(usage.costUsd)) {
-        turnCostUsd = cumulativeCostUsd === null || usage.costUsd < cumulativeCostUsd ? usage.costUsd : usage.costUsd - cumulativeCostUsd;
+        turnCostUsd = step(usage.costUsd, cumulativeCostUsd);
         cumulativeCostUsd = usage.costUsd;
       }
       turnInput = usage.inputTokens < cumulativeInput ? usage.inputTokens : usage.inputTokens - cumulativeInput;
       turnOutput = usage.outputTokens < cumulativeOutput ? usage.outputTokens : usage.outputTokens - cumulativeOutput;
       cumulativeInput = usage.inputTokens;
       cumulativeOutput = usage.outputTokens;
+      if (typeof usage.cacheReadTokens === "number") {
+        turnCacheRead = step(usage.cacheReadTokens, cumulativeCacheRead);
+        cumulativeCacheRead = usage.cacheReadTokens;
+      }
+      if (typeof usage.cacheWriteTokens === "number") {
+        turnCacheWrite = step(usage.cacheWriteTokens, cumulativeCacheWrite);
+        cumulativeCacheWrite = usage.cacheWriteTokens;
+      }
     }
 
     for (let i = messages.length - 1; i >= turnStart; i--) {
       const message = messages[i];
       if (message.role !== "assistant") continue;
-      if (turnInput !== null && turnOutput !== null) message.usage = { input_tokens: turnInput, output_tokens: turnOutput };
+      if (turnInput !== null && turnOutput !== null) {
+        message.usage = {
+          input_tokens: turnInput,
+          output_tokens: turnOutput,
+          ...(turnCacheRead !== null && { cache_read_input_tokens: turnCacheRead }),
+          ...(turnCacheWrite !== null && { cache_creation_input_tokens: turnCacheWrite }),
+        };
+      }
       if (event.durationMs != null) message.durationMs = event.durationMs;
       if (turnCostUsd != null) message.costUsd = turnCostUsd;
+      if (event.stopReason) message.stopReason = event.stopReason;
+      message.generationKey = turnGenerationKey(sessionId, turnIndex);
       break;
     }
     turnStart = messages.length;
+    turnIndex++;
   };
 
   for (const line of lines) {

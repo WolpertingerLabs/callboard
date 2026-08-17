@@ -292,17 +292,38 @@ describe("buildAcpUsage", () => {
     expect(buildAcpUsage(undefined)).toBeUndefined();
     expect(buildAcpUsage({ inputTokens: Number.NaN, outputTokens: 5 } as never)).toEqual({ inputTokens: 0, outputTokens: 5 });
   });
+
+  it("carries the cache and reasoning breakdown the schema reports", () => {
+    // All three are optional in ACP's `Usage`, and callboard dropped them —
+    // which left the debug panel's Cache R / Cache W columns blank for an agent
+    // that had reported the numbers all along.
+    expect(
+      buildAcpUsage({ totalTokens: 30, inputTokens: 10, outputTokens: 20, cachedReadTokens: 900, cachedWriteTokens: 40, thoughtTokens: 12 }),
+    ).toEqual({ inputTokens: 10, outputTokens: 20, cacheReadTokens: 900, cacheWriteTokens: 40, reasoningTokens: 12 });
+  });
+
+  it("reports a measured zero, and reports nothing for a figure the agent omitted", () => {
+    // The distinction the debug panel renders as `0` versus `-`. A vendor that
+    // omits `cachedWriteTokens` has not written zero tokens to the cache, it has
+    // not said — and `null` is how the schema spells "not said".
+    expect(buildAcpUsage({ totalTokens: 30, inputTokens: 10, outputTokens: 20, cachedReadTokens: 0, cachedWriteTokens: null })).toEqual({
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+    });
+    expect(buildAcpUsage({ totalTokens: 30, inputTokens: 10, outputTokens: 20 })).toEqual({ inputTokens: 10, outputTokens: 20 });
+  });
 });
 
 describe("mapStopReason", () => {
   it("treats end_turn as plain success", () => {
-    expect(mapStopReason("end_turn")).toEqual({ type: "result", status: "success" });
+    expect(mapStopReason("end_turn")).toEqual({ type: "result", status: "success", stopReason: "end_turn" });
   });
 
   it("treats cancellation as success with a reason, not an error", () => {
     // The run stopped because callboard asked it to; surfacing the user's own
     // stop button as a failure would be wrong.
-    expect(mapStopReason("cancelled")).toEqual({ type: "result", status: "success", reason: "cancelled" });
+    expect(mapStopReason("cancelled")).toEqual({ type: "result", status: "success", reason: "cancelled", stopReason: "cancelled" });
   });
 
   it("maps the budget limits onto max_turns", () => {

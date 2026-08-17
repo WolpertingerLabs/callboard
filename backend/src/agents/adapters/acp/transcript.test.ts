@@ -325,6 +325,55 @@ describe("per-turn metrics", () => {
     expect(parseAcpTranscript(findAcpTranscript("m7")!.filePath).every((m) => m.usage === undefined)).toBe(true);
   });
 
+  it("carries the turn's cache counts, reasoning split and stop reason onto the reply", () => {
+    // Everything the debug panel's Cache R / Cache W / Stop columns read. All of
+    // it arrives on the terminal `result` and none of it used to survive the
+    // trip onto a ParsedMessage.
+    const writer = new AcpTranscriptWriter("opencode", "m9", "/work");
+    writer.writeHeader(null);
+    writer.writeEvent({ type: "session_started", sessionId: "s" } as never);
+    writer.writeUserMessage("hi");
+    writer.writeEvent({ type: "text", content: "hello" } as never);
+    writer.writeEvent({
+      type: "result",
+      status: "success",
+      stopReason: "end_turn",
+      usage: { inputTokens: 10, outputTokens: 3, cacheReadTokens: 900, cacheWriteTokens: 40, reasoningTokens: 12 },
+    } as never);
+
+    const reply = parseAcpTranscript(findAcpTranscript("m9")!.filePath).find((m) => m.role === "assistant")!;
+    expect(reply.usage).toEqual({ input_tokens: 10, output_tokens: 3, cache_read_input_tokens: 900, cache_creation_input_tokens: 40, reasoning_tokens: 12 });
+    expect(reply.stopReason).toBe("end_turn");
+  });
+
+  it("leaves a cache column blank rather than zero when the agent reported no figure", () => {
+    // A vendor that omits the optional counts has not measured zero. Writing a 0
+    // here would put a measurement in the panel that nothing observed.
+    const writer = new AcpTranscriptWriter("opencode", "m10", "/work");
+    writer.writeHeader(null);
+    turn(writer, { prompt: "hi", reply: "hello", usage: { inputTokens: 10, outputTokens: 3 } });
+
+    const reply = parseAcpTranscript(findAcpTranscript("m10")!.filePath).find((m) => m.role === "assistant")!;
+    expect(reply.usage).toEqual({ input_tokens: 10, output_tokens: 3 });
+    expect(reply.stopReason).toBeUndefined();
+  });
+
+  it("gives each turn its own grouping key, namespaced by session", () => {
+    // Without one, every annotated message became its own `__ungrouped_N` row.
+    // Namespaced because a chat's messages are several transcripts concatenated,
+    // so a bare turn index would merge turn 0 of one file with turn 0 of the next.
+    const writer = new AcpTranscriptWriter("opencode", "m11", "/work");
+    writer.writeHeader(null);
+    turn(writer, { prompt: "one", reply: "first", usage: { inputTokens: 1, outputTokens: 2 } });
+    turn(writer, { prompt: "two", reply: "second", usage: { inputTokens: 3, outputTokens: 4 } });
+
+    const replies = parseAcpTranscript(findAcpTranscript("m11")!.filePath).filter((m) => m.role === "assistant");
+    expect(replies.map((m) => m.generationKey)).toEqual(["acp:m11/0", "acp:m11/1"]);
+    // Grouping is not identity: ACP mints no request id and callboard does not
+    // invent one, so the panel's Req ID column stays empty.
+    expect(replies.every((m) => m.requestId === undefined)).toBe(true);
+  });
+
   it("still parses a transcript written before metrics existed", () => {
     const writer = new AcpTranscriptWriter("opencode", "m8", "/work");
     writer.writeHeader(null);

@@ -166,6 +166,21 @@ function agentCallId(callId: string | undefined): string | undefined {
 }
 
 /**
+ * The responses debug panel's row-grouping identity for one ACP turn.
+ *
+ * ACP has no request id — the protocol mints none, and `PromptResponse` carries
+ * none — so nothing here can populate `requestId`, and it deliberately does not
+ * try: a synthesized id in the Req ID column would look like something a user
+ * could quote to a vendor's support. `generationKey` is the field for exactly
+ * this case (see its doc-comment in `shared/types/message.ts`): a grouping
+ * identity, not a datum, and one row per turn is the truth about ACP — a turn
+ * is the only granularity at which the protocol reports usage.
+ */
+export function turnGenerationKey(sessionId: string, turnIndex: number): string {
+  return `acp:${sessionId}/${turnIndex}`;
+}
+
+/**
  * Project a transcript onto the neutral {@link ParsedMessage} list the chat
  * viewer renders.
  *
@@ -200,6 +215,11 @@ function agentCallId(callId: string | undefined): string | undefined {
 export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   const lines = readAcpTranscriptLines(filePath);
   const messages: ParsedMessage[] = [];
+  // Namespaces the positional generation key. A chat's messages are the
+  // concatenation of *several* transcripts (`AcpSessionProvider.getMessages`
+  // walks every session id on the chat), so a bare turn index would make turn 0
+  // of one file and turn 0 of the next collapse into a single debug-panel row.
+  const sessionId = lines.find((l) => l.type === "session_meta")?.sessionId ?? filePath;
   // One buffer per streamed kind. They are separate rather than one "pending
   // block" because an agent can interleave them — a thought, a sentence, more
   // thinking — and merging across the boundary would put reasoning inside the
@@ -243,6 +263,11 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   // whatever assistant message happens to be last in the file.
   let turnModel: string | undefined;
   let turnStart = 0;
+  /**
+   * Which turn of this transcript is in flight, for {@link turnGenerationKey}.
+   * Counts turns, not messages, and so is stable across re-parses of one file.
+   */
+  let turnIndex = 0;
   /** Counter behind the synthetic plan `toolUseId` — stable across re-parses of one file. */
   let planCount = 0;
   /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
@@ -263,17 +288,37 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
    * to something is better than dropping them. A turn that produced no
    * assistant message at all (an error before the agent spoke) gets nothing,
    * which is correct: there is nothing to attach to.
+   *
+   * ACP mints no per-request id, so there is no `requestId` to set and the Req
+   * ID column stays blank rather than showing something callboard invented. The
+   * debug panel's row *grouping* still needs an identity though, and without one
+   * every annotated message became its own `__ungrouped_N` row. {@link
+   * turnGenerationKey} supplies it: a positional key, not a measurement, and the
+   * distinction is why it goes on `generationKey` and not on `requestId`.
    */
-  const closeTurn = (usage: { inputTokens: number; outputTokens: number } | undefined, durationMs: number | undefined): void => {
+  const closeTurn = (result: Extract<AgentEvent, { type: "result" }>): void => {
+    const { usage, durationMs, stopReason } = result;
     for (let i = messages.length - 1; i >= turnStart; i--) {
       const message = messages[i];
       if (message.role !== "assistant") continue;
-      if (usage) message.usage = { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens };
+      if (usage) {
+        message.usage = {
+          input_tokens: usage.inputTokens,
+          output_tokens: usage.outputTokens,
+          // Present only when the agent reported them — see `buildAcpUsage`.
+          ...(usage.cacheReadTokens !== undefined && { cache_read_input_tokens: usage.cacheReadTokens }),
+          ...(usage.cacheWriteTokens !== undefined && { cache_creation_input_tokens: usage.cacheWriteTokens }),
+          ...(usage.reasoningTokens !== undefined && { reasoning_tokens: usage.reasoningTokens }),
+        };
+      }
       if (durationMs != null) message.durationMs = durationMs;
       if (turnCostUsd != null) message.costUsd = turnCostUsd;
+      if (stopReason) message.stopReason = stopReason;
+      message.generationKey = turnGenerationKey(sessionId, turnIndex);
       break;
     }
     turnCostUsd = null;
+    turnIndex++;
     startTurn();
   };
 
@@ -375,7 +420,7 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
 
       case "result":
         flush();
-        closeTurn(event.usage, event.durationMs);
+        closeTurn(event);
         break;
 
       case "session_started":

@@ -153,18 +153,23 @@ export function sessionIdFromFileName(name: string): string {
  * the file the user can open.
  */
 export function parsePiSession(filePath: string): ParsedMessage[] {
-  const { entries } = readPiSession(filePath);
+  const { header, entries } = readPiSession(filePath);
   const out: ParsedMessage[] = [];
-  for (const entry of entries) out.push(...projectEntry(entry));
+  // Namespaces {@link entryGenerationKey}. A chat's messages are the
+  // concatenation of *several* session files (`PiSessionProvider.getMessages`
+  // walks every session id on the chat, and a fork adds one), and pi's entry ids
+  // are only unique within a file.
+  const sessionId = header?.id ?? filePath;
+  for (const entry of entries) out.push(...projectEntry(entry, sessionId));
   return out;
 }
 
-function projectEntry(entry: SessionEntry): ParsedMessage[] {
+function projectEntry(entry: SessionEntry, sessionId: string): ParsedMessage[] {
   const timestamp = entry.timestamp;
 
   switch (entry.type) {
     case "message":
-      return projectMessage(entry.message as PiAgentMessage, timestamp);
+      return projectMessage(entry.message as PiAgentMessage, timestamp, entryGenerationKey(sessionId, entry.id));
 
     case "compaction":
       // The boundary itself, so the UI can show where history was summarized —
@@ -207,9 +212,122 @@ interface PiAgentMessage {
   model?: string;
   customType?: string;
   display?: boolean;
+  /** `AssistantMessage.usage` — see {@link projectUsage}. */
+  usage?: PiSessionUsage;
+  /** `AssistantMessage.stopReason` — see {@link normalizeStopReason}. */
+  stopReason?: string;
+  /** The provider's own response id, when the provider returned one. */
+  responseId?: string;
 }
 
-function projectMessage(message: PiAgentMessage, timestamp: string): ParsedMessage[] {
+/**
+ * pi's `Usage`, as it sits in the session file.
+ *
+ * Mirrors `@earendil-works/pi-ai`'s `Usage` rather than importing it: this
+ * module reads *files on disk*, which may have been written by a different pi
+ * version than the one currently installed, so every field is optional here even
+ * where the SDK type requires it.
+ */
+interface PiSessionUsage {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+  totalTokens?: number;
+  /** A **breakdown object** (`{input, output, cacheRead, cacheWrite, total}`), not a scalar. */
+  cost?: { total?: number } | number;
+}
+
+/**
+ * The responses debug panel's row-grouping identity for one pi entry.
+ *
+ * A pi session entry IS one generation: one `AssistantMessage` per API call,
+ * appended with its own tree-node `id`. So unlike ACP and Cline this is not a
+ * positional counter — it is the file's own identifier for the generation, and
+ * the panel's rows land one-per-API-call rather than one-per-turn.
+ */
+export function entryGenerationKey(sessionId: string, entryId: string): string {
+  return `pi:${sessionId}/${entryId}`;
+}
+
+/**
+ * pi's `StopReason` → the vocabulary `ParsedMessage.stopReason` is documented in.
+ *
+ * pi reports a **model** stop reason — the same closed concept Anthropic's
+ * `stop_reason` names, spelled differently — so the three that correspond are
+ * renamed rather than passed through. That is a translation, not an
+ * interpretation: `stop`/`length`/`toolUse` and `end_turn`/`max_tokens`/
+ * `tool_use` are the same three facts, and leaving pi's spelling in place would
+ * split the panel's Stop filter and colour-coding across engines for no reason.
+ *
+ *     pi          →  ParsedMessage.stopReason
+ *     "stop"      →  "end_turn"
+ *     "length"    →  "max_tokens"
+ *     "toolUse"   →  "tool_use"
+ *     "error"     →  "error"      (no Anthropic counterpart — verbatim)
+ *     "aborted"   →  "aborted"    (no Anthropic counterpart — verbatim)
+ *     "pending"   →  "pending"    (a partial write; verbatim, and honest)
+ *
+ * Anything pi adds later falls through verbatim rather than being guessed at.
+ *
+ * Contrast Cline, whose finish reason is deliberately NOT translated: it reports
+ * why the agent *loop* ended, which is a different fact from why the model
+ * stopped. pi's is the model's.
+ */
+export function normalizeStopReason(stopReason: string): string {
+  switch (stopReason) {
+    case "stop":
+      return "end_turn";
+    case "length":
+      return "max_tokens";
+    case "toolUse":
+      return "tool_use";
+    default:
+      return stopReason;
+  }
+}
+
+/**
+ * pi's `Usage` → `ParsedMessage.usage`, or undefined when the entry has none.
+ *
+ * Cache counts are surfaced as their own columns rather than folded into
+ * `input_tokens`: pi bills them separately, `cost.total` already accounts for
+ * them, and inflating the input figure would make it disagree with the cost
+ * beside it. `reasoning` is a **subset** of `output` per pi's own doc-comment,
+ * so it rides along as a breakdown and is never added on.
+ *
+ * A field pi did not write stays undefined rather than defaulting to 0 — the
+ * debug panel renders the two differently, and a manufactured zero in a
+ * diagnostics table reads as a measurement.
+ */
+function projectUsage(usage: PiSessionUsage | undefined): ParsedMessage["usage"] | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const count = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const projected: NonNullable<ParsedMessage["usage"]> = {};
+  const input = count(usage.input);
+  const output = count(usage.output);
+  const cacheRead = count(usage.cacheRead);
+  const cacheWrite = count(usage.cacheWrite);
+  const reasoning = count(usage.reasoning);
+  if (input !== undefined) projected.input_tokens = input;
+  if (output !== undefined) projected.output_tokens = output;
+  if (cacheRead !== undefined) projected.cache_read_input_tokens = cacheRead;
+  if (cacheWrite !== undefined) projected.cache_creation_input_tokens = cacheWrite;
+  if (reasoning !== undefined) projected.reasoning_tokens = reasoning;
+  // An entry whose `usage` object held nothing usable is no usage at all: the
+  // panel's row filter is `usage` being present, and an empty object would
+  // conjure a row of dashes for a generation we know nothing about.
+  return Object.keys(projected).length > 0 ? projected : undefined;
+}
+
+/** pi's `cost` breakdown → a scalar USD figure, when it has one. */
+function projectCost(usage: PiSessionUsage | undefined): number | undefined {
+  const cost = typeof usage?.cost === "number" ? usage.cost : usage?.cost?.total;
+  return typeof cost === "number" && Number.isFinite(cost) ? cost : undefined;
+}
+
+function projectMessage(message: PiAgentMessage, timestamp: string, generationKey: string): ParsedMessage[] {
   switch (message?.role) {
     case "user": {
       const text = extractText(message.content);
@@ -218,16 +336,38 @@ function projectMessage(message: PiAgentMessage, timestamp: string): ParsedMessa
 
     case "assistant": {
       const out: ParsedMessage[] = [];
+      // Per-generation metrics, stamped on every block the entry produces.
+      //
+      // This is what makes pi visible in the responses debug panel at all: its
+      // whole row filter is `role === "assistant" && usage`, and before this the
+      // parser projected nothing but text, so a pi chat's panel was empty — not
+      // sparse, empty. Spreading one entry's metrics across its blocks is what
+      // the Claude Code parser does with `meta`, and for the same reason: the
+      // numbers describe the API call, and every block came out of one call. The
+      // panel groups on `generationKey` and collapses the group back to a single
+      // row, so the duplication never reaches the table.
+      const usage = projectUsage(message.usage);
+      const costUsd = projectCost(message.usage);
+      const meta = {
+        ...(message.model && { model: message.model }),
+        ...(usage && { usage }),
+        ...(costUsd !== undefined && { costUsd }),
+        ...(message.stopReason && { stopReason: normalizeStopReason(message.stopReason) }),
+        // The provider's own id — a real one, quotable to that provider's
+        // support — when the provider returned one. Never synthesized.
+        ...(message.responseId && { requestId: message.responseId }),
+        generationKey,
+      };
       // Order within the message is preserved: reasoning, prose and tool calls
       // interleave, and re-grouping them would misrepresent the turn.
       for (const block of asBlocks(message.content)) {
         const type = (block as { type?: string }).type;
         if (type === "thinking") {
           const thinking = String((block as { thinking?: unknown }).thinking ?? "");
-          if (thinking) out.push({ role: "assistant", type: "thinking", content: thinking, timestamp, ...(message.model && { model: message.model }) });
+          if (thinking) out.push({ role: "assistant", type: "thinking", content: thinking, timestamp, ...meta });
         } else if (type === "text") {
           const text = String((block as { text?: unknown }).text ?? "");
-          if (text) out.push({ role: "assistant", type: "text", content: text, timestamp, ...(message.model && { model: message.model }) });
+          if (text) out.push({ role: "assistant", type: "text", content: text, timestamp, ...meta });
         } else if (type === "toolCall") {
           const call = block as { id?: string; name?: string; arguments?: unknown };
           out.push({
@@ -237,6 +377,7 @@ function projectMessage(message: PiAgentMessage, timestamp: string): ParsedMessa
             toolName: call.name || "tool",
             ...(call.id && { toolUseId: call.id }),
             timestamp,
+            ...meta,
           });
         }
       }

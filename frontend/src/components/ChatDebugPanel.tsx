@@ -102,7 +102,14 @@ export default function ChatDebugPanel({ messages }: Props) {
       canonicalEntries.push(final || entries[entries.length - 1]);
     }
 
-    // Step 4: Recompute inter-response timing deltas between grouped rows
+    // Step 4: Recompute inter-response timing deltas between grouped rows.
+    //
+    // Note that `msPerOutputToken` is *always* recomputed here from the wall
+    // clock, overwriting whatever a parser set — so the ms/tok column is
+    // engine-independent by construction and needs nothing from an adapter
+    // beyond `timestamp` and `output_tokens`, which every engine reports. It is
+    // gap-to-gap wall time divided by output tokens, not the model's generation
+    // throughput: a row that sat waiting on a slow tool call inflates it.
     const rows: DebugRow[] = [];
     let prevTs: number | null = null;
 
@@ -176,6 +183,14 @@ export default function ChatDebugPanel({ messages }: Props) {
   }, [filteredRows, sortKey, sortAsc]);
 
   // Aggregate stats
+  //
+  // Every total that an engine may simply not report is tracked with a
+  // "did anything report this?" flag beside it, and renders as a dash when
+  // nothing did. The distinction is not cosmetic: "Cache write: 0" is a
+  // measurement — it says the run wrote nothing to the cache — and OpenAI
+  // reports no cache-write metric at all, so showing that for a Codex chat
+  // would be stating a fact callboard never observed. A zero that a row
+  // genuinely carried still shows as 0.
   const stats = useMemo(() => {
     const rows = filteredRows;
     if (rows.length === 0) return null;
@@ -185,14 +200,16 @@ export default function ChatDebugPanel({ messages }: Props) {
       totalCacheWrite = 0,
       totalCost = 0;
     let hasCost = false;
+    let hasCacheRead = false;
+    let hasCacheWrite = false;
     const deltas: number[] = [];
     const msPerToks: number[] = [];
 
     for (const { message: m } of rows) {
       totalIn += m.usage?.input_tokens ?? 0;
       totalOut += m.usage?.output_tokens ?? 0;
-      totalCacheRead += m.usage?.cache_read_input_tokens ?? 0;
-      totalCacheWrite += m.usage?.cache_creation_input_tokens ?? 0;
+      if (m.usage?.cache_read_input_tokens != null) { totalCacheRead += m.usage.cache_read_input_tokens; hasCacheRead = true; }
+      if (m.usage?.cache_creation_input_tokens != null) { totalCacheWrite += m.usage.cache_creation_input_tokens; hasCacheWrite = true; }
       if (m.costUsd != null) { totalCost += m.costUsd; hasCost = true; }
       if (m.deltaMs != null) deltas.push(m.deltaMs);
       if (m.msPerOutputToken != null) msPerToks.push(m.msPerOutputToken);
@@ -207,9 +224,23 @@ export default function ChatDebugPanel({ messages }: Props) {
           })()
         : null;
     const avgMsPerTok = msPerToks.length > 0 ? msPerToks.reduce((a, b) => a + b, 0) / msPerToks.length : null;
-    const cacheHitRate = totalCacheRead + totalCacheWrite + totalIn > 0 ? (totalCacheRead / (totalCacheRead + totalCacheWrite + totalIn)) * 100 : null;
+    // A hit rate needs a cache-read figure to be a rate *of* anything. Without
+    // one the denominator is just the input count and the answer is a flat 0%,
+    // which reads as "the cache never hit" rather than "nobody counted".
+    const cacheHitRate = hasCacheRead && totalCacheRead + totalCacheWrite + totalIn > 0 ? (totalCacheRead / (totalCacheRead + totalCacheWrite + totalIn)) * 100 : null;
 
-    return { totalIn, totalOut, totalCacheRead, totalCacheWrite, totalCost: hasCost ? totalCost : null, avgDelta, p95Delta, avgMsPerTok, cacheHitRate, count: rows.length };
+    return {
+      totalIn,
+      totalOut,
+      totalCacheRead: hasCacheRead ? totalCacheRead : null,
+      totalCacheWrite: hasCacheWrite ? totalCacheWrite : null,
+      totalCost: hasCost ? totalCost : null,
+      avgDelta,
+      p95Delta,
+      avgMsPerTok,
+      cacheHitRate,
+      count: rows.length,
+    };
   }, [filteredRows]);
 
   function handleSort(key: SortKey) {
@@ -290,11 +321,11 @@ export default function ChatDebugPanel({ messages }: Props) {
             Out: <span style={{ fontWeight: 600, color: "var(--text)" }}>{stats.totalOut.toLocaleString()}</span>
           </div>
           <div>
-            Cache read: <span style={{ fontWeight: 600, color: "var(--text)" }}>{stats.totalCacheRead.toLocaleString()}</span>
+            Cache read: <span style={{ fontWeight: 600, color: "var(--text)" }}>{stats.totalCacheRead?.toLocaleString() ?? "-"}</span>
             {stats.cacheHitRate != null && <span> ({stats.cacheHitRate.toFixed(1)}%)</span>}
           </div>
           <div>
-            Cache write: <span style={{ fontWeight: 600, color: "var(--text)" }}>{stats.totalCacheWrite.toLocaleString()}</span>
+            Cache write: <span style={{ fontWeight: 600, color: "var(--text)" }}>{stats.totalCacheWrite?.toLocaleString() ?? "-"}</span>
           </div>
           {stats.avgDelta != null && (
             <div>

@@ -492,13 +492,32 @@ function translateToolCallUpdate(update: Extract<SessionUpdate, { sessionUpdate:
  *
  * ACP reports no monetary cost on `Usage`, so `costUsd` stays undefined (the UI
  * guards on it). `thoughtTokens` are already included in `outputTokens` per the
- * schema's accounting, so they are not added again.
+ * schema's accounting, so they ride along as `reasoningTokens` — a breakdown —
+ * and are never added to the output total.
+ *
+ * `cachedReadTokens` / `cachedWriteTokens` are `number | null | undefined` in
+ * the schema, and the three are **not** interchangeable here: a number (zero
+ * included) is a measurement the agent made and is passed through, while
+ * null/absent means this agent does not report the figure and must stay
+ * undefined so the debug panel renders a dash instead of a fabricated zero.
+ * OpenCode reports both; a vendor that reports neither shows blank columns.
  */
 export function buildAcpUsage(usage: Usage | null | undefined): TokenUsage | undefined {
   if (!usage || typeof usage !== "object") return undefined;
   const inputTokens = Number.isFinite(usage.inputTokens) ? usage.inputTokens : 0;
   const outputTokens = Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0;
-  return { inputTokens, outputTokens };
+  return {
+    inputTokens,
+    outputTokens,
+    ...(reportedCount(usage.cachedReadTokens) !== undefined && { cacheReadTokens: reportedCount(usage.cachedReadTokens) }),
+    ...(reportedCount(usage.cachedWriteTokens) !== undefined && { cacheWriteTokens: reportedCount(usage.cachedWriteTokens) }),
+    ...(reportedCount(usage.thoughtTokens) !== undefined && { reasoningTokens: reportedCount(usage.thoughtTokens) }),
+  };
+}
+
+/** A finite count the agent actually reported, or undefined for null/absent/NaN. */
+function reportedCount(value: number | null | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 /**
@@ -513,20 +532,30 @@ export function buildAcpUsage(usage: Usage | null | undefined): TokenUsage | und
  * An unrecognized reason (a vendor inventing one, or an SDK version newer than
  * this pin) resolves to `error` with the raw string preserved, rather than being
  * silently reported as success.
+ *
+ * The raw label also rides through on `result.stopReason`, untranslated. The
+ * four-value `status` is callboard's control-flow classification and is lossy
+ * by design — `max_tokens` and `max_turn_requests` both land on `max_turns` —
+ * whereas the responses debug panel wants the thing the agent actually said.
+ * ACP's vocabulary happens to already be Anthropic's for the two values that
+ * overlap (`end_turn`, `max_tokens`), so no mapping is needed or wanted; a
+ * vendor's unrecognized token is shown as-is rather than guessed at. Only a
+ * genuinely absent reason (null/undefined) leaves the field unset.
  */
 export function mapStopReason(stopReason: string | null | undefined): AgentEvent & { type: "result" } {
+  const raw = typeof stopReason === "string" && stopReason ? { stopReason } : {};
   switch (stopReason) {
     case "end_turn":
-      return { type: "result", status: "success" };
+      return { type: "result", status: "success", ...raw };
     case "cancelled":
-      return { type: "result", status: "success", reason: "cancelled" };
+      return { type: "result", status: "success", reason: "cancelled", ...raw };
     case "max_tokens":
-      return { type: "result", status: "max_turns", reason: "Agent stopped: max tokens reached" };
+      return { type: "result", status: "max_turns", reason: "Agent stopped: max tokens reached", ...raw };
     case "max_turn_requests":
-      return { type: "result", status: "max_turns", reason: "Agent stopped: max requests per turn reached" };
+      return { type: "result", status: "max_turns", reason: "Agent stopped: max requests per turn reached", ...raw };
     case "refusal":
-      return { type: "result", status: "error", reason: "Agent refused the request" };
+      return { type: "result", status: "error", reason: "Agent refused the request", ...raw };
     default:
-      return { type: "result", status: "error", reason: `Agent stopped with unrecognized reason "${String(stopReason)}"` };
+      return { type: "result", status: "error", reason: `Agent stopped with unrecognized reason "${String(stopReason)}"`, ...raw };
   }
 }
