@@ -7,8 +7,8 @@
  *
  * `../api` is mocked so getChatTree resolves without network.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Chat, CardSummary, ChatTreeNode, ChatTreeResponse } from "../api";
 import { getChatTree } from "../api";
@@ -309,5 +309,51 @@ describe("ChatTreeList active-first sections", () => {
   it("renders no headers when every row falls in one bucket", () => {
     const { container } = renderSectioned([makeChat("solo-none"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" })]);
     expect(outline(container)).toEqual(["chat solo-none", "chat root"]);
+  });
+
+  /**
+   * The header's count and its collapse toggle.
+   *
+   * Both have a tree-specific failure the flat list cannot have: a group is one
+   * ROW standing for several chats, so a count taken from what is rendered
+   * under-reports it.
+   */
+  describe("counts and collapse", () => {
+    beforeEach(() => localStorage.clear());
+    afterEach(() => localStorage.clear());
+
+    // STRADDLING is 4 chats in 3 rows: the root group (root + folded child-1)
+    // and solo-open under Active, solo-none under Inactive.
+    it("counts chats rather than rows, so a folded group's members are included", () => {
+      renderSectioned(STRADDLING);
+      // 3, not 2: the group row speaks for its child as well as its header.
+      expect(screen.getByText(/^Active \(3\)$/)).toBeTruthy();
+      expect(screen.getByText(/^Inactive \(1\)$/)).toBeTruthy();
+    });
+
+    it("collapses a section's rows while keeping its header and count", () => {
+      const { container } = renderSectioned(STRADDLING);
+      fireEvent.click(screen.getByText(/^Inactive \(1\)$/));
+      // The hidden row is gone from the list, but the header still says how
+      // many are behind it — that count is the only thing left pointing at them.
+      expect(outline(container)).toEqual(["Active", "chat root", "chat solo-open", "Inactive"]);
+      expect(screen.getByText(/^Inactive \(1\)$/)).toBeTruthy();
+    });
+
+    it("remembers a collapsed section across a remount", () => {
+      renderSectioned(STRADDLING);
+      fireEvent.click(screen.getByText(/^Active \(3\)$/));
+      cleanup();
+
+      // A fresh mount — a reload, or the flat/tree layout toggle, which
+      // unmounts this component and reads the same stored choice back.
+      const { container } = renderSectioned(STRADDLING);
+      expect(outline(container)).toEqual(["Active", "Inactive", "chat solo-none"]);
+    });
+
+    it("starts expanded, so a first-run sidebar never hides chats on its own", () => {
+      const { container } = renderSectioned(STRADDLING);
+      expect(outline(container)).toEqual(["Active", "chat root", "chat solo-open", "Inactive", "chat solo-none"]);
+    });
   });
 });

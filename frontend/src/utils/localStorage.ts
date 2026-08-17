@@ -28,6 +28,13 @@ interface LocalStorageData {
   chatsDimCardless?: boolean;
   /** Sidebar splits into Active/Inactive sections, chats on an open card first. */
   chatsSortByCardActive?: boolean;
+  /**
+   * Which of those sections are expanded. Absent — and an absent key within it
+   * — means expanded: the sections only exist when both buckets are non-empty,
+   * so a first-run default of collapsed would hide chats the user never chose
+   * to hide.
+   */
+  chatSectionsExpanded?: Partial<Record<"active" | "inactive", boolean>>;
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
@@ -392,6 +399,20 @@ export function getChatsSortByCardActive(): boolean {
 export function saveChatsSortByCardActive(value: boolean): void {
   const data = getStorageData();
   data.chatsSortByCardActive = value;
+  setStorageData(data);
+}
+
+export type ChatSectionKey = "active" | "inactive";
+
+/** Expanded unless explicitly collapsed — see the field's note. */
+export function getChatSectionExpanded(key: ChatSectionKey): boolean {
+  const data = getStorageData();
+  return data.chatSectionsExpanded?.[key] ?? true;
+}
+
+export function saveChatSectionExpanded(key: ChatSectionKey, expanded: boolean): void {
+  const data = getStorageData();
+  data.chatSectionsExpanded = { ...data.chatSectionsExpanded, [key]: expanded };
   setStorageData(data);
 }
 

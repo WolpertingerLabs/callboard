@@ -15,6 +15,12 @@ export interface ChatSection<T> {
   key: "active" | "inactive";
   label: string;
   items: T[];
+  /**
+   * Chats in this section, which is **not** `items.length` in the tree layout:
+   * one row there stands for a whole lineage group. The header counts chats in
+   * both layouts, so a group's members are counted where they are filed.
+   */
+  count: number;
 }
 
 /**
@@ -59,13 +65,20 @@ export function activeSectionPredicate(
   return (chat) => isChatCardActive(chat, cardsById);
 }
 
-export function sectionByActive<T>(items: readonly T[], isActive: (item: T) => boolean, enabled: boolean): ChatSection<T>[] | null {
+export function sectionByActive<T>(
+  items: readonly T[],
+  isActive: (item: T) => boolean,
+  enabled: boolean,
+  /** Chats one item stands for; the tree layout's rows stand for more than one. */
+  countOf: (item: T) => number = () => 1,
+): ChatSection<T>[] | null {
   if (!enabled) return null;
   const active = items.filter((item) => isActive(item));
   const inactive = items.filter((item) => !isActive(item));
   if (active.length === 0 || inactive.length === 0) return null;
+  const total = (bucket: T[]) => bucket.reduce((sum, item) => sum + countOf(item), 0);
   return [
-    { key: "active", label: "Active", items: active },
-    { key: "inactive", label: "Inactive", items: inactive },
+    { key: "active", label: "Active", items: active, count: total(active) },
+    { key: "inactive", label: "Inactive", items: inactive, count: total(inactive) },
   ];
 }
