@@ -32,9 +32,12 @@ import { parseTaskList, TASK_LIST_TOOLS, type TaskListItem } from "shared/types/
 import { translateSdkMessages } from "./claude-code/messageAdapter.js";
 import { translateCodexEvent } from "./codex/messageAdapter.js";
 import { parseCodexRollout } from "./codex/sessionParser.js";
+import { translateClineEvent } from "./cline/messageAdapter.js";
+import { translatePiEvent } from "./pi/messageAdapter.js";
 import { AcpToolCallBuffer, translateAcpUpdate } from "./acp/messageAdapter.js";
 import { AcpTranscriptWriter } from "./acp/transcript.js";
-import { findAcpTranscript, parseAcpTranscript } from "./acp/sessionParser.js";
+import { findAcpTranscript, parseAcpTranscript, planCallId } from "./acp/sessionParser.js";
+import { BASE_CLIENT_CAPABILITIES } from "./acp/AcpAgentClient.js";
 import { taskListStreamEvent } from "../../services/claude.js";
 import type { AgentEvent } from "../ports/events.js";
 
@@ -83,17 +86,37 @@ describe("live: engine event → AgentEvent", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "tool_use", toolName: TASK_LIST_TOOLS.claudeCode }));
   });
 
-  it("codex: todo_list becomes a task_list, widening `completed` into the shared status union", () => {
+  // Captured from the installed binary with `codex exec --json`: a todo_list
+  // item arrives COMPLETE on item.started, updates once per step ticked off, and
+  // repeats itself at item.completed. All three have to reach the emitter — the
+  // event's whole job is to tell the browser when to refetch, so dropping the
+  // first two means the plan appears only once the agent has finished working
+  // through it, and a turn that plans and then reasons for two minutes shows
+  // nothing at all.
+  it.each(["item.started", "item.updated", "item.completed"])("codex: %s carries the todo_list to the wire, not just the last one", (type) => {
     expect(
       translateCodexEvent({
-        type: "item.completed",
+        type,
         item: {
           id: "t1",
           type: "todo_list",
           items: EXPECTED.map((item) => ({ text: item.content, completed: item.status === "completed" })),
         },
       } as never),
+      // Widened: the SDK's `{text, completed}` has no in_progress to report.
     ).toEqual({ type: "task_list", items: EXPECTED_WITHOUT_IN_PROGRESS });
+  });
+
+  it("codex: partial agent text is still dropped mid-item, unlike the list", () => {
+    // The rule the list is an exception to, pinned so re-emitting a snapshot is
+    // not read as licence to re-emit deltas: text at item.updated would
+    // double-count against the whole message arriving at item.completed. A
+    // task_list is a replace-not-merge snapshot, so it has nothing to
+    // double-count.
+    for (const type of ["item.started", "item.updated"]) {
+      expect(translateCodexEvent({ type, item: { id: "m1", type: "agent_message", text: "half a sen" } } as never)).toBeNull();
+      expect(translateCodexEvent({ type, item: { id: "r1", type: "reasoning", text: "half a thou" } } as never)).toBeNull();
+    }
   });
 
   it("acp: plan becomes a task_list, dropping the priority the list does not render", () => {
@@ -149,28 +172,59 @@ describe("live: engine event → AgentEvent", () => {
     expect(event).toEqual({ type: "task_list", items: [{ content: "Keep this", status: "pending" }] });
   });
 
-  it("cline and pi: neither SDK has a list concept, so there is nothing to track", async () => {
-    const pi = await import("@earendil-works/pi-coding-agent");
-    expect(Object.keys(pi).filter((k) => /todo|plan|checklist/i.test(k))).toEqual([]);
+  it("cline and pi: no task list is invented for an engine that has none", () => {
+    // Neither SDK has a per-response list concept — Cline's plan-ish surface is
+    // a Plan/Act *mode* setting and a checkpoint-diff planner, and pi has
+    // nothing. So the callboard-side rule is that their tool calls stay tool
+    // calls, even when one is named plan-ishly and carries list-shaped
+    // arguments. Anything else would mean callboard guessing at a list.
+    //
+    // This replaces an assertion on the two SDKs' exported symbol names, which
+    // tested a third-party surface: it passed with this feature deleted and
+    // broke on any unrelated release adding a matching export.
+    const listShaped = { entries: EXPECTED.map((item) => ({ content: item.content, status: item.status })) };
 
-    const cline = await import("@cline/sdk");
-    // Every plan-ish export is either a Plan/Act *mode* setting accessor or the
-    // checkpoint-diff planner. Neither is a per-response list, so a task list
-    // for these two would have to be invented rather than reported.
-    expect(
-      Object.keys(cline)
-        .filter((k) => /todo|plan|checklist/i.test(k))
-        .sort(),
-    ).toEqual(["createCheckpointComparePlan", "readPlanActModeGlobally", "setPlanActModeGlobally"]);
+    const cline = translateClineEvent({ type: "content_start", contentType: "tool", toolName: "plan_mode_respond", toolCallId: "c1", input: listShaped } as never);
+    expect(cline).toMatchObject({ type: "tool_use", toolName: "plan_mode_respond" });
+
+    const [pi] = translatePiEvent({ type: "tool_execution_start", toolCallId: "p1", toolName: "update_todos", args: listShaped } as never);
+    expect(pi).toMatchObject({ type: "tool_use", toolName: "update_todos" });
+
+    for (const event of [cline, pi]) {
+      const call = event as Extract<AgentEvent, { type: "tool_use" }>;
+      expect(parseTaskList(call.toolName, JSON.stringify(call.input))).toBeNull();
+    }
+  });
+});
+
+describe("the ACP plan capability is a prerequisite, not a toggle", () => {
+  it("stays unadvertised while acp/messageAdapter.ts discards planId", () => {
+    // Not a style rule — a tripwire, and the reason it is a test rather than a
+    // comment. `plan_update` / `plan_removed` are gated on this capability and
+    // are keyed by `planId`; `translatePlan` tracks none, rendering every update
+    // as the whole list and every removal as "cleared". So two concurrent plans
+    // would flip-flop over each other and removing one would blank the other.
+    //
+    // That bug is unreachable today only because of this line. Adding `plan: {}`
+    // would ship it the same day with every other test still green, because no
+    // other test in the suite exercises a path an agent can currently reach.
+    //
+    // If you are here because this failed: build the planId registry in
+    // `translatePlan` FIRST, then change this assertion to match.
+    expect(BASE_CLIENT_CAPABILITIES.plan ?? null).toBeNull();
   });
 });
 
 describe("live: task_list → the wire", () => {
   it("projects onto tool_use, so no capability-gated StreamEvent type is needed", () => {
     const event = taskListStreamEvent(EXPECTED);
-    expect(event).toEqual({ type: "tool_use", toolName: TASK_LIST_TOOLS.claudeCode, content: JSON.stringify({ todos: EXPECTED }) });
-    // The name and shape a bundle built before this change already renders —
-    // an older tab against this daemon gets the list, not a raw JSON bubble.
+    expect(event).toMatchObject({ type: "tool_use", toolName: TASK_LIST_TOOLS.claudeCode });
+    // The behavioural assertion, and the whole point of the projection: the name
+    // and shape a bundle built before this change already renders. An older tab
+    // against this daemon gets the list, not a raw JSON bubble.
+    //
+    // Deliberately not compared against a `JSON.stringify` literal — that pins
+    // the key order of the serialized payload, which no reader depends on.
     expect(parseTaskList(event.toolName, event.content)).toEqual(EXPECTED);
   });
 });
@@ -245,10 +299,15 @@ describe("persisted: on-disk transcript → ParsedMessage", () => {
     expect(parseTaskList(messages[1].toolName, messages[1].content)).toEqual([]);
   });
 
-  it("acp: each plan gets its own call id, so it cannot swallow the next tool's result", () => {
+  it("acp: each plan gets a distinct call id in callboard's reserved namespace", () => {
     // No tool ran, so there is no real call id. Without a synthetic one the
     // frontend's tool grouping falls back to trusting adjacency and pairs the
     // plan with whatever result follows it — consuming a real tool's output.
+    //
+    // This test asserts only what the parser mints. That the ids then *do*
+    // protect the next tool's result is a property of the grouping, and it is
+    // asserted where the grouping lives: `frontend/src/utils/toolGrouping.test.ts`.
+    // It used to be claimed in this test's name and checked nowhere.
     const writer = new AcpTranscriptWriter("opencode", "s3", "/work");
     writer.writeHeader(null);
     writer.writeEvent({ type: "task_list", items: EXPECTED } as never);
@@ -257,7 +316,29 @@ describe("persisted: on-disk transcript → ParsedMessage", () => {
 
     const messages = parseAcpTranscript(findAcpTranscript("s3")!.filePath);
     const ids = messages.filter((m) => m.type === "tool_use").map((m) => m.toolUseId);
-    expect(ids).toEqual([`${TASK_LIST_TOOLS.acp}-0`, `${TASK_LIST_TOOLS.acp}-1`]);
+    expect(ids).toEqual([planCallId(0), planCallId(1)]);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("acp: an agent that picks callboard's own id shape is evicted from the namespace", () => {
+    // ACP's ToolCallId is agent-chosen and callboard writes it through verbatim,
+    // so a reserved prefix only reserves anything if ids coming the other way
+    // are pushed out of it. Both halves of the pair must move together, or the
+    // eviction breaks the tool's own result matching instead.
+    const forged = planCallId(0);
+    const writer = new AcpTranscriptWriter("opencode", "s4", "/work");
+    writer.writeHeader(null);
+    writer.writeEvent({ type: "task_list", items: EXPECTED } as never);
+    writer.writeEvent({ type: "tool_use", toolName: "make_a_plan", callId: forged, input: {} } as never);
+    writer.writeEvent({ type: "tool_result", callId: forged, content: "the agent's own output" } as never);
+
+    const messages = parseAcpTranscript(findAcpTranscript("s4")!.filePath);
+    const [planMessage, agentCall] = messages.filter((m) => m.type === "tool_use");
+    const [agentResult] = messages.filter((m) => m.type === "tool_result");
+
+    expect(planMessage.toolUseId).toBe(planCallId(0));
+    expect(agentCall.toolUseId).not.toBe(planMessage.toolUseId);
+    // Still paired with each other, just outside the namespace callboard owns.
+    expect(agentResult.toolUseId).toBe(agentCall.toolUseId);
   });
 });
