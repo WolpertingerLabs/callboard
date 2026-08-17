@@ -8,6 +8,12 @@
  * surface, so they should not read as two different ones. Deliberately not the
  * Board's `sectionHeader`, which belongs to a different surface.
  *
+ * Where it does depart from Staging: a filled background. Staging is one
+ * header pinned above a bordered block, while these two sit *inside* the run
+ * of rows and repeat down it, so they need to read as bands rather than as
+ * another row. `--chatlist-section-header-bg` exists for that; the sidebar's
+ * own `--chatlist-header-bg` is transparent in both themes.
+ *
  * The count is chats, passed in rather than derived from the rows below: the
  * tree layout renders one row per lineage group, so counting what it renders
  * would under-report every group with more than one member.
@@ -26,7 +32,7 @@ export default function ChatSectionHeader({ label, count, expanded, onToggle }: 
         alignItems: "center",
         gap: 6,
         padding: "12px 20px",
-        background: "none",
+        background: "var(--chatlist-section-header-bg)",
         border: "none",
         // Only when expanded, where it is the line between the header and the
         // rows it introduces. A collapsed header introduces nothing, and a
