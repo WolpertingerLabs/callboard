@@ -79,7 +79,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm test && npm run build && npm run deps:check",
+    "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm run clean && npm run build && npm test && npm run deps:check",
     "deps:check": "node scripts/check-published-deps.mjs",
     "install:check": "node scripts/check-install-tree.cjs",
     "publish:dry-run": "npm publish --dry-run",
