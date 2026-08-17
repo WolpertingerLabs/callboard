@@ -6,6 +6,7 @@ import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
 import { sectionByActive } from "../utils/chatSections";
+import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 
 /**
  * Tree-layout rendering of the sidebar chat list.
@@ -59,6 +60,21 @@ interface Row {
   chat: Chat;
   rootKey: string;
   isGroup: boolean;
+  /**
+   * Chats from the `chats` prop this row stands for — 1 for a lone chat, the
+   * group's size for a group. The section headers count chats, not rows, so a
+   * group has to carry its own weight to the tally.
+   *
+   * Deliberately *not* "chats visible under this row": expanding a group
+   * renders `trees[rootKey]`, the server's authoritative tree, which no client
+   * filter has been applied to — expand a group under "Show triggered chats:
+   * off" and more rows can appear than this counted. Following that would make
+   * the header's number jump on every expand, and jump to a figure the section
+   * above it does not share. The count answers "how many of the chats this
+   * list loaded are filed here", which is stable and is what the flat layout
+   * answers too.
+   */
+  size: number;
 }
 
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
@@ -241,8 +257,10 @@ export default function ChatTreeList({
       const { rootKey, hasLineage } = infoById.get(chat.id)!;
       if (seen.has(rootKey)) continue;
       seen.add(rootKey);
-      const isGroup = (groupSizes.get(rootKey) || 0) > 1 || hasLineage || groupLineage.get(rootKey) === true;
-      result.push({ chat, rootKey, isGroup });
+      // Always set: this row's own chat counted itself into the bucket above.
+      const size = groupSizes.get(rootKey)!;
+      const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
+      result.push({ chat, rootKey, isGroup, size });
     }
     return result;
   }, [chats]);
@@ -332,7 +350,15 @@ export default function ChatTreeList({
   // and labelled — so a group whose members straddle both buckets still
   // appears exactly once. Cheap enough to redo per render; `rows` above is the
   // memoized part.
-  const sections = sectionByActive(rows, (row) => !!isCardActive?.(row.chat), !!isCardActive);
+  const sections = sectionByActive(
+    rows,
+    (row) => !!isCardActive?.(row.chat),
+    !!isCardActive,
+    (row) => row.size,
+  );
+
+  /** Collapse state for those headers, shared with the flat layout via localStorage. */
+  const sectionExpansion = useChatSectionExpansion();
 
   const renderRow = ({ chat, rootKey, isGroup }: Row) => {
     if (!isGroup) {
@@ -410,8 +436,13 @@ export default function ChatTreeList({
       <>
         {sections.map((section) => (
           <Fragment key={section.key}>
-            <ChatSectionHeader label={section.label} />
-            {section.items.map(renderRow)}
+            <ChatSectionHeader
+              label={section.label}
+              count={section.count}
+              expanded={sectionExpansion.isExpanded(section.key)}
+              onToggle={() => sectionExpansion.toggle(section.key)}
+            />
+            {sectionExpansion.isExpanded(section.key) && section.items.map(renderRow)}
           </Fragment>
         ))}
       </>

@@ -26,6 +26,7 @@ import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import CardPicker from "../components/board/CardPicker";
 import { useChatSearch } from "../hooks/useChatSearch";
+import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
 import { activeSectionPredicate, sectionByActive } from "../utils/chatSections";
 import {
@@ -532,6 +533,9 @@ export default function ChatList({
    */
   const flatSections = sectionByActive(filteredChats, (chat) => !!isCardActive?.(chat), !!isCardActive);
 
+  /** Collapse state for those headers, shared with the tree layout via localStorage. */
+  const sectionExpansion = useChatSectionExpansion();
+
   const renderChatRow = (chat: Chat) => (
     <ChatListItem
       key={chat.id}
@@ -781,8 +785,13 @@ export default function ChatList({
         ) : flatSections ? (
           flatSections.map((section) => (
             <Fragment key={section.key}>
-              <ChatSectionHeader label={section.label} />
-              {section.items.map(renderChatRow)}
+              <ChatSectionHeader
+                label={section.label}
+                count={section.count}
+                expanded={sectionExpansion.isExpanded(section.key)}
+                onToggle={() => sectionExpansion.toggle(section.key)}
+              />
+              {sectionExpansion.isExpanded(section.key) && section.items.map(renderChatRow)}
             </Fragment>
           ))
         ) : (

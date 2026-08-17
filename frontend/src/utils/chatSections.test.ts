@@ -65,6 +65,31 @@ describe("sectionByActive", () => {
     expect(sectionByActive([], byCard, true)).toBeNull();
   });
 
+  it("counts one per item by default", () => {
+    const sections = sectionByActive([chat("a", "open-card"), chat("b"), chat("c", "closed-card")], byCard, true)!;
+    expect(sections.map((s) => s.count)).toEqual([1, 2]);
+  });
+
+  it("counts by countOf, so a tree row can speak for its whole group", () => {
+    // The tree layout's rows stand for a lineage group each. Counting rows
+    // would report 1 for a three-chat group — the header must count chats.
+    const rows = [
+      { chat: chat("closed", "closed-card"), size: 1 },
+      { chat: chat("open", "open-card"), size: 3 },
+      { chat: chat("none"), size: 2 },
+    ];
+    const sections = sectionByActive(
+      rows,
+      (row) => byCard(row.chat),
+      true,
+      (row) => row.size,
+    )!;
+    expect(sections.map((s) => [s.key, s.items.length, s.count])).toEqual([
+      ["active", 1, 3],
+      ["inactive", 2, 3],
+    ]);
+  });
+
   it("files a dangling card id — the card was deleted — as inactive", () => {
     const items = [chat("ghost", "deleted-card"), chat("open", "open-card")];
     expect(ids(sectionByActive(items, byCard, true)!)).toEqual([["open"], ["ghost"]]);

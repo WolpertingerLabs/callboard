@@ -79,7 +79,10 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
           alignItems: "center",
           gap: 8,
           padding: "8px 12px",
-          margin: "0 0 8px 0",
+          // 12px each side to sit inside the composer's own horizontal
+          // padding: the dock is a bordered box directly above a bordered
+          // box, and flush-to-the-edge made it read as the wider of the two.
+          margin: "0 12px 8px",
           borderRadius: 8,
           background: "var(--bg-secondary)",
           border: "1px solid var(--border)",
@@ -102,9 +105,7 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
             />
             <span style={{ color: "var(--text)", fontWeight: 500 }}>{primary.label}</span>
 
-            {primary.expiresAt !== undefined && (
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>— {formatRemaining(primary.expiresAt - now)} left</span>
-            )}
+            {primary.expiresAt !== undefined && <span style={{ fontVariantNumeric: "tabular-nums" }}>— {formatRemaining(primary.expiresAt - now)} left</span>}
 
             {primary.detail && <span style={{ opacity: 0.8 }}>· {primary.detail}</span>}
 
