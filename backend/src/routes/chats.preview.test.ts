@@ -45,7 +45,12 @@ vi.mock("../services/chat-file-service.js", () => ({
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false, getPendingRequest: () => null, getActiveSession: () => null }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
 vi.mock("../utils/git.js", () => ({ getGitInfo: () => ({ isGitRepo: false }), resolveBranch: () => ({ ok: true, folder: "/tmp/proj" }) }));
-vi.mock("../services/card-store.js", () => ({ getCard: () => null, listCards: () => [] }));
+/** Cards the stubbed store hands back, set per test. */
+let cards: any[] = [];
+vi.mock("../services/card-store.js", () => ({
+  getCard: (id: string) => cards.find((c) => c.id === id) ?? null,
+  listCards: () => cards,
+}));
 
 /**
  * Three providers, each owning its own session-id prefix. Only the owner can
@@ -126,6 +131,7 @@ const BULK_IDS = Array.from({ length: 60 }, (_, i) => `claude-code-${String(i).p
 
 beforeEach(() => {
   previewCalls = {};
+  cards = [];
   sessionsByProvider = { "claude-code": [...BULK_IDS], codex: [], cline: [] };
   fileChats = BULK_IDS.map((id, i) => chat(id, i % 2 === 1 ? { triggered: true } : {}));
 });
@@ -223,6 +229,51 @@ describe("GET /api/chats preview reads", () => {
     fileChats = [chat("pi-unreadable", { preview: "recorded at spawn" })];
     const body = await listChats({ limit: "10", offset: "0" });
     expect(previewOf(body, "pi-unreadable")).toBe("recorded at spawn");
+  });
+});
+
+describe("GET /api/chats?cardsOnly=true preview reads", () => {
+  beforeEach(() => {
+    cards = [
+      { id: "card-open", lifecycle: "open" },
+      { id: "card-done", lifecycle: "closed" },
+    ];
+    sessionsByProvider = {
+      "claude-code": ["claude-code-member", "claude-code-child", "claude-code-closed", ...BULK_IDS],
+      codex: ["codex-member"],
+      cline: [],
+    };
+    fileChats = [
+      chat("claude-code-member", { cardId: "card-open" }),
+      // Admitted by descent, not membership — it carries no cardId of its own.
+      chat("claude-code-child", { parentChatId: "claude-code-member" }),
+      chat("claude-code-closed", { cardId: "card-done" }),
+      // No provider hint, so the read has to resolve its owner from the map of
+      // which provider discovered which log.
+      chat("codex-member", { cardId: "card-open" }),
+      ...BULK_IDS.map((id) => chat(id)),
+    ];
+  });
+
+  it("previews every row the filter admits and opens nothing else", async () => {
+    const body = await listChats({ limit: "20", offset: "0", cardsOnly: "true" });
+    expect(body.chats.map((c: any) => c.id).sort()).toEqual(["claude-code-child", "claude-code-member", "codex-member"]);
+    for (const c of body.chats) {
+      expect(JSON.parse(c.metadata).preview).toBe(`preview of /logs/${c.session_id}.jsonl`);
+    }
+    // 64 sessions were discovered to decide those three rows; three files open.
+    expect(totalPreviewCalls()).toBe(3);
+  });
+
+  it("routes an admitted row to the provider that discovered it", async () => {
+    // The row carries no provider hint, so owner-first routing has to come from
+    // the discoverer map — and that map has to survive the filter, which runs
+    // between discovery and the preview read. What pins it is the claude-code
+    // list: walking every provider instead would offer it the codex log too.
+    await listChats({ limit: "20", offset: "0", cardsOnly: "true" });
+    expect(previewCalls["claude-code"]).toEqual(["/logs/claude-code-member.jsonl", "/logs/claude-code-child.jsonl"]);
+    expect(previewCalls["codex"]).toEqual(["/logs/codex-member.jsonl"]);
+    expect(previewCalls["cline"] ?? []).toEqual([]);
   });
 });
 
