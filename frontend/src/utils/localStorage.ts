@@ -15,6 +15,9 @@ interface RecentDirectory {
 
 export type ThemeMode = "light" | "dark" | "system";
 
+/** The sidebar's "Active cards first" sections, as `sectionByActive` keys them. */
+export type ChatSectionKey = "active" | "inactive";
+
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
   recentDirectories?: RecentDirectory[];
@@ -34,7 +37,7 @@ interface LocalStorageData {
    * so a first-run default of collapsed would hide chats the user never chose
    * to hide.
    */
-  chatSectionsExpanded?: Partial<Record<"active" | "inactive", boolean>>;
+  chatSectionsExpanded?: Partial<Record<ChatSectionKey, boolean>>;
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
@@ -402,12 +405,18 @@ export function saveChatsSortByCardActive(value: boolean): void {
   setStorageData(data);
 }
 
-export type ChatSectionKey = "active" | "inactive";
-
-/** Expanded unless explicitly collapsed — see the field's note. */
+/**
+ * Expanded unless explicitly collapsed — see the field's note.
+ *
+ * `!== false` rather than `?? true` so the return is always a real boolean:
+ * this value is parsed out of JSON, so a hand-edited or cross-version store
+ * can hold anything, and the callers render `isExpanded(key) && rows`. A
+ * stored `0` reaching that would put a literal "0" in the sidebar where the
+ * rows belong. Matches `getBoardClosedExpanded`'s `=== true` next door.
+ */
 export function getChatSectionExpanded(key: ChatSectionKey): boolean {
   const data = getStorageData();
-  return data.chatSectionsExpanded?.[key] ?? true;
+  return data.chatSectionsExpanded?.[key] !== false;
 }
 
 export function saveChatSectionExpanded(key: ChatSectionKey, expanded: boolean): void {

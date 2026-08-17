@@ -19,6 +19,22 @@ export interface ChatSection<T> {
    * Chats in this section, which is **not** `items.length` in the tree layout:
    * one row there stands for a whole lineage group. The header counts chats in
    * both layouts, so a group's members are counted where they are filed.
+   *
+   * "Where they are filed" is per-layout, and the two layouts can legitimately
+   * disagree about the same chats — the count reports each layout honestly
+   * rather than papering over a split that is already visible in the rows:
+   *
+   * - A lineage group is filed **whole**, by its header row, so a group whose
+   *   members straddle both buckets counts entirely under the header row's
+   *   section. The flat layout files those same chats individually. This is
+   *   the tree's deliberate filing rule, not a counting bug — a group is one
+   *   row and cannot be in two sections.
+   * - The tree layout requests `includeLineage`, so it loads group members
+   *   from outside the pagination window. Those chats are on screen (folded
+   *   into their group) and are counted; the flat layout never loaded them.
+   *
+   * Both mean the tree's totals can exceed the flat layout's for the same
+   * page. Both are the layouts differing about what they are showing.
    */
   count: number;
 }

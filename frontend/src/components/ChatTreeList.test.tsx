@@ -13,6 +13,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { Chat, CardSummary, ChatTreeNode, ChatTreeResponse } from "../api";
 import { getChatTree } from "../api";
 import { isChatCardActive, isChatDimmed } from "../utils/chatDimming";
+import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import ChatTreeList from "./ChatTreeList";
 
 vi.mock("../api", () => ({
@@ -319,8 +320,16 @@ describe("ChatTreeList active-first sections", () => {
    * under-reports it.
    */
   describe("counts and collapse", () => {
-    beforeEach(() => localStorage.clear());
-    afterEach(() => localStorage.clear());
+    // The hook caches its snapshot module-side, so clearing storage alone
+    // would leave the previous test's state in memory.
+    beforeEach(() => {
+      localStorage.clear();
+      resetChatSectionExpansion();
+    });
+    afterEach(() => {
+      localStorage.clear();
+      resetChatSectionExpansion();
+    });
 
     // STRADDLING is 4 chats in 3 rows: the root group (root + folded child-1)
     // and solo-open under Active, solo-none under Inactive.
@@ -345,15 +354,12 @@ describe("ChatTreeList active-first sections", () => {
       fireEvent.click(screen.getByText(/^Active \(3\)$/));
       cleanup();
 
-      // A fresh mount — a reload, or the flat/tree layout toggle, which
-      // unmounts this component and reads the same stored choice back.
+      // This component remounting — not the flat/tree layout toggle, which is
+      // ChatList keeping its own mount and swapping which branch it renders.
+      // That case is two consumers of one preference, and lives in
+      // hooks/useChatSectionExpansion.test.tsx.
       const { container } = renderSectioned(STRADDLING);
       expect(outline(container)).toEqual(["Active", "Inactive", "chat solo-none"]);
-    });
-
-    it("starts expanded, so a first-run sidebar never hides chats on its own", () => {
-      const { container } = renderSectioned(STRADDLING);
-      expect(outline(container)).toEqual(["Active", "chat root", "chat solo-open", "Inactive", "chat solo-none"]);
     });
   });
 });

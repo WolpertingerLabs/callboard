@@ -61,11 +61,18 @@ interface Row {
   rootKey: string;
   isGroup: boolean;
   /**
-   * Loaded chats this row stands for — 1 for a lone chat, the group's size for
-   * a group. The section headers count chats, not rows, so a group has to
-   * carry its own weight to the tally. Loaded members only: an unexpanded
-   * group's full tree hasn't been fetched, and the header counts what the list
-   * is showing.
+   * Chats from the `chats` prop this row stands for — 1 for a lone chat, the
+   * group's size for a group. The section headers count chats, not rows, so a
+   * group has to carry its own weight to the tally.
+   *
+   * Deliberately *not* "chats visible under this row": expanding a group
+   * renders `trees[rootKey]`, the server's authoritative tree, which no client
+   * filter has been applied to — expand a group under "Show triggered chats:
+   * off" and more rows can appear than this counted. Following that would make
+   * the header's number jump on every expand, and jump to a figure the section
+   * above it does not share. The count answers "how many of the chats this
+   * list loaded are filed here", which is stable and is what the flat layout
+   * answers too.
    */
   size: number;
 }
@@ -250,7 +257,8 @@ export default function ChatTreeList({
       const { rootKey, hasLineage } = infoById.get(chat.id)!;
       if (seen.has(rootKey)) continue;
       seen.add(rootKey);
-      const size = groupSizes.get(rootKey) || 1;
+      // Always set: this row's own chat counted itself into the bucket above.
+      const size = groupSizes.get(rootKey)!;
       const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
       result.push({ chat, rootKey, isGroup, size });
     }
