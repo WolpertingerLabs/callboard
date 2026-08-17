@@ -40,6 +40,7 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { ParsedMessage } from "shared/types/index.js";
 import { getAgentSettings } from "../../../services/agent-settings.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
@@ -190,7 +191,18 @@ function readRolloutLines(filePath: string): RolloutLine[] {
  * the entire corpus; this reads a 64 KB chunk at a time and stops at the hit.
  *
  * A torn/partial line is skipped exactly as the slurping reader skips it, and a
- * missing/unreadable file yields `undefined` rather than throwing.
+ * missing/unreadable file yields `undefined` rather than throwing — including
+ * when the failure is the *read* rather than the open (`EIO` on a failing disk,
+ * `ESTALE` on a network-mounted home). One unreadable rollout must cost the
+ * chat list that rollout, not the whole response.
+ *
+ * Chunk boundaries are a decoding hazard, not just a line-splitting one: a
+ * multi-byte character straddling one would become U+FFFD on both sides if each
+ * chunk were decoded on its own, and — because the corruption lands *inside* a
+ * JSON string — the line would still parse, so the damage would surface as
+ * mojibake in a sidebar preview rather than as an error. {@link StringDecoder}
+ * carries the partial sequence across the boundary, which is what the whole-file
+ * `readFileSync(…, "utf-8")` this replaced did implicitly.
  */
 function scanRolloutLines<T>(filePath: string, visit: (line: RolloutLine) => T | undefined): T | undefined {
   let fd: number;
@@ -201,11 +213,19 @@ function scanRolloutLines<T>(filePath: string, visit: (line: RolloutLine) => T |
   }
   try {
     const chunk = Buffer.allocUnsafe(64 * 1024);
+    const decoder = new StringDecoder("utf8");
     let pending = "";
     for (;;) {
-      const bytes = readSync(fd, chunk, 0, chunk.length, null);
+      let bytes: number;
+      try {
+        bytes = readSync(fd, chunk, 0, chunk.length, null);
+      } catch {
+        return undefined;
+      }
       const atEof = bytes === 0;
-      pending += atEof ? "" : chunk.toString("utf-8", 0, bytes);
+      // `end()` flushes any dangling partial sequence as U+FFFD, matching what
+      // decoding the whole (truncated) file at once would have produced.
+      pending += atEof ? decoder.end() : decoder.write(chunk.subarray(0, bytes));
       // Everything before the last newline is complete; the tail may be a line
       // split across this chunk boundary, so it waits for the next read. At EOF
       // there is no next read, so the tail is complete too.
