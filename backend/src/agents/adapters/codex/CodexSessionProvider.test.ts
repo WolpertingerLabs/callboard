@@ -3,7 +3,7 @@
  * tree (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`) laid down in a
  * tmpdir.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -106,6 +106,59 @@ describe("discoverSessions", () => {
     const result = provider.discoverSessions({ limit: 10, offset: 0 });
     expect(result.total).toBe(1);
     expect(result.sessions[0]!.sessionId).toBe(UUID_A);
+  });
+
+  it("filters ignored folders before paginating, so no page can surface one", async () => {
+    // The ignore verdict needs the rollout's `cwd`, which lives inside the
+    // file — the temptation is to read only the page and filter after. That
+    // would leak ignored sessions into every page past the first and make
+    // `total` count them. Interleaved so a post-pagination filter can't pass by
+    // luck: visible, ignored, visible, ignored, visible.
+    const ids = ["019ec001", "019ec002", "019ec003", "019ec004", "019ec005"].map((p) => `${p}-cd5d-7823-b2d1-6683c42bfe32`);
+    ids.forEach((id, i) => {
+      writeRollout(id, {
+        cwd: i % 2 === 0 ? `/p/visible-${i}` : `/tmp/ignored-${i}`,
+        // Descending mtimes keep discovery order equal to array order.
+        mtime: new Date(Date.UTC(2026, 5, 14, 12, 0, 60 - i)),
+      });
+    });
+    await setIgnoredFolder((f) => f.startsWith("/tmp/"));
+    const provider = new CodexSessionProvider();
+
+    const all = provider.discoverSessions({ limit: 10, offset: 0 });
+    expect(all.total).toBe(3);
+    expect(all.sessions.map((s) => s.folder)).toEqual(["/p/visible-0", "/p/visible-2", "/p/visible-4"]);
+
+    // Pages are cut from the visible list, not from the raw one, so the second
+    // page starts where the first ended rather than skipping into the ignored.
+    const first = provider.discoverSessions({ limit: 2, offset: 0 });
+    const second = provider.discoverSessions({ limit: 2, offset: 2 });
+    expect(first.total).toBe(3);
+    expect(second.total).toBe(3);
+    expect(first.sessions.map((s) => s.folder)).toEqual(["/p/visible-0", "/p/visible-2"]);
+    expect(second.sessions.map((s) => s.folder)).toEqual(["/p/visible-4"]);
+  });
+
+  it("gives each rollout its own folder even when two are the same size and age", async () => {
+    // `readCodexSessionMeta` memoizes per rollout, invalidated by mtime+size.
+    // Two rollouts written in the same second with equal-length cwds agree on
+    // both of those, so a memo keyed on anything but the path would hand the
+    // second session the first one's folder — and the sidebar would file a chat
+    // under someone else's project. Repeated so the second pass reads the memo.
+    const sameMoment = new Date("2026-06-14T10:00:00Z");
+    const fileA = writeRollout(UUID_A, { cwd: "/p/aa", mtime: sameMoment });
+    const fileB = writeRollout(UUID_B, { cwd: "/p/bb", mtime: sameMoment });
+    expect(statSync(fileA).size).toBe(statSync(fileB).size);
+    expect(statSync(fileA).mtimeMs).toBe(statSync(fileB).mtimeMs);
+
+    const provider = new CodexSessionProvider();
+    for (let i = 0; i < 2; i++) {
+      const result = provider.discoverSessions({ limit: 10, offset: 0 });
+      expect(result.sessions.map((s) => [s.sessionId, s.folder, s.displayFolder]).sort()).toEqual([
+        [UUID_A, "/p/aa", "/p/aa"],
+        [UUID_B, "/p/bb", "/p/bb"],
+      ]);
+    }
   });
 
   it("ignores non-rollout files and stray dirs", () => {

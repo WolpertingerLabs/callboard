@@ -37,7 +37,7 @@
  * @see plans/codex-adapter-job.md (Step 9 session-provider)
  * @see plans/codex-spike-findings.md §5 (rollout format)
  */
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
@@ -181,23 +181,269 @@ function readRolloutLines(filePath: string): RolloutLine[] {
 }
 
 /**
+ * Read a rollout's lines lazily, stopping the moment `visit` returns a value.
+ *
+ * Rollouts run to megabytes (the largest on a real device is ~2 MB) but the two
+ * fields the chat list needs — `session_meta.cwd` and the first user prompt —
+ * sit at the very top. {@link readRolloutLines} slurps and `JSON.parse`s the
+ * whole file, so answering "what cwd is this?" for every rollout used to read
+ * the entire corpus; this reads a 64 KB chunk at a time and stops at the hit.
+ *
+ * A torn/partial line is skipped exactly as the slurping reader skips it, and a
+ * missing/unreadable file yields `undefined` rather than throwing.
+ */
+function scanRolloutLines<T>(filePath: string, visit: (line: RolloutLine) => T | undefined): T | undefined {
+  let fd: number;
+  try {
+    fd = openSync(filePath, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let pending = "";
+    for (;;) {
+      const bytes = readSync(fd, chunk, 0, chunk.length, null);
+      const atEof = bytes === 0;
+      pending += atEof ? "" : chunk.toString("utf-8", 0, bytes);
+      // Everything before the last newline is complete; the tail may be a line
+      // split across this chunk boundary, so it waits for the next read. At EOF
+      // there is no next read, so the tail is complete too.
+      const cut = atEof ? pending.length : pending.lastIndexOf("\n") + 1;
+      const ready = pending.slice(0, cut);
+      pending = pending.slice(cut);
+      for (const line of ready.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let parsed: RolloutLine;
+        try {
+          parsed = JSON.parse(trimmed) as RolloutLine;
+        } catch {
+          continue;
+        }
+        const hit = visit(parsed);
+        if (hit !== undefined) return hit;
+      }
+      if (atEof) return undefined;
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Read up to `maxBytes` from the front of a file; `null` when unreadable. */
+function readHead(filePath: string, maxBytes: number): string | null {
+  let fd: number;
+  try {
+    fd = openSync(filePath, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const buf = Buffer.allocUnsafe(maxBytes);
+    const bytes = readSync(fd, buf, 0, maxBytes, 0);
+    return buf.toString("utf-8", 0, bytes);
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** What {@link scanFlatHead} found: the leading scalars, and where they stopped. */
+interface FlatHead {
+  /** Members appearing before the object's first nested object/array value. */
+  scalars: Record<string, unknown>;
+  /** The key whose value is that first nested value, when there is one. */
+  nestedKey?: string;
+  /** Index of the `{` / `[` that opens it. */
+  nestedStart?: number;
+}
+
+/**
+ * Read the *leading scalar members* of the JSON object starting at `open`,
+ * without parsing whatever comes after the first nested value.
+ *
+ * Why this exists: a rollout's `session_meta` payload ends with
+ * `base_instructions.text` — the agent's entire system prompt. On a real device
+ * that makes line 1 average **234 KB**, while the four fields discovery wants
+ * (`id`, `cwd`, `timestamp`, `cli_version`) live in its first ~250 bytes. So
+ * reading only the head of the *file* isn't enough; the expensive part is
+ * `JSON.parse` on a quarter-megabyte line, once per rollout, on every
+ * chat-list request.
+ *
+ * This walks the raw text with a string-aware scanner, stops at the first `{`
+ * or `[`, and hands the flat prefix it collected to the real `JSON.parse` —
+ * so the values are parsed by the parser, not by a regex. It is an accelerator,
+ * never a second parser: anything it doesn't recognise returns `null` and the
+ * caller falls back to parsing the line in full.
+ */
+function scanFlatHead(raw: string, open: number): FlatHead | null {
+  if (raw[open] !== "{") return null;
+  let inString = false;
+  let escaped = false;
+  /** Index of the comma closing the last complete member. */
+  let lastComma = -1;
+  /** Raw (still-escaped) text of the most recently read key. */
+  let lastKey: string | null = null;
+  let stringStart = -1;
+  /** The next string to complete is a key, not a value. */
+  let expectKey = true;
+
+  for (let i = open + 1; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') {
+        inString = false;
+        if (expectKey) {
+          lastKey = raw.slice(stringStart, i);
+          expectKey = false;
+        }
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      stringStart = i + 1;
+      continue;
+    }
+    if (ch === ",") {
+      lastComma = i;
+      expectKey = true;
+      continue;
+    }
+    if (ch === "}") {
+      // Wholly flat object — no nested value to stop at.
+      const scalars = parseObject(raw.slice(open, i + 1));
+      return scalars ? { scalars } : null;
+    }
+    if (ch === "{" || ch === "[") {
+      // A nested value starts here. Everything up to the comma that closed the
+      // previous member is a complete flat object once we re-close the brace.
+      if (lastComma < 0 || lastKey === null) return null;
+      const scalars = parseObject(raw.slice(open, lastComma) + "}");
+      if (!scalars) return null;
+      // `lastKey` is the raw, still-escaped text between the key's quotes;
+      // round-tripping it through the parser is how it gets unescaped.
+      const key = Object.keys(parseObject(`{"${lastKey}":0}`) ?? {})[0];
+      return { scalars, ...(key !== undefined && { nestedKey: key }), nestedStart: i };
+    }
+  }
+  return null; // ran off the end of the head — caller falls back
+}
+
+function parseObject(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bytes of a rollout to read when trying the fast path. Comfortably larger than
+ * any observed `session_meta` scalar prefix (~250 bytes) with room for the
+ * outer wrapper; a rollout that doesn't yield its meta within this falls back
+ * to the full scan.
+ */
+const META_HEAD_BYTES = 8192;
+
+/**
+ * Fast path for {@link readCodexSessionMeta}: pull the meta out of the file's
+ * first 8 KB using {@link scanFlatHead}. Returns `undefined` (not `null`) when
+ * the head isn't recognisable, which means "fall back", as distinct from the
+ * `null` that means "this rollout has no session_meta".
+ */
+function readSessionMetaFromHead(filePath: string): SessionMeta | undefined {
+  const head = readHead(filePath, META_HEAD_BYTES);
+  if (!head) return undefined;
+  const open = head.indexOf("{");
+  if (open < 0) return undefined;
+
+  const outer = scanFlatHead(head, open);
+  // `session_meta` is line 1 of a rollout. If line 1 is something else, this
+  // isn't a shape the fast path can rule on — let the full scan decide.
+  if (!outer || outer.scalars.type !== "session_meta") return undefined;
+  if (outer.nestedKey !== "payload" || outer.nestedStart === undefined) return undefined;
+
+  const payload = scanFlatHead(head, outer.nestedStart);
+  if (!payload) return undefined;
+  return buildSessionMeta(payload.scalars);
+}
+
+function buildSessionMeta(payload: Record<string, unknown>): SessionMeta {
+  const meta: SessionMeta = {};
+  if (typeof payload.id === "string") meta.id = payload.id;
+  if (typeof payload.cwd === "string") meta.cwd = payload.cwd;
+  if (typeof payload.timestamp === "string") meta.timestamp = payload.timestamp;
+  if (typeof payload.cli_version === "string") meta.cliVersion = payload.cli_version;
+  checkCliVersion(meta.cliVersion);
+  return meta;
+}
+
+/**
+ * Memo for {@link readCodexSessionMeta}, keyed by path and invalidated by the
+ * file's `mtimeMs`/`size`.
+ *
+ * `session_meta` is line 1 and a resume only ever *appends*, so the meta itself
+ * is immutable — but keying on the stat means a rewritten rollout (a seeded
+ * handoff reusing a path, a hand-edited file) can never serve a stale cwd, and
+ * the invalidation rule is the same one a reader would guess.
+ *
+ * Bounded so a long-lived daemon that accumulates rollouts doesn't grow the map
+ * without limit; eviction is insertion-order (Map iteration), which for a cache
+ * refilled by a newest-first directory walk drops the coldest entries.
+ */
+const META_CACHE_MAX = 4096;
+const metaCache = new Map<string, { mtimeMs: number; size: number; meta: SessionMeta | null }>();
+
+/** Drop every memoized `session_meta`. Test seam — production never needs it. */
+export function clearCodexSessionMetaCache(): void {
+  metaCache.clear();
+}
+
+/**
  * Read just the `session_meta` (first matching line) of a rollout. Used by the
  * provider for discovery (folder, sort timestamp) and id resolution without
  * parsing the whole transcript.
+ *
+ * Memoized per file version — discovery asks this of every rollout on every
+ * chat-list request, and the answer only changes when the file does.
  */
 export function readCodexSessionMeta(filePath: string): SessionMeta | null {
-  for (const line of readRolloutLines(filePath)) {
-    if (line.type !== "session_meta") continue;
-    const p = line.payload ?? {};
-    const meta: SessionMeta = {};
-    if (typeof p.id === "string") meta.id = p.id;
-    if (typeof p.cwd === "string") meta.cwd = p.cwd;
-    if (typeof p.timestamp === "string") meta.timestamp = p.timestamp;
-    if (typeof p.cli_version === "string") meta.cliVersion = p.cli_version;
-    checkCliVersion(meta.cliVersion);
-    return meta;
+  let mtimeMs = -1;
+  let size = -1;
+  try {
+    const st = statSync(filePath);
+    mtimeMs = st.mtimeMs;
+    size = st.size;
+  } catch {
+    // Unreadable/missing: fall through to the (also-failing) scan so the
+    // not-found answer stays identical to the pre-cache behaviour. Nothing is
+    // memoized for a file we couldn't stat.
+    return null;
   }
-  return null;
+
+  const cached = metaCache.get(filePath);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.meta;
+
+  const meta =
+    readSessionMetaFromHead(filePath) ??
+    scanRolloutLines(filePath, (line) => {
+      if (line.type !== "session_meta") return undefined;
+      return buildSessionMeta(line.payload ?? {});
+    }) ??
+    null;
+
+  if (metaCache.size >= META_CACHE_MAX) {
+    const oldest = metaCache.keys().next();
+    if (!oldest.done) metaCache.delete(oldest.value);
+  }
+  metaCache.set(filePath, { mtimeMs, size, meta });
+  return meta;
 }
 
 /** Warn once if a rollout was written by a Codex CLI version we don't target. */
@@ -533,15 +779,16 @@ export function extractText(content: unknown): string {
  * does, returning the first genuine `user` message's text.
  */
 export function readFirstUserPrompt(filePath: string): string | null {
-  for (const line of readRolloutLines(filePath)) {
-    if (line.type !== "response_item") continue;
-    const p = line.payload;
-    if (!p || p.type !== "message" || p.role !== "user") continue;
-    const { text: content } = extractTextAndImages(p.content);
-    if (!content) continue;
-    const head = content.trimStart().toLowerCase();
-    if (SYNTHETIC_MESSAGE_PREFIXES.some((pre) => head.startsWith(pre))) continue;
-    return content;
-  }
-  return null;
+  return (
+    scanRolloutLines(filePath, (line) => {
+      if (line.type !== "response_item") return undefined;
+      const p = line.payload;
+      if (!p || p.type !== "message" || p.role !== "user") return undefined;
+      const { text: content } = extractTextAndImages(p.content);
+      if (!content) return undefined;
+      const head = content.trimStart().toLowerCase();
+      if (SYNTHETIC_MESSAGE_PREFIXES.some((pre) => head.startsWith(pre))) return undefined;
+      return content;
+    }) ?? null
+  );
 }
