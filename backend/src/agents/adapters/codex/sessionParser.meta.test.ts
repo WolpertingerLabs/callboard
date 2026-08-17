@@ -17,11 +17,11 @@
  * pair each accelerated shape with a shape that must fall back, and assert the
  * same answer either way.
  */
-import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
+import { linkSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { clearCodexSessionMetaCache, readCodexSessionMeta } from "./sessionParser.js";
+import { META_CACHE_MAX, clearCodexSessionMetaCache, readCodexSessionMeta } from "./sessionParser.js";
 
 const THREAD_ID = "019ec7f2-cd5d-7823-b2d1-6683c42bfe32";
 /** Fixed so `statSync().mtimeMs` is an exact, reproducible integer. */
@@ -207,5 +207,73 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     writeFileSync(filePath, `{"type":"response_item","payl\n${JSON.stringify(metaLine("/p/torn", 32 * 1024))}\n`, "utf-8");
     utimesSync(filePath, T0, T0);
     expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/torn");
+  });
+});
+
+/**
+ * The bound, and what it drops when it bites.
+ *
+ * Discovery re-walks every rollout on every chat-list request, in a stable
+ * newest-first order — a *cyclic* access pattern. Above the bound that is the
+ * one pattern an oldest-out policy (FIFO, and LRU with it) cannot survive: the
+ * entry it evicts is the one the next pass asks for first, so the hit rate is
+ * 0% and the memo buys nothing for exactly the users with the most rollouts.
+ * These tests walk a corpus larger than the bound twice and assert the second
+ * walk is still served from the memo.
+ *
+ * The corpus is 4200 *paths* over one inode: the memo keys on the path, so hard
+ * links give a corpus bigger than the bound without writing one. Rewriting the
+ * single inode in place — same byte length, mtime stamped back — then flips the
+ * answer for every path that is NOT memoized, so on the second walk "/p/aaaa"
+ * means hit and "/p/bbbb" means miss.
+ */
+describe("readCodexSessionMeta — the memo's bound", () => {
+  /** `count` paths sharing one inode, in a stable order. */
+  function linkFarm(count: number, cwd: string): string[] {
+    writeFileSync(filePath, JSON.stringify(metaLine(cwd)) + "\n", "utf-8");
+    const paths = [filePath];
+    for (let i = 1; i < count; i++) {
+      const p = join(dir, `rollout-2026-06-14T17-03-58-${THREAD_ID.slice(0, -6)}${String(i).padStart(6, "0")}.jsonl`);
+      linkSync(filePath, p);
+      paths.push(p);
+    }
+    utimesSync(filePath, T0, T0);
+    return paths;
+  }
+
+  /** Rewrite the shared inode with a same-length cwd, mtime unchanged. */
+  function flip(cwd: string): void {
+    const before = statSync(filePath);
+    writeFileSync(filePath, JSON.stringify(metaLine(cwd)) + "\n", "utf-8");
+    utimesSync(filePath, T0, T0);
+    const after = statSync(filePath);
+    expect(after.size).toBe(before.size);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  }
+
+  it("still serves nearly the whole corpus on a re-walk above the bound", () => {
+    const paths = linkFarm(META_CACHE_MAX + 104, "/p/aaaa");
+    for (const p of paths) expect(readCodexSessionMeta(p)?.cwd).toBe("/p/aaaa");
+
+    flip("/p/bbbb");
+    const second = paths.map((p) => readCodexSessionMeta(p)?.cwd);
+
+    // Pass 1 filled the memo at path MAX-1 and then rotated a single slot, so
+    // paths 0…MAX-2 are still resident — the newest rollouts, which is the page
+    // the sidebar shows. Oldest-out would have evicted precisely these, and
+    // every entry here would read "/p/bbbb".
+    const hits = second.filter((cwd) => cwd === "/p/aaaa").length;
+    expect(hits).toBeGreaterThanOrEqual(META_CACHE_MAX - 1);
+    expect(new Set(second.slice(0, META_CACHE_MAX - 1))).toEqual(new Set(["/p/aaaa"]));
+    // And the bound still holds: the tail past it is not memoized.
+    expect(second.at(-1)).toBe("/p/bbbb");
+  });
+
+  it("evicts nothing at all below the bound", () => {
+    const paths = linkFarm(META_CACHE_MAX - 8, "/p/aaaa");
+    for (const p of paths) expect(readCodexSessionMeta(p)?.cwd).toBe("/p/aaaa");
+
+    flip("/p/bbbb");
+    expect(new Set(paths.map((p) => readCodexSessionMeta(p)?.cwd))).toEqual(new Set(["/p/aaaa"]));
   });
 });

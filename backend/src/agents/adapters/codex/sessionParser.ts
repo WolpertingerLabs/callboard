@@ -394,15 +394,36 @@ function buildSessionMeta(payload: Record<string, unknown>): SessionMeta {
  * the invalidation rule is the same one a reader would guess.
  *
  * Bounded so a long-lived daemon that accumulates rollouts doesn't grow the map
- * without limit; eviction is insertion-order (Map iteration), which for a cache
- * refilled by a newest-first directory walk drops the coldest entries.
+ * without limit. Which entry the bound drops matters more than it looks, because
+ * the only access pattern that can overflow this memo is a **cyclic full-corpus
+ * walk**: `discoverSessions` asks every rollout for its cwd on every chat-list
+ * request, in a stable mtime-DESC order, and `~/.codex/sessions` is append-only
+ * and never pruned — so a user crosses the bound once and stays across it.
+ *
+ * Against a cyclic scan, dropping the *oldest* entry (FIFO, and equally LRU) is
+ * the textbook sequential-flooding pathology: the entry evicted is precisely the
+ * one the next pass asks for first, so every access misses and the hit rate is
+ * 0% forever. That is a cliff at a hard threshold, not a taper — the warm pass
+ * reverts to the cost of a cold one for exactly the heaviest users, and it
+ * presents as "the sidebar got slow again" with nothing to blame.
+ *
+ * So eviction takes the **most recently inserted** entry instead, which for this
+ * pattern is what Belady's optimal policy would choose (in a cycle, the entry
+ * just used is the one needed farthest in the future). The first MAX rollouts of
+ * the walk — the newest ones, i.e. the page the sidebar actually shows — stay
+ * resident, and only the tail pays a head-read per pass: hit rate MAX/N,
+ * degrading smoothly instead of collapsing. Below the bound no entry is ever
+ * evicted, so the policy is invisible until it is the only thing that matters.
  */
-const META_CACHE_MAX = 4096;
+export const META_CACHE_MAX = 4096;
 const metaCache = new Map<string, { mtimeMs: number; size: number; meta: SessionMeta | null }>();
+/** Key of the newest insertion — the one eviction takes when the memo is full. */
+let metaCacheNewest: string | null = null;
 
 /** Drop every memoized `session_meta`. Test seam — production never needs it. */
 export function clearCodexSessionMetaCache(): void {
   metaCache.clear();
+  metaCacheNewest = null;
 }
 
 /**
@@ -421,9 +442,9 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
     mtimeMs = st.mtimeMs;
     size = st.size;
   } catch {
-    // Unreadable/missing: fall through to the (also-failing) scan so the
-    // not-found answer stays identical to the pre-cache behaviour. Nothing is
-    // memoized for a file we couldn't stat.
+    // Unreadable/missing: answer "no meta", the same thing the scan would have
+    // answered before there was a cache, without memoizing anything for a file
+    // we couldn't stat — so the answer isn't pinned once the file appears.
     return null;
   }
 
@@ -438,11 +459,18 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
     }) ??
     null;
 
-  if (metaCache.size >= META_CACHE_MAX) {
-    const oldest = metaCache.keys().next();
-    if (!oldest.done) metaCache.delete(oldest.value);
+  // Refreshing an entry already held doesn't grow the map, so it evicts nothing.
+  if (metaCache.size >= META_CACHE_MAX && !metaCache.has(filePath)) {
+    // Newest-out (see the note on `metaCache`). The oldest-out fallback only
+    // matters if `metaCacheNewest` were ever missing from the map, which it
+    // cannot be — it exists so the bound holds regardless.
+    if (metaCacheNewest === null || !metaCache.delete(metaCacheNewest)) {
+      const oldest = metaCache.keys().next();
+      if (!oldest.done) metaCache.delete(oldest.value);
+    }
   }
   metaCache.set(filePath, { mtimeMs, size, meta });
+  metaCacheNewest = filePath;
   return meta;
 }
 
