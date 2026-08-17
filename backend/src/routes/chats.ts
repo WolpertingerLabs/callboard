@@ -64,15 +64,43 @@ function readProvider(chat: { metadata?: string | null }): unknown {
 /**
  * Extract the first user message text from a JSONL session file (up to maxLength chars).
  * Used as a chat preview/title in the chat list.
- * Delegates to the first session provider that can read the file.
+ *
+ * `providerKind` names the session's owning provider — the chat record's
+ * `metadata.provider`, else whichever provider's discovery returned the file.
+ * Asked first, it turns five speculative full-file reads into one. It is a
+ * hint, not a contract: a session whose owner declines still falls through to
+ * the historical walk over every provider, so a stale or missing `provider`
+ * costs the old price rather than a missing preview.
  */
-function getFirstUserMessage(filePath: string, maxLength: number = 200): string | null {
-  for (const provider of getSessionProviders()) {
+function getFirstUserMessage(filePath: string, maxLength: number = 200, providerKind?: string): string | null {
+  const providers = getSessionProviders();
+  const owner = providerKind ? providers.find((p) => p.kind === providerKind) : undefined;
+  if (owner) {
+    const preview = owner.getSessionPreview(filePath, maxLength);
+    if (preview) return preview;
+  }
+  for (const provider of providers) {
+    if (provider === owner) continue;
     const preview = provider.getSessionPreview(filePath, maxLength);
     if (preview) return preview;
   }
   return null;
 }
+
+/**
+ * A discovered session plus the provider that discovered it. The tag is what
+ * lets the list route send a preview read to one provider instead of trying all
+ * five; it is route-local bookkeeping and never reaches the response body.
+ */
+type DiscoveredSession = {
+  sessionId: string;
+  folder: string;
+  displayFolder: string;
+  filePath: string;
+  createdAt: Date;
+  updatedAt: Date;
+  providerKind: string;
+};
 
 /**
  * Discover session JSONL files using filesystem-level sorting for optimal performance.
@@ -82,25 +110,20 @@ function getFirstUserMessage(filePath: string, maxLength: number = 200): string 
  * Discover sessions across all registered providers.
  * Merges results, sorts globally by mtime DESC, and paginates.
  */
-function discoverSessionsPaginated(
-  limit: number,
-  offset: number,
-): {
-  sessions: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[];
-  total: number;
-} {
+function discoverSessionsPaginated(limit: number, offset: number): { sessions: DiscoveredSession[]; total: number } {
   const providers = getSessionProviders();
 
   if (providers.length === 1) {
     // Single provider: delegate directly (preserves existing performance)
-    return providers[0].discoverSessions({ limit, offset });
+    const { sessions, total } = providers[0].discoverSessions({ limit, offset });
+    return { sessions: sessions.map((s) => ({ ...s, providerKind: providers[0].kind })), total };
   }
 
   // Multi-provider: collect all, merge, sort, paginate
-  const allSessions: { sessionId: string; folder: string; displayFolder: string; filePath: string; createdAt: Date; updatedAt: Date }[] = [];
+  const allSessions: DiscoveredSession[] = [];
   for (const provider of providers) {
     const { sessions } = provider.discoverSessions({ limit: 9999, offset: 0 });
-    allSessions.push(...sessions);
+    for (const s of sessions) allSessions.push({ ...s, providerKind: provider.kind });
   }
 
   allSessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
@@ -358,15 +381,28 @@ chatsRouter.get("/", (req, res) => {
         })
       : discoveredSessions;
 
+    // Which provider discovered each session log, so a deferred preview read
+    // can go straight to its owner. Keyed by path because that is all a
+    // finished row still carries by the time the preview is read.
+    const providerKindByLogPath = new Map<string, string>();
+    for (const s of discoveredSessions) providerKindByLogPath.set(s.filePath, s.providerKind);
+
+    /**
+     * Build a response row for a discovered session.
+     *
+     * Deliberately does no session-log I/O: `needsPostFilter` over-fetches
+     * every session (the triggered/bookmarked flags live in chat-file metadata,
+     * and lineage/cards need the whole list to walk), so this runs thousands of
+     * times per request while ~20 rows are returned. The one expensive part —
+     * the first-user-message preview — is split into {@link attachPreview},
+     * which runs after filtering *and* pagination.
+     */
     const augmentSession = (s: (typeof paginatedSessions)[0]) => {
       // Try to find by session ID (may not exist in file storage - that's fine)
       const fileChat = fileChatsBySessionId.get(s.sessionId);
 
       // Get cached git info using the original folder (may be a worktree) for correct branch
       const gitInfo = getCachedGitInfo(s.folder);
-
-      // Extract preview from the first user message in the JSONL file
-      const preview = getFirstUserMessage(s.filePath);
 
       if (fileChat) {
         // Augment with file storage data while keeping filesystem as source of truth for timestamps
@@ -385,7 +421,8 @@ chatsRouter.get("/", (req, res) => {
           // Add git information
           is_git_repo: gitInfo.isGitRepo,
           git_branch: gitInfo.branch,
-          // Merge session_ids in metadata and add preview
+          // Merge session_ids in metadata (the preview is folded in later, by
+          // attachPreview, for the rows this request actually returns)
           metadata: (() => {
             try {
               const meta = JSON.parse(fileChat.metadata || "{}");
@@ -393,9 +430,9 @@ chatsRouter.get("/", (req, res) => {
               if (!sessionIds.includes(s.sessionId)) {
                 sessionIds.push(s.sessionId);
               }
-              return JSON.stringify({ ...meta, session_ids: sessionIds, ...(preview && { preview }) });
+              return JSON.stringify({ ...meta, session_ids: sessionIds });
             } catch {
-              return JSON.stringify({ session_ids: [s.sessionId], ...(preview && { preview }) });
+              return JSON.stringify({ session_ids: [s.sessionId] });
             }
           })(),
           _augmented_from_file: true,
@@ -410,7 +447,7 @@ chatsRouter.get("/", (req, res) => {
           displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: JSON.stringify({ session_ids: [s.sessionId], ...(preview && { preview }) }),
+          metadata: JSON.stringify({ session_ids: [s.sessionId] }),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information
@@ -419,6 +456,34 @@ chatsRouter.get("/", (req, res) => {
           _from_filesystem: true,
         };
       }
+    };
+
+    /**
+     * Fold the session log's first user message into a finished row's metadata
+     * — the other half of {@link augmentSession}, and the only part of building
+     * a row that opens a session file.
+     *
+     * Runs on returned rows only. Gated on `session_log_path`, which is set
+     * exactly when a row was built from a discovered session: stored chat
+     * records always carry `null` there, so the lineage-append pass's bare
+     * `{...fileChat}` fallback stays preview-less, as it always has.
+     *
+     * Nothing in this route filters or sorts on the preview — the post-filters
+     * read `metadata.triggered`/`bookmarked`, pagination reads chat ids — so
+     * reading it last is a reordering of I/O, not of rows.
+     */
+    const attachPreview = (chat: any) => {
+      const logPath = chat.session_log_path;
+      if (typeof logPath !== "string" || !logPath) return chat;
+      let meta: any;
+      try {
+        meta = JSON.parse(chat.metadata || "{}");
+      } catch {
+        meta = {};
+      }
+      const preview = getFirstUserMessage(logPath, 200, typeof meta.provider === "string" ? meta.provider : providerKindByLogPath.get(logPath));
+      if (!preview) return chat;
+      return { ...chat, metadata: JSON.stringify({ ...meta, preview }) };
     };
 
     /** Check if an augmented chat has the triggered flag set in its metadata */
@@ -551,6 +616,10 @@ chatsRouter.get("/", (req, res) => {
       }
       chatsFromLogs = [...chatsFromLogs, ...appended];
     }
+
+    // Last step, once the returned set is final: one preview read per row that
+    // ships, instead of one per session discovered.
+    chatsFromLogs = chatsFromLogs.map(attachPreview);
 
     const responseData = { chats: chatsFromLogs, hasMore, total, windowRows };
     chatListCache.set(cacheKey, { data: responseData, createdAt: Date.now() });
