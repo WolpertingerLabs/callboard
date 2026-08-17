@@ -176,24 +176,30 @@ export class CodexSessionProvider implements SessionProvider {
     // Hide sessions whose working folder matches a configured ignore prefix —
     // same rule the other providers apply. Done before pagination so total
     // reflects only visible sessions.
-    const visible = entries.filter((e) => {
-      const folder = readCodexSessionMeta(e.filePath)?.cwd ?? "";
-      return !(folder && isIgnoredProjectFolder(folder));
-    });
+    //
+    // The cwd lives INSIDE the rollout (claude-code encodes it in the path), so
+    // the ignore verdict can't be reached without opening every file and the
+    // filter can't move after pagination without making `total` a lie about a
+    // page the caller can't see. What used to be expensive was doing it twice —
+    // once here and once in the page map — over a full-file read; the folder is
+    // now carried through to the page instead, and `readCodexSessionMeta` reads
+    // (and memoizes) only the head of the file.
+    const visible: { entry: RolloutEntry; folder: string }[] = [];
+    for (const entry of entries) {
+      const folder = readCodexSessionMeta(entry.filePath)?.cwd ?? "";
+      if (folder && isIgnoredProjectFolder(folder)) continue;
+      visible.push({ entry, folder });
+    }
 
     const total = visible.length;
-    const page = visible.slice(opts.offset, opts.offset + opts.limit);
-    const sessions = page.map((e) => {
-      const folder = readCodexSessionMeta(e.filePath)?.cwd ?? "";
-      return {
-        sessionId: e.threadId,
-        folder,
-        displayFolder: folder,
-        filePath: e.filePath,
-        createdAt: e.stat.birthtime,
-        updatedAt: e.stat.mtime,
-      };
-    });
+    const sessions = visible.slice(opts.offset, opts.offset + opts.limit).map(({ entry, folder }) => ({
+      sessionId: entry.threadId,
+      folder,
+      displayFolder: folder,
+      filePath: entry.filePath,
+      createdAt: entry.stat.birthtime,
+      updatedAt: entry.stat.mtime,
+    }));
 
     return { sessions, total };
   }
