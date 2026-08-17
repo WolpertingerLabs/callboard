@@ -139,6 +139,14 @@
   /* Chat list */
   --chatlist-header-bg: transparent;
   --chatlist-header-border: var(--border);
+  /* The Active/Inactive section headers inside the list, which need to read as
+     raised off the rows they introduce — unlike --chatlist-header-bg (the
+     sidebar's own top header), which is transparent in both themes. Its own
+     variable rather than a shared one because "raised" is a different token
+     per theme: dark layers lighten from --bg-sidebar to --bg-secondary, while
+     in light mode --bg-secondary sits a hair off --bg-sidebar and --surface is
+     the step that actually separates. */
+  --chatlist-section-header-bg: var(--bg-secondary);
   --chatlist-title-text: var(--text);
   --chatlist-subtitle-text: var(--text-muted);
   --chatlist-item-bg: transparent;
@@ -356,6 +364,9 @@
   /* Chat list */
   --chatlist-header-bg: transparent;
   --chatlist-header-border: var(--border);
+  /* --surface, not --bg-secondary: see the dark-mode note. #f0f4f8 against the
+     #eef1f6 sidebar is very nearly no step at all, where #f8fafc reads. */
+  --chatlist-section-header-bg: var(--surface);
   --chatlist-title-text: var(--text);
   --chatlist-subtitle-text: var(--text-muted);
   --chatlist-item-bg: transparent;
