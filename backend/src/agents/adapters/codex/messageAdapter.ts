@@ -59,7 +59,9 @@ const log = createLogger("codex-events");
  * iterates the *real* event stream rather than poking SDK callbacks, so the
  * translation is exercised exactly as it runs in production.
  */
-export async function* translateCodexEvents(events: AsyncIterable<ThreadEvent>): AsyncIterable<AgentEvent> {
+export async function* translateCodexEvents(
+  events: AsyncIterable<ThreadEvent>,
+): AsyncIterable<AgentEvent> {
   log.debug("translateCodexEvents start");
   let eventCount = 0;
   try {
@@ -79,7 +81,9 @@ export async function* translateCodexEvents(events: AsyncIterable<ThreadEvent>):
     // process spawn — see CodexAgentQuery.close). Re-throw so the service
     // layer's existing abort handling runs; lower-level abort detection
     // (signal.aborted) short-circuits before this in the query loop.
-    log.error(`Codex event stream threw after ${eventCount} events: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`);
+    log.error(
+      `Codex event stream threw after ${eventCount} events: ${err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)}`,
+    );
     throw err;
   }
   log.debug(`translateCodexEvents end — eventCount=${eventCount}`);
@@ -122,6 +126,12 @@ export function translateCodexEvent(event: ThreadEvent): AgentEvent | AgentEvent
  * `item.started` opens a tool-shaped item → emit the `tool_use`. Text/thinking
  * items (`agent_message`, `reasoning`) and terminal-only items carry nothing
  * actionable at start, so they drop here and surface at completion.
+ *
+ * `todo_list` is the exception among the non-tool items: a plan arrives
+ * *complete* on `item.started` — captured from `codex exec --json`, the very
+ * first thing a `todo_list` item says is all of its rows — so waiting for
+ * completion would mean showing the user the plan only once the agent had
+ * finished working through it. See {@link todoEvent}.
  */
 function translateItemStarted(item: ThreadItem): AgentEvent | null {
   switch (item.type) {
@@ -133,20 +143,28 @@ function translateItemStarted(item: ThreadItem): AgentEvent | null {
       return toolUse(mcpToolName(item), item.id, item.arguments);
     case "web_search":
       return toolUse("WebSearch", item.id, { query: item.query });
+    case "todo_list":
+      return todoEvent(item);
     case "agent_message":
     case "reasoning":
-    case "todo_list":
     case "error":
       return null;
   }
 }
 
 /**
- * `item.updated` is, in the captured SDK version, never emitted (spike §2.5).
- * It's handled defensively: a future SDK that streams partial tool state would
- * re-emit the `tool_use` (idempotent on the same callId), but partial
- * agent_message/reasoning text is intentionally dropped here so we don't
- * double-count the whole text that arrives again at item.completed.
+ * `item.updated` re-emits whatever the item can currently say in full.
+ *
+ * Tool items re-emit their `tool_use` (idempotent on the same callId), and
+ * `todo_list` re-emits its whole list — that is where a plan's *progress*
+ * arrives, one `item.updated` per step ticked off, so dropping it would leave
+ * the initial plan frozen on screen for the length of the turn.
+ *
+ * Partial `agent_message` / `reasoning` text is still dropped here, and that is
+ * not the same call: text is a delta that would double-count against the whole
+ * message arriving again at `item.completed`. A `task_list` is defined as a
+ * replace-not-merge snapshot, so re-emitting one is idempotent by construction —
+ * there is nothing to double-count.
  */
 function translateItemUpdated(item: ThreadItem): AgentEvent | null {
   switch (item.type) {
@@ -158,9 +176,10 @@ function translateItemUpdated(item: ThreadItem): AgentEvent | null {
       return toolUse(mcpToolName(item), item.id, item.arguments);
     case "web_search":
       return toolUse("WebSearch", item.id, { query: item.query });
+    case "todo_list":
+      return todoEvent(item);
     case "agent_message":
     case "reasoning":
-    case "todo_list":
     case "error":
       return null;
   }
@@ -225,9 +244,16 @@ function mcpResult(item: McpToolCallItem): AgentEvent {
  * `completed`, all three observed in real rollouts). The step Codex is working
  * on right now is therefore reachable from the transcript but not from this
  * stream, so `completed: false` widens to `pending` and nothing here invents an
- * in-progress row. A live list may show one fewer highlighted step than the
- * same list does after a reload; that is the SDK's information, not ours to
- * guess at.
+ * in-progress row; that is the SDK's information, not ours to guess at.
+ *
+ * The loss is not one a user can see, though, and the reason is worth writing
+ * down so nobody spends effort recovering it: this event's payload never reaches
+ * a browser. `services/claude.ts` projects it onto a `tool_use` that the SSE
+ * layer collapses into a bare `message_update`, and the browser answers that by
+ * refetching the transcript — which for Codex is the rollout, with the
+ * three-valued `status`. The event's job is to say *when* to look, not what to
+ * show. Which is exactly why it has to fire at `item.started` and `item.updated`
+ * as well as at completion.
  */
 function todoEvent(item: TodoListItem): AgentEvent {
   return {
@@ -298,7 +324,9 @@ function logEvent(event: ThreadEvent): void {
       log.debug("event turn.started");
       break;
     case "turn.completed":
-      log.debug(`event turn.completed — inputTokens=${event.usage?.input_tokens ?? "n/a"}, outputTokens=${event.usage?.output_tokens ?? "n/a"}`);
+      log.debug(
+        `event turn.completed — inputTokens=${event.usage?.input_tokens ?? "n/a"}, outputTokens=${event.usage?.output_tokens ?? "n/a"}`,
+      );
       break;
     case "turn.failed":
       log.error(`event turn.failed — ${event.error.message}`);

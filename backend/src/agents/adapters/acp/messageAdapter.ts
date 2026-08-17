@@ -327,13 +327,35 @@ const PLAN_ENTRY_STATUSES: ReadonlySet<string> = new Set<PlanEntryStatus>(["pend
  * is defined as replace-not-merge: a removal has to be able to say "there is no
  * list now", and a delta-shaped event could only ever add.
  *
- * **No plan registry.** Several concurrent `planId`s would need one to render a
- * union, and nothing ships the experimental multi-plan form today — every
- * agent callboard has been measured against sends the stable single `plan`. The
- * honest reading of one plan at a time is that the newest snapshot wins, which
- * is what emitting each update as its own snapshot already does.
+ * **No plan registry — and `planId` is therefore discarded below.** Several
+ * concurrent plans would need one to render a union; what this does instead is
+ * treat the newest snapshot as the whole truth, which for two live plans means
+ * the bubble flip-flops between them and removing either blanks both.
+ *
+ * That is a real bug in this code and it is worth being exact about why it can't
+ * fire, because the reason is not "no agent does this yet" — an agent's
+ * behaviour is not something callboard controls. It is structural: `plan_update`
+ * and `plan_removed` are gated on the client advertising `ClientCapabilities`
+ * `plan`, and callboard's `BASE_CLIENT_CAPABILITIES` does not. A spec-conforming
+ * agent cannot send either update to us, so the two branches below are
+ * unreachable by construction rather than by luck, and the tests covering them
+ * pin translation shape only — read them as documentation of the mapping, not as
+ * coverage of a live path.
+ *
+ * The one way to reach them is to add `plan: {}` in `AcpAgentClient.ts`, which
+ * is exactly why a test in `listTracking.test.ts` fails the moment anyone does:
+ * this registry is the prerequisite, not a follow-up. The `log.warn` below is
+ * the same tripwire pointed at production, in case an agent ignores the gate.
  */
 function translatePlan(kind: string, update: SessionUpdate): AgentEvent[] {
+  const planId = (update as { planId?: unknown; plan?: { planId?: unknown } }).planId ?? (update as { plan?: { planId?: unknown } }).plan?.planId;
+  if (typeof planId === "string") {
+    log.warn(
+      `ACP sent a planId-keyed "${kind}" update (planId=${planId}) — callboard advertises no "plan" capability and does not track planId, ` +
+        `so this snapshot will overwrite any other live plan. See translatePlan in acp/messageAdapter.ts.`,
+    );
+  }
+
   if (kind === "plan_removed") return [{ type: "task_list", items: [] }];
 
   if (kind === "plan") {
