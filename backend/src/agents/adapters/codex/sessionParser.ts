@@ -351,6 +351,9 @@ function parseObject(text: string): Record<string, unknown> | null {
  */
 const META_HEAD_BYTES = 8192;
 
+/** The `session_meta.payload` members {@link buildSessionMeta} reads. */
+const WANTED_META_KEYS = ["id", "cwd", "timestamp", "cli_version"] as const;
+
 /**
  * Fast path for {@link readCodexSessionMeta}: pull the meta out of the file's
  * first 8 KB using {@link scanFlatHead}. Returns `undefined` (not `null`) when
@@ -371,6 +374,23 @@ function readSessionMetaFromHead(filePath: string): SessionMeta | undefined {
 
   const payload = scanFlatHead(head, outer.nestedStart);
   if (!payload) return undefined;
+  // When the scan stopped at a nested value, `scalars` is a PREFIX of the
+  // payload — everything after that value is unread. Answering from a prefix
+  // that is missing a field we want would not look like a failure: the shape is
+  // still perfectly recognisable, so the fast path would confidently report
+  // `cwd: ""` for every rollout the day a Codex release emits its `git` object
+  // (or any other new nested member) ahead of `cwd`. Downstream that hides
+  // ignored folders' sessions, collapses every Codex chat into one empty-path
+  // sidebar row, and — because `cli_version` is lost the same way — silences
+  // `checkCliVersion`, the drift alarm that exists to warn about exactly this.
+  // So a partial prefix is not an answer; it's a fall-back to the full scan.
+  //
+  // A wholly flat payload (no `nestedKey`) went through `JSON.parse` entire, so
+  // there is nothing unread and no guard to apply. The remaining prefix-shaped
+  // gap is a key duplicated on BOTH sides of the nested value, where the scan
+  // keeps the first and `JSON.parse` would keep the last — no JSON serialiser
+  // emits duplicate keys, and the scan is an accelerator for files Codex wrote.
+  if (payload.nestedKey !== undefined && !WANTED_META_KEYS.every((key) => key in payload.scalars)) return undefined;
   return buildSessionMeta(payload.scalars);
 }
 

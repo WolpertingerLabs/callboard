@@ -198,6 +198,65 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     });
   });
 
+  it("falls back to the full scan when a nested value precedes the fields it wants", () => {
+    // The shape Codex will plausibly ship next: `git` is already in this
+    // corpus, just always after `cwd`. Move it in front and the head scan stops
+    // there — with a prefix that parses cleanly and is missing everything the
+    // chat list needs. The fast path must decline rather than answer short,
+    // because a short answer is indistinguishable from a real one: `cwd: ""`
+    // hides ignored folders' sessions and collapses the sidebar, and the lost
+    // `cli_version` silences the very drift warning that should have fired.
+    writeRollout([
+      {
+        timestamp: "2026-06-14T17:03:58.000Z",
+        type: "session_meta",
+        payload: {
+          id: THREAD_ID,
+          timestamp: "2026-06-14T17:03:58.000Z",
+          git: { branch: "main", commit: "0f1e2d3" },
+          cwd: "/p/real-project",
+          cli_version: "0.139.0",
+          base_instructions: { text: "x".repeat(32 * 1024) },
+        },
+      },
+    ]);
+    expect(readCodexSessionMeta(filePath)).toEqual({
+      id: THREAD_ID,
+      cwd: "/p/real-project",
+      timestamp: "2026-06-14T17:03:58.000Z",
+      cliVersion: "0.139.0",
+    });
+  });
+
+  it("still takes the fast path when the nested value sits after every field it wants", () => {
+    // The corpus's other real shape: `git` present, but past `cli_version`. The
+    // guard above is keyed on the fields actually collected, not on "there was
+    // a nested value", so this one must still be answered from the head — which
+    // the truncation pins, since the line as a whole cannot be parsed at all.
+    const line = {
+      timestamp: "2026-06-14T17:03:58.000Z",
+      type: "session_meta",
+      payload: {
+        id: THREAD_ID,
+        timestamp: "2026-06-14T17:03:58.000Z",
+        cwd: "/p/git-late",
+        cli_version: "0.139.0",
+        git: { branch: "main", commit: "0f1e2d3" },
+        base_instructions: { text: "x".repeat(64) },
+      },
+    };
+    const truncated = JSON.stringify(line).slice(0, -40);
+    expect(() => JSON.parse(truncated)).toThrow();
+    writeFileSync(filePath, truncated, "utf-8");
+    utimesSync(filePath, T0, T0);
+    expect(readCodexSessionMeta(filePath)).toEqual({
+      id: THREAD_ID,
+      cwd: "/p/git-late",
+      timestamp: "2026-06-14T17:03:58.000Z",
+      cliVersion: "0.139.0",
+    });
+  });
+
   it("returns null when no line is a session_meta", () => {
     writeRollout([userLine("only a message")]);
     expect(readCodexSessionMeta(filePath)).toBeNull();
