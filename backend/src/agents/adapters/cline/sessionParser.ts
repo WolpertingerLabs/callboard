@@ -19,6 +19,7 @@ import { existsSync, readdirSync, readFileSync, statSync, type Stats } from "nod
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
+import { CumulativeCounter } from "../cumulativeCounter.js";
 import { isSafePathSegment, resolveClineSessionsRoot, type ClineTranscriptEntry, type ClineTranscriptHeader, type ClineTranscriptLine } from "./transcript.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -123,19 +124,30 @@ export function readClineTranscriptCwd(filePath: string): string {
 }
 
 /**
- * The responses debug panel's row-grouping identity for one Cline turn.
+ * Cline's `AgentFinishReason` → the value the Stop column shows.
  *
- * Cline mints no per-request id that reaches callboard — its `usage` and `done`
- * events carry none — so `requestId` stays unset and the Req ID column shows a
- * dash rather than something callboard invented. `generationKey` is the field
- * for exactly this case: a grouping identity, not a datum. One row per turn is
- * the truth about Cline, since a turn is the granularity at which its cumulative
- * counters can be differenced at all.
+ * Cline reports why its **agent loop** ended, which is not why the **model**
+ * stopped generating: a turn that ran twelve iterations reports `completed`
+ * once, and relabelling that `end_turn` would claim a model-level fact callboard
+ * never observed. That argument still holds — what it missed is that putting a
+ * second vocabulary in one column under no marking makes the two collide.
+ * Concretely, `error` is a *model-level* failure when pi emits it and a
+ * *loop-level* one when Cline does, and cross-harness forks are supported, so
+ * one chat's "All stop reasons" dropdown could offer a single `error` option
+ * selecting two unrelated failure classes.
  *
- * @see ../acp/sessionParser.ts (`turnGenerationKey` — the same job, same reasons)
+ * So the loop vocabulary is namespaced rather than translated. `loop:completed`
+ * is not `end_turn` and does not pretend to be, `loop:error` no longer collides
+ * with the model's, and the panel can colour a clean loop finish green and
+ * `loop:max_iterations` red — which it could not when every Cline row was an
+ * unrecognised string rendering muted grey, clean and failed alike.
+ *
+ * Applied on **read** rather than in `buildTerminalResult` so it reaches
+ * transcripts already on disk: a Cline transcript stores the normalized
+ * `AgentEvent`, so a change made at write time would only ever affect new chats.
  */
-export function turnGenerationKey(sessionId: string, turnIndex: number): string {
-  return `cline:${sessionId}/${turnIndex}`;
+export function namespaceFinishReason(finishReason: string): string {
+  return finishReason.startsWith("loop:") ? finishReason : `loop:${finishReason}`;
 }
 
 /**
@@ -166,11 +178,6 @@ export function parseClineTranscript(filePath: string): ParsedMessage[] {
   const lines = readClineTranscriptLines(filePath);
   const messages: ParsedMessage[] = [];
   const model = readModelFromLines(lines);
-  // Namespaces the positional generation key. A chat's messages are the
-  // concatenation of *several* transcripts (`ClineSessionProvider.getMessages`
-  // walks every session id on the chat), so a bare turn index would make turn 0
-  // of one file and turn 0 of the next collapse into a single debug-panel row.
-  const sessionId = lines.find((l) => l.type === "session_meta")?.sessionId ?? filePath;
 
   let pendingText: { content: string[]; timestamp: string } | null = null;
   let pendingThinking: { content: string[]; timestamp: string } | null = null;
@@ -198,81 +205,61 @@ export function parseClineTranscript(filePath: string): ParsedMessage[] {
   // reply *it* closed rather than whatever assistant message is last in the file.
   let turnStart = 0;
   /**
-   * Which turn of this transcript is in flight, for {@link turnGenerationKey}.
-   * Counts turns, not messages, so it is stable across re-parses of one file.
-   */
-  let turnIndex = 0;
-  /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
-  let cumulativeCostUsd: number | null = null;
-  /** Latest cumulative token counts, differenced the same way. */
-  let cumulativeInput = 0;
-  let cumulativeOutput = 0;
-  /**
-   * Cache counters, differenced the same way — but `null` until the first turn
-   * that reports one, because Cline's cache totals are optional where its
-   * input/output totals are required. An absent figure has to stay absent: the
-   * debug panel renders `undefined` as a dash and `0` as a measured zero, and a
-   * baseline of 0 for an engine that reported nothing would manufacture the
-   * second from the first.
-   */
-  let cumulativeCacheRead: number | null = null;
-  let cumulativeCacheWrite: number | null = null;
-
-  /**
-   * One cumulative counter's step since the previous turn.
+   * Cline's counters are cumulative for the session, so each is differenced into
+   * a per-turn step by {@link CumulativeCounter} — which also covers the two
+   * cases the previous inline arithmetic did not:
    *
-   * A figure that went *backwards* (a resumed session whose runtime restarted
-   * its counters) is treated as a fresh baseline rather than a negative charge.
+   * - Cost and both cache figures are **optional per turn**
+   *   (`totalCost`/`totalCacheReadTokens`/`totalCacheWriteTokens` are all `?` in
+   *   `@cline/shared`), so a turn can report the totals it has and skip these.
+   *   The old code only advanced the baseline when a figure arrived, so turn 1
+   *   reporting 900, turn 2 omitting and turn 3 reporting 3,000 put **2,100** on
+   *   turn 3's row — turns 2 and 3 combined, billed to turn 3, with nothing
+   *   marking it. The counter returns a dash for that row instead.
+   * - An engine that never reports a cache figure keeps a `null` baseline
+   *   forever, so the column stays blank rather than filling with manufactured
+   *   zeroes. (That part the old code did get right, and it is preserved.)
    */
-  const step = (total: number, previous: number | null): number => (previous === null || total < previous ? total : total - previous);
+  const counters = {
+    input: new CumulativeCounter(),
+    output: new CumulativeCounter(),
+    cacheRead: new CumulativeCounter(),
+    cacheWrite: new CumulativeCounter(),
+    cost: new CumulativeCounter(),
+  };
 
   const closeTurn = (event: Extract<AgentEvent, { type: "result" }>): void => {
     const usage = event.usage;
-    let turnCostUsd: number | null = null;
-    let turnInput: number | null = null;
-    let turnOutput: number | null = null;
-    let turnCacheRead: number | null = null;
-    let turnCacheWrite: number | null = null;
-
-    if (usage) {
-      // Zero is a real answer and is reported, not suppressed.
-      if (typeof usage.costUsd === "number" && Number.isFinite(usage.costUsd)) {
-        turnCostUsd = step(usage.costUsd, cumulativeCostUsd);
-        cumulativeCostUsd = usage.costUsd;
-      }
-      turnInput = usage.inputTokens < cumulativeInput ? usage.inputTokens : usage.inputTokens - cumulativeInput;
-      turnOutput = usage.outputTokens < cumulativeOutput ? usage.outputTokens : usage.outputTokens - cumulativeOutput;
-      cumulativeInput = usage.inputTokens;
-      cumulativeOutput = usage.outputTokens;
-      if (typeof usage.cacheReadTokens === "number") {
-        turnCacheRead = step(usage.cacheReadTokens, cumulativeCacheRead);
-        cumulativeCacheRead = usage.cacheReadTokens;
-      }
-      if (typeof usage.cacheWriteTokens === "number") {
-        turnCacheWrite = step(usage.cacheWriteTokens, cumulativeCacheWrite);
-        cumulativeCacheWrite = usage.cacheWriteTokens;
-      }
-    }
+    // Stepped once per turn whether or not this turn reported them — a counter
+    // only detects a gap if it hears about the turn that skipped it. Zero is a
+    // real answer and is reported, not suppressed.
+    const turnInput = counters.input.step(usage?.inputTokens);
+    const turnOutput = counters.output.step(usage?.outputTokens);
+    const turnCacheRead = counters.cacheRead.step(usage?.cacheReadTokens);
+    const turnCacheWrite = counters.cacheWrite.step(usage?.cacheWriteTokens);
+    const turnCostUsd = counters.cost.step(usage?.costUsd);
 
     for (let i = messages.length - 1; i >= turnStart; i--) {
       const message = messages[i];
       if (message.role !== "assistant") continue;
-      if (turnInput !== null && turnOutput !== null) {
+      if (usage) {
         message.usage = {
-          input_tokens: turnInput,
-          output_tokens: turnOutput,
-          ...(turnCacheRead !== null && { cache_read_input_tokens: turnCacheRead }),
-          ...(turnCacheWrite !== null && { cache_creation_input_tokens: turnCacheWrite }),
+          ...(turnInput !== undefined && { input_tokens: turnInput }),
+          ...(turnOutput !== undefined && { output_tokens: turnOutput }),
+          ...(turnCacheRead !== undefined && { cache_read_input_tokens: turnCacheRead }),
+          ...(turnCacheWrite !== undefined && { cache_creation_input_tokens: turnCacheWrite }),
         };
       }
       if (event.durationMs != null) message.durationMs = event.durationMs;
-      if (turnCostUsd != null) message.costUsd = turnCostUsd;
-      if (event.stopReason) message.stopReason = event.stopReason;
-      message.generationKey = turnGenerationKey(sessionId, turnIndex);
+      if (turnCostUsd !== undefined) message.costUsd = turnCostUsd;
+      // Namespaced, not translated — see {@link namespaceFinishReason}. No
+      // `generationKey` is minted: the panel's `__ungrouped_N` fallback already
+      // numbers rows per message and exactly one message per turn is annotated
+      // here, so a positional key would change the row count from N to N.
+      if (event.stopReason) message.stopReason = namespaceFinishReason(event.stopReason);
       break;
     }
     turnStart = messages.length;
-    turnIndex++;
   };
 
   for (const line of lines) {

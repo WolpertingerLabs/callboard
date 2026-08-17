@@ -232,12 +232,32 @@ export function translateFinishReason(reason: string): AgentResultStatus {
  * Cache W columns Cline has always reported and callboard has always dropped.
  *
  * The cache figures take the **cumulative** totals only, with no fall-back to
- * the event's per-turn `cacheReadTokens`/`cacheWriteTokens`. The reader
- * (`sessionParser.closeTurn`) differences these against the previous turn, so a
- * field that silently switched between cumulative and per-turn would produce a
- * plausible-looking wrong number — worse than the dash an absent field renders
- * as. `totalInputTokens`/`totalOutputTokens` are required by the SDK type and
- * the cache totals are not, which is the only reason those two keep a fallback.
+ * the event's per-turn `cacheReadTokens`/`cacheWriteTokens`. A reviewer pushed
+ * back on that — the original rationale ("a field that silently switched between
+ * cumulative and per-turn would produce a plausible-looking wrong number")
+ * arguably indicted the chosen path more than the rejected one — so here is the
+ * evidence the choice actually rests on:
+ *
+ * - `usage` fires **more than once per turn**, and {@link recordTerminalSignal}
+ *   keeps only the latest. The per-turn fields are per *API call* within Cline's
+ *   iteration loop, so a turn that ran twelve iterations would report the twelfth
+ *   call's tokens as the turn's. The `total*` fields exist precisely because the
+ *   per-call ones do not accumulate. (What is *not* independently verified is the
+ *   exact emission frequency inside one turn — the stored transcript holds
+ *   already-translated events, so it cannot be read back off disk.)
+ * - Both forms are zero-suppressed anyway. Cline's emitter sends
+ *   `cacheReadTokens: turnTotal === 0 ? undefined : …` and
+ *   `totalCacheReadTokens: sessionTotal === 0 ? undefined : …` (verified in
+ *   `@cline/core/dist/index.js`), so switching would not buy back a single
+ *   measured zero — it would only change which unit the absent field is absent in.
+ *
+ * The reader (`sessionParser.closeTurn`) differences these against the previous
+ * turn via `CumulativeCounter`, which is also where the zero-suppression above is
+ * handled: a total still sitting at 0 is dropped by Cline on every turn until the
+ * first cache hit, and that must not be mistaken for a reporting gap.
+ *
+ * `totalInputTokens`/`totalOutputTokens` are required by the SDK type and the
+ * cache totals are not, which is the only reason those two keep a fallback.
  */
 export function translateUsage(event: Extract<ClineAgentEvent, { type: "usage" }>): TokenUsage {
   return {

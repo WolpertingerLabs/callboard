@@ -20,7 +20,7 @@ vi.mock("./ClineAgentQuery.js", () => ({
 
 import { ClineSessionProvider } from "./ClineSessionProvider.js";
 import { ClineTranscriptWriter, clineSeedPath, readSeededMessages } from "./transcript.js";
-import { parseClineTranscript } from "./sessionParser.js";
+import { parseClineTranscript, namespaceFinishReason } from "./sessionParser.js";
 
 let dataDir: string;
 let provider: ClineSessionProvider;
@@ -114,7 +114,7 @@ describe("transcript round-trip", () => {
     expect(answer.usage).toEqual({ input_tokens: 100, output_tokens: 20 });
   });
 
-  it("carries Cline's own finish reason, and gives each turn a grouping key", () => {
+  it("namespaces Cline's own finish reason instead of translating it", () => {
     const w = new ClineTranscriptWriter("sess1", "/repo");
     w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
     w.writeUserMessage("first question");
@@ -127,12 +127,76 @@ describe("transcript round-trip", () => {
     w.writeEvent({ type: "result", status: "max_turns", stopReason: "max_iterations", usage: { inputTokens: 250, outputTokens: 45 } });
 
     const answers = provider.parseSessionMessages(["sess1"]).filter((m) => m.role === "assistant");
-    // Verbatim, NOT translated into Anthropic's `end_turn`: Cline reports why
-    // its agent loop finished, which is not why the model stopped generating.
-    expect(answers.map((m) => m.stopReason)).toEqual(["completed", "max_iterations"]);
-    expect(answers.map((m) => m.generationKey)).toEqual(["cline:sess1/0", "cline:sess1/1"]);
-    // Cline mints no request id that reaches callboard, and none is invented.
+    // NOT translated into Anthropic's `end_turn`: Cline reports why its agent
+    // loop finished, which is not why the model stopped generating. But not bare
+    // either — `error` from Cline is a loop failure and `error` from pi is a
+    // model failure, and a chat forked across harnesses holds both under one
+    // filter option. The prefix is what keeps them apart.
+    expect(answers.map((m) => m.stopReason)).toEqual(["loop:completed", "loop:max_iterations"]);
+    // Cline mints no request id that reaches callboard, and none is invented —
+    // nor is a positional grouping key, which changed the row count from N to N.
     expect(answers.every((m) => m.requestId === undefined)).toBe(true);
+    expect(answers.every((m) => m.generationKey === undefined)).toBe(true);
+    // Still one debug-panel row per turn without one.
+    expect(answers.filter((m) => m.usage)).toHaveLength(2);
+  });
+
+  it("applies the namespace on read, so a transcript already on disk gets it", () => {
+    // Cline transcripts store callboard's already-normalized `AgentEvent`s. Doing
+    // this at write time would have left every existing chat rendering a bare
+    // `completed` that the panel colours as an unrecognised value.
+    expect(namespaceFinishReason("completed")).toBe("loop:completed");
+    // Idempotent, so a transcript written by a build that did namespace at write
+    // time does not become `loop:loop:completed`.
+    expect(namespaceFinishReason("loop:completed")).toBe("loop:completed");
+  });
+
+  it("dashes a cache figure whose step spans a turn that omitted it", () => {
+    // Cline's cache totals are optional per turn. Turn 1 reports 900, turn 2
+    // omits, turn 3 reports 3000 — the old differencing put 2,100 on turn 3,
+    // which is turns 2 and 3 combined billed to turn 3 with nothing marking it.
+    const w = new ClineTranscriptWriter("sess1", "/repo");
+    w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
+    for (const [i, usage] of [
+      { inputTokens: 100, outputTokens: 20, cacheReadTokens: 900 },
+      { inputTokens: 250, outputTokens: 45 },
+      { inputTokens: 400, outputTokens: 70, cacheReadTokens: 3000 },
+    ].entries()) {
+      w.writeUserMessage(`question ${i}`);
+      w.writeEvent({ type: "session_started", sessionId: "sess1" });
+      w.writeEvent({ type: "text", content: `answer ${i}` });
+      w.writeEvent({ type: "result", status: "success", usage });
+    }
+
+    const answers = provider.parseSessionMessages(["sess1"]).filter((m) => m.role === "assistant");
+    expect(answers.map((m) => m.usage?.cache_read_input_tokens)).toEqual([900, undefined, undefined]);
+    // The input counts, which every turn did report, are unaffected.
+    expect(answers.map((m) => m.usage?.input_tokens)).toEqual([100, 150, 150]);
+  });
+
+  it("does not dash the first cache hit of a session that started at zero", () => {
+    // Cline's emitter sends `totalCacheReadTokens: total === 0 ? undefined : …`
+    // (verified in `@cline/core/dist/index.js`), so it omits the field on every
+    // turn until the first cache hit. Treating that as an unattributable gap
+    // would dash the first turn that actually read cache — turning the guard
+    // above into a regression on the common path.
+    const w = new ClineTranscriptWriter("sess1", "/repo");
+    w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
+    for (const [i, usage] of [
+      { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0 },
+      { inputTokens: 250, outputTokens: 45 },
+      { inputTokens: 400, outputTokens: 70, cacheReadTokens: 3000 },
+    ].entries()) {
+      w.writeUserMessage(`question ${i}`);
+      w.writeEvent({ type: "session_started", sessionId: "sess1" });
+      w.writeEvent({ type: "text", content: `answer ${i}` });
+      w.writeEvent({ type: "result", status: "success", usage });
+    }
+
+    const answers = provider.parseSessionMessages(["sess1"]).filter((m) => m.role === "assistant");
+    // A baseline of 0 that goes quiet hides nothing: to have missed a read the
+    // counter would have had to count it, and then it would not still read 0.
+    expect(answers.map((m) => m.usage?.cache_read_input_tokens)).toEqual([0, undefined, 3000]);
   });
 
   it("survives a half-written final line", () => {

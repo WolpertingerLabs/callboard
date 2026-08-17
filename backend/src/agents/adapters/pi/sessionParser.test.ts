@@ -229,11 +229,13 @@ describe("parsePiSession", () => {
   describe("per-generation metrics", () => {
     /** The assistant entries of a conversation, in order. */
     const assistantsOf = (path: string) => parsePiSession(path).filter((m) => m.role === "assistant");
+    /** The blocks of one pi entry, keyed by the generation they came from. */
+    const blocksOfEntry = (path: string, entryId: string) => assistantsOf(path).filter((m) => m.generationKey === `pi:s1/${entryId}`);
 
     it("projects the usage pi records, so the debug panel has rows at all", () => {
-      const first = assistantsOf(writeSession("s1", conversationEntries()))[0];
-      expect(first.usage).toEqual({ input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
-      expect(first.costUsd).toBe(0.001);
+      const carrier = blocksOfEntry(writeSession("s1", conversationEntries()), "e2").at(-1)!;
+      expect(carrier.usage).toEqual({ input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+      expect(carrier.costUsd).toBe(0.001);
     });
 
     it("surfaces the cache split and the reasoning subset rather than folding them into input", () => {
@@ -327,14 +329,51 @@ describe("parsePiSession", () => {
       expect(assistantsOf(writeSession("s2", conversationEntries()))[0].requestId).toBeUndefined();
     });
 
-    it("carries the metrics onto the tool_use block too, not just the prose", () => {
-      // Every block came out of one API call, so every block describes it — the
-      // same thing Claude Code's parser does with its `meta` spread. The panel
-      // regroups them into one row, so the duplication never reaches the table.
-      const toolUse = parsePiSession(writeSession("s1", conversationEntries())).find((m) => m.type === "tool_use")!;
-      expect(toolUse.usage).toBeDefined();
-      expect(toolUse.stopReason).toBe("end_turn");
-      expect(toolUse.model).toBe("google/gemini-3.6-flash");
+    it("puts a generation's cost on exactly one block, not on every block", () => {
+      // `MessageBubble` renders `MessageMetadata` for thinking, tool_use *and*
+      // text, and does no grouping — so a cost stamped on every block is printed
+      // once per bubble. Entry e2 is thinking + prose + a tool call: stamping it
+      // three times made a user summing a chat's per-message costs get 3× the
+      // real spend. The panel would have hidden it (it regroups), the chat view
+      // does not.
+      const blocks = blocksOfEntry(writeSession("s1", conversationEntries()), "e2");
+      expect(blocks).toHaveLength(3);
+      expect(blocks.filter((m) => m.costUsd != null)).toHaveLength(1);
+      expect(blocks.filter((m) => m.usage != null)).toHaveLength(1);
+      expect(blocks.filter((m) => m.stopReason != null)).toHaveLength(1);
+      // Summed across the entry's bubbles, the chat view now shows what the
+      // generation actually cost — 0.001 once, not 0.003.
+      expect(blocks.reduce((sum, m) => sum + (m.costUsd ?? 0), 0)).toBe(0.001);
+    });
+
+    it("carries identity — model and grouping key — onto every block", () => {
+      // The other half of the split: `model` and `generationKey` describe which
+      // call a block came from rather than measuring it, so they belong on all
+      // three. Without the key on the tool_use block the panel would file it as
+      // its own row.
+      const blocks = blocksOfEntry(writeSession("s1", conversationEntries()), "e2");
+      expect(blocks.map((m) => m.type)).toEqual(["thinking", "text", "tool_use"]);
+      expect(blocks.every((m) => m.model === "google/gemini-3.6-flash")).toBe(true);
+    });
+
+    it("shows the model that answered, not the alias that was asked for", () => {
+      // A real entry from `~/.callboard/pi-sessions/` requests
+      // `~anthropic/claude-sonnet-latest` and is served `anthropic/claude-sonnet-5`.
+      // The Model column is a diagnostic; the two differ exactly when it matters.
+      const path = writeSession("s1", [
+        {
+          type: "message",
+          id: "e1",
+          parentId: null,
+          timestamp: TS,
+          message: {
+            ...assistantMessage([{ type: "text", text: "hi" }]),
+            model: "~anthropic/claude-sonnet-latest",
+            responseModel: "anthropic/claude-sonnet-5",
+          },
+        },
+      ]);
+      expect(assistantsOf(path)[0].model).toBe("anthropic/claude-sonnet-5");
     });
 
     it("annotates nothing when the entry carries no metrics at all", () => {
@@ -374,6 +413,55 @@ describe("parsePiSession", () => {
   it("renders a branch summary as a boundary too", () => {
     const path = writeSession("s1", [{ type: "branch_summary", id: "b1", parentId: null, timestamp: TS, fromId: "e2", summary: "abandoned branch" }]);
     expect(parsePiSession(path)[0]).toMatchObject({ subtype: "compact_boundary", content: "abandoned branch" });
+  });
+
+  it("keeps the usage of the call that wrote a compaction summary", () => {
+    // `CompactionEntry.usage` is "Usage from the LLM call(s) that generated this
+    // summary" — a real billed call. A chat that auto-compacted three times spent
+    // three times, and dropping these made "Total cost" quietly short in the one
+    // panel a user opens to find out what a chat cost.
+    const path = writeSession("s1", [
+      {
+        type: "compaction",
+        id: "c1",
+        parentId: null,
+        timestamp: TS,
+        summary: "summarized 40 turns",
+        firstKeptEntryId: "e9",
+        tokensBefore: 1000,
+        usage: { input: 40000, output: 800, cacheRead: 0, cacheWrite: 0, totalTokens: 40800, cost: { total: 0.12 } },
+      },
+    ]);
+    expect(parsePiSession(path)[0]).toMatchObject({
+      subtype: "compact_boundary",
+      usage: { input_tokens: 40000, output_tokens: 800, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      costUsd: 0.12,
+      generationKey: "pi:s1/c1",
+    });
+  });
+
+  it("keeps the usage of the call that wrote a branch summary", () => {
+    const path = writeSession("s1", [
+      {
+        type: "branch_summary",
+        id: "b1",
+        parentId: null,
+        timestamp: TS,
+        fromId: "e2",
+        summary: "abandoned branch",
+        usage: { input: 900, output: 60, cost: { total: 0.004 } },
+      },
+    ]);
+    expect(parsePiSession(path)[0]).toMatchObject({ usage: { input_tokens: 900, output_tokens: 60 }, costUsd: 0.004, generationKey: "pi:s1/b1" });
+  });
+
+  it("leaves a summary that records no usage unannotated", () => {
+    // The common case for an older session file. A boundary with an empty
+    // `usage` object would conjure a debug-panel row of dashes for a call
+    // callboard knows nothing about.
+    const path = writeSession("s1", [{ type: "compaction", id: "c1", parentId: null, timestamp: TS, summary: "s", firstKeptEntryId: "e9", tokensBefore: 10 }]);
+    expect(parsePiSession(path)[0].usage).toBeUndefined();
+    expect(parsePiSession(path)[0].generationKey).toBeUndefined();
   });
 
   /**
@@ -471,7 +559,13 @@ describe("deriveSearchText — SessionInfo.allMessagesText, re-derived", () => {
 
 describe("extractText", () => {
   it("joins text blocks and ignores others", () => {
-    expect(extractText([{ type: "text", text: "a" }, { type: "thinking", thinking: "t" }, { type: "text", text: "b" }])).toBe("ab");
+    expect(
+      extractText([
+        { type: "text", text: "a" },
+        { type: "thinking", thinking: "t" },
+        { type: "text", text: "b" },
+      ]),
+    ).toBe("ab");
   });
 
   it("accepts the bare-string content form", () => {
@@ -484,12 +578,9 @@ describe("extractText", () => {
 });
 
 describe("path safety", () => {
-  it.each([["../escape"], ["a/b"], ["/absolute"], [".."], ["."], ["C:\\win"], ["with\0nul"], [""], [null], [123]])(
-    "rejects %s as a path segment",
-    (value) => {
-      expect(isSafePathSegment(value)).toBe(false);
-    },
-  );
+  it.each([["../escape"], ["a/b"], ["/absolute"], [".."], ["."], ["C:\\win"], ["with\0nul"], [""], [null], [123]])("rejects %s as a path segment", (value) => {
+    expect(isSafePathSegment(value)).toBe(false);
+  });
 
   it.each([["chat-abc-123"], ["a"], ["019fcee0-462d-767a-8298-a6b7b94dbd41"], ["with.dots_and-dashes"]])("accepts %s", (value) => {
     expect(isSafePathSegment(value)).toBe(true);

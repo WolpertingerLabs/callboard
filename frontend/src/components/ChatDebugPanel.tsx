@@ -19,10 +19,74 @@ function fmtMsPerTok(v: number): string {
   return Math.round(v).toString();
 }
 
-/** Format token count with locale grouping */
+/**
+ * Format a token count — **`0` is a number here, not a blank.**
+ *
+ * This is a diagnostics table, and a dash and a zero say different things: a
+ * dash means *this engine does not report the figure* (OpenAI bills no
+ * prompt-cache writes, so a Codex row genuinely has no such number), a zero
+ * means *it counted, and the answer was none* — which is what a fully-cached
+ * Anthropic turn reports for `input_tokens`, and what a real pi generation on
+ * this machine reports for `cacheRead`.
+ *
+ * Four parsers carry machinery to keep `undefined` and `0` apart on the way
+ * here, and the summary chips render them differently. Collapsing them in this
+ * one function made the rows below disagree with the row above them, and made a
+ * measured zero indistinguishable from a column the engine never fills.
+ */
 function fmtTok(n?: number): string {
-  if (n == null || n === 0) return "-";
+  if (n == null) return "-";
   return n.toLocaleString();
+}
+
+/**
+ * Colour for a Stop value, across the two vocabularies the column now carries.
+ *
+ * The panel was built for Anthropic's model-level `stop_reason` and recognised
+ * exactly three values, so every Cline row — whose reason describes why the
+ * *agent loop* ended, a different fact deliberately not relabelled — fell
+ * through to muted grey. A clean `loop:completed` and a `loop:mistake_limit`
+ * rendered identically, and `loop:max_iterations`, the direct analogue of
+ * `max_tokens`, got no danger colour at all.
+ *
+ * Cline's are namespaced `loop:` on the way in (`cline/sessionParser.ts`), which
+ * is what lets both live here without `error` meaning two things at once.
+ */
+function stopReasonColor(reason: string): string {
+  switch (reason) {
+    case "end_turn":
+    case "loop:completed":
+      return "var(--success, #22c55e)";
+    case "tool_use":
+      return "var(--accent)";
+    case "max_tokens":
+    case "refusal":
+    case "error":
+    case "loop:max_iterations":
+    case "loop:mistake_limit":
+    case "loop:error":
+      return "var(--danger, #ef4444)";
+    default:
+      // `aborted`, `loop:aborted`, `cancelled`, `pending`, and anything an
+      // engine adds later: not a failure, not a clean finish, no claim made.
+      return "var(--text-muted)";
+  }
+}
+
+/**
+ * Order rows by an optional metric, keeping "not reported" out of the numbers.
+ *
+ * `?? 0` would sort a row whose engine reports no cache-write metric in among
+ * the rows that measured zero, re-collapsing in the sort exactly the
+ * distinction the cells preserve. Unreported rows sort to the end in both
+ * directions instead, so a descending sort still starts at the largest value
+ * and the dashes stay together.
+ */
+function compareOptional(a: number | undefined | null, b: number | undefined | null, dir: number): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return (a - b) * dir;
 }
 
 /** Format USD cost with adaptive precision */
@@ -68,10 +132,16 @@ export default function ChatDebugPanel({ messages }: Props) {
   // group (the one with stopReason set, or the last entry) and recompute
   // inter-response timing deltas.
   const allRows: DebugRow[] = useMemo(() => {
-    // Step 1: Collect assistant messages that carry usage data
+    // Step 1: Collect the messages that carry usage data.
+    //
+    // Assistant messages, and system markers that record an API call the
+    // assistant did not speak for: pi's compaction and branch-summary entries
+    // carry the usage of the call that *wrote the summary*, which is real spend
+    // on a real call. Excluding them made "Total cost" short by every
+    // compaction in a long chat. User messages never carry usage.
     const assistantEntries: ParsedMessage[] = [];
     for (const m of messages) {
-      if (m.role === "assistant" && m.usage) {
+      if ((m.role === "assistant" || m.role === "system") && m.usage) {
         assistantEntries.push(m);
       }
     }
@@ -162,19 +232,19 @@ export default function ChatDebugPanel({ messages }: Props) {
         case "index":
           return (a.index - b.index) * dir;
         case "delta":
-          return ((am.deltaMs ?? 0) - (bm.deltaMs ?? 0)) * dir;
+          return compareOptional(am.deltaMs, bm.deltaMs, dir);
         case "msPerTok":
-          return ((am.msPerOutputToken ?? 0) - (bm.msPerOutputToken ?? 0)) * dir;
+          return compareOptional(am.msPerOutputToken, bm.msPerOutputToken, dir);
         case "inputTokens":
-          return ((am.usage?.input_tokens ?? 0) - (bm.usage?.input_tokens ?? 0)) * dir;
+          return compareOptional(am.usage?.input_tokens, bm.usage?.input_tokens, dir);
         case "outputTokens":
-          return ((am.usage?.output_tokens ?? 0) - (bm.usage?.output_tokens ?? 0)) * dir;
+          return compareOptional(am.usage?.output_tokens, bm.usage?.output_tokens, dir);
         case "cacheRead":
-          return ((am.usage?.cache_read_input_tokens ?? 0) - (bm.usage?.cache_read_input_tokens ?? 0)) * dir;
+          return compareOptional(am.usage?.cache_read_input_tokens, bm.usage?.cache_read_input_tokens, dir);
         case "cacheWrite":
-          return ((am.usage?.cache_creation_input_tokens ?? 0) - (bm.usage?.cache_creation_input_tokens ?? 0)) * dir;
+          return compareOptional(am.usage?.cache_creation_input_tokens, bm.usage?.cache_creation_input_tokens, dir);
         case "cost":
-          return ((am.costUsd ?? 0) - (bm.costUsd ?? 0)) * dir;
+          return compareOptional(am.costUsd, bm.costUsd, dir);
         default:
           return 0;
       }
@@ -202,15 +272,29 @@ export default function ChatDebugPanel({ messages }: Props) {
     let hasCost = false;
     let hasCacheRead = false;
     let hasCacheWrite = false;
+    // Every prompt token of the rows that reported a cache read, kept apart from
+    // `totalIn`. The hit rate is a ratio, and a ratio needs both halves to come
+    // from the same rows — see `cacheHitRate` below.
+    let cachedRowsPromptTokens = 0;
     const deltas: number[] = [];
     const msPerToks: number[] = [];
 
     for (const { message: m } of rows) {
       totalIn += m.usage?.input_tokens ?? 0;
       totalOut += m.usage?.output_tokens ?? 0;
-      if (m.usage?.cache_read_input_tokens != null) { totalCacheRead += m.usage.cache_read_input_tokens; hasCacheRead = true; }
-      if (m.usage?.cache_creation_input_tokens != null) { totalCacheWrite += m.usage.cache_creation_input_tokens; hasCacheWrite = true; }
-      if (m.costUsd != null) { totalCost += m.costUsd; hasCost = true; }
+      if (m.usage?.cache_read_input_tokens != null) {
+        totalCacheRead += m.usage.cache_read_input_tokens;
+        cachedRowsPromptTokens += (m.usage.input_tokens ?? 0) + m.usage.cache_read_input_tokens + (m.usage.cache_creation_input_tokens ?? 0);
+        hasCacheRead = true;
+      }
+      if (m.usage?.cache_creation_input_tokens != null) {
+        totalCacheWrite += m.usage.cache_creation_input_tokens;
+        hasCacheWrite = true;
+      }
+      if (m.costUsd != null) {
+        totalCost += m.costUsd;
+        hasCost = true;
+      }
       if (m.deltaMs != null) deltas.push(m.deltaMs);
       if (m.msPerOutputToken != null) msPerToks.push(m.msPerOutputToken);
     }
@@ -227,7 +311,15 @@ export default function ChatDebugPanel({ messages }: Props) {
     // A hit rate needs a cache-read figure to be a rate *of* anything. Without
     // one the denominator is just the input count and the answer is a flat 0%,
     // which reads as "the cache never hit" rather than "nobody counted".
-    const cacheHitRate = hasCacheRead && totalCacheRead + totalCacheWrite + totalIn > 0 ? (totalCacheRead / (totalCacheRead + totalCacheWrite + totalIn)) * 100 : null;
+    //
+    // The denominator is the input of the rows that *reported* a cache read, not
+    // of every row. A chat can span engines — forks across harnesses are
+    // supported — and folding in the input of rows from an engine that reports no
+    // cache metric dilutes the rate towards zero: 10 Codex rows at 5k in / 4k
+    // cache read followed by 10 Cline rows at 5k in and no cache figure reported
+    // 28.6% where the measured rate is 44%. Rows nobody measured are not
+    // evidence of a cache miss.
+    const cacheHitRate = hasCacheRead && cachedRowsPromptTokens > 0 ? (totalCacheRead / cachedRowsPromptTokens) * 100 : null;
 
     return {
       totalIn,
@@ -467,20 +559,7 @@ export default function ChatDebugPanel({ messages }: Props) {
                 <td style={tdLeftStyle}>{m.model ?? "-"}</td>
                 <td style={tdLeftStyle}>{m.speed ?? "-"}</td>
                 <td style={tdLeftStyle}>
-                  <span
-                    style={{
-                      color:
-                        m.stopReason === "end_turn"
-                          ? "var(--success, #22c55e)"
-                          : m.stopReason === "tool_use"
-                            ? "var(--accent)"
-                            : m.stopReason === "max_tokens"
-                              ? "var(--danger, #ef4444)"
-                              : "var(--text-muted)",
-                    }}
-                  >
-                    {m.stopReason ?? "-"}
-                  </span>
+                  <span style={{ color: m.stopReason ? stopReasonColor(m.stopReason) : "var(--text-muted)" }}>{m.stopReason ?? "-"}</span>
                 </td>
                 <td style={tdStyle}>{fmtTok(m.usage?.input_tokens)}</td>
                 <td style={tdStyle}>{fmtTok(m.usage?.output_tokens)}</td>

@@ -41,8 +41,18 @@ export interface TokenUsage {
    * make the token figure disagree with the cost figure beside it.
    *
    * Whether these are per-turn or cumulative-for-the-session is the emitting
-   * adapter's choice and must match `inputTokens`/`outputTokens` — Cline sends
-   * running totals and differences them on read; ACP and pi send per-turn.
+   * adapter's choice and must match `inputTokens`/`outputTokens`:
+   *
+   *     cline   running totals, differenced on read
+   *     acp     running totals, differenced on read
+   *     pi      per-generation, used as-is
+   *
+   * An earlier revision of this comment claimed ACP sent per-turn figures. The
+   * SDK this repo pins says otherwise, field by field — `inputTokens` is "Total
+   * input tokens across all turns", `cachedReadTokens` is "Total cache read
+   * tokens", `totalTokens` is "Sum of all token types across session" — so the
+   * ACP parser differences them, and the claim is corrected here rather than
+   * left as a confident lie beside the code it describes.
    */
   cacheReadTokens?: number;
   cacheWriteTokens?: number;

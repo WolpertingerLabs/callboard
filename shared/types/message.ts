@@ -49,10 +49,32 @@ export interface ParsedMessage {
    *   claude-code  cache read ✓  cache write ✓
    *   codex        cache read ✓  cache write ✗ — OpenAI bills no cache writes
    *                                             and reports no such metric
-   *   acp          cache read ✓  cache write ✓ — both optional in the schema;
+   *   acp          cache read ~  cache write ~ — both optional in the schema;
    *                                             blank for a vendor that omits them
-   *   cline        cache read ✓  cache write ✓ — cumulative, differenced on read
+   *   cline        cache read ~  cache write ~ — cumulative, differenced on read;
+   *                                             Cline drops a total that is still 0
    *   pi           cache read ✓  cache write ✓
+   *
+   * ## What an *existing* chat shows
+   *
+   * Populating these fields per engine is a **parser** change, so it reaches a
+   * chat already on disk only if the number is still on disk. It is for pi and
+   * it is not for ACP or Cline, and the difference is where each engine's
+   * transcript sits relative to translation:
+   *
+   * - **pi** — retroactive. A pi session file is pi's own format, and it has
+   *   always recorded `usage`, `stopReason`, `responseId` and the `cost`
+   *   breakdown. The parser was simply not reading them, so existing pi chats
+   *   light up on reparse with no migration.
+   * - **acp / cline** — forward-only. Both transcripts store callboard's own
+   *   already-normalized `AgentEvent`s, so whatever the *writer* dropped is gone
+   *   before the file is written. A stored ACP result line on this machine reads
+   *   `{"type":"result","status":"success","usage":{"inputTokens":2,
+   *   "outputTokens":1241}}` — the cache figures and the stop reason were
+   *   discarded at write time and no parser can recover them. Chats started
+   *   before this change keep showing dashes in those columns; new ones do not.
+   *
+   * Worth knowing before reading a blank column as a bug in the fix.
    */
   usage?: {
     input_tokens?: number;
@@ -101,9 +123,18 @@ export interface ParsedMessage {
    * different spelling — pi's `stop`/`length`/`toolUse` do, and are renamed.
    * Everything else passes through verbatim: ACP already uses these names for
    * the values that overlap and has its own (`refusal`, `cancelled`) for the
-   * rest, and Cline reports why its agent *loop* finished (`completed`,
-   * `max_iterations`), which is a different fact from why the model stopped and
-   * is not relabelled as though it were.
+   * rest.
+   *
+   * **Cline is namespaced, not translated.** It reports why its agent *loop*
+   * finished, which is a different fact from why the model stopped, so
+   * `completed` is not relabelled `end_turn`. But a second vocabulary sharing
+   * one column collides: `error` is a model-level failure from pi and a
+   * loop-level one from Cline, and a chat forked across harnesses can hold both.
+   * So Cline's values arrive as `loop:completed`, `loop:max_iterations`,
+   * `loop:aborted`, `loop:mistake_limit`, `loop:error` — the prefix *is* the
+   * statement that this describes the loop, and it lets the panel colour a clean
+   * loop finish green and `loop:max_iterations` red instead of rendering every
+   * Cline row the same muted grey.
    *
    * Absent for **codex**: a rollout carries no stop reason in any line type —
    * confirmed by a census over every `event_msg` and `response_item` in the 361
@@ -141,14 +172,17 @@ export interface ParsedMessage {
    * identity the debug panel can group on. Falls back to `requestId` when
    * absent.
    *
-   * An **identity, not a datum** — which is what makes it the right home for an
-   * engine that reports no id of its own. Codex uses `"<turnId>/<genIndex>"`,
-   * pi `"pi:<sessionId>/<entryId>"` (its session entries *are* generations), and
-   * ACP and Cline `"<engine>:<sessionId>/<turnIndex>"`, a positional key, since
-   * a turn is the only granularity at which either reports usage. All four are
+   * An **identity, not a datum**. Codex uses `"<turnId>/<genIndex>"` and pi
+   * `"pi:<sessionId>/<entryId>"` (its session entries *are* generations), both
    * namespaced by session id because a chat's messages are the concatenation of
-   * several session files, and a bare index would merge turn 0 of one with turn
+   * several session files and a bare index would merge entry 0 of one with entry
    * 0 of the next into a single row.
+   *
+   * ACP and Cline mint **none**. A positional turn key was added for them and
+   * then removed: the panel's `__ungrouped_N` fallback already numbers rows per
+   * message, and both parsers annotate exactly one message per turn, so the key
+   * changed the row count from N to N. Only mint one where an engine really does
+   * emit several messages for a single generation.
    */
   generationKey?: string;
   /** Server-side tool usage counts */

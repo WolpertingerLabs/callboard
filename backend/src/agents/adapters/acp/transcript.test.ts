@@ -255,17 +255,65 @@ describe("per-turn metrics", () => {
     expect(messages.find((m) => m.role === "user")?.model).toBeUndefined();
   });
 
-  it("attributes tokens to the reply of the turn that reported them", () => {
+  it("differences the session-cumulative token counts into per-turn figures", () => {
+    // `PromptResponse.usage` is a SESSION total, not this response's — the
+    // pinned SDK says so field by field ("Total input tokens across all turns",
+    // "Sum of all token types across session"). Copying it onto a row made turn
+    // 2 claim turns 1 and 2 together; three turns of 900 cache reads rendered
+    // 900 / 1800 / 2700, which looks exactly like a cache warming up.
     const writer = new AcpTranscriptWriter("opencode", "m2", "/work");
     writer.writeHeader(null);
     turn(writer, { model: "a", prompt: "one", reply: "first", usage: { inputTokens: 1, outputTokens: 2 } });
-    turn(writer, { model: "b", prompt: "two", reply: "second", usage: { inputTokens: 30, outputTokens: 40 } });
+    turn(writer, { model: "b", prompt: "two", reply: "second", usage: { inputTokens: 31, outputTokens: 42 } });
 
     const replies = parseAcpTranscript(findAcpTranscript("m2")!.filePath).filter((m) => m.role === "assistant");
     expect(replies.map((m) => [m.model, m.usage?.input_tokens, m.usage?.output_tokens])).toEqual([
       ["a", 1, 2],
+      // 31 - 1 and 42 - 2, not 31 and 42.
       ["b", 30, 40],
     ]);
+  });
+
+  it("differences the cache, and does not let a climbing total read as a warming cache", () => {
+    // The reviewer's scenario, verbatim: three turns each reading 900 cached
+    // tokens arrive as 900 / 1800 / 2700. Every row must say 900.
+    const writer = new AcpTranscriptWriter("opencode", "m2b", "/work");
+    writer.writeHeader(null);
+    for (const [i, cached] of [900, 1800, 2700].entries()) {
+      writer.writeEvent({ type: "session_started", sessionId: "s" } as never);
+      writer.writeUserMessage(`prompt ${i}`);
+      writer.writeEvent({ type: "text", content: `reply ${i}` } as never);
+      writer.writeEvent({
+        type: "result",
+        status: "success",
+        usage: { inputTokens: 10 * (i + 1), outputTokens: 5 * (i + 1), cacheReadTokens: cached, cacheWriteTokens: 40 * (i + 1), reasoningTokens: 12 * (i + 1) },
+      } as never);
+    }
+
+    const replies = parseAcpTranscript(findAcpTranscript("m2b")!.filePath).filter((m) => m.role === "assistant");
+    expect(replies.map((m) => m.usage?.cache_read_input_tokens)).toEqual([900, 900, 900]);
+    expect(replies.map((m) => m.usage?.cache_creation_input_tokens)).toEqual([40, 40, 40]);
+    expect(replies.map((m) => m.usage?.reasoning_tokens)).toEqual([12, 12, 12]);
+    // And the session's total is still the last cumulative figure, not 5,400.
+    expect(replies.reduce((sum, m) => sum + (m.usage?.cache_read_input_tokens ?? 0), 0)).toBe(2700);
+  });
+
+  it("dashes a row whose step spans a turn that reported nothing", () => {
+    // Turn 2 emits a result with no usage at all, so turn 3's step covers both.
+    // Printing it on turn 3 would be a plausible number for the wrong response.
+    const writer = new AcpTranscriptWriter("opencode", "m2c", "/work");
+    writer.writeHeader(null);
+    turn(writer, { prompt: "one", reply: "first", usage: { inputTokens: 100, outputTokens: 10 } });
+    turn(writer, { prompt: "two", reply: "second" });
+    turn(writer, { prompt: "three", reply: "third", usage: { inputTokens: 500, outputTokens: 50 } });
+
+    const replies = parseAcpTranscript(findAcpTranscript("m2c")!.filePath).filter((m) => m.role === "assistant");
+    expect(replies[0].usage).toEqual({ input_tokens: 100, output_tokens: 10 });
+    // Turn 2 reported nothing, so it is not a row at all.
+    expect(replies[1].usage).toBeUndefined();
+    // Turn 3's step is 400, but 400 belongs to turns 2 and 3 jointly. Neither
+    // count is attributable, and the row says so rather than claiming 400.
+    expect(replies[2].usage).toEqual({});
   });
 
   it("differences the cumulative spend beacon into a per-turn cost", () => {
@@ -358,20 +406,23 @@ describe("per-turn metrics", () => {
     expect(reply.stopReason).toBeUndefined();
   });
 
-  it("gives each turn its own grouping key, namespaced by session", () => {
-    // Without one, every annotated message became its own `__ungrouped_N` row.
-    // Namespaced because a chat's messages are several transcripts concatenated,
-    // so a bare turn index would merge turn 0 of one file with turn 0 of the next.
+  it("mints neither a request id nor a grouping key, and needs neither", () => {
+    // A positional `generationKey` was added here and removed again: the panel's
+    // `__ungrouped_N` fallback already numbers rows per message, and exactly one
+    // message per turn is annotated, so each turn was one row with or without a
+    // key. What must hold is the row *count*, which is what this asserts.
     const writer = new AcpTranscriptWriter("opencode", "m11", "/work");
     writer.writeHeader(null);
     turn(writer, { prompt: "one", reply: "first", usage: { inputTokens: 1, outputTokens: 2 } });
     turn(writer, { prompt: "two", reply: "second", usage: { inputTokens: 3, outputTokens: 4 } });
 
-    const replies = parseAcpTranscript(findAcpTranscript("m11")!.filePath).filter((m) => m.role === "assistant");
-    expect(replies.map((m) => m.generationKey)).toEqual(["acp:m11/0", "acp:m11/1"]);
-    // Grouping is not identity: ACP mints no request id and callboard does not
-    // invent one, so the panel's Req ID column stays empty.
-    expect(replies.every((m) => m.requestId === undefined)).toBe(true);
+    const messages = parseAcpTranscript(findAcpTranscript("m11")!.filePath);
+    const rows = messages.filter((m) => m.role === "assistant" && m.usage);
+    expect(rows).toHaveLength(2);
+    // ACP mints no request id and callboard does not invent one, so the panel's
+    // Req ID column stays empty — and no key is synthesized in its place.
+    expect(rows.every((m) => m.requestId === undefined)).toBe(true);
+    expect(rows.every((m) => m.generationKey === undefined)).toBe(true);
   });
 
   it("still parses a transcript written before metrics existed", () => {

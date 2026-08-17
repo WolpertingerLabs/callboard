@@ -87,6 +87,8 @@ interface PiUsageLike {
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
+  /** Reasoning-trace tokens — a **subset** of `output`, never an addition to it. */
+  reasoning?: number;
   totalTokens?: number;
   cost?: { total?: number } | number;
 }
@@ -293,25 +295,55 @@ export function buildTerminalResult(acc: PiTurnAccounting): AgentEvent & { type:
  * Cache tokens are deliberately not folded into `inputTokens`. They are billed
  * differently, `cost.total` already accounts for them, and inflating the input
  * count would make the token figure disagree with the cost figure beside it —
- * the same call the Cline adapter makes.
+ * the same call the Cline adapter makes. `reasoning` is a **subset** of `output`
+ * per pi's own doc-comment, so it rides along as a breakdown and is never added
+ * on.
+ *
+ * Carries the same fields the transcript parser projects (`pi/sessionParser.ts`,
+ * `projectUsage`) and for the same reason: this is the *live* path and that is
+ * the *replay* path over the same `Usage`, so a field one surfaces and the other
+ * drops makes a running chat and the same chat after a reload disagree.
+ *
+ * A figure pi did not write stays undefined rather than defaulting to 0 — the
+ * two mean different things all the way to the debug panel's cells.
  */
 export function translateUsage(usage: PiUsageLike): TokenUsage {
   const cost = typeof usage.cost === "number" ? usage.cost : usage.cost?.total;
+  const count = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const cacheReadTokens = count(usage.cacheRead);
+  const cacheWriteTokens = count(usage.cacheWrite);
+  const reasoningTokens = count(usage.reasoning);
   return {
     inputTokens: usage.input ?? 0,
     outputTokens: usage.output ?? 0,
     ...(typeof cost === "number" ? { costUsd: cost } : {}),
+    ...(cacheReadTokens !== undefined && { cacheReadTokens }),
+    ...(cacheWriteTokens !== undefined && { cacheWriteTokens }),
+    ...(reasoningTokens !== undefined && { reasoningTokens }),
   };
 }
 
-/** Sum two usage records, treating a missing one as zero. */
+/**
+ * Sum two usage records, treating a missing one as zero.
+ *
+ * An optional field stays absent unless at least one side reported it: summing
+ * two turns that never counted cache writes must not produce a measured `0`,
+ * which the debug panel would render as "it wrote none" rather than a dash.
+ */
 export function addUsage(a: TokenUsage | undefined, b: TokenUsage): TokenUsage {
   if (!a) return b;
-  const costUsd = (a.costUsd ?? 0) + (b.costUsd ?? 0);
+  const sumOptional = (x?: number, y?: number): number | undefined => (x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0));
+  const costUsd = sumOptional(a.costUsd, b.costUsd);
+  const cacheReadTokens = sumOptional(a.cacheReadTokens, b.cacheReadTokens);
+  const cacheWriteTokens = sumOptional(a.cacheWriteTokens, b.cacheWriteTokens);
+  const reasoningTokens = sumOptional(a.reasoningTokens, b.reasoningTokens);
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
-    ...(a.costUsd !== undefined || b.costUsd !== undefined ? { costUsd } : {}),
+    ...(costUsd !== undefined && { costUsd }),
+    ...(cacheReadTokens !== undefined && { cacheReadTokens }),
+    ...(cacheWriteTokens !== undefined && { cacheWriteTokens }),
+    ...(reasoningTokens !== undefined && { reasoningTokens }),
   };
 }
 

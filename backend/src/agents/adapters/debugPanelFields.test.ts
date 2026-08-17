@@ -89,13 +89,27 @@ afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
  * the panel's, this file measures something the user never sees.
  */
 const PROBES = {
-  /** The row filter. No usage ⇒ no row at all ⇒ an empty panel. */
+  /**
+   * The row filter. No usage ⇒ no row at all ⇒ an empty panel.
+   *
+   * Necessarily `every()` for every engine, because this predicate *is* the
+   * filter {@link panelRows} applies — the assertion with content is
+   * `assertRow`'s "no rows at all" check, which is what fails when a parser
+   * stops populating usage.
+   */
   usage: (m: ParsedMessage) => m.usage != null,
   /** Model column + the model filter dropdown. */
   model: (m: ParsedMessage) => m.model != null,
   /** Stop column, the "All stop reasons" filter, AND the canonical-entry picker. */
   stopReason: (m: ParsedMessage) => m.stopReason != null,
-  /** Row grouping. Absent ⇒ every message becomes its own `__ungrouped_N` row. */
+  /**
+   * Row grouping — an engine that emits several messages per generation needs a
+   * key, so its blocks collapse to one row instead of multiplying its usage.
+   *
+   * An engine that emits **one** message per generation needs none: the panel's
+   * `__ungrouped_N` fallback already numbers rows per message. That is why acp
+   * and cline are `unavailable` here rather than carrying a positional key.
+   */
   grouping: (m: ParsedMessage) => (m.generationKey ?? m.requestId) != null,
   /** Req ID column — the engine's own id, never a synthesized one. */
   requestId: (m: ParsedMessage) => m.requestId != null,
@@ -105,18 +119,12 @@ const PROBES = {
   cacheWrite: (m: ParsedMessage) => m.usage?.cache_creation_input_tokens != null,
   /** Cost column + "Total cost". */
   cost: (m: ParsedMessage) => m.costUsd != null,
-  /**
-   * ms/tok column + "Avg ms/tok" — as the *parser* leaves it.
-   *
-   * Worth being precise about, because it is not what the column shows: the
-   * panel recomputes `msPerOutputToken` for every row from the wall-clock gap to
-   * the previous row, overwriting whatever a parser set. So the column is
-   * engine-independent by construction and needs only `timestamp` and
-   * `output_tokens`. A parser value survives only when the timestamp is missing
-   * or unparseable, which no engine here produces — making this cell a record of
-   * a field that is effectively write-only, not of what a user sees.
-   */
-  msPerTok: (m: ParsedMessage) => m.msPerOutputToken != null,
+  // `msPerOutputToken` is deliberately NOT a probe. The panel recomputes it for
+  // every row from the wall-clock gap to the previous row, overwriting whatever
+  // a parser set, so no parser's value is user-visible and a cell here would
+  // assert an implementation detail — one that moved whenever a fixture's
+  // timestamps did. The ms/tok column needs only `timestamp` and `output_tokens`,
+  // both covered below.
   /** Speed column. */
   speed: (m: ParsedMessage) => m.speed != null,
   /** Time column, the inter-response deltas, and p95. */
@@ -138,7 +146,9 @@ const unavailable = (because: string): Cell => ({ kind: "none", because });
 
 /** Reasons repeated across engines, named once so they read as one decision. */
 const NO_ANTHROPIC_CONCEPT = "an Anthropic-only service field; no other vendor has the concept, let alone the datum";
-const PANEL_DERIVES_IT = "the panel recomputes ms/tok from the wall clock for every row, so no parser but Claude Code's bothers setting it";
+const NO_KEY_NEEDED =
+  "one message per turn carries the usage, so the panel's own `__ungrouped_N` fallback already gives each turn its own row. " +
+  "A positional key was added here and removed again: it changed the row count from N to N.";
 
 // ── The matrix ──────────────────────────────────────────────────────
 
@@ -154,10 +164,6 @@ const MATRIX: Record<string, Record<Field, Cell>> = {
     cost: unavailable(
       "the Agent SDK writes no cost field anywhere in its JSONL — a key census over the local session logs found none. " +
         "Multiplying tokens by a price table would be a guess wearing a cost's clothing.",
-    ),
-    msPerTok: some(
-      "an entry that shares its predecessor's timestamp has a zero gap, and a zero gap is not a rate. Claude Code writes " +
-        "every block of one API response with a single timestamp, so a multi-block entry always has one such row.",
     ),
     speed: every(),
     timestamp: every(),
@@ -177,7 +183,6 @@ const MATRIX: Record<string, Record<Field, Cell>> = {
     cacheRead: every(),
     cacheWrite: unavailable("OpenAI bills no prompt-cache writes and reports no such metric; `token_count` has `cached_input_tokens` and no counterpart"),
     cost: unavailable("a rollout records no price; a subscription run is not billed per call"),
-    msPerTok: unavailable(PANEL_DERIVES_IT),
     speed: unavailable(NO_ANTHROPIC_CONCEPT),
     timestamp: every(),
   },
@@ -186,15 +191,21 @@ const MATRIX: Record<string, Record<Field, Cell>> = {
     usage: every(),
     model: every(),
     stopReason: every(),
-    grouping: every(),
+    grouping: unavailable(NO_KEY_NEEDED),
     requestId: unavailable(
-      "ACP mints no request id — neither the protocol nor `PromptResponse` has one. Grouping uses `generationKey` " +
-        "instead; an id callboard invented would look like one a user could quote to a vendor's support.",
+      "ACP mints no request id — neither the protocol nor `PromptResponse` has one. An id callboard invented would " +
+        "look like one a user could quote to a vendor's support, and none is needed for grouping.",
     ),
-    cacheRead: every(),
-    cacheWrite: every(),
-    cost: every(),
-    msPerTok: unavailable(PANEL_DERIVES_IT),
+    cacheRead: some(
+      "`cachedReadTokens` is `number | null | undefined` in the ACP schema and only some vendors fill it. OpenCode does; " +
+        "the fixture's third turn is a vendor that reports neither cache figure, and its row's Cache R/W columns are blank. " +
+        "`every()` here would have told a maintainer that a blank column must be a callboard regression.",
+    ),
+    cacheWrite: some("as `cacheRead` — both are optional in the schema and a vendor may report neither"),
+    cost: some(
+      "cost rides on a separate `usage_update` beacon, not on `PromptResponse`, so a turn where the agent sent none has " +
+        "no cost — and after such a gap the next turn's step spans two turns and is dashed rather than misattributed",
+    ),
     speed: unavailable(NO_ANTHROPIC_CONCEPT),
     timestamp: every(),
   },
@@ -202,27 +213,32 @@ const MATRIX: Record<string, Record<Field, Cell>> = {
   cline: {
     usage: every(),
     model: every(),
-    stopReason: every(),
-    grouping: every(),
-    requestId: unavailable("no id reaches callboard: neither Cline's `usage` nor its `done` event carries one. Grouping uses `generationKey`."),
-    cacheRead: every(),
-    cacheWrite: every(),
+    stopReason: some(
+      "`buildTerminalResult` takes it from the `done` event, and a loop that ends on an unrecoverable error never emits " +
+        "one — so a turn can carry usage (a row) with no finish reason. The fixture's last turn is that shape.",
+    ),
+    grouping: unavailable(NO_KEY_NEEDED),
+    requestId: unavailable("no id reaches callboard: neither Cline's `usage` nor its `done` event carries one."),
+    cacheRead: some(
+      "`totalCacheReadTokens` is optional, and Cline's own emitter sends it as `total === 0 ? undefined : total` " +
+        "(`@cline/core/dist/index.js`), so it is absent on every turn before the first cache hit — and a turn whose step " +
+        "spans a turn that omitted it is dashed rather than credited the span",
+    ),
+    cacheWrite: some("as `cacheRead` — `totalCacheWriteTokens` is optional and zero-suppressed by the same emitter"),
     cost: every(),
-    msPerTok: unavailable(PANEL_DERIVES_IT),
     speed: unavailable(NO_ANTHROPIC_CONCEPT),
     timestamp: every(),
   },
 
   pi: {
     usage: every(),
-    model: every(),
-    stopReason: every(),
+    model: some("a compaction entry records the usage of the call that wrote the summary, but no model for it — see `summaryMetrics`"),
+    stopReason: some("as `model`: a compaction row is a real API call with no stop reason recorded, so its Stop column is blank"),
     grouping: every(),
-    requestId: every(),
+    requestId: some("as `model`: pi records no `responseId` for a compaction's own call"),
     cacheRead: every(),
     cacheWrite: every(),
     cost: every(),
-    msPerTok: unavailable(PANEL_DERIVES_IT),
     speed: unavailable(NO_ANTHROPIC_CONCEPT),
     timestamp: every(),
   },
@@ -239,7 +255,9 @@ const MATRIX: Record<string, Record<Field, Cell>> = {
  * tool results, which the panel never shows.
  */
 function panelRows(messages: ParsedMessage[]): ParsedMessage[] {
-  return messages.filter((m) => m.role === "assistant" && m.usage);
+  // Assistant messages, and system markers recording an API call the assistant
+  // did not speak for — pi's compaction summaries. Kept verbatim from the panel.
+  return messages.filter((m) => (m.role === "assistant" || m.role === "system") && m.usage);
 }
 
 /** Distinct grouping keys among the rows — one debug-panel row per key. */
@@ -374,7 +392,11 @@ function codexMessages(): ParsedMessage[] {
     { timestamp: T0, type: "turn_context", payload: { turn_id: "019ec8ab-6a71-7e72-b285-7d984d059a8b", cwd: "/tmp/repo", model: "gpt-5.5", effort: "high" } },
     { timestamp: T0, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "read the readme" }] } },
     { timestamp: T1, type: "response_item", payload: { type: "reasoning", summary: [{ type: "summary_text", text: "I should read it" }] } },
-    { timestamp: T1, type: "response_item", payload: { type: "function_call", name: "shell", call_id: "call-1", arguments: '{"command":["cat","README.md"]}' } },
+    {
+      timestamp: T1,
+      type: "response_item",
+      payload: { type: "function_call", name: "shell", call_id: "call-1", arguments: '{"command":["cat","README.md"]}' },
+    },
     tokenCount(13711, 4992, 202, 57),
     { timestamp: T1, type: "response_item", payload: { type: "function_call_output", call_id: "call-1", output: "hello world" } },
     { timestamp: T2, type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "It says hello world." }] } },
@@ -390,14 +412,28 @@ function codexMessages(): ParsedMessage[] {
  * The ACP-native values go through the adapter's own `translateAcpUpdate` /
  * `buildAcpUsage` / `mapStopReason` rather than being hand-written as normalized
  * events, so this exercises the whole wire → event → disk → `ParsedMessage`
- * chain. Two turns, to prove the per-turn grouping key stays distinct.
+ * chain.
+ *
+ * **Every figure the fixture feeds is cumulative**, because that is what ACP
+ * sends — `Usage.inputTokens` is "Total input tokens across all turns" and
+ * `totalTokens` is "Sum of all token types across session" in the pinned SDK. A
+ * fixture of per-turn numbers would have encoded the bug as ground truth.
+ *
+ * Three turns, and the third is deliberately from a **vendor that reports no
+ * cache figures and no cost beacon**: ACP's cache counts are
+ * `number | null | undefined` and only some agents fill them, so an engine-wide
+ * `every()` for those columns would be a claim about OpenCode dressed up as a
+ * claim about ACP.
  */
 function acpMessages(): ParsedMessage[] {
   const writer = new AcpTranscriptWriter("opencode", "acp-session-1", "/tmp/repo");
   writer.writeHeader({ name: "opencode", version: "1.0.0" });
 
   const buffer = new AcpToolCallBuffer();
-  const turn = (text: string, cumulativeCost: number, inputTokens: number, outputTokens: number, stopReason: string): void => {
+  const turn = (
+    text: string,
+    opts: { cumulativeCost?: number; inputTokens: number; outputTokens: number; cache?: { read: number; write: number; thought: number }; stopReason: string },
+  ): void => {
     writer.writeUserMessage(`turn: ${text}`);
     writer.writeEvent({ type: "session_started", sessionId: "acp-session-1" });
     // The model rides in on an `adapter_specific` beacon rather than an event of
@@ -406,27 +442,52 @@ function acpMessages(): ParsedMessage[] {
     // `set_config_option` and emits exactly this — see its `turn_model` note.
     writer.writeEvent({ type: "adapter_specific", adapter: "acp", payload: { kind: "turn_model", model: "anthropic/claude-opus-5" } });
     for (const e of translateAcpUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } } as never, buffer)) writer.writeEvent(e);
-    for (const e of translateAcpUpdate({ sessionUpdate: "usage_update", used: 100, size: 200, cost: { amount: cumulativeCost, currency: "USD" } } as never, buffer))
-      writer.writeEvent(e);
-    const result = mapStopReason(stopReason);
+    if (opts.cumulativeCost !== undefined) {
+      for (const e of translateAcpUpdate(
+        { sessionUpdate: "usage_update", used: 100, size: 200, cost: { amount: opts.cumulativeCost, currency: "USD" } } as never,
+        buffer,
+      ))
+        writer.writeEvent(e);
+    }
+    const result = mapStopReason(opts.stopReason);
     const usage = buildAcpUsage({
-      totalTokens: inputTokens + outputTokens,
-      inputTokens,
-      outputTokens,
-      thoughtTokens: 12,
-      cachedReadTokens: 900,
-      cachedWriteTokens: 40,
+      totalTokens: opts.inputTokens + opts.outputTokens,
+      inputTokens: opts.inputTokens,
+      outputTokens: opts.outputTokens,
+      // A vendor that reports none sends null, not zero — it has not measured
+      // zero cached reads, it does not count them.
+      thoughtTokens: opts.cache ? opts.cache.thought : null,
+      cachedReadTokens: opts.cache ? opts.cache.read : null,
+      cachedWriteTokens: opts.cache ? opts.cache.write : null,
     } as never);
     writer.writeEvent(usage ? { ...result, usage } : result);
   };
 
-  turn("Reading it now.", 0.01, 1200, 300, "end_turn");
-  turn("It says hello world.", 0.03, 1400, 260, "end_turn");
+  turn("Reading it now.", { cumulativeCost: 0.01, inputTokens: 1200, outputTokens: 300, cache: { read: 900, write: 40, thought: 12 }, stopReason: "end_turn" });
+  turn("It says hello world.", {
+    cumulativeCost: 0.03,
+    inputTokens: 2600,
+    outputTokens: 560,
+    cache: { read: 1800, write: 40, thought: 24 },
+    stopReason: "end_turn",
+  });
+  turn("And a vendor that counts nothing.", { inputTokens: 3000, outputTokens: 600, stopReason: "end_turn" });
 
   const messages = parseAcpTranscript(writer.filePath!);
-  // The two turns must not collapse into one row — a bare turn index would, and
-  // so would no key at all.
-  expect(groupCount(panelRows(messages))).toBe(2);
+  const rows = panelRows(messages);
+  // Three turns, three rows — with no `generationKey` minted for any of them.
+  expect(rows).toHaveLength(3);
+  expect(groupCount(rows)).toBe(3);
+
+  // Differenced, not copied: turn 2's step is 2600-1200 in and 1800-900 of cache
+  // read. A row showing 2600 would claim the whole session's usage for one
+  // response, and 900/1800 down the column would read as a cache warming up.
+  expect(rows[1].usage).toMatchObject({ input_tokens: 1400, output_tokens: 260, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 });
+  expect(rows[1].costUsd).toBeCloseTo(0.02, 10);
+  // The vendor that counts nothing leaves the columns blank rather than zero.
+  expect(rows[2].usage?.cache_read_input_tokens).toBeUndefined();
+  expect(rows[2].usage?.reasoning_tokens).toBeUndefined();
+  expect(rows[2].costUsd).toBeUndefined();
   return messages;
 }
 
@@ -435,14 +496,25 @@ function acpMessages(): ParsedMessage[] {
  *
  * Cline's counters are **cumulative for the session**, so the fixture feeds
  * running totals and the parser is expected to difference them back into
- * per-turn figures. Two turns, so that differencing is actually exercised: turn
- * 2's row must show its own step, not the chat's running total.
+ * per-turn figures.
+ *
+ * Three turns, each covering something the matrix asserts:
+ *
+ *  1. A first turn whose cache totals are still **0**, which Cline's own emitter
+ *     sends as `undefined` (`total === 0 ? undefined : total`, verified in
+ *     `@cline/core/dist/index.js`) — so the Cache columns are legitimately blank
+ *     on it, and `cacheRead`/`cacheWrite` cannot be `every()`.
+ *  2. A normal turn, so the differencing is actually exercised: its row must
+ *     show its own step, not the chat's running total.
+ *  3. A turn that ends on an unrecoverable **error rather than `done`**, which
+ *     is the shape that leaves `stopReason` unset — the state `stopReason:
+ *     every()` claimed could not happen.
  */
 function clineMessages(): ParsedMessage[] {
   const writer = new ClineTranscriptWriter("cline-session-1", "/tmp/repo");
   writer.writeHeader({ providerId: "anthropic", modelId: "claude-opus-5" });
 
-  const turn = (text: string, totals: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }): void => {
+  const turn = (text: string, totals: { input: number; output: number; cacheRead?: number; cacheWrite?: number; cost: number }, finish: unknown): void => {
     writer.writeUserMessage(`turn: ${text}`);
     writer.writeEvent({ type: "session_started", sessionId: "cline-session-1" });
     const accounting = {};
@@ -454,11 +526,12 @@ function clineMessages(): ParsedMessage[] {
         outputTokens: 1,
         totalInputTokens: totals.input,
         totalOutputTokens: totals.output,
-        totalCacheReadTokens: totals.cacheRead,
-        totalCacheWriteTokens: totals.cacheWrite,
+        // Absent, not zero, when Cline's emitter suppresses a zero total.
+        ...(totals.cacheRead !== undefined && { totalCacheReadTokens: totals.cacheRead }),
+        ...(totals.cacheWrite !== undefined && { totalCacheWriteTokens: totals.cacheWrite }),
         totalCost: totals.cost,
       },
-      { type: "done", reason: "completed", text, iterations: 2 },
+      finish,
     ];
     for (const event of inner) {
       recordTerminalSignal(accounting, event as never);
@@ -468,18 +541,38 @@ function clineMessages(): ParsedMessage[] {
     writer.writeEvent(buildTerminalResult(accounting));
   };
 
-  turn("Reading it now.", { input: 1200, output: 300, cacheRead: 900, cacheWrite: 40, cost: 0.01 });
-  turn("It says hello world.", { input: 2600, output: 560, cacheRead: 1800, cacheWrite: 40, cost: 0.03 });
+  const done = { type: "done", reason: "completed", text: "", iterations: 2 };
+  turn("Nothing cached yet.", { input: 1200, output: 300, cost: 0.01 }, done);
+  turn("Reading it now.", { input: 2600, output: 560, cacheRead: 900, cacheWrite: 40, cost: 0.03 }, done);
+  // No `done` — the loop died. `buildTerminalResult` still carries the usage it
+  // accumulated, so this is a row, and it has no finish reason to show.
+  turn(
+    "It says hello world.",
+    { input: 3800, output: 760, cacheRead: 1800, cacheWrite: 40, cost: 0.05 },
+    {
+      type: "error",
+      recoverable: false,
+      error: new Error("provider hung up"),
+    },
+  );
 
   const messages = parseClineTranscript(writer.filePath!);
-  expect(groupCount(panelRows(messages))).toBe(2);
+  const rows = panelRows(messages);
+  // Three turns, three rows — with no `generationKey` minted for any of them.
+  expect(rows).toHaveLength(3);
+  expect(groupCount(rows)).toBe(3);
 
-  // Differencing, not the running total: turn 2's step is 2600-1200 in and
-  // 1800-900 of cache read. A row showing 2600 would claim the whole chat's
-  // usage for one response.
-  const second = panelRows(messages).at(-1)!;
-  expect(second.usage).toMatchObject({ input_tokens: 1400, output_tokens: 260, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 });
-  expect(second.costUsd).toBeCloseTo(0.02, 10);
+  // Turn 1 measured no cache because Cline sent no cache figure at all.
+  expect(rows[0].usage).toEqual({ input_tokens: 1200, output_tokens: 300 });
+  // Differencing, not the running total: turn 2's step is 2600-1200 in. Its
+  // cache read is the full 900 rather than a dash — the baseline it follows sat
+  // at zero, and a counter at zero that goes quiet has nothing to hide.
+  expect(rows[1].usage).toMatchObject({ input_tokens: 1400, output_tokens: 260, cache_read_input_tokens: 900, cache_creation_input_tokens: 40 });
+  expect(rows[1].costUsd).toBeCloseTo(0.02, 10);
+  // 1800-900 read this turn and nothing newly written: a real zero, which is a
+  // different claim from turn 1's absent field.
+  expect(rows[2].usage).toMatchObject({ cache_read_input_tokens: 900, cache_creation_input_tokens: 0 });
+  expect(rows[2].stopReason).toBeUndefined();
   return messages;
 }
 
@@ -517,7 +610,13 @@ function piMessages(): ParsedMessage[] {
   });
   const lines = [
     { type: "session", version: CURRENT_SESSION_VERSION, id: "pi-session-1", timestamp: T0, cwd: "/tmp/repo" },
-    { type: "message", id: "e1", parentId: null, timestamp: T0, message: { role: "user", content: [{ type: "text", text: "read the readme" }], timestamp: Date.parse(T0) } },
+    {
+      type: "message",
+      id: "e1",
+      parentId: null,
+      timestamp: T0,
+      message: { role: "user", content: [{ type: "text", text: "read the readme" }], timestamp: Date.parse(T0) },
+    },
     {
       type: "message",
       id: "e2",
@@ -538,17 +637,42 @@ function piMessages(): ParsedMessage[] {
       id: "e3",
       parentId: "e2",
       timestamp: T1,
-      message: { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "hello world" }], isError: false, timestamp: Date.parse(T1) },
+      message: {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "hello world" }],
+        isError: false,
+        timestamp: Date.parse(T1),
+      },
     },
     { type: "message", id: "e4", parentId: "e3", timestamp: T2, message: assistant([{ type: "text", text: "It says hello world." }], "stop", "resp_bbb") },
+    // A compaction: a real, billed API call that produced no assistant message.
+    // `CompactionEntry.usage` is "Usage from the LLM call(s) that generated this
+    // summary", and dropping it made "Total cost" short by every compaction in a
+    // long chat. It records no model, stop reason or response id, which is why
+    // three of pi's cells are `some()` rather than `every()`.
+    {
+      type: "compaction",
+      id: "c1",
+      parentId: "e4",
+      timestamp: T2,
+      summary: "summarized the earlier turns",
+      firstKeptEntryId: "e4",
+      tokensBefore: 40000,
+      usage: { input: 40000, output: 800, cacheRead: 0, cacheWrite: 0, totalTokens: 40800, cost: { total: 0.12 } },
+    },
   ];
   writeFileSync(file, lines.map((l) => `${JSON.stringify(l)}\n`).join(""), "utf8");
 
   const messages = parsePiSession(file);
-  // Two generations, four rows: the first entry's three blocks share one key and
-  // collapse to a single panel row, exactly as Claude Code's blocks do.
-  expect(panelRows(messages)).toHaveLength(4);
-  expect(groupCount(panelRows(messages))).toBe(2);
+  const rows = panelRows(messages);
+  // Three rows for three API calls: one per generation, plus the compaction. The
+  // first entry's three blocks are one generation — only the last carries the
+  // metrics, so the panel's row filter picks it up once rather than three times.
+  expect(rows).toHaveLength(3);
+  expect(groupCount(rows)).toBe(3);
+  expect(rows.at(-1)).toMatchObject({ role: "system", costUsd: 0.12 });
   return messages;
 }
 
@@ -585,18 +709,23 @@ describe("responses debug panel: per-engine field coverage", () => {
 
   /**
    * Grouping keys are namespaced per engine and per session because a chat's
-   * messages are the concatenation of several session files, and three of the
-   * five engines number their turns positionally. Two engines' turn 0 sharing a
-   * key would merge unrelated responses into one row.
+   * messages are the concatenation of several session files, and the engines
+   * that number their generations positionally would otherwise have two files'
+   * entry 0 sharing a key and merging unrelated responses into one row.
    *
    * Keys repeat *within* an engine on purpose — that is what collapses one API
    * call's several blocks into one row — so what must hold is that no key is
-   * used by two engines.
+   * used by two engines. Rows with no key at all (acp, cline — they need none)
+   * are excluded rather than compared as `undefined`.
    */
   it("grouping keys never collide across engines", () => {
     const byEngine = Object.entries(PARSED).map(([engine, messages]) => ({
       engine,
-      keys: new Set(panelRows(messages).map((m) => m.generationKey ?? m.requestId)),
+      keys: new Set(
+        panelRows(messages)
+          .map((m) => m.generationKey ?? m.requestId)
+          .filter((k) => k != null),
+      ),
     }));
     for (const a of byEngine) {
       for (const b of byEngine) {

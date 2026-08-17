@@ -14,7 +14,7 @@
  * place — is `backend/src/agents/adapters/debugPanelFields.test.ts`.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ParsedMessage } from "../api";
 import ChatDebugPanel from "./ChatDebugPanel";
 
@@ -32,6 +32,21 @@ function row(overrides: Partial<ParsedMessage> = {}): ParsedMessage {
     usage: { input_tokens: 100, output_tokens: 20 },
     ...overrides,
   };
+}
+
+/**
+ * The text of the single row's cell under the column headed `header`.
+ *
+ * By column, not by "some cell somewhere says this": a bare row renders nine
+ * dashes, so `cells).toContain("-")` passes if the cell under test renders
+ * literally anything.
+ */
+function cell(header: string): string {
+  const table = within(screen.getByRole("table"));
+  const columns = table.getAllByRole("columnheader").map((h) => (h.textContent ?? "").replace(/[▲▼]/g, "").trim());
+  const index = columns.indexOf(header);
+  if (index < 0) throw new Error(`no column headed "${header}" — columns are: ${columns.join(", ")}`);
+  return table.getAllByRole("cell")[index]?.textContent ?? "";
 }
 
 /** The text of the summary chip whose label starts with `label`. */
@@ -60,6 +75,52 @@ describe("ChatDebugPanel summary totals", () => {
     );
     expect(summary("Cache read")).toContain("0");
     expect(summary("Cache write")).toBe("Cache write: 0");
+  });
+
+  it("computes the cache hit rate over the rows that reported a cache figure", () => {
+    // A chat can span engines — forks across harnesses are supported — and rows
+    // from an engine that reports no cache metric are not evidence of a cache
+    // miss. Folding their input into the denominator dilutes the rate towards
+    // zero: two Codex-shaped rows at 5k in / 4k cache read are 44.4%, and the
+    // two Cline-shaped rows below reported nothing.
+    render(
+      <ChatDebugPanel
+        messages={[
+          row({ generationKey: "g1", usage: { input_tokens: 5000, output_tokens: 20, cache_read_input_tokens: 4000 } }),
+          row({ generationKey: "g2", usage: { input_tokens: 5000, output_tokens: 20, cache_read_input_tokens: 4000 } }),
+          row({ generationKey: "g3", usage: { input_tokens: 5000, output_tokens: 20 } }),
+          row({ generationKey: "g4", usage: { input_tokens: 5000, output_tokens: 20 } }),
+        ]}
+      />,
+    );
+    // 8000 / (10000 + 8000) = 44.4%. Over every row it would be 8000 / 28000 = 28.6%.
+    expect(summary("Cache read")).toContain("44.4%");
+  });
+
+  it("counts a compaction's own API call towards the totals", () => {
+    // pi's compaction entries carry the usage of the call that wrote the summary
+    // — real spend on a real call, on a system-role marker rather than an
+    // assistant message. Filtering to assistants made "Total cost" short by
+    // every compaction in a long chat.
+    render(
+      <ChatDebugPanel
+        messages={[
+          row({ generationKey: "g1", costUsd: 0.01 }),
+          {
+            role: "system",
+            type: "system",
+            subtype: "compact_boundary",
+            content: "summary",
+            timestamp: "2026-08-04T12:00:10.000Z",
+            generationKey: "c1",
+            usage: { input_tokens: 40000, output_tokens: 800 },
+            costUsd: 0.12,
+          },
+        ]}
+      />,
+    );
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(3); // header + two
+    expect(summary("Total cost")).toContain("0.13");
   });
 
   it("suppresses the cache hit rate rather than reporting a flat 0%", () => {
@@ -123,7 +184,85 @@ describe("ChatDebugPanel rows", () => {
   it("renders a dash for an unreported stop reason instead of blanking the cell", () => {
     // Codex reports none anywhere in its rollout; the Stop column must say so.
     render(<ChatDebugPanel messages={[row()]} />);
-    const cells = within(screen.getByRole("table")).getAllByRole("cell");
-    expect(cells.map((c) => c.textContent)).toContain("-");
+    expect(cell("Stop")).toBe("-");
+    // And a reported one is shown as-is, so the assertion above is about the
+    // Stop column rather than about the nine other cells that also dash.
+    cleanup();
+    render(<ChatDebugPanel messages={[row({ stopReason: "end_turn" })]} />);
+    expect(cell("Stop")).toBe("end_turn");
+  });
+});
+
+/**
+ * The row cells, where the dash-vs-zero distinction actually reaches a user.
+ *
+ * The summary chips implemented it; the table below them did not. `fmtTok`
+ * returned `-` for both `null` and `0`, so four parsers' worth of machinery for
+ * keeping "the engine does not report this" apart from "it reported none"
+ * collapsed in the last function before the DOM.
+ */
+describe("ChatDebugPanel row cells", () => {
+  it("renders a measured zero as 0, not as a dash", () => {
+    // Cline's turn 2 in `debugPanelFields.test.ts` really does produce
+    // `cache_creation_input_tokens: 0` — 40 cumulative minus 40 cumulative, a
+    // turn that wrote nothing new. A real pi generation on this machine reports
+    // `cacheRead: 0` the same way. Rendered as `-` it was byte-identical to a
+    // Codex row, where OpenAI reports no cache-write metric at all.
+    render(<ChatDebugPanel messages={[row({ usage: { input_tokens: 0, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })]} />);
+    expect(cell("Cache W")).toBe("0");
+    expect(cell("Cache R")).toBe("0");
+    // `input_tokens: 0` is real on a fully-cached Anthropic turn.
+    expect(cell("In")).toBe("0");
+  });
+
+  it("still renders a dash for a figure the engine never reported", () => {
+    // The other half: without this the zero above would just mean the panel
+    // stopped distinguishing anything at all.
+    render(<ChatDebugPanel messages={[row({ usage: { input_tokens: 100, output_tokens: 20 } })]} />);
+    expect(cell("Cache W")).toBe("-");
+    expect(cell("Cache R")).toBe("-");
+    expect(cell("In")).toBe("100");
+  });
+
+  it("sorts unreported figures to the end instead of treating them as zero", () => {
+    // `?? 0` in the comparator re-collapsed in the sort exactly what the cells
+    // preserve: a row whose engine reports no cache-write metric interleaved
+    // with the rows that measured zero. Ascending by Cache W, the two measured
+    // values come first in order and the dash lands last.
+    render(
+      <ChatDebugPanel
+        messages={[
+          row({ generationKey: "g1", model: "unreported", usage: { input_tokens: 1, output_tokens: 1 } }),
+          row({ generationKey: "g2", model: "measured-five", usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 5 } }),
+          row({ generationKey: "g3", model: "measured-zero", usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0 } }),
+        ]}
+      />,
+    );
+    const table = within(screen.getByRole("table"));
+    fireEvent.click(table.getAllByRole("columnheader").find((h) => (h.textContent ?? "").startsWith("Cache W"))!);
+
+    const modelColumn = table
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => within(r).getAllByRole("cell")[2].textContent);
+    expect(modelColumn).toEqual(["measured-zero", "measured-five", "unreported"]);
+  });
+
+  it("colours a clean Cline loop finish as success, not as an unrecognised value", () => {
+    // The Stop column knew three Anthropic values, so every Cline row — whose
+    // reason describes the agent loop, deliberately not relabelled — rendered
+    // the same muted grey, a clean `loop:completed` indistinguishable from a
+    // `loop:mistake_limit`.
+    render(<ChatDebugPanel messages={[row({ stopReason: "loop:completed" })]} />);
+    const clean = within(screen.getByRole("table")).getAllByRole("cell")[4].querySelector("span")!;
+
+    cleanup();
+    render(<ChatDebugPanel messages={[row({ stopReason: "loop:max_iterations" })]} />);
+    const capped = within(screen.getByRole("table")).getAllByRole("cell")[4].querySelector("span")!;
+
+    expect(clean.style.color).not.toBe(capped.style.color);
+    expect(clean.style.color).toContain("--success");
+    // `max_iterations` is the direct analogue of `max_tokens` and gets its colour.
+    expect(capped.style.color).toContain("--danger");
   });
 });
