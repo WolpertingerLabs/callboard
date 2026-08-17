@@ -163,7 +163,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
       onMouseLeave={() => setHovered(false)}
       className={faded ? "chatlist-item-dimmed" : undefined}
       style={{
-        padding: "10px 14px",
+        padding: "12px 14px",
         borderBottom: "1px solid var(--chatlist-item-border)",
         display: "flex",
         alignItems: "center",

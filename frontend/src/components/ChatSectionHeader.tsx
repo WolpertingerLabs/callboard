@@ -25,9 +25,13 @@ export default function ChatSectionHeader({ label, count, expanded, onToggle }: 
         display: "flex",
         alignItems: "center",
         gap: 6,
-        padding: "8px 20px",
+        padding: "12px 20px",
         background: "none",
         border: "none",
+        // Only when expanded, where it is the line between the header and the
+        // rows it introduces. A collapsed header introduces nothing, and a
+        // rule under it would read as a separator for the section below.
+        borderBottom: expanded ? "1px solid var(--chatlist-item-border)" : undefined,
         color: "var(--text-muted)",
         fontSize: 12,
         fontWeight: 600,
