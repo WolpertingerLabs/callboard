@@ -1,26 +1,23 @@
 import { useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
 import { Check, GitFork, RotateCw, Square, X } from "lucide-react";
 import type { ForkProvider, ParsedMessage } from "../api";
+import { parseTaskList, type TaskListItem } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 
-interface TodoItem {
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  activeForm?: string;
-}
-
-export function parseTodoItems(content: string): TodoItem[] | null {
-  try {
-    const parsed = JSON.parse(content);
-    if (parsed?.todos && Array.isArray(parsed.todos)) {
-      return parsed.todos;
-    }
-  } catch {}
-  return null;
+/**
+ * The task list this message carries, or null when it is an ordinary tool call.
+ *
+ * Every engine with a list concept goes through here — see
+ * `shared/types/taskList.ts` for the four wrapper keys and why the match is on
+ * the tool name plus the payload shape rather than on either alone.
+ */
+export function parseTodoItems(message: Pick<ParsedMessage, "type" | "toolName" | "content">): TaskListItem[] | null {
+  if (message.type !== "tool_use") return null;
+  return parseTaskList(message.toolName, message.content);
 }
 
 // 16 distinct team colors that work well in dark mode
@@ -214,7 +211,7 @@ const forkMenuItemStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-export function TodoList({ items }: { items: TodoItem[] }) {
+export function TodoList({ items }: { items: TaskListItem[] }) {
   const completedCount = items.filter((t) => t.status === "completed").length;
   const total = items.length;
   const progressPct = total > 0 ? (completedCount / total) * 100 : 0;
@@ -240,9 +237,12 @@ export function TodoList({ items }: { items: TodoItem[] }) {
         }}
       >
         <span style={{ fontWeight: 600, fontSize: 14 }}>Tasks</span>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          {completedCount}/{total} done
-        </span>
+        {/* An empty list is the agent clearing its plan (ACP's `plan_removed`,
+            or a TodoWrite with no todos), not a list that failed to load. It
+            has to render, and say so: this bubble is the newest thing in the
+            transcript, and falling back to nothing would leave the previous
+            list on screen as the agent's current plan. */}
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{total === 0 ? "cleared" : `${completedCount}/${total} done`}</span>
       </div>
 
       <div
@@ -553,13 +553,8 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
     return TEAM_COLORS[colorIndex % TEAM_COLORS.length];
   }, [isTeamMessage, teamColorMap, message.teamName]);
 
-  // Special rendering for TodoWrite tool calls
-  const todoItems = useMemo(() => {
-    if (message.type === "tool_use" && message.toolName === "TodoWrite") {
-      return parseTodoItems(message.content);
-    }
-    return null;
-  }, [message]);
+  // Special rendering for an agent's running task list, whichever engine sent it
+  const todoItems = useMemo(() => parseTodoItems(message), [message]);
 
   if (todoItems) {
     return <TodoList items={todoItems} />;

@@ -83,21 +83,8 @@ import {
 } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { getActivePlugins } from "../utils/plugins";
-
-interface ToolGroup {
-  kind: "tool_group";
-  toolUse: ParsedMessage;
-  toolResult: ParsedMessage | null;
-  originalIndices: [number, number | null];
-}
-
-interface SingleMessage {
-  kind: "single";
-  message: ParsedMessage;
-  originalIndex: number;
-}
-
-type DisplayItem = ToolGroup | SingleMessage;
+import { findLatestTaskListIndex } from "../utils/taskListNav";
+import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
 
 /**
  * Detect if the messages contain an unresolved ExitPlanMode tool_use
@@ -729,60 +716,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }, [messages]);
 
   // Group tool_use + tool_result pairs into combined display items
-  const displayItems: DisplayItem[] = useMemo(() => {
-    const items: DisplayItem[] = [];
-    const consumedIndices = new Set<number>();
-
-    for (let i = 0; i < messages.length; i++) {
-      if (consumedIndices.has(i)) continue;
-      const msg = messages[i];
-
-      if (msg.type === "tool_use") {
-        // Look for a matching tool_result
-        let matchedResultIndex: number | null = null;
-
-        if (i + 1 < messages.length && messages[i + 1].type === "tool_result") {
-          // If both have toolUseId, verify the match
-          if (msg.toolUseId && messages[i + 1].toolUseId) {
-            if (messages[i + 1].toolUseId === msg.toolUseId) {
-              matchedResultIndex = i + 1;
-            }
-          } else {
-            // Fallback for old data without toolUseId: trust adjacency
-            matchedResultIndex = i + 1;
-          }
-        }
-
-        // If not adjacent, scan forward with toolUseId matching
-        if (matchedResultIndex === null && msg.toolUseId) {
-          for (let j = i + 1; j < messages.length && j < i + 10; j++) {
-            if (messages[j].type === "tool_result" && messages[j].toolUseId === msg.toolUseId && !consumedIndices.has(j)) {
-              matchedResultIndex = j;
-              break;
-            }
-          }
-        }
-
-        if (matchedResultIndex !== null) {
-          consumedIndices.add(matchedResultIndex);
-        }
-
-        items.push({
-          kind: "tool_group",
-          toolUse: msg,
-          toolResult: matchedResultIndex !== null ? messages[matchedResultIndex] : null,
-          originalIndices: [i, matchedResultIndex],
-        });
-      } else if (msg.type === "tool_result") {
-        // Orphaned tool_result (its tool_use was not found or already consumed)
-        items.push({ kind: "single", message: msg, originalIndex: i });
-      } else {
-        items.push({ kind: "single", message: msg, originalIndex: i });
-      }
-    }
-
-    return items;
-  }, [messages]);
+  const displayItems: DisplayItem[] = useMemo(() => groupToolMessages(messages), [messages]);
 
   // Optimistic bubbles the fetched transcript hasn't accounted for yet.
   const visibleInFlightMessages = useMemo(() => visibleInFlight(inFlightMessages, messages), [inFlightMessages, messages]);
@@ -2252,21 +2186,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setAutoScroll(true);
   }, []);
 
-  // Check if there are any TodoWrite tool calls in the conversation
-  const hasTodoList = useMemo(() => {
-    return messages.some((message) => message.type === "tool_use" && message.toolName === "TodoWrite");
-  }, [messages]);
+  // The newest task list in the conversation, from whichever engine ran it —
+  // one scan answering both "is there a button?" and "where does it go?", so the
+  // two can't disagree.
+  const latestTodoIndex = useMemo(() => findLatestTaskListIndex(messages), [messages]);
+  const hasTodoList = latestTodoIndex >= 0;
 
   const handleTodoListClick = useCallback(() => {
-    // Find the latest TodoWrite tool call and its result
-    let latestTodoIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].type === "tool_use" && messages[i].toolName === "TodoWrite") {
-        latestTodoIndex = i;
-        break;
-      }
-    }
-
     if (latestTodoIndex >= 0) {
       // Scroll to the todo list — unlatch so auto-scroll doesn't yank the
       // user back to the bottom while they're looking at it
@@ -2283,7 +2209,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }, 2000);
       }
     }
-  }, [messages]);
+  }, [latestTodoIndex]);
 
   const handleSaveDraft = useCallback((message: string, images?: File[], onSuccess?: () => void) => {
     if (!message.trim()) return;

@@ -85,8 +85,20 @@ const CLIENT_INFO: Implementation = { name: "callboard", version: "1" };
  * capability we do not implement is precisely the "capability lie" the plan
  * warns about, just pointed the other way; an agent that trusted it would hang
  * on a `methodNotFound`.
+ *
+ * **`plan` is unset, and unsetting it is what keeps a real bug unreachable.**
+ * The experimental `plan` capability is what unlocks the agent's `plan_update` /
+ * `plan_removed` session updates, and those are keyed by `planId` — a session
+ * may carry several plans at once. `acp/messageAdapter.ts` does not track
+ * `planId`: it renders every update as the whole list and every removal as
+ * "cleared", so two concurrent plans would flip-flop over each other and
+ * removing one would blank the other. Adding `plan: {}` here therefore ships
+ * that bug the same day, and would do it silently, because no other test in the
+ * suite exercises a path an agent can currently reach. So one does: see
+ * `agents/adapters/listTracking.test.ts`, which fails on this constant the
+ * moment `plan` becomes non-null and says what has to be built first.
  */
-const BASE_CLIENT_CAPABILITIES: ClientCapabilities = {
+export const BASE_CLIENT_CAPABILITIES: ClientCapabilities = {
   fs: { readTextFile: false, writeTextFile: false },
   terminal: false,
 };

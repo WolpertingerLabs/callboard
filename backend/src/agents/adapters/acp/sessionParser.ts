@@ -17,6 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import { TASK_LIST_TOOLS } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { isSafePathSegment, resolveAcpSessionsRoot, type AcpTranscriptEntry, type AcpTranscriptHeader, type AcpTranscriptLine } from "./transcript.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -126,6 +127,45 @@ export function readAcpTranscriptCwd(filePath: string): string {
 }
 
 /**
+ * The namespace callboard mints its own `toolUseId`s in, and why it starts with
+ * a NUL.
+ *
+ * ACP's `ToolCallId` is an arbitrary agent-chosen string that callboard writes
+ * through verbatim, so a synthetic id like `plan-0` is one an agent can also
+ * produce for a genuine tool call it happens to number that way. The collision
+ * is not cosmetic: `Chat.tsx` pairs a `tool_use` with the `tool_result` carrying
+ * the same id, and the plan bubble renders its checklist without ever reading
+ * `toolResult` — so the real tool's output is not misfiled, it vanishes.
+ *
+ * A prefix on its own would only make that unlikely. What makes it impossible is
+ * the pair below: ids callboard mints get the prefix, and ids the *agent* chose
+ * are evicted from the namespace on the way in by {@link agentCallId}. U+0000 is
+ * what that hinges on because it is the one character no id-generating scheme in
+ * practice emits — UUIDs, counters, hashes, an agent's own tool names — while
+ * JSON round-trips it exactly (as `\u0000`).
+ */
+const RESERVED_CALL_ID_PREFIX = "\u0000callboard:";
+
+/** The synthetic call id for the nth plan snapshot in a transcript. */
+export function planCallId(index: number): string {
+  return `${RESERVED_CALL_ID_PREFIX}${TASK_LIST_TOOLS.acp}-${index}`;
+}
+
+/**
+ * An agent-chosen `ToolCallId`, evicted from callboard's reserved namespace if
+ * it somehow landed in it.
+ *
+ * Dropping the leading NUL is enough, and it is total: the result cannot start
+ * with one, so it can never be escaped back into the namespace. Both sides of a
+ * pair — `tool_use` and `tool_result` — go through here, so an escaped id still
+ * matches itself.
+ */
+function agentCallId(callId: string | undefined): string | undefined {
+  if (callId === undefined) return undefined;
+  return callId.startsWith(RESERVED_CALL_ID_PREFIX) ? callId.slice(1) : callId;
+}
+
+/**
  * Project a transcript onto the neutral {@link ParsedMessage} list the chat
  * viewer renders.
  *
@@ -203,6 +243,8 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   // whatever assistant message happens to be last in the file.
   let turnModel: string | undefined;
   let turnStart = 0;
+  /** Counter behind the synthetic plan `toolUseId` — stable across re-parses of one file. */
+  let planCount = 0;
   /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
   let cumulativeCostUsd: number | null = null;
   /** Spend attributable to the turn in progress, differenced on arrival. */
@@ -293,7 +335,7 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
           type: "tool_use",
           content: safeStringify(event.input),
           toolName: event.toolName,
-          toolUseId: event.callId,
+          toolUseId: agentCallId(event.callId),
           timestamp,
           ...(turnModel && { model: turnModel }),
         });
@@ -301,7 +343,34 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
 
       case "tool_result":
         flush();
-        messages.push({ role: "user", type: "tool_result", content: event.content, toolUseId: event.callId, timestamp });
+        messages.push({ role: "user", type: "tool_result", content: event.content, toolUseId: agentCallId(event.callId), timestamp });
+        break;
+
+      case "task_list":
+        // Rendered as a `tool_use` because that is the carrier the task-list
+        // renderer already has, and `ParsedMessage.type` is a published
+        // interface — a new value there would leave every older bundle showing
+        // nothing at all. Codex settles the question anyway: its plan reaches
+        // callboard as a real `update_plan` function_call in a rollout we do
+        // not author, so `tool_use` is the shape one renderer has to accept
+        // regardless. `plan` is ACP's own `sessionUpdate` name, kept so the
+        // transcript says which engine's vocabulary the payload is in.
+        //
+        // The synthetic `toolUseId` is load-bearing: no tool ran, so there is
+        // no call id, and an id-less `tool_use` makes the frontend's grouping
+        // fall back to trusting adjacency — which would let a plan swallow the
+        // next real tool's result. See {@link planCallId} for why it is minted
+        // in a reserved namespace rather than as a plain `plan-0`.
+        flush();
+        messages.push({
+          role: "assistant",
+          type: "tool_use",
+          toolName: TASK_LIST_TOOLS.acp,
+          content: JSON.stringify({ entries: event.items }),
+          toolUseId: planCallId(planCount++),
+          timestamp,
+          ...(turnModel && { model: turnModel }),
+        });
         break;
 
       case "result":

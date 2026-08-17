@@ -73,6 +73,9 @@ export type {
 
 export type { ParsedMessage } from "./message.js";
 
+export type { TaskListItem } from "./taskList.js";
+export { TASK_LIST_TOOLS, parseTaskList, isTaskListTool } from "./taskList.js";
+
 export type { StoredImage, ImageUploadResult } from "./image.js";
 
 export type { QueueItem } from "./queue.js";

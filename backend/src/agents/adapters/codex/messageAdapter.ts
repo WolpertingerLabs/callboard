@@ -6,7 +6,7 @@
  * yields a JSONL stream of {@link ThreadEvent}s (one per line) over the
  * `runStreamed().events` async generator. This adapter projects that stream
  * onto the callboard-neutral {@link AgentEvent} union the frontend already
- * consumes (text / thinking / tool_use / tool_result / result).
+ * consumes (text / thinking / tool_use / tool_result / task_list / result).
  *
  * Shape decisions are pinned to the Step-1 spike capture
  * (`plans/codex-spike-findings.md` §4), which corrects the plan's guessed
@@ -126,6 +126,12 @@ export function translateCodexEvent(event: ThreadEvent): AgentEvent | AgentEvent
  * `item.started` opens a tool-shaped item → emit the `tool_use`. Text/thinking
  * items (`agent_message`, `reasoning`) and terminal-only items carry nothing
  * actionable at start, so they drop here and surface at completion.
+ *
+ * `todo_list` is the exception among the non-tool items: a plan arrives
+ * *complete* on `item.started` — captured from `codex exec --json`, the very
+ * first thing a `todo_list` item says is all of its rows — so waiting for
+ * completion would mean showing the user the plan only once the agent had
+ * finished working through it. See {@link todoEvent}.
  */
 function translateItemStarted(item: ThreadItem): AgentEvent | null {
   switch (item.type) {
@@ -137,20 +143,28 @@ function translateItemStarted(item: ThreadItem): AgentEvent | null {
       return toolUse(mcpToolName(item), item.id, item.arguments);
     case "web_search":
       return toolUse("WebSearch", item.id, { query: item.query });
+    case "todo_list":
+      return todoEvent(item);
     case "agent_message":
     case "reasoning":
-    case "todo_list":
     case "error":
       return null;
   }
 }
 
 /**
- * `item.updated` is, in the captured SDK version, never emitted (spike §2.5).
- * It's handled defensively: a future SDK that streams partial tool state would
- * re-emit the `tool_use` (idempotent on the same callId), but partial
- * agent_message/reasoning text is intentionally dropped here so we don't
- * double-count the whole text that arrives again at item.completed.
+ * `item.updated` re-emits whatever the item can currently say in full.
+ *
+ * Tool items re-emit their `tool_use` (idempotent on the same callId), and
+ * `todo_list` re-emits its whole list — that is where a plan's *progress*
+ * arrives, one `item.updated` per step ticked off, so dropping it would leave
+ * the initial plan frozen on screen for the length of the turn.
+ *
+ * Partial `agent_message` / `reasoning` text is still dropped here, and that is
+ * not the same call: text is a delta that would double-count against the whole
+ * message arriving again at `item.completed`. A `task_list` is defined as a
+ * replace-not-merge snapshot, so re-emitting one is idempotent by construction —
+ * there is nothing to double-count.
  */
 function translateItemUpdated(item: ThreadItem): AgentEvent | null {
   switch (item.type) {
@@ -162,9 +176,10 @@ function translateItemUpdated(item: ThreadItem): AgentEvent | null {
       return toolUse(mcpToolName(item), item.id, item.arguments);
     case "web_search":
       return toolUse("WebSearch", item.id, { query: item.query });
+    case "todo_list":
+      return todoEvent(item);
     case "agent_message":
     case "reasoning":
-    case "todo_list":
     case "error":
       return null;
   }
@@ -189,10 +204,6 @@ function translateItemCompleted(item: ThreadItem): AgentEvent | null {
     case "web_search":
       return toolResult(item.id, item.query, false);
     case "todo_list":
-      // No core AgentEvent fits a running plan list; ride it through as
-      // adapter_specific so the service layer can ignore it (today) without
-      // losing the data (spike §4 — "could map to a status/plan event or
-      // ignore").
       return todoEvent(item);
     case "error":
       // Non-fatal item-level error. Surface as adapter_specific rather than a
@@ -224,11 +235,30 @@ function mcpResult(item: McpToolCallItem): AgentEvent {
   return toolResult(item.id, content, item.status === "failed");
 }
 
+/**
+ * The running to-do list → {@link AgentEvent} `task_list`.
+ *
+ * **The SDK's shape is lossier than Codex's own.** `TodoItem` is
+ * `{text, completed}` — a boolean — while the `update_plan` call Codex writes
+ * into its rollout carries a three-valued `status` (`pending` / `in_progress` /
+ * `completed`, all three observed in real rollouts). The step Codex is working
+ * on right now is therefore reachable from the transcript but not from this
+ * stream, so `completed: false` widens to `pending` and nothing here invents an
+ * in-progress row; that is the SDK's information, not ours to guess at.
+ *
+ * The loss is not one a user can see, though, and the reason is worth writing
+ * down so nobody spends effort recovering it: this event's payload never reaches
+ * a browser. `services/claude.ts` projects it onto a `tool_use` that the SSE
+ * layer collapses into a bare `message_update`, and the browser answers that by
+ * refetching the transcript — which for Codex is the rollout, with the
+ * three-valued `status`. The event's job is to say *when* to look, not what to
+ * show. Which is exactly why it has to fire at `item.started` and `item.updated`
+ * as well as at completion.
+ */
 function todoEvent(item: TodoListItem): AgentEvent {
   return {
-    type: "adapter_specific",
-    adapter: "codex",
-    payload: { kind: "todo_list", items: item.items },
+    type: "task_list",
+    items: item.items.map((todo) => ({ content: todo.text, status: todo.completed ? "completed" : "pending" })),
   };
 }
 
