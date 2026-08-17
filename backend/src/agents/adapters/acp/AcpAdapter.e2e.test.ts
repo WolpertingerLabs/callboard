@@ -126,7 +126,7 @@ describe("AcpAdapter end-to-end against a conformant ACP agent", () => {
       expect(events).toContainEqual({ type: "tool_result", callId: "call-1", content: "# Hello", isError: false });
 
       const result = events.at(-1);
-      expect(result).toEqual({ type: "result", status: "success", usage: { inputTokens: 10, outputTokens: 20 } });
+      expect(result).toEqual({ type: "result", status: "success", usage: { inputTokens: 10, outputTokens: 20 }, stopReason: "end_turn" });
     },
     TEST_TIMEOUT,
   );

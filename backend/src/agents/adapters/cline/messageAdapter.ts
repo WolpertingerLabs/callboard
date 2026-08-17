@@ -181,6 +181,17 @@ export function buildTerminalResult(acc: ClineTurnAccounting): AgentEvent & { ty
     status,
     ...(reason ? { reason } : {}),
     ...(acc.usage ? { usage: acc.usage } : {}),
+    // Cline's own label, verbatim — the four-value `status` above is lossy
+    // (`aborted`, `mistake_limit` and `error` all collapse onto `"error"`) and
+    // the responses debug panel wants the thing the runtime actually said.
+    //
+    // NOT translated into Anthropic's `end_turn`/`tool_use`/`max_tokens`
+    // vocabulary, even though `completed` looks like it wants to be `end_turn`.
+    // They are different concepts: Cline reports why its **agent loop** ended,
+    // Anthropic reports why the **model** stopped generating. A turn that ran
+    // twelve iterations reports `completed` once; relabelling that `end_turn`
+    // would claim a model-level fact callboard never observed.
+    ...(acc.finishReason ? { stopReason: acc.finishReason } : {}),
   };
 }
 
@@ -217,12 +228,44 @@ export function translateFinishReason(reason: string): AgentResultStatus {
  * Cache tokens are deliberately not folded into `inputTokens`. They are billed
  * differently, `totalCost` already accounts for them, and inflating the input
  * count would make the token figure disagree with the cost figure beside it.
+ * They are carried alongside instead, so the debug panel can show the Cache R /
+ * Cache W columns Cline has always reported and callboard has always dropped.
+ *
+ * The cache figures take the **cumulative** totals only, with no fall-back to
+ * the event's per-turn `cacheReadTokens`/`cacheWriteTokens`. A reviewer pushed
+ * back on that — the original rationale ("a field that silently switched between
+ * cumulative and per-turn would produce a plausible-looking wrong number")
+ * arguably indicted the chosen path more than the rejected one — so here is the
+ * evidence the choice actually rests on:
+ *
+ * - `usage` fires **more than once per turn**, and {@link recordTerminalSignal}
+ *   keeps only the latest. The per-turn fields are per *API call* within Cline's
+ *   iteration loop, so a turn that ran twelve iterations would report the twelfth
+ *   call's tokens as the turn's. The `total*` fields exist precisely because the
+ *   per-call ones do not accumulate. (What is *not* independently verified is the
+ *   exact emission frequency inside one turn — the stored transcript holds
+ *   already-translated events, so it cannot be read back off disk.)
+ * - Both forms are zero-suppressed anyway. Cline's emitter sends
+ *   `cacheReadTokens: turnTotal === 0 ? undefined : …` and
+ *   `totalCacheReadTokens: sessionTotal === 0 ? undefined : …` (verified in
+ *   `@cline/core/dist/index.js`), so switching would not buy back a single
+ *   measured zero — it would only change which unit the absent field is absent in.
+ *
+ * The reader (`sessionParser.closeTurn`) differences these against the previous
+ * turn via `CumulativeCounter`, which is also where the zero-suppression above is
+ * handled: a total still sitting at 0 is dropped by Cline on every turn until the
+ * first cache hit, and that must not be mistaken for a reporting gap.
+ *
+ * `totalInputTokens`/`totalOutputTokens` are required by the SDK type and the
+ * cache totals are not, which is the only reason those two keep a fallback.
  */
 export function translateUsage(event: Extract<ClineAgentEvent, { type: "usage" }>): TokenUsage {
   return {
     inputTokens: event.totalInputTokens ?? event.inputTokens ?? 0,
     outputTokens: event.totalOutputTokens ?? event.outputTokens ?? 0,
     ...(typeof event.totalCost === "number" ? { costUsd: event.totalCost } : {}),
+    ...(typeof event.totalCacheReadTokens === "number" ? { cacheReadTokens: event.totalCacheReadTokens } : {}),
+    ...(typeof event.totalCacheWriteTokens === "number" ? { cacheWriteTokens: event.totalCacheWriteTokens } : {}),
   };
 }
 

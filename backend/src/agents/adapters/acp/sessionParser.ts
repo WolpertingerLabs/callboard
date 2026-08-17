@@ -19,6 +19,7 @@ import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import { TASK_LIST_TOOLS } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
+import { CumulativeCounter } from "../cumulativeCounter.js";
 import { isSafePathSegment, resolveAcpSessionsRoot, type AcpTranscriptEntry, type AcpTranscriptHeader, type AcpTranscriptLine } from "./transcript.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -200,6 +201,10 @@ function agentCallId(callId: string | undefined): string | undefined {
 export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   const lines = readAcpTranscriptLines(filePath);
   const messages: ParsedMessage[] = [];
+  // Namespaces the positional generation key. A chat's messages are the
+  // concatenation of *several* transcripts (`AcpSessionProvider.getMessages`
+  // walks every session id on the chat), so a bare turn index would make turn 0
+  // of one file and turn 0 of the next collapse into a single debug-panel row.
   // One buffer per streamed kind. They are separate rather than one "pending
   // block" because an agent can interleave them — a thought, a sentence, more
   // thinking — and merging across the boundary would put reasoning inside the
@@ -245,10 +250,23 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
   let turnStart = 0;
   /** Counter behind the synthetic plan `toolUseId` — stable across re-parses of one file. */
   let planCount = 0;
-  /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
-  let cumulativeCostUsd: number | null = null;
-  /** Spend attributable to the turn in progress, differenced on arrival. */
-  let turnCostUsd: number | null = null;
+  /**
+   * Every figure ACP reports is **cumulative for the session**, so every one of
+   * them is differenced into a per-turn step. See {@link CumulativeCounter} for
+   * resets and gaps, and the `closeTurn` doc-comment for the evidence.
+   *
+   * One counter per field, each stepped exactly once per turn.
+   */
+  const counters = {
+    input: new CumulativeCounter(),
+    output: new CumulativeCounter(),
+    cacheRead: new CumulativeCounter(),
+    cacheWrite: new CumulativeCounter(),
+    reasoning: new CumulativeCounter(),
+    cost: new CumulativeCounter(),
+  };
+  /** The session's latest cumulative spend, banked by `usage_update` and stepped at `closeTurn`. */
+  let cumulativeCostUsd: number | undefined;
 
   /** Begin a new turn's attribution window. Model carries over until changed. */
   const startTurn = (): void => {
@@ -263,17 +281,72 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
    * to something is better than dropping them. A turn that produced no
    * assistant message at all (an error before the agent spoke) gets nothing,
    * which is correct: there is nothing to attach to.
+   *
+   * ACP mints no per-request id, so there is no `requestId` to set and the Req
+   * ID column stays blank rather than showing something callboard invented. No
+   * `generationKey` is minted either: the panel's own `__ungrouped_N` fallback
+   * already numbers rows per message, and exactly one message per turn is
+   * annotated here (the `break` below), so a positional key would change the row
+   * count from N to N.
+   *
+   * ## Every number here is cumulative, and is differenced
+   *
+   * `PromptResponse.usage` is a **session** total, not this response's. The
+   * pinned SDK says so field by field
+   * (`@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`):
+   *
+   *     totalTokens        "Sum of all token types across session."
+   *     inputTokens        "Total input tokens across all turns."
+   *     outputTokens       "Total output tokens across all turns."
+   *     thoughtTokens      "Total thought/reasoning tokens"
+   *     cachedReadTokens   "Total cache read tokens."
+   *     cachedWriteTokens  "Total cache write tokens."
+   *
+   * Copying those onto a row would make turn 3 of a chat claim turns 1–3 — three
+   * turns of 900 cache reads render 900 / 1800 / 2700, a curve that looks like a
+   * cache warming up, and a summary of 5,400 for 2,700 tokens actually read. So
+   * all six go through {@link CumulativeCounter}, the same treatment the sibling
+   * `usage_update` cost has always had (`applyAdapterMetric`) — that these two
+   * halves of the same payload were accounted differently was the bug.
+   *
+   * **Unverified empirically, and worth saying plainly.** ACP's `Usage` is
+   * flagged `@experimental` in the schema, and the only local transcript has a
+   * single turn, on which cumulative and per-turn are indistinguishable. This
+   * follows the pinned contract and callboard's own precedent for the cost. The
+   * reset branch in the counter is the hedge: an agent that ignores the contract
+   * and reports per-turn figures will trip it on any turn smaller than its
+   * predecessor rather than silently accumulating.
    */
-  const closeTurn = (usage: { inputTokens: number; outputTokens: number } | undefined, durationMs: number | undefined): void => {
+  const closeTurn = (result: Extract<AgentEvent, { type: "result" }>): void => {
+    const { usage, durationMs, stopReason } = result;
+    // Stepped once per turn whether or not this turn reported them — a counter
+    // only detects a gap if it hears about the turn that skipped it.
+    const input = counters.input.step(usage?.inputTokens);
+    const output = counters.output.step(usage?.outputTokens);
+    const cacheRead = counters.cacheRead.step(usage?.cacheReadTokens);
+    const cacheWrite = counters.cacheWrite.step(usage?.cacheWriteTokens);
+    const reasoning = counters.reasoning.step(usage?.reasoningTokens);
+    const turnCostUsd = counters.cost.step(cumulativeCostUsd);
+
     for (let i = messages.length - 1; i >= turnStart; i--) {
       const message = messages[i];
       if (message.role !== "assistant") continue;
-      if (usage) message.usage = { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens };
+      if (usage) {
+        message.usage = {
+          ...(input !== undefined && { input_tokens: input }),
+          ...(output !== undefined && { output_tokens: output }),
+          // Present only when the agent reported them — see `buildAcpUsage`.
+          ...(cacheRead !== undefined && { cache_read_input_tokens: cacheRead }),
+          ...(cacheWrite !== undefined && { cache_creation_input_tokens: cacheWrite }),
+          ...(reasoning !== undefined && { reasoning_tokens: reasoning }),
+        };
+      }
       if (durationMs != null) message.durationMs = durationMs;
-      if (turnCostUsd != null) message.costUsd = turnCostUsd;
+      if (turnCostUsd !== undefined) message.costUsd = turnCostUsd;
+      if (stopReason) message.stopReason = stopReason;
       break;
     }
-    turnCostUsd = null;
+    cumulativeCostUsd = undefined;
     startTurn();
   };
 
@@ -292,12 +365,11 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
       return;
     }
     if (kind === "turn_cost" && typeof costUsd === "number" && Number.isFinite(costUsd)) {
-      // Cumulative for the session, so a turn's own spend is the step since the
-      // last beacon. Zero is a real answer — OpenCode's free models genuinely
-      // cost nothing — so it is reported rather than suppressed. A figure that
-      // went *backwards* (a resumed session whose agent restarted its counter)
-      // is treated as a fresh baseline instead of a negative charge.
-      turnCostUsd = cumulativeCostUsd === null || costUsd < cumulativeCostUsd ? costUsd : costUsd - cumulativeCostUsd;
+      // Cumulative for the session, like every other ACP figure, so it is only
+      // banked here — `closeTurn` steps it against the previous turn along with
+      // the token counts. Zero is a real answer (OpenCode's free models
+      // genuinely cost nothing) and is reported rather than suppressed. Several
+      // beacons in one turn is fine: the last one is the turn's end state.
       cumulativeCostUsd = costUsd;
     }
   };
@@ -375,7 +447,7 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
 
       case "result":
         flush();
-        closeTurn(event.usage, event.durationMs);
+        closeTurn(event);
         break;
 
       case "session_started":

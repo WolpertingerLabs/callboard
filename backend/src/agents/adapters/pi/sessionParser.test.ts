@@ -217,6 +217,186 @@ describe("parsePiSession", () => {
     expect(text?.model).toBe("google/gemini-3.6-flash");
   });
 
+  /**
+   * The regression this group guards.
+   *
+   * `ChatDebugPanel`'s entire row filter is `role === "assistant" && usage`, and
+   * this parser used to set neither `usage` nor `stopReason` on anything — so a
+   * pi chat's debug tab was not a table with gaps, it was the empty state. pi's
+   * `AssistantMessage` carries both as **required** fields; every number below
+   * was already sitting in the session file, unread.
+   */
+  describe("per-generation metrics", () => {
+    /** The assistant entries of a conversation, in order. */
+    const assistantsOf = (path: string) => parsePiSession(path).filter((m) => m.role === "assistant");
+    /** The blocks of one pi entry, keyed by the generation they came from. */
+    const blocksOfEntry = (path: string, entryId: string) => assistantsOf(path).filter((m) => m.generationKey === `pi:s1/${entryId}`);
+
+    it("projects the usage pi records, so the debug panel has rows at all", () => {
+      const carrier = blocksOfEntry(writeSession("s1", conversationEntries()), "e2").at(-1)!;
+      expect(carrier.usage).toEqual({ input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+      expect(carrier.costUsd).toBe(0.001);
+    });
+
+    it("surfaces the cache split and the reasoning subset rather than folding them into input", () => {
+      // Cache tokens are billed separately and `cost.total` already accounts for
+      // them; adding them to `input` would make the token figure disagree with
+      // the cost beside it. `reasoning` is a subset of `output`, never an addend.
+      const path = writeSession("s1", [
+        {
+          type: "message",
+          id: "e1",
+          parentId: null,
+          timestamp: TS,
+          message: {
+            ...assistantMessage([{ type: "text", text: "hi" }]),
+            usage: { input: 4, output: 120, cacheRead: 900, cacheWrite: 40, reasoning: 12, totalTokens: 1064, cost: { total: 0.0033 } },
+          },
+        },
+      ]);
+      expect(assistantsOf(path)[0].usage).toEqual({
+        input_tokens: 4,
+        output_tokens: 120,
+        cache_read_input_tokens: 900,
+        cache_creation_input_tokens: 40,
+        reasoning_tokens: 12,
+      });
+    });
+
+    it("leaves a field pi did not write unset instead of defaulting it to zero", () => {
+      // The panel renders `0` as a measurement and `undefined` as a dash. A
+      // provider that reports no cache traffic has not read zero cached tokens.
+      const path = writeSession("s1", [
+        {
+          type: "message",
+          id: "e1",
+          parentId: null,
+          timestamp: TS,
+          message: { ...assistantMessage([{ type: "text", text: "hi" }]), usage: { input: 4, output: 120 } },
+        },
+      ]);
+      expect(assistantsOf(path)[0].usage).toEqual({ input_tokens: 4, output_tokens: 120 });
+      expect(assistantsOf(path)[0].costUsd).toBeUndefined();
+    });
+
+    it("translates pi's model stop reasons into the vocabulary the field documents", () => {
+      const stopped = (stopReason: string) =>
+        assistantsOf(
+          writeSession("s1", [
+            {
+              type: "message",
+              id: "e1",
+              parentId: null,
+              timestamp: TS,
+              message: { ...assistantMessage([{ type: "text", text: "hi" }]), stopReason },
+            },
+          ]),
+        )[0].stopReason;
+
+      // The same three facts Anthropic names, spelled pi's way.
+      expect(stopped("stop")).toBe("end_turn");
+      expect(stopped("length")).toBe("max_tokens");
+      expect(stopped("toolUse")).toBe("tool_use");
+      // No Anthropic counterpart: passed through rather than guessed at.
+      expect(stopped("aborted")).toBe("aborted");
+      expect(stopped("error")).toBe("error");
+      expect(stopped("a_reason_pi_adds_later")).toBe("a_reason_pi_adds_later");
+    });
+
+    it("groups a generation's blocks together and keeps two generations apart", () => {
+      // One pi entry IS one API call, so its thinking, prose and tool call share
+      // a key and collapse to a single panel row — while the next entry gets its
+      // own. Namespaced by session id: a chat is several files concatenated, and
+      // pi's entry ids are only unique within one.
+      const messages = parsePiSession(writeSession("s1", conversationEntries()));
+      const assistants = messages.filter((m) => m.role === "assistant");
+      expect(assistants.map((m) => m.generationKey)).toEqual(["pi:s1/e2", "pi:s1/e2", "pi:s1/e2", "pi:s1/e4"]);
+    });
+
+    it("uses the provider's own response id as the request id, and none when there is none", () => {
+      const withId = writeSession("s1", [
+        {
+          type: "message",
+          id: "e1",
+          parentId: null,
+          timestamp: TS,
+          message: { ...assistantMessage([{ type: "text", text: "hi" }]), responseId: "resp_aaa" },
+        },
+      ]);
+      expect(assistantsOf(withId)[0].requestId).toBe("resp_aaa");
+      // A provider that returned no id gets no id — never a synthesized one, so
+      // the Req ID column cannot show something a user might quote to support.
+      expect(assistantsOf(writeSession("s2", conversationEntries()))[0].requestId).toBeUndefined();
+    });
+
+    it("puts a generation's cost on exactly one block, not on every block", () => {
+      // `MessageBubble` renders `MessageMetadata` for thinking, tool_use *and*
+      // text, and does no grouping — so a cost stamped on every block is printed
+      // once per bubble. Entry e2 is thinking + prose + a tool call: stamping it
+      // three times made a user summing a chat's per-message costs get 3× the
+      // real spend. The panel would have hidden it (it regroups), the chat view
+      // does not.
+      const blocks = blocksOfEntry(writeSession("s1", conversationEntries()), "e2");
+      expect(blocks).toHaveLength(3);
+      expect(blocks.filter((m) => m.costUsd != null)).toHaveLength(1);
+      expect(blocks.filter((m) => m.usage != null)).toHaveLength(1);
+      expect(blocks.filter((m) => m.stopReason != null)).toHaveLength(1);
+      // Summed across the entry's bubbles, the chat view now shows what the
+      // generation actually cost — 0.001 once, not 0.003.
+      expect(blocks.reduce((sum, m) => sum + (m.costUsd ?? 0), 0)).toBe(0.001);
+    });
+
+    it("carries identity — model and grouping key — onto every block", () => {
+      // The other half of the split: `model` and `generationKey` describe which
+      // call a block came from rather than measuring it, so they belong on all
+      // three. Without the key on the tool_use block the panel would file it as
+      // its own row.
+      const blocks = blocksOfEntry(writeSession("s1", conversationEntries()), "e2");
+      expect(blocks.map((m) => m.type)).toEqual(["thinking", "text", "tool_use"]);
+      expect(blocks.every((m) => m.model === "google/gemini-3.6-flash")).toBe(true);
+    });
+
+    it("shows the model that answered, not the alias that was asked for", () => {
+      // A real entry from `~/.callboard/pi-sessions/` requests
+      // `~anthropic/claude-sonnet-latest` and is served `anthropic/claude-sonnet-5`.
+      // The Model column is a diagnostic; the two differ exactly when it matters.
+      const path = writeSession("s1", [
+        {
+          type: "message",
+          id: "e1",
+          parentId: null,
+          timestamp: TS,
+          message: {
+            ...assistantMessage([{ type: "text", text: "hi" }]),
+            model: "~anthropic/claude-sonnet-latest",
+            responseModel: "anthropic/claude-sonnet-5",
+          },
+        },
+      ]);
+      expect(assistantsOf(path)[0].model).toBe("anthropic/claude-sonnet-5");
+    });
+
+    it("annotates nothing when the entry carries no metrics at all", () => {
+      // A session file written by an older pi, or a half-flushed entry.
+      const path = writeSession("s1", [
+        {
+          type: "message",
+          id: "e1",
+          parentId: null,
+          timestamp: TS,
+          message: { role: "assistant", content: [{ type: "text", text: "bare" }], model: "m" },
+        },
+      ]);
+      const bare = assistantsOf(path)[0];
+      expect(bare.usage).toBeUndefined();
+      expect(bare.stopReason).toBeUndefined();
+      expect(bare.costUsd).toBeUndefined();
+      // The grouping key is positional, not measured, so it survives — otherwise
+      // an old transcript's rows would each become their own `__ungrouped_N`.
+      expect(bare.generationKey).toBe("pi:s1/e1");
+    });
+  });
+
   it("stamps every message with the entry timestamp", () => {
     for (const message of parsePiSession(writeSession("s1", conversationEntries()))) {
       expect(message.timestamp).toBe(TS);
@@ -233,6 +413,55 @@ describe("parsePiSession", () => {
   it("renders a branch summary as a boundary too", () => {
     const path = writeSession("s1", [{ type: "branch_summary", id: "b1", parentId: null, timestamp: TS, fromId: "e2", summary: "abandoned branch" }]);
     expect(parsePiSession(path)[0]).toMatchObject({ subtype: "compact_boundary", content: "abandoned branch" });
+  });
+
+  it("keeps the usage of the call that wrote a compaction summary", () => {
+    // `CompactionEntry.usage` is "Usage from the LLM call(s) that generated this
+    // summary" — a real billed call. A chat that auto-compacted three times spent
+    // three times, and dropping these made "Total cost" quietly short in the one
+    // panel a user opens to find out what a chat cost.
+    const path = writeSession("s1", [
+      {
+        type: "compaction",
+        id: "c1",
+        parentId: null,
+        timestamp: TS,
+        summary: "summarized 40 turns",
+        firstKeptEntryId: "e9",
+        tokensBefore: 1000,
+        usage: { input: 40000, output: 800, cacheRead: 0, cacheWrite: 0, totalTokens: 40800, cost: { total: 0.12 } },
+      },
+    ]);
+    expect(parsePiSession(path)[0]).toMatchObject({
+      subtype: "compact_boundary",
+      usage: { input_tokens: 40000, output_tokens: 800, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      costUsd: 0.12,
+      generationKey: "pi:s1/c1",
+    });
+  });
+
+  it("keeps the usage of the call that wrote a branch summary", () => {
+    const path = writeSession("s1", [
+      {
+        type: "branch_summary",
+        id: "b1",
+        parentId: null,
+        timestamp: TS,
+        fromId: "e2",
+        summary: "abandoned branch",
+        usage: { input: 900, output: 60, cost: { total: 0.004 } },
+      },
+    ]);
+    expect(parsePiSession(path)[0]).toMatchObject({ usage: { input_tokens: 900, output_tokens: 60 }, costUsd: 0.004, generationKey: "pi:s1/b1" });
+  });
+
+  it("leaves a summary that records no usage unannotated", () => {
+    // The common case for an older session file. A boundary with an empty
+    // `usage` object would conjure a debug-panel row of dashes for a call
+    // callboard knows nothing about.
+    const path = writeSession("s1", [{ type: "compaction", id: "c1", parentId: null, timestamp: TS, summary: "s", firstKeptEntryId: "e9", tokensBefore: 10 }]);
+    expect(parsePiSession(path)[0].usage).toBeUndefined();
+    expect(parsePiSession(path)[0].generationKey).toBeUndefined();
   });
 
   /**
@@ -330,7 +559,13 @@ describe("deriveSearchText — SessionInfo.allMessagesText, re-derived", () => {
 
 describe("extractText", () => {
   it("joins text blocks and ignores others", () => {
-    expect(extractText([{ type: "text", text: "a" }, { type: "thinking", thinking: "t" }, { type: "text", text: "b" }])).toBe("ab");
+    expect(
+      extractText([
+        { type: "text", text: "a" },
+        { type: "thinking", thinking: "t" },
+        { type: "text", text: "b" },
+      ]),
+    ).toBe("ab");
   });
 
   it("accepts the bare-string content form", () => {
@@ -343,12 +578,9 @@ describe("extractText", () => {
 });
 
 describe("path safety", () => {
-  it.each([["../escape"], ["a/b"], ["/absolute"], [".."], ["."], ["C:\\win"], ["with\0nul"], [""], [null], [123]])(
-    "rejects %s as a path segment",
-    (value) => {
-      expect(isSafePathSegment(value)).toBe(false);
-    },
-  );
+  it.each([["../escape"], ["a/b"], ["/absolute"], [".."], ["."], ["C:\\win"], ["with\0nul"], [""], [null], [123]])("rejects %s as a path segment", (value) => {
+    expect(isSafePathSegment(value)).toBe(false);
+  });
 
   it.each([["chat-abc-123"], ["a"], ["019fcee0-462d-767a-8298-a6b7b94dbd41"], ["with.dots_and-dashes"]])("accepts %s", (value) => {
     expect(isSafePathSegment(value)).toBe(true);

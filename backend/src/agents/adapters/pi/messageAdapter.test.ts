@@ -168,7 +168,9 @@ describe("usage", () => {
         usage: { input: 498, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 499, cost: { total: 0.0007545 } },
       }),
     );
-    expect(acc.usage).toEqual({ inputTokens: 498, outputTokens: 1, costUsd: 0.0007545 });
+    // The cache figures are `0` here, not absent — pi counted, and the answer
+    // was none. They ride through as measured zeroes rather than being dropped.
+    expect(acc.usage).toEqual({ inputTokens: 498, outputTokens: 1, costUsd: 0.0007545, cacheReadTokens: 0, cacheWriteTokens: 0 });
   });
 
   it("takes no usage from turn_end, which carries none", () => {
@@ -198,8 +200,36 @@ describe("usage", () => {
 
   it("does not fold cache tokens into inputTokens", () => {
     // They are billed differently and cost.total already accounts for them;
-    // inflating the input count would disagree with the cost beside it.
-    expect(translateUsage({ input: 10, output: 2, cacheRead: 5000, cacheWrite: 100 })).toEqual({ inputTokens: 10, outputTokens: 2 });
+    // inflating the input count would disagree with the cost beside it. They are
+    // carried alongside instead — see the next test for why that matters.
+    const usage = translateUsage({ input: 10, output: 2, cacheRead: 5000, cacheWrite: 100 });
+    expect(usage.inputTokens).toBe(10);
+    expect(usage.outputTokens).toBe(2);
+  });
+
+  it("carries the same fields the transcript parser projects", () => {
+    // This is the *live* path over pi's `Usage`; `pi/sessionParser.ts`'s
+    // `projectUsage` is the *replay* path over the same object. A field one
+    // surfaces and the other drops makes a running chat and the same chat after
+    // a reload show different numbers — which is what happened: the parser was
+    // taught the cache split and the reasoning subset and this was not.
+    expect(translateUsage({ input: 10, output: 2, cacheRead: 5000, cacheWrite: 100, reasoning: 18 })).toEqual({
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 5000,
+      cacheWriteTokens: 100,
+      reasoningTokens: 18,
+    });
+  });
+
+  it("leaves a figure pi did not report unset rather than defaulting it to zero", () => {
+    // `undefined` reaches the debug panel as a dash and `0` as a measured zero.
+    const usage = translateUsage({ input: 10, output: 2 });
+    expect(usage).not.toHaveProperty("cacheReadTokens");
+    expect(usage).not.toHaveProperty("cacheWriteTokens");
+    expect(usage).not.toHaveProperty("reasoningTokens");
+    // And a real zero survives as a zero.
+    expect(translateUsage({ input: 10, output: 2, cacheRead: 0 }).cacheReadTokens).toBe(0);
   });
 
   it("tolerates a scalar cost as well as a breakdown", () => {
@@ -262,7 +292,13 @@ describe("buildTerminalResult", () => {
 
 describe("content extraction", () => {
   it("joins text blocks and ignores other kinds", () => {
-    expect(extractText([{ type: "text", text: "a" }, { type: "thinking", thinking: "t" }, { type: "text", text: "b" }])).toBe("ab");
+    expect(
+      extractText([
+        { type: "text", text: "a" },
+        { type: "thinking", thinking: "t" },
+        { type: "text", text: "b" },
+      ]),
+    ).toBe("ab");
   });
 
   it("takes a bare string", () => {
@@ -270,7 +306,12 @@ describe("content extraction", () => {
   });
 
   it("pulls thinking separately", () => {
-    expect(extractThinking([{ type: "thinking", thinking: "why" }, { type: "text", text: "a" }])).toBe("why");
+    expect(
+      extractThinking([
+        { type: "thinking", thinking: "why" },
+        { type: "text", text: "a" },
+      ]),
+    ).toBe("why");
   });
 
   it.each([[null], [undefined], [42], [{}]])("returns empty for %s", (value) => {

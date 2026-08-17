@@ -35,7 +35,47 @@ export interface ParsedMessage {
   model?: string;
   /** Git branch at the time this message was recorded */
   gitBranch?: string;
-  /** Token usage from the API response */
+  /**
+   * Token usage from the API response.
+   *
+   * **This field is the responses debug panel's row filter** — an assistant
+   * message without it produces no row at all — so a parser that drops it makes
+   * the panel blank for that engine rather than sparse.
+   *
+   * A sub-field is `undefined` when the engine does not report it and `0` when
+   * it reported none; the two are not interchangeable, and no parser may
+   * default one into the other. Cache-write availability, for instance:
+   *
+   *   claude-code  cache read ✓  cache write ✓
+   *   codex        cache read ✓  cache write ✗ — OpenAI bills no cache writes
+   *                                             and reports no such metric
+   *   acp          cache read ~  cache write ~ — both optional in the schema;
+   *                                             blank for a vendor that omits them
+   *   cline        cache read ~  cache write ~ — cumulative, differenced on read;
+   *                                             Cline drops a total that is still 0
+   *   pi           cache read ✓  cache write ✓
+   *
+   * ## What an *existing* chat shows
+   *
+   * Populating these fields per engine is a **parser** change, so it reaches a
+   * chat already on disk only if the number is still on disk. It is for pi and
+   * it is not for ACP or Cline, and the difference is where each engine's
+   * transcript sits relative to translation:
+   *
+   * - **pi** — retroactive. A pi session file is pi's own format, and it has
+   *   always recorded `usage`, `stopReason`, `responseId` and the `cost`
+   *   breakdown. The parser was simply not reading them, so existing pi chats
+   *   light up on reparse with no migration.
+   * - **acp / cline** — forward-only. Both transcripts store callboard's own
+   *   already-normalized `AgentEvent`s, so whatever the *writer* dropped is gone
+   *   before the file is written. A stored ACP result line on this machine reads
+   *   `{"type":"result","status":"success","usage":{"inputTokens":2,
+   *   "outputTokens":1241}}` — the cache figures and the stop reason were
+   *   discarded at write time and no parser can recover them. Chats started
+   *   before this change keep showing dashes in those columns; new ones do not.
+   *
+   * Worth knowing before reading a blank column as a bug in the fix.
+   */
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -44,7 +84,21 @@ export interface ParsedMessage {
     /** Reasoning-trace tokens billed as output, when the adapter reports them. */
     reasoning_tokens?: number;
   };
-  /** USD cost for this response, when the adapter exposes it. */
+  /**
+   * USD cost for this response, when the adapter exposes it.
+   *
+   * Reported by **cline** (from its running `totalCost`), **pi** (from
+   * `usage.cost.total`) and **acp** (from a `usage_update` that carries a USD
+   * amount) — all three differenced or taken per-turn so a row shows its own
+   * spend rather than the chat's.
+   *
+   * Never populated for **claude-code** or **codex**, and not for want of
+   * trying: the Agent SDK's JSONL records no cost field anywhere (surveyed
+   * across the local session logs), and a Codex rollout has none either —
+   * subscription runs are not priced per call. Deriving one from token counts
+   * and a price table would be a guess wearing a cost's clothing, so the column
+   * stays blank for those two.
+   */
   costUsd?: number;
   /** End-to-end duration of the assistant turn that produced this message, in ms, when the transcript records it. */
   durationMs?: number;
@@ -59,13 +113,55 @@ export interface ParsedMessage {
 
   // ── Debug / metrics fields ──
 
-  /** Why the model stopped: "end_turn", "tool_use", "max_tokens", or null for streaming partials */
+  /**
+   * Why the model stopped: "end_turn", "tool_use", "max_tokens", or null for
+   * streaming partials.
+   *
+   * Not narrowed to a union, because the vocabulary is per-engine and a value
+   * this build has not seen must still render. Parsers translate into the three
+   * names above **only** when the engine reports the same closed concept under a
+   * different spelling — pi's `stop`/`length`/`toolUse` do, and are renamed.
+   * Everything else passes through verbatim: ACP already uses these names for
+   * the values that overlap and has its own (`refusal`, `cancelled`) for the
+   * rest.
+   *
+   * **Cline is namespaced, not translated.** It reports why its agent *loop*
+   * finished, which is a different fact from why the model stopped, so
+   * `completed` is not relabelled `end_turn`. But a second vocabulary sharing
+   * one column collides: `error` is a model-level failure from pi and a
+   * loop-level one from Cline, and a chat forked across harnesses can hold both.
+   * So Cline's values arrive as `loop:completed`, `loop:max_iterations`,
+   * `loop:aborted`, `loop:mistake_limit`, `loop:error` — the prefix *is* the
+   * statement that this describes the loop, and it lets the panel colour a clean
+   * loop finish green and `loop:max_iterations` red instead of rendering every
+   * Cline row the same muted grey.
+   *
+   * Absent for **codex**: a rollout carries no stop reason in any line type —
+   * confirmed by a census over every `event_msg` and `response_item` in the 361
+   * rollouts on the development machine. The turn-level `task_complete` says a
+   * turn ended, not why the model yielded, and inferring one from "this
+   * generation was followed by a tool call" would be callboard's inference
+   * printed in an engine's column.
+   */
   stopReason?: string | null;
-  /** Speed mode: "standard" or "fast" */
+  /**
+   * Speed mode: "standard" or "fast". Anthropic-only — it comes off
+   * `usage.speed` in the Claude Code JSONL, and no other engine has the
+   * concept, let alone the field.
+   */
   speed?: string;
-  /** Inference geography hint from the API */
+  /** Inference geography hint from the API. Anthropic-only, as {@link speed}. */
   inferenceGeo?: string;
-  /** API request ID from the JSONL entry (useful for support escalation) */
+  /**
+   * The **engine's own** request/response id, for support escalation. Claude
+   * Code takes it from the JSONL line, Codex from the rollout's `turn_id`, pi
+   * from the provider's `responseId`.
+   *
+   * Never synthesized. ACP mints no request id and neither does Cline, so this
+   * stays unset for them and the panel's Req ID column shows a dash — an id
+   * callboard invented would look like one a user could quote to a vendor.
+   * Row *grouping* is a separate concern and uses {@link generationKey}.
+   */
   requestId?: string;
   /**
    * Unique key identifying a single model generation within the responses
@@ -74,7 +170,19 @@ export interface ParsedMessage {
    * intra-cycle turns needs its transcript parser to synthesise `generationKey`
    * as `"<requestId>/<turnNumber>"` instead, giving each generation a distinct
    * identity the debug panel can group on. Falls back to `requestId` when
-   * absent, which is every row this build produces.
+   * absent.
+   *
+   * An **identity, not a datum**. Codex uses `"<turnId>/<genIndex>"` and pi
+   * `"pi:<sessionId>/<entryId>"` (its session entries *are* generations), both
+   * namespaced by session id because a chat's messages are the concatenation of
+   * several session files and a bare index would merge entry 0 of one with entry
+   * 0 of the next into a single row.
+   *
+   * ACP and Cline mint **none**. A positional turn key was added for them and
+   * then removed: the panel's `__ungrouped_N` fallback already numbers rows per
+   * message, and both parsers annotate exactly one message per turn, so the key
+   * changed the row count from N to N. Only mint one where an engine really does
+   * emit several messages for a single generation.
    */
   generationKey?: string;
   /** Server-side tool usage counts */

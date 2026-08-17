@@ -19,6 +19,7 @@ import { existsSync, readdirSync, readFileSync, statSync, type Stats } from "nod
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
+import { CumulativeCounter } from "../cumulativeCounter.js";
 import { isSafePathSegment, resolveClineSessionsRoot, type ClineTranscriptEntry, type ClineTranscriptHeader, type ClineTranscriptLine } from "./transcript.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -123,6 +124,33 @@ export function readClineTranscriptCwd(filePath: string): string {
 }
 
 /**
+ * Cline's `AgentFinishReason` → the value the Stop column shows.
+ *
+ * Cline reports why its **agent loop** ended, which is not why the **model**
+ * stopped generating: a turn that ran twelve iterations reports `completed`
+ * once, and relabelling that `end_turn` would claim a model-level fact callboard
+ * never observed. That argument still holds — what it missed is that putting a
+ * second vocabulary in one column under no marking makes the two collide.
+ * Concretely, `error` is a *model-level* failure when pi emits it and a
+ * *loop-level* one when Cline does, and cross-harness forks are supported, so
+ * one chat's "All stop reasons" dropdown could offer a single `error` option
+ * selecting two unrelated failure classes.
+ *
+ * So the loop vocabulary is namespaced rather than translated. `loop:completed`
+ * is not `end_turn` and does not pretend to be, `loop:error` no longer collides
+ * with the model's, and the panel can colour a clean loop finish green and
+ * `loop:max_iterations` red — which it could not when every Cline row was an
+ * unrecognised string rendering muted grey, clean and failed alike.
+ *
+ * Applied on **read** rather than in `buildTerminalResult` so it reaches
+ * transcripts already on disk: a Cline transcript stores the normalized
+ * `AgentEvent`, so a change made at write time would only ever affect new chats.
+ */
+export function namespaceFinishReason(finishReason: string): string {
+  return finishReason.startsWith("loop:") ? finishReason : `loop:${finishReason}`;
+}
+
+/**
  * Project a transcript onto the neutral {@link ParsedMessage} list the chat
  * viewer renders.
  *
@@ -176,38 +204,59 @@ export function parseClineTranscript(filePath: string): ParsedMessage[] {
   // Where the current turn's output begins, so a terminal `result` annotates the
   // reply *it* closed rather than whatever assistant message is last in the file.
   let turnStart = 0;
-  /** Latest cumulative session spend seen, for differencing into a per-turn cost. */
-  let cumulativeCostUsd: number | null = null;
-  /** Latest cumulative token counts, differenced the same way. */
-  let cumulativeInput = 0;
-  let cumulativeOutput = 0;
+  /**
+   * Cline's counters are cumulative for the session, so each is differenced into
+   * a per-turn step by {@link CumulativeCounter} — which also covers the two
+   * cases the previous inline arithmetic did not:
+   *
+   * - Cost and both cache figures are **optional per turn**
+   *   (`totalCost`/`totalCacheReadTokens`/`totalCacheWriteTokens` are all `?` in
+   *   `@cline/shared`), so a turn can report the totals it has and skip these.
+   *   The old code only advanced the baseline when a figure arrived, so turn 1
+   *   reporting 900, turn 2 omitting and turn 3 reporting 3,000 put **2,100** on
+   *   turn 3's row — turns 2 and 3 combined, billed to turn 3, with nothing
+   *   marking it. The counter returns a dash for that row instead.
+   * - An engine that never reports a cache figure keeps a `null` baseline
+   *   forever, so the column stays blank rather than filling with manufactured
+   *   zeroes. (That part the old code did get right, and it is preserved.)
+   */
+  const counters = {
+    input: new CumulativeCounter(),
+    output: new CumulativeCounter(),
+    cacheRead: new CumulativeCounter(),
+    cacheWrite: new CumulativeCounter(),
+    cost: new CumulativeCounter(),
+  };
 
   const closeTurn = (event: Extract<AgentEvent, { type: "result" }>): void => {
     const usage = event.usage;
-    let turnCostUsd: number | null = null;
-    let turnInput: number | null = null;
-    let turnOutput: number | null = null;
-
-    if (usage) {
-      // A figure that went *backwards* (a resumed session whose runtime restarted
-      // its counters) is treated as a fresh baseline rather than a negative
-      // charge. Zero is a real answer and is reported, not suppressed.
-      if (typeof usage.costUsd === "number" && Number.isFinite(usage.costUsd)) {
-        turnCostUsd = cumulativeCostUsd === null || usage.costUsd < cumulativeCostUsd ? usage.costUsd : usage.costUsd - cumulativeCostUsd;
-        cumulativeCostUsd = usage.costUsd;
-      }
-      turnInput = usage.inputTokens < cumulativeInput ? usage.inputTokens : usage.inputTokens - cumulativeInput;
-      turnOutput = usage.outputTokens < cumulativeOutput ? usage.outputTokens : usage.outputTokens - cumulativeOutput;
-      cumulativeInput = usage.inputTokens;
-      cumulativeOutput = usage.outputTokens;
-    }
+    // Stepped once per turn whether or not this turn reported them — a counter
+    // only detects a gap if it hears about the turn that skipped it. Zero is a
+    // real answer and is reported, not suppressed.
+    const turnInput = counters.input.step(usage?.inputTokens);
+    const turnOutput = counters.output.step(usage?.outputTokens);
+    const turnCacheRead = counters.cacheRead.step(usage?.cacheReadTokens);
+    const turnCacheWrite = counters.cacheWrite.step(usage?.cacheWriteTokens);
+    const turnCostUsd = counters.cost.step(usage?.costUsd);
 
     for (let i = messages.length - 1; i >= turnStart; i--) {
       const message = messages[i];
       if (message.role !== "assistant") continue;
-      if (turnInput !== null && turnOutput !== null) message.usage = { input_tokens: turnInput, output_tokens: turnOutput };
+      if (usage) {
+        message.usage = {
+          ...(turnInput !== undefined && { input_tokens: turnInput }),
+          ...(turnOutput !== undefined && { output_tokens: turnOutput }),
+          ...(turnCacheRead !== undefined && { cache_read_input_tokens: turnCacheRead }),
+          ...(turnCacheWrite !== undefined && { cache_creation_input_tokens: turnCacheWrite }),
+        };
+      }
       if (event.durationMs != null) message.durationMs = event.durationMs;
-      if (turnCostUsd != null) message.costUsd = turnCostUsd;
+      if (turnCostUsd !== undefined) message.costUsd = turnCostUsd;
+      // Namespaced, not translated — see {@link namespaceFinishReason}. No
+      // `generationKey` is minted: the panel's `__ungrouped_N` fallback already
+      // numbers rows per message and exactly one message per turn is annotated
+      // here, so a positional key would change the row count from N to N.
+      if (event.stopReason) message.stopReason = namespaceFinishReason(event.stopReason);
       break;
     }
     turnStart = messages.length;
