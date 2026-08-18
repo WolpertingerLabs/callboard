@@ -201,6 +201,16 @@
   --board-tile-title-text: var(--text);
   --board-tile-meta-text: var(--text-muted);
   --board-section-label-text: var(--text-muted);
+  /* Category sub-heading inside a status section. Two tokens rather than one
+     token dimmed by opacity: opacity composites against --bg and lands at a
+     different ratio per mode — the trap --chatlist-item-dimmed-opacity above
+     already documents — and --text at 0.55 measures 5.42:1 here but only
+     3.52:1 in light, under the 4.5:1 AA floor for 12px semibold. --text-muted
+     is the same quiet read and clears AA in both (6.15:1 / 6.38:1), which is
+     why these need no per-mode value. */
+  --board-group-label-text: var(--text);
+  --board-group-label-muted-text: var(--text-muted);
+  --board-group-rule: var(--border);
   --board-rollup-needs-you: var(--warning);
   --board-rollup-job-running: var(--accent-text);
   --board-rollup-active: var(--status-active);
@@ -417,6 +427,11 @@
   --board-tile-title-text: var(--text);
   --board-tile-meta-text: var(--text-muted);
   --board-section-label-text: var(--text-muted);
+  /* Same derivation as dark, deliberately: carrying the dim in the token
+     instead of an opacity is what lets one value serve both modes. */
+  --board-group-label-text: var(--text);
+  --board-group-label-muted-text: var(--text-muted);
+  --board-group-rule: var(--border);
   --board-rollup-needs-you: var(--warning);
   --board-rollup-job-running: var(--accent-text);
   --board-rollup-active: var(--status-active);

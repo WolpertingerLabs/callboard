@@ -59,18 +59,21 @@ async function mount(cards: CardSummary[]) {
       <Board />
     </MemoryRouter>,
   );
-  await screen.findAllByTestId("section-header");
+  await screen.findAllByRole("heading", { level: 2 });
 }
 
 /**
- * Every status header, category header and tile on the board, in the order the
- * DOM holds them. Headers are prefixed so an assertion can't be satisfied by a
- * card that happens to be titled like a category.
+ * Every status heading, category heading and tile on the board, in the order
+ * the DOM holds them. Read through the heading hierarchy the page actually
+ * exposes, so these assertions cover the structure a screen reader walks and
+ * not a set of test-only handles. Headings carry one markdown-style marker per
+ * level — `## Status`, `### Category` — so an assertion can't be satisfied by a
+ * card titled like a category, or by a heading at the wrong depth.
  */
 function outline(): string[] {
-  return [...document.querySelectorAll('[data-testid="section-header"],[data-testid="group-header"],[role="checkbox"]')].map((el) => {
+  return [...document.querySelectorAll('[role="heading"],[role="checkbox"]')].map((el) => {
     if (el.getAttribute("role") === "checkbox") return el.getAttribute("aria-label")!.replace("Select ", "");
-    return `${el.getAttribute("data-testid") === "section-header" ? "##" : "#"} ${el.textContent}`;
+    return `${"#".repeat(Number(el.getAttribute("aria-level")))} ${el.textContent}`;
   });
 }
 
@@ -91,38 +94,63 @@ describe("status sections with category sub-groups", () => {
     // last alphabetically and holds nothing else.
     expect(outline()).toEqual([
       "## Needs you",
-      "# Beta",
+      "### Beta",
       "Blocked beta",
       "## Running",
-      "# Alpha",
+      "### Alpha",
       "Running alpha",
       "## Idle",
-      "# Alpha",
+      "### Alpha",
       "Idle alpha",
     ]);
   });
 
-  it("orders a section's categories by the same activity extreme as the cards inside them", async () => {
+  it("leads the Idle section with the category holding the stalest card", async () => {
     await mount([
-      card("b1", "Beta recent", { category: "Beta", lastActivityAt: "2026-08-07T04:00:00.000Z" }),
-      card("a1", "Alpha stalest", { category: "Alpha", lastActivityAt: "2026-08-07T01:00:00.000Z" }),
-      card("b2", "Beta stale", { category: "Beta", lastActivityAt: "2026-08-07T03:00:00.000Z" }),
-      card("a2", "Alpha stale", { category: "Alpha", lastActivityAt: "2026-08-07T02:00:00.000Z" }),
+      card("z1", "Zeta stalest", { category: "Zeta", lastActivityAt: "2026-08-07T01:00:00.000Z" }),
+      card("a1", "Alpha mid", { category: "Alpha", lastActivityAt: "2026-08-07T02:00:00.000Z" }),
+      card("a2", "Alpha later", { category: "Alpha", lastActivityAt: "2026-08-07T03:00:00.000Z" }),
+      card("z2", "Zeta fresh", { category: "Zeta", lastActivityAt: "2026-08-07T09:00:00.000Z" }),
     ]);
 
-    // Idle sorts stalest-first, so the category holding the stalest card leads
-    // — not the alphabetically-first one, which here happens to agree, and not
-    // the freshest.
-    expect(outline()).toEqual(["## Idle", "# Alpha", "Alpha stalest", "Alpha stale", "# Beta", "Beta stale", "Beta recent"]);
+    // The ranges INTERLEAVE deliberately, so the three plausible keys disagree:
+    // stalest-card puts Zeta first (01:00 < 02:00), freshest-card would put
+    // Alpha first (03:00 < 09:00 ascending), and alphabetical would too. Only
+    // the intended rule produces this order.
+    expect(outline()).toEqual(["## Idle", "### Zeta", "Zeta stalest", "Zeta fresh", "### Alpha", "Alpha mid", "Alpha later"]);
   });
 
-  it("puts the freshest category first in a live section", async () => {
+  it("reads a group's age from its stalest card, not from whatever a pin put first", async () => {
     await mount([
-      card("a1", "Alpha older", { category: "Alpha", rollup: "active", lastActivityAt: "2026-08-07T01:00:00.000Z" }),
-      card("b1", "Beta newer", { category: "Beta", rollup: "active", lastActivityAt: "2026-08-07T05:00:00.000Z" }),
+      card("a1", "Alpha pinned fresh", { category: "Alpha", pinned: true, lastActivityAt: "2026-08-07T09:00:00.000Z" }),
+      card("a2", "Alpha stalest", { category: "Alpha", lastActivityAt: "2026-08-07T01:00:00.000Z" }),
+      card("b1", "Beta mid", { category: "Beta", lastActivityAt: "2026-08-07T05:00:00.000Z" }),
     ]);
 
-    expect(outline()).toEqual(["## Running", "# Beta", "Beta newer", "# Alpha", "Alpha older"]);
+    // Alpha leads on its 01:00 card even though the pin makes 09:00 the tile
+    // rendered first. Keying the group on cards[0] would put Beta first.
+    expect(outline()).toEqual(["## Idle", "### Alpha", "Alpha pinned fresh", "Alpha stalest", "### Beta", "Beta mid"]);
+  });
+
+  it("orders a live section's categories alphabetically, so a poll cannot reshuffle them", async () => {
+    const live = (activity: string) => [
+      card("a1", "Alpha work", { category: "Alpha", rollup: "active", lastActivityAt: activity }),
+      card("b1", "Beta work", { category: "Beta", rollup: "active", lastActivityAt: "2026-08-07T05:00:00.000Z" }),
+    ];
+
+    await mount(live("2026-08-07T01:00:00.000Z"));
+    const before = outline();
+    // Freshest-first would lead with Beta here, so this assertion alone pins
+    // the direction; the re-render below pins the stability.
+    expect(before).toEqual(["## Running", "### Alpha", "Alpha work", "### Beta", "Beta work"]);
+
+    // Alpha does some work, crossing Beta. That flips the comparison BOTH ways
+    // — Alpha becomes the freshest and Beta the stalest — so any activity key
+    // would swap these two BLOCKS of tiles on the next 15s poll, moving a
+    // different card under a click already on its way. Only a static key holds.
+    cleanup();
+    await mount(live("2026-08-07T09:00:00.000Z"));
+    expect(outline()).toEqual(before);
   });
 
   it("sorts a category with a running job above one that is merely active", async () => {
@@ -132,7 +160,7 @@ describe("status sections with category sub-groups", () => {
     ]);
 
     // Peak urgency beats recency between groups, so the stale job still leads.
-    expect(outline()).toEqual(["## Running", "# Beta", "Beta job", "# Alpha", "Alpha active"]);
+    expect(outline()).toEqual(["## Running", "### Beta", "Beta job", "### Alpha", "Alpha active"]);
   });
 
   it("labels the uncategorized group only where it shares a section", async () => {
@@ -144,13 +172,13 @@ describe("status sections with category sub-groups", () => {
 
     // Idle holds both, so both are named. Needs you holds only uncategorized
     // cards, where an "Uncategorized" heading would add nothing.
-    expect(outline()).toEqual(["## Needs you", "Blocked loose", "## Idle", "# Alpha", "Idle alpha", "# Uncategorized", "Idle loose"]);
+    expect(outline()).toEqual(["## Needs you", "Blocked loose", "## Idle", "### Alpha", "Idle alpha", "### Uncategorized", "Idle loose"]);
   });
 
   it("shows no sub-headings at all when nothing is categorized", async () => {
     await mount([card("u1", "Idle one"), card("u2", "Running one", { rollup: "active" })]);
 
-    expect(screen.queryAllByTestId("group-header")).toEqual([]);
+    expect(screen.queryAllByRole("heading", { level: 3 })).toEqual([]);
     expect(outline()).toEqual(["## Running", "Running one", "## Idle", "Idle one"]);
   });
 
@@ -163,6 +191,26 @@ describe("status sections with category sub-groups", () => {
 
     // Beta still leads: group order reads the stalest card in each group, which
     // a pin inside Alpha cannot change.
-    expect(outline()).toEqual(["## Idle", "# Beta", "Beta stalest", "# Alpha", "Alpha pinned fresh", "Alpha stale"]);
+    expect(outline()).toEqual(["## Idle", "### Beta", "Beta stalest", "### Alpha", "Alpha pinned fresh", "Alpha stale"]);
+  });
+
+  it("lets uncategorized lead a section when it holds the stalest work", async () => {
+    await mount([
+      card("a1", "Alpha fresher", { category: "Alpha", lastActivityAt: "2026-08-07T05:00:00.000Z" }),
+      card("u1", "Loose stalest", { lastActivityAt: "2026-08-07T01:00:00.000Z" }),
+    ]);
+
+    // Uncategorized loses only the ALPHABETICAL tie-break. It is not pinned to
+    // the bottom, or the stalest thing on the board could hide under a heading
+    // the eye reads as leftovers.
+    expect(outline()).toEqual(["## Idle", "### Uncategorized", "Loose stalest", "### Alpha", "Alpha fresher"]);
+  });
+
+  it("files a rollup value this bundle predates under Idle rather than dropping the card", async () => {
+    // An older tab against a newer daemon. Off the board entirely is the one
+    // outcome worse than under the wrong heading — see BUCKETS in Board.tsx.
+    await mount([card("x1", "From the future", { rollup: "hibernating" as CardSummary["rollup"] })]);
+
+    expect(outline()).toEqual(["## Idle", "From the future"]);
   });
 });
