@@ -85,6 +85,7 @@ import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { getActivePlugins } from "../utils/plugins";
 import { findLatestTaskListIndex } from "../utils/taskListNav";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
+import { pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 
 /**
  * Detect if the messages contain an unresolved ExitPlanMode tool_use
@@ -717,6 +718,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Group tool_use + tool_result pairs into combined display items
   const displayItems: DisplayItem[] = useMemo(() => groupToolMessages(messages), [messages]);
+
+  // Background tasks launched but never reported on. A background shell belongs
+  // to the session's subprocess and cannot outlive it, so an unreported task in
+  // a chat that is not streaming is not still running — it was killed when the
+  // session ended, and the transcript simply never got to say so. Gating on
+  // `streaming` is what keeps that from rendering as a spinner forever.
+  const pendingBackgroundIds = useMemo(() => (streaming ? pendingBackgroundTaskIds(messages) : null), [streaming, messages]);
 
   // Optimistic bubbles the fetched transcript hasn't accounted for yet.
   const visibleInFlightMessages = useMemo(() => visibleInFlight(inFlightMessages, messages), [inFlightMessages, messages]);
@@ -2211,6 +2219,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [latestTodoIndex]);
 
+  const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
+
   const handleSaveDraft = useCallback((message: string, images?: File[], onSuccess?: () => void) => {
     if (!message.trim()) return;
     setDraftMessage(message.trim());
@@ -2221,8 +2231,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
     // TODO: Handle images in draft
   }, []);
-
-  const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
 
   const handleCommandSelect = useCallback(
     (command: string) => {
@@ -3109,7 +3117,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   if (item.kind === "tool_group") {
                     return (
                       <div key={`tool-${item.originalIndices[0]}`} data-message-index={item.originalIndices[0]}>
-                        <ToolCallBubble toolUse={item.toolUse} toolResult={item.toolResult} isRunning={item.toolResult === null && streaming} />
+                        <ToolCallBubble
+                          toolUse={item.toolUse}
+                          toolResult={item.toolResult}
+                          isRunning={item.toolResult === null && streaming}
+                          backgroundPending={!!item.toolResult?.backgroundTaskId && !!pendingBackgroundIds?.has(item.toolResult.backgroundTaskId)}
+                        />
                       </div>
                     );
                   }

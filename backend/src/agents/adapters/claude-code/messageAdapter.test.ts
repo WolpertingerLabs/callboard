@@ -276,3 +276,100 @@ describe("translateSdkMessages — combined stream", () => {
     ]);
   });
 });
+
+/**
+ * Background-task lifecycle.
+ *
+ * The payloads below are copied from a real SDK stream (a `run_in_background`
+ * Bash call, drained end to end) rather than written from the type: the query
+ * loop ends a session on the strength of these events, so a translation that
+ * agrees with an invented shape and not with the CLI's would hold sessions open
+ * forever, or release them while work is still running.
+ */
+describe("translateSdkMessages — background tasks", () => {
+  const started = {
+    type: "system",
+    subtype: "task_started",
+    task_id: "b1c0oxnsp",
+    tool_use_id: "toolu_01XMnQdNKqjN8SV3X7mAgNnL",
+    description: "Sleep then write marker file",
+    task_type: "local_bash",
+    session_id: "e0435f6b",
+  };
+  const notification = {
+    type: "system",
+    subtype: "task_notification",
+    task_id: "b1c0oxnsp",
+    tool_use_id: "toolu_01XMnQdNKqjN8SV3X7mAgNnL",
+    status: "completed",
+    output_file: "/tmp/claude-1001/-tmp/e0435f6b/tasks/b1c0oxnsp.output",
+    summary: 'Background command "Sleep then write marker file" completed (exit code 0)',
+    session_id: "e0435f6b",
+  };
+
+  /** Only the background_task events, so session_started noise doesn't matter. */
+  const backgroundEvents = async (messages: unknown[]) => (await collect(messages)).filter((e) => e.type === "background_task");
+
+  it("emits a started event carrying the task id, call id and description", async () => {
+    expect(await backgroundEvents([started])).toEqual([
+      {
+        type: "background_task",
+        phase: "started",
+        taskId: "b1c0oxnsp",
+        callId: "toolu_01XMnQdNKqjN8SV3X7mAgNnL",
+        summary: "Sleep then write marker file",
+      },
+    ]);
+  });
+
+  it("emits an ended event from a task_notification, with status and output file", async () => {
+    expect(await backgroundEvents([notification])).toEqual([
+      {
+        type: "background_task",
+        phase: "ended",
+        taskId: "b1c0oxnsp",
+        callId: "toolu_01XMnQdNKqjN8SV3X7mAgNnL",
+        status: "completed",
+        summary: 'Background command "Sleep then write marker file" completed (exit code 0)',
+        outputFile: "/tmp/claude-1001/-tmp/e0435f6b/tasks/b1c0oxnsp.output",
+      },
+    ]);
+  });
+
+  it("emits an ended event from a terminal task_updated", async () => {
+    // The belt to task_notification's braces: whichever arrives, the hold ends.
+    const events = await backgroundEvents([{ type: "system", subtype: "task_updated", task_id: "b1c0oxnsp", patch: { status: "completed", end_time: 1 } }]);
+    expect(events).toEqual([{ type: "background_task", phase: "ended", taskId: "b1c0oxnsp", status: "completed" }]);
+  });
+
+  it("does not end a task on a task_updated that only reports progress", async () => {
+    const events = await backgroundEvents([{ type: "system", subtype: "task_updated", task_id: "b1c0oxnsp", patch: { status: "running" } }]);
+    expect(events).toEqual([]);
+  });
+
+  it("treats an unrecognised status as terminal", async () => {
+    // Releasing early costs one notification; never releasing pins a live
+    // subprocess until the hold times out. The default leans to the cheaper one.
+    const events = await backgroundEvents([{ type: "system", subtype: "task_updated", task_id: "b1c0oxnsp", patch: { status: "vaporised" } }]);
+    expect(events).toEqual([{ type: "background_task", phase: "ended", taskId: "b1c0oxnsp", status: "vaporised" }]);
+  });
+
+  it("ignores a task_updated with no status at all", async () => {
+    const events = await backgroundEvents([{ type: "system", subtype: "task_updated", task_id: "b1c0oxnsp", patch: {} }]);
+    expect(events).toEqual([]);
+  });
+
+  it("reports a failed task as ended", async () => {
+    const events = await backgroundEvents([{ ...notification, status: "failed", summary: "Background command failed with exit code 1" }]);
+    expect(events).toEqual([expect.objectContaining({ phase: "ended", status: "failed" })]);
+  });
+
+  it("ignores system messages that carry no task id", async () => {
+    expect(await backgroundEvents([{ type: "system", subtype: "init", session_id: "e0435f6b" }])).toEqual([]);
+  });
+
+  it("translates a whole start → notify sequence in order", async () => {
+    const events = await backgroundEvents([started, notification]);
+    expect(events.map((e) => e.type === "background_task" && e.phase)).toEqual(["started", "ended"]);
+  });
+});

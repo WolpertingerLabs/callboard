@@ -23,6 +23,7 @@ import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
 import { clearActivitiesForChat, migrateActivities, getWatch } from "./chat-activity.js";
 import { decideNudge } from "./nudge-decision.js";
+import { decideHold, HeldPrompt, OutstandingTasks, DEFAULT_MAX_HOLD_MS } from "./background-task-hold.js";
 import { getRun as getJobRun } from "./job-store.js";
 import {
   isStreamClosedToolFailure,
@@ -1098,6 +1099,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // each build a fresh one), so stopSession always closes the live one rather
   // than a stale handle.
   let activeQuery: AgentQuery | null = null;
+  // This run's held-open input stream, when the provider supports the
+  // background-task hold. Declared out here, alongside `activeQuery` and for
+  // the same reason: the run's `finally` has to be able to release it, and a
+  // `try`-scoped binding is invisible from the `finally` that guards it.
+  //
+  // A ref cell rather than a bare `let` because it is reassigned inside a
+  // closure (`setQueryPrompt`): control-flow analysis cannot follow that, so a
+  // plain binding stays narrowed to `null` and every later use is a type error.
+  const heldPromptRef: { current: HeldPrompt | null } = { current: null };
   sessionRegistry.register(trackingId, {
     type: "web",
     abortController,
@@ -1672,6 +1682,41 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // restarting forever.
       let recoveriesUsed = 0;
 
+      // ── Background-task hold ──
+      // Background tasks this session started and has not seen end. A turn that
+      // ends with any outstanding is held open rather than torn down, because
+      // the shells belong to the CLI subprocess and die with it — see
+      // background-task-hold.ts for the measurements behind that.
+      //
+      // Claude Code only: it is the sole provider that reports background tasks
+      // (`background_task` events), so for every other provider `heldPrompt`
+      // stays null and the prompt is passed through exactly as before.
+      const outstandingTasks = new OutstandingTasks();
+      const holdEnabled = providerKind === "claude-code";
+      /** Set once the wall-clock bound elapses, so later turns stop re-holding. */
+      let holdExpired = false;
+      /**
+       * Install this turn's prompt, wrapping it so it can be held open. Closes
+       * any previous hold first — a continuation (nudge, stream recovery) has
+       * already finished with the stream it replaces.
+       */
+      const setQueryPrompt = (source: AsyncIterable<unknown> | string): void => {
+        if (!holdEnabled) {
+          queryOpts.prompt = source;
+          return;
+        }
+        heldPromptRef.current?.close();
+        const held = new HeldPrompt(source);
+        heldPromptRef.current = held;
+        queryOpts.prompt = held.iterable();
+      };
+      if (holdEnabled) setQueryPrompt(effectivePrompt as AsyncIterable<unknown> | string);
+      // A stop pressed *during* a hold must not wait it out. The SDK tears the
+      // subprocess down on abort anyway, but a held input stream is the one
+      // thing that stop cannot reach on its own: nothing else ever resolves
+      // that promise, so the release has to be wired to the signal directly.
+      abortController.signal.addEventListener("abort", () => heldPromptRef.current?.close(), { once: true });
+
       // ── Query loop ──
       // Runs exactly once for normal sessions. When requireExplicitCompletion
       // is set and the stream ends without the completion tool having been
@@ -1738,6 +1783,42 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                 lastCostUsd = event.usage.costUsd;
               }
               // "success" → endReason stays undefined (normal completion)
+
+              // ── Should this turn actually end? ──
+              // `result` is the last event of a *turn*, not necessarily of the
+              // run. If background tasks are still going we leave the input
+              // stream open and keep draining: the CLI notices its own tasks
+              // finishing and opens a fresh turn to report them, with no prompt
+              // from us. Releasing closes stdin and the stream ends (~0.3s),
+              // which is the path every ordinary session takes.
+              const held = heldPromptRef.current;
+              if (holdEnabled && held && !held.closed) {
+                const hold = decideHold({
+                  outstanding: outstandingTasks.size,
+                  aborted: abortController.signal.aborted,
+                  errored: errorDetail !== undefined,
+                  endReason,
+                  expired: holdExpired,
+                });
+                if (hold.action === "hold") {
+                  log.info(
+                    `Session ${trackingId} turn ended with ${hold.taskCount} background task(s) outstanding ` +
+                      `[${outstandingTasks.ids().join(", ")}] — holding the session open`,
+                  );
+                  held.armTimeout(DEFAULT_MAX_HOLD_MS, () => {
+                    holdExpired = true;
+                    log.warn(
+                      `Session ${trackingId} held ${Math.round(DEFAULT_MAX_HOLD_MS / 60_000)}m for background task(s) ` +
+                        `[${outstandingTasks.ids().join(", ")}] — giving up waiting; they end with the subprocess`,
+                    );
+                  });
+                } else {
+                  if (hold.reason !== "none-outstanding") {
+                    log.info(`Session ${trackingId} releasing background-task hold (${hold.reason})`);
+                  }
+                  held.close();
+                }
+              }
               break;
             }
 
@@ -1931,6 +2012,24 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               emitter.emit("event", taskListStreamEvent(event.items));
               break;
 
+            case "background_task": {
+              // Bookkeeping only — nothing is emitted to the client here. The
+              // transcript already carries both edges (the launching
+              // tool_result, and the CLI's own `<task-notification>` record),
+              // and the frontend renders the pending state by pairing them, so
+              // a wire event would be a third copy of what the UI already has.
+              if (event.phase === "started") {
+                outstandingTasks.start(event.taskId);
+                log.info(`Session ${trackingId} started background task ${event.taskId}${event.summary ? ` — ${event.summary}` : ""}`);
+              } else if (outstandingTasks.end(event.taskId)) {
+                log.info(
+                  `Session ${trackingId} background task ${event.taskId} ended` +
+                    `${event.status ? ` (${event.status})` : ""} — ${outstandingTasks.size} still outstanding`,
+                );
+              }
+              break;
+            }
+
             case "tool_result":
               // Watch for the "Stream closed" transport-failure signature.
               // The failing result is still emitted (the transcript shows
@@ -2018,7 +2117,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
             );
             // Kill the broken query's subprocess before starting the
             // replacement — it may still be live and writing to the same
-            // session file.
+            // session file. Release the hold first: closing a query whose
+            // input stream is still open leaves the generator parked on a
+            // promise nothing will ever resolve.
+            heldPromptRef.current?.close();
             try {
               await conversation.close();
             } catch {
@@ -2031,12 +2133,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               reason: `stream_recovery_${recoveriesUsed}_of_${MAX_STREAM_RECOVERIES}`,
             } as StreamEvent);
             queryOpts.options.resume = resumeTarget;
-            queryOpts.prompt = (async function* () {
-              yield {
-                type: "user" as const,
-                message: { role: "user" as const, content: recoveryText },
-              };
-            })();
+            setQueryPrompt(
+              (async function* () {
+                yield {
+                  type: "user" as const,
+                  message: { role: "user" as const, content: recoveryText },
+                };
+              })(),
+            );
             sessionId = null;
             continue;
           }
@@ -2089,12 +2193,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // captured from this iteration's session_started; reset it so the
         // resumed query's new session id is appended to the chat record.
         queryOpts.options.resume = sessionId ?? resumeSessionId;
-        queryOpts.prompt = (async function* () {
-          yield {
-            type: "user" as const,
-            message: { role: "user" as const, content: nudgeText },
-          };
-        })();
+        setQueryPrompt(
+          (async function* () {
+            yield {
+              type: "user" as const,
+              message: { role: "user" as const, content: nudgeText },
+            };
+          })(),
+        );
         sessionId = null;
       }
 
@@ -2149,6 +2255,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {
+      // Release any background-task hold. Idempotent, and unconditional on
+      // purpose: every other exit from the loop closes its own hold, and this
+      // is the one that catches the paths that throw past them.
+      heldPromptRef.current?.close();
       // This run's query is done with — drop the handle so a late stop on a
       // replacement session can never close it a second time.
       activeQuery = null;

@@ -31,6 +31,27 @@ export interface ParsedMessage {
    * status.
    */
   backgroundTaskStatus?: string;
+  /**
+   * The engine's background-task id, on both ends of a background task:
+   *
+   * - on the **`tool_result`** that launched one (a Bash call with
+   *   `run_in_background`), where it means "this call started work that
+   *   outlives the turn";
+   * - on the **`background_task`** system marker that later reports the
+   *   outcome, where it means "this is the task that ended".
+   *
+   * Pairing the two is how the UI tells a background task that is still
+   * running from one that has finished — a launching result with no marker
+   * bearing its id is, by definition, still going. Taken from the transcript's
+   * own `toolUseResult.backgroundTaskId` and `<task-id>` fields rather than
+   * parsed out of the "Command running in background with ID: …" prose, which
+   * is written for the model to read, not for us.
+   *
+   * Absent on the launching side for transcripts written before callboard
+   * recorded it; a pre-existing chat therefore shows no pending state rather
+   * than a wrong one.
+   */
+  backgroundTaskId?: string;
   /** Model name from the API response, e.g. "claude-opus-4-6" */
   model?: string;
   /** Git branch at the time this message was recorded */

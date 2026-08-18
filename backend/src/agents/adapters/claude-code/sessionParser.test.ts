@@ -256,3 +256,73 @@ describe("parseMessages — background task notifications", () => {
     expect(msg).toMatchObject({ role: "user", type: "text" });
   });
 });
+
+/**
+ * Pairing the two ends of a background task.
+ *
+ * The launching `tool_result` and the completion marker are what the UI matches
+ * to tell a background task that is still running from one that has finished.
+ * Both ids come from the transcript's own fields; nothing here parses the
+ * "Command running in background with ID: …" sentence, which the CLI writes for
+ * the model rather than for us.
+ */
+describe("parseMessages — background task ids", () => {
+  /** A backgrounded Bash result, shaped as the CLI records it. */
+  function backgroundResultLine(taskId: string, toolUseId = "toolu_01Ckwx") {
+    return {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolUseId,
+            content: `Command running in background with ID: ${taskId}. Output is being written to: /tmp/claude-1001/tasks/${taskId}.output`,
+          },
+        ],
+      },
+      toolUseResult: { stdout: "", stderr: "", interrupted: false, isImage: false, backgroundTaskId: taskId },
+      timestamp: "2026-01-01T10:00:00.000Z",
+    };
+  }
+
+  it("tags the launching tool_result with the background task id", () => {
+    const [msg] = parseMessages([backgroundResultLine("budijlgzl")]);
+    expect(msg).toMatchObject({ type: "tool_result", toolUseId: "toolu_01Ckwx", backgroundTaskId: "budijlgzl" });
+  });
+
+  it("leaves an ordinary tool_result untagged", () => {
+    // The absence is what the UI reads as "this call is simply done".
+    const line = {
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01Plain", content: "ok" }] },
+      toolUseResult: { stdout: "ok", stderr: "", interrupted: false, isImage: false },
+      timestamp: "2026-01-01T10:00:00.000Z",
+    };
+    const [msg] = parseMessages([line]);
+    expect(msg.backgroundTaskId).toBeUndefined();
+  });
+
+  it("tags the completion marker with the same id, so the two pair up", () => {
+    const notice =
+      "<task-notification>\n<task-id>budijlgzl</task-id>\n<tool-use-id>toolu_01Ckwx</tool-use-id>\n" +
+      "<status>completed</status>\n<summary>Background command completed (exit code 0)</summary>\n</task-notification>";
+    const parsed = parseMessages([backgroundResultLine("budijlgzl"), { type: "queue-operation", operation: "enqueue", content: notice }]);
+
+    const launch = parsed.find((m) => m.type === "tool_result");
+    const marker = parsed.find((m) => m.subtype === "background_task");
+    expect(launch?.backgroundTaskId).toBe("budijlgzl");
+    expect(marker?.backgroundTaskId).toBe("budijlgzl");
+  });
+
+  it("does not attribute a multi-task summary to a single task", () => {
+    // The orphan summary reports on several tasks at once; tagging it with
+    // whichever id came first would silently mark one of them finished.
+    const orphan =
+      "<task-notification>\n<task-id>bqg7u6zpk</task-id>\n<task-id>bother1234</task-id>\n<status>stopped</status>\n" +
+      "<summary>2 background shell command task(s) from the previous session have no completion record.</summary>\n</task-notification>";
+    const [msg] = parseMessages([{ type: "queue-operation", operation: "enqueue", content: orphan }]);
+    expect(msg).toMatchObject({ subtype: "background_task" });
+    expect(msg.backgroundTaskId).toBeUndefined();
+  });
+});
