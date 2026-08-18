@@ -58,10 +58,18 @@ function card(id: string, title: string, overrides: Partial<CardSummary> = {}): 
 }
 
 /**
- * Two categories, all idle, so section order is alphabetical and within-section
- * order is stalest-first. Rendered order is therefore, and deterministically:
- *   Alpha one, Alpha two | Beta one, Beta two | (closed) Closed one, two, three
- * The bar between Alpha and Beta is the section boundary a range must cross.
+ * The board groups by status first and category second, so this fixture spans
+ * BOTH kinds of boundary a range can cross. Rendered order is deterministically:
+ *
+ *   Needs you │ Alpha: Alpha one
+ *   Idle      │ Alpha: Alpha two │ Beta: Beta one, Beta two
+ *   (closed)  │ Closed one, Closed two, Closed three
+ *
+ * So Alpha one → Alpha two crosses a SECTION boundary, and Alpha two → Beta one
+ * crosses a category GROUP boundary inside one section. Both matter: a flatten
+ * that walked sections or groups in the wrong order would select cards the user
+ * never saw, and with only one kind of boundary present, half of that flatten
+ * is unguarded. Alpha leads Idle because it holds the stalest card (02:00).
  *
  * This array is DELIBERATELY not in rendered order — the open cards interleave
  * their categories and the closed ones are not in closedAt order. A range that
@@ -70,7 +78,7 @@ function card(id: string, title: string, overrides: Partial<CardSummary> = {}): 
  * it selects a visibly different set.
  */
 const CARDS: CardSummary[] = [
-  card("a1", "Alpha one", { category: "Alpha", lastActivityAt: "2026-08-07T01:00:00.000Z" }),
+  card("a1", "Alpha one", { category: "Alpha", rollup: "needs_you", lastActivityAt: "2026-08-07T05:00:00.000Z" }),
   card("b1", "Beta one", { category: "Beta", lastActivityAt: "2026-08-07T03:00:00.000Z" }),
   card("a2", "Alpha two", { category: "Alpha", lastActivityAt: "2026-08-07T02:00:00.000Z" }),
   card("b2", "Beta two", { category: "Beta", lastActivityAt: "2026-08-07T04:00:00.000Z" }),
@@ -163,20 +171,23 @@ describe("entering selection mode from the desktop", () => {
 });
 
 describe("shift+click ranges", () => {
-  it("selects the inclusive range in rendered order, across a section boundary", async () => {
+  it("selects the inclusive range in rendered order, across a status section boundary", async () => {
     await mount();
     fireEvent.click(tile("Alpha one"), { metaKey: true });
     fireEvent.click(tile("Beta one"), { shiftKey: true });
 
-    // Alpha one → Beta one spans the end of Alpha and the start of Beta.
+    // Alpha one is the whole of Needs you; the range runs from there into Idle
+    // and stops partway through it. A flatten that walked the sections in any
+    // other order would sweep a different set.
     expect(selectedTitles()).toEqual(["Alpha one", "Alpha two", "Beta one"]);
   });
 
-  it("works backwards from the anchor", async () => {
+  it("works backwards from the anchor, across a category group boundary", async () => {
     await mount();
     fireEvent.click(tile("Beta two"), { metaKey: true });
     fireEvent.click(tile("Alpha two"), { shiftKey: true });
 
+    // Both ends sit inside Idle, on either side of the Alpha/Beta sub-heading.
     expect(selectedTitles()).toEqual(["Alpha two", "Beta one", "Beta two"]);
   });
 
