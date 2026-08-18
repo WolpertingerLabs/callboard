@@ -12,17 +12,33 @@ import NewCardModal from "../components/board/NewCardModal";
 import { Plus, ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 
-type Section = { key: string; label: string; cards: CardSummary[] };
+/** A category's cards inside one status section. `label: null` is uncategorized. */
+type Group = { key: string; label: string | null; cards: CardSummary[] };
+type Section = { key: string; label: string; groups: Group[]; count: number };
 
-/** Higher = more urgent; used to order cards inside a category group. */
+/** Higher = more urgent; used to order cards inside a group. */
 const ROLLUP_RANK: Record<CardSummary["rollup"], number> = { needs_you: 3, job_running: 2, active: 1, idle: 0 };
 
 /**
- * Pinned first, then urgency, then activity. Two idle cards sort STALEST
- * first — the same nudge-to-close-out the ungrouped Idle section applies —
- * while anything live sorts freshest first.
+ * The status sections, in board order. Status is the OUTER grouping and
+ * category the inner one, never the other way around: the question the board
+ * answers first is "what needs me", and a category split at the top level
+ * scatters that answer across every group on screen. Category still earns its
+ * place — but as a sub-heading inside the bucket, where it tells you which
+ * area an idle pile belongs to without hiding the pile itself.
  */
-function sortWithinCategory(cards: CardSummary[]): CardSummary[] {
+const BUCKETS: { key: string; label: string; match: (c: CardSummary) => boolean }[] = [
+  { key: "needs_you", label: "Needs you", match: (c) => c.rollup === "needs_you" },
+  { key: "running", label: "Running", match: (c) => c.rollup === "job_running" || c.rollup === "active" },
+  { key: "idle", label: "Idle", match: (c) => c.rollup === "idle" },
+];
+
+/**
+ * Pinned first, then urgency, then activity. Two idle cards sort STALEST
+ * first — a gentle nudge to close out or kick forward — while anything live
+ * sorts freshest first.
+ */
+function sortCards(cards: CardSummary[]): CardSummary[] {
   return [...cards].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     if (ROLLUP_RANK[a.rollup] !== ROLLUP_RANK[b.rollup]) return ROLLUP_RANK[b.rollup] - ROLLUP_RANK[a.rollup];
@@ -34,6 +50,44 @@ function sortWithinCategory(cards: CardSummary[]): CardSummary[] {
 /** Rank of the most urgent card in a group — decides where the group sorts. */
 function peakUrgency(cards: CardSummary[]): number {
   return cards.reduce((max, c) => Math.max(max, ROLLUP_RANK[c.rollup]), 0);
+}
+
+/**
+ * A group's activity, taken at the extreme its section already sorts toward:
+ * the stalest card in Idle, the freshest everywhere else. Ordering groups by
+ * that extreme rather than alphabetically means the sub-groups read in the
+ * same direction as the cards inside them — the most neglected category leads
+ * the Idle section, the same way the most neglected card leads its group.
+ */
+function groupActivity(cards: CardSummary[], stalestFirst: boolean): string {
+  return cards.reduce((acc, c) => (stalestFirst ? (c.lastActivityAt < acc ? c.lastActivityAt : acc) : c.lastActivityAt > acc ? c.lastActivityAt : acc), cards[0].lastActivityAt);
+}
+
+/**
+ * Split one status section's cards by category. Uncategorized collects into a
+ * trailing group that sorts by the same rule as the rest, so it isn't pinned
+ * to the bottom while holding the stalest work on the board.
+ */
+function groupByCategory(cards: CardSummary[], categories: string[], stalestFirst: boolean): Group[] {
+  return [
+    ...categories.map((category) => ({ key: `category:${category}`, label: category, cards: cards.filter((c) => c.category === category) })),
+    { key: "category:none", label: null, cards: cards.filter((c) => !c.category) },
+  ]
+    .filter((group) => group.cards.length > 0)
+    .map((group) => ({ ...group, cards: sortCards(group.cards) }))
+    .sort((a, b) => {
+      // Peak urgency, not cards[0] — a pinned idle card can lead a group that
+      // also holds the one card with a job still running.
+      const urgency = peakUrgency(b.cards) - peakUrgency(a.cards);
+      if (urgency !== 0) return urgency;
+      const activity = groupActivity(a.cards, stalestFirst).localeCompare(groupActivity(b.cards, stalestFirst));
+      if (activity !== 0) return stalestFirst ? activity : -activity;
+      // Alphabetical only as a last resort, and uncategorized loses that tie:
+      // it is a residue, not a category, so it reads better after the named
+      // ones when nothing else separates them.
+      if (a.label === null || b.label === null) return a.label === null ? 1 : -1;
+      return a.label.localeCompare(b.label);
+    });
 }
 
 
@@ -112,52 +166,25 @@ export default function Board() {
   // category doesn't vanish from autocomplete when its last open card closes.
   const knownCategories = uniqueCategories(cards);
 
-  // Open cards group by category once any card has one; uncategorized cards
-  // collect in an "Uncategorized" group. With no categories at all, keep the
-  // classic urgency sections.
-  //
-  // Groups are ordered by their most urgent card, NOT alphabetically: a card
-  // needing you must stay near the top of the board, and alphabetical order
-  // would happily bury it under an unrelated category. Alphabetical is only
-  // the tie-break between equally-urgent groups. Uncategorized sorts by the
-  // same rule so it isn't pinned to the bottom while holding a blocked chat.
+  // Open cards always split by status first; category subdivides each status
+  // section once any open card carries one.
   const openCategories = uniqueCategories(open);
-  const sections: Section[] =
-    openCategories.length > 0
-      ? [
-          ...openCategories.map((category) => ({
-            key: `category:${category}`,
-            label: category,
-            cards: sortWithinCategory(open.filter((c) => c.category === category)),
-          })),
-          { key: "category:none", label: "Uncategorized", cards: sortWithinCategory(open.filter((c) => !c.category)) },
-        ]
-          .filter((section) => section.cards.length > 0)
-          .sort((a, b) => {
-            // Peak urgency, not cards[0] — a pinned idle card can lead a group
-            // that also holds the one card blocked on you.
-            const urgency = peakUrgency(b.cards) - peakUrgency(a.cards);
-            return urgency !== 0 ? urgency : a.label.localeCompare(b.label);
-          })
-      : [
-          { key: "needs_you", label: "Needs you", cards: open.filter((c) => c.rollup === "needs_you") },
-          { key: "running", label: "Running", cards: open.filter((c) => c.rollup === "job_running" || c.rollup === "active") },
-          // Stalest first — a gentle nudge to close out or kick forward.
-          {
-            key: "idle",
-            label: "Idle",
-            cards: open
-              .filter((c) => c.rollup === "idle")
-              .sort((a, b) => (a.pinned === b.pinned ? a.lastActivityAt.localeCompare(b.lastActivityAt) : a.pinned ? -1 : 1)),
-          },
-        ];
+  const sections: Section[] = BUCKETS.map((bucket) => {
+    const cards = open.filter(bucket.match);
+    return { key: bucket.key, label: bucket.label, groups: groupByCategory(cards, openCategories, bucket.key === "idle"), count: cards.length };
+  }).filter((section) => section.count > 0);
+  // Sub-headings are suppressed for a section whose cards are all
+  // uncategorized — an "Uncategorized" heading over the whole section says
+  // nothing the section header didn't. A lone *named* group still shows its
+  // name, so a category never silently disappears from the board.
+  const showsGroupLabel = (section: Section) => section.groups.length > 1 || section.groups[0].label !== null;
 
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) : undefined;
 
   // The one order that shift+click ranges are read from — flattened out of
   // the very arrays rendered above, open sections first then the closed strip.
   // Ranges cross section boundaries, matching Finder and Explorer.
-  const orderedIds = [...sections.flatMap((s) => s.cards.map((c) => c.id)), ...closed.map((c) => c.id)];
+  const orderedIds = [...sections.flatMap((s) => s.groups.flatMap((g) => g.cards.map((c) => c.id))), ...closed.map((c) => c.id)];
 
   /**
    * The selection, reconciled against the cards that actually exist — derived
@@ -326,8 +353,23 @@ export default function Board() {
 
   const sectionHeader = (label: string, count: number) => (
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--board-section-label-text)", textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</span>
+      <span data-testid="section-header" style={{ fontSize: 12, fontWeight: 700, color: "var(--board-section-label-text)", textTransform: "uppercase", letterSpacing: 0.6 }}>
+        {label}
+      </span>
       <span style={{ fontSize: 11, color: "var(--board-section-label-text)" }}>{count}</span>
+    </div>
+  );
+
+  // Deliberately quieter than the status header above it — not uppercase, not
+  // bold — so a glance still lands on the status band first and only then
+  // reads the categories inside it.
+  const groupHeader = (label: string | null, count: number) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+      <span data-testid="group-header" style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", opacity: label === null ? 0.55 : 0.8 }}>
+        {label ?? "Uncategorized"}
+      </span>
+      <span style={{ fontSize: 11, color: "var(--board-section-label-text)" }}>{count}</span>
+      <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
     </div>
   );
 
@@ -409,19 +451,21 @@ export default function Board() {
               </div>
             )}
 
-            {sections.map(
-              (section) =>
-                section.cards.length > 0 && (
-                  <div key={section.key} style={{ marginBottom: 28 }}>
-                    {sectionHeader(section.label, section.cards.length)}
+            {sections.map((section) => (
+              <div key={section.key} style={{ marginBottom: 28 }}>
+                {sectionHeader(section.label, section.count)}
+                {section.groups.map((group, i) => (
+                  <div key={group.key} style={{ marginBottom: i === section.groups.length - 1 ? 0 : 18 }}>
+                    {showsGroupLabel(section) && groupHeader(group.label, group.cards.length)}
                     <div style={grid}>
-                      {section.cards.map((card) => (
+                      {group.cards.map((card) => (
                         <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} {...selectionProps(card)} />
                       ))}
                     </div>
                   </div>
-                ),
-            )}
+                ))}
+              </div>
+            ))}
 
             {/* Closed strip */}
             {closed.length > 0 && (
