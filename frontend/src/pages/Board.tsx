@@ -49,12 +49,21 @@ const BUCKETS: { key: string; label: string; match: (c: CardSummary) => boolean 
  * Pinned first, then urgency, then activity. Two idle cards sort STALEST
  * first — a gentle nudge to close out or kick forward — while anything live
  * sorts freshest first.
+ *
+ * The direction branches on the RANK, not on `rollup === "idle"`. Ranks are
+ * already equal by the time it is reached, so rank 0 means "both sit in the
+ * Idle section" — which, since that section is residual, includes a rollup
+ * value this bundle predates. Branching on the string instead would compare
+ * (idle, idle) stalest-first and (idle, unknown) freshest-first, and a
+ * comparator that disagrees with itself across a set is not merely wrong once:
+ * it makes the rendered order a function of the order the server happened to
+ * return the cards in.
  */
 function sortCards(cards: CardSummary[]): CardSummary[] {
   return [...cards].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     if (rank(a) !== rank(b)) return rank(b) - rank(a);
-    if (a.rollup === "idle" && b.rollup === "idle") return a.lastActivityAt.localeCompare(b.lastActivityAt);
+    if (rank(a) === 0) return a.lastActivityAt.localeCompare(b.lastActivityAt);
     return b.lastActivityAt.localeCompare(a.lastActivityAt);
   });
 }

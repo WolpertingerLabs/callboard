@@ -204,8 +204,8 @@
   /* Category sub-heading inside a status section. Two tokens rather than one
      token dimmed by opacity: opacity composites against --bg and lands at a
      different ratio per mode — the trap --chatlist-item-dimmed-opacity above
-     already documents — and --text at 0.55 measures 5.42:1 here but only
-     3.52:1 in light, under the 4.5:1 AA floor for 12px semibold. --text-muted
+     already documents — and --text at 0.55 measures 5.43:1 here but only
+     3.51:1 in light, under the 4.5:1 AA floor for 12px semibold. --text-muted
      is the same quiet read and clears AA in both (6.15:1 / 6.38:1), which is
      why these need no per-mode value. */
   --board-group-label-text: var(--text);

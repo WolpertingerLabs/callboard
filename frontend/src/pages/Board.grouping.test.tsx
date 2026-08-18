@@ -206,11 +206,30 @@ describe("status sections with category sub-groups", () => {
     expect(outline()).toEqual(["## Idle", "### Uncategorized", "Loose stalest", "### Alpha", "Alpha fresher"]);
   });
 
-  it("files a rollup value this bundle predates under Idle rather than dropping the card", async () => {
+  it("files a rollup value this bundle predates under Idle, and orders it as idle", async () => {
     // An older tab against a newer daemon. Off the board entirely is the one
     // outcome worse than under the wrong heading — see BUCKETS in Board.tsx.
-    await mount([card("x1", "From the future", { rollup: "hibernating" as CardSummary["rollup"] })]);
+    //
+    // Three cards, not one: with a single card `sort` never calls the
+    // comparator, so a version of this test that only proved the card renders
+    // would say nothing about how it sorts. The unknown rollup sits between
+    // two real idle cards by age, which it can only do if the comparator gives
+    // the same direction for (idle, unknown) as for (idle, idle). If it did
+    // not, this order would depend on the order listCards returned them in.
+    const cards = [
+      card("i1", "Idle stalest", { lastActivityAt: "2026-08-07T01:00:00.000Z" }),
+      card("x1", "From the future", { rollup: "hibernating" as CardSummary["rollup"], lastActivityAt: "2026-08-07T05:00:00.000Z" }),
+      card("i2", "Idle freshest", { lastActivityAt: "2026-08-07T09:00:00.000Z" }),
+    ];
+    const expected = ["## Idle", "Idle stalest", "From the future", "Idle freshest"];
 
-    expect(outline()).toEqual(["## Idle", "From the future"]);
+    await mount(cards);
+    expect(outline()).toEqual(expected);
+
+    // Same three cards, different server order. A non-transitive comparator
+    // renders these two mounts differently.
+    cleanup();
+    await mount([cards[1], cards[2], cards[0]]);
+    expect(outline()).toEqual(expected);
   });
 });
