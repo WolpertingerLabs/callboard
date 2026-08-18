@@ -188,25 +188,30 @@ describe("HeldPrompt", () => {
     }
   });
 
-  it("re-arming replaces the deadline rather than adding one", () => {
-    // A second task starting mid-hold must not buy the session another full
-    // window on top of the one already running.
+  it("measures its deadline from the first arm, not the latest", () => {
+    // `armTimeout` runs at every held turn boundary, and each delivered
+    // notification opens another turn. If re-arming restarted the window, a
+    // task reporting periodically could extend the cap forever — the exact
+    // runaway the bound exists to stop. Armed at t=0 for 60s and re-armed at
+    // t=30s, it must still fire at t=60s, not t=90s.
     vi.useFakeTimers();
     try {
       const held = new HeldPrompt("hello");
-      const first = vi.fn();
-      const second = vi.fn();
-      held.armTimeout(60_000, first);
+      const onExpiry = vi.fn();
+      held.armTimeout(60_000, onExpiry);
       vi.advanceTimersByTime(30_000);
-      held.armTimeout(60_000, second);
-      vi.advanceTimersByTime(60_000);
+      held.armTimeout(60_000, onExpiry);
 
-      expect(first).not.toHaveBeenCalled();
-      expect(second).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(29_999);
+      expect(onExpiry).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(2);
+      expect(onExpiry).toHaveBeenCalledOnce();
+      expect(held.closed).toBe(true);
     } finally {
       vi.useRealTimers();
     }
   });
+
 
   it("ignores an arm request after close", () => {
     vi.useFakeTimers();
@@ -235,5 +240,19 @@ describe("OutstandingTasks.end — reporting the transition", () => {
 
   it("reports false for a task it never saw start", () => {
     expect(new OutstandingTasks().end("ghost")).toBe(false);
+  });
+});
+
+describe("decideHold — a dead transport is not worth waiting on", () => {
+  it("releases when a stream recovery is pending, even with tasks outstanding", () => {
+    // The transport is about to be stopped and resumed, so nothing can be
+    // delivered over it. The query loop breaks out immediately afterwards and
+    // would close the hold anyway; deciding it here keeps the invariant local
+    // rather than dependent on an unconditional `break` far below.
+    expect(decideHold({ ...base, outstanding: 2, streamRecoveryNeeded: true })).toEqual({ action: "release", reason: "terminal" });
+  });
+
+  it("still holds when no recovery is pending", () => {
+    expect(decideHold({ ...base, outstanding: 2, streamRecoveryNeeded: false })).toEqual({ action: "hold", taskCount: 2 });
   });
 });

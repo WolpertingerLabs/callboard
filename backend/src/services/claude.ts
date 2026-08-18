@@ -1716,6 +1716,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // thing that stop cannot reach on its own: nothing else ever resolves
       // that promise, so the release has to be wired to the signal directly.
       abortController.signal.addEventListener("abort", () => heldPromptRef.current?.close(), { once: true });
+      // Registration happens well after the session was registered and after at
+      // least one await, so a stop can land in the gap — and `abort` has then
+      // already dispatched, leaving the listener above inert. Cover the gap
+      // rather than leave the guarantee the comment claims quietly false.
+      if (abortController.signal.aborted) heldPromptRef.current?.close();
 
       // ── Query loop ──
       // Runs exactly once for normal sessions. When requireExplicitCompletion
@@ -1799,6 +1804,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   errored: errorDetail !== undefined,
                   endReason,
                   expired: holdExpired,
+                  streamRecoveryNeeded,
                 });
                 if (hold.action === "hold") {
                   log.info(

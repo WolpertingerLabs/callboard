@@ -52,6 +52,21 @@ export interface ParsedMessage {
    * than a wrong one.
    */
   backgroundTaskId?: string;
+  /**
+   * On a `background_task` marker: every task the notice accounts for, however
+   * many. On the launching side it is never set — one `tool_result` starts one
+   * task.
+   *
+   * Separate from `backgroundTaskId` because the two answer different
+   * questions, and one field cannot answer both. *Attribution* ("which call
+   * does this outcome belong to?") demands exactly one id and must stay silent
+   * when a notice covers several. *Settling* ("has this task been accounted
+   * for?") just needs membership, and is right to accept all of them. The
+   * resume-time orphan notice is where they diverge: it names one id per
+   * orphaned task, so collapsing the two fields left every task from a
+   * multi-task notice looking like it was still running, forever.
+   */
+  backgroundTaskIds?: string[];
   /** Model name from the API response, e.g. "claude-opus-4-6" */
   model?: string;
   /** Git branch at the time this message was recorded */

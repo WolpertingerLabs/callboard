@@ -74,4 +74,43 @@ describe("pendingBackgroundTaskIds", () => {
   it("returns nothing for an empty transcript", () => {
     expect(pendingBackgroundTaskIds([]).size).toBe(0);
   });
+
+  it("settles every task named by a multi-task orphan notice", () => {
+    // The resume-time orphan summary reports several tasks at once and names
+    // no single one, so it carries only the plural field. Reading just the
+    // singular one left all of them pending for the rest of the chat's life.
+    const orphanSummary: ParsedMessage = {
+      role: "system",
+      type: "system",
+      content: "2 background shell command task(s) from the previous session have no completion record.",
+      subtype: "background_task",
+      backgroundTaskStatus: "stopped",
+      backgroundTaskIds: ["a", "b"],
+    };
+    expect(pendingBackgroundTaskIds([launch("a"), launch("b"), orphanSummary]).size).toBe(0);
+  });
+
+  it("leaves tasks the orphan notice did not name still pending", () => {
+    const orphanSummary: ParsedMessage = {
+      role: "system",
+      type: "system",
+      content: "1 background shell command task(s) have no completion record.",
+      subtype: "background_task",
+      backgroundTaskIds: ["a"],
+    };
+    expect([...pendingBackgroundTaskIds([launch("a"), launch("c"), orphanSummary])]).toEqual(["c"]);
+  });
+
+  it("still settles a marker parsed before the plural field existed", () => {
+    // Transcripts are re-parsed on every load, but a client may hold a
+    // response from an older daemon.
+    const legacy: ParsedMessage = {
+      role: "system",
+      type: "system",
+      content: "Background command completed",
+      subtype: "background_task",
+      backgroundTaskId: "a",
+    };
+    expect(pendingBackgroundTaskIds([launch("a"), legacy]).size).toBe(0);
+  });
 });

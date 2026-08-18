@@ -49,8 +49,42 @@ const log = createLogger("bg-task-hold");
  * waiting, and it dies with the subprocess exactly as it did before this
  * existed. The failure mode of the cap is therefore the old behaviour, which is
  * the right thing for a bound to degrade into.
+ *
+ * ## The case this bound is *not* free in
+ *
+ * Some backgrounded work never finishes by design. This repo's own
+ * `.claude/CLAUDE.md` tells agents to start the dev server with
+ * `run_in_background: true`, and a server emits no terminal status ever — so
+ * the hold runs the full window every time, and the `done` event, the
+ * `session_stopped` that drives onComplete phone-home, and the job runner's
+ * step harvest all wait behind it. A job step whose `timeoutMinutes` is
+ * shorter than this window can time out while its session is merely being
+ * patient.
+ *
+ * That is a policy cost, not a defect — the hold cannot tell a build it should
+ * wait for from a server it shouldn't, because nothing in the task's shape
+ * distinguishes them until one of them ends. It is tunable rather than
+ * hard-coded for exactly that reason: a deployment that leans on long
+ * background builds wants this high, one that mostly runs dev servers wants it
+ * low, and neither should need a release to say so.
  */
-export const DEFAULT_MAX_HOLD_MS = 15 * 60_000;
+const HOLD_MS_ENV = "CALLBOARD_MAX_BACKGROUND_HOLD_MS";
+
+function resolveMaxHoldMs(): number {
+  const raw = process.env[HOLD_MS_ENV];
+  if (!raw) return 15 * 60_000;
+  const parsed = Number(raw);
+  // A malformed override falls back rather than throwing: this value bounds a
+  // wait, and a daemon that refuses to boot over it would be a worse failure
+  // than one that waits the default.
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    log.warn(`Ignoring ${HOLD_MS_ENV}="${raw}" — not a positive number of milliseconds`);
+    return 15 * 60_000;
+  }
+  return parsed;
+}
+
+export const DEFAULT_MAX_HOLD_MS = resolveMaxHoldMs();
 
 /**
  * Most tasks one session will be held for. A session that has somehow accrued
@@ -117,11 +151,20 @@ export class HeldPrompt {
   private readonly released: Promise<void>;
   private isReleased = false;
   private timer: NodeJS.Timeout | null = null;
+  /** Absolute expiry, fixed by the first `armTimeout` and never extended. */
+  private deadlineAt: number | null = null;
 
   /**
    * @param source the messages this turn is sending, in whatever shape the
    *   caller already had them — a plain string, or the async iterable the SDK
    *   requires once MCP servers are configured.
+   *
+   * A string is converted to an iterable rather than passed through, and that
+   * conversion is load-bearing, not tidiness: a string prompt puts the SDK in
+   * single-user-turn mode, where it closes stdin at the first `result`
+   * regardless of what this class does. Handing the SDK a string would defeat
+   * the hold entirely and silently — the session would end exactly as it did
+   * before, with no error to explain why.
    */
   constructor(private readonly source: AsyncIterable<unknown> | string) {
     this.released = new Promise<void>((resolve) => {
@@ -167,19 +210,33 @@ export class HeldPrompt {
   }
 
   /**
-   * Arm the wall-clock bound. Called when a hold begins so the cap measures the
-   * wait itself, not the turn that preceded it. Re-arming replaces the previous
-   * deadline, which keeps a multi-task hold bounded by one window rather than
-   * one window per task.
+   * Arm the wall-clock bound, measured from the *first* time this is called.
+   *
+   * Called at every held turn boundary, not once — each delivered notification
+   * opens a new turn that can itself end still holding. So the deadline is
+   * stored absolutely and later calls only re-hang a timer against the time
+   * already on the clock. Re-arming from `ms` each time would have made the cap
+   * "15 minutes since the last turn ended", which a task that reports
+   * periodically could extend indefinitely — the exact runaway the bound exists
+   * to stop.
    */
   armTimeout(ms: number, onExpiry: () => void): void {
     if (this.isReleased) return;
+    if (this.deadlineAt === null) this.deadlineAt = Date.now() + ms;
     if (this.timer) clearTimeout(this.timer);
+
+    const remaining = this.deadlineAt - Date.now();
+    if (remaining <= 0) {
+      this.timer = null;
+      onExpiry();
+      this.close();
+      return;
+    }
     this.timer = setTimeout(() => {
       this.timer = null;
       onExpiry();
       this.close();
-    }, ms);
+    }, remaining);
     // A pending hold must not be the reason the daemon stays up.
     this.timer.unref?.();
   }
@@ -196,6 +253,16 @@ export interface HoldInputs {
   endReason?: string | undefined;
   /** The hold's wall-clock bound has already elapsed. */
   expired: boolean;
+  /**
+   * The transport died and the run is about to be stopped and resumed.
+   *
+   * Passed in even though the query loop breaks out immediately afterwards and
+   * would close the hold anyway. The point is to make the invariant local: a
+   * dead transport delivers nothing, so arming a fifteen-minute wait on one is
+   * never right, and this function should not need a reader to go and check an
+   * unconditional `break` three hundred lines away to know that it doesn't.
+   */
+  streamRecoveryNeeded?: boolean;
 }
 
 export type HoldDecision = { action: "hold"; taskCount: number } | { action: "release"; reason: "none-outstanding" | "terminal" | "expired" };
@@ -214,7 +281,7 @@ export type HoldDecision = { action: "hold"; taskCount: number } | { action: "re
  * are unchanged rather than newly special-cased.
  */
 export function decideHold(i: HoldInputs): HoldDecision {
-  if (i.aborted || i.errored || i.endReason) return { action: "release", reason: "terminal" };
+  if (i.aborted || i.errored || i.endReason || i.streamRecoveryNeeded) return { action: "release", reason: "terminal" };
   if (i.expired) return { action: "release", reason: "expired" };
   if (i.outstanding <= 0) return { action: "release", reason: "none-outstanding" };
   return { action: "hold", taskCount: i.outstanding };

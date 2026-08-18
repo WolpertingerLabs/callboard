@@ -145,6 +145,12 @@ export async function* translateSdkMessages(source: AsyncIterable<unknown>): Asy
       const taskId = message.task_id;
       const callId = typeof message.tool_use_id === "string" ? message.tool_use_id : undefined;
 
+      // Every task kind is tracked, not just `local_bash` — subagents and the
+      // CLI's own housekeeping tasks included. Measured as safe today: the
+      // kinds observed either report terminally or settle before the turn's
+      // `result`. Worth knowing the cost is asymmetric, though: a future kind
+      // that starts and never ends terminally costs a full hold window each
+      // time, so filtering to known kinds is the change to make if one appears.
       if (message.subtype === "task_started") {
         yield {
           type: "background_task",

@@ -315,14 +315,26 @@ describe("parseMessages — background task ids", () => {
     expect(marker?.backgroundTaskId).toBe("budijlgzl");
   });
 
-  it("does not attribute a multi-task summary to a single task", () => {
-    // The orphan summary reports on several tasks at once; tagging it with
-    // whichever id came first would silently mark one of them finished.
+  it("does not attribute a multi-task summary to a single task, but still accounts for all of them", () => {
+    // Two fields because there are two questions. Attribution must stay silent
+    // — tagging the notice with whichever id came first would mark one task
+    // finished on another's evidence. Settling must not: these tasks *are*
+    // accounted for, and omitting them left every one of them rendering as
+    // still running for the rest of the chat.
     const orphan =
-      "<task-notification>\n<task-id>bqg7u6zpk</task-id>\n<task-id>bother1234</task-id>\n<status>stopped</status>\n" +
+      "<task-notification>\n<task-id>bqg7u6zpk</task-id>\n<task-id>bother1234</task-id>\n<task-id>__orphan_summary__:shell</task-id>\n<status>stopped</status>\n" +
       "<summary>2 background shell command task(s) from the previous session have no completion record.</summary>\n</task-notification>";
     const [msg] = parseMessages([{ type: "queue-operation", operation: "enqueue", content: orphan }]);
     expect(msg).toMatchObject({ subtype: "background_task" });
     expect(msg.backgroundTaskId).toBeUndefined();
+    // The synthetic scan marker is not a task and must not be listed.
+    expect(msg.backgroundTaskIds).toEqual(["bqg7u6zpk", "bother1234"]);
+  });
+
+  it("lists the single id on both fields for an ordinary notice", () => {
+    const notice = "<task-notification>\n<task-id>budijlgzl</task-id>\n<status>completed</status>\n</task-notification>";
+    const [msg] = parseMessages([{ type: "queue-operation", operation: "enqueue", content: notice }]);
+    expect(msg.backgroundTaskId).toBe("budijlgzl");
+    expect(msg.backgroundTaskIds).toEqual(["budijlgzl"]);
   });
 });

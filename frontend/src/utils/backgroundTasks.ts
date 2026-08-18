@@ -36,10 +36,19 @@ export function pendingBackgroundTaskIds(messages: readonly ParsedMessage[]): Re
   const reported = new Set<string>();
 
   for (const message of messages) {
-    const id = message.backgroundTaskId;
-    if (!id) continue;
-    if (message.type === "tool_result") launched.add(id);
-    else if (message.subtype === "background_task") reported.add(id);
+    if (message.type === "tool_result") {
+      if (message.backgroundTaskId) launched.add(message.backgroundTaskId);
+      continue;
+    }
+    if (message.subtype !== "background_task") continue;
+    // Settle on `backgroundTaskIds`, not `backgroundTaskId`: a notice covering
+    // several tasks — the resume-time orphan summary — deliberately declines to
+    // attribute itself to any single one, but it still accounts for all of
+    // them. Reading only the singular field left every task in a multi-task
+    // notice pending for the rest of the chat.
+    for (const id of message.backgroundTaskIds ?? []) reported.add(id);
+    // Transcripts parsed before the plural field existed carry only this one.
+    if (message.backgroundTaskId) reported.add(message.backgroundTaskId);
   }
 
   for (const id of reported) launched.delete(id);

@@ -73,6 +73,14 @@ interface TaskNotification {
   toolUseId?: string;
   /** The background task this notice reports on, when it names a single one. */
   taskId?: string;
+  /**
+   * Every task this notice accounts for, however many. Distinct from `taskId`
+   * on purpose: attribution needs exactly one, but *settling* a task only needs
+   * to know it was accounted for. The resume-time orphan notice names one id
+   * per orphaned task, and treating a two-task notice as naming nothing left
+   * both of them looking like they were still running.
+   */
+  taskIds: string[];
   /** Identity for dedup — a notice can arrive as both shapes above. */
   key: string;
 }
@@ -111,6 +119,7 @@ function parseTaskNotification(raw: unknown): TaskNotification | null {
     // must not be attributed to whichever id happened to come first.
     ...(toolUseIds.length === 1 && { toolUseId: toolUseIds[0] }),
     ...(taskIds.length === 1 && { taskId: taskIds[0] }),
+    taskIds,
     key: trimmed,
   };
 }
@@ -285,6 +294,7 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
       ...(notification.status && { backgroundTaskStatus: notification.status }),
       ...(notification.toolUseId && { toolUseId: notification.toolUseId }),
       ...(notification.taskId && { backgroundTaskId: notification.taskId }),
+      ...(notification.taskIds.length > 0 && { backgroundTaskIds: notification.taskIds }),
       timestamp,
     });
   };
