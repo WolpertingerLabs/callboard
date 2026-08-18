@@ -111,6 +111,44 @@ export type AgentEvent =
       type: "task_list";
       items: TaskListItem[];
     }
+  | {
+      /**
+       * A background task starting or ending — a Bash shell launched with
+       * `run_in_background`, or a subagent the Agent tool backgrounds.
+       *
+       * In the core union rather than `adapter_specific` because this is
+       * **control flow, not decoration**: the query loop holds a session open
+       * while tasks are outstanding (see `background-task-hold.ts`), and a
+       * backgrounded shell dies with the process that spawned it. An event the
+       * loop must not miss is exactly the kind `adapter_specific` loses — it
+       * carries an opaque payload no exhaustiveness check can police.
+       *
+       * Claude Code is the only engine emitting it today. That is a statement
+       * about the other adapters, not about the shape: "I started work that
+       * outlives this turn" is engine-neutral, and Codex/ACP simply have no
+       * equivalent to translate yet.
+       *
+       * `started` and `ended` are the only phases. Progress updates are not
+       * modelled — nothing consumes them, and the hold only needs the edges.
+       */
+      type: "background_task";
+      phase: "started" | "ended";
+      /** The engine's id for the task. Stable across `started` and `ended`. */
+      taskId: string;
+      /** The `tool_use` that launched it, when the engine names one. */
+      callId?: string;
+      /**
+       * The engine's own outcome word on `ended` — `completed`, `failed`,
+       * `stopped`, … Verbatim rather than narrowed to a union, matching
+       * `ParsedMessage.backgroundTaskStatus`: the engine owns this vocabulary
+       * and a value this build has not seen should still render.
+       */
+      status?: string;
+      /** Human-readable line — the engine's summary, or its task description. */
+      summary?: string;
+      /** File the task's output is being written to, when reported. */
+      outputFile?: string;
+    }
   | { type: "slash_commands"; commands: string[] }
   | { type: "compaction_boundary"; content?: string }
   | {

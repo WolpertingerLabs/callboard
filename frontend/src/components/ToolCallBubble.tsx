@@ -11,6 +11,14 @@ interface ToolCallBubbleProps {
   toolUse: ParsedMessage;
   toolResult: ParsedMessage | null;
   isRunning: boolean;
+  /**
+   * The call launched a background task that has not reported back yet.
+   *
+   * Distinct from `isRunning`, and the two are never true together: a
+   * backgrounded call *has* its result — a handle — so by every rule this
+   * component otherwise uses it is finished. Only the work it started is not.
+   */
+  backgroundPending?: boolean;
 }
 
 /** Below this, a running tool is just a fast tool and a timer is noise. */
@@ -67,10 +75,14 @@ export function formatElapsed(ms: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolCallBubbleProps) {
+export default function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = false }: ToolCallBubbleProps) {
   const [inputExpanded, setInputExpanded] = useState(false);
   const [resultExpanded, setResultExpanded] = useState(false);
-  const elapsed = useRunningElapsed(isRunning, toolUse.timestamp);
+  // Both kinds of "still going" get the clock and the spinner. For a background
+  // task the age is measured from the launching call, which is the honest
+  // number: that is when the work started, whatever the turn did afterwards.
+  const stillWorking = isRunning || backgroundPending;
+  const elapsed = useRunningElapsed(stillWorking, toolUse.timestamp);
 
   // Special case: an agent's running task list renders as TodoList. Matched by
   // tool name AND payload shape so every engine that has a list hits it (Claude:
@@ -151,12 +163,33 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning }: ToolC
             {summary}
             <ToolSourceBadge toolSource={toolUse.toolSource} />
           </span>
+          {backgroundPending && (
+            <span
+              title="Started in the background — this chat stays open until it reports back"
+              style={{
+                flexShrink: 0,
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: 0.3,
+                textTransform: "uppercase",
+                padding: "1px 6px",
+                borderRadius: 999,
+                color: "var(--warning)",
+                border: "1px solid var(--warning)",
+              }}
+            >
+              background
+            </span>
+          )}
           {elapsed && (
-            <span style={{ flexShrink: 0, fontSize: 11, opacity: 0.7, fontVariantNumeric: "tabular-nums" }} title="How long this tool call has been running">
+            <span
+              style={{ flexShrink: 0, fontSize: 11, opacity: 0.7, fontVariantNumeric: "tabular-nums" }}
+              title={backgroundPending ? "How long this background task has been running" : "How long this tool call has been running"}
+            >
               {elapsed}
             </span>
           )}
-          {isRunning && (
+          {stillWorking && (
             <RotateCw
               size={12}
               style={{

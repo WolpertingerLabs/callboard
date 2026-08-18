@@ -71,6 +71,16 @@ interface TaskNotification {
   status?: string;
   /** The `tool_use` this notice reports on, when it names a single one. */
   toolUseId?: string;
+  /** The background task this notice reports on, when it names a single one. */
+  taskId?: string;
+  /**
+   * Every task this notice accounts for, however many. Distinct from `taskId`
+   * on purpose: attribution needs exactly one, but *settling* a task only needs
+   * to know it was accounted for. The resume-time orphan notice names one id
+   * per orphaned task, and treating a two-task notice as naming nothing left
+   * both of them looking like they were still running.
+   */
+  taskIds: string[];
   /** Identity for dedup — a notice can arrive as both shapes above. */
   key: string;
 }
@@ -108,6 +118,8 @@ function parseTaskNotification(raw: unknown): TaskNotification | null {
     // Only when the notice reports on exactly one call — a multi-task summary
     // must not be attributed to whichever id happened to come first.
     ...(toolUseIds.length === 1 && { toolUseId: toolUseIds[0] }),
+    ...(taskIds.length === 1 && { taskId: taskIds[0] }),
+    taskIds,
     key: trimmed,
   };
 }
@@ -281,6 +293,8 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
       subtype: "background_task",
       ...(notification.status && { backgroundTaskStatus: notification.status }),
       ...(notification.toolUseId && { toolUseId: notification.toolUseId }),
+      ...(notification.taskId && { backgroundTaskId: notification.taskId }),
+      ...(notification.taskIds.length > 0 && { backgroundTaskIds: notification.taskIds }),
       timestamp,
     });
   };
@@ -482,6 +496,11 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
           break;
         case "tool_result": {
           const { content: resultContent, imageIds } = extractToolResultContent(block);
+          // A Bash call made with `run_in_background` returns a handle, not an
+          // outcome. The CLI records the task's id beside the result, so the
+          // launching end of a background task is identifiable structurally —
+          // the id is what the completion marker is later paired against.
+          const backgroundTaskId = typeof msg.toolUseResult?.backgroundTaskId === "string" ? msg.toolUseResult.backgroundTaskId : undefined;
           result.push({
             role: "assistant",
             type: "tool_result",
@@ -490,6 +509,7 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
             toolUseId: block.tool_use_id,
             timestamp,
             ...(imageIds.length > 0 && { imageIds }),
+            ...(backgroundTaskId && { backgroundTaskId }),
             ...meta,
           });
           break;
