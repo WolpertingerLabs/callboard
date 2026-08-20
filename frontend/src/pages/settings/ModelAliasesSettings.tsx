@@ -4,7 +4,6 @@ import { getAgentSettings, updateAgentSettings, getSystemInfo, type AcpProviderI
 import type { ModelAlias } from "shared/types/index.js";
 import { validateModelAliases } from "shared/types/index.js";
 import ClaudeModelSelector from "../../components/ClaudeModelSelector";
-import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
 import PiModelSelector from "../../components/PiModelSelector";
@@ -14,17 +13,27 @@ import PiModelSelector from "../../components/PiModelSelector";
  *
  * Edits the cross-harness alias registry (`agentSettings.modelAliases`): one
  * named alias resolves to a different concrete model per harness, so
- * `model: "planner"` works on claude-code, openrouter, and codex alike. This
+ * `model: "planner"` works on claude-code, codex and the rest alike. This
  * supersedes the OpenRouter-only alias editor that used to live in Settings →
  * API; the backend folds any legacy `openRouterModelAliases` into the
- * `openrouter` column on load, and retires the legacy map on the first save
+ * `openrouter` target on load, and retires the legacy map on the first save
  * here.
+ *
+ * **There is no OpenRouter column, but `targets.openrouter` still round-trips.**
+ * The harness was removed, so nothing resolves that target any more (no call
+ * site passes `"openrouter"` to `resolveModelAlias`) and offering a picker for
+ * it invited users to configure a model that could never run. The stored value
+ * is still user data, though — kept in `AliasRow` and written back by
+ * `toAliases()` untouched, because this editor rebuilds `targets` from row state
+ * on every save, so a field the row forgets is a field the next save deletes.
+ * See `HarnessProvider` in shared/types/modelAlias.ts for why the key survives.
  */
 
 interface AliasRow {
   name: string;
   description: string;
   claudeCode: string;
+  /** Retained, never edited — see the file's doc-comment. */
   openrouter: string;
   codex: string;
   acp: string;
@@ -53,6 +62,8 @@ function toAliases(rows: AliasRow[]): ModelAlias[] {
     .map((r) => {
       const targets: ModelAlias["targets"] = {};
       if (r.claudeCode.trim()) targets["claude-code"] = r.claudeCode.trim();
+      // Uneditable here, but preserved: dropping it would delete the slug on the
+      // next save of any unrelated column.
       if (r.openrouter.trim()) targets.openrouter = r.openrouter.trim();
       if (r.codex.trim()) targets.codex = r.codex.trim();
       if (r.acp.trim()) targets.acp = r.acp.trim();
@@ -136,7 +147,10 @@ export default function ModelAliasesSettings() {
   // problems surface before the save round-trips.
   const { errors: validationErrors } = validateModelAliases(toAliases(rows));
   // A named row with no target at all is a likely mistake — flag it even though
-  // toAliases() would silently drop it.
+  // toAliases() would silently drop it. `openrouter` stays in this test despite
+  // having no column: a row carrying only a retained slug still survives the
+  // save, so calling it unsaved would be a lie. Such a row gets the per-row
+  // legacy note below instead.
   const targetlessNames = rows
     .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim() && !r.cline.trim() && !r.pi.trim())
     .map((r) => r.name.trim());
@@ -171,10 +185,9 @@ export default function ModelAliasesSettings() {
         </div>
         <div style={helpStyle}>
           Name a shortcut once and point it at a different model per harness — e.g. <code>planner</code> → <code>opus</code> on Claude Code,{" "}
-          <code>anthropic/claude-opus-4.8</code> on OpenRouter, <code>gpt-5.5</code> on Codex, <code>opencode/gpt-5.5</code> on an ACP agent. Then set{" "}
-          <code>model: &quot;planner&quot;</code> anywhere a model is configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it
-          resolves to the target for whichever harness runs the session. Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets
-          must be real model ids, never other alias names.
+          <code>gpt-5.5</code> on Codex, <code>opencode/gpt-5.5</code> on an ACP agent. Then set <code>model: &quot;planner&quot;</code> anywhere a model is
+          configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it resolves to the target for whichever harness runs the session.
+          Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets must be real model ids, never other alias names.
         </div>
 
         <div style={{ marginTop: 16 }}>
@@ -242,16 +255,6 @@ export default function ModelAliasesSettings() {
                   <ClaudeModelSelector value={row.claudeCode} onChange={(v) => update(i, { claudeCode: v })} placeholder="opus / claude-sonnet-4-6" />
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <label style={colLabel}>OpenRouter</label>
-                  <OpenRouterModelSelector
-                    value={row.openrouter}
-                    onChange={(v) => update(i, { openrouter: v })}
-                    placeholder="anthropic/claude-opus-4.8"
-                    priorityPrefix="anthropic/"
-                    excludeAliases
-                  />
-                </div>
-                <div style={{ minWidth: 0 }}>
                   <label style={colLabel}>Codex</label>
                   <CodexModelSelector value={row.codex} onChange={(v) => update(i, { codex: v })} placeholder="gpt-5.5" />
                 </div>
@@ -295,6 +298,16 @@ export default function ModelAliasesSettings() {
                   <PiModelSelector value={row.pi} onChange={(v) => update(i, { pi: v })} placeholder="google/gemini-3.6-flash" compact />
                 </div>
               </div>
+
+              {/* Only for aliases that predate the OpenRouter harness removal.
+                  Without it, a row whose sole target is the retained slug reads
+                  as blank-but-somehow-saved, and there is nowhere to learn why. */}
+              {row.openrouter.trim() && (
+                <div style={{ ...helpStyle, marginTop: 8 }}>
+                  Keeps a retired OpenRouter target (<code>{row.openrouter.trim()}</code>) from an earlier version. It is stored but never used — set a target
+                  above for the harnesses you run.
+                </div>
+              )}
             </div>
           ))}
 
