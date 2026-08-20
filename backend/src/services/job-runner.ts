@@ -38,6 +38,7 @@ import { sessionRegistry, type SessionEvent } from "./session-registry.js";
 import {
   getJob,
   getRun,
+  latestRunChatId,
   saveRun,
   createRun,
   executionKey,
@@ -55,6 +56,8 @@ import {
   type RunParentLink,
 } from "./job-store.js";
 import { buildRunContext, interpolate, evaluateGate, resolveRunOutputs } from "./job-template.js";
+import { clearChatListCache } from "./chat-list-cache.js";
+import { announcedApprovalChat, clearApprovalParked, isApprovalAnnounced, markApprovalParked } from "./job-approval-signal.js";
 import { registerEphemeralEventListener, unregisterEphemeralEventListener } from "./trigger-dispatcher.js";
 import { getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
 import { compileSystemPrompt } from "./claude-compiler.js";
@@ -262,8 +265,14 @@ function resumeRunAfterRestart(run: JobRun): void {
       }
       break;
     }
-    case "sleeping":
     case "waiting_approval":
+      // Re-adopt the badge this run was already showing before the restart,
+      // so answering the approval still clears it. syncApprovalSignal only
+      // announces a release for a run it believes it announced a park for.
+      syncApprovalSignal(run);
+      armWakeTimer(run);
+      break;
+    case "sleeping":
       armWakeTimer(run);
       break;
     case "waiting_child": {
@@ -1813,6 +1822,54 @@ function notifyRunUpdated(run: JobRun): void {
   for (const chatId of activeChatIds(run)) {
     sessionRegistry.notifyMetadata(chatId, { jobRunId: run.runId, jobRunStatus: run.status });
   }
+  syncApprovalSignal(run);
+}
+
+/**
+ * Push a run's arrival at, or release from, `waiting_approval` to the sidebar.
+ *
+ * The loop above cannot carry this. It walks `activeChatIds`, which reads
+ * `run.activeStep.chatId`, and an approval step never has one — `enterStep`
+ * sets a chatId only when it spawns a session. So on the way *into*
+ * `waiting_approval` that loop iterates an empty list, `metadataVersion` never
+ * increments, and an idle sidebar issues no request at all (its 15s poll is
+ * gated on there being a live session). The badge would then appear only if
+ * something unrelated happened to wake the client — which, with `notify` on,
+ * the advisory notifier's own `session_started` incidentally does, and with
+ * `notify: false` nothing does. The same silence runs in reverse after you
+ * approve, leaving rows insisting they still need you.
+ *
+ * Clearing the chat-list cache is the other half of one fix: the bump makes
+ * the client ask, and this makes the answer describe the transition instead of
+ * a response computed up to `CHAT_LIST_CACHE_TTL` before it.
+ *
+ * Deliberately scoped to approvals. `notifyRunUpdated` being chatId-scoped
+ * drops every other session-less transition too (gate, sleep-wake, terminal);
+ * that is a real and separate bug, not this one.
+ */
+function syncApprovalSignal(run: JobRun): void {
+  const announced = isApprovalAnnounced(run.runId);
+  if (run.status === "waiting_approval") {
+    const chatId = latestRunChatId(run);
+    // Defensive: as the code stands the representative cannot move while a run
+    // is parked. The only session spawned during an approval is the notifier,
+    // and it is advisory — spawnStepSession skips the activeStep.chatId write
+    // for advisory sessions, and the session_stopped listener returns before
+    // appending history — so neither input to latestRunChatId can change here.
+    if (announced && announcedApprovalChat(run.runId) === chatId) return;
+    markApprovalParked(run.runId, chatId);
+    announceApprovalChange(run, chatId);
+    return;
+  }
+  if (!announced) return;
+  const parkedChatId = announcedApprovalChat(run.runId);
+  clearApprovalParked(run.runId);
+  announceApprovalChange(run, parkedChatId ?? latestRunChatId(run));
+}
+
+function announceApprovalChange(run: JobRun, chatId: string | undefined): void {
+  clearChatListCache();
+  if (chatId) sessionRegistry.notifyMetadata(chatId, { jobRunId: run.runId, jobRunStatus: run.status });
 }
 
 /** Last assistant text from a step chat — the unstructured-output fallback. */

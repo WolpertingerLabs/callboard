@@ -9,6 +9,8 @@ import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
 import { getCard, listCards } from "../services/card-store.js";
+import { getRun, latestRunChatId } from "../services/job-store.js";
+import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { setChatCardMembership } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
@@ -486,13 +488,120 @@ chatsRouter.get("/", (req, res) => {
       return { ...chat, metadata: JSON.stringify({ ...meta, preview }) };
     };
 
-    /** Check if an augmented chat has the triggered flag set in its metadata */
-    const isTriggered = (chat: any): boolean => {
-      try {
-        return JSON.parse(chat.metadata || "{}").triggered === true;
-      } catch {
-        return false;
+    /**
+     * Is any run at all parked on an approval right now?
+     *
+     * Read once per request, and the gate on every run-file read below. When
+     * nothing is parked — very nearly always — no row can be a representative,
+     * so both passes fall through on metadata alone and touch no run files.
+     *
+     * The map behind this is complete rather than warm: job-runner seeds it at
+     * boot from `listResumableRuns`, which returns every non-terminal run. It
+     * answers "is anything parked", never "is THIS row the one" — that stays a
+     * question for the run file, so a stale entry costs a wasted scan and
+     * cannot put the badge on the wrong row.
+     */
+    const anyApprovalParked = hasParkedApprovals();
+
+    /**
+     * Per-request memo of the job runs this response has had to open, keyed by
+     * runId. `null` records a run whose file is gone, so a pruned run costs one
+     * read and not one per row that still names it.
+     *
+     * Shared by the triggered-filter carve-out and the needs-you stamp below,
+     * in that order: whatever the filter had to resolve, the stamp reuses.
+     *
+     * Reached only when `anyApprovalParked`. Past that gate it is one read per
+     * distinct `jobRunId` among the rows examined, never one per row and never
+     * bounded by the size of the run store. How many rows get examined depends
+     * on the path, and the wide one is the *default*: `fetchLimit` above jumps
+     * to 9999 whenever `needsPostFilter` is set, and `excludeTriggered` alone
+     * sets it — so the sidebar's ordinary request examines the whole discovered
+     * list, not a page. Only the unfiltered path examines just the page.
+     */
+    const runCache = new Map<string, { status: string; latestChatId?: string } | null>();
+    const resolveRun = (runId: string) => {
+      if (!runCache.has(runId)) {
+        const run = getRun(runId);
+        runCache.set(runId, run ? { status: run.status, latestChatId: latestRunChatId(run) } : null);
       }
+      return runCache.get(runId)!;
+    };
+
+    /**
+     * Is this row the single row that should carry "needs you"?
+     *
+     * "Waiting on your approval" is a property of the *run*, and a run owns
+     * every chat it has ever opened — a step per attempt, a chat per parallel
+     * branch, plus the notifier's. Painting all of them would flag a dozen rows
+     * for one decision, none of which is more the place to make it than any
+     * other, so the run elects one representative and only that row is flagged.
+     */
+    const isParkedApprovalRow = (chat: any, meta: any): boolean => {
+      const runId = typeof meta.jobRunId === "string" ? meta.jobRunId : "";
+      if (!runId) return false;
+      const run = resolveRun(runId);
+      return !!run && run.status === "waiting_approval" && run.latestChatId === chat.id;
+    };
+
+    /**
+     * Does this row survive the triggered filter?
+     *
+     * Yes if it is not a triggered chat at all — and yes, too, if it is the one
+     * row a job run is waiting on.
+     *
+     * Every job-step session is spawned with `triggered: true`, and "show
+     * triggered chats" is off by default, so without this carve-out the filter
+     * would remove precisely the rows the approval badge exists to surface and
+     * the signal would be reachable only by users who had opted in. A run
+     * parked on your signoff is not background automation, which is the thing
+     * the filter is for.
+     *
+     * Order is untouched: re-admission is a predicate inside the existing
+     * single filtering pass, not an append.
+     */
+    const survivesTriggeredFilter = (chat: any): boolean => {
+      let meta: any;
+      try {
+        meta = JSON.parse(chat.metadata || "{}");
+      } catch {
+        return true;
+      }
+      if (meta.triggered !== true) return true;
+      if (!anyApprovalParked) return false;
+      return isParkedApprovalRow(chat, meta);
+    };
+
+    const dropTriggered = (chats: any[]): any[] => chats.filter(survivesTriggeredFilter);
+
+    /**
+     * Flag the one row a job run is waiting on — the sidebar's only signal that
+     * a run is parked on your approval while you are working somewhere else.
+     *
+     * Sibling of {@link attachPreview}: computed per response, never stored, so
+     * it cannot go stale in a chat record the way a written copy would.
+     *
+     * Only `jobRunNeedsYou` is stamped, and only on the representative. The
+     * run's status is deliberately *not* attached to every job row: no chat-row
+     * consumer reads it, and the frontend cannot derive representativeness from
+     * it anyway, since no single row can see the others. The identically-named
+     * key on the `chat_metadata_updated` stream event is a different payload
+     * with a live consumer and is unaffected.
+     */
+    const attachJobNeedsYou = (chat: any) => {
+      if (!anyApprovalParked) return chat;
+      let meta: any;
+      try {
+        // Reachable: the lineage-append pass emits `{...fileChat}` for a
+        // relative with no session in the window, and that bypasses the
+        // normalisation augmentSession would otherwise have done. Without this
+        // catch a single corrupt record 500s the whole chat list.
+        meta = JSON.parse(chat.metadata || "{}");
+      } catch {
+        return chat;
+      }
+      if (!isParkedApprovalRow(chat, meta)) return chat;
+      return { ...chat, metadata: JSON.stringify({ ...meta, jobRunNeedsYou: true }) };
     };
 
     /**
@@ -534,13 +643,13 @@ chatsRouter.get("/", (req, res) => {
       const bookmarkedSessions = paginatedSessions.filter((s) => bookmarkedSessionIds!.has(s.sessionId));
       let augmented = bookmarkedSessions.map(augmentSession);
       if (excludeTriggered) {
-        augmented = augmented.filter((c) => !isTriggered(c));
+        augmented = dropTriggered(augmented);
       }
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
     } else if (excludeTriggered) {
       // Augment all fetched sessions, drop triggered chats, then paginate —
       // so the window is filled from what's left.
-      const augmented = paginatedSessions.map(augmentSession).filter((c) => !isTriggered(c));
+      const augmented = dropTriggered(paginatedSessions.map(augmentSession));
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
     } else if (includeLineage || cardsOnly) {
       // Sessions were over-fetched (for lineage lookup, or so the cards-only
@@ -611,7 +720,7 @@ chatsRouter.get("/", (req, res) => {
         // Chats without a session log yet (e.g. freshly spawned) fall back
         // to the bare file record.
         const augmented = session ? augmentSession(session) : { ...fc, displayFolder: fc.folder };
-        if (excludeTriggered && isTriggered(augmented)) continue;
+        if (excludeTriggered && !survivesTriggeredFilter(augmented)) continue;
         appended.push({ ...augmented, _lineage_appended: true });
       }
       chatsFromLogs = [...chatsFromLogs, ...appended];
@@ -619,7 +728,7 @@ chatsRouter.get("/", (req, res) => {
 
     // Last step, once the returned set is final: one preview read per row that
     // ships, instead of one per session discovered.
-    chatsFromLogs = chatsFromLogs.map(attachPreview);
+    chatsFromLogs = chatsFromLogs.map((chat: any) => attachJobNeedsYou(attachPreview(chat)));
 
     const responseData = { chats: chatsFromLogs, hasMore, total, windowRows };
     chatListCache.set(cacheKey, { data: responseData, createdAt: Date.now() });

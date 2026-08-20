@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Bot, PanelLeftClose, List, FolderOpen, Workflow, AlertTriangle, Plus, LayoutGrid } from "lucide-react";
+import { Settings, Bot, PanelLeftClose, List, FolderOpen, AlertTriangle, Plus, LayoutGrid } from "lucide-react";
 import { fetchInstanceName } from "../api";
 import type { SidebarViewMode } from "../utils/localStorage";
 
@@ -16,7 +16,6 @@ interface SidebarHeaderProps {
 const VIEW_MODES: { mode: SidebarViewMode; label: string; Icon: typeof List }[] = [
   { mode: "folders", label: "Folders", Icon: FolderOpen },
   { mode: "chats", label: "Chats", Icon: List },
-  { mode: "jobs", label: "Jobs", Icon: Workflow },
 ];
 
 export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange, claudeLoggedIn, onShowClaudeModal, onToggleSidebar }: SidebarHeaderProps) {

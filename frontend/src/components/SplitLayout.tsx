@@ -3,7 +3,6 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ChatList from "../pages/ChatList";
 import FolderList from "../pages/FolderList";
-import JobList from "../pages/JobList";
 import Chat from "../pages/Chat";
 import Board from "../pages/Board";
 import Settings from "../pages/Settings";
@@ -157,18 +156,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
         />
       );
     }
-    if (viewMode === "jobs") {
-      return (
-        <JobList
-          onRefresh={(fn) => {
-            chatListRefreshRef.current = fn;
-          }}
-          claudeLoggedIn={claudeLoggedIn}
-          onShowClaudeModal={onShowClaudeModal}
-          onViewModeChange={changeViewMode}
-        />
-      );
-    }
     return (
       <ChatList
         onRefresh={(fn) => {
@@ -208,18 +195,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
       >
         {viewMode === "folders" ? (
           <FolderList
-            activeChatId={activeChatId ?? undefined}
-            onRefresh={(fn) => {
-              chatListRefreshRef.current = fn;
-            }}
-            sidebarCollapsed={sidebarCollapsed}
-            onToggleSidebar={toggleSidebar}
-            claudeLoggedIn={claudeLoggedIn}
-            onShowClaudeModal={onShowClaudeModal}
-            onViewModeChange={changeViewMode}
-          />
-        ) : viewMode === "jobs" ? (
-          <JobList
             activeChatId={activeChatId ?? undefined}
             onRefresh={(fn) => {
               chatListRefreshRef.current = fn;

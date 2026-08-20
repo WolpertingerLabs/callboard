@@ -259,6 +259,27 @@ export function importJobDefinition(raw: unknown, opts?: { mode?: "copy" | "over
 
 // ── Runs ────────────────────────────────────────────────────────────
 
+/**
+ * The one chat that stands for a run right now: its active step's session,
+ * else whichever parallel branch has one, else the most recent step that ran
+ * in a chat.
+ *
+ * A run opens a chat per step, per attempt, per parallel branch, plus the
+ * approval notifier's, and `metadata.jobRunId` is written once at creation and
+ * never cleared — so "belongs to this run" is a set that only ever grows.
+ * Anything that is a property of the *run* rather than of a chat (the
+ * sidebar's approval badge, {@link JobRunListItem.latestChatId}) therefore has
+ * to elect one member of that set, and every caller has to elect the same one.
+ * That is this function's entire job; do not re-derive it inline.
+ */
+export function latestRunChatId(run: JobRun): string | undefined {
+  return (
+    run.activeStep?.chatId ??
+    Object.values(run.activeStep?.parallel?.branches ?? {}).find((b) => b.chatId)?.chatId ??
+    [...run.history].reverse().find((h) => h.chatId)?.chatId
+  );
+}
+
 export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number; assignedToCard?: boolean }): JobRunListItem[] {
   const items: JobRunListItem[] = [];
   for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
@@ -271,11 +292,7 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
       if (filter?.assignedToCard && !run.cardId) continue;
       const stepIndex = run.currentStepId ? run.definition.steps.findIndex((s) => s.id === run.currentStepId) : -1;
       const currentStep = stepIndex >= 0 ? run.definition.steps[stepIndex] : undefined;
-      // Active step session, else the most recent step that ran in a chat.
-      const latestChatId =
-        run.activeStep?.chatId ??
-        Object.values(run.activeStep?.parallel?.branches ?? {}).find((b) => b.chatId)?.chatId ??
-        [...run.history].reverse().find((h) => h.chatId)?.chatId;
+      const latestChatId = latestRunChatId(run);
       items.push({
         runId: run.runId,
         jobId: run.jobId,
