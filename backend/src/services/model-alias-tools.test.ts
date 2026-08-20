@@ -11,12 +11,16 @@
  * `openRouterModelAliases` map it was migrated from.
  *
  * agent-settings is mocked so the registry is an in-memory value rather than
- * the host's real agent-settings.json. Note what else that drops: the real
- * `getAgentSettings` runs `migrateModelAliases` on every read, so production
- * never hands this handler a settings object with a populated
- * `openRouterModelAliases` — the fake does, which is why the retire-the-legacy-
- * map case below can set one up directly. Merge behavior is unaffected either
- * way; migration and the merge do not interact.
+ * the host's real agent-settings.json. Note what that drops: the real
+ * `getAgentSettings` runs `migrateModelAliases` on every read, folding the
+ * legacy map's entries into each alias's `openrouter` target while leaving the
+ * map itself in place as a rollback fallback. The fake skips the fold, not the
+ * map — production really does hand this handler a populated
+ * `openRouterModelAliases`, which is why retiring it here is load-bearing.
+ * Harmless for the fixture below: `planner` already carries the target the fold
+ * would have added, and migration never overwrites an existing one, so the
+ * mocked state matches what production would produce. Merge behavior does not
+ * interact with migration either way.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { z } from "zod";
