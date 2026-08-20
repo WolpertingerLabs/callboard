@@ -26,14 +26,22 @@ import PiModelSelector from "../../components/PiModelSelector";
  * is still user data, though — kept in `AliasRow` and written back by
  * `toAliases()` untouched, because this editor rebuilds `targets` from row state
  * on every save, so a field the row forgets is a field the next save deletes.
- * See `HarnessProvider` in shared/types/modelAlias.ts for why the key survives.
+ *
+ * That deletion would be unrecoverable, which is what makes this worth the
+ * carried field rather than a comment: saving from this page also retires the
+ * legacy `openRouterModelAliases` map the values were migrated from
+ * (`routes/agent-settings.ts`, the `modelAliases !== undefined` branch). Forget
+ * the field and the first save of an unrelated column destroys the target and
+ * its only backup in one write. See `HarnessProvider` in
+ * shared/types/modelAlias.ts for why the key itself survives — dropping it from
+ * `HARNESS_PROVIDERS` would make `validateModelAliases` reject the whole alias
+ * and 400 the save, bricking this tab for anyone holding a legacy target.
  */
 
-interface AliasRow {
+export interface AliasRow {
   name: string;
   description: string;
   claudeCode: string;
-  /** Retained, never edited — see the file's doc-comment. */
   openrouter: string;
   codex: string;
   acp: string;
@@ -43,7 +51,9 @@ interface AliasRow {
 
 const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "", cline: "", pi: "" });
 
-function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
+// Exported for the round-trip test: this pair is the only thing standing between
+// a legacy OpenRouter target and permanent deletion, so it is tested directly.
+export function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
   return (aliases ?? []).map((a) => ({
     name: a.name,
     description: a.description ?? "",
@@ -57,13 +67,14 @@ function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
 }
 
 /** Build the ModelAlias[] a row set represents (blank fields dropped). */
-function toAliases(rows: AliasRow[]): ModelAlias[] {
+export function toAliases(rows: AliasRow[]): ModelAlias[] {
   return rows
     .map((r) => {
       const targets: ModelAlias["targets"] = {};
       if (r.claudeCode.trim()) targets["claude-code"] = r.claudeCode.trim();
-      // Uneditable here, but preserved: dropping it would delete the slug on the
-      // next save of any unrelated column.
+      // Has no column — carried straight through from toRows(). Dropping this
+      // line deletes the slug on the next save of any unrelated column; only the
+      // note's "Clear it" button, an explicit user action, blanks it.
       if (r.openrouter.trim()) targets.openrouter = r.openrouter.trim();
       if (r.codex.trim()) targets.codex = r.codex.trim();
       if (r.acp.trim()) targets.acp = r.acp.trim();
@@ -74,6 +85,16 @@ function toAliases(rows: AliasRow[]): ModelAlias[] {
       return alias;
     })
     .filter((a) => a.name !== "" && Object.keys(a.targets).length > 0);
+}
+
+/** True when any column the page still renders has a target. */
+export function hasEditableTarget(r: AliasRow): boolean {
+  return Boolean(r.claudeCode.trim() || r.codex.trim() || r.acp.trim() || r.cline.trim() || r.pi.trim());
+}
+
+/** True when the retained OpenRouter slug is the row's *only* target. */
+export function onlyOpenRouterTarget(r: AliasRow): boolean {
+  return Boolean(r.openrouter.trim()) && !hasEditableTarget(r);
 }
 
 const sectionStyle: React.CSSProperties = {
@@ -151,9 +172,7 @@ export default function ModelAliasesSettings() {
   // having no column: a row carrying only a retained slug still survives the
   // save, so calling it unsaved would be a lie. Such a row gets the per-row
   // legacy note below instead.
-  const targetlessNames = rows
-    .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim() && !r.cline.trim() && !r.pi.trim())
-    .map((r) => r.name.trim());
+  const targetlessNames = rows.filter((r) => r.name.trim() && !hasEditableTarget(r) && !r.openrouter.trim()).map((r) => r.name.trim());
 
   const handleSave = async () => {
     if (validationErrors.length > 0) {
@@ -300,12 +319,39 @@ export default function ModelAliasesSettings() {
               </div>
 
               {/* Only for aliases that predate the OpenRouter harness removal.
-                  Without it, a row whose sole target is the retained slug reads
-                  as blank-but-somehow-saved, and there is nowhere to learn why. */}
+                  The retained target has no column, so without this the value is
+                  invisible — and a row whose *sole* target is that slug reads as
+                  blank-but-somehow-saved with nowhere to learn why. The advice to
+                  fill in a harness is gated on that sole-target case: the
+                  migration gave an OpenRouter target to every legacy alias, so
+                  most rows carrying one are already configured elsewhere and
+                  telling those to go set a target is telling them to redo work
+                  they have done. Clearing is offered because otherwise the note
+                  is a permanent nag whose only escape is deleting the alias
+                  outright — an explicit click is not the silent drop that
+                  keeping the value in AliasRow exists to prevent. */}
               {row.openrouter.trim() && (
-                <div style={{ ...helpStyle, marginTop: 8 }}>
-                  Keeps a retired OpenRouter target (<code>{row.openrouter.trim()}</code>) from an earlier version. It is stored but never used — set a target
-                  above for the harnesses you run.
+                <div style={{ ...helpStyle, marginTop: 8, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                  <span>
+                    Retired OpenRouter target (<code>{row.openrouter.trim()}</code>) kept from an earlier version — stored, but no longer used by any harness.
+                    {onlyOpenRouterTarget(row) && " Set a target above for the harnesses you run."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => update(i, { openrouter: "" })}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      borderBottom: "1px solid var(--border)",
+                      color: "var(--text-muted)",
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Clear it
+                  </button>
                 </div>
               )}
             </div>
