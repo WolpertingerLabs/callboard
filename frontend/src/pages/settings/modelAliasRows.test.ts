@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateModelAliases, type ModelAlias } from "shared/types/index.js";
-import { toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./ModelAliasesSettings";
+import { toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./modelAliasRows";
 
 /**
  * The alias editor rebuilds `targets` from row state on every save, so a target

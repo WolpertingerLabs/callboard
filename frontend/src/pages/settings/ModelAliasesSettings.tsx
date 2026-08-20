@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Route, Plus, Trash2, Save, Check } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getSystemInfo, type AcpProviderInfo } from "../../api";
-import type { ModelAlias } from "shared/types/index.js";
 import { validateModelAliases } from "shared/types/index.js";
 import ClaudeModelSelector from "../../components/ClaudeModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
 import PiModelSelector from "../../components/PiModelSelector";
+import { emptyRow, toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./modelAliasRows";
 
 /**
  * Settings → Model Aliases.
@@ -19,83 +19,10 @@ import PiModelSelector from "../../components/PiModelSelector";
  * `openrouter` target on load, and retires the legacy map on the first save
  * here.
  *
- * **There is no OpenRouter column, but `targets.openrouter` still round-trips.**
- * The harness was removed, so nothing resolves that target any more (no call
- * site passes `"openrouter"` to `resolveModelAlias`) and offering a picker for
- * it invited users to configure a model that could never run. The stored value
- * is still user data, though — kept in `AliasRow` and written back by
- * `toAliases()` untouched, because this editor rebuilds `targets` from row state
- * on every save, so a field the row forgets is a field the next save deletes.
- *
- * That deletion would be unrecoverable, which is what makes this worth the
- * carried field rather than a comment: saving from this page also retires the
- * legacy `openRouterModelAliases` map the values were migrated from
- * (`routes/agent-settings.ts`, the `modelAliases !== undefined` branch). Forget
- * the field and the first save of an unrelated column destroys the target and
- * its only backup in one write. See `HarnessProvider` in
- * shared/types/modelAlias.ts for why the key itself survives — dropping it from
- * `HARNESS_PROVIDERS` would make `validateModelAliases` reject the whole alias
- * and 400 the save, bricking this tab for anyone holding a legacy target.
+ * The row model and its conversions live in `./modelAliasRows` — including the
+ * OpenRouter target this page deliberately has no column for. See that file for
+ * why it is still carried.
  */
-
-export interface AliasRow {
-  name: string;
-  description: string;
-  claudeCode: string;
-  openrouter: string;
-  codex: string;
-  acp: string;
-  cline: string;
-  pi: string;
-}
-
-const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "", cline: "", pi: "" });
-
-// Exported for the round-trip test: this pair is the only thing standing between
-// a legacy OpenRouter target and permanent deletion, so it is tested directly.
-export function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
-  return (aliases ?? []).map((a) => ({
-    name: a.name,
-    description: a.description ?? "",
-    claudeCode: a.targets["claude-code"] ?? "",
-    openrouter: a.targets.openrouter ?? "",
-    codex: a.targets.codex ?? "",
-    acp: a.targets.acp ?? "",
-    cline: a.targets.cline ?? "",
-    pi: a.targets.pi ?? "",
-  }));
-}
-
-/** Build the ModelAlias[] a row set represents (blank fields dropped). */
-export function toAliases(rows: AliasRow[]): ModelAlias[] {
-  return rows
-    .map((r) => {
-      const targets: ModelAlias["targets"] = {};
-      if (r.claudeCode.trim()) targets["claude-code"] = r.claudeCode.trim();
-      // Has no column — carried straight through from toRows(). Dropping this
-      // line deletes the slug on the next save of any unrelated column; only the
-      // note's "Clear it" button, an explicit user action, blanks it.
-      if (r.openrouter.trim()) targets.openrouter = r.openrouter.trim();
-      if (r.codex.trim()) targets.codex = r.codex.trim();
-      if (r.acp.trim()) targets.acp = r.acp.trim();
-      if (r.cline.trim()) targets.cline = r.cline.trim();
-      if (r.pi.trim()) targets.pi = r.pi.trim();
-      const alias: ModelAlias = { name: r.name.trim(), targets };
-      if (r.description.trim()) alias.description = r.description.trim();
-      return alias;
-    })
-    .filter((a) => a.name !== "" && Object.keys(a.targets).length > 0);
-}
-
-/** True when any column the page still renders has a target. */
-export function hasEditableTarget(r: AliasRow): boolean {
-  return Boolean(r.claudeCode.trim() || r.codex.trim() || r.acp.trim() || r.cline.trim() || r.pi.trim());
-}
-
-/** True when the retained OpenRouter slug is the row's *only* target. */
-export function onlyOpenRouterTarget(r: AliasRow): boolean {
-  return Boolean(r.openrouter.trim()) && !hasEditableTarget(r);
-}
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -339,6 +266,9 @@ export default function ModelAliasesSettings() {
                   <button
                     type="button"
                     onClick={() => update(i, { openrouter: "" })}
+                    // Every row's button reads "Clear it", so the accessible
+                    // name has to carry the alias to be distinguishable.
+                    aria-label={`Clear the retired OpenRouter target for ${row.name.trim() || "this alias"}`}
                     style={{
                       background: "transparent",
                       border: "none",

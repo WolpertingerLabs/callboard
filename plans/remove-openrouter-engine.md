@@ -13,12 +13,12 @@ each leaves the tree compiling and green.
 "OpenRouter" names four separable things in this tree. Only the first is going
 away.
 
-| #   | Thing                                                                                          | Where                                                                                                                                                                      | Fate                 |
-| --- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| 1   | **The engine** — an `AgentProviderKind` backed by `@wolpertingerlabs/openrouter-agent-harness` | `backend/src/agents/adapters/openrouter/`                                                                                                                                  | **Remove**           |
-| 2   | **Credential overrides for other engines** — run a _native_ harness against OpenRouter         | `claudeCodeUseOpenRouter`, `codexUseOpenRouter`, `acpUseOpenRouter`, `clineProviderId: "openrouter"`, `piProviderId: "openrouter"`, all resolved in `getApiEnvOverrides()` | **Untouched**        |
-| 3   | **The model catalog**                                                                          | `services/openrouter-models.ts`, `GET /api/openrouter/models`, `list/search_openrouter_models` MCP tools                                                                   | **Keep**             |
-| 4   | **Utility completions** — chat titles, branch names, themes                                    | `services/quick-completion.ts`                                                                                                                                             | **Keep, re-plumbed** |
+| # | Thing | Where | Fate |
+|---|-------|-------|------|
+| 1 | **The engine** — an `AgentProviderKind` backed by `@wolpertingerlabs/openrouter-agent-harness` | `backend/src/agents/adapters/openrouter/` | **Remove** |
+| 2 | **Credential overrides for other engines** — run a *native* harness against OpenRouter | `claudeCodeUseOpenRouter`, `codexUseOpenRouter`, `acpUseOpenRouter`, `clineProviderId: "openrouter"`, `piProviderId: "openrouter"`, all resolved in `getApiEnvOverrides()` | **Untouched** |
+| 3 | **The model catalog** | `services/openrouter-models.ts`, `GET /api/openrouter/models`, `list/search_openrouter_models` MCP tools | **Keep** |
+| 4 | **Utility completions** — chat titles, branch names, themes | `services/quick-completion.ts` | **Keep, re-plumbed** |
 
 #2 is the whole point of the exercise: a user who pays for OpenRouter keeps
 using OpenRouter for everything. They just do it through the native Claude
@@ -36,7 +36,7 @@ These were settled before work started. Do not relitigate them mid-phase.
 
 1. **Model routing is deleted, not re-scoped.** It is gated on
    `providerKind === "openrouter"` and is unreachable once the engine is gone.
-2. **OR-only settings are deleted** — but only the ones that are _provably_
+2. **OR-only settings are deleted** — but only the ones that are *provably*
    engine-only. See the triage table in Phase 3; two fields fail that test and
    must survive.
 3. **Old OpenRouter chats are dropped.** No read-only session provider, no
@@ -47,10 +47,10 @@ These were settled before work started. Do not relitigate them mid-phase.
    settings page, with an **explicit opt-in toggle** and **three model tier
    fields** (haiku/sonnet/opus). Not implicit-on-key-present.
 5. **The `openrouter` model-alias target is retained.** It is engine-only for
-   _resolution_, but it is user data, and dropping the column silently discards
+   *resolution*, but it is user data, and dropping the column silently discards
    slugs users typed. Cost of keeping: one union member.
 
-   _Amended in #351:_ the **column** is gone — an editable picker for a harness
+   *Amended in #351:* the **column** is gone — an editable picker for a harness
    that cannot run was the opposite of useful — but the **target** is retained
    exactly as this decision requires. The settings page carries the stored value
    through its row state untouched, so removing the UI discards nothing; a
@@ -58,7 +58,7 @@ These were settled before work started. Do not relitigate them mid-phase.
 
 ## Phase 1 — Stop offering it — **DONE** (`04d171e`)
 
-Goal: OpenRouter disappears from every user-facing surface that lets you _pick_
+Goal: OpenRouter disappears from every user-facing surface that lets you *pick*
 a harness. The adapter still exists and existing chats still run. Tree compiles,
 tests green.
 
@@ -74,22 +74,22 @@ should read these as fact:
    stops compiling once `"openrouter"` leaves `UiAgentProviderKind`. **Already
    done**; Phase 2 only fills in the section body.
 3. `job-store`'s model-validity checks run again at run start, so `"openrouter"`
-   is still _accepted_ there (just no longer advertised in the error message).
+   is still *accepted* there (just no longer advertised in the error message).
    Removing it would fail every persisted OR job at run time.
 4. The composer popover and its fork menu entry are hidden for a legacy OR chat,
    and editing a legacy OR cron job re-targets it to Claude Code.
 
 The mechanism is the existing `ROUTABLE_PROVIDER_KINDS` /
 `INTERNAL_PROVIDER_KINDS` split in `backend/src/agents/ports/AgentProvider.ts` —
-it is documented as exactly the seam that lets a kind be _implemented_ without
-being _offered_. Run it in reverse.
+it is documented as exactly the seam that lets a kind be *implemented* without
+being *offered*. Run it in reverse.
 
 - `ROUTABLE_PROVIDER_KINDS` — drop `"openrouter"`. Leave `AgentProviderKind` and
   `INTERNAL_PROVIDER_KINDS` alone for now so the backend keeps compiling.
 - `shared/types/providers.ts` — drop `"openrouter"` from `UiAgentProviderKind`.
 - `shared/types/modelAlias.ts` — `HarnessProvider` currently aliases
   `UiAgentProviderKind`. Decouple it: `type HarnessProvider = UiAgentProviderKind
-| "openrouter"`, and keep `"openrouter"` in `HARNESS_PROVIDERS`, per Decision 5.
+  | "openrouter"`, and keep `"openrouter"` in `HARNESS_PROVIDERS`, per Decision 5.
   Comment why.
 - Frontend pickers: the provider toggle in `components/ProviderConfigPicker.tsx`,
   `components/NewChatPanel.tsx`, `components/ForkHandoffModal.tsx`,
@@ -114,10 +114,10 @@ Two things later phases should read as fact:
 
 1. The shared base-URL resolution landed as its own module,
    `backend/src/services/openrouter-endpoint.ts` (`OPENROUTER_DEFAULT_BASE_URL`
-   - `resolveOpenRouterApiUrl`), rather than as an export of
-     `openrouter-models.ts` — neither the catalog nor the completion client owns
-     the other, and the completion client has no business importing a module whose
-     side effect is a startup cache.
+   + `resolveOpenRouterApiUrl`), rather than as an export of
+   `openrouter-models.ts` — neither the catalog nor the completion client owns
+   the other, and the completion client has no business importing a module whose
+   side effect is a startup cache.
 2. `model-routing.ts` now calls `runOpenRouterCompletion` **directly** rather
    than going through `quickCompletion`. It needs a caller-supplied classifier
    slug, which the tier-based `QuickModel` option cannot express; routing is
@@ -189,7 +189,7 @@ disagree about which endpoint the key belongs to.
   `OpenRouterOptionsExtras` import.
 - Drop the `provider` argument from `generateChatTitle` / `generateBranchName`
   and their call sites (`services/claude.ts`, `routes/git.ts`, `routes/stream.ts`).
-  "Prefer the chat's own harness" was only meaningful while OR _was_ a harness;
+  "Prefer the chat's own harness" was only meaningful while OR *was* a harness;
   with two backends differing solely in credential it is dead weight.
 - `quickCompletion()` becomes a two-branch dispatch:
   - OR utility client when `openRouterUtilityCompletions` is on and a key exists;
@@ -278,7 +278,7 @@ Original scope:
 
 Not an implementation phase. The chat list is driven by
 `discoverSessionsPaginated()` over the registered session providers, with
-`~/.callboard/chats/*.json` records only _augmenting_ what filesystem discovery
+`~/.callboard/chats/*.json` records only *augmenting* what filesystem discovery
 returns — so deregistering the OR session provider makes those chats vanish
 cleanly, with no orphan rows. Confirm that holds at three seams:
 
@@ -299,7 +299,7 @@ housekeeping, explicitly **not** part of this work.
 ### What the audit found
 
 **The 426 figure is wrong and was load-bearing.** It counted every chat file
-_mentioning_ the string. Of 7,665 records, **155** carry
+*mentioning* the string. Of 7,665 records, **155** carry
 `metadata.provider: "openrouter"`; the other 275 mentions are almost all a
 `lastBranch` of `refactor/remove-openrouter-engine` written by this very
 refactor's worktrees. Corrected at its three quoted sites (`claude.ts`,
@@ -307,17 +307,17 @@ refactor's worktrees. Corrected at its three quoted sites (`claude.ts`,
 
 **The decision's premise is right; two structures did not follow it.** The rule
 is "filesystem discovery decides what is live", and three paths read chat
-_records_ instead:
+*records* instead:
 
 1. `routes/cards.ts` passes `chatFileService.getAllChats()` to
    `buildCardSummaries` — the rollup never consults discovery at all. The plan
-   predicted a card would _lose_ OR members; the opposite was true. They stayed,
+   predicted a card would *lose* OR members; the opposite was true. They stayed,
    counted toward `chatCount`, and could carry `unread` — a board that disagrees
    with the sidebar about how many chats a card has. **Fixed** in
    `card-rollup.ts`.
 2. The lineage-append pass in `routes/chats.ts` reaches outside the pagination
    window by file record and falls back to the bare record when no session is
-   discovered — so an OR _parent_ of a surviving claude-code child was appended
+   discovered — so an OR *parent* of a surviving claude-code child was appended
    to the sidebar as a live row. **Fixed**; the child stays and folds under a
    dangling root, which is the deleted-parent case `rootKeyOf` and the client's
    `lineageOf` already agree on.
@@ -337,7 +337,7 @@ metadata, never resolves a session), `folder-service.ts` and `folder-summaries.t
 (discovery-driven, so OR chats vanish and `mostRecentChatProvider` can never name
 one), `utils/session-log.ts` and `utils/chat-lookup.ts` (both return
 null/`session_log_path: null` for an unresolvable session), the `cardsOnly` filter
-(drops sessions with no stored record _before_ augmentation, so it was already
+(drops sessions with no stored record *before* augmentation, so it was already
 correct), and `job-runner.ts` — a step naming the removed harness fails that step
 with the actionable message via `handleAttemptSpawnFailure`, and
 `readFinalAssistantText` degrades to `""` when no provider resolves the session.
@@ -357,5 +357,5 @@ than by rule. Out of scope for this phase.
 
 `RETIRED_PROVIDER_KINDS` / `isRetiredProvider` in `agents/ports/AgentProvider.ts`
 is the third state the two existing guards could not express: not routable, not
-internal, and _not unknown either_ — `isInternalProvider` answers false for
+internal, and *not unknown either* — `isInternalProvider` answers false for
 `"openrouter"` and for a typo alike, and the two want opposite handling.
