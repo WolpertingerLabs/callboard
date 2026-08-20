@@ -604,7 +604,7 @@ export function buildCallboardToolsSpec(
           set: z
             .record(z.string(), z.string().max(CARD_METADATA_VALUE_MAX))
             .optional()
-            .describe("Keys to write or overwrite, e.g. { \"github-pr\": \"https://github.com/org/repo/pull/42\" }"),
+            .describe('Keys to write or overwrite, e.g. { "github-pr": "https://github.com/org/repo/pull/42" }'),
           remove: z.array(z.string()).optional().describe("Keys to delete from the card's metadata"),
           card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
         },
@@ -1030,7 +1030,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "list_openrouter_models",
-        'List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug wherever an OpenRouter model id is configured — the Claude Code / Codex / Cline / pi harnesses can each be pointed at OpenRouter credentials in Settings → API. Also returns user-defined model aliases (e.g. "low coder" -> a real slug), equally valid in those fields. The list is cached and refreshed on app start.',
+        "List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug wherever an OpenRouter model id is configured — the Claude Code / Codex / Cline / pi harnesses can each be pointed at OpenRouter credentials in Settings → API. The list is cached and refreshed on app start. The `aliases` field is vestigial: it reads the deprecated OpenRouter-only alias map, which is retired the first time the unified registry is written, so it is empty for most installs — use list_model_aliases for cross-harness aliases.",
         {
           limit: z.number().optional().describe("Max models to return (default: all). Aliases are always returned in full."),
         },
@@ -1067,7 +1067,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "search_openrouter_models",
-        "Search tool-calling OpenRouter models by slug using subsequence matching (characters in order, e.g. 'claop' matches 'anthropic/claude-opus'). Also matches user-defined model aliases by alias name or target slug — an alias is equally valid as the `model` param. Returns matching slugs with input/output pricing (per 1M tokens).",
+        "Search tool-calling OpenRouter models by slug using subsequence matching (characters in order, e.g. 'claop' matches 'anthropic/claude-opus'). Returns matching slugs with input/output pricing (per 1M tokens). Alias matching is vestigial — it reads the deprecated OpenRouter-only alias map, which is retired the first time the unified registry is written, so it matches nothing for most installs. Use list_model_aliases for cross-harness aliases.",
         {
           query: z.string().describe("Search text matched as a subsequence against the model slug (and alias names)."),
           limit: z.number().optional().describe("Max results to return (default: 50)."),

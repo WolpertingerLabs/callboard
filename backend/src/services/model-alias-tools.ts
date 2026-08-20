@@ -80,17 +80,19 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
           .string()
           .optional()
           .describe('claude-code target — an Anthropic alias ("opus"/"sonnet"/"haiku"/"opusplan") or full model id. Pass "" to clear.'),
-        // Still accepted, deliberately: the parameter is what lets a caller
-        // CLEAR a pre-removal target, matching the settings page's "Clear it"
-        // button. Dropping it would leave the value editable from the UI but
-        // untouchable here. Preservation does not depend on it — an omitted
-        // target is left unchanged by the merge below either way.
+        // Narrowed to the empty string rather than dropped: clearing stays
+        // possible, setting a new dead target becomes a schema error instead of
+        // something an agent has to be talked out of. Preservation does not
+        // depend on this key at all — an omitted target is left unchanged by the
+        // merge below, which is what actually carries pre-removal values.
         openrouter: z
-          .string()
+          .literal("")
           .optional()
           .describe(
-            "openrouter target — RETIRED, do not set a new one. The OpenRouter harness was removed, so this target no longer resolves on " +
-              'any harness. It is still accepted so that targets stored before the removal can be cleared: pass "" to drop one.',
+            'openrouter target — RETIRED; the only accepted value is "", which clears one. The OpenRouter harness was removed, so this ' +
+              "target no longer resolves on any harness and a new one cannot be set. Values stored before the removal are kept as-is " +
+              "unless cleared. If the retired target is the alias's only one, clearing it would leave nothing to resolve to — use " +
+              "delete_model_alias instead.",
           ),
         codex: z.string().optional().describe('codex target — a Codex model slug, e.g. "gpt-5.5". Pass "" to clear.'),
         acp: z

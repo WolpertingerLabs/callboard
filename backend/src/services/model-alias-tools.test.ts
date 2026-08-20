@@ -11,9 +11,15 @@
  * `openRouterModelAliases` map it was migrated from.
  *
  * agent-settings is mocked so the registry is an in-memory value rather than
- * the host's real agent-settings.json.
+ * the host's real agent-settings.json. Note what else that drops: the real
+ * `getAgentSettings` runs `migrateModelAliases` on every read, so production
+ * never hands this handler a settings object with a populated
+ * `openRouterModelAliases` — the fake does, which is why the retire-the-legacy-
+ * map case below can set one up directly. Merge behavior is unaffected either
+ * way; migration and the merge do not interact.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
+import { z } from "zod";
 import type { AgentSettings, ModelAlias } from "shared";
 
 let settings: AgentSettings;
@@ -93,6 +99,18 @@ describe("set_model_alias merge semantics", () => {
 
     expect(out.error).toMatch(/at least one provider target/);
     expect(aliasNamed(await call("list_model_aliases"), "legacy")?.targets).toEqual({ openrouter: "moonshotai/kimi-k2" });
+  });
+
+  it("refuses a new openrouter target at the schema, not just in prose", () => {
+    // The parameter exists only to clear. Narrowing it to "" makes setting a
+    // dead target a validation error rather than something an agent has to be
+    // talked out of by the description.
+    const shape = buildModelAliasTools().find((t) => t.name === "set_model_alias")!.inputSchema;
+    const openrouter = z.object(shape).shape.openrouter;
+
+    expect(openrouter.safeParse("anthropic/claude-opus-4.8").success).toBe(false);
+    expect(openrouter.safeParse("").success).toBe(true);
+    expect(openrouter.safeParse(undefined).success).toBe(true);
   });
 
   it("retires the legacy openRouterModelAliases map on write", async () => {

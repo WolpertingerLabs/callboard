@@ -61,8 +61,14 @@ export interface ModelAlias {
 
 /**
  * Display-oriented view of an alias: its raw targets joined with the resolved
- * model's human name per provider where discoverable. Emitted by the
- * list_model_aliases MCP tool and the settings API for UI rendering.
+ * model's human name per provider where discoverable.
+ *
+ * Aspirational, not current: nothing populates `resolvedNames` today. The
+ * list_model_aliases MCP tool and the settings API both return plain
+ * {@link ModelAlias}, and the settings UI renders the raw target ids. Kept as
+ * the shape to fill in if a join is ever added — the doc previously claimed
+ * both were already emitting it, which sent readers looking for a producer that
+ * has never existed.
  */
 export interface ModelAliasInfo extends ModelAlias {
   resolvedNames?: Partial<Record<HarnessProvider, string>>;
