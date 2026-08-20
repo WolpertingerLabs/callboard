@@ -3,10 +3,12 @@
  *
  * A single named alias (e.g. "planner", "worker") that resolves to a different
  * concrete model depending on which harness/provider runs the session — `opus`
- * under claude-code, an OpenRouter slug under openrouter, a Codex slug under
- * codex. Aliases are accepted anywhere a model is configured (new chats,
+ * under claude-code, a Codex slug under codex, a vendor model id under
+ * acp/cline/pi. Aliases are accepted anywhere a model is configured (new chats,
  * per-chat overrides, provider defaults, cron/trigger actions, job steps, MCP
  * tools) and resolve to the per-provider target when the session starts.
+ * `openrouter` is the one member of {@link HarnessProvider} that resolves
+ * nowhere — see its doc-comment for why the key outlives its harness.
  *
  * Supersedes the OpenRouter-only `AgentSettings.openRouterModelAliases` map,
  * which is migrated into the `openrouter` target of each alias on load.
