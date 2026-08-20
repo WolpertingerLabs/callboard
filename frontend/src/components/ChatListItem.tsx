@@ -113,6 +113,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let acpProviderId: string | undefined;
   let jobRunId: string | undefined;
   let jobStepId: string | undefined;
+  let jobNeedsYou = false;
   let hasCard = false;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
@@ -130,7 +131,12 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
     acpProviderId = meta.acpProviderId || undefined;
     jobRunId = meta.jobRunId || undefined;
     jobStepId = meta.jobStepId || undefined;
+    // Set by the list route on the run's representative row only — a run owns
+    // every chat it ever opened, so the status alone would flag all of them.
+    jobNeedsYou = meta.jobRunNeedsYou === true;
   } catch {}
+
+  const jobAwaitingApproval = !!jobRunId && jobNeedsYou;
 
   const hasUnread = lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
 
@@ -139,11 +145,16 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   /**
    * The dim, with the rows that need you taken back out of it.
    *
-   * A faded row that is holding a permission prompt, has a summon on it, or has
-   * unread output is the precise inverse of what this option is for — the point
-   * is to make live work stand out, and those three are the loudest live work
-   * there is. The exemption lives here rather than in the list because these
-   * are already parsed out of the chat's metadata a few lines up.
+   * A faded row that is the open one, has a summon on it, has unread output,
+   * or is the row a job run is waiting on for approval is the precise inverse
+   * of what this option is for — the point is to make live work stand out, and
+   * those are the loudest live work there is. The exemption lives here rather
+   * than in the list because each is already parsed out of the chat's metadata
+   * a few lines up.
+   *
+   * Those four are the whole list: `Props` carries no permission-prompt state
+   * (`sessionStatus` distinguishes only web from cli), so a row holding one is
+   * not something this component can currently see.
    *
    * What the fade costs, measured rather than assumed: `opacity` composites the
    * whole row against `--bg-sidebar`, so it drags every pairing in the row down
@@ -154,7 +165,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
    * is not a visible dim. That is a property of fading with opacity, not of
    * these two values.
    */
-  const faded = !!dimmed && !isActive && !summon && !hasUnread;
+  const faded = !!dimmed && !isActive && !summon && !hasUnread && !jobAwaitingApproval;
 
   return (
     <div
@@ -236,7 +247,11 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           )}
           {jobRunId && (
             <span
-              title={`Job step${jobStepId ? `: ${jobStepId}` : ""} (run ${jobRunId})`}
+              title={
+                jobAwaitingApproval
+                  ? `Waiting for your approval — job step${jobStepId ? `: ${jobStepId}` : ""} (run ${jobRunId})`
+                  : `Job step${jobStepId ? `: ${jobStepId}` : ""} (run ${jobRunId})`
+              }
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -245,13 +260,13 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                 fontWeight: 600,
                 padding: "1px 6px",
                 borderRadius: 4,
-                background: "var(--chatlist-badge-agent-bg)",
-                color: "var(--chatlist-badge-agent-text)",
+                background: jobAwaitingApproval ? "var(--warning-bg)" : "var(--chatlist-badge-agent-bg)",
+                color: jobAwaitingApproval ? "var(--warning)" : "var(--chatlist-badge-agent-text)",
                 flexShrink: 0,
               }}
             >
-              <Workflow size={10} style={{ color: "var(--chatlist-badge-agent-text)" }} />
-              {jobStepId || "job"}
+              <Workflow size={10} style={{ color: jobAwaitingApproval ? "var(--warning)" : "var(--chatlist-badge-agent-text)" }} />
+              {jobAwaitingApproval ? "needs you" : jobStepId || "job"}
             </span>
           )}
           {isTriggered && !jobRunId && (

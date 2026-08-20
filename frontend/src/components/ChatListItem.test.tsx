@@ -43,6 +43,24 @@ function makeChat(overrides: Partial<Chat> = {}): Chat {
 }
 
 /**
+ * A job-step row as the list route serves one: triggered, and flagged
+ * `jobRunNeedsYou` only if it is the run's elected representative. The route
+ * attaches no run status to a chat row, so neither does this.
+ */
+function jobChat({ id = "chat-1", needsYou }: { id?: string; needsYou: boolean }): Chat {
+  return makeChat({
+    id,
+    metadata: JSON.stringify({
+      title: "My Chat",
+      triggered: true,
+      jobRunId: "run-1",
+      jobStepId: "deploy",
+      ...(needsYou && { jobRunNeedsYou: true }),
+    }),
+  });
+}
+
+/**
  * Open the row's kebab menu (the only place card actions live). The kebab is
  * hover-gated on desktop widths, which is what jsdom reports, so hover first.
  */
@@ -178,6 +196,52 @@ describe("ChatListItem dimming", () => {
 
     expect(row(withUnread).className).not.toContain(DIM_CLASS);
     expect(row(control).className).toContain(DIM_CLASS);
+  });
+
+  it("never fades the row a job run is waiting on for approval", () => {
+    // The control is another step chat of the same run: it carries the runId
+    // and the status, but not the representative's flag, so it still fades.
+    const { container: parked } = render(<ChatListItem chat={jobChat({ needsYou: true })} onClick={() => {}} onDelete={() => {}} dimmed />);
+    const { container: control } = render(
+      <ChatListItem chat={jobChat({ id: "chat-2", needsYou: false })} onClick={() => {}} onDelete={() => {}} dimmed />,
+    );
+
+    expect(row(parked).className).not.toContain(DIM_CLASS);
+    expect(row(control).className).toContain(DIM_CLASS);
+  });
+});
+
+/**
+ * "Needs you" is a property of the run, but a run owns every chat it ever
+ * opened — a step per attempt, a chat per parallel branch, plus the approval
+ * notifier's. The list route therefore elects one representative row and marks
+ * only that one with `jobRunNeedsYou`; every other row of the same run is
+ * indistinguishable from it in metadata and must stay an ordinary job badge.
+ * These tests pin that the component keys off that flag alone.
+ */
+describe("ChatListItem job badge", () => {
+  it("shows the step id for an ordinary job row", () => {
+    render(<ChatListItem chat={jobChat({ needsYou: false })} onClick={() => {}} onDelete={() => {}} />);
+
+    expect(screen.getByText("deploy")).toBeTruthy();
+    expect(screen.queryByText("needs you")).toBeNull();
+  });
+
+  it("swaps the label and says why in the tooltip on the representative row", () => {
+    render(<ChatListItem chat={jobChat({ needsYou: true })} onClick={() => {}} onDelete={() => {}} />);
+
+    expect(screen.getByText("needs you")).toBeTruthy();
+    expect(screen.queryByText("deploy")).toBeNull();
+    // The step id and run id are still reachable, just demoted to the tooltip.
+    expect(screen.getByTitle(/Waiting for your approval.*deploy.*run-1/)).toBeTruthy();
+  });
+
+  it("keeps a waiting_approval row that is not the representative ordinary", () => {
+    // The whole point of the second key: same run, same status, different row.
+    render(<ChatListItem chat={jobChat({ needsYou: false })} onClick={() => {}} onDelete={() => {}} />);
+
+    expect(screen.queryByText("needs you")).toBeNull();
+    expect(screen.getByTitle("Job step: deploy (run run-1)")).toBeTruthy();
   });
 });
 

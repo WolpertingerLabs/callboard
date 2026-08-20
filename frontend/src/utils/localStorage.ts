@@ -43,7 +43,7 @@ interface LocalStorageData {
   sidebarCollapsed?: boolean;
   /** Desktop sidebar width in pixels when expanded. Clamped to >= SIDEBAR_MIN_WIDTH on read. */
   sidebarWidth?: number;
-  sidebarViewMode?: "folders" | "chats" | "jobs";
+  sidebarViewMode?: "folders" | "chats";
   /** Chat list presentation: flat list (default) or parentage-tree groups. */
   chatListLayout?: "flat" | "tree";
   /** Whether the board's Closed section is expanded. */
@@ -491,11 +491,16 @@ export function saveSidebarWidth(value: number): void {
   setStorageData(data);
 }
 
-export type SidebarViewMode = "folders" | "chats" | "jobs";
+export type SidebarViewMode = "folders" | "chats";
+
+const SIDEBAR_VIEW_MODES: readonly string[] = ["folders", "chats"];
 
 export function getSidebarViewMode(): SidebarViewMode {
   const data = getStorageData();
-  return data.sidebarViewMode ?? "chats";
+  // Anyone who last used the removed "jobs" view still has it persisted, and a
+  // mode with no branch left to render would leave them on a blank sidebar.
+  const stored = data.sidebarViewMode as string | undefined;
+  return stored && SIDEBAR_VIEW_MODES.includes(stored) ? (stored as SidebarViewMode) : "chats";
 }
 
 export function saveSidebarViewMode(mode: SidebarViewMode): void {
