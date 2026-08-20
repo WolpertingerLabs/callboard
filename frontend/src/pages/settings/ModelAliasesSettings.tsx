@@ -267,8 +267,10 @@ export default function ModelAliasesSettings() {
                     type="button"
                     onClick={() => update(i, { openrouter: "" })}
                     // Every row's button reads "Clear it", so the accessible
-                    // name has to carry the alias to be distinguishable.
-                    aria-label={`Clear the retired OpenRouter target for ${row.name.trim() || "this alias"}`}
+                    // name has to carry the alias to be distinguishable — and
+                    // has to open with the visible text, or speech input can't
+                    // match it (WCAG 2.5.3, Label in Name).
+                    aria-label={`Clear it — the retired OpenRouter target for ${row.name.trim() || "this alias"}`}
                     style={{
                       background: "transparent",
                       border: "none",
