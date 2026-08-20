@@ -50,6 +50,12 @@ These were settled before work started. Do not relitigate them mid-phase.
    *resolution*, but it is user data, and dropping the column silently discards
    slugs users typed. Cost of keeping: one union member.
 
+   *Amended in #351:* the **column** is gone — an editable picker for a harness
+   that cannot run was the opposite of useful — but the **target** is retained
+   exactly as this decision requires. The settings page carries the stored value
+   through its row state untouched, so removing the UI discards nothing; a
+   per-row note offers explicit clearing for anyone who wants it gone.
+
 ## Phase 1 — Stop offering it — **DONE** (`04d171e`)
 
 Goal: OpenRouter disappears from every user-facing surface that lets you *pick*

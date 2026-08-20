@@ -1,69 +1,28 @@
 import { useEffect, useState } from "react";
 import { Route, Plus, Trash2, Save, Check } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getSystemInfo, type AcpProviderInfo } from "../../api";
-import type { ModelAlias } from "shared/types/index.js";
 import { validateModelAliases } from "shared/types/index.js";
 import ClaudeModelSelector from "../../components/ClaudeModelSelector";
-import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
 import PiModelSelector from "../../components/PiModelSelector";
+import { emptyRow, toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./modelAliasRows";
 
 /**
  * Settings → Model Aliases.
  *
  * Edits the cross-harness alias registry (`agentSettings.modelAliases`): one
  * named alias resolves to a different concrete model per harness, so
- * `model: "planner"` works on claude-code, openrouter, and codex alike. This
+ * `model: "planner"` works on claude-code, codex and the rest alike. This
  * supersedes the OpenRouter-only alias editor that used to live in Settings →
  * API; the backend folds any legacy `openRouterModelAliases` into the
- * `openrouter` column on load, and retires the legacy map on the first save
+ * `openrouter` target on load, and retires the legacy map on the first save
  * here.
+ *
+ * The row model and its conversions live in `./modelAliasRows` — including the
+ * OpenRouter target this page deliberately has no column for. See that file for
+ * why it is still carried.
  */
-
-interface AliasRow {
-  name: string;
-  description: string;
-  claudeCode: string;
-  openrouter: string;
-  codex: string;
-  acp: string;
-  cline: string;
-  pi: string;
-}
-
-const emptyRow = (): AliasRow => ({ name: "", description: "", claudeCode: "", openrouter: "", codex: "", acp: "", cline: "", pi: "" });
-
-function toRows(aliases: ModelAlias[] | undefined): AliasRow[] {
-  return (aliases ?? []).map((a) => ({
-    name: a.name,
-    description: a.description ?? "",
-    claudeCode: a.targets["claude-code"] ?? "",
-    openrouter: a.targets.openrouter ?? "",
-    codex: a.targets.codex ?? "",
-    acp: a.targets.acp ?? "",
-    cline: a.targets.cline ?? "",
-    pi: a.targets.pi ?? "",
-  }));
-}
-
-/** Build the ModelAlias[] a row set represents (blank fields dropped). */
-function toAliases(rows: AliasRow[]): ModelAlias[] {
-  return rows
-    .map((r) => {
-      const targets: ModelAlias["targets"] = {};
-      if (r.claudeCode.trim()) targets["claude-code"] = r.claudeCode.trim();
-      if (r.openrouter.trim()) targets.openrouter = r.openrouter.trim();
-      if (r.codex.trim()) targets.codex = r.codex.trim();
-      if (r.acp.trim()) targets.acp = r.acp.trim();
-      if (r.cline.trim()) targets.cline = r.cline.trim();
-      if (r.pi.trim()) targets.pi = r.pi.trim();
-      const alias: ModelAlias = { name: r.name.trim(), targets };
-      if (r.description.trim()) alias.description = r.description.trim();
-      return alias;
-    })
-    .filter((a) => a.name !== "" && Object.keys(a.targets).length > 0);
-}
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -136,10 +95,11 @@ export default function ModelAliasesSettings() {
   // problems surface before the save round-trips.
   const { errors: validationErrors } = validateModelAliases(toAliases(rows));
   // A named row with no target at all is a likely mistake — flag it even though
-  // toAliases() would silently drop it.
-  const targetlessNames = rows
-    .filter((r) => r.name.trim() && !r.claudeCode.trim() && !r.openrouter.trim() && !r.codex.trim() && !r.acp.trim() && !r.cline.trim() && !r.pi.trim())
-    .map((r) => r.name.trim());
+  // toAliases() would silently drop it. `openrouter` stays in this test despite
+  // having no column: a row carrying only a retained slug still survives the
+  // save, so calling it unsaved would be a lie. Such a row gets the per-row
+  // legacy note below instead.
+  const targetlessNames = rows.filter((r) => r.name.trim() && !hasEditableTarget(r) && !r.openrouter.trim()).map((r) => r.name.trim());
 
   const handleSave = async () => {
     if (validationErrors.length > 0) {
@@ -171,10 +131,9 @@ export default function ModelAliasesSettings() {
         </div>
         <div style={helpStyle}>
           Name a shortcut once and point it at a different model per harness — e.g. <code>planner</code> → <code>opus</code> on Claude Code,{" "}
-          <code>anthropic/claude-opus-4.8</code> on OpenRouter, <code>gpt-5.5</code> on Codex, <code>opencode/gpt-5.5</code> on an ACP agent. Then set{" "}
-          <code>model: &quot;planner&quot;</code> anywhere a model is configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it
-          resolves to the target for whichever harness runs the session. Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets
-          must be real model ids, never other alias names.
+          <code>gpt-5.5</code> on Codex, <code>opencode/gpt-5.5</code> on an ACP agent. Then set <code>model: &quot;planner&quot;</code> anywhere a model is
+          configured (new chats, per-chat overrides, job steps, cron/trigger actions) and it resolves to the target for whichever harness runs the session.
+          Leave a harness blank to fall back to that provider&rsquo;s configured default. Targets must be real model ids, never other alias names.
         </div>
 
         <div style={{ marginTop: 16 }}>
@@ -242,16 +201,6 @@ export default function ModelAliasesSettings() {
                   <ClaudeModelSelector value={row.claudeCode} onChange={(v) => update(i, { claudeCode: v })} placeholder="opus / claude-sonnet-4-6" />
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <label style={colLabel}>OpenRouter</label>
-                  <OpenRouterModelSelector
-                    value={row.openrouter}
-                    onChange={(v) => update(i, { openrouter: v })}
-                    placeholder="anthropic/claude-opus-4.8"
-                    priorityPrefix="anthropic/"
-                    excludeAliases
-                  />
-                </div>
-                <div style={{ minWidth: 0 }}>
                   <label style={colLabel}>Codex</label>
                   <CodexModelSelector value={row.codex} onChange={(v) => update(i, { codex: v })} placeholder="gpt-5.5" />
                 </div>
@@ -295,6 +244,48 @@ export default function ModelAliasesSettings() {
                   <PiModelSelector value={row.pi} onChange={(v) => update(i, { pi: v })} placeholder="google/gemini-3.6-flash" compact />
                 </div>
               </div>
+
+              {/* Only for aliases that predate the OpenRouter harness removal.
+                  The retained target has no column, so without this the value is
+                  invisible — and a row whose *sole* target is that slug reads as
+                  blank-but-somehow-saved with nowhere to learn why. The advice to
+                  fill in a harness is gated on that sole-target case: the
+                  migration gave an OpenRouter target to every legacy alias, so
+                  most rows carrying one are already configured elsewhere and
+                  telling those to go set a target is telling them to redo work
+                  they have done. Clearing is offered because otherwise the note
+                  is a permanent nag whose only escape is deleting the alias
+                  outright — an explicit click is not the silent drop that
+                  keeping the value in AliasRow exists to prevent. */}
+              {row.openrouter.trim() && (
+                <div style={{ ...helpStyle, marginTop: 8, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                  <span>
+                    Retired OpenRouter target (<code>{row.openrouter.trim()}</code>) kept from an earlier version — stored, but no longer used by any harness.
+                    {onlyOpenRouterTarget(row) && " Set a target above for the harnesses you run."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => update(i, { openrouter: "" })}
+                    // Every row's button reads "Clear it", so the accessible
+                    // name has to carry the alias to be distinguishable — and
+                    // has to open with the visible text, or speech input can't
+                    // match it (WCAG 2.5.3, Label in Name).
+                    aria-label={`Clear it — the retired OpenRouter target for ${row.name.trim() || "this alias"}`}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      borderBottom: "1px solid var(--border)",
+                      color: "var(--text-muted)",
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Clear it
+                  </button>
+                </div>
+              )}
             </div>
           ))}
 

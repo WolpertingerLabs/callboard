@@ -7,11 +7,6 @@ interface Props {
   onChange: (value: string) => void;
   placeholder?: string;
   /**
-   * Hide user-defined aliases from the dropdown. Used by the alias manager's
-   * target picker — alias targets must be real model slugs, not other aliases.
-   */
-  excludeAliases?: boolean;
-  /**
    * Float models whose slug starts with this prefix to the top of the list
    * (e.g. "anthropic/" for the Claude Code picker, "openai/" for Codex), while
    * still listing every model. Stable — relative order is otherwise preserved.
@@ -69,7 +64,7 @@ const rowLabelStyle: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-export default function OpenRouterModelSelector({ id, value, onChange, placeholder, excludeAliases, priorityPrefix }: Props) {
+export default function OpenRouterModelSelector({ id, value, onChange, placeholder, priorityPrefix }: Props) {
   const [models, setModels] = useState<OpenRouterModelInfo[]>([]);
   const [aliases, setAliases] = useState<OpenRouterModelAliasInfo[]>([]);
   const [open, setOpen] = useState(false);
@@ -107,7 +102,7 @@ export default function OpenRouterModelSelector({ id, value, onChange, placehold
   // pinned above the model list so custom names surface first.
   const matches = useMemo(() => {
     const q = value.trim();
-    const aliasMatches = excludeAliases ? [] : q === "" ? aliases : aliases.filter((a) => isSubsequence(q, a.alias) || isSubsequence(q, a.modelId));
+    const aliasMatches = q === "" ? aliases : aliases.filter((a) => isSubsequence(q, a.alias) || isSubsequence(q, a.modelId));
     let modelMatches = q === "" ? models : models.filter((m) => isSubsequence(q, m.id));
     // Float the harness's native family to the top (stable partition) when a
     // priority prefix is given, so e.g. anthropic/* surfaces first for Claude Code.
@@ -121,7 +116,7 @@ export default function OpenRouterModelSelector({ id, value, onChange, placehold
       ...modelMatches.map((model) => ({ kind: "model" as const, model })),
     ];
     return entries.slice(0, MAX_RESULTS);
-  }, [models, aliases, value, excludeAliases, priorityPrefix]);
+  }, [models, aliases, value, priorityPrefix]);
 
   const select = (entry: Entry) => {
     onChange(entry.kind === "alias" ? entry.alias.alias : entry.model.id);
