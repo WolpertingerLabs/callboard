@@ -8,6 +8,16 @@ package-lock.json
 # whitespace churn in the diff that reviews the wire change.
 shared/types/wire-surface.snapshot.json
 
+# Prose, not code — and prettier's markdown printer is not safe on it. In #351
+# it read the wrapped "(`OPENROUTER_DEFAULT_BASE_URL` + `resolveOpenRouterApiUrl`)"
+# in plans/remove-openrouter-engine.md as a list bullet, rewrote the `+` to `-`,
+# and the sentence stopped saying the module exports both names; it also
+# de-indents lazy continuations and flips emphasis markers wholesale, burying
+# the real edit in churn. `npm run prettier` globs every changed file and
+# --ignore-unknown only skips files with no parser, so markdown was in scope.
+# Nothing formats or checks markdown in CI, so there is no consistency to lose.
+*.md
+
 **/.env*
 **/.git
 **/.next

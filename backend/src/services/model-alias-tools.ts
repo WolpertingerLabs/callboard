@@ -59,8 +59,10 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
     defineTool(
       "list_model_aliases",
       "View the global cross-harness model alias registry. Each alias resolves to a different concrete model per provider — an " +
-        'Anthropic alias/ID for claude-code, an OpenRouter slug for openrouter, a Codex slug for codex — so `model: "<alias>"` works ' +
-        "on any harness (new chats, per-chat overrides, job steps, cron/trigger actions). Returns every alias with its per-provider targets.",
+        'Anthropic alias/ID for claude-code, a Codex slug for codex, a vendor model id for acp/cline/pi — so `model: "<alias>"` works ' +
+        "on any harness (new chats, per-chat overrides, job steps, cron/trigger actions). Returns every alias with its per-provider targets. " +
+        "Aliases predating the removal of the OpenRouter harness may also carry an `openrouter` target: it is retired and never resolves, " +
+        "so ignore it when picking a model for a session.",
       {},
       async () => ok({ modelAliases: currentAliases() }),
     ),
@@ -78,7 +80,20 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
           .string()
           .optional()
           .describe('claude-code target — an Anthropic alias ("opus"/"sonnet"/"haiku"/"opusplan") or full model id. Pass "" to clear.'),
-        openrouter: z.string().optional().describe('openrouter target — an OpenRouter model slug. Pass "" to clear.'),
+        // Narrowed to the empty string rather than dropped: clearing stays
+        // possible, setting a new dead target becomes a schema error instead of
+        // something an agent has to be talked out of. Preservation does not
+        // depend on this key at all — an omitted target is left unchanged by the
+        // merge below, which is what actually carries pre-removal values.
+        openrouter: z
+          .literal("")
+          .optional()
+          .describe(
+            'openrouter target — RETIRED; the only accepted value is "", which clears one. The OpenRouter harness was removed, so this ' +
+              "target no longer resolves on any harness and a new one cannot be set. Values stored before the removal are kept as-is " +
+              "unless cleared. If the retired target is the alias's only one, clearing it would leave nothing to resolve to — use " +
+              "delete_model_alias instead.",
+          ),
         codex: z.string().optional().describe('codex target — a Codex model slug, e.g. "gpt-5.5". Pass "" to clear.'),
         acp: z
           .string()
