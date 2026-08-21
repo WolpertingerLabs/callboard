@@ -52,15 +52,35 @@
  *    per-object count would be up to seven allowances wearing one's name.
  *
  * Together they bound a run at `MAX_HOLD_EPISODES × DEFAULT_MAX_HOLD_MS` of
- * holding, and both degrade into the pre-hold behaviour: we stop waiting, and
+ * *waiting*, and both degrade into the pre-hold behaviour: we stop waiting, and
  * tasks still running die with the subprocess.
  *
- * Two rules refine *when* a bound may act, without loosening it: an expiry that
- * lands mid-turn waits for the turn to end rather than closing stdin under it,
- * and a drained episode hands its timer slot to a separate liveness floor
- * rather than merely stopping (see {@link HeldPrompt.armTimeout} and
- * {@link HeldPrompt.disarmTimeout}). The floor is not a budget and keeps its
- * own clock, so it can never be spent as one episode's window by the next.
+ * Two rules refine *when* a bound may act: an expiry that lands mid-turn waits
+ * for the turn to end rather than closing stdin under it, and a drained episode
+ * hands its timer slot to a separate liveness floor rather than merely stopping
+ * (see {@link HeldPrompt.armTimeout} and {@link HeldPrompt.disarmTimeout}). The
+ * floor is not a budget and keeps its own clock, so it can never be spent as
+ * one episode's window by the next.
+ *
+ * ## What that product does and does not bound
+ *
+ * Read it as time spent *waiting*, not as how long the stream can stay open,
+ * and the difference is the deferral. An expiry always fires on schedule; what
+ * it may postpone is the close, and only while a turn is still producing
+ * events. That reprieve slides on every event, so an episode can outlast its
+ * window by as long as a turn keeps talking.
+ *
+ * Which is correct, and the reason is worth stating rather than bounding: a
+ * turn that is emitting events is a *working* run, and a working run is what
+ * pins the subprocess — the hold is not. That turn is bounded elsewhere.
+ * `maxTurns` and `max_budget` both terminate the query with a `result`, which
+ * lands on `markTurnEnded()` and closes. So the term this file contributes is
+ * one window of silence, which is the one failure a turn's own bounds cannot
+ * catch, and the rest belongs to the query.
+ *
+ * The case nothing here bounds is a query that streams events forever without
+ * a `result`. Nothing else bounds it either, and it is not a hold: the
+ * subprocess would be pinned by the live query with or without this file.
  *
  * Both refinements are safe for the same reason, and it is the load-bearing
  * property of this file: **while a hold is open, a timer is always pending.**

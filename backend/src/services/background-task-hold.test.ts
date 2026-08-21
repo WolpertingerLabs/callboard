@@ -441,6 +441,11 @@ describe("HeldPrompt", () => {
     // Silence is the signal, not elapsed time. A turn still emitting events is
     // doing something, and cutting stdin under one is the damage the deferral
     // exists to avoid — so the watchdog restarts on every sign of life.
+    //
+    // A hundred windows, deliberately: the reprieve is unbounded in wall-clock
+    // by design, and the file header says so rather than claiming a product it
+    // does not enforce. What bounds a working turn is `maxTurns` / `max_budget`,
+    // which end the query with a `result` — the `markTurnEnded` below.
     vi.useFakeTimers();
     try {
       const held = new HeldPrompt("hello");
@@ -448,8 +453,8 @@ describe("HeldPrompt", () => {
       held.armTimeout(60_000, vi.fn());
       vi.advanceTimersByTime(60_000); // deferred
 
-      for (let i = 0; i < 5; i++) {
-        vi.advanceTimersByTime(50_000);
+      for (let i = 0; i < 100; i++) {
+        vi.advanceTimersByTime(59_000);
         held.markTurnActive(); // still working
       }
       expect(held.closed).toBe(false);
