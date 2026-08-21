@@ -47,6 +47,18 @@ describe("the registry itself", () => {
     }
   });
 
+  it("has no allowlist entry that no recipe asks for", () => {
+    // The other direction, and the one that was missing. Phase 3 checks
+    // membership in this set before spawning, so a stray entry is a package
+    // Callboard would install on request with nothing in the UI naming it —
+    // and the previous test suite could not have noticed, because it only
+    // checked recipes ⊆ allowlist. The set is now derived, which makes this
+    // true by construction; the assertion is here so that a future
+    // hand-written literal fails instead of quietly re-opening the hole.
+    const fromRecipes = new Set(ENGINE_INSTALL_RECIPES.filter((r) => r.method === "npm-global").map((r) => r.package));
+    expect([...INSTALLABLE_PACKAGES].sort()).toEqual([...fromRecipes].sort());
+  });
+
   it("names the allowlisted package as the literal last argv entry", () => {
     // Not `expect.stringContaining`: the point is that argv is a fixed array
     // with the package as its own element, so nothing about it can be assembled
@@ -83,7 +95,7 @@ describe("the registry itself", () => {
     }
   });
 
-  it("states the ways a successful command still leaves the engine missing", () => {
+  it("states the ways a successful npm command still leaves the engine missing", () => {
     // Phase 2 does not detect a non-writable prefix or an nvm prefix belonging
     // to another Node. It must therefore not imply that it checked — and both
     // end in a command that exits 0 with nothing found.
@@ -92,6 +104,37 @@ describe("the registry itself", () => {
       const caveats = (recipe.caveats ?? []).join(" ");
       expect(caveats).toContain("EACCES");
       expect(caveats).toContain("nvm");
+    }
+  });
+
+  it("says where each vendor script installs, and that Recheck cannot see it", () => {
+    // The previous cut asserted caveats only for `npm-global` — it opened with
+    // `if (recipe.method !== "npm-global") continue`, so the script recipes'
+    // caveats were covered by nothing at all. They were also the weaker copy:
+    // npm-global got two careful notes about a failure that is occasional,
+    // while the scripts, which fail this way *by design every time*, got none.
+    //
+    // Read off the live installers: opencode's sets
+    // `INSTALL_DIR=$HOME/.opencode/bin` and edits the shell rc; Anthropic's runs
+    // `<binary> install`, landing the launcher in `$HOME/.local/bin`. Neither
+    // directory can be on a running daemon's PATH, which is fixed at exec.
+    const dirs: Record<string, string> = { "claude-code": "~/.local/bin", opencode: "~/.opencode/bin" };
+    const scripts = ENGINE_INSTALL_RECIPES.filter((r) => r.method === "script");
+    expect(scripts.map((r) => r.engineId).sort()).toEqual(["claude-code", "opencode"]);
+    for (const recipe of scripts) {
+      const caveats = (recipe.caveats ?? []).join(" ");
+      expect(caveats).toContain(dirs[recipe.engineId]);
+      expect(caveats).toContain("PATH");
+      expect(caveats).toContain("callboard restart");
+      expect(caveats).toMatch(/macOS and Linux only/);
+    }
+  });
+
+  it("marks exactly the npm recipes as things Recheck can see", () => {
+    // The card's closing line is keyed off this, so a wrong value here is a
+    // "press Recheck" instruction that can never come true.
+    for (const recipe of ENGINE_INSTALL_RECIPES) {
+      expect(recipe.visibleAfterRecheck).toBe(recipe.method === "npm-global");
     }
   });
 });
@@ -136,6 +179,23 @@ describe("codex — install to log in, not to run", () => {
   it("says nothing when Callboard could not tell whether it is authenticated", () => {
     expect(installGuidanceFor(codex({ credentials: { configured: "unknown" } }))).toBeUndefined();
   });
+
+  it("does not offer an install to someone who already has the CLI", () => {
+    // The state the recipe itself creates: install `@openai/codex`, press
+    // Recheck, and the previous cut handed back the very same "install it"
+    // block — because the only gate was auth and nothing ever looked at PATH.
+    const guidance = installGuidanceFor(codex({ credentials: { configured: false }, userCliPath: "/usr/local/bin/codex" }));
+    expect(guidance?.recipes).toEqual([]);
+    expect(guidance?.reason).toContain("/usr/local/bin/codex");
+    expect(guidance?.reason).toContain("codex login");
+    expect(guidance?.reason).not.toMatch(/not a command you have/);
+  });
+
+  it("still says the CLI is missing when it genuinely is", () => {
+    const guidance = installGuidanceFor(codex({ credentials: { configured: false } }));
+    expect(guidance?.recipes.map((r) => r.command)).toEqual(["npm install -g @openai/codex"]);
+    expect(guidance?.reason).toContain("no `codex` on the daemon's PATH");
+  });
 });
 
 describe("claude code — two states, and the ones in between", () => {
@@ -150,7 +210,7 @@ describe("claude code — two states, and the ones in between", () => {
     expect(guidance?.reason).toContain("claude auth login");
   });
 
-  it("says nothing when a native claude is already on PATH", () => {
+  it("offers no install when a native claude is already on PATH, only the login", () => {
     const guidance = installGuidanceFor(
       claudeCode({
         runtime: {
@@ -163,7 +223,12 @@ describe("claude code — two states, and the ones in between", () => {
         credentials: { configured: false },
       }),
     );
-    expect(guidance).toBeUndefined();
+    expect(guidance?.recipes).toEqual([]);
+    expect(guidance?.reason).toContain("claude auth login");
+    // No "chats are running the bundled binary" caveat here — this copy IS the
+    // one the SDK resolved, so appending it would invent a split that does not
+    // exist on this machine.
+    expect(guidance?.reason).not.toContain("bundled binary");
   });
 
   it("says nothing to a credentialed user running the bundled binary", () => {
@@ -171,6 +236,26 @@ describe("claude code — two states, and the ones in between", () => {
     // all authenticate without any CLI. Telling those users to install one is
     // the Phase 1 Bedrock defect with a command attached.
     expect(installGuidanceFor(claudeCode({ credentials: { configured: true, source: "bedrock" } }))).toBeUndefined();
+  });
+
+  it("does not tell someone to install a claude the wider lookup already found", () => {
+    // `getClaudeCodeExecutablePath()` sees the setting and `which claude`;
+    // `getClaudeBinaryPath()` also sees `CLAUDE_BINARY` and `~/.local/bin` —
+    // which is where this file's own script recipe installs. A daemon started
+    // before that was on its PATH has the second and not the first, so gating
+    // on `resolvedPath` alone printed "no native claude" on a card while the
+    // About page reported that same binary's version.
+    const guidance = installGuidanceFor(claudeCode({ credentials: { configured: false }, userCliPath: "/home/u/.local/bin/claude" }));
+    expect(guidance?.recipes).toEqual([]);
+    expect(guidance?.reason).toContain("/home/u/.local/bin/claude");
+    expect(guidance?.reason).toContain("claude auth login");
+    // And it explains the split rather than pretending the two lookups agree.
+    expect(guidance?.reason).toContain("bundled binary");
+  });
+
+  it("offers the install only when neither lookup found a claude", () => {
+    const guidance = installGuidanceFor(claudeCode({ credentials: { configured: false } }));
+    expect(guidance?.recipes.map((r) => r.method)).toEqual(["npm-global", "script"]);
   });
 
   it("says nothing when the SDK could not be asked whether an account exists", () => {

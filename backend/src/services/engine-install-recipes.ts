@@ -53,15 +53,8 @@ const CLAUDE_CODE_CLI_PACKAGE = "@anthropic-ai/claude-code";
 const OPENCODE_PACKAGE = "opencode-ai";
 const CODEX_CLI_PACKAGE = "@openai/codex";
 
-/**
- * The closed set of packages Callboard will ever install globally.
- *
- * Phase 3's endpoint checks membership here before spawning anything. It is
- * derived from the recipes rather than maintained beside them, so the two cannot
- * drift — a package reachable by the installer but absent from this set is not
- * expressible.
- */
-export const INSTALLABLE_PACKAGES: ReadonlySet<string> = new Set([CLAUDE_CODE_CLI_PACKAGE, OPENCODE_PACKAGE, CODEX_CLI_PACKAGE]);
+// {@link INSTALLABLE_PACKAGES} is derived from the recipes below rather than
+// declared here — see its doc comment for why that distinction matters.
 
 // ── Shared caveats ──────────────────────────────────────────────────
 
@@ -80,11 +73,35 @@ const NPM_GLOBAL_CAVEATS = Object.freeze([
   "Under nvm the global prefix belongs to the active Node version. Callboard finds the binary only if its daemon runs under that same version — check `node -v` in the terminal you install from against the Node running Callboard.",
 ] as const);
 
-/** A `curl … | bash` installer is a bash script, and both of the ones here are POSIX-only. */
-const SCRIPT_CAVEATS = Object.freeze([
-  "macOS and Linux only — this is a bash script. On Windows, use the npm command above (or WSL).",
-  "Callboard never runs this for you. Read the script before piping it to a shell, as you would any installer.",
-] as const);
+/**
+ * What a `curl … | bash` installer does that the npm path does not.
+ *
+ * The second entry is the important one and it is stated **per script**, with
+ * the real directory, because it is not a corner case — it is what these
+ * scripts do by design, every time:
+ *
+ * - `https://opencode.ai/install` sets `INSTALL_DIR=$HOME/.opencode/bin`,
+ *   `mkdir -p`s it, and appends `export PATH=$INSTALL_DIR:$PATH` to the user's
+ *   shell rc.
+ * - `https://claude.ai/install.sh` downloads to `$HOME/.claude/downloads` and
+ *   then runs `<binary> install`, which lands the launcher in
+ *   `$HOME/.local/bin` and wires up shell integration.
+ *
+ * Both verified by reading the live scripts. In both cases the directory is on
+ * the user's *future* shells' PATH and not on the running daemon's — a
+ * process's environment is fixed at exec — and for OpenCode the directory
+ * usually did not exist when the daemon started, so it *cannot* have been
+ * inherited. Recheck re-runs `which` in the daemon's environment, so it will
+ * keep answering "not installed" until Callboard is restarted from a shell that
+ * has been re-sourced. Telling someone to press Recheck without saying that is
+ * the copy-block equivalent of a button that does nothing.
+ */
+const scriptCaveats = (installDir: string, command: string) =>
+  Object.freeze([
+    "macOS and Linux only — this is a bash script. On Windows, use the npm command above (or WSL).",
+    `Installs to \`${installDir}\` and puts it on your PATH by editing your shell rc. That takes effect in new terminals, not in the already-running Callboard daemon — a process's PATH is fixed when it starts, and this directory may not have existed then. Recheck will not find this install: run \`callboard restart\` from a terminal where \`${command}\` works.`,
+    "Callboard never runs this for you. Read the script before piping it to a shell, as you would any installer.",
+  ] as const);
 
 /**
  * What installing `@openai/codex` does, and — more importantly — what it does
@@ -119,6 +136,7 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
     argv: Object.freeze(["npm", "install", "-g", CLAUDE_CODE_CLI_PACKAGE]),
     command: `npm install -g ${CLAUDE_CODE_CLI_PACKAGE}`,
     docsUrl: "https://docs.claude.com/en/docs/claude-code/setup",
+    visibleAfterRecheck: true,
     caveats: NPM_GLOBAL_CAVEATS,
   },
   {
@@ -127,7 +145,8 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
     label: "Anthropic's installer",
     command: "curl -fsSL https://claude.ai/install.sh | bash",
     docsUrl: "https://docs.claude.com/en/docs/claude-code/setup",
-    caveats: SCRIPT_CAVEATS,
+    visibleAfterRecheck: false,
+    caveats: scriptCaveats("~/.local/bin", "claude"),
   },
   {
     engineId: "opencode",
@@ -137,6 +156,7 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
     argv: Object.freeze(["npm", "install", "-g", OPENCODE_PACKAGE]),
     command: `npm install -g ${OPENCODE_PACKAGE}`,
     docsUrl: "https://opencode.ai/docs/",
+    visibleAfterRecheck: true,
     caveats: NPM_GLOBAL_CAVEATS,
   },
   {
@@ -145,7 +165,8 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
     label: "OpenCode's installer",
     command: "curl -fsSL https://opencode.ai/install | bash",
     docsUrl: "https://opencode.ai/docs/",
-    caveats: SCRIPT_CAVEATS,
+    visibleAfterRecheck: false,
+    caveats: scriptCaveats("~/.opencode/bin", "opencode"),
   },
   {
     engineId: "codex",
@@ -155,9 +176,25 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
     argv: Object.freeze(["npm", "install", "-g", CODEX_CLI_PACKAGE]),
     command: `npm install -g ${CODEX_CLI_PACKAGE}`,
     docsUrl: "https://developers.openai.com/codex/cli/",
+    visibleAfterRecheck: true,
     caveats: NPM_GLOBAL_CAVEATS,
   },
 ] as const satisfies readonly EngineInstallRecipe[]);
+
+/**
+ * The closed set of packages Callboard will ever install globally.
+ *
+ * Phase 3's endpoint checks membership here before spawning anything, which
+ * makes this the security argument for that endpoint — so it is **derived**
+ * from the recipes rather than written beside them. The previous cut claimed
+ * exactly that in a comment while being a hand-written literal, and the test
+ * only checked recipes ⊆ allowlist, so a stray entry would have been spawnable
+ * with nothing failing. `engine-install-recipes.test.ts` now checks both
+ * directions; derivation makes one of them true by construction.
+ */
+export const INSTALLABLE_PACKAGES: ReadonlySet<string> = Object.freeze(
+  new Set(ENGINE_INSTALL_RECIPES.filter((r) => r.method === "npm-global" && r.package).map((r) => r.package!)),
+) as ReadonlySet<string>;
 
 /** Every recipe registered for an engine id, in offer order. Empty for the bundled engines. */
 export function recipesFor(engineId: string): EngineInstallRecipe[] {
@@ -167,26 +204,35 @@ export function recipesFor(engineId: string): EngineInstallRecipe[] {
 // ── When a card offers them ─────────────────────────────────────────
 
 /**
- * Does this engine's state warrant showing a command, and what should it say?
+ * What can this engine's user actually do, if anything?
  *
  * The bar is deliberately high, because the failure mode of getting it wrong is
- * the one Phase 1 shipped four times: telling a user to run something that would
- * not help them. Three gates, and each is an observed fact rather than a guess:
+ * the one Phase 1 shipped four times: telling a user to run something that
+ * would not help them. Every gate below is an **observed** fact, and the
+ * observation has to be as wide as the claim:
  *
  * - **OpenCode** — `installed === false` means `which opencode` came back empty
  *   and the engine cannot run. Unambiguous.
- * - **Claude Code** — two separate states. Neither binary present (the engine
- *   cannot run), or a bundled binary running with no native CLI *and* no
- *   credentials, where `claude auth login` is the fix and is not a command the
- *   user has. Credentials `"unknown"` does not qualify: that is the SDK failing
- *   to answer, not an observed absence, and nagging on it is the Bedrock defect
- *   again.
- * - **Codex** — installed by definition, so the only gate is auth, and only when
- *   it is observably absent (`configured === false`, never `"unknown"`).
+ * - **Claude Code** — the CLI counts as present if *either* lookup found one.
+ *   `runtime.resolvedPath` is what the Agent SDK will run;
+ *   {@link EngineStatus.userCliPath} is what the user can type. They differ
+ *   routinely — `~/.local/bin/claude` is where this file's own script recipe
+ *   installs, and a daemon that started before that was on its PATH sees only
+ *   the second. Gating on the first alone told people to install a binary the
+ *   About page was simultaneously reporting the version of.
+ * - **Codex** — always installed, so the only gate is auth. But "you do not
+ *   have `codex login`" is a claim about PATH, so it is now *checked* against
+ *   `userCliPath` rather than assumed from the bundled layout. Without that,
+ *   following this card's own recipe and pressing Recheck returned the very
+ *   same "install it" block.
  *
- * Everything else — a credentialed engine, a bundled runtime, an ACP vendor that
- * resolved on PATH — gets `undefined`, and the card renders no command block at
- * all.
+ * Credentials `"unknown"` never qualifies anywhere: that is the SDK or the
+ * protocol failing to answer, not an observed absence, and acting on it is the
+ * Bedrock defect with a command attached.
+ *
+ * The result may carry **no recipes** — "you have the CLI, you just have not
+ * logged in" is guidance with nothing to install. See
+ * {@link EngineInstallGuidance}.
  */
 export function installGuidanceFor(engine: EngineStatus): EngineInstallGuidance | undefined {
   const recipes = recipesFor(engine.id);
@@ -195,9 +241,21 @@ export function installGuidanceFor(engine: EngineStatus): EngineInstallGuidance 
   if (engine.id === "codex") {
     // Bundled and always runnable; the only thing an install buys is `codex login`.
     if (engine.credentials.configured !== false) return undefined;
+
+    if (engine.userCliPath) {
+      // They already have the CLI — quite possibly because they followed the
+      // recipe below a minute ago. Offering it again is the bug this branch
+      // exists to prevent.
+      return {
+        reason: `No Codex credentials yet, but you already have the CLI at \`${engine.userCliPath}\` — so \`codex login\` is a command you can run right now. It writes to \`$CODEX_HOME/auth.json\`, which is where Callboard reads from.`,
+        alternative: "Or skip the login: switch the auth mode below to API key and paste an OpenAI key.",
+        recipes: [],
+      };
+    }
+
     return {
       reason:
-        "Callboard found no Codex credentials. Signing in with a ChatGPT subscription needs the `codex` CLI on your PATH, and Callboard's copy of the binary is nested inside its own `node_modules` — so `codex login` is not a command you have yet.",
+        "Callboard found no Codex credentials, and no `codex` on the daemon's PATH. Signing in with a ChatGPT subscription needs that CLI — Callboard's copy of the binary is nested inside its own `node_modules`, so `codex login` is not a command you have yet.",
       scope: CODEX_LOGIN_SCOPE,
       alternative: "Or skip the install entirely: switch the auth mode below to API key and paste an OpenAI key. No CLI is involved in that path.",
       recipes,
@@ -206,29 +264,43 @@ export function installGuidanceFor(engine: EngineStatus): EngineInstallGuidance 
 
   if (engine.id === "claude-code") {
     const runtime = engine.runtime;
-    const nativeOnPath = runtime.kind === "external-preferred" && Boolean(runtime.resolvedPath);
+    const sdkPath = runtime.kind === "external-preferred" ? runtime.resolvedPath : undefined;
+    // Either lookup counts. `claude auth login` runs in the user's shell, and
+    // does not care which of the two Callboard would hand to the SDK.
+    const cliAnywhere = sdkPath ?? engine.userCliPath;
 
     if (!engine.installed) {
       return {
         reason:
-          "Neither a native `claude` on your PATH nor a bundled binary for this platform — the Agent SDK ships its binary as an optional dependency, so `--omit=optional` or an unpublished platform leaves nothing to run. This engine cannot start until one of the two is present.",
+          "Neither a native `claude` nor a bundled binary for this platform — the Agent SDK ships its binary as an optional dependency, so `--omit=optional` or an unpublished platform leaves nothing to run. This engine cannot start until one of the two is present.",
         alternative: "Reinstalling Callboard without `--omit=optional` restores the bundled binary, if that is how it went missing.",
         recipes,
       };
     }
 
-    if (!nativeOnPath && engine.credentials.configured === false) {
+    if (engine.credentials.configured !== false) return undefined;
+
+    if (cliAnywhere) {
+      // Installed somewhere findable. Whether the SDK would pick it up is a
+      // different question — and one this block must not conflate, because the
+      // action is the same either way: log in.
       return {
-        reason:
-          "Chats run on the binary bundled with the Agent SDK, which works — but Callboard found no account, and `claude auth login` needs a native `claude` on your PATH. The bundled copy is nested inside Callboard's `node_modules` and never lands there.",
-        scope:
-          "It also becomes the copy your chats run: a native `claude` on your PATH wins over the bundled binary, and it is the one you update yourself rather than waiting for a Callboard release.",
-        alternative: "Or skip the install: set an API key or auth token under Authentication below, which authenticates chats without any CLI.",
-        recipes,
+        reason: `Callboard found no account, but there is a \`claude\` at \`${cliAnywhere}\` — so \`claude auth login\` is a command you can run right now.${
+          sdkPath ? "" : " Note that chats are still running the bundled binary: this copy is not on the PATH the daemon inherited, so the Agent SDK's own lookup does not see it."
+        }`,
+        alternative: "Or skip the login: set an API key or auth token under Authentication below, which authenticates chats without any CLI.",
+        recipes: [],
       };
     }
 
-    return undefined;
+    return {
+      reason:
+        "Chats run on the binary bundled with the Agent SDK, which works — but Callboard found no account, and `claude auth login` needs a native `claude` that Callboard can see. The bundled copy is nested inside Callboard's `node_modules` and never lands on a PATH.",
+      scope:
+        "It also becomes the copy your chats run: a native `claude` on the daemon's PATH wins over the bundled binary, and it is the one you update yourself rather than waiting for a Callboard release.",
+      alternative: "Or skip the install: set an API key or auth token under Authentication below, which authenticates chats without any CLI.",
+      recipes,
+    };
   }
 
   // ACP vendors — the one genuinely install-or-not row on the page.

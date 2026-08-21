@@ -142,6 +142,19 @@ export interface EngineInstallRecipe {
   /** Vendor documentation for this install path. */
   docsUrl: string;
   /**
+   * Will the daemon's own "Recheck" see the result of this command?
+   *
+   * `true` for `npm-global`: the global bin directory is normally already on
+   * the PATH the daemon inherited, so re-running `which` finds the new binary.
+   * (`caveats` names the two cases where it does not.)
+   *
+   * `false` for the vendor scripts, which install into a directory they add to
+   * your *shell rc* — `~/.opencode/bin`, `~/.local/bin`. A running process's
+   * PATH is fixed at exec, so Recheck cannot see those however many times it is
+   * pressed, and the card must not tell someone to press it.
+   */
+  visibleAfterRecheck: boolean;
+  /**
    * Conditions under which the command above would not do what it says.
    *
    * Rendered verbatim, because a copyable command *is an instruction*: a recipe
@@ -164,6 +177,13 @@ export interface EngineInstallRecipe {
  * Deliberately a *set* of recipes rather than the single one the plan's sketch
  * named: the same engine has both an npm path and a vendor-script path, and
  * only one of the two can be a Phase-3 button.
+ *
+ * `recipes` may be **empty**, and that is a distinct and important state: the
+ * CLI is already installed and only a login is missing, so there is something
+ * to say and nothing to install. A card that offered an install command there
+ * would be telling the user to install what they already have — which is what
+ * the previous cut of the Codex block did, including to anyone who had just
+ * followed its own recipe.
  */
 export interface EngineInstallGuidance {
   /** Why this is being offered — "no `opencode` on PATH", "`codex login` needs the CLI". */
@@ -218,11 +238,37 @@ export interface EngineStatus {
   latestVersionStale?: boolean;
   credentials: EngineCredentials;
   /**
-   * The copyable command(s), when this engine is in a state one would help.
+   * A copy of this engine's CLI the **user** can run in their own terminal,
+   * when one exists and is not the copy Callboard runs for chats.
    *
-   * Absent is the common and correct case: a bundled engine has nothing to
-   * install *ever* (a global install cannot reach Callboard's nested
-   * `node_modules`), and a working external one has nothing to install *now*.
+   * This field exists because "is the CLI installed" and "will Callboard use
+   * it" are different questions, and the login commands this feature points
+   * people at (`claude auth login`, `codex login`) only need the first:
+   *
+   * - **Claude Code** — `getClaudeCodeExecutablePath()` decides what the Agent
+   *   SDK runs and looks only at the setting and `which claude`.
+   *   `getClaudeBinaryPath()` — the lookup the About page and the login prompt
+   *   use — additionally checks `CLAUDE_BINARY` and `~/.local/bin`,
+   *   `~/.claude/bin`, `/usr/local/bin`, `/opt/homebrew/bin`. A daemon started
+   *   before those were on its `PATH` sees the second and not the first, which
+   *   is the *normal* outcome of the `install.sh` recipe.
+   * - **Codex** — Callboard always runs the binary nested inside
+   *   `@openai/codex-sdk`, so a user-installed `codex` on `PATH` changes
+   *   nothing about chats and everything about whether `codex login` exists.
+   *
+   * Absent means "looked and found none", and the card may then say the CLI is
+   * missing. Asserting that from the narrower lookup alone is how a card tells
+   * someone to install a binary they are looking at.
+   */
+  userCliPath?: string;
+  /**
+   * What the user can do about this engine, when there is anything.
+   *
+   * Usually a copyable command; sometimes — when the CLI is already there and
+   * only a login is missing — just a sentence, with `recipes` empty. Absent is
+   * the common and correct case: a bundled engine has nothing to install
+   * *ever* (a global install cannot reach Callboard's nested `node_modules`),
+   * and a working, credentialed engine has nothing to do *now*.
    */
   install?: EngineInstallGuidance;
 }
@@ -230,4 +276,21 @@ export interface EngineStatus {
 /** `GET /api/engines`. */
 export interface EngineStatusResponse {
   engines: EngineStatus[];
+}
+
+/**
+ * `POST /api/engines/refresh`.
+ *
+ * `probed` is the honest bit. The endpoint drops five caches and re-runs a
+ * `which` per engine, two `--version` spawns and an Agent SDK query, two of
+ * them synchronously on a single-threaded server — so it is rate-limited, and
+ * a call inside the window gets the cached statuses back instead. Reporting
+ * that as a successful re-probe would make "Recheck" claim work it did not do,
+ * which is the same defect as an install command that cannot help.
+ */
+export interface EngineRefreshResponse extends EngineStatusResponse {
+  /** Did this call actually re-probe, or was it coalesced with another / served from cache? */
+  probed: boolean;
+  /** Roughly how long until a probe would run, when `probed` is false. */
+  retryAfterMs?: number;
 }

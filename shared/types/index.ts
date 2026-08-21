@@ -141,6 +141,7 @@ export type {
   EngineInstallGuidance,
   EngineStatus,
   EngineStatusResponse,
+  EngineRefreshResponse,
 } from "./engines.js";
 
 export type { HarnessProvider, ModelAlias, ModelAliasInfo } from "./modelAlias.js";
