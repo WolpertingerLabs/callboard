@@ -1,8 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Cpu, ExternalLink, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, Download, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import CopyButton from "../../components/CopyButton";
-import type { EngineInstallGuidance, EngineInstallRecipe, EngineStatus } from "../../api";
+import { readEngineInstallStream, startEngineInstall } from "../../api";
+import type { EngineInstallEvent, EngineInstallGuidance, EngineInstallRecipe, EngineOneClickOffer, EngineStatus } from "../../api";
 
 /**
  * The engine status card at the top of every engine tab in Settings → API.
@@ -19,20 +20,36 @@ import type { EngineInstallGuidance, EngineInstallRecipe, EngineStatus } from ".
  * strip, where there is room for a dot and nothing else. Its title spells the
  * three facts back out.
  *
- * ## Phase 2 — the command, and only ever the command
+ * ## Phase 2 — the command
  *
  * Under the rows sits {@link InstallGuidance}: the copyable text for the engines
  * that have one, the shape `web-tunnel.ts`'s `INSTALL_HINT` already used for
- * `cloudflared`, promoted from a log string to an affordance. It is a copy
- * block and a docs link — there is no install button here, and pressing
- * anything on this card cannot run a command.
+ * `cloudflared`, promoted from a log string to an affordance.
  *
  * A **bundled** engine never gets one, however far behind it is. Not out of
  * caution: `npm i -g @cline/sdk@latest` cannot reach Callboard's nested
  * `node_modules`, so the button would be an inert no-op whose version row never
  * moved. Their action is a link to About — see {@link BundledUpdateNote}.
  *
- * @see plans/engine-availability-and-install.md — Phase 2, Decisions 2 and 5
+ * ## Phase 3 — the button, which is a shortcut and never a replacement
+ *
+ * `install.oneClick` adds an **Install** button beside the npm command, and the
+ * copy block stays exactly where it was. That is Decision 8 rendered rather than
+ * merely intended: every path that declines to run the install — a client
+ * outside the LAN, `allowEngineInstalls` off, Windows, a non-writable npm
+ * prefix, a spawn that failed, a non-zero exit, an install npm completed that
+ * this daemon still cannot see — arrives here with a one-line reason printed
+ * *under* the same command it always showed. There is no state on this card
+ * where the user is offered a button, refused, and left with nothing to type.
+ *
+ * The copy that ships next to a button is held to the standard the rest of this
+ * card is: {@link InstallRunner} says "Installing…" only while npm is running,
+ * "Checking…" while the server re-probes, and "Installed" only for an
+ * `install_verified` event that actually found the binary. A zero exit on its
+ * own says nothing here, because it does not mean the daemon can see anything —
+ * see `services/engine-install.ts`.
+ *
+ * @see plans/engine-availability-and-install.md — Phase 3, Decisions 2, 5 and 8
  */
 
 const cardStyle: React.CSSProperties = {
@@ -352,7 +369,13 @@ const noteStyle: React.CSSProperties = { color: "var(--text-muted)", fontSize: 1
  * that *succeeded* and an engine that is still missing. Callboard does not
  * detect either in this phase, so it says so instead of implying it checked.
  */
-function RecipeBlock({ recipe }: { recipe: EngineInstallRecipe }) {
+function RecipeBlock({ recipe, offer, runner }: { recipe: EngineInstallRecipe; offer?: EngineOneClickOffer; runner?: InstallRunner }) {
+  // The button belongs to *this* recipe or to none: the offer names a package,
+  // and only the recipe that installs that package may claim to be what the
+  // button runs. A card with an npm recipe and a vendor script must not put an
+  // Install button under the script — Decision 5 is not a styling preference.
+  const runnable = offer && recipe.method === "npm-global" && recipe.package === offer.package;
+
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
@@ -386,6 +409,39 @@ function RecipeBlock({ recipe }: { recipe: EngineInstallRecipe }) {
             always visible), but the class still carries the shared chrome. */}
         <CopyButton text={recipe.command} title={`Copy: ${recipe.command}`} className="copy-btn" size={12} />
       </div>
+      {runnable && runner && offer ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => runner.start(offer)}
+            disabled={runner.busy}
+            title={`Run \`${offer.command}\` on the machine running Callboard`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--accent)",
+              background: runner.busy ? "var(--surface)" : "var(--accent)",
+              color: runner.busy ? "var(--text-muted)" : "var(--text-on-accent)",
+              fontSize: 11,
+              fontWeight: 500,
+              cursor: runner.busy ? "default" : "pointer",
+            }}
+          >
+            {runner.busy ? <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} /> : <Download size={11} />}
+            {runner.busyLabel ?? "Install"}
+          </button>
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Runs it here, on the machine running Callboard.</span>
+        </div>
+      ) : null}
+      {/* The nvm caveat, but *detected* rather than stated: the generic version
+          of this sentence is already in `caveats` below, and it has to hedge
+          because Phase 2 never looked. This one names the actual interpreter and
+          the actual prefix, and it is a warning rather than a refusal because
+          the daemon doing the install is the daemon that will look. */}
+      {runnable && offer?.note ? <div style={{ ...noteStyle, marginTop: 6 }}>{withInlineCode(offer.note)}</div> : null}
       {recipe.caveats?.length ? (
         <ul style={{ ...noteStyle, margin: "6px 0 0", paddingLeft: 16 }}>
           {recipe.caveats.map((caveat) => (
@@ -419,11 +475,22 @@ function RecipeBlock({ recipe }: { recipe: EngineInstallRecipe }) {
  * rather than fixed. Telling a user to press Recheck after running a vendor
  * script is false by construction: those scripts install into a directory they
  * add to the shell rc, and a running daemon's PATH cannot pick that up.
+ *
+ * It is also conditional on whether one of these can be *run*. "Callboard does
+ * not run it for you" was true of every recipe in Phase 2 and is now true of
+ * some: a `script` recipe keeps that sentence forever (Decision 5), and an
+ * `npm-global` one loses it only when a button was actually offered — the
+ * server decided that, per client, and said why when the answer was no.
  */
-function InstallGuidance({ install }: { install: EngineInstallGuidance }) {
+function InstallGuidance({ install, runner }: { install: EngineInstallGuidance; runner?: InstallRunner }) {
   const hasRecipes = install.recipes.length > 0;
   const anyRecheckable = install.recipes.some((r) => r.visibleAfterRecheck);
   const allRecheckable = hasRecipes && install.recipes.every((r) => r.visibleAfterRecheck);
+  const offer = install.oneClick;
+  // "Copy one of these" is wrong when there is only one, and "Callboard does not
+  // run it for you" is wrong when it just did. Two conditions, kept apart,
+  // because the second is the one Phase 2 hard-coded.
+  const copyOnlyRecipes = install.recipes.filter((r) => !(offer && r.method === "npm-global" && r.package === offer.package));
 
   return (
     <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
@@ -431,15 +498,37 @@ function InstallGuidance({ install }: { install: EngineInstallGuidance }) {
       <div style={{ ...noteStyle, marginTop: 0 }}>{withInlineCode(install.reason)}</div>
       {install.scope ? <div style={noteStyle}>{withInlineCode(install.scope)}</div> : null}
       {install.recipes.map((recipe) => (
-        <RecipeBlock key={`${recipe.method}:${recipe.command}`} recipe={recipe} />
+        <RecipeBlock key={`${recipe.method}:${recipe.command}`} recipe={recipe} offer={offer} runner={runner} />
       ))}
+      {/* Why there is no Install button, when a runnable recipe exists and one
+          was not offered. Rendered *under* the command it declines to run, never
+          in place of it — that structural ordering is the whole of Decision 8. */}
+      {install.refusal ? (
+        <div style={{ ...noteStyle, display: "flex", gap: 6, alignItems: "flex-start" }}>
+          <AlertTriangle size={12} style={{ color: "var(--warning)", flexShrink: 0, marginTop: 2 }} />
+          <span>{withInlineCode(install.refusal)}</span>
+        </div>
+      ) : null}
       {install.alternative ? <div style={noteStyle}>{withInlineCode(install.alternative)}</div> : null}
       <div style={noteStyle}>
-        {hasRecipes ? <>Copy one of these into your own terminal — Callboard does not run it for you. </> : null}
+        {copyOnlyRecipes.length > 0 ? (
+          <>
+            {copyOnlyRecipes.length === install.recipes.length
+              ? `Copy ${install.recipes.length > 1 ? "one of these" : "this"} into your own terminal — Callboard does not run it for you. `
+              : "Callboard runs only the npm command above; the other is yours to copy into a terminal. "}
+          </>
+        ) : offer ? (
+          <>Press Install to run it here, or copy it into your own terminal — the two do the same thing. </>
+        ) : null}
         {anyRecheckable ? (
           <>
-            Afterwards press <strong>Recheck</strong> above: binary lookups are resolved once per daemon and cached, so until then this card keeps reporting
-            what it found before.
+            {/* The Install button already re-probes server-side and reports what
+                that probe found, so telling someone who used it to press
+                Recheck would be busywork. The instruction is for the copy path,
+                which is the only path left when a button was refused. */}
+            {offer ? <>If you run it in a terminal instead, press </> : <>Afterwards press </>}
+            <strong>Recheck</strong> above: binary lookups are resolved once per daemon and cached, so until then this card keeps reporting what it found
+            before.
             {allRecheckable ? null : <> Recheck cannot see the installer script&rsquo;s result — see its note above.</>}
           </>
         ) : hasRecipes ? (
@@ -450,6 +539,248 @@ function InstallGuidance({ install }: { install: EngineInstallGuidance }) {
         ) : (
           <>
             Afterwards press <strong>Recheck</strong> above — it re-reads the credential too, not just the binary lookups.
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── One-click install ───────────────────────────────────────────────
+
+/** How the install is going, in the only four states this card can honestly distinguish. */
+type InstallPhase =
+  /** The POST is in flight. Nothing is installing yet. */
+  | "starting"
+  /** npm is running. This is the only state that may say "Installing". */
+  | "running"
+  /** npm exited 0 and the server is re-probing. A zero exit is not yet a result. */
+  | "verifying"
+  /** There is a verdict. */
+  | "done";
+
+/** Colour and icon follow the verdict, and the verdict is never inferred from the exit code alone. */
+type VerdictTone = "ok" | "warn" | "error";
+
+interface InstallRunState {
+  engineId: string;
+  command: string;
+  phase: InstallPhase;
+  lines: { stream: "stdout" | "stderr"; line: string }[];
+  /** Set only by a terminal event. `tone: "warn"` is "npm succeeded and Callboard still cannot see it". */
+  verdict?: { tone: VerdictTone; text: string };
+}
+
+/** What {@link RecipeBlock} needs to render a button, and nothing more. */
+interface InstallRunner {
+  start: (offer: EngineOneClickOffer) => void;
+  busy: boolean;
+  busyLabel?: string;
+}
+
+/** Lines kept in the browser. The server caps its own buffer too; this is the render bound. */
+const MAX_CONSOLE_LINES = 500;
+
+/**
+ * Own one install for one card.
+ *
+ * State lives here, on the card, rather than inside {@link InstallGuidance} —
+ * and that is load-bearing, not tidiness. A successful install makes the
+ * guidance disappear (the engine is fine now), and if the transcript lived
+ * inside it the console and the "Installed" line would unmount at the exact
+ * moment they became the answer to "did that work?".
+ */
+function useInstallRunner(onEnginesUpdated?: (engines: EngineStatus[]) => void): { runner: InstallRunner; run: InstallRunState | null } {
+  const [run, setRun] = useState<InstallRunState | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const runningRef = useRef(false);
+
+  // A stream left open after the tab is gone is a socket the daemon holds for
+  // nothing. The install itself is server-side and carries on regardless, which
+  // is why this aborts the read rather than trying to cancel the install.
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const start = useCallback(
+    (offer: EngineOneClickOffer) => {
+      if (runningRef.current) return;
+      runningRef.current = true;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      setRun({ engineId: offer.engineId, command: offer.command, phase: "starting", lines: [] });
+
+      void (async () => {
+        try {
+          const started = await startEngineInstall(offer.engineId);
+          setRun((prev) => (prev ? { ...prev, phase: "running", command: started.command } : prev));
+
+          await readEngineInstallStream(
+            started.installId,
+            (event: EngineInstallEvent) => {
+              setRun((prev) => (prev ? reduceInstallEvent(prev, event) : prev));
+              // Push the re-probed statuses up so every tab's dot, every version
+              // row and this card's own guidance move together. The server did
+              // the probing; this is the only place its answer enters the page.
+              if (event.type === "install_verified") onEnginesUpdated?.(event.engines);
+            },
+            controller.signal,
+          );
+
+          // The server closes the stream on its terminal event, so arriving here
+          // without a verdict means the connection dropped first. Say that,
+          // rather than leaving a spinner that will never stop.
+          setRun((prev) =>
+            prev && prev.phase !== "done"
+              ? {
+                  ...prev,
+                  phase: "done",
+                  verdict: {
+                    tone: "warn",
+                    text: "The connection to the install stream ended before Callboard reported a result. The install may still have finished — press Recheck above to see where this engine stands.",
+                  },
+                }
+              : prev,
+          );
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          setRun((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  phase: "done",
+                  // The message is the server's `refusal` where there was one:
+                  // `assertOk` surfaces the `error` field, and the endpoint puts
+                  // the same sentence in both.
+                  verdict: { tone: "error", text: err instanceof Error ? err.message : "The install could not be started." },
+                }
+              : prev,
+          );
+        } finally {
+          runningRef.current = false;
+        }
+      })();
+    },
+    [onEnginesUpdated],
+  );
+
+  const busy = run !== null && run.phase !== "done";
+  return {
+    run,
+    runner: {
+      start,
+      busy,
+      busyLabel: run?.phase === "starting" ? "Starting…" : run?.phase === "running" ? "Installing…" : run?.phase === "verifying" ? "Checking…" : undefined,
+    },
+  };
+}
+
+/**
+ * Fold one stream event into the card's state.
+ *
+ * The one rule this encodes: **`install_exit` with `ok: true` produces no
+ * verdict.** npm exiting 0 means npm wrote files, not that this daemon can find
+ * them, and the difference is the whole reason the server sends a second event.
+ * Every "Installed" string on this card comes from an `install_verified` whose
+ * `visible` is true — which is a path the server observed, not an exit code it
+ * interpreted.
+ */
+function reduceInstallEvent(prev: InstallRunState, event: EngineInstallEvent): InstallRunState {
+  switch (event.type) {
+    case "install_started":
+      return { ...prev, phase: "running", command: event.command };
+    case "install_output": {
+      const lines = [...prev.lines, { stream: event.stream, line: event.line }];
+      return { ...prev, lines: lines.length > MAX_CONSOLE_LINES ? lines.slice(lines.length - MAX_CONSOLE_LINES) : lines };
+    }
+    case "install_exit":
+      if (event.ok) return { ...prev, phase: "verifying" };
+      return { ...prev, phase: "done", verdict: { tone: "error", text: event.refusal ?? `The install exited with code ${event.code}.` } };
+    case "install_verified":
+      return { ...prev, phase: "done", verdict: { tone: event.visible ? "ok" : "warn", text: event.summary } };
+  }
+}
+
+/**
+ * The transcript, and the verdict under it.
+ *
+ * npm's own output, unedited apart from ANSI stripping server-side. It is shown
+ * rather than summarised because a failed global install says why in its own
+ * words far better than any sentence this card could compose, and because a
+ * command Callboard ran on the user's machine should not be something they have
+ * to take on trust.
+ */
+function InstallConsole({ run }: { run: InstallRunState }) {
+  const scroller = useRef<HTMLPreElement | null>(null);
+  const pinned = useRef(true);
+
+  // Follow the tail, but stop following the moment the user scrolls up to read
+  // something — an auto-scroll that fights the reader is worse than none.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [run.lines.length, run.phase]);
+
+  const tone = run.verdict?.tone;
+  const toneColor = tone === "ok" ? "var(--success)" : tone === "error" ? "var(--danger)" : "var(--warning)";
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>Install output</span>
+        <code style={{ ...mono, color: "var(--text-muted)" }}>{run.command}</code>
+      </div>
+      {run.lines.length > 0 ? (
+        <pre
+          ref={scroller}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          }}
+          style={{
+            margin: 0,
+            maxHeight: 200,
+            overflowY: "auto",
+            padding: "8px 10px",
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            color: "var(--text-muted)",
+            fontFamily: "monospace",
+            fontSize: 11,
+            lineHeight: 1.5,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {/* One text node rather than an element per line: npm can emit
+              hundreds, and a `<pre>` renders them identically either way.
+              stdout and stderr are not styled differently — npm writes notices
+              to stderr routinely, so colouring it as a warning would invent a
+              severity npm never claimed. */}
+          {run.lines.map((l) => `${l.line}\n`).join("")}
+        </pre>
+      ) : (
+        <div style={{ ...noteStyle, marginTop: 0 }}>{run.phase === "starting" ? "Asking the daemon to start it…" : "No output yet."}</div>
+      )}
+      <div style={{ display: "flex", gap: 6, alignItems: "flex-start", marginTop: 8, fontSize: 11, lineHeight: 1.55 }}>
+        {run.verdict ? (
+          <>
+            {tone === "ok" ? (
+              <CheckCircle2 size={12} style={{ color: toneColor, flexShrink: 0, marginTop: 2 }} />
+            ) : (
+              <AlertTriangle size={12} style={{ color: toneColor, flexShrink: 0, marginTop: 2 }} />
+            )}
+            <span style={{ color: tone === "ok" ? "var(--text)" : "var(--text-muted)" }}>{withInlineCode(run.verdict.text)}</span>
+          </>
+        ) : (
+          <>
+            <Loader2 size={12} style={{ color: "var(--text-muted)", flexShrink: 0, marginTop: 2, animation: "spin 1s linear infinite" }} />
+            <span style={{ color: "var(--text-muted)" }}>
+              {run.phase === "verifying"
+                ? "npm has finished. Checking whether Callboard can actually find it — a global install that exits 0 is not the same thing as one this daemon can see."
+                : "Running on the machine hosting Callboard. Leaving this page does not stop it."}
+            </span>
           </>
         )}
       </div>
@@ -585,12 +916,23 @@ export default function EngineStatusCard({
   engine,
   loading,
   onRecheck,
+  onEnginesUpdated,
 }: {
   engine: EngineStatus | undefined;
   loading?: boolean;
   /** Re-probe every engine. Omitted where there is no handler to give it — the button then does not render. */
   onRecheck?: () => void | Promise<void | EngineRecheckOutcome>;
+  /**
+   * The statuses the server re-probed after an install it ran, so the page can
+   * adopt them without a second round trip. Omitted ⇒ the install still runs and
+   * still reports honestly; only the rest of the page stays stale until Recheck.
+   */
+  onEnginesUpdated?: (engines: EngineStatus[]) => void;
 }) {
+  // Before the early return, because hooks are not optional — and because a
+  // card that has lost its engine mid-install must still render the transcript.
+  const { runner, run } = useInstallRunner(onEnginesUpdated);
+
   if (!engine) {
     return (
       <div style={cardStyle}>
@@ -626,7 +968,11 @@ export default function EngineStatusCard({
       <StatusRow label="Latest">{latestSummary(engine)}</StatusRow>
       <StatusRow label="Credentials">{credentialsSummary(engine)}</StatusRow>
 
-      {engine.install ? <InstallGuidance install={engine.install} /> : <BundledUpdateNote engine={engine} />}
+      {engine.install ? <InstallGuidance install={engine.install} runner={runner} /> : <BundledUpdateNote engine={engine} />}
+      {/* Outside the guidance on purpose: a successful install removes the
+          guidance block, and the transcript that proves it worked must not
+          vanish with it. */}
+      {run ? <InstallConsole run={run} /> : null}
     </div>
   );
 }

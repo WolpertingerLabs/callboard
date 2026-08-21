@@ -98,6 +98,11 @@ import type {
   EngineRefreshResponse,
   EngineInstallGuidance,
   EngineInstallRecipe,
+  EngineOneClickOffer,
+  EngineInstallStartResponse,
+  EngineInstallEvent,
+  EngineInstallExitEvent,
+  EngineInstallVerifiedEvent,
 } from "shared/types/index.js";
 
 export type {
@@ -200,6 +205,11 @@ export type {
   EngineRefreshResponse,
   EngineInstallGuidance,
   EngineInstallRecipe,
+  EngineOneClickOffer,
+  EngineInstallStartResponse,
+  EngineInstallEvent,
+  EngineInstallExitEvent,
+  EngineInstallVerifiedEvent,
 };
 
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
@@ -1423,6 +1433,76 @@ export async function refreshEngines(): Promise<EngineRefreshResponse> {
   await assertOk(res, "Failed to re-check engine status");
   const data = (await res.json()) as EngineRefreshResponse;
   return { engines: Array.isArray(data.engines) ? data.engines : [], probed: data.probed !== false, retryAfterMs: data.retryAfterMs };
+}
+
+/**
+ * Ask the daemon to run an engine's install recipe on its own machine.
+ *
+ * The only call in this file that makes Callboard execute a command. The engine
+ * id **selects** a recipe from a closed registry server-side; nothing sent from
+ * here reaches a command line, and there is no argv parameter to supply.
+ *
+ * A refusal is a normal outcome, not an exception in spirit — every gate that
+ * can decline (a client outside the LAN, the capability switched off, Windows, a
+ * non-writable npm prefix, another install already running) answers with a
+ * one-line `refusal` written for the card, which keeps rendering the
+ * copy-and-paste command either way. It still *throws*, because `assertOk`'s
+ * contract is that a non-2xx is an error; the message is that sentence.
+ */
+export async function startEngineInstall(engineId: string): Promise<EngineInstallStartResponse> {
+  const res = await fetch(`${BASE}/engines/${encodeURIComponent(engineId)}/install`, { method: "POST", credentials: "include" });
+  await assertOk(res, "Failed to start the install");
+  return (await res.json()) as EngineInstallStartResponse;
+}
+
+/**
+ * Follow one install's output to its verdict.
+ *
+ * Reads the SSE stream with `fetch` rather than `EventSource` for the reason
+ * `Chat.tsx` does: an abortable request that shares the app's `credentials:
+ * "include"` handling, instead of a second connection type with its own
+ * reconnection behaviour. The server replays the whole transcript on connect, so
+ * a late subscriber loses nothing and a reconnect is not a special case.
+ *
+ * Resolves when the server closes the stream — which it does on the terminal
+ * event, so the caller does not have to decide what "finished" means. It never
+ * throws for an unhappy install: a non-zero exit is an `install_exit` event with
+ * `ok: false`, and an install that npm completed but the daemon cannot see is an
+ * `install_verified` with `visible: false`. Both are data, not errors.
+ */
+export async function readEngineInstallStream(
+  installId: string,
+  onEvent: (event: EngineInstallEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${BASE}/engines/installs/${encodeURIComponent(installId)}/stream`, { credentials: "include", signal });
+  await assertOk(res, "Failed to follow the install");
+  if (!res.body) throw new Error("The install stream returned no body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue; // heartbeats are `:` comments
+        try {
+          onEvent(JSON.parse(line.slice(6)) as EngineInstallEvent);
+        } catch {
+          // A frame this bundle cannot parse is skipped rather than fatal — the
+          // transcript is prose, and losing one line of it must not lose the
+          // verdict that comes after.
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /** The models callboard has seen an ACP vendor advertise. */
