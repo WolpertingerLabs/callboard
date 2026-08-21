@@ -60,6 +60,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     cloudflaredToken,
     remoteAccessHostname,
     remoteAccessIpAllowlist,
+    allowEngineInstalls,
     apiBaseUrl,
     apiKey,
     authToken,
@@ -282,6 +283,14 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(cloudflaredToken !== undefined && { cloudflaredToken: normalize(cloudflaredToken) }),
       ...(remoteAccessHostname !== undefined && { remoteAccessHostname: normalize(remoteAccessHostname) }),
       ...(remoteAccessIpAllowlist !== undefined && { remoteAccessIpAllowlist: normalizedAllowlist }),
+      // NOT `normalizeBool`, and the difference is the direction it fails in.
+      // `normalizeBool` returns `undefined` for a non-boolean, and an explicit
+      // `undefined` in this spread *clears* the stored field — so
+      // `{"allowEngineInstalls": "false"}` from a typo, a form serialiser or a
+      // shell script would delete an operator's "off" and revert the capability
+      // to its permissive default. For a security switch the only safe
+      // interpretation of an unparseable value is "change nothing".
+      ...(typeof allowEngineInstalls === "boolean" && { allowEngineInstalls }),
       ...(apiBaseUrl !== undefined && { apiBaseUrl: normalize(apiBaseUrl) }),
       ...(apiKey !== undefined && { apiKey: normalize(apiKey) }),
       ...(authToken !== undefined && { authToken: normalize(authToken) }),

@@ -14,6 +14,10 @@ export default function RemoteAccessSettings() {
   const [token, setToken] = useState("");
   const [hostname, setHostname] = useState("");
   const [ipAllowlist, setIpAllowlist] = useState("");
+  // Absent means on. Read as `!== false` on the backend too, so a settings file
+  // written before this field existed keeps the documented default rather than
+  // silently switching the capability off.
+  const [allowEngineInstalls, setAllowEngineInstalls] = useState(true);
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -34,6 +38,7 @@ export default function RemoteAccessSettings() {
         setToken(s.cloudflaredToken || "");
         setHostname(s.remoteAccessHostname || "");
         setIpAllowlist((s.remoteAccessIpAllowlist || []).join("\n"));
+        setAllowEngineInstalls(s.allowEngineInstalls !== false);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -80,6 +85,40 @@ export default function RemoteAccessSettings() {
       if (/password/i.test(msg)) setNeedsPassword(true);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const [installsSaving, setInstallsSaving] = useState(false);
+  const [installsError, setInstallsError] = useState<string | null>(null);
+
+  /**
+   * Persist the one-click-install switch on its own, immediately.
+   *
+   * Deliberately **not** routed through {@link persist}. That function submits
+   * every remote-access field together and the backend re-applies the tunnel
+   * from them, so putting a security switch behind the shared **Apply** button
+   * coupled "turn installs off" to "respawn cloudflared" — two unrelated
+   * effects, one of which the operator did not ask for, and a switch nobody
+   * flips until they want it to have already taken effect.
+   *
+   * Sending only this field also keeps the backend's `remoteFieldsTouched`
+   * check false, so no tunnel lifecycle runs at all.
+   */
+  const persistEngineInstalls = async (next: boolean) => {
+    if (installsSaving) return;
+    setInstallsSaving(true);
+    setInstallsError(null);
+    const previous = allowEngineInstalls;
+    setAllowEngineInstalls(next);
+    try {
+      await updateAgentSettings({ allowEngineInstalls: next });
+    } catch (e: any) {
+      // Put the switch back rather than leaving the UI showing a state the
+      // daemon does not have — this one decides whether a command can run.
+      setAllowEngineInstalls(previous);
+      setInstallsError(e?.message || "Failed to save");
+    } finally {
+      setInstallsSaving(false);
     }
   };
 
@@ -314,6 +353,59 @@ export default function RemoteAccessSettings() {
               </button>
             </div>
           )}
+        </div>
+
+        {/* ── One-click engine installs ─────────────────────────────────
+            Not strictly a remote-access setting — it applies to local clients,
+            who are the only ones it can ever apply to — but this is the page an
+            operator hardens, and the capability's whole shape is decided by who
+            is allowed to reach this server. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>One-click engine installs</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Let <strong>Settings &rarr; API</strong> run an engine&rsquo;s <code>npm install -g</code> on this machine instead of only showing you the
+                command. The package comes from a fixed list Callboard ships &mdash; nothing you type reaches a command line, and no shell is involved.
+                Clients reaching Callboard through the tunnel never get this, whatever this switch says &mdash; so this switch governs your own local
+                browsers, not a remote attacker, who is already refused by the client check. Turning it off leaves the copy-and-paste command, which is all
+                there ever was before. Saved as soon as you flip it.
+              </div>
+            </div>
+            <button
+              role="switch"
+              aria-checked={allowEngineInstalls}
+              aria-label="Allow one-click engine installs"
+              onClick={() => void persistEngineInstalls(!allowEngineInstalls)}
+              disabled={installsSaving}
+              style={{
+                position: "relative",
+                width: 44,
+                height: 24,
+                borderRadius: 999,
+                border: "none",
+                cursor: installsSaving ? "default" : "pointer",
+                flexShrink: 0,
+                background: allowEngineInstalls ? "var(--accent)" : "var(--border)",
+                transition: "background 0.15s",
+                opacity: installsSaving ? 0.6 : 1,
+              }}
+            >
+              <span
+                style={{
+                  position: "absolute",
+                  top: 2,
+                  left: allowEngineInstalls ? 22 : 2,
+                  width: 20,
+                  height: 20,
+                  borderRadius: "50%",
+                  background: "var(--toggle-knob)",
+                  transition: "left 0.15s",
+                }}
+              />
+            </button>
+          </div>
+          {installsError && <div style={{ color: "var(--danger)", fontSize: 12 }}>{installsError}</div>}
         </div>
 
         {/* Apply button (re-spawns the tunnel with the latest config when enabled) */}

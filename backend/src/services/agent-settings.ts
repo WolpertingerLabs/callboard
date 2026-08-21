@@ -30,19 +30,63 @@ export const OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1";
 
 // ── Load / Save ─────────────────────────────────────────────────────
 
-function loadSettings(): AgentSettings {
+/**
+ * How a settings read went, for the callers that cannot treat the three
+ * outcomes alike.
+ *
+ * - `absent` — no file yet. Every field is legitimately at its default.
+ * - `ok` — the file was read and parsed.
+ * - `unreadable` — the file **exists** and could not be read or parsed. The
+ *   returned settings are the defaults, and they are a fabrication: whatever the
+ *   operator actually configured is unknown.
+ */
+export type AgentSettingsLoadState = "absent" | "ok" | "unreadable";
+
+export interface AgentSettingsRead {
+  settings: AgentSettings;
+  state: AgentSettingsLoadState;
+  /** Why the read failed, when `state` is `unreadable`. */
+  error?: string;
+}
+
+/**
+ * Read the settings file, and say how that went.
+ *
+ * `loadSettings` has always folded `absent` and `unreadable` into the same
+ * `{ proxyMode: "local" }`, and for almost every caller that is right: a corrupt
+ * settings file should not stop the daemon from booting, and a missing model
+ * override should fall back to the default.
+ *
+ * It is **wrong for anything that reads a setting as a restriction**, because
+ * defaults are permissive by design. A field whose absence means "allowed" —
+ * `allowEngineInstalls`, and by the same logic `remoteAccessIpAllowlist`
+ * (absent ⇒ no restriction) and `tunnelEnabled` — silently returns to its
+ * permissive value the moment the file stops parsing, so a `chmod 000` or a
+ * truncated write reads as the operator having turned the restriction *off*.
+ *
+ * `getInstallCapability` is the first caller in this tree to lean on a setting
+ * as a security control, and it is the reason this channel exists. It refuses
+ * on `unreadable` rather than falling back to the default. The two other fields
+ * named above still fail open; that is pre-existing and out of scope here, but
+ * it is a real gap and this is where the tool to close it now lives.
+ */
+export function readAgentSettings(): AgentSettingsRead {
   ensureDataDir();
-  if (!existsSync(SETTINGS_FILE)) return { proxyMode: "local" };
+  if (!existsSync(SETTINGS_FILE)) return { settings: { proxyMode: "local" }, state: "absent" };
   try {
     const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
     if (!raw.proxyMode) {
       raw.proxyMode = "local";
     }
-    return migrateOpenRouterUtilityCompletions(migrateOpenRouterRoutingModels(migrateModelAliases(raw)));
+    return { settings: migrateOpenRouterUtilityCompletions(migrateOpenRouterRoutingModels(migrateModelAliases(raw))), state: "ok" };
   } catch (err: any) {
     log.warn(`Failed to load agent settings: ${err.message}`);
-    return { proxyMode: "local" };
+    return { settings: { proxyMode: "local" }, state: "unreadable", error: err?.message ?? String(err) };
   }
+}
+
+function loadSettings(): AgentSettings {
+  return readAgentSettings().settings;
 }
 
 /**

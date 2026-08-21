@@ -65,6 +65,44 @@ export interface AgentSettings {
    */
   remoteAccessIpAllowlist?: string[];
 
+  /**
+   * May Settings → API offer a button that runs `npm install -g <engine CLI>`
+   * on this machine? Absent or `true` ⇒ yes, for loopback and LAN clients only.
+   *
+   * The capability switch for the one and only place Callboard executes a
+   * command on a user's request. Three things narrow it before this flag is even
+   * read — the package must be in the closed allowlist in
+   * `backend/src/services/engine-install-recipes.ts`, the client must be on the
+   * LAN (a request arriving through the remote-access tunnel never qualifies,
+   * whatever this is set to), and npm's global prefix must be writable — so this
+   * exists for the operator who wants none of it regardless: setting it to
+   * `false` removes the button everywhere and leaves the copy-and-paste command
+   * that was always the fallback.
+   *
+   * Default-on rather than default-off because the gate that matters is the
+   * client scope, and a locally-reachable Callboard already runs whatever a chat
+   * asks it to.
+   *
+   * ## What this does not defend against, said plainly
+   *
+   * `PUT /api/agent-settings` is **not** scope-gated — any authenticated client,
+   * including one on the remote-access tunnel, can set this back to `true`. That
+   * is harmless today only because such a client still fails the
+   * `isDirectLocalClient` check and is refused anyway, so flipping the flag buys
+   * them nothing. But it does mean this switch governs *the operator's own local
+   * browsers*, and is not a second barrier against a remote attacker. The client
+   * check is the barrier; this is a policy control layered on top of it. If the
+   * scope gate were ever relaxed, this flag would have to be gated at the same
+   * time or it would be decorative.
+   *
+   * Written to only on an explicit boolean — a non-boolean value leaves the
+   * stored setting untouched rather than clearing it, because clearing it means
+   * reverting to the permissive default. See `routes/agent-settings.ts`.
+   *
+   * @see plans/engine-availability-and-install.md — Phase 3
+   */
+  allowEngineInstalls?: boolean;
+
   /** Default local MCP config directory path (read-only, computed by backend) */
   defaultLocalMcpConfigDir?: string;
 

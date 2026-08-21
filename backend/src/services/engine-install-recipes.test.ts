@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { EngineStatus } from "shared/types/index.js";
-import { ENGINE_INSTALL_RECIPES, INSTALLABLE_PACKAGES, installGuidanceFor, recipesFor } from "./engine-install-recipes.js";
+import { ENGINE_INSTALL_RECIPES, INSTALLABLE_PACKAGES, installGuidanceFor, oneClickRecipeFor, recipesFor } from "./engine-install-recipes.js";
 
 const engine = (over: Partial<EngineStatus> & Pick<EngineStatus, "id">): EngineStatus => ({
   label: over.id,
@@ -47,16 +47,32 @@ describe("the registry itself", () => {
     }
   });
 
-  it("has no allowlist entry that no recipe asks for", () => {
-    // The other direction, and the one that was missing. Phase 3 checks
-    // membership in this set before spawning, so a stray entry is a package
-    // Callboard would install on request with nothing in the UI naming it —
-    // and the previous test suite could not have noticed, because it only
-    // checked recipes ⊆ allowlist. The set is now derived, which makes this
-    // true by construction; the assertion is here so that a future
-    // hand-written literal fails instead of quietly re-opening the hole.
+  it("has no allowlist entry that no recipe asks for, and no recipe package the allowlist omits", () => {
+    // Both directions, and both of them now *mean* something.
+    //
+    // For one cut this set was derived from these same recipes, which made
+    // `INSTALLABLE_PACKAGES.has(recipe.package)` true by construction and this
+    // assertion a comparison of a set with itself — a maintainer adding
+    // `{ method: "npm-global", package: "anything", argv: [...] }` would have
+    // widened the "closed set" automatically with every test still green. The
+    // set is an independent literal again, so neither list can move without the
+    // other and the failure is here rather than in production.
+    //
+    // Note what this does *not* protect: injection is stopped by the argv-shape
+    // checks in `oneClickRecipeFor` and `assertSpawnable`, which hold whatever
+    // this set contains. This is the governance control — the list a reviewer
+    // reads — and it is meant to be awkward to grow.
     const fromRecipes = new Set(ENGINE_INSTALL_RECIPES.filter((r) => r.method === "npm-global").map((r) => r.package));
     expect([...INSTALLABLE_PACKAGES].sort()).toEqual([...fromRecipes].sort());
+  });
+
+  it("is a literal, not a projection of the recipe table", () => {
+    // The property the previous cut lost. If this set were derived, filtering
+    // the recipes down could not change it relative to those recipes; because
+    // it is written out independently, a package present in one and not the
+    // other is detectable — which is exactly what the test above does.
+    expect(INSTALLABLE_PACKAGES.size).toBe(3);
+    expect([...INSTALLABLE_PACKAGES].sort()).toEqual(["@anthropic-ai/claude-code", "@openai/codex", "opencode-ai"]);
   });
 
   it("names the allowlisted package as the literal last argv entry", () => {
@@ -262,5 +278,119 @@ describe("claude code — two states, and the ones in between", () => {
     // "unknown" is the SDK failing to answer, not an observed absence. Offering
     // an install on it is a claim about the user's machine made from an error.
     expect(installGuidanceFor(claudeCode({ credentials: { configured: "unknown" } }))).toBeUndefined();
+  });
+});
+
+describe("oneClickRecipeFor — the security argument, in both directions", () => {
+  it("selects exactly the npm-global recipe for each engine that has one", () => {
+    expect(oneClickRecipeFor("opencode")?.package).toBe("opencode-ai");
+    expect(oneClickRecipeFor("claude-code")?.package).toBe("@anthropic-ai/claude-code");
+    expect(oneClickRecipeFor("codex")?.package).toBe("@openai/codex");
+  });
+
+  it("never selects a script recipe, for any engine", () => {
+    // Decision 5, from the spawn side. Both engines that have a `script` recipe
+    // also have an npm one, so the interesting assertion is not that this
+    // returns undefined but that what it returns is never the script.
+    for (const engineId of new Set(ENGINE_INSTALL_RECIPES.map((r) => r.engineId))) {
+      expect(oneClickRecipeFor(engineId)?.method).not.toBe("script");
+    }
+  });
+
+  it("selects nothing for a bundled engine or an unknown id", () => {
+    expect(oneClickRecipeFor("cline")).toBeUndefined();
+    expect(oneClickRecipeFor("pi")).toBeUndefined();
+    expect(oneClickRecipeFor("")).toBeUndefined();
+    expect(oneClickRecipeFor("../../etc/passwd")).toBeUndefined();
+    expect(oneClickRecipeFor("opencode; rm -rf /")).toBeUndefined();
+  });
+
+  it("only ever returns a recipe whose argv tail is an allowlisted package", () => {
+    // The property the install endpoint relies on: the thing spawned and the
+    // thing allowlisted are provably the same string, not merely related ones.
+    for (const engineId of new Set(ENGINE_INSTALL_RECIPES.map((r) => r.engineId))) {
+      const recipe = oneClickRecipeFor(engineId);
+      if (!recipe) continue;
+      expect(recipe.argv).toEqual(["npm", "install", "-g", recipe.package]);
+      expect(INSTALLABLE_PACKAGES.has(recipe.package!)).toBe(true);
+    }
+  });
+
+  it("covers every allowlisted package — nothing is installable that no engine offers", () => {
+    const reachable = new Set(
+      [...new Set(ENGINE_INSTALL_RECIPES.map((r) => r.engineId))].map((id) => oneClickRecipeFor(id)?.package).filter(Boolean) as string[],
+    );
+    expect([...reachable].sort()).toEqual([...INSTALLABLE_PACKAGES].sort());
+  });
+});
+
+describe("the button, and the reason there is not one — Decision 8", () => {
+  const missingOpencode = () => opencode({ installed: false });
+
+  it("says nothing either way when nobody evaluated capability", () => {
+    // Every internal caller. Inventing "Callboard will not run this for you"
+    // from an unasked question is the same class of claim as an "installed ✓"
+    // nothing checked.
+    const guidance = installGuidanceFor(missingOpencode());
+    expect(guidance?.oneClick).toBeUndefined();
+    expect(guidance?.refusal).toBeUndefined();
+  });
+
+  it("offers the npm recipe as a button when capability permits", () => {
+    const guidance = installGuidanceFor(missingOpencode(), { oneClick: true });
+    expect(guidance?.oneClick).toEqual({ engineId: "opencode", package: "opencode-ai", command: "npm install -g opencode-ai" });
+    expect(guidance?.refusal).toBeUndefined();
+  });
+
+  it("carries a survivable warning next to the button rather than withholding it", () => {
+    // The nvm case. The daemon doing the install is the daemon that will look,
+    // so it is a note; turning it into a refusal would remove a button that
+    // works on the overwhelming majority of nvm machines.
+    const guidance = installGuidanceFor(missingOpencode(), { oneClick: true, note: "nvm-managed" });
+    expect(guidance?.oneClick?.note).toBe("nvm-managed");
+  });
+
+  it("keeps every recipe when the capability refuses, and adds the reason", () => {
+    // The structural half of Decision 8: a refusal may only ever *add* a
+    // sentence. If this ever starts emptying `recipes`, a refused user is left
+    // with nothing to type, which is the state the decision forbids.
+    const permitted = installGuidanceFor(missingOpencode(), { oneClick: true });
+    const refused = installGuidanceFor(missingOpencode(), { oneClick: false, code: "not-local", refusal: "You are on the tunnel." });
+    expect(refused?.recipes.map((r) => r.command)).toEqual(permitted?.recipes.map((r) => r.command));
+    expect(refused?.recipes.length).toBeGreaterThan(0);
+    expect(refused?.reason).toBe(permitted?.reason);
+    expect(refused?.oneClick).toBeUndefined();
+    expect(refused?.refusal).toBe("You are on the tunnel.");
+  });
+
+  it("still says something when a refusal arrives with no sentence attached", () => {
+    const guidance = installGuidanceFor(missingOpencode(), { oneClick: false });
+    expect(guidance?.refusal).toBeTruthy();
+  });
+
+  it("offers no button and no refusal when there is nothing to install", () => {
+    // `recipes: []` — the CLI is already there and only a login is missing. A
+    // refusal here would be answering a question the card never asked.
+    const guidance = installGuidanceFor(codex({ credentials: { configured: false }, userCliPath: "/usr/local/bin/codex" }), { oneClick: true });
+    expect(guidance?.recipes).toEqual([]);
+    expect(guidance?.oneClick).toBeUndefined();
+    expect(guidance?.refusal).toBeUndefined();
+  });
+
+  it("offers no button at all to an engine that is fine", () => {
+    expect(installGuidanceFor(opencode({ installed: true }), { oneClick: true })).toBeUndefined();
+    expect(installGuidanceFor(engine({ id: "cline", updateAvailable: true }), { oneClick: true })).toBeUndefined();
+  });
+
+  it("names the codex recipe as the button, not the script — there is no codex script", () => {
+    const guidance = installGuidanceFor(codex({ credentials: { configured: false } }), { oneClick: true });
+    expect(guidance?.oneClick?.package).toBe("@openai/codex");
+  });
+
+  it("points claude-code's button at the npm recipe while the installer script stays copy-only", () => {
+    const guidance = installGuidanceFor(claudeCode({ credentials: { configured: false } }), { oneClick: true });
+    expect(guidance?.oneClick?.package).toBe("@anthropic-ai/claude-code");
+    // Both recipes still render; only one of them is a button.
+    expect(guidance?.recipes.map((r) => r.method)).toEqual(["npm-global", "script"]);
   });
 });

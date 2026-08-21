@@ -4,11 +4,18 @@
  * ## What is in here, and what is deliberately not
  *
  * Every command below is a **literal**. Package names are written out in this
- * file and never assembled from a request, argv is an array rather than a
- * string, and the set of installable packages is closed
- * ({@link INSTALLABLE_PACKAGES}). That is Decision 4, and it is what lets
- * Phase 3 spawn one of these without the endpoint becoming an
- * arbitrary-command surface.
+ * file and never assembled from a request, and argv is a frozen array rather
+ * than a string. That is what lets Phase 3 spawn one of these without the
+ * endpoint becoming an arbitrary-command surface — the enforcing check is the
+ * **argv shape**: `oneClickRecipeFor` and `assertSpawnable` both require a
+ * four-element `["npm", "install", "-g", <pkg>]` whose tail is the recipe's own
+ * allowlisted package, so nothing from a request can reach a command line
+ * whatever the registry says.
+ *
+ * {@link INSTALLABLE_PACKAGES} (Decision 4's "closed set") sits alongside that
+ * as a *governance* control rather than an injection barrier: it is the list a
+ * reviewer reads to answer "what can this daemon be made to install?", and it is
+ * an independent literal specifically so that adding a recipe cannot widen it.
  *
  * **Nothing in this module executes anything.** It has no imports from
  * `node:child_process`, and it never will: Phase 2's whole deliverable is text a
@@ -42,7 +49,7 @@
  *
  * @see plans/engine-availability-and-install.md — Phase 2, Decisions 4 and 5
  */
-import type { EngineInstallGuidance, EngineInstallRecipe, EngineStatus } from "shared/types/index.js";
+import type { EngineInstallCapability, EngineInstallGuidance, EngineInstallRecipe, EngineStatus } from "shared/types/index.js";
 
 // ── Package literals ────────────────────────────────────────────────
 //
@@ -53,8 +60,8 @@ const CLAUDE_CODE_CLI_PACKAGE = "@anthropic-ai/claude-code";
 const OPENCODE_PACKAGE = "opencode-ai";
 const CODEX_CLI_PACKAGE = "@openai/codex";
 
-// {@link INSTALLABLE_PACKAGES} is derived from the recipes below rather than
-// declared here — see its doc comment for why that distinction matters.
+// {@link INSTALLABLE_PACKAGES} lists these same three, independently, so that
+// neither list can move without the other — see its doc comment.
 
 // ── Shared caveats ──────────────────────────────────────────────────
 
@@ -184,21 +191,77 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
 /**
  * The closed set of packages Callboard will ever install globally.
  *
- * Phase 3's endpoint checks membership here before spawning anything, which
- * makes this the security argument for that endpoint — so it is **derived**
- * from the recipes rather than written beside them. The previous cut claimed
- * exactly that in a comment while being a hand-written literal, and the test
- * only checked recipes ⊆ allowlist, so a stray entry would have been spawnable
- * with nothing failing. `engine-install-recipes.test.ts` now checks both
- * directions; derivation makes one of them true by construction.
+ * ## Why this is a literal again
+ *
+ * It was briefly *derived* from the recipes, to close a real hole (an allowlist
+ * entry no recipe asked for would have been spawnable). Derivation closed that
+ * hole by making the set unable to disagree with the recipes — which also made
+ * `INSTALLABLE_PACKAGES.has(recipe.package)` **true by construction** and the
+ * both-directions test a comparison of a set with itself. A maintainer adding
+ * `{ method: "npm-global", package: "anything", argv: [...] }` would have
+ * widened the "closed set" automatically, with every test still green.
+ *
+ * So it is written out here, independently, and
+ * `engine-install-recipes.test.ts` asserts set equality in both directions.
+ * Neither list can now move without the other, and the failure is a test
+ * failure rather than a silently larger allowlist. Adding an engine means
+ * editing two places on purpose; that is the entire point of a closed set.
+ *
+ * ## What this actually protects against, stated precisely
+ *
+ * Not injection. Nothing from a request reaches argv under any circumstances —
+ * that is guaranteed by `oneClickRecipeFor`'s argv-shape check and by
+ * `assertSpawnable`, which verify that what gets spawned is a four-element
+ * literal array whose tail *is* the allowlisted package. Those checks are the
+ * strong ones and they hold whatever this set contains.
+ *
+ * This set is the *governance* control: it is the list a reviewer reads to
+ * answer "what can this daemon be made to install?", and it is deliberately
+ * awkward to grow.
  */
 export const INSTALLABLE_PACKAGES: ReadonlySet<string> = Object.freeze(
-  new Set(ENGINE_INSTALL_RECIPES.filter((r) => r.method === "npm-global" && r.package).map((r) => r.package!)),
+  new Set<string>([CLAUDE_CODE_CLI_PACKAGE, OPENCODE_PACKAGE, CODEX_CLI_PACKAGE]),
 ) as ReadonlySet<string>;
 
 /** Every recipe registered for an engine id, in offer order. Empty for the bundled engines. */
 export function recipesFor(engineId: string): EngineInstallRecipe[] {
   return ENGINE_INSTALL_RECIPES.filter((recipe) => recipe.engineId === engineId);
+}
+
+/**
+ * The one recipe for `engineId` that Phase 3 is permitted to spawn, if any.
+ *
+ * **This function is the security argument for `POST /api/engines/:id/install`,
+ * so the endpoint routes through it rather than around it.** An engine id off
+ * the wire selects a recipe here; it is never interpolated into a command, and
+ * nothing the caller sends reaches argv. Four conditions, all of them checked
+ * against the registry above rather than against the request:
+ *
+ * 1. the recipe's `method` is `npm-global` — a `script` recipe can never be
+ *    reached with an intent to execute, which is Decision 5 made structural
+ *    rather than remembered;
+ * 2. it carries a `package`, and that package is in {@link INSTALLABLE_PACKAGES}
+ *    — which is *derived* from this same table, so the set cannot drift open;
+ * 3. it carries an `argv` array whose last element **is** that package, so the
+ *    thing spawned and the thing allowlisted are provably the same string;
+ * 4. `visibleAfterRecheck` is true. A recipe flagged false installs somewhere a
+ *    running daemon's PATH cannot reach, so a one-click install of it would
+ *    report success and change nothing observable — a lie with a progress bar.
+ *    No `npm-global` recipe is flagged false today; the check is here so that
+ *    adding one does not silently become a button.
+ *
+ * Returns `undefined` for every bundled engine, every unknown id, and any recipe
+ * that fails a condition. The caller's only correct response to `undefined` is a
+ * refusal that points at the copy block.
+ */
+export function oneClickRecipeFor(engineId: string): EngineInstallRecipe | undefined {
+  const recipe = recipesFor(engineId).find((r) => r.method === "npm-global");
+  if (!recipe) return undefined;
+  if (!recipe.package || !INSTALLABLE_PACKAGES.has(recipe.package)) return undefined;
+  if (!recipe.argv || recipe.argv.length < 2) return undefined;
+  if (recipe.argv[recipe.argv.length - 1] !== recipe.package) return undefined;
+  if (!recipe.visibleAfterRecheck) return undefined;
+  return recipe;
 }
 
 // ── When a card offers them ─────────────────────────────────────────
@@ -233,8 +296,77 @@ export function recipesFor(engineId: string): EngineInstallRecipe[] {
  * The result may carry **no recipes** — "you have the CLI, you just have not
  * logged in" is guidance with nothing to install. See
  * {@link EngineInstallGuidance}.
+ *
+ * ## What `capability` does, and what it deliberately cannot do
+ *
+ * Everything above gates on **engine state alone**, and that is load-bearing
+ * for Decision 8 rather than incidental: {@link withOneClick} runs afterwards
+ * and can only *add* a button or a refusal line, never remove a recipe. So no
+ * value of `capability` — not a tunnelled client, not the setting switched off,
+ * not a read-only npm prefix — can take the copyable command away. Omitting the
+ * argument is the honest encoding of "install capability was never evaluated",
+ * and leaves the Phase 2 shape untouched.
  */
-export function installGuidanceFor(engine: EngineStatus): EngineInstallGuidance | undefined {
+export function installGuidanceFor(engine: EngineStatus, capability?: EngineInstallCapability): EngineInstallGuidance | undefined {
+  const guidance = baseGuidanceFor(engine);
+  return guidance ? withOneClick(engine.id, guidance, capability) : undefined;
+}
+
+/**
+ * Attach Phase 3's button — or the one-line reason there is not one.
+ *
+ * Decision 8 in one function. The guidance handed in was decided entirely by
+ * **engine state**, and this only ever *adds* to it: there is no branch here
+ * that removes a recipe, empties the list, or replaces the block. Turning the
+ * capability off anywhere therefore cannot make the copy-and-paste command
+ * disappear — the worst it can do is leave the copy block exactly as Phase 2
+ * shipped it, with a sentence saying why.
+ *
+ * `capability === undefined` means nobody evaluated it — an internal caller, a
+ * test, a probe with no HTTP request behind it. That leaves both fields absent
+ * rather than inventing a refusal, because "Callboard will not run this for you"
+ * would be a claim about a decision that was never made.
+ */
+function withOneClick(engineId: string, guidance: EngineInstallGuidance, capability: EngineInstallCapability | undefined): EngineInstallGuidance {
+  if (!capability) return guidance;
+
+  // Nothing to install (the CLI is there, only a login is missing) — a button
+  // would have nothing to run, and a refusal would answer a question nobody
+  // asked. This is `recipes: []`, the state Phase 2 added deliberately.
+  if (guidance.recipes.length === 0) return guidance;
+
+  const recipe = oneClickRecipeFor(engineId);
+
+  if (!recipe) {
+    // Every recipe on offer is copy-only. No `npm-global` entry exists for this
+    // engine — today that is unreachable (all three engines with recipes have
+    // one), and it is handled anyway so that adding a script-only engine cannot
+    // produce a card that silently has no button and no explanation.
+    return {
+      ...guidance,
+      refusal: "Callboard has no install for this engine that it can run itself — the only path is the vendor's own script, and Callboard never pipes an installer into a shell for you. Copy it into a terminal.",
+    };
+  }
+
+  if (!capability.oneClick) {
+    return {
+      ...guidance,
+      refusal: capability.refusal ?? "Callboard cannot run this install itself on this machine. Copy the command into a terminal instead.",
+    };
+  }
+
+  return {
+    ...guidance,
+    oneClick: {
+      engineId,
+      package: recipe.package!,
+      command: recipe.command,
+      ...(capability.note ? { note: capability.note } : {}),
+    },
+  };
+}
+
+function baseGuidanceFor(engine: EngineStatus): EngineInstallGuidance | undefined {
   const recipes = recipesFor(engine.id);
   if (recipes.length === 0) return undefined;
 

@@ -199,7 +199,190 @@ export interface EngineInstallGuidance {
   /** The alternative that needs nothing installed, where there is one (an API key on this tab). */
   alternative?: string;
   recipes: EngineInstallRecipe[];
+  /**
+   * Phase 3: the one recipe this client may run from a button, when there is
+   * one on offer.
+   *
+   * Absent is the *normal* answer, not an error state — see {@link refusal}.
+   * Present means every gate passed at the moment this status was assembled:
+   * the client is on the LAN, the operator has not switched the capability off,
+   * the platform is one Callboard can spawn `npm` on without a shell, and npm's
+   * global prefix resolved and is writable.
+   */
+  oneClick?: EngineOneClickOffer;
+  /**
+   * Phase 3: one line saying why there is no install button, when a runnable
+   * recipe exists and no button is offered.
+   *
+   * Decision 8 is why this field exists. Every path that declines a one-click
+   * install — a tunnelled client, `allowEngineInstalls` off, an unsupported
+   * platform, a non-writable npm prefix, a `script`-only recipe — must land the
+   * user on the copy block *above* with an explanation, rather than on a card
+   * that quietly has one fewer button than it did on another machine. It sits
+   * alongside {@link reason} rather than replacing it: `reason` says why the
+   * engine needs attention, `refusal` says why Callboard will not give it that
+   * attention itself.
+   *
+   * Present exactly when {@link recipes} is non-empty and {@link oneClick} is
+   * absent *and* capability was evaluated. A caller that never evaluated install
+   * capability (anything but the HTTP routes) leaves both fields absent, which
+   * is the honest encoding of "nobody asked".
+   */
+  refusal?: string;
 }
+
+/**
+ * The single recipe an install button would run, once every gate has passed.
+ *
+ * Carries the package and command verbatim so the button's tooltip can name
+ * exactly what is about to run — the argv is *not* here, because the client
+ * never supplies it: `POST /api/engines/:id/install` re-derives it from the
+ * closed registry, and the `:id` only ever selects a recipe.
+ */
+export interface EngineOneClickOffer {
+  engineId: string;
+  /** The npm package, from the closed allowlist. */
+  package: string;
+  /** The equivalent shell command, for the button's title and for logs. */
+  command: string;
+  /**
+   * A condition that is true *and* does not prevent the install — the nvm case.
+   *
+   * Under nvm the global prefix belongs to the active Node version, so a
+   * successful install is visible only to a daemon running that same Node. That
+   * is worth saying next to the button and is not a reason to withhold it: the
+   * daemon doing the installing *is* the one that will look, so it usually
+   * works. It is a warning, never a refusal.
+   */
+  note?: string;
+}
+
+/**
+ * Whether this client may run an install, evaluated per request.
+ *
+ * Not cached with the engine statuses, and deliberately not part of them: the
+ * same daemon answers "yes" to a browser on the LAN and "no" to the same
+ * browser reaching it through the remote-access tunnel a minute later. Baking it
+ * into the cached probe result would hand one client the other's verdict.
+ */
+export interface EngineInstallCapability {
+  /** May this client press an install button at all? */
+  oneClick: boolean;
+  /** One line explaining why not. Always present when `oneClick` is false. */
+  refusal?: string;
+  /** Which gate said no. Always present when `oneClick` is false. Never used to *build* the sentence — it classifies one. */
+  code?: EngineInstallRefusalCode;
+  /** True-but-survivable condition to render beside the button. See {@link EngineOneClickOffer.note}. */
+  note?: string;
+}
+
+/** Why an install was declined. Sent with the refusal so the UI can pick a status code's worth of nuance if it ever needs to. */
+export type EngineInstallRefusalCode =
+  /** The request came from outside the LAN — through the remote-access tunnel. */
+  | "not-local"
+  /** `AgentSettings.allowEngineInstalls` is off. */
+  | "disabled"
+  /** No `npm-global` recipe for this engine id — a bundled engine, or a `script`-only one. */
+  | "no-recipe"
+  /** Callboard cannot spawn `npm` without a shell here (Windows). */
+  | "unsupported-platform"
+  /** `npm root -g` did not answer. */
+  | "npm-unresolvable"
+  /** npm's global prefix is not writable by the user running the daemon. */
+  | "prefix-not-writable"
+  /** Another install is already running. One at a time. */
+  | "busy"
+  /**
+   * An install finished moments ago.
+   *
+   * Every completed install ends in a *forced* re-probe of every engine, which
+   * bypasses the rate limit Phase 2 put on that work. Bounding how often an
+   * install may be accepted is what puts the bound back.
+   */
+  | "cooling-down"
+  /** The process could not be spawned, or exited non-zero. */
+  | "install-failed";
+
+/** `POST /api/engines/:id/install`, when it starts one. */
+export interface EngineInstallStartResponse {
+  installId: string;
+  engineId: string;
+  package: string;
+  command: string;
+}
+
+/** `POST /api/engines/:id/install`, when it does not. Always carries a one-line `refusal` for the card. */
+export interface EngineInstallRefusalResponse {
+  error: string;
+  refusal: string;
+  code: EngineInstallRefusalCode;
+}
+
+/** The first frame: what is about to run, named in full. */
+export interface EngineInstallStartedEvent {
+  type: "install_started";
+  installId: string;
+  engineId: string;
+  package: string;
+  command: string;
+  startedAt: string;
+}
+
+/** One line of the child process's output, verbatim apart from ANSI stripping and a length clip. */
+export interface EngineInstallOutputEvent {
+  type: "install_output";
+  stream: "stdout" | "stderr";
+  line: string;
+}
+
+/**
+ * The process is over. **Not** the user-facing verdict.
+ *
+ * `ok: true` means only "npm exited 0", which is not the same claim as
+ * "the engine is installed" — the two diverge every time the global bin
+ * directory is not on the PATH the daemon inherited. So a successful exit
+ * carries no summary at all and is followed by an {@link EngineInstallVerifiedEvent};
+ * a failed one is terminal and carries the `refusal` that sends the user back to
+ * the copy block.
+ */
+export interface EngineInstallExitEvent {
+  type: "install_exit";
+  installId: string;
+  engineId: string;
+  ok: boolean;
+  code: number | null;
+  signal: string | null;
+  durationMs: number;
+  /** Present exactly when `ok` is false. */
+  refusal?: string;
+}
+
+/**
+ * What Callboard found when it looked again — the only event that may claim an
+ * engine is installed.
+ *
+ * Emitted after a zero exit, once the server has run the Phase-2 refresh itself.
+ * `visible: false` is the important case and the reason this event is separate:
+ * `npm install -g` exited 0, and Callboard still cannot find the binary. That is
+ * a refusal like any other and lands on the copy block with a reason, rather
+ * than on a green tick that is wrong.
+ */
+export interface EngineInstallVerifiedEvent {
+  type: "install_verified";
+  installId: string;
+  engineId: string;
+  /** Did the re-probe actually find the thing the install was supposed to produce? */
+  visible: boolean;
+  /** One line for the card. States what was observed, never what was assumed. */
+  summary: string;
+  /** Present when `visible` is false — the install "worked" and Callboard still cannot see it. */
+  refusal?: string;
+  /** The re-probed statuses, so the page updates without a second round trip. */
+  engines: EngineStatus[];
+}
+
+/** Everything `GET /api/engines/installs/:installId/stream` emits. */
+export type EngineInstallEvent = EngineInstallStartedEvent | EngineInstallOutputEvent | EngineInstallExitEvent | EngineInstallVerifiedEvent;
 
 /** One engine, as Settings → API renders it. */
 export interface EngineStatus {

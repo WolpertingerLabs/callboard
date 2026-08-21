@@ -211,6 +211,7 @@ function AcpProviderSection({
   engine,
   enginesLoading,
   onRecheckEngines,
+  onEnginesUpdated,
   useOpenRouter,
   onUseOpenRouterChange,
   openRouterApiKey,
@@ -223,6 +224,8 @@ function AcpProviderSection({
   enginesLoading: boolean;
   /** Drop the daemon's cached lookups and re-probe — the card's Recheck button. */
   onRecheckEngines: () => Promise<EngineRecheckOutcome>;
+  /** Adopt the statuses the server re-probed after running an install from this card. */
+  onEnginesUpdated: (engines: EngineStatus[]) => void;
   useOpenRouter: boolean;
   onUseOpenRouterChange: (v: boolean) => void;
   openRouterApiKey: string;
@@ -248,7 +251,7 @@ function AcpProviderSection({
 
   return (
     <>
-      <EngineStatusCard engine={engine ?? acpFallbackEngine(vendor)} loading={enginesLoading} onRecheck={onRecheckEngines} />
+      <EngineStatusCard engine={engine ?? acpFallbackEngine(vendor)} loading={enginesLoading} onRecheck={onRecheckEngines} onEnginesUpdated={onEnginesUpdated} />
 
       <div style={sectionStyle}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
@@ -869,6 +872,37 @@ export default function ApiSettings() {
     return { probed, retryAfterMs };
   };
 
+  /**
+   * Adopt the statuses the server re-probed after an install it ran itself.
+   *
+   * The install endpoint drops the same caches Recheck does and re-assembles
+   * every engine, so this is a Recheck's answer arriving without the button
+   * being pressed — which is the point: a user who installs from the card should
+   * not then have to ask the card to look.
+   *
+   * It claims the request id for the same reason {@link handleRecheckEngines}
+   * does. An install outlives most page fetches, and a `GET /api/engines` issued
+   * before it finished would otherwise land afterwards and overwrite this with
+   * the pre-install answer — the card would say "Installed" over a row that had
+   * reverted to "Not installed".
+   *
+   * `systemInfo` is refreshed alongside it because `acpProviders[].available`
+   * feeds the New Chat picker from the same lookup.
+   */
+  const handleEnginesUpdated = (fresh: EngineStatus[]) => {
+    if (fresh.length === 0) return; // a refresh that failed server-side; keep what we have
+    const requestId = ++enginesRequestId.current;
+    setEngines(fresh);
+    setEnginesLoading(false);
+    void getSystemInfo()
+      .then((sys) => {
+        if (enginesRequestId.current === requestId) setSystemInfo(sys);
+      })
+      .catch(() => {
+        // A stale tab strip is a smaller lie than dropping the install's result.
+      });
+  };
+
   if (loading) {
     return <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>Loading...</div>;
   }
@@ -975,7 +1009,7 @@ export default function ApiSettings() {
 
       {activeProvider === "claude-code" && (
         <>
-          <EngineStatusCard engine={engineFor("claude-code")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
+          <EngineStatusCard engine={engineFor("claude-code")} loading={enginesLoading} onRecheck={handleRecheckEngines} onEnginesUpdated={handleEnginesUpdated} />
           <ReferenceLinksSection provider="claude-code" />
 
           <OpenRouterRoutingSection
@@ -1391,6 +1425,7 @@ export default function ApiSettings() {
               vendor={vendor}
               engine={engineFor("acp", vendor.id)}
               onRecheckEngines={handleRecheckEngines}
+              onEnginesUpdated={handleEnginesUpdated}
               enginesLoading={enginesLoading}
               useOpenRouter={acpUseOpenRouter}
               onUseOpenRouterChange={setAcpUseOpenRouter}
@@ -1403,7 +1438,7 @@ export default function ApiSettings() {
 
       {activeProvider === "codex" && (
         <>
-          <EngineStatusCard engine={engineFor("codex")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
+          <EngineStatusCard engine={engineFor("codex")} loading={enginesLoading} onRecheck={handleRecheckEngines} onEnginesUpdated={handleEnginesUpdated} />
           <ReferenceLinksSection provider="codex" />
 
           <OpenRouterRoutingSection
@@ -1616,7 +1651,7 @@ export default function ApiSettings() {
 
       {activeProvider === "pi" && (
         <>
-          <EngineStatusCard engine={engineFor("pi")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
+          <EngineStatusCard engine={engineFor("pi")} loading={enginesLoading} onRecheck={handleRecheckEngines} onEnginesUpdated={handleEnginesUpdated} />
           <ReferenceLinksSection provider="pi" />
 
           <div style={sectionStyle}>
@@ -1718,7 +1753,7 @@ export default function ApiSettings() {
 
       {activeProvider === "cline" && (
         <>
-          <EngineStatusCard engine={engineFor("cline")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
+          <EngineStatusCard engine={engineFor("cline")} loading={enginesLoading} onRecheck={handleRecheckEngines} onEnginesUpdated={handleEnginesUpdated} />
           <ReferenceLinksSection provider="cline" />
 
           {/* Cline — provider + credentials */}
