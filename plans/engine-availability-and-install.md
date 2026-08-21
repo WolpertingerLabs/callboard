@@ -240,6 +240,25 @@ Ends with: every tab tells the truth, nothing executes, no new failure mode.
 
 Runs `npm-global` recipes from the daemon and streams the output.
 
+**Two things Phase 2 built that Phase 3 has to change**, recorded here rather
+than built early, since both would be dead weight until there is a button:
+
+- `InstallGuidance` in `EngineStatusCard.tsx` hard-codes "Callboard does not run
+  it for you". Once one of these can be run, that sentence has to become
+  conditional on the recipe's method and on whether the install path is
+  available to this client — `script` recipes keep it forever (Decision 5),
+  `npm-global` recipes lose it only when the button is actually offered.
+- `EngineInstallGuidance` has **no field for a refusal reason**, and Decision 8
+  requires one: every path that declines a one-click install (tunnelled client,
+  non-writable prefix, `allowEngineInstalls` off, a spawn that failed, an
+  install that exited non-zero) must land on this same block *with a one-line
+  explanation*. Add it as an optional field alongside `reason`, so the copy
+  block stays the fallback rather than being replaced by an error.
+
+Also note that Phase 2's `installGuidanceFor` gates purely on **engine state**
+and never on install capability, which is what makes the structural fallback
+hold: turning the button off anywhere cannot make the copy block disappear.
+
 - **`POST /api/engines/:id/install`** → `{ installId }`, one install at a time
   (a module-level singleton, like `web-tunnel`'s supervisor).
   **`GET /api/engines/installs/:installId/stream`** → SSE via `utils/sse.ts`,

@@ -95,6 +95,9 @@ import type {
   TrashRestoreResult,
   EngineStatus,
   EngineStatusResponse,
+  EngineRefreshResponse,
+  EngineInstallGuidance,
+  EngineInstallRecipe,
 } from "shared/types/index.js";
 
 export type {
@@ -194,6 +197,9 @@ export type {
   TrashRestoreResult,
   EngineStatus,
   EngineStatusResponse,
+  EngineRefreshResponse,
+  EngineInstallGuidance,
+  EngineInstallRecipe,
 };
 
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
@@ -1397,6 +1403,26 @@ export async function getEngines(refresh = false): Promise<EngineStatus[]> {
   await assertOk(res, "Failed to get engine status");
   const data = (await res.json()) as EngineStatusResponse;
   return Array.isArray(data.engines) ? data.engines : [];
+}
+
+/**
+ * Re-probe every engine after installing something — the "Recheck" button.
+ *
+ * Distinct from `getEngines(true)`, which only bypasses the npm-registry cache.
+ * The daemon memoizes where each binary resolved for its whole lifetime, so a
+ * user who has just installed `opencode` and re-fetches is told again that it is
+ * missing. This drops those caches server-side first, which is why it is a POST.
+ *
+ * Answers `probed: false` when the call was coalesced with a concurrent one or
+ * fell inside the server's minimum interval — the endpoint spawns processes
+ * synchronously, so it is rate-limited. Callers must not report a `probed:
+ * false` result as a fresh check.
+ */
+export async function refreshEngines(): Promise<EngineRefreshResponse> {
+  const res = await fetch(`${BASE}/engines/refresh`, { method: "POST", credentials: "include" });
+  await assertOk(res, "Failed to re-check engine status");
+  const data = (await res.json()) as EngineRefreshResponse;
+  return { engines: Array.isArray(data.engines) ? data.engines : [], probed: data.probed !== false, retryAfterMs: data.retryAfterMs };
 }
 
 /** The models callboard has seen an ACP vendor advertise. */

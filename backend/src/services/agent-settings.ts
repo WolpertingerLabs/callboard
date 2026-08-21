@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync, copyFileSync, rmSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import { execSync } from "child_process";
+import { execFileSync } from "node:child_process";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
@@ -377,9 +377,24 @@ export function getClaudeCodeExecutablePath(): string | undefined {
     log.warn(`Configured pathToClaudeCodeExecutable not found: ${settings.pathToClaudeCodeExecutable}`);
   }
 
-  // Try finding claude on PATH
+  // Try finding claude on PATH.
+  //
+  // `execFileSync` with a hard kill rather than the bare `execSync("which claude")`
+  // this used to be, for two reasons that only became load-bearing once
+  // `POST /api/engines/refresh` could re-run it on demand. It had **no timeout
+  // at all**, and it is synchronous on a single-threaded server: a slow or hung
+  // `which` stalled every open SSE stream and in-flight chat, not just the
+  // request that triggered it — measured at 6.5s of daemon stall from one call.
+  // `killSignal: "SIGKILL"` is what makes the deadline enforceable; Node's
+  // default SIGTERM is sent at the deadline and then waited on indefinitely.
+  // No shell, for the same reason `availability.ts` avoids one.
   try {
-    const path = execSync("which claude", { encoding: "utf-8" }).trim();
+    const path = execFileSync("which", ["claude"], {
+      timeout: 3_000,
+      killSignal: "SIGKILL",
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
     if (path && existsSync(path)) {
       resolvedClaudePath = path;
       log.info(`Found Claude Code on PATH: ${resolvedClaudePath}`);
@@ -391,6 +406,21 @@ export function getClaudeCodeExecutablePath(): string | undefined {
 
   resolvedClaudePath = undefined;
   return undefined;
+}
+
+/**
+ * Forget the resolved Claude Code executable so the next call looks again.
+ *
+ * Two callers, and the second is the interesting one:
+ *
+ * - `POST /api/engines/refresh`, after a user installs the CLI — without this
+ *   the daemon keeps reporting the answer it cached before the install;
+ * - anything that changes `pathToClaudeCodeExecutable`. That setting has always
+ *   needed a daemon restart to take effect, purely because this cache had no
+ *   way to be dropped.
+ */
+export function resetClaudeCodeExecutablePathCache(): void {
+  resolvedClaudePath = null;
 }
 
 /**

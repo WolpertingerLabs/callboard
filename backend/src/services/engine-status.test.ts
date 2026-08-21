@@ -19,6 +19,7 @@ import { join } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   latestVersions: vi.fn(),
+  claudeBinaryPath: vi.fn(),
   claudeExecutablePath: vi.fn(),
   claudeRoutedThroughOpenRouter: vi.fn(),
   agentSettings: vi.fn(),
@@ -42,7 +43,13 @@ vi.mock("./agent-settings.js", () => ({
   isClaudeCodeRoutedThroughOpenRouter: mocks.claudeRoutedThroughOpenRouter,
 }));
 
-vi.mock("./sdk-info.js", () => ({ getSdkInfoAsync: mocks.sdkInfo }));
+vi.mock("./sdk-info.js", () => ({ getSdkInfoAsync: mocks.sdkInfo, refreshSdkInfoCache: vi.fn().mockResolvedValue(undefined) }));
+
+vi.mock("../utils/paths.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/paths.js")>()),
+  getClaudeBinaryPath: mocks.claudeBinaryPath,
+  resetClaudeBinaryPathCache: vi.fn(),
+}));
 
 vi.mock("../agents/adapters/codex/codexAuth.js", () => ({
   getCodexAuthSource: mocks.codexAuthSource,
@@ -73,6 +80,9 @@ beforeEach(() => {
   mocks.codexRoutedThroughOpenRouter.mockReturnValue(false);
   mocks.acpBinaryPath.mockReturnValue(null);
   mocks.acpVersion.mockResolvedValue(undefined);
+  // The wider lookup's "I gave up" answer, so it contributes nothing unless a
+  // case says otherwise.
+  mocks.claudeBinaryPath.mockReturnValue("claude");
 });
 
 afterEach(() => {
@@ -234,8 +244,9 @@ describe("acp vendors — the external kind", () => {
     if (engine.runtime.kind !== "external") throw new Error("unreachable");
     expect(engine.runtime.resolvedPath).toBeUndefined();
     expect(engine.version).toBeUndefined();
-    // Phase 2 attaches the `npm install -g opencode-ai` recipe here.
-    expect(engine).not.toHaveProperty("install");
+    // Phase 2 attaches the copyable commands here. The gating itself is
+    // engine-install-recipes.test.ts's subject; this asserts the wiring.
+    expect(engine.install?.recipes.map((r) => r.command)).toEqual(["npm install -g opencode-ai", "curl -fsSL https://opencode.ai/install | bash"]);
   });
 
   it("report the resolved path and the CLI's own version when installed", async () => {
@@ -265,6 +276,17 @@ describe("credentials", () => {
     expect(engine.credentials).toEqual({ configured: true, source: "ANTHROPIC_AUTH_TOKEN" });
   });
 
+  it("does not read the literal string \"none\" as a credential", async () => {
+    // Measured against a daemon booted with an empty HOME: the SDK answers
+    // `{ tokenSource: "none" }` rather than omitting the field, and a
+    // present-but-"none" string is truthy — so an unauthenticated machine was
+    // reported as `configured: true, source: "none"`. Which also meant Phase 2's
+    // install guidance for Claude Code could never fire.
+    mocks.sdkInfo.mockResolvedValue({ account: { tokenSource: "none", apiKeySource: "none" }, models: [], fetchedAt: 0 });
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials.configured).toBe(false);
+  });
+
   it("counts a subscription login, which reports no token source at all", async () => {
     // The regression this guards: the SDK returns { email, subscriptionType }
     // and no `tokenSource` for a subscription login, so keying on that field
@@ -279,7 +301,10 @@ describe("credentials", () => {
     // credentials live and found nothing.
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     expect(engine.credentials.configured).toBe(false);
-    expect(engine.credentials.note).toContain("claude login");
+    // `claude auth login`, the CLI's actual subcommand — a note that names a
+    // command the binary does not have is as wrong as one that names a command
+    // the user cannot reach.
+    expect(engine.credentials.note).toContain("claude auth login");
   });
 
   it("says unknown, not unconfigured, when the SDK could not be asked at all", async () => {
@@ -473,5 +498,63 @@ describe("bundledPackageVersion", () => {
 
   it("returns undefined for a package that is not installed", () => {
     expect(bundledPackageVersion("@not-a-real-scope/definitely-not-installed")).toBeUndefined();
+  });
+});
+
+describe("userCliPath — the CLI the user can type, as opposed to the one Callboard runs", () => {
+  it("reports a claude the wider lookup found when the SDK's own lookup did not", async () => {
+    // `getClaudeCodeExecutablePath()` sees the setting and `which claude`.
+    // `getClaudeBinaryPath()` also sees CLAUDE_BINARY and ~/.local/bin — which
+    // is where this feature's own `install.sh` recipe puts the binary. A daemon
+    // started before that was on its PATH has exactly this split, and reporting
+    // only the narrow answer let the card tell someone to install a binary the
+    // About page was printing the version of.
+    const claudeInUserBin = fakeClaudeCli("2.0.1 (Claude Code)");
+    mocks.claudeExecutablePath.mockReturnValue(undefined);
+    mocks.claudeBinaryPath.mockReturnValue(claudeInUserBin);
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.userCliPath).toBe(claudeInUserBin);
+    if (engine.runtime.kind !== "external-preferred") throw new Error("unreachable");
+    // Still absent from `resolvedPath`: chats do not run this copy, and saying
+    // they did would be the opposite lie.
+    expect(engine.runtime.resolvedPath).toBeUndefined();
+  });
+
+  it("does not report one when the SDK already resolved a native claude", async () => {
+    // Nothing to disambiguate — the two lookups agree, so a second path on the
+    // card would be noise dressed as a distinction.
+    mocks.claudeExecutablePath.mockReturnValue("/usr/local/bin/claude");
+    mocks.claudeBinaryPath.mockReturnValue("/usr/local/bin/claude");
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.userCliPath).toBeUndefined();
+  });
+
+  it("treats the bare-name fallback as no discovery at all", async () => {
+    // `getClaudeBinaryPath()` returns the literal "claude" when it gave up and
+    // wants exec to try its luck. That is not a binary anyone found.
+    mocks.claudeExecutablePath.mockReturnValue(undefined);
+    mocks.claudeBinaryPath.mockReturnValue("claude");
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.userCliPath).toBeUndefined();
+  });
+
+  it("looks up codex on PATH so the card can stop guessing", async () => {
+    // The engine is bundled and always runnable, so nothing else in the status
+    // needs this. `codex login` does: it is a command the user either has or
+    // does not, and Phase 2's first cut asserted "does not" without looking.
+    mocks.acpBinaryPath.mockImplementation((command: string) => (command === "codex" ? "/usr/local/bin/codex" : null));
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.userCliPath).toBe("/usr/local/bin/codex");
+    expect(mocks.acpBinaryPath).toHaveBeenCalledWith("codex");
+  });
+
+  it("reports none when there is no codex on PATH", async () => {
+    mocks.acpBinaryPath.mockReturnValue(null);
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.userCliPath).toBeUndefined();
   });
 });

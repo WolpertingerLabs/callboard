@@ -163,8 +163,13 @@ export function getClaudeBinaryPath(): string {
 
   // 2. Ask the shell — works for login/interactive shells
   try {
+    // `killSignal: "SIGKILL"` makes the timeout an actual bound. Node sends
+    // SIGTERM at the deadline by default and then waits indefinitely, so a
+    // child that ignores it holds this synchronous call — and therefore the
+    // whole single-threaded server — for as long as it likes.
     const resolved = execSync("which claude", {
       timeout: 3_000,
+      killSignal: "SIGKILL",
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
@@ -187,6 +192,19 @@ export function getClaudeBinaryPath(): string {
   // 4. Bare fallback — let the OS resolve it at exec time
   _claudeBinaryPath = "claude";
   return _claudeBinaryPath;
+}
+
+/**
+ * Forget the resolved `claude` path so the next call re-runs the search.
+ *
+ * The lifetime cache above is right while PATH cannot change under a running
+ * daemon, and wrong the moment a user installs the CLI and asks Callboard to
+ * look again — `POST /api/engines/refresh`. Note that step 4 caches the bare
+ * string `"claude"`, so a daemon that has ever missed keeps missing until this
+ * runs.
+ */
+export function resetClaudeBinaryPathCache(): void {
+  _claudeBinaryPath = null;
 }
 
 /**

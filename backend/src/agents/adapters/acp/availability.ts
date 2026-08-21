@@ -123,6 +123,12 @@ const versionCache = new Map<string, string | null>();
  */
 const versionProbes = new Map<string, Promise<string | undefined>>();
 
+/**
+ * Incremented by every reset, so an async probe can tell whether the world it
+ * started in still exists before writing to it. See {@link resetAcpAvailabilityCache}.
+ */
+let cacheGeneration = 0;
+
 export async function acpProviderVersion(command: string): Promise<string | undefined> {
   const cached = versionCache.get(command);
   if (cached !== undefined) return cached ?? undefined;
@@ -130,6 +136,7 @@ export async function acpProviderVersion(command: string): Promise<string | unde
   const inFlight = versionProbes.get(command);
   if (inFlight) return inFlight;
 
+  const generation = cacheGeneration;
   const probe = (async (): Promise<string | undefined> => {
     let version: string | null = null;
     if (resolveAcpBinaryPath(command) !== null) {
@@ -147,8 +154,20 @@ export async function acpProviderVersion(command: string): Promise<string | unde
         version = null;
       }
     }
-    versionCache.set(command, version);
-    versionProbes.delete(command);
+    // A probe started before a reset must not write its answer afterwards, and
+    // must not delete the *replacement* probe's map entry. Clearing the maps
+    // cannot cancel a promise already in flight, and the ordering that loses is
+    // the likely one: a slow probe is the usual reason someone pressed Recheck,
+    // so the stale answer tends to settle last and would win for the rest of the
+    // process's life.
+    if (generation === cacheGeneration) {
+      // Within one generation there can only ever be this probe for this
+      // command — a second is short-circuited by the `versionProbes` lookup
+      // above, and the only thing that clears the map also bumps the
+      // generation. So a matching generation is proof the entry is ours.
+      versionCache.set(command, version);
+      versionProbes.delete(command);
+    }
     return version ?? undefined;
   })();
 
@@ -169,8 +188,23 @@ export function listAcpProviderAvailability(): AcpProviderAvailability[] {
     .sort((a, b) => Number(b.available) - Number(a.available) || a.label.localeCompare(b.label));
 }
 
-/** Test seam: forget cached PATH lookups and version probes. */
+/**
+ * Forget cached PATH lookups and version probes.
+ *
+ * Began as a test seam and is now also production: `POST /api/engines/refresh`
+ * calls it (through `services/engine-status.ts`'s `resetEngineProbeCaches`) so a
+ * user who installs a vendor CLI can be told it is there without restarting the
+ * daemon.
+ *
+ * Bumping {@link cacheGeneration} is the part that actually works. Clearing the
+ * maps cannot cancel a `--version` probe that is already running: without the
+ * generation check in {@link acpProviderVersion}, that probe would still write
+ * its pre-reset answer into the fresh cache, and would delete the replacement
+ * probe's entry on its way out. An earlier version of this comment claimed the
+ * map clear handled that. It did not.
+ */
 export function resetAcpAvailabilityCache(): void {
+  cacheGeneration++;
   cache.clear();
   versionCache.clear();
   versionProbes.clear();

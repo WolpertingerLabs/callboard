@@ -132,7 +132,17 @@ export type { CodexModelInfo } from "./codex.js";
 
 export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./providers.js";
 
-export type { EngineRuntime, EngineCredentials, EngineStatus, EngineStatusResponse } from "./engines.js";
+export type {
+  EngineRuntime,
+  EngineCredentials,
+  EngineCredentialState,
+  EngineInstallMethod,
+  EngineInstallRecipe,
+  EngineInstallGuidance,
+  EngineStatus,
+  EngineStatusResponse,
+  EngineRefreshResponse,
+} from "./engines.js";
 
 export type { HarnessProvider, ModelAlias, ModelAliasInfo } from "./modelAlias.js";
 export { HARNESS_PROVIDERS, validateModelAliases } from "./modelAlias.js";
