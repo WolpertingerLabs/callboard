@@ -169,7 +169,15 @@ export function listAcpProviderAvailability(): AcpProviderAvailability[] {
     .sort((a, b) => Number(b.available) - Number(a.available) || a.label.localeCompare(b.label));
 }
 
-/** Test seam: forget cached PATH lookups and version probes. */
+/**
+ * Forget cached PATH lookups and version probes.
+ *
+ * Began as a test seam and is now also production: `POST /api/engines/refresh`
+ * calls it (through `services/engine-status.ts`'s `resetEngineProbeCaches`) so a
+ * user who installs a vendor CLI can be told it is there without restarting the
+ * daemon. Clearing `versionProbes` matters as much as the other two — an
+ * in-flight probe left behind would resolve with the pre-install answer.
+ */
 export function resetAcpAvailabilityCache(): void {
   cache.clear();
   versionCache.clear();

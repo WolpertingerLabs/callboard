@@ -394,6 +394,21 @@ export function getClaudeCodeExecutablePath(): string | undefined {
 }
 
 /**
+ * Forget the resolved Claude Code executable so the next call looks again.
+ *
+ * Two callers, and the second is the interesting one:
+ *
+ * - `POST /api/engines/refresh`, after a user installs the CLI — without this
+ *   the daemon keeps reporting the answer it cached before the install;
+ * - anything that changes `pathToClaudeCodeExecutable`. That setting has always
+ *   needed a daemon restart to take effect, purely because this cache had no
+ *   way to be dropped.
+ */
+export function resetClaudeCodeExecutablePathCache(): void {
+  resolvedClaudePath = null;
+}
+
+/**
  * Resolve the MCP config directory for an explicit proxy mode.
  *
  * The built-in defaults (~/.callboard/.drawlatch.{local,remote}) are the source

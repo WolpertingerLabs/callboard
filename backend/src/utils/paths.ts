@@ -190,6 +190,19 @@ export function getClaudeBinaryPath(): string {
 }
 
 /**
+ * Forget the resolved `claude` path so the next call re-runs the search.
+ *
+ * The lifetime cache above is right while PATH cannot change under a running
+ * daemon, and wrong the moment a user installs the CLI and asks Callboard to
+ * look again — `POST /api/engines/refresh`. Note that step 4 caches the bare
+ * string `"claude"`, so a daemon that has ever missed keeps missing until this
+ * runs.
+ */
+export function resetClaudeBinaryPathCache(): void {
+  _claudeBinaryPath = null;
+}
+
+/**
  * Absolute path to the Callboard data directory.
  * Defaults to ~/.callboard; override with CALLBOARD_DATA_DIR env var
  * (e.g. ~/.callboard-dev for development).
