@@ -621,8 +621,9 @@ chatsRouter.get("/", (req, res) => {
      * `limit` visible rows no matter how many chats fold together.
      *
      * Gated on includeLineage, not on the index existing: the cards-only
-     * filter builds the same index for its descendant walk, and folding
-     * rows for a flat-layout request would silently drop chats from the page.
+     * filter builds the same index for its descendant walk, and folding rows
+     * for a request that did not ask for lineage would silently drop chats
+     * from the page. The sidebar always asks; other API clients need not.
      */
     const paginateWindow = <T>(items: T[], chatIdOf: (item: T) => string): { page: T[]; total: number; windowRows: number } => {
       if (!includeLineage || !lineageIndex) {
@@ -735,7 +736,18 @@ chatsRouter.get("/", (req, res) => {
         // the client's lineageOf already agree on.
         if (isRetiredProvider(readProvider(fc))) continue;
         // Chats without a session log yet (e.g. freshly spawned) fall back
-        // to the bare file record.
+        // to the bare file record — the `else` here, and now the ordinary case:
+        // every scope filter above re-guards, and paginateTreeRows never splits
+        // a group across a page boundary, so a discovery-backed relative is
+        // normally already ON the page rather than appended to it.
+        //
+        // The `if` is NOT dead, and is not merely defensive. rootKeyOf caps its
+        // ascent at MAX_LINEAGE_DEPTH while the relatedIds descent below is
+        // uncapped, so an unstamped chain (parentChatId/forkedFrom with no
+        // rootChatId) longer than that cap keys its deep members on a different
+        // row from its shallow ones. Those members are then genuinely off-page
+        // AND discovery-backed. It is the corrupt-chain case the cap exists to
+        // bound — do not delete this branch as unreachable.
         const augmented = session ? augmentSession(session) : { ...fc, displayFolder: fc.folder };
         if (excludeTriggered && !survivesTriggeredFilter(augmented)) continue;
         appended.push({ ...augmented, _lineage_appended: true });

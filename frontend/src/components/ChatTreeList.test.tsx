@@ -163,9 +163,9 @@ describe("ChatTreeList refresh", () => {
 });
 
 /**
- * The tree layout renders `ChatListItem` from two places — a lone chat and a
- * group's header row — and a dim wired into only one of them is invisible
- * until you happen to look at a folder that has both.
+ * The list renders `ChatListItem` from two places — a lone chat and a group's
+ * header row — and a dim wired into only one of them is invisible until you
+ * happen to look at a folder that has both.
  *
  * Driven by the real `isChatDimmed` rather than a hand-written predicate, so
  * the first-paint case is the genuine one: `cards` is empty *and* the fetch has
@@ -231,7 +231,7 @@ describe("ChatTreeList dimming", () => {
 });
 
 /**
- * "Active cards first" in the tree layout.
+ * "Active cards first" over grouped rows.
  *
  * The case this exists for: a lineage group collapses into ONE row but its
  * members can straddle both buckets. Handing this component a pre-partitioned

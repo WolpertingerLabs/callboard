@@ -284,11 +284,23 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     // record. Ghost is the lineage-append pass's remaining job — a tree member
     // discovery never returned, which is the branch that falls back to
     // `{...fileChat}` and has nothing to read.
-    sessionsByProvider = { "claude-code": ["claude-code-root", "claude-code-kid"], codex: [], cline: [] };
+    //
+    // The 30 fillers are not scenery. `includeLineage` forces the route to
+    // discover everything (needsPostFilter), so the file's second invariant —
+    // reads scale with rows SHIPPED, not sessions discovered — only has a
+    // margin to measure when those two numbers differ. Every other strong
+    // margin in this file sits on a query without `includeLineage`, i.e. a
+    // shape the sidebar no longer sends.
+    sessionsByProvider = {
+      "claude-code": ["claude-code-root", "claude-code-kid", ...Array.from({ length: 30 }, (_, i) => `claude-code-fill-${String(i).padStart(2, "0")}`)],
+      codex: [],
+      cline: [],
+    };
     fileChats = [
       chat("claude-code-root", { bookmarked: true }),
       chat("claude-code-kid", { parentChatId: "claude-code-root" }),
       chat("claude-code-ghost", { parentChatId: "claude-code-root" }),
+      ...Array.from({ length: 30 }, (_, i) => chat(`claude-code-fill-${String(i).padStart(2, "0")}`)),
     ];
   });
 
@@ -302,12 +314,20 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     expect(previewCalls["claude-code"] ?? []).not.toContain("/logs/claude-code-ghost.jsonl");
   });
 
-  it("reads one preview per row that has a log, and none for the appended ghost", async () => {
+  it("reads one preview per shipped log, not one per session discovered", async () => {
     const body = await tree();
-    expect(body.chats.map((c: any) => c.id).sort()).toEqual(["claude-code-ghost", "claude-code-kid", "claude-code-root"]);
-    // The whole family folds into one row; ghost rides along appended.
-    expect(body).toMatchObject({ total: 1, windowRows: 1, hasMore: false });
-    expect(totalPreviewCalls()).toBe(2);
+    // 31 rows: the family folds into one, then 30 fillers. A 20-row window is
+    // the family (root + kid) plus 19 fillers, and ghost rides along appended.
+    expect(body).toMatchObject({ total: 31, windowRows: 20, hasMore: true });
+    expect(body.chats).toHaveLength(22);
+
+    // 21 of those 22 rows have a log; ghost is the one that does not.
+    expect(totalPreviewCalls()).toBe(21);
+    expect(previewCalls["claude-code"]).not.toContain("/logs/claude-code-ghost.jsonl");
+    // The margin that is the point: 32 sessions were discovered to build this
+    // page, because includeLineage makes the route fetch the whole corpus.
+    // Files opened must track the rows that ship, not that fetch.
+    expect(totalPreviewCalls()).toBeLessThan(sessionsByProvider["claude-code"].length);
   });
 
   /**
@@ -328,6 +348,7 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     expect(body).toMatchObject({ total: 1, windowRows: 1, hasMore: false });
     // The starred root still gets its preview — the guard drops relatives, not rows.
     expect(previewOf(body, "claude-code-root")).toBe("preview of /logs/claude-code-root.jsonl");
+    // One file opened out of 32 sessions discovered.
     expect(totalPreviewCalls()).toBe(1);
   });
 
