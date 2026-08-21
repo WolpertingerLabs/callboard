@@ -9,12 +9,20 @@
  * something the user installed, and a bundled engine with a newer version on npm
  * must not read as something the user can go and install.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import type { EngineStatus } from "../../api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import type { EngineInstallGuidance, EngineStatus } from "../../api";
 import EngineStatusCard, { engineStatusDot } from "./EngineStatusCard";
 
 afterEach(cleanup);
+
+/**
+ * The card renders a `<Link>` for the bundled "check for a Callboard update"
+ * action, so every case needs a router in scope — including the ones that do not
+ * reach that branch, since which branch renders is what several of them assert.
+ */
+const render = (ui: React.ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
 
 /** Cline: bundled and pinned to an exact version in Callboard's manifest. */
 const base: EngineStatus = {
@@ -207,7 +215,10 @@ describe("the Credentials row", () => {
     render(<EngineStatusCard engine={{ ...base, credentials: { configured: false, note: "Run `codex login` once in a terminal." } }} />);
     // Header verdict plus the Credentials row itself.
     expect(screen.getAllByText("Not configured")).toHaveLength(2);
-    expect(screen.getByText("Run `codex login` once in a terminal.")).toBeTruthy();
+    // Backtick spans render as <code>, so the note is split across elements —
+    // the same treatment the install block below gives its prose.
+    expect(screen.getByText("codex login").tagName).toBe("CODE");
+    expect(screen.getByText(/once in a terminal/)).toBeTruthy();
   });
 
   it("says Callboard cannot tell rather than asserting a negative it cannot support", () => {
@@ -293,5 +304,131 @@ describe("before the status arrives", () => {
   it("says it is checking rather than rendering an empty verdict", () => {
     render(<EngineStatusCard engine={undefined} loading />);
     expect(screen.getByText(/Checking engine status/)).toBeTruthy();
+  });
+});
+
+describe("the install block — Phase 2's whole deliverable", () => {
+  const guidance: EngineInstallGuidance = {
+    reason: "No `opencode` on the PATH of the user running the Callboard daemon.",
+    scope: "Installing it does not change which binary your chats run.",
+    alternative: "Or set an API key on this tab.",
+    recipes: [
+      {
+        engineId: "opencode",
+        method: "npm-global",
+        label: "npm (global)",
+        package: "opencode-ai",
+        argv: ["npm", "install", "-g", "opencode-ai"],
+        command: "npm install -g opencode-ai",
+        docsUrl: "https://opencode.ai/docs/",
+        caveats: ["Needs a writable npm global prefix."],
+      },
+      {
+        engineId: "opencode",
+        method: "script",
+        label: "OpenCode's installer",
+        command: "curl -fsSL https://opencode.ai/install | bash",
+        docsUrl: "https://opencode.ai/docs/",
+      },
+    ],
+  };
+
+  const missing: EngineStatus = {
+    ...base,
+    id: "opencode",
+    label: "OpenCode",
+    runtime: { kind: "external", command: "opencode" },
+    installed: false,
+    version: undefined,
+    install: guidance,
+  };
+
+  it("shows every command, verbatim", () => {
+    render(<EngineStatusCard engine={missing} />);
+    expect(screen.getByText("npm install -g opencode-ai")).toBeTruthy();
+    expect(screen.getByText("curl -fsSL https://opencode.ai/install | bash")).toBeTruthy();
+  });
+
+  it("says what to run, what it does not change, and what needs nothing installed", () => {
+    render(<EngineStatusCard engine={missing} />);
+    expect(screen.getByText(/on the PATH of the user running the Callboard daemon/)).toBeTruthy();
+    expect(screen.getByText(/does not change which binary your chats run/)).toBeTruthy();
+    expect(screen.getByText(/Or set an API key on this tab/)).toBeTruthy();
+  });
+
+  it("states the caveat rather than implying it was checked", () => {
+    // Phase 2 does not probe the npm prefix. A command block is an instruction,
+    // so the conditions under which it would not help are printed next to it.
+    render(<EngineStatusCard engine={missing} />);
+    expect(screen.getByText(/Needs a writable npm global prefix/)).toBeTruthy();
+  });
+
+  it("does not offer to run anything for the user", () => {
+    render(<EngineStatusCard engine={missing} />);
+    // Copy buttons only — there is no install action anywhere on this card, in
+    // this phase or, for the `curl | bash` recipe, ever.
+    expect(screen.getByText(/Callboard does not run it for you/)).toBeTruthy();
+    for (const button of screen.queryAllByRole("button")) {
+      expect(button.getAttribute("aria-label") ?? button.textContent ?? "").toMatch(/Copy|Recheck/);
+    }
+  });
+
+  it("copies the command it displays", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    render(<EngineStatusCard engine={missing} />);
+    fireEvent.click(screen.getByLabelText("Copy: npm install -g opencode-ai"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm install -g opencode-ai"));
+  });
+
+  it("is absent entirely when the engine is fine", () => {
+    render(<EngineStatusCard engine={{ ...missing, installed: true, install: undefined }} />);
+    expect(screen.queryByText("What to run")).toBeNull();
+  });
+});
+
+describe("a bundled engine that is behind", () => {
+  const behind: EngineStatus = { ...base, latestVersion: "0.0.77", updateAvailable: true };
+
+  it("gets a link to About and no install command at all", () => {
+    // Decision 2, as corrected in #354: `npm i -g @cline/sdk@latest` cannot
+    // reach Callboard's nested node_modules, so a button would be inert — and a
+    // button whose version row never moves is worse than no button.
+    render(<EngineStatusCard engine={behind} />);
+    expect(screen.queryByText("What to run")).toBeNull();
+    const link = screen.getByText("Check for a Callboard update").closest("a");
+    expect(link?.getAttribute("href")).toBe("/settings/about");
+  });
+
+  it("does not promise a Callboard update would move a pinned dependency", () => {
+    render(<EngineStatusCard engine={behind} />);
+    expect(screen.getByText(/only a release that moves the pin changes it/)).toBeTruthy();
+  });
+
+  it("says nothing when the bundled engine is current", () => {
+    render(<EngineStatusCard engine={{ ...base, latestVersion: "0.0.69", updateAvailable: false }} />);
+    expect(screen.queryByText("What to do")).toBeNull();
+  });
+});
+
+describe("Recheck", () => {
+  it("calls the handler it was given", async () => {
+    const onRecheck = vi.fn().mockResolvedValue(undefined);
+    render(<EngineStatusCard engine={base} onRecheck={onRecheck} />);
+    fireEvent.click(screen.getByText("Recheck"));
+    await waitFor(() => expect(onRecheck).toHaveBeenCalledTimes(1));
+  });
+
+  it("reports a failure instead of implying the recheck happened", async () => {
+    const onRecheck = vi.fn().mockRejectedValue(new Error("offline"));
+    render(<EngineStatusCard engine={base} onRecheck={onRecheck} />);
+    fireEvent.click(screen.getByText("Recheck"));
+    await waitFor(() => expect(screen.getByText(/Recheck failed/)).toBeTruthy());
+  });
+
+  it("is not rendered when there is no handler", () => {
+    render(<EngineStatusCard engine={base} />);
+    expect(screen.queryByText("Recheck")).toBeNull();
   });
 });

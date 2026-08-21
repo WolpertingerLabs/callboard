@@ -9,6 +9,7 @@ import {
   getClineProviders,
   getPiProviders,
   getEngines,
+  refreshEngines,
 } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
 import EngineStatusCard, { EngineStatusDot, StatusRow } from "./EngineStatusCard";
@@ -208,6 +209,7 @@ function AcpProviderSection({
   vendor,
   engine,
   enginesLoading,
+  onRecheckEngines,
   useOpenRouter,
   onUseOpenRouterChange,
   openRouterApiKey,
@@ -218,6 +220,8 @@ function AcpProviderSection({
   /** This vendor's row from `GET /api/engines`; absent while it loads or if the call failed. */
   engine: EngineStatus | undefined;
   enginesLoading: boolean;
+  /** Drop the daemon's cached binary lookups and re-probe — the card's Recheck button. */
+  onRecheckEngines: () => Promise<void>;
   useOpenRouter: boolean;
   onUseOpenRouterChange: (v: boolean) => void;
   openRouterApiKey: string;
@@ -243,7 +247,7 @@ function AcpProviderSection({
 
   return (
     <>
-      <EngineStatusCard engine={engine ?? acpFallbackEngine(vendor)} loading={enginesLoading} />
+      <EngineStatusCard engine={engine ?? acpFallbackEngine(vendor)} loading={enginesLoading} onRecheck={onRecheckEngines} />
 
       <div style={sectionStyle}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
@@ -794,6 +798,33 @@ export default function ApiSettings() {
     }
   };
 
+  /**
+   * "Recheck" on any engine card — re-probe every engine, not just this tab's.
+   *
+   * One call for all of them because the server-side reset is global: the caches
+   * it drops are per-daemon, not per-engine, so probing one and leaving the rest
+   * on stale answers would be a distinction the backend does not make.
+   *
+   * `systemInfo` is refreshed alongside it because `acpProviders[].available`
+   * comes from the same PATH lookup that was just invalidated — without this the
+   * tab strip and the New Chat picker would keep the pre-install answer while the
+   * card showed the new one.
+   *
+   * Errors propagate: {@link EngineStatusCard}'s button owns the failure state,
+   * and swallowing them here would leave it showing a success it did not have.
+   */
+  const handleRecheckEngines = async () => {
+    const fresh = await refreshEngines();
+    setEngines(fresh);
+    setEnginesLoading(false);
+    try {
+      setSystemInfo(await getSystemInfo());
+    } catch {
+      // The engine list is the answer the button promised; a stale tab strip is
+      // a smaller lie than a failed Recheck that actually worked.
+    }
+  };
+
   if (loading) {
     return <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>Loading...</div>;
   }
@@ -900,7 +931,7 @@ export default function ApiSettings() {
 
       {activeProvider === "claude-code" && (
         <>
-          <EngineStatusCard engine={engineFor("claude-code")} loading={enginesLoading} />
+          <EngineStatusCard engine={engineFor("claude-code")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
           <ReferenceLinksSection provider="claude-code" />
 
           <OpenRouterRoutingSection
@@ -1313,6 +1344,7 @@ export default function ApiSettings() {
             <AcpProviderSection
               vendor={vendor}
               engine={engineFor("acp", vendor.id)}
+              onRecheckEngines={handleRecheckEngines}
               enginesLoading={enginesLoading}
               useOpenRouter={acpUseOpenRouter}
               onUseOpenRouterChange={setAcpUseOpenRouter}
@@ -1325,7 +1357,7 @@ export default function ApiSettings() {
 
       {activeProvider === "codex" && (
         <>
-          <EngineStatusCard engine={engineFor("codex")} loading={enginesLoading} />
+          <EngineStatusCard engine={engineFor("codex")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
           <ReferenceLinksSection provider="codex" />
 
           <OpenRouterRoutingSection
@@ -1538,7 +1570,7 @@ export default function ApiSettings() {
 
       {activeProvider === "pi" && (
         <>
-          <EngineStatusCard engine={engineFor("pi")} loading={enginesLoading} />
+          <EngineStatusCard engine={engineFor("pi")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
           <ReferenceLinksSection provider="pi" />
 
           <div style={sectionStyle}>
@@ -1640,7 +1672,7 @@ export default function ApiSettings() {
 
       {activeProvider === "cline" && (
         <>
-          <EngineStatusCard engine={engineFor("cline")} loading={enginesLoading} />
+          <EngineStatusCard engine={engineFor("cline")} loading={enginesLoading} onRecheck={handleRecheckEngines} />
           <ReferenceLinksSection provider="cline" />
 
           {/* Cline — provider + credentials */}

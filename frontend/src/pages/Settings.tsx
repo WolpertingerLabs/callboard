@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
 import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -41,6 +41,16 @@ export default function Settings({ onLogout }: SettingsProps) {
     if (tabParam && validTabKeys.has(tabParam)) return tabParam;
     return (location.state as { tab?: string } | null)?.tab || "general";
   });
+
+  // Follow `/settings/:tab` when it changes *after* mount. The initializer above
+  // only runs once, and this component does not remount when the param changes —
+  // so before this, a link from one settings pane to another (the engine cards'
+  // "Check for a Callboard update" → About) moved the URL and left the visible
+  // tab exactly where it was. The tab strip itself does not write to the URL, so
+  // this cannot fight it: `tabParam` only moves when something navigates.
+  useEffect(() => {
+    if (tabParam && validTabKeys.has(tabParam)) setActiveTab(tabParam);
+  }, [tabParam]);
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
