@@ -1693,7 +1693,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // stays null and the prompt is passed through exactly as before.
       const outstandingTasks = new OutstandingTasks();
       const holdEnabled = providerKind === "claude-code";
-      /** Set once the wall-clock bound elapses, so later turns stop re-holding. */
+      /**
+       * Set once the current hold's wall-clock bound elapses, so later turns
+       * stop re-holding it. Scoped to the {@link HeldPrompt} it describes, not
+       * to the run — see `setQueryPrompt`, which clears it.
+       */
       let holdExpired = false;
       /**
        * Install this turn's prompt, wrapping it so it can be held open. Closes
@@ -1709,6 +1713,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         const held = new HeldPrompt(source);
         heldPromptRef.current = held;
         queryOpts.prompt = held.iterable();
+        // The new hold has a new (unset) deadline, so it must not inherit the
+        // old one's verdict. Left latched, a single expiry killed the hold for
+        // the rest of the run: a stream recovery installs a fresh HeldPrompt,
+        // but `decideHold` still saw `expired: true` and released every
+        // subsequent turn at once — in production a task started 47 seconds
+        // after a recovery was released, and killed, 13 seconds later, having
+        // never been held at all.
+        holdExpired = false;
       };
       if (holdEnabled) setQueryPrompt(effectivePrompt as AsyncIterable<unknown> | string);
       // A stop pressed *during* a hold must not wait it out. The SDK tears the
