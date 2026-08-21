@@ -79,7 +79,9 @@ export function engineStatusDot(engine: EngineStatus | undefined): { color: stri
     const command = engine.runtime.kind === "external" ? engine.runtime.command : undefined;
     return { color: "var(--text-muted)", label: "Not installed", title: command ? `Not installed — no ${command} on PATH` : "Not installed" };
   }
-  if (engine.credentials.configured) {
+  // `=== true` and not truthiness: "unknown" is a string, and a tri-state that
+  // silently reads as configured is the bug this type exists to prevent.
+  if (engine.credentials.configured === true) {
     return {
       color: "var(--success)",
       label: "Ready",
@@ -88,7 +90,7 @@ export function engineStatusDot(engine: EngineStatus | undefined): { color: stri
   }
   return {
     color: "var(--warning)",
-    label: "Credentials not confirmed",
+    label: engine.credentials.configured === "unknown" ? "Credentials not confirmed" : "Not configured",
     title: `Installed — ${engine.credentials.note ?? "no credentials configured"}`,
   };
 }
@@ -106,7 +108,8 @@ function runtimeSummary(engine: EngineStatus): React.ReactNode {
     case "bundled":
       return (
         <>
-          Bundled with Callboard — <code style={mono}>{runtime.package}</code> runs in-process. Nothing to install; it updates when Callboard does.
+          Bundled with Callboard — <code style={mono}>{runtime.package}</code> runs in-process. Nothing to install: a global install of it cannot reach
+          Callboard&rsquo;s own <code style={mono}>node_modules</code>, which is where the copy that runs comes from.
         </>
       );
     case "bundled-overridable":
@@ -118,31 +121,54 @@ function runtimeSummary(engine: EngineStatus): React.ReactNode {
               , overridden by <code style={mono}>{runtime.overridePath}</code>
             </>
           ) : (
-            <>. It updates when Callboard does.</>
+            <>
+              . Nothing to install: a global install of it cannot reach Callboard&rsquo;s own <code style={mono}>node_modules</code>.
+            </>
           )}
         </>
       );
     case "external-preferred":
-      return runtime.resolvedPath ? (
-        <>
-          Native <code style={mono}>{runtime.command}</code> at <code style={mono}>{runtime.resolvedPath}</code>, preferred over the bundled{" "}
-          <code style={mono}>{runtime.fallbackPackage}</code>
-          {runtime.fallbackVersion ? ` ${runtime.fallbackVersion}` : ""}.
-        </>
-      ) : (
+      if (runtime.resolvedPath) {
+        return (
+          <>
+            Native <code style={mono}>{runtime.command}</code> at <code style={mono}>{runtime.resolvedPath}</code>, preferred over the bundled{" "}
+            <code style={mono}>{runtime.fallbackPackage}</code>
+            {runtime.fallbackVersion ? ` ${runtime.fallbackVersion}` : ""}.
+          </>
+        );
+      }
+      // The bundled binary is an optional dependency, so "no native CLI" does
+      // not imply "the bundled one runs" — say which of the two states it is.
+      return engine.installed ? (
         <>
           No native <code style={mono}>{runtime.command}</code> on PATH — running the binary bundled with <code style={mono}>{runtime.fallbackPackage}</code>
           {runtime.fallbackVersion ? ` ${runtime.fallbackVersion}` : ""}.
         </>
+      ) : (
+        <>
+          No native <code style={mono}>{runtime.command}</code> on PATH, and no bundled binary for this platform in{" "}
+          <code style={mono}>{runtime.fallbackPackage}</code> — this engine cannot run until one of the two is installed.
+        </>
       );
     case "external":
+      // `installed` decides found-or-not, and the path is shown when known:
+      // the fallback built from /api/system-info knows the former but not the
+      // latter, and keying the sentence off the path told a user with the CLI
+      // on their PATH to go and install it.
+      if (!engine.installed) {
+        return (
+          <>
+            External CLI — <code style={mono}>{runtime.command}</code> not found on PATH. Install it to enable this engine.
+          </>
+        );
+      }
       return runtime.resolvedPath ? (
         <>
           External CLI — <code style={mono}>{runtime.command}</code> at <code style={mono}>{runtime.resolvedPath}</code>. You install and update it yourself.
         </>
       ) : (
         <>
-          External CLI — <code style={mono}>{runtime.command}</code> not found on PATH. Install it to enable this engine.
+          External CLI — <code style={mono}>{runtime.command}</code>, found on PATH. You install and update it yourself.
         </>
       );
   }
@@ -157,34 +183,129 @@ function versionSummary(engine: EngineStatus): React.ReactNode {
 }
 
 /**
+ * The npm package this engine's "Latest" is about, when there is one.
+ *
+ * Optional only on `external`: an ACP vendor may ship a CLI that npm has never
+ * heard of, and for that one nothing was ever asked.
+ */
+function trackedPackage(engine: EngineStatus): string | undefined {
+  return engine.runtime.package;
+}
+
+/**
+ * What, if anything, a user can do about a newer published version.
+ *
+ * A `switch` rather than a ternary chain so `pinned` / `dependencyRange` are
+ * read only off the variants that carry them.
+ */
+function updateRemedy(runtime: EngineStatus["runtime"]): React.ReactNode {
+  switch (runtime.kind) {
+    case "external":
+    case "external-preferred":
+      return " · update available";
+    case "bundled":
+    case "bundled-overridable":
+      if (runtime.pinned) {
+        return (
+          <>
+            {" "}
+            · newer than the version Callboard pins (<code style={mono}>{runtime.dependencyRange}</code>), which only moves when Callboard&rsquo;s manifest does
+          </>
+        );
+      }
+      if (runtime.dependencyRange) {
+        return (
+          <>
+            {" "}
+            · within Callboard&rsquo;s <code style={mono}>{runtime.dependencyRange}</code> range, so a Callboard update can pick it up
+          </>
+        );
+      }
+      return " · newer than the bundled copy";
+  }
+}
+
+/**
  * The Latest row.
  *
- * An update being available is stated as a fact and never as a button: a
- * bundled engine is pinned by Callboard's own manifest, and installing a newer
- * one into its tree is a silent way to break the adapter. Phase 2 turns this
- * into an action only for the two engines where the action is honest.
+ * An update being available is stated as a fact, and the *remedy* is stated only
+ * where one exists. Three cases, and conflating them is how this row lies:
+ *
+ * - **Pinned** (`@cline/sdk`, `@earendil-works/pi-coding-agent` — exact
+ *   versions in Callboard's manifest): updating Callboard changes nothing until
+ *   a maintainer moves the pin, so the row states the pin and stops. The first
+ *   cut of this said "updating Callboard picks it up", which was false for
+ *   exactly the two engines it was rendered for.
+ * - **Ranged** (`@openai/codex-sdk`, a caret): a Callboard update really can
+ *   resolve the newer version, so saying so is honest.
+ * - **External**: the user installs it, so "update available" is an action they
+ *   can take. Phase 2 gives them the command.
  */
 function latestSummary(engine: EngineStatus): React.ReactNode {
-  if (!engine.latestVersion) return <span style={{ color: "var(--text-muted)" }}>Unavailable — the npm registry could not be reached</span>;
-  const bundled = engine.runtime.kind === "bundled" || engine.runtime.kind === "bundled-overridable";
+  if (!engine.latestVersion) {
+    // Distinguish "asked and could not reach npm" from "never asked" — an
+    // engine with no package to look up is not an offline daemon. The second
+    // branch states Callboard's own state rather than a claim about what npm
+    // does or does not carry, which is not something this knows either.
+    return trackedPackage(engine) ? (
+      <span style={{ color: "var(--text-muted)" }}>Unavailable — the npm registry could not be reached</span>
+    ) : (
+      <span style={{ color: "var(--text-muted)" }}>Not checked — Callboard tracks no npm package for this CLI</span>
+    );
+  }
+
   return (
     <>
       <code style={mono}>{engine.latestVersion}</code>
       {engine.updateAvailable === true ? (
-        <span style={{ color: "var(--warning)" }}>{bundled ? " · newer than the bundled copy; updating Callboard picks it up" : " · update available"}</span>
-      ) : engine.updateAvailable === false ? (
+        <span style={{ color: "var(--warning)" }}>{updateRemedy(engine.runtime)}</span>
+      ) : engine.updateAvailable === false && !engine.latestVersionStale ? (
         <span style={{ color: "var(--text-muted)" }}> · up to date</span>
+      ) : null}
+      {/* An answer nobody could refresh is still worth showing, but it is a
+          weaker claim than a fresh one — so it says when it was last true
+          rather than asserting the present tense. */}
+      {engine.latestVersionStale ? (
+        <div style={{ color: "var(--text-muted)", marginTop: 2 }}>
+          Last checked {formatCheckedAt(engine.latestVersionCheckedAt)}; the registry could not be reached since.
+        </div>
       ) : null}
     </>
   );
 }
 
-/** The Credentials row: configured-or-not, its source, and the caveat when there is one. */
+/** A cache timestamp as something a human can weigh — "3 days ago", not an ISO string. */
+function formatCheckedAt(iso: string | undefined): string {
+  if (!iso) return "at an unknown time";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "at an unknown time";
+  const hours = Math.floor((Date.now() - then) / 3_600_000);
+  if (hours < 1) return "less than an hour ago";
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * The Credentials row: configured, not configured, or genuinely unknown.
+ *
+ * The third state is the point. "Not configured" is an assertion about the
+ * user's machine, and for an ACP vendor — or an embedded runtime reading a key
+ * from the process environment — Callboard has no standing to make it. It read
+ * as a flat denial to users who *were* authenticated, printed directly above a
+ * note explaining that a chat might work anyway.
+ */
 function credentialsSummary(engine: EngineStatus): React.ReactNode {
   const { configured, source, note } = engine.credentials;
   return (
     <>
-      {configured ? <>Configured{source ? <> — {source}</> : null}</> : <span style={{ color: "var(--text-muted)" }}>Not configured</span>}
+      {configured === true ? (
+        <>Configured{source ? <> — {source}</> : null}</>
+      ) : configured === "unknown" ? (
+        <span style={{ color: "var(--text-muted)" }}>Callboard cannot tell</span>
+      ) : (
+        <span style={{ color: "var(--text-muted)" }}>Not configured</span>
+      )}
       {note ? <div style={{ color: "var(--text-muted)", marginTop: 2 }}>{note}</div> : null}
     </>
   );

@@ -156,6 +156,31 @@ const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
 };
 
 /**
+ * An ACP vendor's status from `/api/system-info` alone.
+ *
+ * `acpProviders` carries the two facts that matter most — is the binary there,
+ * and what is it called — and it arrives with the rest of the page rather than
+ * behind a registry lookup. So a missing `/api/engines` answer costs the version
+ * rows and nothing else, instead of blanking the tab.
+ *
+ * Credentials are `"unknown"` here for the same reason they are on the real
+ * status: ACP has no auth introspection, and this path knows strictly less than
+ * that one does.
+ */
+function acpFallbackEngine(vendor: AcpProviderInfo): EngineStatus {
+  return {
+    id: vendor.id,
+    label: vendor.label,
+    runtime: { kind: "external", command: vendor.command },
+    installed: vendor.available,
+    credentials: {
+      configured: "unknown",
+      note: `Held by the ${vendor.label} CLI, never by Callboard. ACP gives a client no way to ask whether an agent is signed in.`,
+    },
+  };
+}
+
+/**
  * Read-only status for one ACP vendor.
  *
  * Every other tab on this page edits credentials callboard holds. This one has
@@ -171,6 +196,13 @@ const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
  * left here is what the card cannot know: the permission override callboard
  * applies to sessions it launches (invisible otherwise, and it materially
  * changes how the agent behaves) and the harvested model catalog.
+ *
+ * When `/api/engines` has not answered — a cold registry lookup, or a failed
+ * call — the card falls back to {@link acpFallbackEngine} rather than to a
+ * placeholder. `systemInfo.acpProviders` already carries `available` and
+ * `command` synchronously, and dropping to "Checking engine status…" would take
+ * the single most actionable line on the page ("`opencode` not found on PATH")
+ * away from exactly the user who needs it.
  */
 function AcpProviderSection({
   vendor,
@@ -211,7 +243,7 @@ function AcpProviderSection({
 
   return (
     <>
-      <EngineStatusCard engine={engine} loading={enginesLoading} />
+      <EngineStatusCard engine={engine ?? acpFallbackEngine(vendor)} loading={enginesLoading} />
 
       <div style={sectionStyle}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
@@ -589,6 +621,19 @@ export default function ApiSettings() {
 
   const loadAll = async () => {
     setLoading(true);
+
+    // Engine status, kicked off before anything that can throw and never
+    // awaited with the rest. Two reasons it lives out here: a cold registry
+    // lookup must not hold the whole page on "Loading...", and as the last
+    // statement of the try below it was skipped whenever settings failed to
+    // load — leaving every tab saying "Checking engine status…" forever,
+    // underneath the error banner.
+    setEnginesLoading(true);
+    getEngines()
+      .then(setEngines)
+      .catch(() => setEngines([]))
+      .finally(() => setEnginesLoading(false));
+
     try {
       const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo().catch(() => null)]);
       setSettings(s);
@@ -657,14 +702,6 @@ export default function ApiSettings() {
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
         .catch(() => {});
-      // Engine status. Not awaited with the rest: a cold registry lookup should
-      // not hold the whole page on "Loading...", and every tab renders fine
-      // while the card says "Checking engine status…".
-      setEnginesLoading(true);
-      getEngines()
-        .then(setEngines)
-        .catch(() => setEngines([]))
-        .finally(() => setEnginesLoading(false));
     } catch (err: any) {
       setError(err.message || "Failed to load settings");
     } finally {
@@ -774,7 +811,13 @@ export default function ApiSettings() {
    */
   const engineFor = (tab: SettingsTab, acpId?: string): EngineStatus | undefined => {
     const id = tab === "acp" ? acpId : tab === "openrouter" ? undefined : tab;
-    return id ? engines.find((e) => e.id === id) : undefined;
+    if (!id) return undefined;
+    const engine = engines.find((e) => e.id === id);
+    if (engine) return engine;
+    // An ACP vendor knows enough from system-info alone to show a dot, so its
+    // tab is not left blank while /api/engines is in flight or after it failed.
+    const vendor = tab === "acp" ? (systemInfo?.acpProviders ?? []).find((v) => v.id === id) : undefined;
+    return vendor ? acpFallbackEngine(vendor) : undefined;
   };
 
   // Inline alias validation — mirrors the backend's write-time rules so the
