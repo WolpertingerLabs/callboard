@@ -19,7 +19,7 @@ fourth is bundled-but-overridable:
 | Engine | How it actually runs | What "installed" can honestly mean | Real update path |
 |---|---|---|---|
 | **Claude Code** | `@anthropic-ai/claude-agent-sdk` (bundled; per-platform native binaries as optional deps) — but `getClaudeCodeExecutablePath()` **prefers a native `claude` on PATH** and only falls back to the bundled binary | SDK: always present. Native CLI: genuinely present-or-not, and preferred | CLI: `npm i -g @anthropic-ai/claude-code` or the native installer. SDK: bump callboard |
-| **Codex** | `@openai/codex-sdk` → `@openai/codex` → platform binary `@openai/codex-<plat>`, all installed with callboard. `codexPathOverride` exists in the SDK and callboard does not use it | Binary: always present. The real gate is **auth**, which `codexConfigured` / `codexAuthSource` already report | Bump callboard (or, after Phase 4, point at a user-installed `codex`) |
+| **Codex** | `@openai/codex-sdk` → `@openai/codex` → platform binary `@openai/codex-<plat>`, all installed with callboard. `codexPathOverride` exists in the SDK and callboard does not use it | Binary: always present, but nested — it never reaches the user's `PATH`, so `codex login` needs a separate `npm i -g @openai/codex` (see Phase 2). The real gate is **auth**, which `codexConfigured` / `codexAuthSource` already report | Bump callboard (or, after Phase 4, point at a user-installed `codex`) |
 | **Cline** | `@cline/sdk` → `@cline/core`, pure JS, in-process | Always present | Bump callboard |
 | **pi** | `@earendil-works/pi-coding-agent`, in-process library (its `pi` bin is unused) | Always present | Bump callboard |
 | **ACP / OpenCode** | External `opencode` binary on PATH, spawned per turn | Genuinely install-or-not — already detected by `adapters/acp/availability.ts` | `npm i -g opencode-ai`, or the vendor's install script |
@@ -57,10 +57,16 @@ Settled before work starts.
 2. **Bundled engines never get an "Update" button.** Their version is a
    dependency range in callboard's manifest — `@cline/sdk` and
    `@earendil-works/pi-coding-agent` are pinned *exactly*, and the Codex adapter
-   already warns on drift from `EXPECTED_CODEX_CLI_VERSION` because the rollout
-   format is version-dependent. Letting a user `npm i -g @cline/sdk@latest` into
-   callboard's tree is a silent way to break the adapters. Their honest action
-   is "Update Callboard", linking to the About page's existing notice.
+   carries an `EXPECTED_CODEX_CLI_VERSION` drift check because the rollout
+   format is version-dependent (though that check does not currently fire — see
+   Phase 1). The reason a button would be wrong is not that a global install is
+   dangerous but that it is **inert**: `npm i -g @cline/sdk@latest` cannot reach
+   callboard's tree at all, because Node resolves the package from callboard's
+   own nested `node_modules` first and the global prefix is not on that search
+   path. The two copies coexist, and an "Update" button would be a silent no-op
+   — which is worse than no button, since the version it reports would never
+   move. Their honest action is "Update Callboard", linking to the About page's
+   existing notice.
 3. **A new `GET /api/engines` endpoint, not more fields on `/api/system-info`.**
    System-info is polled by several pages and already carries
    `acpProviders` / `codexConfigured` / `codexAuthSource`; those stay exactly as
@@ -127,17 +133,43 @@ interface EngineStatus {
 
 Sources, all of them already in the tree:
 
-- **Versions**: `require("<pkg>/package.json").version` for bundled engines (the
-  pattern `CodexSessionProvider.checkSdkVersionOnce` already uses);
+- **Versions**: for bundled engines, resolve the manifest path and read it —
+  **not** `require("<pkg>/package.json").version`. Every engine package except
+  `@openai/codex` ships an `exports` map with no `"./package.json"` entry, so
+  that require throws `ERR_PACKAGE_PATH_NOT_EXPORTED`; measured against the
+  installed tree, it fails for `@anthropic-ai/claude-agent-sdk`,
+  `@openai/codex-sdk`, `@cline/sdk` and `@earendil-works/pi-coding-agent`. Use
+  `require.resolve.paths("<pkg>")` (or resolve the package entry and walk up) to
+  find the directory and `readFileSync` its `package.json`.
+
+  **Consequence, and it is a live bug:**
+  `CodexSessionProvider.checkSdkVersionOnce` is the pattern this plan originally
+  named — and it is **dead code**. Its `require("@openai/codex-sdk/package.json")`
+  throws into the bare catch on every boot, so the `EXPECTED_CODEX_CLI_VERSION`
+  drift warning it exists to emit can never fire, and a rollout-format drift
+  would arrive silently. Not this phase's job to fix; **Phase 4 owns it**, where
+  the drift warning is already being moved into the status card.
+
   `claude --version` for the native CLI (already run for
-  `system-info.claudeCliVersion`); `opencode --version` for ACP vendors, added
-  to `AcpProviderAvailability` behind the same per-process cache.
+  `system-info.claudeCliVersion`); `opencode --version` for ACP vendors — in a
+  **separate function**, called only from the engines route, not a new field on
+  `AcpProviderAvailability`. That type is serialized into `/api/system-info`,
+  which Decision 3 commits to leaving alone, and the probe executes a
+  third-party binary — which is exactly what `availability.ts` refuses to do on
+  a polled endpoint.
 - **Latest versions**: generalize the npm-registry fetch + 4-hour disk cache
   that `bin/callboard.js` and the `/api/system-info` handler each implement
   today into `services/npm-registry.ts`, keyed by package, cached at
   `~/.callboard/engine-versions.json`. Best-effort: an offline daemon returns
   status with `latestVersion` absent, never an error.
-- **Credentials**: `sdk-info`'s `account.tokenSource` (Claude Code),
+- **Credentials**: for Claude Code, `sdk-info`'s account info — but **not
+  `tokenSource` alone**. Every field on the SDK's `AccountInfo` is optional and
+  `tokenSource` is absent on a subscription login (which returns `email` /
+  `organization` / `subscriptionType` / `apiProvider`), so keying on it reports
+  a signed-in Max account as unconfigured. Fall back through
+  `tokenSource → apiKeySource → subscriptionType → email` and treat the first
+  present value as the source.
+  Then `getCodexAuthSource()` (Codex),
   `getCodexAuthSource()` (Codex), `clineProviderId` + key presence (Cline),
   `piProviderId` + key presence (pi), and for ACP the *honest non-answer* the
   availability module already documents — "held by the CLI; ACP has no auth
@@ -169,10 +201,22 @@ Ends with: every tab tells the truth, nothing executes, no new failure mode.
    | Claude Code (native CLI) | `script` (copy-only) | `curl -fsSL https://claude.ai/install.sh \| bash` |
    | OpenCode | `npm-global` | `npm install -g opencode-ai` |
    | OpenCode | `script` (copy-only) | the vendor's install script |
-   | Codex / Cline / pi | `bundled` | none — "Update Callboard" |
+   | Codex CLI (login only) | `npm-global` | `npm install -g @openai/codex` |
+   | Cline / pi | `bundled` | none — "Update Callboard" |
 
    Each entry carries `docsUrl`. `npm-global` entries carry an argv array; the
    package name is a literal in this file and never arrives from a request.
+
+   **Codex is not purely bundled, which the table above originally missed.** The
+   engine needs no install — its binary ships nested under `@openai/codex-sdk`
+   — but that copy resolves inside callboard's own `node_modules` and never
+   reaches the user's `PATH`, and callboard's `bin/` exposes no `codex`
+   passthrough. So the *subscription* auth path is unreachable out of the box:
+   `codex login` is not a command a clean-install user has. `@openai/codex` is
+   therefore a genuine, offerable recipe — scoped to "install this to log in",
+   not "install this to run Codex", since chats keep using the bundled copy
+   either way. The alternative, which needs nothing installed, is the API-key
+   mode in Settings → API → Codex; the status card should say both.
 
 2. **UI**: when `installed === false`, the status card shows the command in a
    copy-to-clipboard block plus a docs link — the shape `web-tunnel.ts`'s
