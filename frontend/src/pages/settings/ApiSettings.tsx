@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, ExternalLink } from "lucide-react";
+import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, ExternalLink, AlertTriangle, CheckCircle2, HardDrive } from "lucide-react";
 import {
   getAgentSettings,
   updateAgentSettings,
@@ -10,12 +10,13 @@ import {
   getPiProviders,
   getEngines,
   refreshEngines,
+  checkEngineBinary,
 } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
 import EngineStatusCard, { EngineStatusDot, StatusRow } from "./EngineStatusCard";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
-import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo, EngineStatus } from "../../api";
+import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo, EngineStatus, EngineBinaryCheckResponse } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import ClineModelSelector from "../../components/ClineModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
@@ -435,6 +436,151 @@ function SecretField({ id, value, onChange, placeholder }: SecretFieldProps) {
   );
 }
 
+/**
+ * "Run *my* binary, not the one you found" — the field behind
+ * `pathToClaudeCodeExecutable` and `codexPathOverride`.
+ *
+ * ## Why the validation is a round trip
+ *
+ * The path is on the **daemon's** filesystem, not the browser's, and the three
+ * things that decide whether it will work — does it exist, is it a regular file,
+ * does the user running the daemon hold an execute bit on it — are all questions
+ * only the daemon can answer. So this asks it, on a debounce, through the same
+ * `utils/binary-path.ts` check the resolver applies when a chat starts. A
+ * browser-side "looks like a path" regex would have been free and would have
+ * agreed with the resolver exactly until the first time it mattered.
+ *
+ * ## What the field claims, and what it does not
+ *
+ * A green tick here means "Callboard would accept this path", which is not the
+ * same as "this is in effect" — the value has not been saved yet, and until it
+ * is, chats keep running whatever they ran before. The **status card at the top
+ * of the tab is the authority** on what actually runs, it re-probes on save, and
+ * this help text points at it rather than implying the tick settled the matter.
+ * The distance between those two claims is the entire bug this feature has
+ * produced ten times.
+ *
+ * A blank field is neither valid nor invalid: it is the default, and it is
+ * rendered as plain help text.
+ */
+function BinaryOverrideField({
+  id,
+  engineId,
+  value,
+  onChange,
+  placeholder,
+  help,
+}: {
+  id: string;
+  /** Selects the fallback sentence the daemon returns. */
+  engineId: "claude-code" | "codex";
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  /** What this override means for this engine, rendered above the check result. */
+  help: React.ReactNode;
+}) {
+  /**
+   * The last answer received, tagged with the path it was *about*.
+   *
+   * Tagged rather than cleared on every keystroke, and that is the whole
+   * anti-staleness mechanism: {@link current} below only accepts an answer whose
+   * `path` matches what is in the box right now, so an in-flight check for a
+   * half-typed path can never be rendered as a verdict on the finished one. It
+   * also means the effect never has to write state synchronously to erase a
+   * previous result — there is nothing to erase, only something that stops
+   * matching.
+   */
+  const [check, setCheck] = useState<EngineBinaryCheckResponse | null>(null);
+  const trimmed = value.trim();
+
+  useEffect(() => {
+    if (!trimmed) return;
+    // Debounced, and aborted on every keystroke and on unmount — the abort is
+    // what stops the daemon fielding a request per character.
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      checkEngineBinary(trimmed, engineId, controller.signal)
+        .then((result) => {
+          if (!controller.signal.aborted) setCheck(result);
+        })
+        .catch(() => {
+          // The daemon did not answer. Leave the field in its "checking" state
+          // rather than guessing: "invalid" would be a claim about the user's
+          // filesystem made by something that failed to look at it.
+        });
+    }, 350);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [trimmed, engineId]);
+
+  const current = check && check.path === trimmed ? check : null;
+  const ok = current?.state === "active";
+  const bad = Boolean(current && current.state && current.state !== "active");
+  const checking = Boolean(trimmed) && !current;
+
+  return (
+    <div style={fieldWrap}>
+      <label htmlFor={id} style={labelStyle}>
+        Binary path
+      </label>
+      <input
+        id={id}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="off"
+        spellCheck={false}
+        style={{ ...inputStyle, borderColor: bad ? "var(--warning)" : ok ? "var(--success)" : "var(--border)" }}
+      />
+      <div style={helpStyle}>{help}</div>
+      {trimmed ? (
+        <div style={{ ...helpStyle, display: "flex", gap: 5, alignItems: "flex-start", marginTop: 4 }}>
+          {checking ? (
+            <span style={{ color: "var(--text-muted)" }}>Checking&hellip;</span>
+          ) : ok ? (
+            <>
+              <CheckCircle2 size={12} style={{ color: "var(--success)", flexShrink: 0, marginTop: 1 }} />
+              <span>
+                Callboard can run this. It takes effect when you save — the status card at the top of this tab then reports which binary chats are actually
+                using.
+              </span>
+            </>
+          ) : bad ? (
+            <>
+              <AlertTriangle size={12} style={{ color: "var(--warning)", flexShrink: 0, marginTop: 1 }} />
+              <span>{inlineCode(current!.detail)}</span>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Render backtick spans in a backend-authored sentence as `<code>`.
+ *
+ * Same job as `EngineStatusCard`'s `withInlineCode`, on strings written in the
+ * same place and in the same voice — the check details name paths and `chmod`
+ * commands, and prose that renders them as plain text in one card and as code in
+ * another reads as two different products.
+ */
+function inlineCode(text: string): React.ReactNode {
+  return text.split("`").map((part, i) =>
+    i % 2 === 1 ? (
+      <code key={i} style={{ fontSize: 11 }}>
+        {part}
+      </code>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  );
+}
+
 interface OpenRouterRoutingSectionProps {
   /** Which native harness this routes — drives copy and the key env-var label. */
   harness: "Claude Code" | "Codex";
@@ -605,6 +751,11 @@ export default function ApiSettings() {
   const [defaultSonnetModel, setDefaultSonnetModel] = useState("");
   const [defaultHaikuModel, setDefaultHaikuModel] = useState("");
   const [subagentModel, setSubagentModel] = useState("");
+  // Binary overrides — "run my copy, not the one you found". Two engines have
+  // one; Cline and pi are in-process libraries with no subprocess to point
+  // elsewhere, so they get no field rather than a disabled one.
+  const [pathToClaudeCodeExecutable, setPathToClaudeCodeExecutable] = useState("");
+  const [codexPathOverride, setCodexPathOverride] = useState("");
   // Claude Code → OpenRouter endpoint routing
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [claudeCodeOpenRouterApiKey, setClaudeCodeOpenRouterApiKey] = useState("");
@@ -703,6 +854,7 @@ export default function ApiSettings() {
       setDefaultSonnetModel(s.defaultSonnetModel ?? "");
       setDefaultHaikuModel(s.defaultHaikuModel ?? "");
       setSubagentModel(s.subagentModel ?? "");
+      setPathToClaudeCodeExecutable(s.pathToClaudeCodeExecutable ?? "");
       // Default the toggle on when the ambient env already routes through
       // OpenRouter and the user hasn't explicitly saved a choice yet.
       setClaudeCodeUseOpenRouter(s.claudeCodeUseOpenRouter ?? Boolean(sys?.claudeCodeOpenRouterDetected));
@@ -728,6 +880,7 @@ export default function ApiSettings() {
       setCodexBaseUrl(s.codexBaseUrl ?? "");
       setCodexModel(s.codexModel ?? "");
       setCodexHome(s.codexHome ?? "");
+      setCodexPathOverride(s.codexPathOverride ?? "");
       setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
       setCodexUseOpenRouter(s.codexUseOpenRouter ?? Boolean(sys?.codexOpenRouterDetected));
       setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
@@ -764,6 +917,18 @@ export default function ApiSettings() {
     setSaving(true);
     setError("");
 
+    // Did this save move a binary override? Captured *before* the write, because
+    // `setSettings(updated)` below replaces the value being compared against.
+    //
+    // The server drops its resolution caches when one of these changes, so the
+    // card would eventually tell the truth — but only after someone pressed
+    // Recheck. Between saving and pressing it, the card would go on describing
+    // the previous binary, which is the exact state this feature keeps shipping:
+    // a settings page reporting a machine it has not looked at since.
+    const overridesChanged =
+      pathToClaudeCodeExecutable.trim() !== (settings?.pathToClaudeCodeExecutable ?? "").trim() ||
+      codexPathOverride.trim() !== (settings?.codexPathOverride ?? "").trim();
+
     try {
       const updated = await updateAgentSettings({
         apiBaseUrl,
@@ -774,6 +939,7 @@ export default function ApiSettings() {
         defaultSonnetModel,
         defaultHaikuModel,
         subagentModel,
+        pathToClaudeCodeExecutable,
         claudeCodeUseOpenRouter,
         claudeCodeOpenRouterApiKey,
         claudeCodeOpenRouterBaseUrl,
@@ -800,6 +966,7 @@ export default function ApiSettings() {
         codexBaseUrl,
         codexModel,
         codexHome,
+        codexPathOverride,
         codexSandboxMode,
         codexUseOpenRouter,
         codexOpenRouterApiKey,
@@ -818,6 +985,14 @@ export default function ApiSettings() {
       setSettings(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      // Re-probe so the status card names the binary that is now in effect
+      // rather than the one that was. Errors are swallowed here and only here:
+      // the save itself succeeded, and turning a failed follow-up probe into a
+      // red "Failed to save settings" would report the wrong outcome for the
+      // thing the user actually pressed. A stale card is recoverable with
+      // Recheck; a false failure sends someone looking for a problem that is not
+      // there.
+      if (overridesChanged) void handleRecheckEngines().catch(() => {});
       // Re-fetch system info so the Account / Models display reflects new overrides.
       // The backend kicks off a refresh on save; give it a moment before polling.
       setTimeout(() => {
@@ -1109,6 +1284,38 @@ export default function ApiSettings() {
               </div>
             </div>
           )}
+
+          {/* Binary — deliberately OUTSIDE the OpenRouter guard above. Routing
+              through OpenRouter changes the endpoint and the credential; the
+              Agent SDK still spawns a `claude` either way, so hiding this field
+              in that mode would hide the setting from exactly the users most
+              likely to be running a hand-built CLI. */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <HardDrive size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Claude Code Binary</span>
+            </div>
+            <div style={subtitleStyle}>
+              Which <code style={{ fontSize: 11 }}>claude</code> the Agent SDK runs. Leave this empty and Callboard looks for a native{" "}
+              <code style={{ fontSize: 11 }}>claude</code> on its <code style={{ fontSize: 11 }}>PATH</code>, then falls back to the binary bundled with the
+              Agent SDK.
+            </div>
+            <BinaryOverrideField
+              id="pathToClaudeCodeExecutable"
+              engineId="claude-code"
+              value={pathToClaudeCodeExecutable}
+              onChange={setPathToClaudeCodeExecutable}
+              placeholder="/usr/local/bin/claude"
+              help={
+                <>
+                  Absolute path on the machine running Callboard. Set this to pin a specific build — a local checkout, a version you have not upgraded, or an
+                  install somewhere the daemon&rsquo;s <code style={{ fontSize: 11 }}>PATH</code> does not reach. Clearing it restores the default lookup. Note
+                  it does <em>not</em> change the binary behind the About page&rsquo;s CLI version or the login prompt: that is a separate lookup, and the status
+                  card above says so when the two disagree.
+                </>
+              }
+            />
+          </div>
 
           {/* Models */}
           <div style={sectionStyle}>
@@ -1645,6 +1852,51 @@ export default function ApiSettings() {
                 <code style={{ fontSize: 11 }}>~/.codex</code>.
               </div>
             </div>
+          </div>
+
+          {/* Codex — which binary. The interesting one, because the Codex card
+              also offers `npm i -g @openai/codex` for a completely different
+              reason: that install exists so `codex login` is a command you have.
+              Until this field is set it changes nothing about chats, and the
+              copy on both sides has to keep saying so — an install recipe that
+              silently became "and now it runs your chats too" is the same class
+              of surprise as a card claiming an override that is not in effect. */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <HardDrive size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Codex Binary</span>
+            </div>
+            <div style={subtitleStyle}>
+              Which <code style={{ fontSize: 11 }}>codex</code> runs your chats. Leave this empty and Callboard uses the platform binary bundled with{" "}
+              <code style={{ fontSize: 11 }}>@openai/codex-sdk</code>, which is what it has always done. There is no{" "}
+              <code style={{ fontSize: 11 }}>PATH</code> search behind this field: it is your path or the bundled copy, nothing in between.
+            </div>
+            <BinaryOverrideField
+              id="codexPathOverride"
+              engineId="codex"
+              value={codexPathOverride}
+              onChange={setCodexPathOverride}
+              placeholder={engineFor("codex")?.userCliPath || "/usr/local/bin/codex"}
+              help={
+                <>
+                  {engineFor("codex")?.userCliPath ? (
+                    <>
+                      You already have a <code style={{ fontSize: 11 }}>codex</code> at{" "}
+                      <code style={{ fontSize: 11 }}>{engineFor("codex")?.userCliPath}</code> — the one{" "}
+                      <code style={{ fontSize: 11 }}>codex login</code> runs. Setting it here makes chats run it too.{" "}
+                    </>
+                  ) : (
+                    <>
+                      Absolute path on the machine running Callboard. If you installed the CLI globally with{" "}
+                      <code style={{ fontSize: 11 }}>npm i -g @openai/codex</code>, <code style={{ fontSize: 11 }}>which codex</code> in a terminal will print
+                      it.{" "}
+                    </>
+                  )}
+                  Auth and sessions do not move: an overridden binary still reads{" "}
+                  <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and writes to the same rollout tree. Clearing this returns to the bundled binary.
+                </>
+              }
+            />
           </div>
         </>
       )}

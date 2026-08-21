@@ -531,3 +531,156 @@ describe("Recheck, when the server did not actually probe", () => {
     expect(screen.queryByText(/Checked moments ago/)).toBeNull();
   });
 });
+
+describe("binary overrides — the card must say which binary is in effect", () => {
+  it("names an active Codex override as what runs, with its version", () => {
+    render(
+      <EngineStatusCard
+        engine={{
+          ...ranged,
+          version: "0.150.0",
+          runtime: {
+            kind: "bundled-overridable",
+            package: "@openai/codex-sdk",
+            overridePath: "/opt/codex/bin/codex",
+            override: { path: "/opt/codex/bin/codex", state: "active", detail: "executable", version: "0.150.0" },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/Running/)).toBeTruthy();
+    expect(screen.getAllByText("/opt/codex/bin/codex").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Override in effect:/)).toBeTruthy();
+    // "Bundled with Callboard" would be the opposite of true here: the bundled
+    // copy is on disk and nothing executes it.
+    expect(screen.queryByText(/Bundled with Callboard/)).toBeNull();
+  });
+
+  it("shows a REJECTED override, which is invisible from every other row", () => {
+    // The whole reason the state travels with the path. With the override
+    // rejected, the resolver falls through and Runtime, Version and Credentials
+    // all describe the fallback — so without this line the card looks exactly
+    // like a machine where nothing was ever configured, and the user is left
+    // wondering why the path they saved is not the path being used.
+    render(
+      <EngineStatusCard
+        engine={{
+          ...ranged,
+          runtime: {
+            kind: "bundled-overridable",
+            package: "@openai/codex-sdk",
+            override: { path: "/opt/typo", state: "not-executable", detail: "`/opt/typo` has no execute bit. Falling back to the bundled binary." },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/has no execute bit/)).toBeTruthy();
+    expect(screen.getByText(/Falling back to the bundled binary/)).toBeTruthy();
+    // And it still says, correctly, that the bundled copy is what runs.
+    expect(screen.getByText(/Bundled with Callboard/)).toBeTruthy();
+  });
+
+  it("shows a rejected Claude override alongside the path the SDK actually got", () => {
+    render(
+      <EngineStatusCard
+        engine={{
+          id: "claude-code",
+          label: "Claude Code",
+          installed: true,
+          version: "2.0.1",
+          credentials: { configured: true, source: "subscription" },
+          runtime: {
+            kind: "external-preferred",
+            package: "@anthropic-ai/claude-code",
+            command: "claude",
+            resolvedPath: "/usr/local/bin/claude",
+            fallbackPackage: "@anthropic-ai/claude-agent-sdk",
+            override: { path: "/opt/gone", state: "missing", detail: "Nothing at `/opt/gone`." },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("/usr/local/bin/claude").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Nothing at/)).toBeTruthy();
+  });
+
+  it("names the other Claude lookup when the two disagree", () => {
+    render(
+      <EngineStatusCard
+        engine={{
+          id: "claude-code",
+          label: "Claude Code",
+          installed: true,
+          credentials: { configured: true },
+          runtime: {
+            kind: "external-preferred",
+            package: "@anthropic-ai/claude-code",
+            command: "claude",
+            resolvedPath: "/opt/mine/claude",
+            fallbackPackage: "@anthropic-ai/claude-agent-sdk",
+            override: { path: "/opt/mine/claude", state: "active", detail: "ok", version: "2.9.9" },
+            otherLookupPath: "/home/u/.local/bin/claude",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/The About page/)).toBeTruthy();
+    expect(screen.getByText("/home/u/.local/bin/claude")).toBeTruthy();
+  });
+
+  it("says nothing about a second lookup when there is no disagreement", () => {
+    render(
+      <EngineStatusCard
+        engine={{
+          id: "claude-code",
+          label: "Claude Code",
+          installed: true,
+          credentials: { configured: true },
+          runtime: {
+            kind: "external-preferred",
+            package: "@anthropic-ai/claude-code",
+            command: "claude",
+            resolvedPath: "/usr/local/bin/claude",
+            fallbackPackage: "@anthropic-ai/claude-agent-sdk",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.queryByText(/The About page/)).toBeNull();
+  });
+});
+
+describe("the Compatibility row — a check that had never fired", () => {
+  it("renders drift with both versions and what it risks", () => {
+    render(
+      <EngineStatusCard
+        engine={{
+          ...ranged,
+          version: "0.999.0",
+          drift: {
+            expected: "0.146.0",
+            actual: "0.999.0",
+            source: "override",
+            detail: "The `codex` at `/opt/codex` reports 0.999.0 … resuming an older chat may drop messages rather than fail loudly.",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Compatibility")).toBeTruthy();
+    expect(screen.getByText(/parser targets/)).toBeTruthy();
+    expect(screen.getByText(/may drop messages/)).toBeTruthy();
+  });
+
+  it("renders no Compatibility row at all when there is no drift", () => {
+    // Absence is the passing case, and it is the state on a normal install — so
+    // it is asserted rather than left to chance.
+    render(<EngineStatusCard engine={ranged} />);
+    expect(screen.queryByText("Compatibility")).toBeNull();
+  });
+});
