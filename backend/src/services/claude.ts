@@ -1109,6 +1109,35 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // plain binding stays narrowed to `null` and every later use is a type error.
   const heldPromptRef: { current: HeldPrompt | null } = { current: null };
   /**
+   * Background tasks this session started and has not seen end.
+   *
+   * Out here rather than inside the run's `try`, alongside `heldPromptRef` and
+   * for a related reason: the `catch` blocks have to be able to read it. A
+   * provider error and a user stop are the two endings *most* likely to leave
+   * tasks running, and both need to name them on the way out or the client
+   * draws a killed task exactly as it draws a finished one.
+   */
+  const outstandingTasks = new OutstandingTasks();
+  /**
+   * The `abandonedBackgroundTaskIds` payload for whichever ending is being
+   * emitted, and the log line that goes with it.
+   *
+   * A helper rather than three inline copies because there are three endings
+   * and it is the *unusual* ones that matter most here — a provider error and
+   * a user stop are far likelier to leave shells running than a clean finish,
+   * and both used to say nothing, so the client drew a killed task exactly as
+   * it draws a completed one.
+   *
+   * Spreads to `{}` when nothing was left running, so the key stays absent
+   * rather than becoming an empty array on every ordinary session.
+   */
+  const abandonedTaskFields = (): { abandonedBackgroundTaskIds?: string[] } => {
+    const ids = outstandingTasks.ids();
+    if (ids.length === 0) return {};
+    log.warn(`Session ${trackingId} ended with ${ids.length} background task(s) still outstanding [${ids.join(", ")}] — they die with the subprocess`);
+    return { abandonedBackgroundTaskIds: ids };
+  };
+  /**
    * The `holding` ChatActivity open for the current hold episode, if any.
    *
    * A hold is the third way a chat can legitimately be busy — after the `wait`
@@ -1715,7 +1744,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // Claude Code only: it is the sole provider that reports background tasks
       // (`background_task` events), so for every other provider `heldPrompt`
       // stays null and the prompt is passed through exactly as before.
-      const outstandingTasks = new OutstandingTasks();
+      //
+      // `outstandingTasks` itself lives out with `heldPromptRef`, because the
+      // catch blocks need it — see its declaration.
       const holdEnabled = providerKind === "claude-code";
       /**
        * Set once the current hold's wall-clock bound elapses, so later turns
@@ -2370,7 +2401,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // done/clear/budget path below — those describe a successful run.
       if (errorDetail !== undefined) {
         log.debug(`Session ${trackingId} surfaced provider error to user: ${errorDetail}`);
-        emitter.emit("event", { type: "error", content: errorDetail } as StreamEvent);
+        // This path returns instead of falling through to `done`, so it has to
+        // name its own casualties. A provider error is one of the two endings
+        // most likely to have left shells running.
+        emitter.emit("event", { type: "error", content: errorDetail, ...abandonedTaskFields() } as StreamEvent);
         return;
       }
 
@@ -2378,18 +2412,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       if (typeof prompt === "string" && prompt.trim().toLowerCase() === "/clear") {
         log.debug(`Session cleared via /clear — trackingId=${trackingId}`);
         emitter.emit("event", { type: "cleared", content: "Conversation was cleared" } as StreamEvent);
-      }
-
-      // Background tasks that never reported an outcome. The run is ending, so
-      // the subprocess that owns their shells is about to go with it and they
-      // are dead whatever they were doing — the hold gave up, or a stop or an
-      // error got here first. Naming them is what lets the UI draw a killed
-      // task as killed: the spinner is gated on the chat streaming, so at
-      // `done` a task that was cut short otherwise disappears in exactly the
-      // way one that finished does.
-      const abandonedTaskIds = outstandingTasks.ids();
-      if (abandonedTaskIds.length > 0) {
-        log.warn(`Session ${trackingId} ended with ${abandonedTaskIds.length} background task(s) still outstanding [${abandonedTaskIds.join(", ")}] — they die with the subprocess`);
       }
 
       log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}, costUsd=${lastCostUsd ?? "n/a"}`);
@@ -2401,7 +2423,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // Whether the explicit-completion requirement was satisfied — only
         // attached when the requirement was on for this run.
         ...(requireCompletion && { objectiveComplete: isObjectiveSatisfied() }),
-        ...(abandonedTaskIds.length > 0 && { abandonedBackgroundTaskIds: abandonedTaskIds }),
+        // Background tasks that never reported an outcome. The run is ending,
+        // so the subprocess that owns their shells goes with it and they are
+        // dead whatever they were doing.
+        ...abandonedTaskFields(),
       } as StreamEvent);
     } catch (err: any) {
       if (err.name === "AbortError") {
@@ -2409,10 +2434,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // rather than silently swallowing the event.
         log.warn(`Session ${trackingId} (provider=${providerKind}) ended: aborted`);
         chatFileService.updateChat(trackingId, {});
-        emitter.emit("event", { type: "done", content: "", reason: "aborted" } as StreamEvent);
+        // A stop is the other ending most likely to leave shells running — the
+        // user pressed it precisely because something was still going.
+        emitter.emit("event", { type: "done", content: "", reason: "aborted", ...abandonedTaskFields() } as StreamEvent);
       } else {
         log.error(`Session ${trackingId} (provider=${providerKind}) error: ${err.message}${err.stack ? `\n${err.stack}` : ""}`);
-        emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
+        emitter.emit("event", { type: "error", content: err.message, ...abandonedTaskFields() } as StreamEvent);
       }
     } finally {
       // Release any background-task hold, and take its dock row down with it.

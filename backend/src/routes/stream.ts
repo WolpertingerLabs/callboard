@@ -296,7 +296,13 @@ streamRouter.post("/new/message", async (req, res) => {
         res.end();
       } else if (event.type === "error") {
         log.error(`SSE error — ${event.content}`);
-        sendSSE(res, { type: "message_error", content: event.content });
+        sendSSE(res, {
+          type: "message_error",
+          content: event.content,
+          // Mirrors createSSEHandler — an error ends the run without a `done`,
+          // so this is its only chance to name the shells that died with it.
+          ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
+        });
         emitter.removeListener("event", onEvent);
         res.end();
       } else if (event.type === "permission_request" || event.type === "user_question" || event.type === "plan_review") {

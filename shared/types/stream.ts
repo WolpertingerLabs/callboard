@@ -122,7 +122,13 @@ export interface StreamEvent {
    */
   objectiveComplete?: boolean;
   /**
-   * Background tasks still outstanding when the run ended, attached to "done".
+   * Background tasks still outstanding when the run ended, attached to "done"
+   * and to "error".
+   *
+   * Both, because an error ends the run *instead of* a `done` rather than
+   * before one — and a provider error and a user stop are the two endings
+   * likeliest to leave shells running, so the unusual paths are the ones this
+   * matters most on.
    *
    * These are shells that died with the CLI subprocess — the hold gave up
    * waiting, or the run was stopped or errored out from under them. They are

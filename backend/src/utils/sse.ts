@@ -97,7 +97,13 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
       emitter.removeListener("event", onEvent);
       res.end();
     } else if (event.type === "error") {
-      sendSSE(res, { type: "message_error", content: event.content });
+      sendSSE(res, {
+        type: "message_error",
+        content: event.content,
+        // An error ends the run without a `done`, so this is its only chance to
+        // say which background shells died with it.
+        ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
+      });
       emitter.removeListener("event", onEvent);
       res.end();
     } else if (event.type === "permission_request" || event.type === "user_question" || event.type === "plan_review") {

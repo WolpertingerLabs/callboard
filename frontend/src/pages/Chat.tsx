@@ -949,9 +949,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   if (currentIdRef.current !== streamChatId) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
                   const alreadyPersisted = msgArray.slice(-3).some((m) => m.subtype === "session_error" && m.content === event.content);
-                  setMessages(
-                    alreadyPersisted ? msgArray : [...msgArray, { role: "system", type: "system", subtype: "session_error", content: event.content ?? "" }],
-                  );
+                  // Same trailer the clean ending builds, for the same reason —
+                  // an error kills the subprocess and every shell it owned, and
+                  // this path ends the run without a `message_complete`, so it
+                  // is the only chance to say so. Before the marker.
+                  const trailing: ParsedMessage[] = [];
+                  const killed = abandonedTaskMarker(Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [], msgArray);
+                  if (killed) trailing.push(killed);
+                  if (!alreadyPersisted) trailing.push({ role: "system", type: "system", subtype: "session_error", content: event.content ?? "" });
+                  setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                 });
                 return;
               }
