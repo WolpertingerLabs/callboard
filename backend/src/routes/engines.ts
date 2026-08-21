@@ -25,7 +25,7 @@ import {
   subscribeToInstallRun,
 } from "../services/engine-install.js";
 import { getEngineStatuses, refreshEngineStatuses } from "../services/engine-status.js";
-import { getClientKey, isLocalClient } from "../utils/client-ip.js";
+import { getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
 import { createLogger } from "../utils/logger.js";
 import { sendSSE, startSSEHeartbeat, writeSSEHeaders } from "../utils/sse.js";
 
@@ -47,7 +47,7 @@ export const enginesRouter = Router();
  */
 async function capabilityFor(req: Request): Promise<EngineInstallCapability> {
   try {
-    return await getInstallCapability({ local: isLocalClient(req) });
+    return await getInstallCapability({ local: isDirectLocalClient(req) });
   } catch (err) {
     log.warn(`install preflight failed: ${err instanceof Error ? err.message : String(err)}`);
     return {
@@ -185,7 +185,7 @@ enginesRouter.get("/installs/:installId/stream", (req, res) => {
   /* #swagger.responses[200] = { description: 'SSE stream' } */
   /* #swagger.responses[403] = { description: 'Not a local client' } */
   /* #swagger.responses[404] = { description: 'No such install, or it has aged out' } */
-  if (!isLocalClient(req)) {
+  if (!isDirectLocalClient(req)) {
     return res.status(403).json({
       error: "Install output is only available to clients on the local network.",
       refusal: "Install output is only available to clients on the local network.",

@@ -30,7 +30,7 @@ import type { EngineInstallEvent, EngineStatus } from "shared/types/index.js";
 const mocks = vi.hoisted(() => ({
   spawn: vi.fn(),
   execFileAsync: vi.fn(),
-  getAgentSettings: vi.fn(),
+  readAgentSettings: vi.fn(),
   refreshEngineStatuses: vi.fn(),
   accessSync: vi.fn(),
 }));
@@ -49,10 +49,15 @@ vi.mock("node:fs", async (importOriginal) => ({
   accessSync: mocks.accessSync,
 }));
 
-vi.mock("./agent-settings.js", () => ({ getAgentSettings: mocks.getAgentSettings }));
-vi.mock("./engine-status.js", () => ({ refreshEngineStatuses: mocks.refreshEngineStatuses }));
+vi.mock("./agent-settings.js", () => ({ readAgentSettings: mocks.readAgentSettings }));
+vi.mock("./engine-status.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./engine-status.js")>()),
+  refreshEngineStatuses: mocks.refreshEngineStatuses,
+}));
 
+const { MIN_REFRESH_INTERVAL_MS } = await import("./engine-status.js");
 const {
+  assertSpawnable,
   getInstallCapability,
   startEngineInstall,
   getInstallRun,
@@ -107,7 +112,7 @@ beforeEach(() => {
   mocks.spawn.mockReturnValue(child);
   mocks.execFileAsync.mockResolvedValue({ stdout: "/home/u/.npm-global/lib/node_modules\n", stderr: "" });
   mocks.accessSync.mockReturnValue(undefined);
-  mocks.getAgentSettings.mockReturnValue({});
+  mocks.readAgentSettings.mockReturnValue({ settings: {}, state: "ok" });
   mocks.refreshEngineStatuses.mockResolvedValue({ engines: [opencodeInstalled()], probed: true });
 });
 
@@ -140,33 +145,49 @@ describe("getInstallCapability — every gate, and the sentence it hands the car
   it("refuses a client outside the LAN before it looks at anything else", async () => {
     const capability = await getInstallCapability({ local: false });
     expect(capability).toMatchObject({ oneClick: false, code: "not-local" });
-    expect(capability.refusal).toMatch(/local network/);
+    expect(capability.refusal).toMatch(/connected directly to it/);
     // Cheapest and most decisive first: a tunnelled client must not cost this
     // daemon an `npm root -g` spawn per settings-page load.
     expect(mocks.execFileAsync).not.toHaveBeenCalled();
   });
 
   it("refuses when the operator has switched the capability off", async () => {
-    mocks.getAgentSettings.mockReturnValue({ allowEngineInstalls: false });
+    mocks.readAgentSettings.mockReturnValue({ settings: { allowEngineInstalls: false }, state: "ok" });
     const capability = await getInstallCapability({ local: true });
     expect(capability).toMatchObject({ oneClick: false, code: "disabled" });
     expect(capability.refusal).toMatch(/switched off/);
   });
 
-  it("treats an absent setting as on, which is the documented default", async () => {
-    mocks.getAgentSettings.mockReturnValue({});
+  it("treats a MISSING settings file as on, which is the documented default", async () => {
+    mocks.readAgentSettings.mockReturnValue({ settings: { proxyMode: "local" }, state: "absent" });
     expect((await getInstallCapability({ local: true })).oneClick).toBe(true);
   });
 
-  it("refuses rather than defaulting on when the settings cannot be read", async () => {
-    // The default is "on". Falling back to a default from an error would let a
-    // box whose operator turned this off quietly turn it back on.
-    mocks.getAgentSettings.mockImplementation(() => {
-      throw new Error("settings file is corrupt");
-    });
+  it("refuses when the settings file exists and could not be read", async () => {
+    // This test previously mocked `getAgentSettings` to *throw*, which
+    // production cannot do — `loadSettings` swallows its own errors and returns
+    // a valid default object, so the `try/catch` it exercised was dead code and
+    // the real kill switch failed **open**. It was green and proved nothing:
+    // this feature's own thesis, an assertion nothing checked, committed inside
+    // its own suite.
+    //
+    // The real shape is a `state` of "unreadable" with settings that are
+    // defaults *and a fabrication*. `engine-install.settings-failure.test.ts`
+    // drives the genuine article — a corrupt file and an unreadable file on
+    // disk, through the real agent-settings module — because a mock of a
+    // channel cannot prove the channel exists.
+    mocks.readAgentSettings.mockReturnValue({ settings: { proxyMode: "local" }, state: "unreadable", error: "Unexpected token h in JSON at position 2" });
     const capability = await getInstallCapability({ local: true });
     expect(capability.oneClick).toBe(false);
-    expect(capability.refusal).toMatch(/could not read its own settings/);
+    expect(capability.refusal).toMatch(/settings file exists but could not be read/);
+    expect(capability.refusal).toContain("Unexpected token");
+  });
+
+  it("does not consult allowEngineInstalls at all when the file is unreadable", async () => {
+    // Belt to the braces above: even if the fabricated defaults happened to
+    // carry a permissive value, the state check comes first.
+    mocks.readAgentSettings.mockReturnValue({ settings: { allowEngineInstalls: true }, state: "unreadable", error: "EACCES" });
+    expect((await getInstallCapability({ local: true })).oneClick).toBe(false);
   });
 
   it("refuses when `npm root -g` cannot be run at all", async () => {
@@ -189,6 +210,40 @@ describe("getInstallCapability — every gate, and the sentence it hands the car
     expect(capability.refusal).toContain("EACCES");
   });
 
+  it("refuses when the BIN directory is not writable, even though the package root is", async () => {
+    // The shape the first cut missed and the reviewer reproduced: a user-owned
+    // `~/.npm-global` whose `bin/` was created by an earlier `sudo npm i -g`.
+    // `npm root -g` points at a writable directory, npm still fails with EACCES
+    // when it goes to link the binary — from a card that had just claimed it
+    // checked.
+    mocks.accessSync.mockImplementation((dir: string) => {
+      if (dir.endsWith("/bin")) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    });
+    const capability = await getInstallCapability({ local: true });
+    expect(capability).toMatchObject({ oneClick: false, code: "prefix-not-writable" });
+    expect(capability.refusal).toContain("bin directory");
+    expect(capability.refusal).toContain("/home/u/.npm-global/bin");
+  });
+
+  it("checks both directories npm writes to, and names which one refused", async () => {
+    const checked: string[] = [];
+    mocks.accessSync.mockImplementation((dir: string) => {
+      checked.push(dir);
+    });
+    await getInstallCapability({ local: true });
+    expect(checked).toContain("/home/u/.npm-global/lib/node_modules");
+    expect(checked).toContain("/home/u/.npm-global/bin");
+  });
+
+  it("asserts nothing about a global root whose layout it does not recognise", async () => {
+    // No derivable bin directory ⇒ no bin check and no visibility note. Saying
+    // nothing is the honest output of not having looked.
+    mocks.execFileAsync.mockResolvedValue({ stdout: "/opt/weird/place\n", stderr: "" });
+    const capability = await getInstallCapability({ local: true });
+    expect(capability.oneClick).toBe(true);
+    expect(capability.note).toBeUndefined();
+  });
+
   it("walks up to the nearest existing directory rather than refusing a prefix npm would create", async () => {
     // A fresh `npm config set prefix ~/.npm-global` leaves lib/node_modules
     // absent until the first global install. Refusing on ENOENT would refuse
@@ -200,6 +255,70 @@ describe("getInstallCapability — every gate, and the sentence it hands the car
     });
     expect((await getInstallCapability({ local: true })).oneClick).toBe(true);
     expect(seen.length).toBeGreaterThan(1);
+  });
+
+  it("WARNS when the global bin directory is not on the daemon's PATH", async () => {
+    // C1. The previous note keyed on `process.execPath` matching `.nvm` and
+    // concluded "Callboard itself will see it" — a claim about PATH derived
+    // from a fact about the interpreter. It rendered that promise and the
+    // verdict then said `visible: false`. Now the actual question is asked.
+    const before = process.env.PATH;
+    process.env.PATH = "/usr/bin:/bin";
+    try {
+      const capability = await getInstallCapability({ local: true });
+      expect(capability.oneClick).toBe(true);
+      expect(capability.note).toContain("/home/u/.npm-global/bin");
+      expect(capability.note).toContain("not on the PATH this Callboard daemon inherited");
+      expect(capability.note).not.toContain("**");
+      expect(capability.note).not.toMatch(/Callboard itself will see it/);
+    } finally {
+      process.env.PATH = before;
+    }
+  });
+
+  it("says nothing at all when the bin directory IS on PATH and Node is not nvm-managed", async () => {
+    const before = process.env.PATH;
+    process.env.PATH = "/usr/bin:/home/u/.npm-global/bin";
+    const execPath = Object.getOwnPropertyDescriptor(process, "execPath");
+    Object.defineProperty(process, "execPath", { value: "/usr/bin/node", configurable: true });
+    try {
+      const capability = await getInstallCapability({ local: true });
+      expect(capability).toEqual({ oneClick: true });
+    } finally {
+      process.env.PATH = before;
+      if (execPath) Object.defineProperty(process, "execPath", execPath);
+    }
+  });
+
+  it("names the nvm prefix only once it has confirmed the bin directory is on PATH", async () => {
+    const before = process.env.PATH;
+    process.env.PATH = "/home/u/.npm-global/bin:/usr/bin";
+    const execPath = Object.getOwnPropertyDescriptor(process, "execPath");
+    Object.defineProperty(process, "execPath", { value: "/home/u/.nvm/versions/node/v22.0.0/bin/node", configurable: true });
+    try {
+      const capability = await getInstallCapability({ local: true });
+      expect(capability.note).toContain("nvm-managed");
+      // The claim it makes is hedged to what it measured, and scoped to the
+      // directory rather than to the outcome.
+      expect(capability.note).toContain("is on the PATH this daemon inherited");
+      expect(capability.note).toContain("should find it");
+    } finally {
+      process.env.PATH = before;
+      if (execPath) Object.defineProperty(process, "execPath", execPath);
+    }
+  });
+
+  it("ignores a trailing slash when matching PATH entries", async () => {
+    const before = process.env.PATH;
+    process.env.PATH = "/home/u/.npm-global/bin/:/usr/bin";
+    const execPath = Object.getOwnPropertyDescriptor(process, "execPath");
+    Object.defineProperty(process, "execPath", { value: "/usr/bin/node", configurable: true });
+    try {
+      expect((await getInstallCapability({ local: true })).note).toBeUndefined();
+    } finally {
+      process.env.PATH = before;
+      if (execPath) Object.defineProperty(process, "execPath", execPath);
+    }
   });
 
   it("caches `npm root -g` but re-checks writability every time", async () => {
@@ -253,16 +372,53 @@ describe("startEngineInstall — refusing without spawning", () => {
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts a new install once the previous one has finished", async () => {
+  it("cools down after a finished install rather than accepting another immediately", async () => {
+    // Every completed install ends in a *forced* re-probe that bypasses the
+    // 10s bound Phase 2 put on that work — five caches dropped, a `which` per
+    // engine, two synchronous `--version` spawns and an SDK query. A warm
+    // repeat cycle is about four seconds, so without this an authenticated LAN
+    // client could loop the endpoint and drive that probe every ~4s. Bounding
+    // the *accepted install* is what puts the bound back at its source.
     await runInstall("opencode");
-    child.stdout.end();
-    child.stderr.end();
     child.emit("close", 0, null);
     await settle();
 
     child = new FakeChild();
     mocks.spawn.mockReturnValue(child);
-    expect(startEngineInstall({ engineId: "codex", capability: { oneClick: true } }).ok).toBe(true);
+    const result = startEngineInstall({ engineId: "codex", capability: { oneClick: true } });
+    expect(result).toMatchObject({ ok: false, code: "cooling-down", status: 429 });
+    expect(result.ok === false && result.refusal).toMatch(/try again in \d+ seconds?/i);
+    expect(result.ok === false && result.refusal).toContain("copy the command into a terminal");
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a new install once the cooldown has passed", async () => {
+    // Only `Date` is faked. The module's async plumbing runs on `setImmediate`
+    // (that is what `settle()` waits for), and faking the whole timer set
+    // deadlocks the very code under test.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await runInstall("opencode");
+      child.emit("close", 0, null);
+      await settle();
+
+      vi.setSystemTime(Date.now() + MIN_REFRESH_INTERVAL_MS + 1);
+      child = new FakeChild();
+      mocks.spawn.mockReturnValue(child);
+      expect(startEngineInstall({ engineId: "codex", capability: { oneClick: true } }).ok).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not cool down after a REFUSED install — nothing was probed", async () => {
+    // The cooldown exists to bound the forced re-probe, and a refusal never
+    // reaches one. Rate-limiting refusals would only punish a user fixing their
+    // prefix.
+    for (let i = 0; i < 5; i++) {
+      expect(startEngineInstall({ engineId: "cline", capability: { oneClick: true } })).toMatchObject({ code: "no-recipe" });
+    }
+    expect(startEngineInstall({ engineId: "opencode", capability: { oneClick: true } }).ok).toBe(true);
   });
 });
 
@@ -544,5 +700,63 @@ describe("replay, so a late or reconnecting stream loses nothing", () => {
     expect(events[0].type).toBe("install_started");
     // The tail is what a user is looking at when something goes wrong.
     expect(outputLines(events).at(-1)).toBe("line 1999");
+  });
+});
+
+// ── The guard that never fires ──────────────────────────────────────
+
+describe("assertSpawnable — defence in depth, tested so that deleting it fails", () => {
+  /**
+   * This guard is unreachable against the committed registry: `oneClickRecipeFor`
+   * has already rejected everything it rejects. That is precisely why it needs
+   * its own tests — with only the end-to-end suite, removing the call and the
+   * function would change nothing observable, and the second layer would quietly
+   * become one layer. Importing it here means deletion breaks the build.
+   */
+  const good = { engineId: "opencode", method: "npm-global", label: "npm (global)", package: "opencode-ai", argv: ["npm", "install", "-g", "opencode-ai"], command: "npm install -g opencode-ai", docsUrl: "https://x", visibleAfterRecheck: true } as const;
+
+  it("accepts the shape the registry actually produces", () => {
+    expect(assertSpawnable(good)).toEqual({ argv: ["npm", "install", "-g", "opencode-ai"], package: "opencode-ai" });
+  });
+
+  it("rejects a script recipe even if someone hand-fits an argv to it", () => {
+    // Decision 5's last line of defence. A `script` recipe carries no argv by
+    // construction; this rejects one that has been given one anyway.
+    expect(assertSpawnable({ ...good, method: "script", argv: ["npm", "install", "-g", "opencode-ai"] })).toBeNull();
+  });
+
+  it("rejects a package that is not on the allowlist", () => {
+    expect(assertSpawnable({ ...good, package: "evil-pkg", argv: ["npm", "install", "-g", "evil-pkg"] })).toBeNull();
+  });
+
+  it("rejects argv whose tail is not the recipe's own package", () => {
+    // The substitution attack this exists to stop: an allowlisted `package`
+    // field acting as a fig leaf over a different argv.
+    expect(assertSpawnable({ ...good, argv: ["npm", "install", "-g", "evil-pkg"] })).toBeNull();
+  });
+
+  it("rejects any argv that is not exactly npm install -g <pkg>", () => {
+    for (const argv of [
+      ["npm", "install", "-g", "opencode-ai", "--foreground-scripts"],
+      ["npm", "install", "opencode-ai"],
+      ["npm", "exec", "-g", "opencode-ai"],
+      ["npx", "install", "-g", "opencode-ai"],
+      ["npm", "install", "--global", "opencode-ai"],
+      ["npm", "install", "-g", "opencode-ai; id"],
+      [],
+    ]) {
+      expect(assertSpawnable({ ...good, argv })).toBeNull();
+    }
+  });
+
+  it("rejects a missing, non-array or holey argv", () => {
+    expect(assertSpawnable({ ...good, argv: undefined })).toBeNull();
+    expect(assertSpawnable({ ...good, argv: "npm install -g opencode-ai" as unknown as string[] })).toBeNull();
+    expect(assertSpawnable({ ...good, argv: ["npm", "install", "", "opencode-ai"] })).toBeNull();
+    expect(assertSpawnable({ ...good, argv: ["npm", "install", "-g", undefined as unknown as string] })).toBeNull();
+  });
+
+  it("rejects a missing package", () => {
+    expect(assertSpawnable({ ...good, package: undefined })).toBeNull();
   });
 });

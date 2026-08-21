@@ -28,8 +28,10 @@
  * Auth is inherited from `requireAuth`. On top of that, and checked by the
  * routes before anything here is reached:
  *
- * - **loopback/LAN only** (`utils/client-ip.ts`'s `isLocalClient`). A client
- *   arriving through the remote-access tunnel gets the copy-command instead —
+ * - **loopback/LAN only, with no proxy in between** (`utils/client-ip.ts`'s
+ *   `isDirectLocalClient`): the socket's own peer address must be local *and*
+ *   the request must carry no forwarding header at all. A client arriving
+ *   through the remote-access tunnel gets the copy-command instead —
  *   "authenticated" is not a strong enough answer for command execution on a
  *   box that may be internet-facing.
  * - **`AgentSettings.allowEngineInstalls`**, default on, so an operator can
@@ -37,17 +39,30 @@
  *
  * Both, plus the preflight below, are folded into one
  * {@link EngineInstallCapability} that is *also* what the status card reads, so
- * the button is offered in exactly the states the install would be permitted.
- * There is no state where the UI shows a button and the endpoint refuses it.
+ * a client sees a button in the states where that client's capability permits
+ * one.
+ *
+ * That is a claim about *capability*, and it is deliberately narrower than "the
+ * button always works". A pressed button can still be refused, and two of those
+ * are ordinary rather than exotic: `busy` (409) whenever a second tab presses
+ * Install while one is running, and any capability that changed between the GET
+ * that rendered the card and the POST — widened by the {@link NPM_ROOT_TTL_MS}
+ * cache on `npm root -g`. What holds without qualification is the *user-facing*
+ * half of Decision 8: every refusal, expected or not, returns a one-line
+ * `refusal` and lands under a copy-and-paste command that was never removed.
  *
  * ## Why the preflight exists
  *
  * `npm install -g` under a global prefix the daemon's user cannot write produces
  * an EACCES wall of text and no install. That is the common failure on a
- * system-wide Node, it is entirely predictable from `npm root -g` plus one
- * `access()` call, and running the command anyway would spend thirty seconds to
- * arrive at a stack trace. So it is detected and refused *before* spawning, and
- * the refusal lands on the same copy block the button sits next to.
+ * system-wide Node, and it is predictable from `npm root -g` plus an `access()`
+ * check on **both** directories npm writes to — the package root
+ * `<prefix>/lib/node_modules` and the bin directory `<prefix>/bin`. Checking
+ * only the first is not enough: a user-owned `~/.npm-global` whose `bin/` was
+ * created by an earlier `sudo npm i -g` fails on the second, which is a shape
+ * that occurs in the wild and was reproduced. Both are checked, before
+ * spawning, and the refusal lands on the same copy block the button sits next
+ * to.
  *
  * ## Why a zero exit is not a success message
  *
@@ -65,7 +80,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { dirname } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
   EngineInstallCapability,
@@ -75,9 +90,9 @@ import type {
   EngineStatus,
 } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
-import { getAgentSettings } from "./agent-settings.js";
+import { readAgentSettings } from "./agent-settings.js";
 import { INSTALLABLE_PACKAGES, oneClickRecipeFor } from "./engine-install-recipes.js";
-import { refreshEngineStatuses } from "./engine-status.js";
+import { MIN_REFRESH_INTERVAL_MS, refreshEngineStatuses } from "./engine-status.js";
 
 const log = createLogger("engine-install");
 const execFileAsync = promisify(execFile);
@@ -106,9 +121,9 @@ const RUN_RETENTION_MS = 15 * 60_000;
  *
  * Cached for {@link NPM_ROOT_TTL_MS} because `npm root -g` is a ~200ms process
  * spawn and `GET /api/engines` is what a settings page loads — the writability
- * check itself is one `access()` syscall and is deliberately *not* cached, so a
- * `chown` takes effect on the next page load rather than on the next daemon
- * restart.
+ * checks themselves are two `access()` syscalls (the package root and the bin
+ * directory) and are deliberately *not* cached, so a `chown` takes effect on the
+ * next page load rather than on the next daemon restart.
  */
 let npmRootCache: { at: number; root: string | null; error?: string } | null = null;
 
@@ -179,6 +194,46 @@ function isNvmManagedNode(): boolean {
 }
 
 /**
+ * The directory `npm install -g` links binaries into, derived from `npm root -g`.
+ *
+ * `npm root -g` prints `<prefix>/lib/node_modules` on POSIX, and the bin
+ * directory is `<prefix>/bin` — two levels up and across. Derived rather than
+ * asked for, because `npm bin -g` was removed in npm 9 and a second spawn on a
+ * settings-page load is not worth it.
+ *
+ * Returns `undefined` when the root does not have that shape, in which case the
+ * caller must not assert anything about the bin directory — an unrecognised
+ * layout is a reason to say nothing, not to guess.
+ */
+function globalBinDirFor(root: string): string | undefined {
+  const parts = root.split(/[/\\]/);
+  if (parts.length < 3) return undefined;
+  if (parts[parts.length - 1] !== "node_modules" || parts[parts.length - 2] !== "lib") return undefined;
+  return join(parts.slice(0, -2).join("/"), "bin");
+}
+
+/**
+ * Is `dir` one of the entries on the PATH this process inherited?
+ *
+ * The literal question, asked literally. `npm install -g` writing a binary into
+ * a directory the daemon cannot search is the single most confusing outcome this
+ * feature produces, and it is knowable *before* the install rather than only
+ * from the verdict afterwards.
+ *
+ * Compared with trailing separators normalised and nothing else — no `realpath`,
+ * because a symlinked PATH entry that resolves to the same place is a case this
+ * cannot confirm and must therefore not claim either way.
+ */
+function isOnDaemonPath(dir: string): boolean {
+  const normalise = (p: string) => p.replace(/[/\\]+$/, "");
+  const target = normalise(dir);
+  return (process.env.PATH ?? "")
+    .split(delimiter)
+    .filter(Boolean)
+    .some((entry) => normalise(entry) === target);
+}
+
+/**
  * Everything that decides whether this client sees an install button.
  *
  * Ordered cheapest-and-most-decisive first, and every branch returns a sentence
@@ -191,25 +246,39 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
     return {
       oneClick: false,
       code: "not-local",
+      // Worded for every shape this branch now catches, not just the tunnel.
+      // The check refuses any request that is not a *direct* local connection —
+      // a public peer address, or a local one carrying a forwarding header —
+      // because a proxy that does not mark the hop is indistinguishable from a
+      // browser on this machine, and one that does mark it might be anything.
       refusal:
-        "This browser is reaching Callboard from outside its local network, and running commands on the daemon's machine is a loopback/LAN-only capability — remote access puts this server behind nothing but a password. Copy the command into a terminal on the machine running Callboard.",
+        "Callboard only runs installs for a browser connected directly to it from this machine or your LAN, and this request either came from further away or arrived through a proxy. Running commands on the daemon's machine is a local-only capability — remote access puts this server behind nothing but a password. Copy the command into a terminal on the machine running Callboard.",
     };
   }
 
-  let allowed = true;
-  try {
-    allowed = getAgentSettings().allowEngineInstalls !== false;
-  } catch {
-    // Settings unreadable. Refuse rather than assume the default: the default is
-    // "on", and defaulting a security capability on from an error is how a
-    // switched-off box quietly switches itself back on.
+  // `readAgentSettings`, not `getAgentSettings`, and the distinction is the
+  // whole of this branch.
+  //
+  // `getAgentSettings` folds "no file" and "file exists and did not parse" into
+  // the same `{ proxyMode: "local" }` — a valid object with `allowEngineInstalls`
+  // absent, which `!== false` reads as **on**. It swallows the error internally,
+  // so a `try/catch` here is dead code: an operator who had switched this off
+  // got the kill switch back on by corrupting or `chmod 000`-ing one file.
+  // Measured: both cases spawned npm.
+  //
+  // A setting whose absence means "allowed" cannot be read through a channel
+  // that returns absence on failure. So this reads the state explicitly and
+  // refuses on `unreadable`, while still treating a genuinely missing file as
+  // the documented default-on.
+  const { settings, state, error: settingsError } = readAgentSettings();
+  if (state === "unreadable") {
     return {
       oneClick: false,
       code: "disabled",
-      refusal: "Callboard could not read its own settings to check whether one-click installs are permitted, so it will not run one. Copy the command into a terminal instead.",
+      refusal: `Callboard's settings file exists but could not be read (${settingsError ?? "unknown error"}), so it cannot tell whether one-click installs are permitted here — and it will not assume they are. Fix or remove \`agent-settings.json\`, or copy the command into a terminal.`,
     };
   }
-  if (!allowed) {
+  if (settings.allowEngineInstalls === false) {
     return {
       oneClick: false,
       code: "disabled",
@@ -218,14 +287,20 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
   }
 
   if (process.platform === "win32") {
-    // `npm` on Windows is `npm.cmd`, a batch script, and Node will not run one
-    // without `shell: true` — which is exactly the thing this endpoint does not
-    // get to have. Refusing is the honest end of that: the command below still
-    // works perfectly when the user types it.
+    // On Windows `npm` is `npm.cmd`, a batch script, and since the fix for
+    // CVE-2024-27980 Node refuses to `spawn` one without `shell: true` — which
+    // is the one thing this endpoint does not get to have.
+    //
+    // This is a limit of *this implementation*, not of the platform, and the
+    // copy says so. Spawning `process.execPath` with npm's own `npm-cli.js`
+    // would work shell-free; it is not done here because it would ship
+    // untested on a platform I cannot exercise, and the copy-and-paste command
+    // works perfectly meanwhile.
     return {
       oneClick: false,
       code: "unsupported-platform",
-      refusal: "Callboard runs installs without a shell, and `npm` on Windows is a batch script that needs one — so this command can only be run from your own terminal.",
+      refusal:
+        "Callboard does not run installs itself on Windows: it spawns without a shell, and `npm` here is a batch script that needs one. That is a limitation of Callboard rather than of npm — the command below works normally when you run it yourself.",
     };
   }
 
@@ -238,29 +313,83 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
     };
   }
 
-  const { writable, checked } = writableTarget(root);
-  if (!writable) {
+  // **Both** directories, not just the package root.
+  //
+  // `npm install -g` writes the package into `<prefix>/lib/node_modules` and
+  // then links its bin into `<prefix>/bin`, and it fails on either. Checking
+  // only the first missed a realistic and reproducible shape: a user-owned
+  // `~/.npm-global` whose `bin/` was created by an earlier `sudo npm i -g` and
+  // is therefore root's. That produced exactly the EACCES wall this preflight
+  // exists to prevent, from a card that had just promised it checked.
+  const binDir = globalBinDirFor(root);
+  for (const dir of binDir ? [root, binDir] : [root]) {
+    const { writable, checked } = writableTarget(dir);
+    if (writable) continue;
     return {
       oneClick: false,
       code: "prefix-not-writable",
       // The checked path is named separately only when it is not the directory
-      // itself — npm creates `lib/node_modules` on first global install, so the
-      // thing that actually refused is often an ancestor, and printing the same
-      // path twice reads like a bug in the message.
-      refusal: `npm's global package directory (\`${root}\`) is not writable by the user running Callboard${
-        checked === root ? "" : ` — \`${checked}\`, the nearest directory that exists, refused`
+      // itself — npm creates these on first global install, so the thing that
+      // actually refused is often an ancestor, and printing the same path twice
+      // reads like a bug in the message.
+      refusal: `npm's global ${dir === root ? "package directory" : "bin directory"} (\`${dir}\`) is not writable by the user running Callboard${
+        checked === dir ? "" : ` — \`${checked}\`, the nearest directory that exists, refused`
       }. \`npm install -g\` would fail with EACCES, so Callboard will not run it. Point npm at a prefix you own (\`npm config set prefix ~/.npm-global\`), or run the command below with the privileges it needs.`,
     };
   }
 
-  return {
-    oneClick: true,
-    ...(isNvmManagedNode()
-      ? {
-          note: `Callboard's Node is nvm-managed (\`${process.execPath}\`), so this installs into that version's global prefix — \`${root}\`. Callboard itself will see it, because it is that same Node; a shell on a different Node version will not.`,
-        }
-      : {}),
-  };
+  return { oneClick: true, ...(installVisibilityNote(root, binDir) ?? {}) };
+}
+
+/**
+ * The one true-but-survivable thing to say beside the button, or nothing.
+ *
+ * ## What the previous version got wrong
+ *
+ * It keyed on `process.execPath` matching `.nvm` and concluded *"Callboard
+ * itself will see it, because it is that same Node"*. The premise is about which
+ * interpreter is running; the conclusion is about the daemon's inherited `PATH`.
+ * Those are different facts, and on a daemon whose `PATH` lacked the global bin
+ * directory the note rendered that promise and the verdict thirty seconds later
+ * said `visible: false`. It was this feature's own defect — a claim nothing
+ * checked — inside the sentence warning about that defect.
+ *
+ * ## What it says now
+ *
+ * Only what was observed. The bin directory is derived from `npm root -g` and
+ * compared against `process.env.PATH`:
+ *
+ * - **not on PATH** — a warning, and a genuine one: the install will land
+ *   somewhere this daemon cannot search, so it will very likely report
+ *   `visible: false` afterwards. Said *before* the install rather than only
+ *   after it.
+ * - **on PATH, nvm** — the prefix is per-Node-version, which is worth knowing
+ *   for the user's own shell. No claim about Callboard beyond the observed
+ *   directory membership.
+ * - **on PATH, not nvm** — nothing to warn about. Silence is the honest output;
+ *   a note that says "this will probably work" is noise with a risk attached.
+ * - **unrecognised layout** (no derivable bin directory) — also nothing, because
+ *   nothing was checked.
+ */
+function installVisibilityNote(root: string, binDir: string | undefined): { note: string } | undefined {
+  if (!binDir) return undefined;
+
+  if (!isOnDaemonPath(binDir)) {
+    return {
+      // No markdown emphasis: the card renders these strings with a splitter
+      // that understands backticks and nothing else, so `**not**` would print
+      // its own asterisks. Verified rendered.
+      note: `Heads up: npm would link the binary into \`${binDir}\`, and that directory is not on the PATH this Callboard daemon inherited. The install will very likely succeed and stay invisible to Callboard until you run \`callboard restart\` from a shell where it is on PATH. Callboard will say either way once it has looked.`,
+    };
+  }
+
+  if (isNvmManagedNode()) {
+    return {
+      note: `Callboard's Node is nvm-managed (\`${process.execPath}\`), so this installs into that version's global prefix. Its bin directory \`${binDir}\` is on the PATH this daemon inherited, so Callboard should find it; a shell on a different Node version will not.`,
+    };
+  }
+
+  return undefined;
 }
 
 // ── The run ─────────────────────────────────────────────────────────
@@ -348,8 +477,14 @@ export type StartInstallResult =
  * it is asserted rather than computed. If any of it is false, the registry has
  * been edited into a shape the security argument does not cover, and the correct
  * behaviour is to run nothing at all.
+ *
+ * It is therefore **unreachable in production**, which is exactly what makes it
+ * easy to delete by accident: removing it changes no observable behaviour
+ * against the committed registry. Exported so `engine-install.test.ts` can drive
+ * it with the hand-built recipes the registry will not produce — that suite
+ * fails to import if this function goes away, which is the point of having it.
  */
-function assertSpawnable(recipe: EngineInstallRecipe): { argv: readonly string[]; package: string } | null {
+export function assertSpawnable(recipe: EngineInstallRecipe): { argv: readonly string[]; package: string } | null {
   if (recipe.method !== "npm-global") return null;
   if (!recipe.package || !INSTALLABLE_PACKAGES.has(recipe.package)) return null;
   const argv = recipe.argv;
@@ -412,6 +547,35 @@ export function startEngineInstall(opts: {
       code: "busy",
       refusal: `Callboard is already installing ${current?.package ?? "another engine"} and runs one install at a time. Wait for it to finish, or copy the command into a terminal.`,
       status: 409,
+    };
+  }
+
+  // The cooldown, and why an accepted install needs one at all.
+  //
+  // Every completed install ends in `refreshEngineStatuses({ force: true })` —
+  // deliberately, because verifying against a cached probe is how a success
+  // message gets asserted on evidence that predates the install. But `force`
+  // bypasses the minimum interval Phase 2 added for a measured reason: a probe
+  // drops five caches and pays for a `which` per engine, two synchronous
+  // `--version` spawns and an Agent SDK query.
+  //
+  // A warm repeat install cycle is roughly four seconds, so an authenticated LAN
+  // client looping the endpoint drove a forced full re-probe every ~4s — under
+  // the 10s bound, through a door this feature opened. Refusing here restores
+  // that bound at its source: at most one accepted install, and therefore at
+  // most one forced probe, per {@link MIN_REFRESH_INTERVAL_MS}.
+  //
+  // Measured from the previous install's *completion*, so a user installing two
+  // engines back to back waits at most that long and is told why. That cost is
+  // real and is the reason this is not longer.
+  const sinceLast = current?.finishedAt ? Date.now() - current.finishedAt : Infinity;
+  if (sinceLast < MIN_REFRESH_INTERVAL_MS) {
+    const waitSeconds = Math.max(1, Math.ceil((MIN_REFRESH_INTERVAL_MS - sinceLast) / 1000));
+    return {
+      ok: false,
+      code: "cooling-down",
+      refusal: `Callboard re-checks every engine after an install, and that is rate-limited — it just finished one. Try again in ${waitSeconds} second${waitSeconds === 1 ? "" : "s"}, or copy the command into a terminal.`,
+      status: 429,
     };
   }
 
@@ -526,8 +690,14 @@ function spawnInstall(run: InstallRun): void {
   for (const stream of ["stdout", "stderr"] as const) {
     let pending = "";
     const source = stream === "stdout" ? child.stdout : child.stderr;
-    source?.on("data", (chunk: Buffer) => {
-      pending += chunk.toString("utf-8");
+    // `setEncoding` rather than decoding each chunk: a multi-byte character
+    // straddling a chunk boundary decodes to U+FFFD twice when every chunk is
+    // converted independently, and npm prints non-ASCII routinely (package
+    // names, box drawing, a user's own path). The stream keeps the partial
+    // sequence and hands over whole characters.
+    source?.setEncoding("utf-8");
+    source?.on("data", (chunk: string) => {
+      pending += chunk;
       const lines = pending.split("\n");
       pending = lines.pop() ?? "";
       for (const line of lines) emit(run, { type: "install_output", stream, line: cleanLine(line) });

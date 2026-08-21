@@ -292,6 +292,14 @@ export type EngineInstallRefusalCode =
   | "prefix-not-writable"
   /** Another install is already running. One at a time. */
   | "busy"
+  /**
+   * An install finished moments ago.
+   *
+   * Every completed install ends in a *forced* re-probe of every engine, which
+   * bypasses the rate limit Phase 2 put on that work. Bounding how often an
+   * install may be accepted is what puts the bound back.
+   */
+  | "cooling-down"
   /** The process could not be spawned, or exited non-zero. */
   | "install-failed";
 

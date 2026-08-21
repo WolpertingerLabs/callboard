@@ -47,6 +47,8 @@ const streamHandler = routeHandler("/installs/:installId/stream", "get");
 const LOCAL_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: {} };
 /** The same daemon reached through the cloudflared tunnel: loopback socket, real client in CF-Connecting-IP. */
 const TUNNELLED_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "cf-connecting-ip": "203.0.113.7" } };
+/** The measured bypass: a loopback socket and an XFF whose *head* is loopback. `getClientKey` keys this as 127.0.0.1. */
+const SPOOFED_XFF_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forwarded-for": "127.0.0.1, 203.0.113.7" } };
 
 const engine: EngineStatus = {
   id: "cline",
@@ -95,7 +97,7 @@ beforeEach(() => {
   mocks.getEngineStatuses.mockResolvedValue([engine]);
   mocks.refreshEngineStatuses.mockResolvedValue({ engines: [engine], probed: true });
   mocks.getInstallCapability.mockImplementation(async ({ local }: { local: boolean }) =>
-    local ? { oneClick: true } : { oneClick: false, code: "not-local", refusal: "outside the local network" },
+    local ? { oneClick: true } : { oneClick: false, code: "not-local", refusal: "not a direct local connection" },
   );
   mocks.startEngineInstall.mockReturnValue({ ok: true, installId: "inst-1", engineId: "opencode", package: "opencode-ai", command: "npm install -g opencode-ai" });
   mocks.installRunEvents.mockReturnValue([]);
@@ -196,6 +198,28 @@ describe("the client-scope gate", () => {
   it("hands a loopback client a capability that permits", async () => {
     await get();
     expect(mocks.getEngineStatuses).toHaveBeenCalledWith(expect.objectContaining({ capability: { oneClick: true } }));
+  });
+
+  it("refuses a loopback socket carrying a spoofed X-Forwarded-For", async () => {
+    // The reviewer's measured bypass. cloudflared *appends* to a
+    // client-supplied XFF, so `127.0.0.1, 203.0.113.7` is exactly the header an
+    // attacker sends — and the old `getClientKey`-based check took the head and
+    // called it local. `isDirectLocalClient` requires the socket to be local
+    // *and* no forwarding header to be present at all.
+    await call(handler, { ...SPOOFED_XFF_REQ, query: {} });
+    expect(mocks.getEngineStatuses).toHaveBeenLastCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
+
+    // The POST hands the service a refusing capability. `engine-install.test.ts`
+    // owns what the service then does with it (403, nothing spawned); the
+    // service is mocked here, so asserting a status would only be asserting the
+    // mock.
+    await call(installHandler, { ...SPOOFED_XFF_REQ, params: { id: "opencode" } });
+    expect(mocks.startEngineInstall).toHaveBeenCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
+
+    // The stream route refuses on its own, before it looks the run up.
+    const stream = await call(streamHandler, { ...SPOOFED_XFF_REQ, params: { installId: "inst-1" } });
+    expect(stream.status).toBe(403);
+    expect(mocks.getInstallRun).not.toHaveBeenCalled();
   });
 
   it("treats a private LAN address as local", async () => {
