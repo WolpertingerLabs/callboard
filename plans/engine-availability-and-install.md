@@ -93,6 +93,26 @@ Settled before work starts.
    install button, declines to run it, and leaves the user with nothing to type.
    Phase 3 therefore adds a shortcut to Phase 2; it never replaces it, and the
    copy block stays rendered alongside the button rather than behind a failure.
+9. **Designating which binary the daemon spawns is a local-client capability,
+   on the same side of the line as running an install.** Added in Phase 4,
+   because Phase 4 is what made it a question: `pathToClaudeCodeExecutable` and
+   `codexPathOverride` had never been reachable over HTTP, so putting them in
+   the settings PUT body made "which executable does this machine run" remotely
+   writable for the first time — and it shipped ungated while Decision 7's
+   `ip-allowlist` gate was refusing *the same client* the far narrower
+   capability of running one command from a closed allowlist. Measured: a
+   request carrying `X-Forwarded-For: 8.8.8.8` got 403 from
+   `POST /api/engines/:id/install` and 200 from `PUT /api/agent-settings` with
+   `codexPathOverride` set.
+
+   It is not privilege escalation — the daemon runs as the user and an
+   authenticated client can already run commands through a chat. It is the two
+   phases disagreeing, and Decision 7's own justification settles which way:
+   Remote Access can put this server on the public internet with a password as
+   the only barrier. **Writes to those two fields therefore require
+   `isDirectLocalClient`; reads are untouched.** A tunnelled client still sees
+   which binary is in effect, and still gets `binary-check`, which executes
+   nothing.
 
 ## Phase 0 — Document the engines (no code)
 
@@ -146,9 +166,21 @@ Sources, all of them already in the tree:
   `CodexSessionProvider.checkSdkVersionOnce` is the pattern this plan originally
   named — and it is **dead code**. Its `require("@openai/codex-sdk/package.json")`
   throws into the bare catch on every boot, so the `EXPECTED_CODEX_CLI_VERSION`
-  drift warning it exists to emit can never fire, and a rollout-format drift
-  would arrive silently. Not this phase's job to fix; **Phase 4 owns it**, where
-  the drift warning is already being moved into the status card.
+  drift warning it exists to emit can never fire. Not this phase's job to fix;
+  **Phase 4 owns it**, where the drift warning is already being moved into the
+  status card.
+
+  **Corrected in Phase 4:** the sentence that used to end that paragraph — "and
+  a rollout-format drift would arrive silently" — was wrong, and the same claim
+  was repeated in Phase 4's code comments until review caught it. There are
+  *two* checks against `EXPECTED_CODEX_CLI_VERSION`, and only one of them was
+  broken. `sessionParser.checkCliVersion` compares the constant against each
+  rollout's own `session_meta.cli_version` (real rollouts carry it — verified
+  against `~/.codex/sessions`) and has always been live. It is the
+  better-aimed of the two, since it tests the file being decoded rather than a
+  binary that might write one. What was dead was the *boot-time* warning: the
+  half that can speak before a mismatched rollout exists to be read, and the
+  only half that can be asked about an overridden binary.
 
   `claude --version` for the native CLI (already run for
   `system-info.claudeCliVersion`); `opencode --version` for ACP vendors — in a
@@ -304,13 +336,17 @@ and there is nothing to point elsewhere.
 Three departures, each forced by the same question this feature keeps asking —
 *did Callboard look?*
 
-1. **`existsSync` is not the check.** It accepts a directory, and it accepts a
-   file with no execute bit — the normal state of anything fetched with
-   `curl -O`. In both cases the old resolver returned the path, the SDK spawned
-   it, and every chat died at the first turn against a path Settings was
-   simultaneously reporting as configured. `utils/binary-path.ts` adds a `stat`
-   and an `X_OK` test, and it is one module so the resolver, the status card and
-   the settings field cannot answer differently.
+1. **`existsSync` is not the check.** It accepts a directory, a file with no
+   execute bit — the normal state of anything fetched with `curl -O` — and a
+   **relative path**, which is the worst of the three because it is not a looser
+   test but a different question: Callboard resolves it against the daemon's cwd
+   while the engine spawns it with the *chat folder* as cwd, so `"relwrap"`
+   validated green and failed to launch in every chat. In all three the old
+   resolver returned the path, the SDK spawned it, and the chat died at the first
+   turn against a path Settings was simultaneously reporting as configured.
+   `utils/binary-path.ts` rejects relative paths outright and adds a `stat` and
+   an `X_OK` test, in one module so the resolver, the status card and the
+   settings field cannot answer differently.
 
 2. **A rejected override falls through — and says so.** Handing an unspawnable
    path to the SDK breaks every chat over a typo, so a failed check resolves as
@@ -326,14 +362,50 @@ Three departures, each forced by the same question this feature keeps asking —
    override routinely splits them, and the card prints both rather than picking
    one and leaving the user watching a version that never moves.
 
-The drift check the plan assigned here was worse than dead: it threw
-`ERR_PACKAGE_PATH_NOT_EXPORTED` into a bare `catch` on every boot, so its
-`catch` comment ("SDK not resolvable (tests / partial install)") described
-something that had never happened while hiding something that always did. It
-now reads the manifest through `utils/package-version.ts` and fires, and it
-compares against **the version in effect** — which, with an override, is the
-user's binary rather than Callboard's `node_modules`, a case no boot-time
-constant comparison could have seen.
+4. **Only the `which` lookup is memoized; the override is read fresh on every
+   resolution.** The first cut memoized the whole decision, which put the
+   resolver and the card on different clocks and let them disagree *in both
+   directions* — an override whose binary was deleted after resolution left the
+   card reading "Native `claude` at X · Ready" beside "⚠ Nothing at X" while
+   every chat died, and an override saved before its target existed stayed
+   ignored by chats while the card announced it was in effect. Both reproduced
+   in review. One `stat` per resolution is the price of the two answers being
+   one answer, and this function is called at chat start, not in a loop. It also
+   means editing the field is live by construction rather than by remembering to
+   invalidate a cache — which is the only version of that guarantee a status card
+   can be built on.
+
+5. **The version of an overridden binary is its own or nothing.** `--version`
+   output that contains no dotted numeric token yields `undefined`, not the raw
+   banner, and an active override with no readable version does **not** borrow
+   the bundled package's. Both were real: a wrapper printing `my custom codex
+   build` became the engine's `version`, produced a permanent drift row and an
+   `isNewerVersion` comparison over `NaN`; and the `??` fallback attributed
+   `0.146.0` to a binary Callboard had got no version out of, then issued a drift
+   verdict on evidence about a file nothing executes. "Did not look" and "looked
+   at something else" are the two answers this branch exists to keep apart.
+
+The drift check the plan assigned here threw `ERR_PACKAGE_PATH_NOT_EXPORTED`
+into a bare `catch` on every boot, so its `catch` comment ("SDK not resolvable
+(tests / partial install)") described something that had never happened while
+hiding something that always did. It now reads the manifest through
+`utils/package-version.ts` and fires, and it compares against **the version in
+effect** — which, with an override, is the user's binary rather than Callboard's
+`node_modules`, a case no boot-time constant comparison could have seen.
+
+It was never the *only* check, and both this document and Phase 4's own code
+comments said it was until review corrected them — see the note under Phase 1.
+`sessionParser.checkCliVersion` has always worked. The repair restores the
+boot-time and ahead-of-time half, not drift detection as such.
+
+Two pieces of copy were also wrong in the direction that matters most, since
+they are what a user acts on. The drift row said resuming an older chat was the
+risk and that new chats were unaffected; it is the reverse — the constant is
+what the *parser* targets, so a drifted binary writes an unfamiliar format from
+now on, and `parseCodexRollout` renders every transcript rather than only a
+resume. And `updateRemedy` offered "a Callboard update can pick it up" for an
+active override, which moves `node_modules` and cannot touch a binary the user
+installed.
 
 ## Testing
 

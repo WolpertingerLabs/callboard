@@ -50,7 +50,9 @@ No engine to install: the Claude Agent SDK ships with Callboard, and carries a n
 
 Callboard prefers a `claude` you installed anyway. For running chats it checks the **Binary path** field under Settings → API → Claude Code (`pathToClaudeCodeExecutable`), then `which claude`, then the bundled binary. A second lookup — used by the login prompt and the About page — checks the `CLAUDE_BINARY` environment variable, then `which claude`, then a handful of well-known install paths, and it ignores the Binary path field entirely. The two can therefore land on different binaries; when they do, the status card at the top of the tab names both rather than picking one. Having the CLI on your `PATH` keeps them agreeing.
 
-Either binary field — Claude Code's or Codex's — is checked before it is used: the path must exist, be a regular file, and be executable by the user running the Callboard daemon. A path that fails any of those is **rejected** and resolution carries on as if the field were blank, so a typo cannot break every chat. The field says why while you are typing, and the status card says why afterwards. Editing either field takes effect on the next chat; no restart.
+Either binary field — Claude Code's or Codex's — is checked before it is used: the path must be **absolute**, exist, be a regular file, and be executable by the user running the Callboard daemon. (Absolute matters more than it looks: Callboard would resolve a relative path against the daemon's own directory while the engine spawns it from the chat's folder, so it would name a different file in every chat.) A path that fails any of those is **rejected** and resolution carries on as if the field were blank, so a typo cannot break every chat. The field says why while you are typing, and the status card says why afterwards. Editing either field takes effect on the next chat; no restart.
+
+Both fields can only be changed from a browser on the same machine or LAN, or by editing `~/.callboard/agent-settings.json` on the host. They decide which executable the daemon spawns, so they are held to the same scope as running an install — a client reaching Callboard through Remote Access can see which binary is in effect but not change it.
 
 Installing it is the recommended setup, and it is the only way to sign in with a Claude subscription:
 
@@ -82,7 +84,7 @@ Set **Binary path** under Settings → API → Codex (`codexPathOverride`) and c
 
 There is no `PATH` search behind that field: it is your path or the bundled copy, nothing in between. Auth and sessions do not move either — the overriding binary still reads `$CODEX_HOME/auth.json` and writes to the same rollout tree.
 
-One thing to watch. Callboard parses Codex's session rollout files by hand, and that format is undocumented and changes between releases. Run a `codex` far enough from the version Callboard targets and *resuming* an older chat can silently drop messages rather than fail. The status card shows a **Compatibility** row when the version in effect differs from the one the parser was written against; new chats are unaffected either way.
+One thing to watch. Callboard parses Codex's session rollout files by hand, and that format is undocumented and changes between releases. Run a `codex` far enough from the version Callboard targets and the transcripts it writes **from now on** can render with turns missing rather than fail loudly — chats recorded by a matching version still read correctly. The status card shows a **Compatibility** row when the version in effect differs from the one the parser was written against.
 
 ### Cline
 

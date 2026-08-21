@@ -104,10 +104,18 @@ export class CodexSessionProvider implements SessionProvider {
    * require throws `ERR_PACKAGE_PATH_NOT_EXPORTED` — **every** boot, straight
    * into the bare `catch` below, which was written for "SDK not resolvable
    * (tests / partial install)" and swallowed it as if that were what happened.
-   * The warning it exists to emit had therefore never fired and could not, which
-   * means the one signal standing between a rollout-format change and chats
-   * quietly losing messages on resume was decorative. Confirmed by execution
-   * across two independent sessions before it was replaced.
+   * The warning it exists to emit had therefore never fired and could not.
+   * Confirmed by execution across two independent sessions before it was
+   * replaced.
+   *
+   * It was not, however, the *only* drift check, and an earlier version of this
+   * comment said it was. {@link checkCliVersion} in `sessionParser.ts` compares
+   * the same constant against each rollout's recorded
+   * `session_meta.cli_version` and has always been live — real rollouts carry
+   * the field. It is arguably the better-aimed of the two, since it tests the
+   * file actually being decoded rather than the binary that might have written
+   * one. This check's distinct value is that it speaks at boot, before any
+   * mismatched rollout has been read.
    *
    * {@link bundledPackageVersion} resolves the manifest through
    * `require.resolve.paths()` instead, which does not consult the `exports` map
@@ -115,8 +123,9 @@ export class CodexSessionProvider implements SessionProvider {
    * this `catch` was documented to mean, so there is a real skip and a real
    * check rather than one branch pretending to be both.
    *
-   * The status card carries the same drift as a rendered row (`EngineStatus.drift`) —
-   * a boot log nobody is watching is not where you learn that resume is lossy.
+   * The status card carries the same drift as a rendered row
+   * (`EngineStatus.drift`) — a boot log nobody is watching is not where you
+   * learn that your transcripts may be rendering short.
    */
   private checkSdkVersionOnce(): void {
     if (warnedSdkDrift) return;

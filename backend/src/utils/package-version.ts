@@ -11,10 +11,16 @@
  * `@cline/sdk` and `@earendil-works/pi-coding-agent`.
  *
  * That is not a hypothetical. `CodexSessionProvider.checkSdkVersionOnce` used
- * exactly that pattern inside a bare `catch {}`, which meant the
- * `EXPECTED_CODEX_CLI_VERSION` drift warning — the one thing standing between a
- * rollout-format change and chats silently losing messages on resume — had never
- * fired on any machine and could not. It threw on every boot instead.
+ * exactly that pattern inside a bare `catch {}`, so its
+ * `EXPECTED_CODEX_CLI_VERSION` drift warning had never fired on any machine and
+ * could not — it threw on every boot instead.
+ *
+ * To be precise about what that cost, since the first version of this comment
+ * was not: it was **one of two** drift checks, not the only one.
+ * `sessionParser.checkCliVersion` compares the same constant against each
+ * rollout's own `session_meta.cli_version` and has always worked. What was lost
+ * was the boot-time warning — the half that can speak before a mismatched
+ * rollout exists to be read.
  *
  * `require.resolve.paths()` gives the `node_modules` directories Node itself
  * would search, walking up from the caller. That covers a workspace checkout

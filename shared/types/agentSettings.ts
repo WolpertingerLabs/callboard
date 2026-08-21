@@ -351,6 +351,16 @@ export interface AgentSettings {
    * Only the executable path moves. `CODEX_HOME`, auth and config still come
    * from {@link codexHome} and the rest of this block, so an overridden binary
    * reads the same credentials the bundled one did.
+   *
+   * One thing that does change, and it is the SDK's behaviour rather than
+   * Callboard's: when handed a `codexPathOverride` the SDK stops prepending its
+   * own bundled helper directories to the child's `PATH` (verified against
+   * `@openai/codex-sdk`'s exec layer, which sets `pathDirs` to `[]` on this
+   * branch). Those directories carry the `rg` and `bwrap` that ship beside the
+   * bundled binary. A real global install brings its own — which is why the SDK
+   * does this — but a bare binary copied out of a tarball may not, and the
+   * symptom would be a sandbox or search feature failing inside chats rather
+   * than anything Callboard can see. Stated in the UI for that reason.
    */
   codexPathOverride?: string;
 
