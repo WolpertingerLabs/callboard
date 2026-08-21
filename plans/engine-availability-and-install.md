@@ -299,6 +299,42 @@ Makes "use *my* install, not the bundled one" a UI decision:
 Cline and pi get no override: they are in-process libraries, not subprocesses,
 and there is nothing to point elsewhere.
 
+### What shipped, and where it departed from the above
+
+Three departures, each forced by the same question this feature keeps asking —
+*did Callboard look?*
+
+1. **`existsSync` is not the check.** It accepts a directory, and it accepts a
+   file with no execute bit — the normal state of anything fetched with
+   `curl -O`. In both cases the old resolver returned the path, the SDK spawned
+   it, and every chat died at the first turn against a path Settings was
+   simultaneously reporting as configured. `utils/binary-path.ts` adds a `stat`
+   and an `X_OK` test, and it is one module so the resolver, the status card and
+   the settings field cannot answer differently.
+
+2. **A rejected override falls through — and says so.** Handing an unspawnable
+   path to the SDK breaks every chat over a typo, so a failed check resolves as
+   if the field were blank. That is only defensible because the rejection is
+   *visible*: from every other field on the card, a rejected override looks
+   exactly like never having set one. Hence `EngineRuntime.override` carrying
+   the state next to the path, with `overridePath` set only when it is live.
+
+3. **The two Claude lookups are named, not reconciled.**
+   `getClaudeBinaryPath()` — About's CLI version, the login prompt — ignores
+   this setting and reads `$CLAUDE_BINARY` and four well-known directories, and
+   `utils/paths.ts` cannot import `agent-settings.ts` without a cycle. So an
+   override routinely splits them, and the card prints both rather than picking
+   one and leaving the user watching a version that never moves.
+
+The drift check the plan assigned here was worse than dead: it threw
+`ERR_PACKAGE_PATH_NOT_EXPORTED` into a bare `catch` on every boot, so its
+`catch` comment ("SDK not resolvable (tests / partial install)") described
+something that had never happened while hiding something that always did. It
+now reads the manifest through `utils/package-version.ts` and fires, and it
+compares against **the version in effect** — which, with an override, is the
+user's binary rather than Callboard's `node_modules`, a case no boot-time
+constant comparison could have seen.
+
 ## Testing
 
 - `engine-status.test.ts` — one case per runtime kind; bundled engines report
