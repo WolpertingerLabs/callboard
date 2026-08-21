@@ -6,7 +6,8 @@
  * running this test, and a random name is not installed by construction.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { acpProviderAvailability, listAcpProviderAvailability, resetAcpAvailabilityCache } from "./availability.js";
+import { isAbsolute } from "node:path";
+import { acpProviderAvailability, acpProviderVersion, listAcpProviderAvailability, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "./availability.js";
 import { ACP_VENDOR_PRESETS, OPENCODE_CONFIG_CONTENT_ENV, type AcpVendorPreset } from "./vendors.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 
@@ -33,6 +34,39 @@ describe("acpProviderAvailability", () => {
     // The command is the binary, not the whole argv — a "not installed" message
     // should say `opencode`, not `opencode acp`.
     expect(result).toMatchObject({ id: "opencode", label: "OpenCode", command: "opencode" });
+  });
+});
+
+describe("resolveAcpBinaryPath", () => {
+  it("returns where the binary resolved, not just that it did", () => {
+    // The engine status card names the path it found; `available` is derived
+    // from the same lookup, so the two cannot disagree.
+    const path = resolveAcpBinaryPath("node");
+    expect(path).toBeTruthy();
+    expect(isAbsolute(path!)).toBe(true);
+  });
+
+  it("returns null for a binary that is not installed", () => {
+    expect(resolveAcpBinaryPath("callboard-definitely-not-a-real-binary")).toBeNull();
+  });
+});
+
+describe("acpProviderVersion", () => {
+  it("reports the first line of what the CLI printed", () => {
+    // `node --version` prints `v22.x.y` — kept verbatim, because vendors print
+    // anything from a bare semver to a banner and parsing further would guess.
+    expect(acpProviderVersion("node")).toMatch(/^v\d+\./);
+  });
+
+  it("says nothing for a binary that is not installed, and never spawns it", () => {
+    expect(acpProviderVersion("callboard-definitely-not-a-real-binary")).toBeUndefined();
+  });
+
+  it("is not on the availability payload, which /api/system-info serializes", () => {
+    // Deliberate: availability is a `which` lookup, this executes a third-party
+    // binary. Adding it to the polled payload would fork a CLI per poll — and
+    // system-info is under orders not to grow.
+    expect(acpProviderAvailability(preset("node"))).not.toHaveProperty("version");
   });
 });
 
