@@ -1,9 +1,19 @@
 import { useEffect, useState } from "react";
 import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, ExternalLink } from "lucide-react";
-import { getAgentSettings, updateAgentSettings, getSystemInfo, getOpenRouterCatalog, getAcpModels, getClineProviders, getPiProviders } from "../../api";
+import {
+  getAgentSettings,
+  updateAgentSettings,
+  getSystemInfo,
+  getOpenRouterCatalog,
+  getAcpModels,
+  getClineProviders,
+  getPiProviders,
+  getEngines,
+} from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
+import EngineStatusCard, { EngineStatusDot, StatusRow } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
-import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo } from "../../api";
+import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo, EngineStatus } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
 import ClineModelSelector from "../../components/ClineModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
@@ -146,6 +156,31 @@ const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
 };
 
 /**
+ * An ACP vendor's status from `/api/system-info` alone.
+ *
+ * `acpProviders` carries the two facts that matter most — is the binary there,
+ * and what is it called — and it arrives with the rest of the page rather than
+ * behind a registry lookup. So a missing `/api/engines` answer costs the version
+ * rows and nothing else, instead of blanking the tab.
+ *
+ * Credentials are `"unknown"` here for the same reason they are on the real
+ * status: ACP has no auth introspection, and this path knows strictly less than
+ * that one does.
+ */
+function acpFallbackEngine(vendor: AcpProviderInfo): EngineStatus {
+  return {
+    id: vendor.id,
+    label: vendor.label,
+    runtime: { kind: "external", command: vendor.command },
+    installed: vendor.available,
+    credentials: {
+      configured: "unknown",
+      note: `Held by the ${vendor.label} CLI, never by Callboard. ACP gives a client no way to ask whether an agent is signed in.`,
+    },
+  };
+}
+
+/**
  * Read-only status for one ACP vendor.
  *
  * Every other tab on this page edits credentials callboard holds. This one has
@@ -154,12 +189,25 @@ const providerReferenceLinks: Record<SettingsTab, ReferenceLink[]> = {
  * `authMethods` and never a place to hand over a key — so the useful thing to
  * show is what callboard *does* know, and what it does to the agent it spawns.
  *
- * The permission line is the part worth surfacing. Callboard overrides the
- * vendor's own permission config for sessions it launches, which is invisible
- * otherwise and materially changes how the agent behaves.
+ * The CLI and Credentials rows this used to render itself are now
+ * {@link EngineStatusCard}'s Runtime and Credentials rows — an ACP vendor is
+ * the one genuinely install-or-not engine on the page, so it is the shared
+ * card's first consumer rather than a parallel implementation of it. What is
+ * left here is what the card cannot know: the permission override callboard
+ * applies to sessions it launches (invisible otherwise, and it materially
+ * changes how the agent behaves) and the harvested model catalog.
+ *
+ * When `/api/engines` has not answered — a cold registry lookup, or a failed
+ * call — the card falls back to {@link acpFallbackEngine} rather than to a
+ * placeholder. `systemInfo.acpProviders` already carries `available` and
+ * `command` synchronously, and dropping to "Checking engine status…" would take
+ * the single most actionable line on the page ("`opencode` not found on PATH")
+ * away from exactly the user who needs it.
  */
 function AcpProviderSection({
   vendor,
+  engine,
+  enginesLoading,
   useOpenRouter,
   onUseOpenRouterChange,
   openRouterApiKey,
@@ -167,6 +215,9 @@ function AcpProviderSection({
   accountKeySet,
 }: {
   vendor: AcpProviderInfo;
+  /** This vendor's row from `GET /api/engines`; absent while it loads or if the call failed. */
+  engine: EngineStatus | undefined;
+  enginesLoading: boolean;
   useOpenRouter: boolean;
   onUseOpenRouterChange: (v: boolean) => void;
   openRouterApiKey: string;
@@ -190,61 +241,31 @@ function AcpProviderSection({
     };
   }, [vendor.id]);
 
-  const row = (label: string, body: React.ReactNode) => (
-    <div style={{ ...rowStyle, alignItems: "flex-start", gap: 16 }}>
-      <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{label}</span>
-      <span style={{ color: "var(--text)", textAlign: "right", lineHeight: 1.5 }}>{body}</span>
-    </div>
-  );
-
   return (
     <>
+      <EngineStatusCard engine={engine ?? acpFallbackEngine(vendor)} loading={enginesLoading} />
+
       <div style={sectionStyle}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
           <Plug size={14} style={{ color: "var(--accent-text)" }} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{vendor.label}</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Session behaviour</span>
           <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Agent Client Protocol</span>
         </div>
 
-        {row(
-          "CLI",
-          vendor.available ? (
-            <>
-              <code style={{ fontSize: 11 }}>{vendor.command}</code> found on PATH
-            </>
-          ) : (
-            <>
-              <code style={{ fontSize: 11 }}>{vendor.command}</code> not found — install it to enable this provider
-            </>
-          ),
-        )}
+        <StatusRow label="Permissions">
+          Callboard runs this agent with every tool set to <code style={{ fontSize: 11 }}>ask</code>, so its own four axes decide. Without that override the
+          vendor&rsquo;s defaults apply and the permission settings here would govern nothing.
+        </StatusRow>
 
-        {row(
-          "Credentials",
-          <>
-            Held by the CLI, never by Callboard. ACP has no way to hand an agent a key, so &ldquo;found on PATH&rdquo; does not mean &ldquo;signed in&rdquo; —
-            an unauthenticated agent fails at send time with its own message.
-          </>,
-        )}
-
-        {row(
-          "Permissions",
-          <>
-            Callboard runs this agent with every tool set to <code style={{ fontSize: 11 }}>ask</code>, so its own four axes decide. Without that override the
-            vendor&rsquo;s defaults apply and the permission settings here would govern nothing.
-          </>,
-        )}
-
-        {row(
-          "Models",
-          catalog && catalog.models.length > 0 ? (
+        <StatusRow label="Models">
+          {catalog && catalog.models.length > 0 ? (
             <>
               {catalog.models.length} known{catalog.currentValue ? <> · last ran {<code style={{ fontSize: 11 }}>{catalog.currentValue}</code>}</> : null}
             </>
           ) : (
             <>None yet — the list is learned from chats you run, so it fills in after the first one.</>
-          ),
-        )}
+          )}
+        </StatusRow>
       </div>
 
       <div style={sectionStyle}>
@@ -524,6 +545,12 @@ export default function ApiSettings() {
 
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  // Per-engine runtime / version / credential status, from GET /api/engines.
+  // Its own call rather than more fields on system-info: it reaches the npm
+  // registry, so it is slower than the poll system-info is built for, and the
+  // page must render without waiting for it.
+  const [engines, setEngines] = useState<EngineStatus[]>([]);
+  const [enginesLoading, setEnginesLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -594,6 +621,19 @@ export default function ApiSettings() {
 
   const loadAll = async () => {
     setLoading(true);
+
+    // Engine status, kicked off before anything that can throw and never
+    // awaited with the rest. Two reasons it lives out here: a cold registry
+    // lookup must not hold the whole page on "Loading...", and as the last
+    // statement of the try below it was skipped whenever settings failed to
+    // load — leaving every tab saying "Checking engine status…" forever,
+    // underneath the error banner.
+    setEnginesLoading(true);
+    getEngines()
+      .then(setEngines)
+      .catch(() => setEngines([]))
+      .finally(() => setEnginesLoading(false));
+
     try {
       const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo().catch(() => null)]);
       setSettings(s);
@@ -761,6 +801,25 @@ export default function ApiSettings() {
   const account = systemInfo?.account;
   const models = systemInfo?.models ?? [];
 
+  /**
+   * The engine backing a tab.
+   *
+   * `"openrouter"` deliberately maps to nothing: it is a service credential, not
+   * an engine — see the {@link SettingsTab} doc-comment — so it gets no status
+   * card and no dot. Inventing a row for it would be the same kind of lie as an
+   * "installed ✓" column on a bundled engine.
+   */
+  const engineFor = (tab: SettingsTab, acpId?: string): EngineStatus | undefined => {
+    const id = tab === "acp" ? acpId : tab === "openrouter" ? undefined : tab;
+    if (!id) return undefined;
+    const engine = engines.find((e) => e.id === id);
+    if (engine) return engine;
+    // An ACP vendor knows enough from system-info alone to show a dot, so its
+    // tab is not left blank while /api/engines is in flight or after it failed.
+    const vendor = tab === "acp" ? (systemInfo?.acpProviders ?? []).find((v) => v.id === id) : undefined;
+    return vendor ? acpFallbackEngine(vendor) : undefined;
+  };
+
   // Inline alias validation — mirrors the backend's write-time rules so the
   // user sees the problem before Save bounces with a 400.
 
@@ -824,6 +883,16 @@ export default function ApiSettings() {
             >
               {icon}
               {label}
+              {/* Installed + credentialed / installed + uncredentialed / not
+                  installed, in that order of colour. Rendered only once the
+                  engine is known — a placeholder dot while /api/engines is in
+                  flight would read as a state rather than as an absence. The
+                  OpenRouter tab never has one: it is a service credential
+                  rather than an engine. */}
+              {(() => {
+                const engine = engineFor(kind, acpId);
+                return engine ? <EngineStatusDot engine={engine} /> : null;
+              })()}
             </button>
           );
         })}
@@ -831,6 +900,7 @@ export default function ApiSettings() {
 
       {activeProvider === "claude-code" && (
         <>
+          <EngineStatusCard engine={engineFor("claude-code")} loading={enginesLoading} />
           <ReferenceLinksSection provider="claude-code" />
 
           <OpenRouterRoutingSection
@@ -1152,7 +1222,9 @@ export default function ApiSettings() {
                 spellCheck={false}
                 style={inputStyle}
               />
-              <div style={helpStyle}>Optional. Override the OpenRouter API endpoint (proxies / regional mirrors). Used for both the model catalog and the completions below.</div>
+              <div style={helpStyle}>
+                Optional. Override the OpenRouter API endpoint (proxies / regional mirrors). Used for both the model catalog and the completions below.
+              </div>
             </div>
           </div>
 
@@ -1240,6 +1312,8 @@ export default function ApiSettings() {
           return vendor ? (
             <AcpProviderSection
               vendor={vendor}
+              engine={engineFor("acp", vendor.id)}
+              enginesLoading={enginesLoading}
               useOpenRouter={acpUseOpenRouter}
               onUseOpenRouterChange={setAcpUseOpenRouter}
               openRouterApiKey={acpOpenRouterApiKey}
@@ -1251,6 +1325,7 @@ export default function ApiSettings() {
 
       {activeProvider === "codex" && (
         <>
+          <EngineStatusCard engine={engineFor("codex")} loading={enginesLoading} />
           <ReferenceLinksSection provider="codex" />
 
           <OpenRouterRoutingSection
@@ -1463,6 +1538,7 @@ export default function ApiSettings() {
 
       {activeProvider === "pi" && (
         <>
+          <EngineStatusCard engine={engineFor("pi")} loading={enginesLoading} />
           <ReferenceLinksSection provider="pi" />
 
           <div style={sectionStyle}>
@@ -1564,6 +1640,7 @@ export default function ApiSettings() {
 
       {activeProvider === "cline" && (
         <>
+          <EngineStatusCard engine={engineFor("cline")} loading={enginesLoading} />
           <ReferenceLinksSection provider="cline" />
 
           {/* Cline — provider + credentials */}

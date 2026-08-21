@@ -93,6 +93,8 @@ import type {
   TrashEntryView,
   TrashListing,
   TrashRestoreResult,
+  EngineStatus,
+  EngineStatusResponse,
 } from "shared/types/index.js";
 
 export type {
@@ -190,6 +192,8 @@ export type {
   TrashEntryView,
   TrashListing,
   TrashRestoreResult,
+  EngineStatus,
+  EngineStatusResponse,
 };
 
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
@@ -1375,6 +1379,24 @@ export interface SystemInfo {
    * there is no state in which the provider could honestly be disabled.
    */
   clineProviderId?: string;
+}
+
+/**
+ * Per-engine runtime / version / credential status.
+ *
+ * A separate call from {@link getSystemInfo} on purpose: system-info is polled
+ * by several pages and its `acpProviders` / `codexConfigured` / `codexAuthSource`
+ * fields are read by older bundles, so engine status — which hits the npm
+ * registry — got its own route rather than growing that payload.
+ *
+ * Best-effort by contract: an offline daemon answers 200 with `latestVersion`
+ * omitted, so a failure here means the request itself failed.
+ */
+export async function getEngines(refresh = false): Promise<EngineStatus[]> {
+  const res = await fetch(`${BASE}/engines${refresh ? "?refresh=1" : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to get engine status");
+  const data = (await res.json()) as EngineStatusResponse;
+  return Array.isArray(data.engines) ? data.engines : [];
 }
 
 /** The models callboard has seen an ACP vendor advertise. */
