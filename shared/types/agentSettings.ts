@@ -65,6 +65,28 @@ export interface AgentSettings {
    */
   remoteAccessIpAllowlist?: string[];
 
+  /**
+   * May Settings → API offer a button that runs `npm install -g <engine CLI>`
+   * on this machine? Absent or `true` ⇒ yes, for loopback and LAN clients only.
+   *
+   * The capability switch for the one and only place Callboard executes a
+   * command on a user's request. Three things narrow it before this flag is even
+   * read — the package must be in the closed allowlist in
+   * `backend/src/services/engine-install-recipes.ts`, the client must be on the
+   * LAN (a request arriving through the remote-access tunnel never qualifies,
+   * whatever this is set to), and npm's global prefix must be writable — so this
+   * exists for the operator who wants none of it regardless: setting it to
+   * `false` removes the button everywhere and leaves the copy-and-paste command
+   * that was always the fallback.
+   *
+   * Default-on rather than default-off because the gate that matters is the
+   * client scope, and a locally-reachable Callboard already runs whatever a chat
+   * asks it to.
+   *
+   * @see plans/engine-availability-and-install.md — Phase 3
+   */
+  allowEngineInstalls?: boolean;
+
   /** Default local MCP config directory path (read-only, computed by backend) */
   defaultLocalMcpConfigDir?: string;
 

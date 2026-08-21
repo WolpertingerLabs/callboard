@@ -14,6 +14,10 @@ export default function RemoteAccessSettings() {
   const [token, setToken] = useState("");
   const [hostname, setHostname] = useState("");
   const [ipAllowlist, setIpAllowlist] = useState("");
+  // Absent means on. Read as `!== false` on the backend too, so a settings file
+  // written before this field existed keeps the documented default rather than
+  // silently switching the capability off.
+  const [allowEngineInstalls, setAllowEngineInstalls] = useState(true);
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -34,6 +38,7 @@ export default function RemoteAccessSettings() {
         setToken(s.cloudflaredToken || "");
         setHostname(s.remoteAccessHostname || "");
         setIpAllowlist((s.remoteAccessIpAllowlist || []).join("\n"));
+        setAllowEngineInstalls(s.allowEngineInstalls !== false);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -67,6 +72,7 @@ export default function RemoteAccessSettings() {
         cloudflaredToken: token,
         remoteAccessHostname: hostname,
         remoteAccessIpAllowlist: parseAllowlistInput(ipAllowlist),
+        allowEngineInstalls,
       });
       setEnabled(nextEnabled);
       setSaved(true);
@@ -314,6 +320,57 @@ export default function RemoteAccessSettings() {
               </button>
             </div>
           )}
+        </div>
+
+        {/* ── One-click engine installs ─────────────────────────────────
+            Not strictly a remote-access setting — it applies to local clients,
+            who are the only ones it can ever apply to — but this is the page an
+            operator hardens, and the capability's whole shape is decided by who
+            is allowed to reach this server. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>One-click engine installs</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Let <strong>Settings &rarr; API</strong> run an engine&rsquo;s <code>npm install -g</code> on this machine instead of only showing you the
+                command. The package comes from a fixed list Callboard ships &mdash; nothing you type reaches a command line, and no shell is involved.
+                Clients reaching Callboard through the tunnel never get this, whatever this switch says. Turning it off leaves the copy-and-paste command,
+                which is all there ever was before.
+              </div>
+            </div>
+            <button
+              role="switch"
+              aria-checked={allowEngineInstalls}
+              aria-label="Allow one-click engine installs"
+              onClick={() => !saving && setAllowEngineInstalls((v) => !v)}
+              disabled={saving}
+              style={{
+                position: "relative",
+                width: 44,
+                height: 24,
+                borderRadius: 999,
+                border: "none",
+                cursor: saving ? "default" : "pointer",
+                flexShrink: 0,
+                background: allowEngineInstalls ? "var(--accent)" : "var(--border)",
+                transition: "background 0.15s",
+                opacity: saving ? 0.6 : 1,
+              }}
+            >
+              <span
+                style={{
+                  position: "absolute",
+                  top: 2,
+                  left: allowEngineInstalls ? 22 : 2,
+                  width: 20,
+                  height: 20,
+                  borderRadius: "50%",
+                  background: "var(--toggle-knob)",
+                  transition: "left 0.15s",
+                }}
+              />
+            </button>
+          </div>
         </div>
 
         {/* Apply button (re-spawns the tunnel with the latest config when enabled) */}

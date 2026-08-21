@@ -60,6 +60,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     cloudflaredToken,
     remoteAccessHostname,
     remoteAccessIpAllowlist,
+    allowEngineInstalls,
     apiBaseUrl,
     apiKey,
     authToken,
@@ -282,6 +283,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(cloudflaredToken !== undefined && { cloudflaredToken: normalize(cloudflaredToken) }),
       ...(remoteAccessHostname !== undefined && { remoteAccessHostname: normalize(remoteAccessHostname) }),
       ...(remoteAccessIpAllowlist !== undefined && { remoteAccessIpAllowlist: normalizedAllowlist }),
+      // Default-on, so `true` is stored explicitly rather than cleared: the
+      // consumer reads `!== false`, and a field that vanished on save would be
+      // indistinguishable from one that was never set — which is fine here, but
+      // would stop being fine the moment the default flips.
+      ...(allowEngineInstalls !== undefined && { allowEngineInstalls: normalizeBool(allowEngineInstalls) }),
       ...(apiBaseUrl !== undefined && { apiBaseUrl: normalize(apiBaseUrl) }),
       ...(apiKey !== undefined && { apiKey: normalize(apiKey) }),
       ...(authToken !== undefined && { authToken: normalize(authToken) }),
