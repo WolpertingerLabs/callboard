@@ -4,11 +4,18 @@
  * ## What is in here, and what is deliberately not
  *
  * Every command below is a **literal**. Package names are written out in this
- * file and never assembled from a request, argv is an array rather than a
- * string, and the set of installable packages is closed
- * ({@link INSTALLABLE_PACKAGES}). That is Decision 4, and it is what lets
- * Phase 3 spawn one of these without the endpoint becoming an
- * arbitrary-command surface.
+ * file and never assembled from a request, and argv is a frozen array rather
+ * than a string. That is what lets Phase 3 spawn one of these without the
+ * endpoint becoming an arbitrary-command surface — the enforcing check is the
+ * **argv shape**: `oneClickRecipeFor` and `assertSpawnable` both require a
+ * four-element `["npm", "install", "-g", <pkg>]` whose tail is the recipe's own
+ * allowlisted package, so nothing from a request can reach a command line
+ * whatever the registry says.
+ *
+ * {@link INSTALLABLE_PACKAGES} (Decision 4's "closed set") sits alongside that
+ * as a *governance* control rather than an injection barrier: it is the list a
+ * reviewer reads to answer "what can this daemon be made to install?", and it is
+ * an independent literal specifically so that adding a recipe cannot widen it.
  *
  * **Nothing in this module executes anything.** It has no imports from
  * `node:child_process`, and it never will: Phase 2's whole deliverable is text a
@@ -53,8 +60,8 @@ const CLAUDE_CODE_CLI_PACKAGE = "@anthropic-ai/claude-code";
 const OPENCODE_PACKAGE = "opencode-ai";
 const CODEX_CLI_PACKAGE = "@openai/codex";
 
-// {@link INSTALLABLE_PACKAGES} is derived from the recipes below rather than
-// declared here — see its doc comment for why that distinction matters.
+// {@link INSTALLABLE_PACKAGES} lists these same three, independently, so that
+// neither list can move without the other — see its doc comment.
 
 // ── Shared caveats ──────────────────────────────────────────────────
 
@@ -184,16 +191,36 @@ export const ENGINE_INSTALL_RECIPES: readonly EngineInstallRecipe[] = Object.fre
 /**
  * The closed set of packages Callboard will ever install globally.
  *
- * Phase 3's endpoint checks membership here before spawning anything, which
- * makes this the security argument for that endpoint — so it is **derived**
- * from the recipes rather than written beside them. The previous cut claimed
- * exactly that in a comment while being a hand-written literal, and the test
- * only checked recipes ⊆ allowlist, so a stray entry would have been spawnable
- * with nothing failing. `engine-install-recipes.test.ts` now checks both
- * directions; derivation makes one of them true by construction.
+ * ## Why this is a literal again
+ *
+ * It was briefly *derived* from the recipes, to close a real hole (an allowlist
+ * entry no recipe asked for would have been spawnable). Derivation closed that
+ * hole by making the set unable to disagree with the recipes — which also made
+ * `INSTALLABLE_PACKAGES.has(recipe.package)` **true by construction** and the
+ * both-directions test a comparison of a set with itself. A maintainer adding
+ * `{ method: "npm-global", package: "anything", argv: [...] }` would have
+ * widened the "closed set" automatically, with every test still green.
+ *
+ * So it is written out here, independently, and
+ * `engine-install-recipes.test.ts` asserts set equality in both directions.
+ * Neither list can now move without the other, and the failure is a test
+ * failure rather than a silently larger allowlist. Adding an engine means
+ * editing two places on purpose; that is the entire point of a closed set.
+ *
+ * ## What this actually protects against, stated precisely
+ *
+ * Not injection. Nothing from a request reaches argv under any circumstances —
+ * that is guaranteed by `oneClickRecipeFor`'s argv-shape check and by
+ * `assertSpawnable`, which verify that what gets spawned is a four-element
+ * literal array whose tail *is* the allowlisted package. Those checks are the
+ * strong ones and they hold whatever this set contains.
+ *
+ * This set is the *governance* control: it is the list a reviewer reads to
+ * answer "what can this daemon be made to install?", and it is deliberately
+ * awkward to grow.
  */
 export const INSTALLABLE_PACKAGES: ReadonlySet<string> = Object.freeze(
-  new Set(ENGINE_INSTALL_RECIPES.filter((r) => r.method === "npm-global" && r.package).map((r) => r.package!)),
+  new Set<string>([CLAUDE_CODE_CLI_PACKAGE, OPENCODE_PACKAGE, CODEX_CLI_PACKAGE]),
 ) as ReadonlySet<string>;
 
 /** Every recipe registered for an engine id, in offer order. Empty for the bundled engines. */

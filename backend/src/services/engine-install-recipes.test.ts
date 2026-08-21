@@ -47,16 +47,32 @@ describe("the registry itself", () => {
     }
   });
 
-  it("has no allowlist entry that no recipe asks for", () => {
-    // The other direction, and the one that was missing. Phase 3 checks
-    // membership in this set before spawning, so a stray entry is a package
-    // Callboard would install on request with nothing in the UI naming it —
-    // and the previous test suite could not have noticed, because it only
-    // checked recipes ⊆ allowlist. The set is now derived, which makes this
-    // true by construction; the assertion is here so that a future
-    // hand-written literal fails instead of quietly re-opening the hole.
+  it("has no allowlist entry that no recipe asks for, and no recipe package the allowlist omits", () => {
+    // Both directions, and both of them now *mean* something.
+    //
+    // For one cut this set was derived from these same recipes, which made
+    // `INSTALLABLE_PACKAGES.has(recipe.package)` true by construction and this
+    // assertion a comparison of a set with itself — a maintainer adding
+    // `{ method: "npm-global", package: "anything", argv: [...] }` would have
+    // widened the "closed set" automatically with every test still green. The
+    // set is an independent literal again, so neither list can move without the
+    // other and the failure is here rather than in production.
+    //
+    // Note what this does *not* protect: injection is stopped by the argv-shape
+    // checks in `oneClickRecipeFor` and `assertSpawnable`, which hold whatever
+    // this set contains. This is the governance control — the list a reviewer
+    // reads — and it is meant to be awkward to grow.
     const fromRecipes = new Set(ENGINE_INSTALL_RECIPES.filter((r) => r.method === "npm-global").map((r) => r.package));
     expect([...INSTALLABLE_PACKAGES].sort()).toEqual([...fromRecipes].sort());
+  });
+
+  it("is a literal, not a projection of the recipe table", () => {
+    // The property the previous cut lost. If this set were derived, filtering
+    // the recipes down could not change it relative to those recipes; because
+    // it is written out independently, a package present in one and not the
+    // other is detectable — which is exactly what the test above does.
+    expect(INSTALLABLE_PACKAGES.size).toBe(3);
+    expect([...INSTALLABLE_PACKAGES].sort()).toEqual(["@anthropic-ai/claude-code", "@openai/codex", "opencode-ai"]);
   });
 
   it("names the allowlisted package as the literal last argv entry", () => {
