@@ -163,8 +163,13 @@ export function getClaudeBinaryPath(): string {
 
   // 2. Ask the shell — works for login/interactive shells
   try {
+    // `killSignal: "SIGKILL"` makes the timeout an actual bound. Node sends
+    // SIGTERM at the deadline by default and then waits indefinitely, so a
+    // child that ignores it holds this synchronous call — and therefore the
+    // whole single-threaded server — for as long as it likes.
     const resolved = execSync("which claude", {
       timeout: 3_000,
+      killSignal: "SIGKILL",
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
