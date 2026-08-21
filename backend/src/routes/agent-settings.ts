@@ -283,11 +283,14 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(cloudflaredToken !== undefined && { cloudflaredToken: normalize(cloudflaredToken) }),
       ...(remoteAccessHostname !== undefined && { remoteAccessHostname: normalize(remoteAccessHostname) }),
       ...(remoteAccessIpAllowlist !== undefined && { remoteAccessIpAllowlist: normalizedAllowlist }),
-      // Default-on, so `true` is stored explicitly rather than cleared: the
-      // consumer reads `!== false`, and a field that vanished on save would be
-      // indistinguishable from one that was never set — which is fine here, but
-      // would stop being fine the moment the default flips.
-      ...(allowEngineInstalls !== undefined && { allowEngineInstalls: normalizeBool(allowEngineInstalls) }),
+      // NOT `normalizeBool`, and the difference is the direction it fails in.
+      // `normalizeBool` returns `undefined` for a non-boolean, and an explicit
+      // `undefined` in this spread *clears* the stored field — so
+      // `{"allowEngineInstalls": "false"}` from a typo, a form serialiser or a
+      // shell script would delete an operator's "off" and revert the capability
+      // to its permissive default. For a security switch the only safe
+      // interpretation of an unparseable value is "change nothing".
+      ...(typeof allowEngineInstalls === "boolean" && { allowEngineInstalls }),
       ...(apiBaseUrl !== undefined && { apiBaseUrl: normalize(apiBaseUrl) }),
       ...(apiKey !== undefined && { apiKey: normalize(apiKey) }),
       ...(authToken !== undefined && { authToken: normalize(authToken) }),

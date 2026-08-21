@@ -578,6 +578,51 @@ interface InstallRunner {
   busyLabel?: string;
 }
 
+/**
+ * The one in-flight install this browsing session knows about.
+ *
+ * A single key rather than one per engine, because the server runs one install
+ * at a time — two entries could not both be live, and a stale second one would
+ * be a card reattaching to something that ended long ago.
+ */
+const INSTALL_STORAGE_KEY = "callboard.engineInstall";
+
+interface StoredInstall {
+  installId: string;
+  engineId: string;
+  command: string;
+}
+
+function readStoredInstall(): StoredInstall | null {
+  try {
+    const raw = sessionStorage.getItem(INSTALL_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.installId !== "string" || typeof parsed?.engineId !== "string") return null;
+    return { installId: parsed.installId, engineId: parsed.engineId, command: String(parsed.command ?? "") };
+  } catch {
+    // Storage disabled, quota'd, or holding something this bundle cannot read.
+    // Losing the reconnect is a degraded reload, not a broken page.
+    return null;
+  }
+}
+
+function writeStoredInstall(value: StoredInstall): void {
+  try {
+    sessionStorage.setItem(INSTALL_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    /* see readStoredInstall */
+  }
+}
+
+function clearStoredInstall(): void {
+  try {
+    sessionStorage.removeItem(INSTALL_STORAGE_KEY);
+  } catch {
+    /* see readStoredInstall */
+  }
+}
+
 /** Lines kept in the browser. The server caps its own buffer too; this is the render bound. */
 const MAX_CONSOLE_LINES = 500;
 
@@ -590,15 +635,93 @@ const MAX_CONSOLE_LINES = 500;
  * inside it the console and the "Installed" line would unmount at the exact
  * moment they became the answer to "did that work?".
  */
-function useInstallRunner(onEnginesUpdated?: (engines: EngineStatus[]) => void): { runner: InstallRunner; run: InstallRunState | null } {
+function useInstallRunner(
+  engineId: string | undefined,
+  onEnginesUpdated?: (engines: EngineStatus[]) => void,
+): { runner: InstallRunner; run: InstallRunState | null } {
   const [run, setRun] = useState<InstallRunState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const runningRef = useRef(false);
+  /** Did the POST return an installId? Decides whether a stream failure may forget the pointer. */
+  const startedRef = useRef(false);
+  const onEnginesUpdatedRef = useRef(onEnginesUpdated);
+  onEnginesUpdatedRef.current = onEnginesUpdated;
 
   // A stream left open after the tab is gone is a socket the daemon holds for
   // nothing. The install itself is server-side and carries on regardless, which
   // is why this aborts the read rather than trying to cancel the install.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  /**
+   * Follow an install that is already running, from its id.
+   *
+   * Shared by the button and by the reconnect below, because the server replays
+   * the whole transcript on connect — so "attach to the one I just started" and
+   * "attach to the one that was running before this page reloaded" are the same
+   * operation.
+   */
+  const follow = useCallback(async (installId: string, controller: AbortController) => {
+    try {
+      await readEngineInstallStream(
+        installId,
+        (event: EngineInstallEvent) => {
+          setRun((prev) => (prev ? reduceInstallEvent(prev, event) : prev));
+          if (event.type === "install_verified") onEnginesUpdatedRef.current?.(event.engines);
+          if (event.type === "install_verified" || (event.type === "install_exit" && !event.ok)) clearStoredInstall();
+        },
+        controller.signal,
+      );
+      setRun((prev) =>
+        prev && prev.phase !== "done"
+          ? {
+              ...prev,
+              phase: "done",
+              verdict: {
+                tone: "warn",
+                text: "The connection to the install stream ended before Callboard reported a result. The install may still have finished — press Recheck above to see where this engine stands.",
+              },
+            }
+          : prev,
+      );
+    } finally {
+      runningRef.current = false;
+    }
+  }, []);
+
+  /**
+   * Re-attach to an install this browser started before the page reloaded.
+   *
+   * Without it, reloading mid-install lost the runner state entirely and a
+   * *successful* install rendered as nothing at all — no transcript, no verdict,
+   * and a card still showing the pre-install status until someone pressed
+   * Recheck. That is the same failure this feature keeps producing, reached by a
+   * different route: the UI showing a state that does not match the machine.
+   *
+   * `sessionStorage` rather than `localStorage`: an install belongs to the tab
+   * that started it and to that browsing session, and the server drops the run
+   * after fifteen minutes anyway. A 404 (aged out, or replaced by a newer
+   * install) clears the pointer silently — there is nothing to report about an
+   * install whose outcome is simply no longer held.
+   */
+  useEffect(() => {
+    if (!engineId) return;
+    const stored = readStoredInstall();
+    if (!stored || stored.engineId !== engineId || runningRef.current) return;
+
+    runningRef.current = true;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setRun({ engineId, command: stored.command, phase: "running", lines: [] });
+
+    void follow(stored.installId, controller).catch((err) => {
+      // Only forget the pointer when the server says the run is gone. Any other
+      // failure — the daemon restarting, a flaky socket, another reload landing
+      // on top of this one — leaves it in place, because the install is
+      // server-side and may well still be running.
+      if ((err as { installGone?: boolean })?.installGone) clearStoredInstall();
+      setRun(null);
+    });
+  }, [engineId, follow]);
 
   const start = useCallback(
     (offer: EngineOneClickOffer) => {
@@ -609,10 +732,13 @@ function useInstallRunner(onEnginesUpdated?: (engines: EngineStatus[]) => void):
       abortRef.current = controller;
 
       setRun({ engineId: offer.engineId, command: offer.command, phase: "starting", lines: [] });
+      startedRef.current = false;
 
       void (async () => {
         try {
           const started = await startEngineInstall(offer.engineId);
+          startedRef.current = true;
+          writeStoredInstall({ installId: started.installId, engineId: started.engineId, command: started.command });
           setRun((prev) => (prev ? { ...prev, phase: "running", command: started.command } : prev));
 
           await readEngineInstallStream(
@@ -622,7 +748,9 @@ function useInstallRunner(onEnginesUpdated?: (engines: EngineStatus[]) => void):
               // Push the re-probed statuses up so every tab's dot, every version
               // row and this card's own guidance move together. The server did
               // the probing; this is the only place its answer enters the page.
-              if (event.type === "install_verified") onEnginesUpdated?.(event.engines);
+              if (event.type === "install_verified") onEnginesUpdatedRef.current?.(event.engines);
+              // Terminal — nothing left to reconnect to.
+              if (event.type === "install_verified" || (event.type === "install_exit" && !event.ok)) clearStoredInstall();
             },
             controller.signal,
           );
@@ -644,6 +772,15 @@ function useInstallRunner(onEnginesUpdated?: (engines: EngineStatus[]) => void):
           );
         } catch (err) {
           if (controller.signal.aborted) return;
+          // Deliberately does NOT clear the stored pointer once the install has
+          // started. A page reload tears the fetch down *without* running React
+          // cleanup, so `signal.aborted` is false and this branch runs — and the
+          // first cut cleared here, which meant reloading mid-install deleted
+          // the pointer a reload exists to use. Measured: storage was null
+          // immediately after the reload. The pointer is only dropped by a
+          // terminal event, by a 404 on reattach, or by a POST that never
+          // produced an install at all (below).
+          if (!startedRef.current) clearStoredInstall();
           setRun((prev) =>
             prev
               ? {
@@ -661,7 +798,7 @@ function useInstallRunner(onEnginesUpdated?: (engines: EngineStatus[]) => void):
         }
       })();
     },
-    [onEnginesUpdated],
+    [],
   );
 
   const busy = run !== null && run.phase !== "done";
@@ -931,7 +1068,7 @@ export default function EngineStatusCard({
 }) {
   // Before the early return, because hooks are not optional — and because a
   // card that has lost its engine mid-install must still render the transcript.
-  const { runner, run } = useInstallRunner(onEnginesUpdated);
+  const { runner, run } = useInstallRunner(engine?.id, onEnginesUpdated);
 
   if (!engine) {
     return (

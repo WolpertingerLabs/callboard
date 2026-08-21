@@ -1476,6 +1476,13 @@ export async function readEngineInstallStream(
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${BASE}/engines/installs/${encodeURIComponent(installId)}/stream`, { credentials: "include", signal });
+  if (res.status === 404) {
+    // Tagged, because the caller has to tell "this install no longer exists"
+    // (forget it) from "the connection broke" (it may still be running, keep
+    // the pointer so a reload can reattach). Collapsing the two is how a
+    // reconnect deletes the thing it exists to reconnect to.
+    throw Object.assign(new Error("That install is no longer available."), { installGone: true });
+  }
   await assertOk(res, "Failed to follow the install");
   if (!res.body) throw new Error("The install stream returned no body");
 

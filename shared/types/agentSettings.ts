@@ -83,6 +83,22 @@ export interface AgentSettings {
    * client scope, and a locally-reachable Callboard already runs whatever a chat
    * asks it to.
    *
+   * ## What this does not defend against, said plainly
+   *
+   * `PUT /api/agent-settings` is **not** scope-gated — any authenticated client,
+   * including one on the remote-access tunnel, can set this back to `true`. That
+   * is harmless today only because such a client still fails the
+   * `isDirectLocalClient` check and is refused anyway, so flipping the flag buys
+   * them nothing. But it does mean this switch governs *the operator's own local
+   * browsers*, and is not a second barrier against a remote attacker. The client
+   * check is the barrier; this is a policy control layered on top of it. If the
+   * scope gate were ever relaxed, this flag would have to be gated at the same
+   * time or it would be decorative.
+   *
+   * Written to only on an explicit boolean — a non-boolean value leaves the
+   * stored setting untouched rather than clearing it, because clearing it means
+   * reverting to the permissive default. See `routes/agent-settings.ts`.
+   *
    * @see plans/engine-availability-and-install.md — Phase 3
    */
   allowEngineInstalls?: boolean;
