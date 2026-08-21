@@ -50,35 +50,38 @@ const { listActivities } = await import("./chat-activity.js");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface TurnRecord {
-  /** False once the held prompt iterable returned — i.e. the hold released. */
+  /** False once this query's held prompt iterable returned — i.e. it released. */
   promptOpen: boolean;
+  /** Pending events, plus the parked reader waiting for one. */
+  queued: AgentEvent[];
+  wake: (() => void) | null;
+  ended: boolean;
 }
 
 /**
  * A provider the test drives by hand, standing in for the CLI.
  *
- * Two halves matter. `push` delivers events on demand, so a test can place one
- * either side of a deadline. And each query consumes its prompt the way the SDK
+ * Three things matter. `push` delivers events on demand, so a test can place
+ * one either side of a deadline. Each query consumes its prompt the way the SDK
  * does, ending the stream when that iterable returns — without which a released
  * hold would leave the query loop parked forever and every test would time out
- * rather than fail.
+ * rather than fail. And the state is *per query*, because a stream recovery
+ * closes one conversation and opens another within a single run: shared state
+ * would let the first query's close end the second one on arrival.
  */
 function controllableProvider() {
   const turns: TurnRecord[] = [];
-  let pending: AgentEvent[] = [];
-  let wake: (() => void) | null = null;
-  let ended = false;
 
-  const nudge = () => {
-    const w = wake;
-    wake = null;
+  const nudge = (turn: TurnRecord) => {
+    const w = turn.wake;
+    turn.wake = null;
     w?.();
   };
 
   const provider: AgentProvider = {
     kind: "mock",
     query(req: AgentQueryRequest): AgentQuery {
-      const turn: TurnRecord = { promptOpen: true };
+      const turn: TurnRecord = { promptOpen: true, queued: [], wake: null, ended: false };
       turns.push(turn);
       // The SDK's side of the contract: drain the prompt, and when it returns
       // (stdin closed) the conversation ends.
@@ -87,25 +90,25 @@ function controllableProvider() {
           // The turn's messages; their content is irrelevant here.
         }
         turn.promptOpen = false;
-        ended = true;
-        nudge();
+        turn.ended = true;
+        nudge(turn);
       })();
 
       return {
         async *[Symbol.asyncIterator]() {
           for (;;) {
-            while (pending.length > 0) yield pending.shift()!;
-            if (ended) return;
+            while (turn.queued.length > 0) yield turn.queued.shift()!;
+            if (turn.ended) return;
             await new Promise<void>((resolve) => {
-              wake = resolve;
+              turn.wake = resolve;
             });
           }
         },
         accountInfo: async () => null,
         supportedModels: async () => [],
         close: async () => {
-          ended = true;
-          nudge();
+          turn.ended = true;
+          nudge(turn);
         },
       };
     },
@@ -115,9 +118,19 @@ function controllableProvider() {
   return {
     provider,
     turns,
+    /** Deliver events to the query currently running. */
     push(...events: AgentEvent[]) {
-      pending = pending.concat(events);
-      nudge();
+      const turn = turns[turns.length - 1];
+      turn.queued = turn.queued.concat(events);
+      nudge(turn);
+    },
+    /** Wait until the run has opened its `n`th query (a recovery opens one). */
+    async waitForQuery(n: number, timeoutMs = 5_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (turns.length < n) {
+        if (Date.now() > deadline) throw new Error(`query ${n} never opened (saw ${turns.length})`);
+        await sleep(10);
+      }
     },
   };
 }
@@ -279,6 +292,49 @@ describe("background-task hold — query loop wiring", () => {
     await run.finished;
     expect(ctrl.turns[0].promptOpen).toBe(false);
     expect(run.events.at(-1)!.abandonedBackgroundTaskIds).toEqual(["t1"]);
+  });
+
+  it("holds a task started after a stream recovery, even though an earlier hold expired", async () => {
+    // The expiry latch is scoped to the HeldPrompt it describes, and a stream
+    // recovery installs a new one with a clean deadline. Carried across, one
+    // expiry poisoned the rest of the run: `decideHold` kept reading
+    // `expired: true` and released every subsequent turn on arrival. The
+    // production trace is a task started 47 seconds after a recovery and killed
+    // 13 seconds later, having never been held at all.
+    //
+    // The single line under test is `holdExpired = false` in `setQueryPrompt`.
+    // The HeldPrompt-side latches cannot be responsible here: the recovery
+    // throws that object away and builds a fresh one.
+    const ctrl = controllableProvider();
+    const run = startSession(ctrl.provider);
+    ctrl.push({ type: "session_started", sessionId: "bh-sa-1" }, started("t1"), { type: "result", status: "success" });
+
+    // A turn opens and the deadline passes under it, so the expiry latches.
+    ctrl.push({ type: "text", content: "working" });
+    await sleep(HOLD_MS * 1.3);
+    expect(ctrl.turns[0].promptOpen).toBe(true); // deferred, not closed
+
+    // The transport dies. Two consecutive failures trip the recovery, which
+    // closes this query and resumes the session with a fresh prompt.
+    ctrl.push(
+      { type: "tool_use", toolName: "Bash", input: {}, callId: "sa-1" },
+      { type: "tool_result", callId: "sa-1", content: "Error: Stream closed", isError: true },
+      { type: "tool_use", toolName: "Read", input: {}, callId: "sa-2" },
+      { type: "tool_result", callId: "sa-2", content: "Error: Stream closed", isError: true },
+    );
+    await ctrl.waitForQuery(2);
+    expect(run.events.some((e) => e.type === "auto_recovery")).toBe(true);
+
+    // A new task on the recovered query. It must get a real hold.
+    ctrl.push({ type: "session_started", sessionId: "bh-sa-2" }, started("t2"), { type: "result", status: "success" });
+    await sleep(HOLD_MS / 3);
+    expect(ctrl.turns[1].promptOpen).toBe(true);
+
+    ctrl.push(ended("t1"), ended("t2"), { type: "result", status: "success" });
+    await run.finished;
+    expect(ctrl.turns[1].promptOpen).toBe(false);
+    expect(run.events.at(-1)!.type).toBe("done");
+    expect(run.events.at(-1)!.abandonedBackgroundTaskIds).toBeUndefined();
   });
 
   it("names tasks abandoned by a provider error, which ends the run without a `done`", async () => {
