@@ -318,3 +318,47 @@ describe("GET /api/engines/installs/:installId/stream", () => {
     expect(mocks.subscribeToInstallRun).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /binary-check — as-you-type validation for the override fields", () => {
+  const binaryCheck = routeHandler("/binary-check", "get");
+  const check = (query: Record<string, unknown>) => call(binaryCheck, { ...LOCAL_REQ, query });
+
+  it("accepts an executable file and names it as what would run", async () => {
+    const { body } = await check({ path: process.execPath, engineId: "codex" });
+    expect(body.state).toBe("active");
+    expect(body.path).toBe(process.execPath);
+    expect(body.detail).toContain("Codex binary");
+  });
+
+  it("rejects a directory, a missing path, and says which fallback applies", async () => {
+    const missing = await check({ path: "/definitely/not/here/codex", engineId: "codex" });
+    expect(missing.body.state).toBe("missing");
+    expect(missing.body.detail).toContain("@openai/codex-sdk");
+
+    const dir = await check({ path: process.cwd(), engineId: "claude-code" });
+    expect(dir.body.state).toBe("not-a-file");
+    // The Claude fallback sentence, not the Codex one — the engineId picks it.
+    expect(dir.body.detail).toContain("Agent SDK");
+  });
+
+  it("treats a blank path as the default rather than an error", async () => {
+    for (const path of ["", "   ", undefined]) {
+      const { status, body } = await check({ path, engineId: "codex" });
+      expect(status).toBe(200);
+      expect(body).toEqual({ path: "", state: null, detail: "" });
+    }
+  });
+
+  it("still validates when the engineId is unrecognised, with generic phrasing", async () => {
+    // A 400 here would mean the field stops validating because a label was
+    // wrong, which is a worse answer than a vaguer sentence.
+    const { status, body } = await check({ path: "/definitely/not/here", engineId: "not-an-engine" });
+    expect(status).toBe(200);
+    expect(body.state).toBe("missing");
+  });
+
+  it("does not consult the install capability — this route runs nothing", async () => {
+    await check({ path: process.execPath, engineId: "codex" });
+    expect(mocks.getInstallCapability).not.toHaveBeenCalled();
+  });
+});

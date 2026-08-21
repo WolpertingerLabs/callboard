@@ -11,6 +11,7 @@ import { homedir } from "os";
 import { execFileSync } from "node:child_process";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
+import { checkBinaryPath, type BinaryPathCheck } from "../utils/binary-path.js";
 import { createLogger } from "../utils/logger.js";
 import { listAgents } from "./agent-file-service.js";
 import { getLatestAnthropicRoleModels } from "./openrouter-models.js";
@@ -391,10 +392,30 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
 }
 
 /**
+ * The `pathToClaudeCodeExecutable` setting, checked — or `undefined` when the
+ * field is blank.
+ *
+ * Exported so `services/engine-status.ts` can report the *rejected* states,
+ * which {@link getClaudeCodeExecutablePath} deliberately cannot: that function
+ * answers "what do I hand the SDK", and its answer for a broken override is the
+ * same as for no override at all. A card built on that alone would render a
+ * typo'd path as if the user had never set one.
+ *
+ * Not cached. It is one `stat` on an explicit request, and the whole reason it
+ * exists is to report a state that a user is in the middle of changing.
+ */
+export function getClaudeCodeExecutableOverride(): BinaryPathCheck | undefined {
+  const configured = loadSettings().pathToClaudeCodeExecutable?.trim();
+  if (!configured) return undefined;
+  return checkBinaryPath(configured, "Claude Code binary", "Callboard is falling back to a `claude` on its PATH, or to the binary bundled with the Agent SDK.");
+}
+
+/**
  * Resolve the path to the Claude Code executable.
  *
  * Priority:
- *   1. User-configured pathToClaudeCodeExecutable in agent settings
+ *   1. User-configured pathToClaudeCodeExecutable in agent settings — but only
+ *      if it passes {@link checkBinaryPath}
  *   2. `claude` found on PATH via `which` (native install)
  *   3. undefined — let the SDK use its bundled binary
  *
@@ -406,19 +427,27 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
  * `--omit=optional` or an unpublished platform can leave no bundled binary at
  * all. This function detects the native install and returns its path so the SDK
  * uses it instead.
+ *
+ * **Step 1 now checks the execute bit, not just existence.** `existsSync` alone
+ * accepted a directory and accepted a file with no execute permission — the
+ * normal state of anything fetched with `curl -O` — and in both cases this
+ * returned the path, the SDK spawned it, and every Claude chat failed at the
+ * first turn. Falling through instead means a broken override degrades to the
+ * behaviour of an unset one; `getClaudeCodeExecutableOverride` is what keeps
+ * that from being silent, and the status card renders it.
  */
 let resolvedClaudePath: string | undefined | null = null; // null = not yet resolved
 export function getClaudeCodeExecutablePath(): string | undefined {
   if (resolvedClaudePath !== null) return resolvedClaudePath;
 
-  const settings = loadSettings();
-  if (settings.pathToClaudeCodeExecutable) {
-    if (existsSync(settings.pathToClaudeCodeExecutable)) {
-      resolvedClaudePath = settings.pathToClaudeCodeExecutable;
+  const override = getClaudeCodeExecutableOverride();
+  if (override) {
+    if (override.state === "active") {
+      resolvedClaudePath = override.path;
       log.info(`Using configured Claude Code executable: ${resolvedClaudePath}`);
       return resolvedClaudePath;
     }
-    log.warn(`Configured pathToClaudeCodeExecutable not found: ${settings.pathToClaudeCodeExecutable}`);
+    log.warn(`Ignoring pathToClaudeCodeExecutable (${override.state}): ${override.path}`);
   }
 
   // Try finding claude on PATH.
@@ -465,6 +494,50 @@ export function getClaudeCodeExecutablePath(): string | undefined {
  */
 export function resetClaudeCodeExecutablePathCache(): void {
   resolvedClaudePath = null;
+}
+
+/**
+ * The `codexPathOverride` setting, checked — or `undefined` when the field is
+ * blank.
+ *
+ * The Codex twin of {@link getClaudeCodeExecutableOverride}, and — unlike that
+ * one — it is also the *whole* resolver, because there is no second lookup
+ * behind it. Codex resolution is exactly two outcomes: an active override, or
+ * the platform binary nested under `@openai/codex-sdk`, which the SDK finds for
+ * itself when handed no `codexPathOverride`.
+ *
+ * There is deliberately **no `which codex` step**. Adding one would silently
+ * change which binary ran for every user who followed Settings → API's own
+ * `npm i -g @openai/codex` recipe — a recipe whose copy states, in as many
+ * words, that it does not change which binary chats use. A PATH probe would
+ * make that sentence false for exactly the people who read it.
+ *
+ * Uncached for the same reason the Claude override check is: it is one `stat`,
+ * and the value is read at chat start, where a cache would mean the field
+ * needed a daemon restart all over again.
+ */
+export function getCodexExecutableOverride(settings?: AgentSettings): BinaryPathCheck | undefined {
+  const configured = (settings ?? loadSettings()).codexPathOverride?.trim();
+  if (!configured) return undefined;
+  return checkBinaryPath(configured, "Codex binary", "Callboard is falling back to the binary bundled with `@openai/codex-sdk`.");
+}
+
+/**
+ * The `codexPathOverride` to hand the Codex SDK, or `undefined` to let it find
+ * its own bundled binary.
+ *
+ * The single place that decision is made, called by `claude.ts` when it builds a
+ * chat's options and by `engine-status.ts` when it describes the engine — so the
+ * card and the chat cannot disagree about which binary runs. A rejected override
+ * returns `undefined` (chats keep working on the bundled copy) and logs why;
+ * the card is where the user finds out.
+ */
+export function getCodexExecutablePath(settings?: AgentSettings): string | undefined {
+  const override = getCodexExecutableOverride(settings);
+  if (!override) return undefined;
+  if (override.state === "active") return override.path;
+  log.warn(`Ignoring codexPathOverride (${override.state}): ${override.path}`);
+  return undefined;
 }
 
 /**

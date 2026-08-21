@@ -36,16 +36,75 @@
  * The discriminant is the thing a user can act on: `bundled` means "updates
  * when callboard does", `external` means "you install this yourself".
  */
+/**
+ * What Callboard observed about a configured binary-override path.
+ *
+ * `"active"` is the only state in which the override is what runs. Every other
+ * value means Callboard **rejected** the path and fell back — to `PATH` and then
+ * the bundled binary for Claude Code, straight to the bundled binary for Codex.
+ *
+ * There are four of them rather than one `valid: boolean` because they fail
+ * differently and a user fixes them differently: a typo, a directory, and a
+ * downloaded file nobody `chmod +x`'d are three separate mornings.
+ */
+export type EngineOverrideState =
+  /** The path exists, is a file, and carries an execute bit for the user running the daemon. This is what runs. */
+  | "active"
+  /** Nothing at that path. */
+  | "missing"
+  /** Something is there, but it is a directory (or a socket, or a device) rather than a file. */
+  | "not-a-file"
+  /** A file, with no execute permission for the daemon's user — `spawn` would fail with EACCES. */
+  | "not-executable";
+
+/**
+ * A configured "run *my* binary" path, and whether it is actually in effect.
+ *
+ * The whole point of this shape is that `path` and "what runs" are **two
+ * different facts**, and a card that prints the first while a chat uses the
+ * second is this feature's signature bug. So the state is carried alongside the
+ * path, always, and it is derived from a `stat` + an access check rather than
+ * from the field being non-empty.
+ */
+export interface EngineBinaryOverride {
+  /** Exactly what the user saved, verbatim — including if it is nonsense. */
+  path: string;
+  state: EngineOverrideState;
+  /**
+   * One sentence: what Callboard looked at, what it found, and what runs as a
+   * result. Rendered directly, so it is written for a person and not for a log.
+   */
+  detail: string;
+  /**
+   * The overriding binary's own `--version`, when it is `"active"` and answered.
+   *
+   * Absent for a rejected override (nothing was run) and for one that is present
+   * but did not print a version — which is itself worth knowing, since it is
+   * usually a wrapper script or the wrong binary entirely.
+   */
+  version?: string;
+}
+
 export type EngineRuntime =
   /** In-process library shipped inside the callboard package. Nothing to install, nothing to point elsewhere. */
   | { kind: "bundled"; package: string; dependencyRange?: string; pinned?: boolean }
   /**
    * Bundled, but the engine accepts a path to a user-supplied binary.
    *
-   * `overridePath` is always absent in Phase 1 — the Codex SDK's
-   * `codexPathOverride` exists and callboard does not pass it yet (Phase 4).
+   * `overridePath` is set only when an override is **active** — i.e. it always
+   * names the binary that runs, never merely one that was typed into a settings
+   * field. {@link override} carries the fuller story, including the rejected
+   * states; a consumer that only knows about `overridePath` still cannot be
+   * misled by one.
    */
-  | { kind: "bundled-overridable"; package: string; overridePath?: string; dependencyRange?: string; pinned?: boolean }
+  | {
+      kind: "bundled-overridable";
+      package: string;
+      overridePath?: string;
+      override?: EngineBinaryOverride;
+      dependencyRange?: string;
+      pinned?: boolean;
+    }
   /**
    * A bundled fallback exists, but an external install on PATH is *preferred*
    * and wins when present — the Claude Code shape.
@@ -64,6 +123,29 @@ export type EngineRuntime =
       resolvedPath?: string;
       fallbackPackage: string;
       fallbackVersion?: string;
+      /**
+       * The `pathToClaudeCodeExecutable` setting, when one is saved.
+       *
+       * Present whether or not it worked — an override Callboard **rejected** is
+       * exactly the state the user most needs to see, because from every other
+       * row the card looks identical to having set nothing at all. When it is
+       * `"active"`, `resolvedPath` is this same path.
+       */
+      override?: EngineBinaryOverride;
+      /**
+       * Where the *other* Claude lookup landed, when it disagrees with
+       * `resolvedPath`.
+       *
+       * `getClaudeCodeExecutablePath()` (this row) decides what chats run;
+       * `getClaudeBinaryPath()` decides what the About page reports a version
+       * for and what the login prompt runs. They read different inputs — only
+       * the first honours {@link override}, only the second reads
+       * `$CLAUDE_BINARY` and `~/.local/bin` — so on a machine with both they can
+       * name two different binaries. Set only when they actually differ, so the
+       * card can say so instead of leaving the user to discover it from a
+       * version number that will not move.
+       */
+      otherLookupPath?: string;
     }
   /** An external binary spawned per turn, with nothing bundled behind it — the ACP vendors. */
   | { kind: "external"; command: string; resolvedPath?: string; package?: string };
@@ -384,6 +466,34 @@ export interface EngineInstallVerifiedEvent {
 /** Everything `GET /api/engines/installs/:installId/stream` emits. */
 export type EngineInstallEvent = EngineInstallStartedEvent | EngineInstallOutputEvent | EngineInstallExitEvent | EngineInstallVerifiedEvent;
 
+/**
+ * A version Callboard was written against, against the one it is actually
+ * talking to.
+ *
+ * Only Codex carries this today, and the reason is specific rather than
+ * general: the Codex rollout format (`$CODEX_HOME/sessions/**.jsonl`) is
+ * undocumented and version-dependent, and `adapters/codex/sessionParser.ts`
+ * translates it by hand. A format change does not throw — it produces a chat
+ * that silently loses messages on resume. `EXPECTED_CODEX_CLI_VERSION` exists so
+ * that outcome is *diagnosable*, and until Phase 4 the check that reads it could
+ * not run at all: it resolved the SDK version through
+ * `require("@openai/codex-sdk/package.json")`, which throws
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` into a bare `catch {}` on every boot.
+ *
+ * So this is not a cosmetic row. It is the difference between "parsing may be
+ * lossy, here is why" and a bug report about vanishing messages.
+ */
+export interface EngineVersionDrift {
+  /** The version the adapter was written against. */
+  expected: string;
+  /** The version actually in effect — the bundled package, or an active binary override. */
+  actual: string;
+  /** Where `actual` came from, so the sentence can name the binary rather than a package in the abstract. */
+  source: "bundled" | "override";
+  /** One line: what differs, and what it puts at risk. Rendered directly. */
+  detail: string;
+}
+
 /** One engine, as Settings → API renders it. */
 export interface EngineStatus {
   /** `"claude-code" | "codex" | "cline" | "pi"`, or an ACP vendor id. */
@@ -445,6 +555,14 @@ export interface EngineStatus {
    */
   userCliPath?: string;
   /**
+   * The version this engine's adapter targets is not the version it is running.
+   *
+   * Absent is the normal answer and the only one that means "checked and fine" —
+   * see {@link EngineVersionDrift} for why the check matters and why, before
+   * Phase 4, it could not fire.
+   */
+  drift?: EngineVersionDrift;
+  /**
    * What the user can do about this engine, when there is anything.
    *
    * Usually a copyable command; sometimes — when the CLI is already there and
@@ -459,6 +577,30 @@ export interface EngineStatus {
 /** `GET /api/engines`. */
 export interface EngineStatusResponse {
   engines: EngineStatus[];
+}
+
+/**
+ * `GET /api/engines/binary-check?path=…` — "would Callboard accept this path?"
+ *
+ * Exists so the two override fields in Settings → API can answer while the user
+ * is still typing, using the **same** check the resolver applies at chat time,
+ * rather than a second implementation that agrees with it until it does not.
+ *
+ * It `stat`s and tests the execute bit. It deliberately does **not** run the
+ * binary: a settings field that executes whatever is currently typed into it
+ * would spawn a process per keystroke, and the version Callboard needs comes
+ * from the status card after Save, where a path has actually been committed.
+ */
+export interface EngineBinaryCheckResponse {
+  /** The path as sent, trimmed. Empty when the field is blank. */
+  path: string;
+  /**
+   * `null` for a blank path — "nothing configured" is not a failure, it is the
+   * default, and colouring an empty field red is how a settings page nags.
+   */
+  state: EngineOverrideState | null;
+  /** One line for the field's help text. Empty string when `state` is null. */
+  detail: string;
 }
 
 /**

@@ -139,7 +139,25 @@ export interface AgentSettings {
   /** CLAUDE_CODE_SUBAGENT_MODEL — model used by spawned subagents. */
   subagentModel?: string;
 
-  /** Path to the Claude Code executable. Overrides the SDK's bundled binary. */
+  /**
+   * Absolute path to a `claude` binary to run instead of the one Callboard would
+   * find for itself.
+   *
+   * Highest-priority input to `getClaudeCodeExecutablePath()`, ahead of
+   * `which claude` and ahead of the Agent SDK's own bundled per-platform binary.
+   * It is checked before it is used — a path that does not exist, is not a file,
+   * or carries no execute bit for the user running the daemon is **rejected**,
+   * logged, and reported on the Claude Code status card, and resolution falls
+   * through as if the field were blank. Silently handing an unspawnable path to
+   * the SDK would break every chat; silently ignoring a broken one without
+   * saying so would be worse.
+   *
+   * Note it does **not** feed `utils/paths.ts`'s `getClaudeBinaryPath()`, which
+   * is a separate lookup (it reads `$CLAUDE_BINARY` and four well-known
+   * directories) behind the About page's CLI version and the login prompt. The
+   * two can therefore name different binaries, and the status card says so when
+   * they do rather than pretending one answer covers both.
+   */
   pathToClaudeCodeExecutable?: string;
 
   // ── Claude Code → OpenRouter endpoint routing ─────────────────────
@@ -310,6 +328,31 @@ export interface AgentSettings {
    * into the SDK subprocess env so callboard controls the auth/session location.
    */
   codexHome?: string;
+
+  /**
+   * Absolute path to a `codex` binary to run instead of the one bundled with
+   * `@openai/codex-sdk` (→ the SDK's `CodexOptions.codexPathOverride`).
+   *
+   * The SDK has always accepted this; Callboard never passed it, so every chat
+   * ran the platform binary nested inside Callboard's own `node_modules`. That
+   * copy is fine — it just never reaches the user's `PATH`, which is why
+   * Settings → API offers `npm i -g @openai/codex` so `codex login` exists as a
+   * command. With this field set, that same global install also becomes the
+   * binary chats run, and the status card says which of the two is in effect.
+   *
+   * Checked before use, exactly like {@link pathToClaudeCodeExecutable}: a
+   * missing, non-file or non-executable path is rejected, logged, reported on
+   * the card, and chats fall back to the bundled binary. Unlike the Claude Code
+   * field there is **no PATH lookup** behind it — an override or the bundled
+   * copy, nothing else. Probing `PATH` here would silently change which binary
+   * ran for everyone who followed the login recipe, which that recipe explicitly
+   * promises it will not do.
+   *
+   * Only the executable path moves. `CODEX_HOME`, auth and config still come
+   * from {@link codexHome} and the rest of this block, so an overridden binary
+   * reads the same credentials the bundled one did.
+   */
+  codexPathOverride?: string;
 
   /** Codex sandbox mode, mapped onto the CLI's `--sandbox` flag. */
   codexSandboxMode?: "read-only" | "workspace-write" | "danger-full-access";

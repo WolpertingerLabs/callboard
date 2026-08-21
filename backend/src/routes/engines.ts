@@ -25,6 +25,7 @@ import {
   subscribeToInstallRun,
 } from "../services/engine-install.js";
 import { getEngineStatuses, refreshEngineStatuses } from "../services/engine-status.js";
+import { checkBinaryPath } from "../utils/binary-path.js";
 import { getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
 import { createLogger } from "../utils/logger.js";
 import { sendSSE, startSSEHeartbeat, writeSSEHeaders } from "../utils/sse.js";
@@ -75,6 +76,50 @@ enginesRouter.get("/", async (req, res) => {
     log.error(`failed to assemble engine statuses: ${err instanceof Error ? err.message : String(err)}`);
     return res.json({ engines: [] });
   }
+});
+
+/**
+ * `GET /api/engines/binary-check?path=…` — would Callboard accept this as a
+ * binary override?
+ *
+ * Backs the live validation on the two override fields in Settings → API, and
+ * it exists so those fields answer with the **same** check the resolvers apply
+ * at chat time rather than a second implementation that agrees until it does
+ * not. `utils/binary-path.ts` is the one copy; this is a thin wrapper on it.
+ *
+ * **It does not execute anything.** A `stat` and an execute-bit test, nothing
+ * more. That is not caution for its own sake: this endpoint is reached on a
+ * debounce while someone is typing, so "run it and see" would spawn a process
+ * per keystroke against a path that is still half-written. The version of an
+ * override is read on the status card instead, after Save, where a path has been
+ * committed and is one Callboard has already decided to run.
+ *
+ * Not gated on client scope. The answer is a boolean about one path the caller
+ * already supplied, and any authenticated client can learn far more than that
+ * from the file-explorer routes or from a chat.
+ *
+ * Registered ahead of `/:id/install` in file order for readability only — these
+ * are distinct methods and paths, so there is no shadowing to worry about.
+ */
+enginesRouter.get("/binary-check", (req, res) => {
+  // #swagger.tags = ['System']
+  // #swagger.summary = 'Would Callboard accept this path as an engine binary override?'
+  // #swagger.description = 'Checks one filesystem path the way the engine resolvers do - it must exist, be a regular file, and carry an execute bit for the user running the daemon - and returns the state plus a sentence explaining it. Runs nothing: this backs as-you-type validation on the Claude Code and Codex binary-override fields, so executing the value would mean spawning a process per keystroke. A blank path returns state null, because "not configured" is the default rather than an error.'
+  /* #swagger.parameters['path'] = { in: 'query', required: false, type: 'string', description: 'Absolute path to check. Blank or absent returns state null.' } */
+  /* #swagger.responses[200] = { description: 'The check result' } */
+  const raw = typeof req.query.path === "string" ? req.query.path : "";
+  // The two fields differ only in what they fall back to, and the caller says
+  // which it is. An unrecognised value gets the generic phrasing rather than a
+  // 400: this is a validation helper, and failing to validate because the label
+  // was wrong would be a worse answer than validating with a vaguer sentence.
+  const engineId = typeof req.query.engineId === "string" ? req.query.engineId : "";
+  const { path, state, detail } =
+    engineId === "codex"
+      ? checkBinaryPath(raw, "Codex binary", "Callboard is falling back to the binary bundled with `@openai/codex-sdk`.")
+      : engineId === "claude-code"
+        ? checkBinaryPath(raw, "Claude Code binary", "Callboard is falling back to a `claude` on its PATH, or to the binary bundled with the Agent SDK.")
+        : checkBinaryPath(raw, "binary", "Callboard is falling back to the binary it would have resolved for itself.");
+  return res.json({ path, state, detail });
 });
 
 /**

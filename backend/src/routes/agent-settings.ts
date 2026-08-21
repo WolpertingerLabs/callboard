@@ -31,6 +31,7 @@ import { parseAllowlist, validateAllowlistEntry, isIpAllowed, isPrivateOrLoopbac
 import { startWebTunnel, stopWebTunnel, getWebTunnelStatus, isCloudflaredAvailable, resolveCallboardPort } from "../services/web-tunnel.js";
 import { importBundle, BundleImportError } from "../services/bundle-import.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
+import { resetEngineProbeCaches } from "../services/engine-status.js";
 import { refreshCodexModelsCache } from "../services/codex-models.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -69,6 +70,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultSonnetModel,
     defaultHaikuModel,
     subagentModel,
+    pathToClaudeCodeExecutable,
     claudeCodeUseOpenRouter,
     claudeCodeOpenRouterApiKey,
     claudeCodeOpenRouterBaseUrl,
@@ -90,6 +92,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexBaseUrl,
     codexModel,
     codexHome,
+    codexPathOverride,
     codexSandboxMode,
     codexUseOpenRouter,
     codexOpenRouterApiKey,
@@ -183,6 +186,27 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     claudeCodeOpenRouterSonnetModel !== undefined ||
     claudeCodeOpenRouterHaikuModel !== undefined ||
     claudeCodeOpenRouterSubagentModel !== undefined;
+
+  /**
+   * Did this save change *which binary* an engine spawns?
+   *
+   * Kept apart from {@link apiFieldsTouched} because the remedy is different and
+   * heavier: an API-key change needs the SDK account refetched, while a path
+   * change invalidates every memoized "where did this resolve" answer in the
+   * daemon. `getClaudeCodeExecutablePath` caches its result for the process
+   * lifetime, which is why editing `pathToClaudeCodeExecutable` used to require
+   * `callboard restart` before it took effect at all — a papercut Phase 2 built
+   * `resetEngineProbeCaches()` to fix and nothing was yet calling for this
+   * reason.
+   *
+   * Compared against the stored value rather than merely "was the field in the
+   * request": the settings page sends every field on every save, so keying on
+   * presence would drop five caches and re-run an Agent SDK query each time
+   * someone changed a model name on an unrelated tab.
+   */
+  const binaryOverrideFieldsTouched =
+    (pathToClaudeCodeExecutable !== undefined && normalize(pathToClaudeCodeExecutable) !== getAgentSettings().pathToClaudeCodeExecutable) ||
+    (codexPathOverride !== undefined && normalize(codexPathOverride) !== getAgentSettings().codexPathOverride);
 
   const codexFieldsTouched =
     codexAuthMode !== undefined ||
@@ -299,6 +323,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(defaultSonnetModel !== undefined && { defaultSonnetModel: normalize(defaultSonnetModel) }),
       ...(defaultHaikuModel !== undefined && { defaultHaikuModel: normalize(defaultHaikuModel) }),
       ...(subagentModel !== undefined && { subagentModel: normalize(subagentModel) }),
+      // Binary overrides. `normalize` trims and turns "" into undefined, which is
+      // what clearing the field must do — an empty string here would be a
+      // configured path of zero length, and the resolvers would report it as a
+      // missing binary forever.
+      ...(pathToClaudeCodeExecutable !== undefined && { pathToClaudeCodeExecutable: normalize(pathToClaudeCodeExecutable) }),
       ...(claudeCodeUseOpenRouter !== undefined && { claudeCodeUseOpenRouter: normalizeBool(claudeCodeUseOpenRouter) }),
       ...(claudeCodeOpenRouterApiKey !== undefined && { claudeCodeOpenRouterApiKey: normalize(claudeCodeOpenRouterApiKey) }),
       ...(claudeCodeOpenRouterBaseUrl !== undefined && { claudeCodeOpenRouterBaseUrl: normalize(claudeCodeOpenRouterBaseUrl) }),
@@ -326,6 +355,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(codexBaseUrl !== undefined && { codexBaseUrl: normalize(codexBaseUrl) }),
       ...(codexModel !== undefined && { codexModel: normalize(codexModel) }),
       ...(codexHome !== undefined && { codexHome: normalize(codexHome) }),
+      ...(codexPathOverride !== undefined && { codexPathOverride: normalize(codexPathOverride) }),
       ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
       ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
@@ -375,7 +405,21 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
         await stopWebTunnel().catch((err) => log.error(`Remote-access tunnel stop failed: ${err.message}`));
       }
     }
-    if (apiFieldsTouched) {
+    if (binaryOverrideFieldsTouched) {
+      // A different binary is now in effect, so every cached answer about which
+      // one resolved — and the account info the *old* one reported — is stale.
+      // This is the same reset Recheck performs; doing it here is what makes the
+      // field take effect on the next chat instead of on the next daemon
+      // restart, and what makes the status card agree with that chat.
+      //
+      // It subsumes the SDK-info refresh below (which is why that branch is now
+      // an `else if`): both would otherwise fire, and `resetEngineProbeCaches`
+      // deliberately drops the executable-path cache *before* re-spawning the
+      // SDK query, so running the bare refresh alongside it would race a fetch
+      // on the old path against one on the new.
+      log.info("Binary override changed — dropping engine probe caches so the next chat and the status card both see it.");
+      resetEngineProbeCaches();
+    } else if (apiFieldsTouched) {
       // Kick off a refresh so the About tab and any subsequent sessions see
       // the updated account / models. Don't await — the client gets back
       // quickly and the next poll of /api/system-info will pick it up.

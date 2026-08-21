@@ -50,6 +50,23 @@ const log = createLogger("codex-adapter");
 export interface CodexOptionsExtras {
   /** Subscription (ChatGPT login) vs raw API key. Default subscription — no key passed. */
   authMode?: "subscription" | "api-key";
+  /**
+   * A user-supplied `codex` binary to run instead of the bundled one
+   * (→ `CodexOptions.codexPathOverride`).
+   *
+   * Resolved by `getCodexExecutablePath()` in `agent-settings.ts` **before** it
+   * reaches here, so this field only ever carries a path that was `stat`ed and
+   * found executable. A rejected override arrives as `undefined` and the SDK
+   * resolves its own bundled binary, exactly as it did before this field
+   * existed — see the setting's doc-comment for why a broken path degrades
+   * rather than failing every chat.
+   *
+   * Nothing else about the run changes: the SDK's exec layer substitutes the
+   * executable and keeps every flag, and `CODEX_HOME` still rides in via
+   * {@link ClaudeShapedOptions.env}, so an overridden binary reads the same
+   * `auth.json` and writes to the same sessions tree.
+   */
+  pathOverride?: string;
   /** OPENAI/Codex API key — only consumed in api-key mode (→ CodexOptions.apiKey → CODEX_API_KEY). */
   apiKey?: string;
   /** Base URL override — api-key mode only (→ CodexOptions.baseUrl → --config openai_base_url). */
@@ -343,6 +360,16 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   const env = buildCodexEnv(opts.env);
   if (env) codexOpts.env = env;
 
+  // ── which binary runs ────────────────────────────────────────────
+  // Set only when a checked override survived resolution. Absent (the default,
+  // and what Callboard did for its whole life until Phase 4) leaves the SDK to
+  // resolve the platform binary nested under `@openai/codex-sdk`. Note the SDK
+  // stops prepending its own bin directories to PATH once an override is given —
+  // which is correct here, since the point of the field is that the user's copy
+  // is the one they want found.
+  const pathOverride = extras.pathOverride?.trim();
+  if (pathOverride) codexOpts.codexPathOverride = pathOverride;
+
   // ── reasoning effort + summaries → thinking blocks ───────────────
   // The Codex CLI's exec path defaults to emitting NO reasoning summary, so
   // gpt-5.x reasoning never surfaces as `reasoning` items and callboard shows no
@@ -423,6 +450,7 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   log.debug(
     `translateCodexOptions — authMode=${authMode}, resume=${resumeId ?? "none"}, ` +
       `cwd=${cwd ?? "(default)"}, model=${model ?? "(default)"}, ` +
+      `binary=${pathOverride ?? "(bundled)"}, ` +
       `sandbox=${sandboxMode ?? "(default)"}, approval=${approvalPolicy ?? "(default)"}, ` +
       `reasoningEffort=${reasoningEffort ?? "(default)"}, ` +
       `instructions=${instructionsFilePath ? `${instructions?.length}chars` : "(none)"}, ` +
