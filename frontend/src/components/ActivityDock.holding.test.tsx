@@ -8,10 +8,16 @@
  * chat deliberately holding open rendered as idle and finished — the `wait`
  * tool and `onComplete` callbacks both had a row and this did not.
  *
- * The second test is the compatibility half. Activities cross REST, where
- * there is no capability handshake to gate a new `ActivityKind` behind, so a
- * tab running an older bundle can be handed a kind it has never heard of. It
- * must read as vague, not as "· undefined".
+ * The third test is about the *next* kind, not this one. Activities cross REST,
+ * where there is no capability handshake to gate a new `ActivityKind` behind,
+ * so this bundle can be handed a kind it has never heard of and must read as
+ * vague rather than as "· undefined".
+ *
+ * What it does not and cannot cover: a tab running a bundle older than the
+ * fallback. That code ships in the client, so the clients at risk from
+ * `"holding"` are precisely the ones without it. See the note in
+ * `shared/types/activity.ts` — the exposure is real, cosmetic, and self-heals
+ * on reload.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -51,9 +57,14 @@ describe("ActivityDock — background-task hold", () => {
     expect(screen.queryByText("End wait")).toBeNull();
   });
 
-  it("falls back to a neutral verb for a kind this bundle predates", () => {
-    // What an old tab does against a newer daemon. Before the fallback this
-    // rendered the literal string "undefined".
+  it("falls back to a neutral verb for a kind added after this bundle was built", () => {
+    // Forward compatibility for the kind *after* "holding": this bundle has
+    // the fallback, so a daemon that grows a new kind cannot make it render
+    // the literal string "undefined".
+    //
+    // Not a test of what an older tab does with "holding" — an older tab does
+    // not have this code. That case is unmitigable from here and is documented
+    // in shared/types/activity.ts rather than pretended away.
     const future = holding({ kind: "some_future_kind" as ChatActivity["kind"], label: "something" });
     render(<ActivityDock activities={[future]} conditionWatch={null} awaitingChildren={0} onRelease={noop} />);
     expect(screen.getByText("· Busy")).toBeTruthy();

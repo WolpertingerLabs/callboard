@@ -36,6 +36,19 @@
  * this kind up in a map and renders nothing", so the obligation lands on the
  * consumer instead: anything keying a lookup on {@link ActivityKind} must fall
  * back for a kind it has never heard of. See `ActivityDock.tsx`.
+ *
+ * Be honest about what that buys and when. A fallback protects clients built
+ * *after* it — it cannot protect the ones a new kind is actually new to, since
+ * those are running a bundle that predates the fallback itself. When `holding`
+ * shipped, every tab already open rendered `· undefined` beside the row. That
+ * was judged acceptable rather than mitigated: the damage is one wrong word in
+ * a status line, on a row whose label, countdown and detail all still read
+ * correctly, and it self-heals on the next reload. The fallback earns its place
+ * for the kind after this one, not this one.
+ *
+ * If a future kind ever carries more than a verb — a control, a different
+ * layout, an interruptible affordance — that calculus changes and it wants a
+ * real gate, which means moving the payload onto the SSE wire where one exists.
  */
 export type ActivityKind = "wait" | "await_chat" | "await_agent" | "generating" | "scanning" | "holding";
 
