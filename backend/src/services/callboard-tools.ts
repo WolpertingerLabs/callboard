@@ -781,7 +781,11 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "start_chat_session",
-        "Start a new Claude Code chat session in any directory. The session runs asynchronously — use get_session_status to check on it later. Returns the chatId of the new session. Supports optional git branch/worktree configuration. Set onComplete=true to be automatically notified (a new turn in THIS chat) when the spawned session finishes — no polling required. The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node.",
+        "Start a new Claude Code chat session in any directory. Returns the chatId of the new session. Supports optional git branch/worktree configuration. " +
+          "The session runs asynchronously. Prefer onComplete=true to be notified (a new turn in THIS chat) when it finishes — no polling at all. " +
+          "If you must poll, use get_session_status and sleep between checks with the `wait` tool. " +
+          "Do NOT sleep by running `sleep` as a background Bash command: `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes. " +
+          "The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node.",
         {
           prompt: z.string().describe("The task or message for the chat session"),
           folder: z.string().describe("Absolute path to the working directory for the session"),
@@ -1118,7 +1122,8 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_session_status",
-        "Check the status of a Claude Code session. Returns whether the session is active, complete, or not found.",
+        "Check the status of a Claude Code session. Returns whether the session is active, complete, or not found. " +
+          "To poll, sleep between checks with the `wait` tool — not a background `sleep` shell, which is invisible to the user and holds this session open until it finishes.",
         {
           chatId: z.string().describe("The chat/session ID to check"),
         },
@@ -1194,7 +1199,9 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "continue_chat",
-        "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. Set waitForCompletion=true to block until the response is ready, or onComplete=true to be notified in a new turn of THIS chat when it finishes.",
+        "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. " +
+          "Set waitForCompletion=true to block until the response is ready, or onComplete=true to be notified in a new turn of THIS chat when it finishes. Either beats polling. " +
+          "If you do poll with get_session_status, sleep between checks with the `wait` tool rather than a background `sleep` shell — `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes.",
         {
           chatId: z.string().describe("The chat/session ID to continue"),
           prompt: z.string().describe("The follow-up message to send"),
