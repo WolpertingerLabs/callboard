@@ -45,37 +45,81 @@ export interface AcpProviderAvailability {
   command: string;
 }
 
-const cache = new Map<string, boolean>();
+/** Resolved absolute path per command, or `null` for "looked, not there". */
+const cache = new Map<string, string | null>();
 
 /**
- * Does `command` resolve to an executable?
+ * Where does `command` resolve to on PATH, if anywhere?
  *
  * `execFileSync` rather than `execSync` so the binary name is an argument and
  * never reaches a shell — preset commands are data, and Phase 3 will let users
  * supply them.
+ *
+ * The cache holds the resolved *path* rather than a boolean so the engine status
+ * card can name the binary it found; `available` is derived from it, which is
+ * exactly the answer the boolean cache gave before.
  */
-function isOnPath(command: string): boolean {
+export function resolveAcpBinaryPath(command: string): string | null {
   const cached = cache.get(command);
   if (cached !== undefined) return cached;
 
-  let found = false;
+  let resolved: string | null = null;
   try {
     const which = process.platform === "win32" ? "where" : "which";
     const out = execFileSync(which, [command], { timeout: 3_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-    found = out.trim().length > 0;
+    // `where` can list several matches; the first line is the one that wins.
+    resolved = out.split("\n")[0].trim() || null;
   } catch {
     // Non-zero exit is the normal "not found" answer, not an error worth raising.
-    found = false;
+    resolved = null;
   }
-  cache.set(command, found);
-  log.debug(`ACP binary "${command}" ${found ? "found" : "not found"} on PATH`);
-  return found;
+  cache.set(command, resolved);
+  log.debug(`ACP binary "${command}" ${resolved ? `found at ${resolved}` : "not found"} on PATH`);
+  return resolved;
 }
 
 /** Availability of one preset. */
 export function acpProviderAvailability(preset: AcpVendorPreset): AcpProviderAvailability {
   const command = preset.command[0];
-  return { id: preset.id, label: preset.label, available: isOnPath(command), command };
+  return { id: preset.id, label: preset.label, available: resolveAcpBinaryPath(command) !== null, command };
+}
+
+/** Version strings per command, or `null` when the CLI would not say. */
+const versionCache = new Map<string, string | null>();
+
+/**
+ * What does `<command> --version` report?
+ *
+ * Deliberately **not** a field on {@link AcpProviderAvailability}: that type is
+ * serialized into `/api/system-info`'s `acpProviders`, which several pages poll
+ * and which this feature is under orders not to grow. Availability is a `which`
+ * lookup; this actually *executes the vendor's binary*, so it stays opt-in and
+ * is called only from the engine-status route.
+ *
+ * Cached for the process lifetime for the same reason availability is — a
+ * settings poll must not fork a third-party CLI every time.
+ *
+ * Returns `undefined` when the binary is absent or refuses the flag. Vendors
+ * print anything from a bare semver to a banner, so only the first line is kept
+ * and no attempt is made to parse it further.
+ */
+export function acpProviderVersion(command: string): string | undefined {
+  const cached = versionCache.get(command);
+  if (cached !== undefined) return cached ?? undefined;
+
+  let version: string | null = null;
+  if (resolveAcpBinaryPath(command) !== null) {
+    try {
+      const out = execFileSync(command, ["--version"], { timeout: 5_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      version = out.split("\n")[0].trim() || null;
+    } catch {
+      // A CLI that does not implement --version is not an error state; it just
+      // has no version to report.
+      version = null;
+    }
+  }
+  versionCache.set(command, version);
+  return version ?? undefined;
 }
 
 /**
@@ -91,7 +135,8 @@ export function listAcpProviderAvailability(): AcpProviderAvailability[] {
     .sort((a, b) => Number(b.available) - Number(a.available) || a.label.localeCompare(b.label));
 }
 
-/** Test seam: forget cached PATH lookups. */
+/** Test seam: forget cached PATH lookups and version probes. */
 export function resetAcpAvailabilityCache(): void {
   cache.clear();
+  versionCache.clear();
 }
