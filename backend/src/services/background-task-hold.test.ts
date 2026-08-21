@@ -277,8 +277,15 @@ describe("HeldPrompt", () => {
     // The other half of the invariant above. `disarmTimeout` is called only
     // when the outstanding count reaches zero — the work finished — so the
     // next task is not made to serve out the remainder of a dead task's
-    // budget. Armed at t=0, disarmed at t=30s, re-armed at t=30s: it must fire
-    // at t=90s, a full 60s later.
+    // budget.
+    //
+    // The gap between drain and re-arm is deliberately NONZERO. Draining and
+    // re-arming in the same instant is the one moment where the liveness
+    // floor's deadline and a freshly-minted one coincide, so a version that
+    // handed the floor's remaining time to the new episode passed it too:
+    // drained at t=30s and re-armed at t=45s, the old code gave the episode 45
+    // seconds, not 60. Armed at t=0, drained at t=30s, re-armed at t=45s, it
+    // must fire at t=105s.
     vi.useFakeTimers();
     try {
       const held = new HeldPrompt("hello");
@@ -286,7 +293,9 @@ describe("HeldPrompt", () => {
       held.armTimeout(60_000, onExpiry);
       vi.advanceTimersByTime(30_000);
       held.disarmTimeout();
+      vi.advanceTimersByTime(15_000); // a notification turn does some work
       held.armTimeout(60_000, onExpiry);
+      expect(held.deadline! - Date.now()).toBe(60_000);
 
       vi.advanceTimersByTime(59_999);
       expect(onExpiry).not.toHaveBeenCalled();
