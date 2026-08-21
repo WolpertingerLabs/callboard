@@ -11,7 +11,7 @@ import { homedir } from "os";
 import { execFileSync } from "node:child_process";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
-import { checkBinaryPath, type BinaryPathCheck } from "../utils/binary-path.js";
+import { BINARY_OVERRIDE_PHRASING, checkBinaryPath, type BinaryPathCheck } from "../utils/binary-path.js";
 import { createLogger } from "../utils/logger.js";
 import { listAgents } from "./agent-file-service.js";
 import { getLatestAnthropicRoleModels } from "./openrouter-models.js";
@@ -401,14 +401,28 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
  * same as for no override at all. A card built on that alone would render a
  * typo'd path as if the user had never set one.
  *
- * Not cached. It is one `stat` on an explicit request, and the whole reason it
- * exists is to report a state that a user is in the middle of changing.
+ * **Uncached, and {@link getClaudeCodeExecutablePath} calls it on every
+ * resolution.** That is not an optimisation left on the table — it is what
+ * makes the two answers one answer. When this was fresh and the resolver was
+ * memoized, the card and the chat could disagree in both directions, and both
+ * were reproduced: an override whose binary was deleted after resolution left
+ * the card reading "Native `claude` at X, Ready" beside "⚠ Nothing at X", while
+ * every chat died with `native binary not found`; and an override saved before
+ * its target existed stayed ignored by chats while the card announced it was in
+ * effect. Only the `which` lookup below is worth memoizing, because only it
+ * spawns a process.
  */
 export function getClaudeCodeExecutableOverride(): BinaryPathCheck | undefined {
   const configured = loadSettings().pathToClaudeCodeExecutable?.trim();
   if (!configured) return undefined;
-  return checkBinaryPath(configured, "Claude Code binary", "Callboard is falling back to a `claude` on its PATH, or to the binary bundled with the Agent SDK.");
+  return checkBinaryPath(configured, BINARY_OVERRIDE_PHRASING["claude-code"].what, BINARY_OVERRIDE_PHRASING["claude-code"].fallback);
 }
+
+/**
+ * The last rejection this module logged, so a per-call check does not become a
+ * per-call log line. Keyed by path+state, so a *different* failure still speaks.
+ */
+let lastLoggedOverrideRejection: string | null = null;
 
 /**
  * Resolve the path to the Claude Code executable.
@@ -428,39 +442,51 @@ export function getClaudeCodeExecutableOverride(): BinaryPathCheck | undefined {
  * all. This function detects the native install and returns its path so the SDK
  * uses it instead.
  *
- * **Step 1 now checks the execute bit, not just existence.** `existsSync` alone
+ * **Step 1 checks the execute bit, not just existence.** `existsSync` alone
  * accepted a directory and accepted a file with no execute permission — the
  * normal state of anything fetched with `curl -O` — and in both cases this
  * returned the path, the SDK spawned it, and every Claude chat failed at the
  * first turn. Falling through instead means a broken override degrades to the
- * behaviour of an unset one; `getClaudeCodeExecutableOverride` is what keeps
- * that from being silent, and the status card renders it.
+ * behaviour of an unset one; {@link getClaudeCodeExecutableOverride} is what
+ * keeps that from being silent, and the status card renders it.
+ *
+ * **Step 1 is re-evaluated on every call; only step 2 is memoized.** The
+ * override is one `stat`, and this function is called at chat start and by the
+ * status card — not in a loop. The `which` spawn is the expensive part and the
+ * only part whose answer cannot change without something else in the daemon
+ * knowing. Memoizing the whole decision is what let the card and the chat
+ * disagree; see {@link getClaudeCodeExecutableOverride}.
  */
-let resolvedClaudePath: string | undefined | null = null; // null = not yet resolved
+let claudeOnPath: string | undefined | null = null; // null = `which claude` not yet run
 export function getClaudeCodeExecutablePath(): string | undefined {
-  if (resolvedClaudePath !== null) return resolvedClaudePath;
-
   const override = getClaudeCodeExecutableOverride();
   if (override) {
-    if (override.state === "active") {
-      resolvedClaudePath = override.path;
-      log.info(`Using configured Claude Code executable: ${resolvedClaudePath}`);
-      return resolvedClaudePath;
+    if (override.state === "active") return override.path;
+    const signature = `${override.state}:${override.path}`;
+    if (lastLoggedOverrideRejection !== signature) {
+      lastLoggedOverrideRejection = signature;
+      log.warn(`Ignoring pathToClaudeCodeExecutable (${override.state}): ${override.path}`);
     }
-    log.warn(`Ignoring pathToClaudeCodeExecutable (${override.state}): ${override.path}`);
   }
+  return claudePathFromEnvironment();
+}
 
-  // Try finding claude on PATH.
-  //
-  // `execFileSync` with a hard kill rather than the bare `execSync("which claude")`
-  // this used to be, for two reasons that only became load-bearing once
-  // `POST /api/engines/refresh` could re-run it on demand. It had **no timeout
-  // at all**, and it is synchronous on a single-threaded server: a slow or hung
-  // `which` stalled every open SSE stream and in-flight chat, not just the
-  // request that triggered it — measured at 6.5s of daemon stall from one call.
-  // `killSignal: "SIGKILL"` is what makes the deadline enforceable; Node's
-  // default SIGTERM is sent at the deadline and then waited on indefinitely.
-  // No shell, for the same reason `availability.ts` avoids one.
+/**
+ * `which claude`, memoized for the process lifetime.
+ *
+ * `execFileSync` with a hard kill rather than the bare `execSync("which claude")`
+ * this used to be, for two reasons that only became load-bearing once
+ * `POST /api/engines/refresh` could re-run it on demand. It had **no timeout
+ * at all**, and it is synchronous on a single-threaded server: a slow or hung
+ * `which` stalled every open SSE stream and in-flight chat, not just the
+ * request that triggered it — measured at 6.5s of daemon stall from one call.
+ * `killSignal: "SIGKILL"` is what makes the deadline enforceable; Node's
+ * default SIGTERM is sent at the deadline and then waited on indefinitely.
+ * No shell, for the same reason `availability.ts` avoids one.
+ */
+function claudePathFromEnvironment(): string | undefined {
+  if (claudeOnPath !== null) return claudeOnPath;
+
   try {
     const path = execFileSync("which", ["claude"], {
       timeout: 3_000,
@@ -469,31 +495,35 @@ export function getClaudeCodeExecutablePath(): string | undefined {
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
     if (path && existsSync(path)) {
-      resolvedClaudePath = path;
-      log.info(`Found Claude Code on PATH: ${resolvedClaudePath}`);
-      return resolvedClaudePath;
+      claudeOnPath = path;
+      log.info(`Found Claude Code on PATH: ${claudeOnPath}`);
+      return claudeOnPath;
     }
   } catch {
     // `which` failed — claude not on PATH
   }
 
-  resolvedClaudePath = undefined;
+  claudeOnPath = undefined;
   return undefined;
 }
 
 /**
- * Forget the resolved Claude Code executable so the next call looks again.
+ * Forget the memoized `which claude` result so the next call looks again.
  *
- * Two callers, and the second is the interesting one:
+ * One caller that matters: `POST /api/engines/refresh`, after a user installs
+ * the CLI — without this the daemon keeps reporting the answer it cached before
+ * the install.
  *
- * - `POST /api/engines/refresh`, after a user installs the CLI — without this
- *   the daemon keeps reporting the answer it cached before the install;
- * - anything that changes `pathToClaudeCodeExecutable`. That setting has always
- *   needed a daemon restart to take effect, purely because this cache had no
- *   way to be dropped.
+ * It is no longer what makes an edited `pathToClaudeCodeExecutable` take
+ * effect. That used to need this reset (and, before the reset existed, a daemon
+ * restart) because the whole decision was memoized. The override is now read
+ * fresh on every resolution, so editing the setting is live by construction
+ * rather than by remembering to invalidate — which is the only version of that
+ * guarantee the status card can be built on.
  */
 export function resetClaudeCodeExecutablePathCache(): void {
-  resolvedClaudePath = null;
+  claudeOnPath = null;
+  lastLoggedOverrideRejection = null;
 }
 
 /**
@@ -519,7 +549,7 @@ export function resetClaudeCodeExecutablePathCache(): void {
 export function getCodexExecutableOverride(settings?: AgentSettings): BinaryPathCheck | undefined {
   const configured = (settings ?? loadSettings()).codexPathOverride?.trim();
   if (!configured) return undefined;
-  return checkBinaryPath(configured, "Codex binary", "Callboard is falling back to the binary bundled with `@openai/codex-sdk`.");
+  return checkBinaryPath(configured, BINARY_OVERRIDE_PHRASING.codex.what, BINARY_OVERRIDE_PHRASING.codex.fallback);
 }
 
 /**

@@ -341,6 +341,16 @@ describe("GET /binary-check — as-you-type validation for the override fields",
     expect(dir.body.detail).toContain("Agent SDK");
   });
 
+  it("rejects a relative path without looking at the filesystem", async () => {
+    // A relative path validated green whenever the daemon's own cwd happened to
+    // contain it, and then failed to launch in every chat — the engine spawns
+    // with the chat's folder as cwd. `"package.json"` exists relative to the
+    // test process, which is precisely why it is the one to assert on.
+    const { body } = await check({ path: "package.json", engineId: "codex" });
+    expect(body.state).toBe("not-absolute");
+    expect(body.detail).toContain("relative path");
+  });
+
   it("treats a blank path as the default rather than an error", async () => {
     for (const path of ["", "   ", undefined]) {
       const { status, body } = await check({ path, engineId: "codex" });

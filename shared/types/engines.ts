@@ -50,6 +50,18 @@
 export type EngineOverrideState =
   /** The path exists, is a file, and carries an execute bit for the user running the daemon. This is what runs. */
   | "active"
+  /**
+   * Not an absolute path.
+   *
+   * Rejected *before* anything is looked at, because a relative path is not one
+   * question with one answer: Callboard would resolve it against the daemon's
+   * own working directory while the engine spawns it against the **chat
+   * folder**. `"relwrap"` therefore validated green — the daemon's cwd had it —
+   * and then failed to launch in every chat. This is the `existsSync` mistake
+   * one step further out: a check that answers a different question than the
+   * spawn asks.
+   */
+  | "not-absolute"
   /** Nothing at that path. */
   | "missing"
   /** Something is there, but it is a directory (or a socket, or a device) rather than a file. */
@@ -473,15 +485,29 @@ export type EngineInstallEvent = EngineInstallStartedEvent | EngineInstallOutput
  * Only Codex carries this today, and the reason is specific rather than
  * general: the Codex rollout format (`$CODEX_HOME/sessions/**.jsonl`) is
  * undocumented and version-dependent, and `adapters/codex/sessionParser.ts`
- * translates it by hand. A format change does not throw — it produces a chat
- * that silently loses messages on resume. `EXPECTED_CODEX_CLI_VERSION` exists so
- * that outcome is *diagnosable*, and until Phase 4 the check that reads it could
- * not run at all: it resolved the SDK version through
- * `require("@openai/codex-sdk/package.json")`, which throws
- * `ERR_PACKAGE_PATH_NOT_EXPORTED` into a bare `catch {}` on every boot.
+ * translates it by hand. A format change does not throw — it renders a
+ * transcript with turns quietly missing. `EXPECTED_CODEX_CLI_VERSION` exists so
+ * that outcome is *diagnosable*.
  *
- * So this is not a cosmetic row. It is the difference between "parsing may be
- * lossy, here is why" and a bug report about vanishing messages.
+ * ## Where this sits relative to the check that already worked
+ *
+ * `sessionParser.checkCliVersion` compares that constant against the
+ * `session_meta.cli_version` recorded in each rollout, and it has always been
+ * live — real rollouts carry the field, and it logs on a mismatch. It is the
+ * better-aimed of the two, because it tests the very file being decoded.
+ *
+ * What it cannot do is warn *before* there is a mismatched file to read: it
+ * fires while parsing a transcript that has already been written, and only into
+ * the log. This is the ahead-of-time, in-the-UI half — it asks the binary that
+ * is about to write rollouts what version it is, which for an active
+ * `codexPathOverride` is a question no amount of reading Callboard's own
+ * `node_modules` could answer.
+ *
+ * (The third check, `CodexSessionProvider.checkSdkVersionOnce`, was the one
+ * that had never fired: it read the SDK version through
+ * `require("@openai/codex-sdk/package.json")`, which throws
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` into a bare `catch {}` on every boot. Fixed
+ * in Phase 4.)
  */
 export interface EngineVersionDrift {
   /** The version the adapter was written against. */

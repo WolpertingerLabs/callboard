@@ -146,21 +146,20 @@ describe("getClaudeCodeExecutablePath", () => {
     expect(getClaudeCodeExecutablePath()).toBeUndefined();
   });
 
-  it("takes effect on the next call once the cache is dropped, without a restart", () => {
-    // The standing papercut this phase closes: the resolved path is memoized for
-    // the process lifetime, so editing the setting used to need `callboard
-    // restart`. The settings route now drops this cache on a write.
+  it("takes effect on the very next call, with no cache reset and no restart", () => {
+    // The standing papercut this phase closes, and its second cut closes
+    // properly. An earlier version of this test asserted the opposite — that the
+    // old path survived until something invalidated a cache — which was an
+    // accurate description of a bug: the same memoisation let the status card
+    // and the chat disagree in both directions. Only the `which` lookup is
+    // memoized now, so the setting is live by construction rather than by
+    // remembering to call the reset below.
     const first = executable("claude-a");
     const second = executable("claude-b");
     updateAgentSettings({ pathToClaudeCodeExecutable: first });
     expect(getClaudeCodeExecutablePath()).toBe(first);
 
     updateAgentSettings({ pathToClaudeCodeExecutable: second });
-    // Still the old answer until the cache is invalidated — asserted rather than
-    // glossed over, because it is exactly what made the field feel broken.
-    expect(getClaudeCodeExecutablePath()).toBe(first);
-
-    resetClaudeCodeExecutablePathCache();
     expect(getClaudeCodeExecutablePath()).toBe(second);
   });
 
@@ -182,5 +181,81 @@ describe("getClaudeCodeExecutablePath", () => {
     expect(getClaudeCodeExecutableOverride()).toBeUndefined();
     updateAgentSettings({ pathToClaudeCodeExecutable: "" });
     expect(getClaudeCodeExecutableOverride()).toBeUndefined();
+  });
+});
+
+describe("the resolver and the card cannot drift apart", () => {
+  /**
+   * Both directions of the memoisation finding, which review reproduced live.
+   *
+   * The first cut memoized the whole decision while
+   * `getClaudeCodeExecutableOverride` — what the status card renders — re-`stat`ed
+   * on every call. Two functions, one module, one question, two clocks. The
+   * assertions below pair them deliberately: it is not enough that each is
+   * individually reasonable, they have to *agree*, because the card's central
+   * claim is "this is the binary Callboard runs".
+   */
+  it("stops using an override whose binary disappears after it resolved", () => {
+    // Direction A. Reproduced as: card reads "Native `claude` at X · Ready"
+    // beside "⚠ Nothing at X", while every chat dies with `native binary not
+    // found`. The reassuring line was the false one.
+    const bin = executable("vanishing-claude");
+    const onPath = executable("path-claude");
+    mocks.which.mockReturnValue(`${onPath}\n`);
+    updateAgentSettings({ pathToClaudeCodeExecutable: bin });
+
+    expect(getClaudeCodeExecutablePath()).toBe(bin);
+    expect(getClaudeCodeExecutableOverride()?.state).toBe("active");
+
+    rmSync(bin, { force: true });
+
+    // No cache reset in between — that is the point.
+    expect(getClaudeCodeExecutableOverride()?.state).toBe("missing");
+    expect(getClaudeCodeExecutablePath()).toBe(onPath);
+  });
+
+  it("starts using an override whose binary appears after it was rejected", () => {
+    // Direction B. Reproduced as: card says "Override in effect", chats ignore
+    // it. The resolver had cached `which claude` at a moment the path did not
+    // exist and never looked again.
+    const target = join(scratch, "later-claude");
+    const onPath = executable("path-claude");
+    mocks.which.mockReturnValue(`${onPath}\n`);
+    updateAgentSettings({ pathToClaudeCodeExecutable: target });
+
+    expect(getClaudeCodeExecutablePath()).toBe(onPath);
+    expect(getClaudeCodeExecutableOverride()?.state).toBe("missing");
+
+    writeFileSync(target, "#!/bin/sh\nexit 0\n");
+    chmodSync(target, 0o755);
+
+    expect(getClaudeCodeExecutableOverride()?.state).toBe("active");
+    expect(getClaudeCodeExecutablePath()).toBe(target);
+  });
+
+  it("still memoizes the expensive half — `which` runs once", () => {
+    // The guard on the fix. Reading the override fresh is one `stat`; re-running
+    // `which claude` on every resolution would be a synchronous spawn on a
+    // single-threaded server, which is the cost the cache existed to avoid.
+    mocks.which.mockReturnValue(`${executable("path-claude")}\n`);
+
+    getClaudeCodeExecutablePath();
+    getClaudeCodeExecutablePath();
+    getClaudeCodeExecutablePath();
+    expect(mocks.which).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a relative override rather than resolving it against the daemon's cwd", () => {
+    // The engine spawns with the chat's folder as cwd, so a path that works
+    // from here works nowhere that matters.
+    const onPath = executable("path-claude");
+    mocks.which.mockReturnValue(`${onPath}\n`);
+    updateAgentSettings({ pathToClaudeCodeExecutable: "relwrap" });
+
+    expect(getClaudeCodeExecutableOverride()?.state).toBe("not-absolute");
+    expect(getClaudeCodeExecutablePath()).toBe(onPath);
+    updateAgentSettings({ codexPathOverride: "relwrap" });
+    expect(getCodexExecutableOverride()?.state).toBe("not-absolute");
+    expect(getCodexExecutablePath()).toBeUndefined();
   });
 });

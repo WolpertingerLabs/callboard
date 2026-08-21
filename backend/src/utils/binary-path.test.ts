@@ -14,7 +14,7 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkBinaryPath } from "./binary-path.js";
+import { checkBinaryPath, checkBinaryPathAsync } from "./binary-path.js";
 
 let scratch: string;
 
@@ -77,6 +77,43 @@ describe("an executable file is what runs", () => {
   });
 });
 
+describe("a relative path is rejected before anything is looked at", () => {
+  it("refuses one even when it resolves against the daemon's own cwd", () => {
+    // The worst of the four, because it is not a stricter test but a different
+    // question: Callboard resolves it against the daemon's working directory
+    // while the engine spawns it with the *chat folder* as cwd. `"relwrap"`
+    // therefore validated green — the daemon's cwd had it — and failed to
+    // launch in every chat. So the check must not be "can I find it from here".
+    const bin = join(scratch, "relwrap");
+    writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+    chmodSync(bin, 0o755);
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(scratch);
+      // Present, executable, and findable from right here — and still refused.
+      expect(check("relwrap").state).toBe("not-absolute");
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it.each(["relwrap", "./bin/codex", "../codex", "bin/codex"])("refuses %p", (value) => {
+    const result = check(value);
+    expect(result.state).toBe("not-absolute");
+    expect(result.detail).toContain("relative path");
+    // Says what happens instead, like every other rejection.
+    expect(result.detail).toContain("Falling back to the bundled binary.");
+  });
+
+  it("does not touch the filesystem to decide — a relative path has no right answer there", () => {
+    // `~/codex` is the other one users type. It is not absolute to Node (no
+    // tilde expansion outside a shell), so it is refused for the same reason
+    // rather than silently resolving to a directory named `~`.
+    expect(check("~/codex").state).toBe("not-absolute");
+  });
+});
+
 describe("the three rejections, which fail differently and are fixed differently", () => {
   it("missing — nothing at the path", () => {
     const result = check(join(scratch, "nope"));
@@ -117,6 +154,49 @@ describe("the three rejections, which fail differently and are fixed differently
 
     chmodSync(bin, 0o755);
     expect(check(bin).state).toBe("active");
+  });
+});
+
+describe("the chmod suggestion is checked, not assumed", () => {
+  it("names `chmod +x` for a file this user owns", () => {
+    const bin = join(scratch, "mine");
+    writeFileSync(bin, "");
+    chmodSync(bin, 0o644);
+    expect(check(bin).detail).toContain(`chmod +x ${bin}`);
+  });
+
+  it("does not tell the user to chmod a file belonging to someone else", () => {
+    // Unconditional advice here has the settings page cheerfully suggest
+    // `chmod +x /etc/passwd` — a command that will not work and should not be
+    // recommended. Ownership is observable, so it is observed.
+    const result = check("/etc/passwd");
+    // Skip where the check is meaningless: running as root, or a system without
+    // that file. The assertion is about advice, not about /etc/passwd.
+    if (result.state !== "not-executable") return;
+    expect(result.detail).not.toContain("chmod +x");
+    expect(result.detail).toContain("another user");
+  });
+});
+
+describe("the async variant answers identically", () => {
+  it("agrees with the sync one on every state", async () => {
+    // The route uses the async one so a debounced per-keystroke check does not
+    // `statSync` on the event loop. Two implementations that could disagree
+    // would be the same defect this module exists to prevent, one layer down.
+    const good = join(scratch, "ok");
+    writeFileSync(good, "");
+    chmodSync(good, 0o755);
+    const dir = join(scratch, "dir");
+    mkdirSync(dir);
+    const notExec = join(scratch, "plain");
+    writeFileSync(notExec, "");
+    chmodSync(notExec, 0o644);
+
+    for (const value of [undefined, "", "relative/path", good, dir, notExec, join(scratch, "gone")]) {
+      const sync = check(value);
+      const async = await checkBinaryPathAsync(value, "Codex binary", "Falling back to the bundled binary.");
+      expect(async).toEqual(sync);
+    }
   });
 });
 

@@ -25,7 +25,7 @@ import {
   subscribeToInstallRun,
 } from "../services/engine-install.js";
 import { getEngineStatuses, refreshEngineStatuses } from "../services/engine-status.js";
-import { checkBinaryPath } from "../utils/binary-path.js";
+import { BINARY_OVERRIDE_PHRASING, checkBinaryPathAsync } from "../utils/binary-path.js";
 import { getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
 import { createLogger } from "../utils/logger.js";
 import { sendSSE, startSSEHeartbeat, writeSSEHeaders } from "../utils/sse.js";
@@ -101,7 +101,7 @@ enginesRouter.get("/", async (req, res) => {
  * Registered ahead of `/:id/install` in file order for readability only — these
  * are distinct methods and paths, so there is no shadowing to worry about.
  */
-enginesRouter.get("/binary-check", (req, res) => {
+enginesRouter.get("/binary-check", async (req, res) => {
   // #swagger.tags = ['System']
   // #swagger.summary = 'Would Callboard accept this path as an engine binary override?'
   // #swagger.description = 'Checks one filesystem path the way the engine resolvers do - it must exist, be a regular file, and carry an execute bit for the user running the daemon - and returns the state plus a sentence explaining it. Runs nothing: this backs as-you-type validation on the Claude Code and Codex binary-override fields, so executing the value would mean spawning a process per keystroke. A blank path returns state null, because "not configured" is the default rather than an error.'
@@ -113,12 +113,16 @@ enginesRouter.get("/binary-check", (req, res) => {
   // 400: this is a validation helper, and failing to validate because the label
   // was wrong would be a worse answer than validating with a vaguer sentence.
   const engineId = typeof req.query.engineId === "string" ? req.query.engineId : "";
-  const { path, state, detail } =
+  const { what, fallback } =
     engineId === "codex"
-      ? checkBinaryPath(raw, "Codex binary", "Callboard is falling back to the binary bundled with `@openai/codex-sdk`.")
+      ? BINARY_OVERRIDE_PHRASING.codex
       : engineId === "claude-code"
-        ? checkBinaryPath(raw, "Claude Code binary", "Callboard is falling back to a `claude` on its PATH, or to the binary bundled with the Agent SDK.")
-        : checkBinaryPath(raw, "binary", "Callboard is falling back to the binary it would have resolved for itself.");
+        ? BINARY_OVERRIDE_PHRASING["claude-code"]
+        : { what: "binary", fallback: "Callboard is falling back to the binary it would have resolved for itself." };
+  // The async variant, because this fires on a debounce per keystroke and a
+  // `statSync` there is the same event-loop stall this codebase already refuses
+  // for `which` and `--version`, only cheaper per call.
+  const { path, state, detail } = await checkBinaryPathAsync(raw, what, fallback);
   return res.json({ path, state, detail });
 });
 
