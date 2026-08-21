@@ -492,6 +492,17 @@ function BinaryOverrideField({
    * matching.
    */
   const [check, setCheck] = useState<EngineBinaryCheckResponse | null>(null);
+  /**
+   * The path whose check failed to reach the daemon at all.
+   *
+   * A third outcome, kept apart from both a verdict and "still waiting". Not
+   * claiming "invalid" on a failed request is right — that would be a statement
+   * about the user's filesystem from something that never looked at it — but the
+   * previous cut said *nothing*, so a daemon that had gone away left the field
+   * spinning "Checking…" forever with no way to tell that apart from a slow
+   * answer. Saying which one it is costs one line and one piece of state.
+   */
+  const [unreachable, setUnreachable] = useState<string | null>(null);
   const trimmed = value.trim();
 
   useEffect(() => {
@@ -505,9 +516,8 @@ function BinaryOverrideField({
           if (!controller.signal.aborted) setCheck(result);
         })
         .catch(() => {
-          // The daemon did not answer. Leave the field in its "checking" state
-          // rather than guessing: "invalid" would be a claim about the user's
-          // filesystem made by something that failed to look at it.
+          // Report that Callboard could not ask — never that the answer was no.
+          if (!controller.signal.aborted) setUnreachable(trimmed);
         });
     }, 350);
     return () => {
@@ -516,10 +526,14 @@ function BinaryOverrideField({
     };
   }, [trimmed, engineId]);
 
+  // Both pieces of state are tagged with the path they are about, so neither a
+  // stale verdict nor a stale failure can be rendered against a path the user
+  // has since edited.
   const current = check && check.path === trimmed ? check : null;
+  const failed = unreachable === trimmed && !current;
   const ok = current?.state === "active";
   const bad = Boolean(current && current.state && current.state !== "active");
-  const checking = Boolean(trimmed) && !current;
+  const checking = Boolean(trimmed) && !current && !failed;
 
   return (
     <div style={fieldWrap}>
@@ -553,6 +567,14 @@ function BinaryOverrideField({
             <>
               <AlertTriangle size={12} style={{ color: "var(--warning)", flexShrink: 0, marginTop: 1 }} />
               <span>{inlineCode(current!.detail)}</span>
+            </>
+          ) : failed ? (
+            <>
+              <AlertTriangle size={12} style={{ color: "var(--text-muted)", flexShrink: 0, marginTop: 1 }} />
+              <span>
+                Callboard could not reach the daemon to check this path, so it does not know whether it will work. The path itself may be perfectly fine —
+                saving still stores it, and the status card above reports what actually happens.
+              </span>
             </>
           ) : null}
         </div>
@@ -985,14 +1007,35 @@ export default function ApiSettings() {
       setSettings(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      // Re-probe so the status card names the binary that is now in effect
-      // rather than the one that was. Errors are swallowed here and only here:
-      // the save itself succeeded, and turning a failed follow-up probe into a
-      // red "Failed to save settings" would report the wrong outcome for the
-      // thing the user actually pressed. A stale card is recoverable with
-      // Recheck; a false failure sends someone looking for a problem that is not
-      // there.
-      if (overridesChanged) void handleRecheckEngines().catch(() => {});
+      // Re-read so the status card names the binary that is now in effect
+      // rather than the one that was.
+      //
+      // A plain `getEngines()`, **not** the Recheck path. Recheck exists to drop
+      // the daemon's caches, and is rate-limited to one real probe every ten
+      // seconds precisely because it spawns processes — so two saves inside that
+      // window returned the *previous* probe's statuses with `probed: false`,
+      // which this code then adopted unconditionally as if they were current.
+      // The card would show the override the user had just replaced. Nothing
+      // here needs the reset anyway: the PUT dropped those caches server-side
+      // before it responded, so an ordinary read already sees the new
+      // resolution, and it is neither throttled nor a spawn.
+      //
+      // Errors are swallowed here and only here: the save itself succeeded, and
+      // turning a failed follow-up read into a red "Failed to save settings"
+      // would report the wrong outcome for the thing the user pressed. A stale
+      // card is recoverable with Recheck; a false failure sends someone looking
+      // for a problem that is not there.
+      if (overridesChanged) {
+        const requestId = ++enginesRequestId.current;
+        void getEngines()
+          .then((fresh) => {
+            if (enginesRequestId.current === requestId) {
+              setEngines(fresh);
+              setEnginesLoading(false);
+            }
+          })
+          .catch(() => {});
+      }
       // Re-fetch system info so the Account / Models display reflects new overrides.
       // The backend kicks off a refresh on save; give it a moment before polling.
       setTimeout(() => {
@@ -1894,6 +1937,10 @@ export default function ApiSettings() {
                   )}
                   Auth and sessions do not move: an overridden binary still reads{" "}
                   <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code> and writes to the same rollout tree. Clearing this returns to the bundled binary.
+                  Point it at a real install rather than a loose binary if you can — the Codex SDK stops adding its own bundled helpers (
+                  <code style={{ fontSize: 11 }}>rg</code>, <code style={{ fontSize: 11 }}>bwrap</code>) to the subprocess&rsquo;s{" "}
+                  <code style={{ fontSize: 11 }}>PATH</code> once you name a binary yourself, so a copy that did not bring its own may lose search or
+                  sandboxing inside chats.
                 </>
               }
             />

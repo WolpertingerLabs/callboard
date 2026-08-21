@@ -299,6 +299,16 @@ function trackedPackage(engine: EngineStatus): string | undefined {
  * read only off the variants that carry them.
  */
 function updateRemedy(runtime: EngineStatus["runtime"]): React.ReactNode {
+  // An **active** override outranks the runtime kind, because the kind
+  // describes where Callboard *would* get the engine and the override says
+  // where it actually did. Reading `kind` alone told a user running their own
+  // `codex` that "a Callboard update can pick it up" — which moves
+  // `node_modules` and cannot touch their binary. The remedy for a binary you
+  // installed is to update the binary you installed.
+  if (runtime.kind === "bundled-overridable" && runtime.overridePath) {
+    return " · update available — for the copy at the path above, which you update yourself";
+  }
+
   switch (runtime.kind) {
     case "external":
     case "external-preferred":
@@ -1044,6 +1054,12 @@ function BundledUpdateNote({ engine }: { engine: EngineStatus }) {
   const runtime = engine.runtime;
   if (runtime.kind !== "bundled" && runtime.kind !== "bundled-overridable") return null;
   if (engine.updateAvailable !== true) return null;
+  // Not for an active override. Everything below argues "nothing to install,
+  // this moves when Callboard does" — true of the bundled copy and false of the
+  // binary that is actually running, which the user installed and updates
+  // themselves. The Latest row's remedy already says so; a second block
+  // contradicting it is worse than no block.
+  if (runtime.kind === "bundled-overridable" && runtime.overridePath) return null;
 
   return (
     <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>

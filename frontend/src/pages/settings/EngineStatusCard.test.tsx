@@ -684,3 +684,63 @@ describe("the Compatibility row — a check that had never fired", () => {
     expect(screen.queryByText("Compatibility")).toBeNull();
   });
 });
+
+describe("the remedy for a newer version follows the binary that runs", () => {
+  const overridden: EngineStatus = {
+    ...ranged,
+    version: "0.146.0",
+    latestVersion: "0.149.0",
+    updateAvailable: true,
+    runtime: {
+      kind: "bundled-overridable",
+      package: "@openai/codex-sdk",
+      dependencyRange: "^0.146.0",
+      pinned: false,
+      overridePath: "/opt/codex/bin/codex",
+      override: { path: "/opt/codex/bin/codex", state: "active", detail: "ok", version: "0.146.0" },
+    },
+  };
+
+  it("does not tell someone running their own binary that a Callboard update fixes it", () => {
+    // `updateRemedy` switched on `runtime.kind` alone, so an active override
+    // still got the bundled remedy — and updating Callboard moves
+    // `node_modules`, not `/opt/codex/bin/codex`. The remedy for a binary you
+    // installed is to update the binary you installed.
+    render(<EngineStatusCard engine={overridden} />);
+    expect(screen.queryByText(/a Callboard update can pick it up/)).toBeNull();
+    expect(screen.getByText(/which you update yourself/)).toBeTruthy();
+  });
+
+  it("drops the About-page block too, rather than contradicting the row above it", () => {
+    render(<EngineStatusCard engine={overridden} />);
+    expect(screen.queryByText(/Check for a Callboard update/)).toBeNull();
+    expect(screen.queryByText(/ships inside Callboard/)).toBeNull();
+  });
+
+  it("still points a genuinely bundled Codex at Callboard's own dependency range", () => {
+    // The guard: suppressing the bundled remedy unconditionally would be just as
+    // wrong for the overwhelmingly common case of no override at all.
+    render(<EngineStatusCard engine={{ ...ranged, version: "0.146.0", latestVersion: "0.149.0", updateAvailable: true }} />);
+    expect(screen.getByText(/a Callboard update can pick it up/)).toBeTruthy();
+  });
+
+  it("keeps the bundled remedy when an override was configured and rejected", () => {
+    // Rejected ⇒ the bundled copy is what runs ⇒ the bundled remedy is the true
+    // one. Keying on `override` rather than `overridePath` would get this wrong.
+    render(
+      <EngineStatusCard
+        engine={{
+          ...overridden,
+          runtime: {
+            kind: "bundled-overridable",
+            package: "@openai/codex-sdk",
+            dependencyRange: "^0.146.0",
+            pinned: false,
+            override: { path: "/opt/typo", state: "missing", detail: "Nothing at `/opt/typo`." },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText(/a Callboard update can pick it up/)).toBeTruthy();
+  });
+});

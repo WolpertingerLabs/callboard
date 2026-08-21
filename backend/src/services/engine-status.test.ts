@@ -697,9 +697,15 @@ describe("the Codex rollout-format drift check", () => {
     const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
     expect(engine.drift).toMatchObject({ expected: EXPECTED_CODEX_CLI_VERSION, actual: "0.999.0", source: "override" });
     expect(engine.drift?.detail).toContain(bin);
-    // The stake, in the sentence: not "your engine is broken" but "resuming an
-    // old chat may lose messages", which is what the parser actually risks.
-    expect(engine.drift?.detail).toContain("resuming an older chat may drop messages");
+    // The stake, in the sentence, and — this is the part that was wrong — in the
+    // right direction. `EXPECTED_CODEX_CLI_VERSION` is what the *parser*
+    // targets, so a drifted binary writes an unfamiliar format from now on:
+    // the transcripts at risk are the ones it is about to write, not the ones a
+    // matching version already wrote. The first cut said the reverse, which is
+    // the sentence a user would have acted on.
+    expect(engine.drift?.detail).toContain("writes from now on");
+    expect(engine.drift?.detail).toContain("Chats recorded by a matching version still read correctly");
+    expect(engine.drift?.detail).not.toContain("New chats are unaffected");
   });
 
   it("does not claim drift when the effective version could not be read", async () => {
@@ -717,5 +723,63 @@ describe("the Codex rollout-format drift check", () => {
   it("reports no drift for engines that have no version contract", async () => {
     const engines = await getEngineStatuses();
     for (const id of ["claude-code", "cline", "pi"]) expect(byId(engines, id).drift).toBeUndefined();
+  });
+});
+
+describe("what counts as a version, and what does not", () => {
+  function cliPrinting(name: string, banner: string): string {
+    const path = join(scratch, name);
+    writeFileSync(path, `#!/bin/sh\necho "${banner}"\n`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  it("does not treat an unparseable banner as a version", async () => {
+    // A wrapper printing `my custom codex build` used to *become* the engine's
+    // version, which produced a permanent amber drift row asserting transcripts
+    // were at risk, and an `isNewerVersion(…)` comparison over NaN that reported
+    // an update was available. Three wrong claims from one string that was never
+    // a version.
+    const bin = cliPrinting("codex-odd", "my custom codex build");
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "active", detail: "" });
+    mocks.latestVersions.mockResolvedValue({ "@openai/codex-sdk": { version: "0.149.0", checkedAt: Date.now() } });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBeUndefined();
+    expect(engine.drift).toBeUndefined();
+    expect(engine.updateAvailable).toBeUndefined();
+    if (engine.runtime.kind !== "bundled-overridable") throw new Error("unreachable");
+    expect(engine.runtime.override?.version).toBeUndefined();
+  });
+
+  it("finds the version inside a normal banner", async () => {
+    const bin = cliPrinting("codex-normal", "codex-cli 0.150.1");
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "active", detail: "" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBe("0.150.1");
+  });
+
+  it("never borrows the bundled version for an override it got no answer from", async () => {
+    // `codexActive?.version ?? readPackageVersion(…)` attributed the bundled
+    // 0.146.0 to a binary Callboard had got nothing out of, then issued a drift
+    // verdict on evidence about a copy nothing executes. "Did not look" and
+    // "looked at something else" are the two answers this module keeps apart.
+    const silent = join(scratch, "codex-silent");
+    writeFileSync(silent, "#!/bin/sh\nexit 3\n");
+    chmodSync(silent, 0o755);
+    mocks.codexOverride.mockReturnValue({ path: silent, state: "active", detail: "" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBeUndefined();
+    expect(engine.version).not.toBe(bundledPackageVersion("@openai/codex-sdk"));
+    expect(engine.drift).toBeUndefined();
+  });
+
+  it("still reports the bundled version when no override is configured", async () => {
+    // The guard on the above: an unconditional `undefined` would also pass those
+    // assertions and would be just as wrong.
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBe(bundledPackageVersion("@openai/codex-sdk"));
   });
 });

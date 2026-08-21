@@ -161,11 +161,17 @@ export function bundledClaudeBinaryPresent(): boolean {
  * nothing here runs a string a request supplied. (The settings fields validate
  * with `stat` only, for exactly that reason — see `utils/binary-path.ts`.)
  *
- * The CLIs print `"2.0.1 (Claude Code)"` and `"codex-cli 0.146.0"`; the semver
- * is what compares against npm, so a leading version is taken where there is
- * one, and otherwise the first embedded version-looking token. The whole first
- * line is the fallback, because "it printed something unexpected" is still more
- * informative on a card than a blank.
+ * The CLIs print `"2.0.1 (Claude Code)"` and `"codex-cli 0.146.0"`, so the
+ * answer is the first **dotted numeric** token on the first line.
+ *
+ * A banner with no such token yields `undefined`, and it must: the previous cut
+ * fell back to the whole first line, which meant a wrapper printing
+ * `my custom codex build` became the engine's `version` — a permanent amber
+ * drift row asserting resume was unsafe, and an `isNewerVersion(…)` comparison
+ * over `NaN` that reported an update was available. Every consumer of this
+ * value compares it numerically or against a version constant, so a string that
+ * is not a version is not an answer to give them; the card says the binary
+ * printed nothing recognisable instead, which is both true and more useful.
  *
  * Async, with `killSignal: "SIGKILL"`, for the reason spelled out on
  * `acpProviderVersion`: `execFileSync`'s `timeout` does not bound wall-clock
@@ -195,8 +201,9 @@ async function binaryVersion(execPath: string): Promise<string | undefined> {
     });
     const out = stdout.trim();
     const firstLine = out.split("\n")[0]?.trim() ?? "";
-    version = /^\d[\w.+-]*/.exec(firstLine)?.[0] ?? /\d+\.\d+\.\d+[\w.+-]*/.exec(firstLine)?.[0] ?? firstLine ?? "";
-    version = version || undefined;
+    // `MAJOR.MINOR[.PATCH][-prerelease]`, anywhere on the line. No fallback to
+    // the raw banner — see the doc-comment.
+    version = /\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/.exec(firstLine)?.[0];
   } catch {
     // Present but unrunnable (wrong arch, permissions, killed at the deadline) —
     // no version to report.
@@ -503,10 +510,17 @@ function codexVersionDrift(actual: string | undefined, source: "bundled" | "over
     expected: EXPECTED_CODEX_CLI_VERSION,
     actual,
     source,
+    // Which chats are at risk, stated in the direction the versions actually
+    // run. `EXPECTED_CODEX_CLI_VERSION` is what the *parser* targets, so a
+    // drifted binary writes a format Callboard was not written to read **from
+    // now on** — the rollouts at risk are the ones this binary is about to
+    // write, not the ones a matching version already wrote. And the parser
+    // renders every Codex transcript, not just a resume, so the symptom is not
+    // limited to continuing an old chat.
     detail:
       `${what}, and Callboard's rollout parser was written against ${EXPECTED_CODEX_CLI_VERSION}. ` +
-      `Codex's session format is undocumented and changes between releases, so resuming an older chat may drop messages rather than fail loudly. ` +
-      `New chats are unaffected. If you see a resumed Codex chat missing turns, this is the first thing to check.`,
+      `Codex's session format is undocumented and changes between releases, so transcripts this binary writes from now on may render with turns missing rather than fail loudly. ` +
+      `Chats recorded by a matching version still read correctly. If a Codex transcript looks short, this is the first thing to check.`,
   };
 }
 
@@ -847,12 +861,21 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
   // When an override wins, the bundled version is no longer a fact about this
   // machine's Codex — it is a fact about a copy nothing executes.
   //
+  // Hence a conditional and **not** `codexActive?.version ?? readPackageVersion(…)`,
+  // which is what this was: an active override whose `--version` said nothing
+  // recognisable fell through to the bundled number, so the card attributed
+  // `0.146.0` to a binary it had got no version out of and then issued a drift
+  // verdict on evidence about a different file. "Callboard did not look" and
+  // "Callboard looked at something else" are the two answers this branch exists
+  // to keep apart. Undefined is the honest one, and the card renders it as
+  // Unknown with no drift row.
+  //
   // Comparing an overriding *CLI*'s version against `@openai/codex-sdk`'s npm
   // latest is sound rather than sloppy: the CLI and the SDK are published in
   // lockstep off one version line (`@openai/codex` and `@openai/codex-sdk` were
   // both 0.146.0 bundled and both 0.149.0 latest when this was written), so the
   // Latest row stays a like-for-like comparison either way.
-  const codexEffectiveVersion = codexActive?.version ?? readPackageVersion(CODEX_SDK_PACKAGE);
+  const codexEffectiveVersion = codexActive ? codexActive.version : readPackageVersion(CODEX_SDK_PACKAGE);
   const drift = codexVersionDrift(codexEffectiveVersion, codexActive ? "override" : "bundled", codexActive?.path);
   engines.push({
     id: "codex",
