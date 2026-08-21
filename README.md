@@ -14,7 +14,7 @@ Callboard gives you a full-featured chat interface on top of the Claude Code age
 npm install -g @wolpertingerlabs/callboard
 ```
 
-Requires **Node.js 22+** and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+Requires **Node.js 22+**, and — for Claude Code, the default engine — either the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated, or an Anthropic API key set under Settings → API. See [Engines](#engines) for that and for the four other engines Callboard can run.
 
 ### 2. Set a password
 
@@ -29,6 +29,80 @@ callboard start
 ```
 
 Open **http://localhost:8000** in your browser and log in. That's it.
+
+## Engines
+
+Callboard runs a chat on one of five agent **engines** — Claude Code, Codex, Cline, pi, or OpenCode. You pick one per chat, and set each one's defaults under **Settings → API**. Every engine gets a tab there whether or not it can actually run, so start here. (The OpenRouter tab alongside them is not an engine — it holds a service credential the other engines can be routed through.)
+
+| Engine          | How it runs                                                   | Install anything?     | Authentication                                                    |
+| --------------- | ------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------- |
+| **Claude Code** | Bundled agent SDK, but a `claude` on your `PATH` is preferred | Optional, recommended | `claude auth login`, or a key in Settings → API                   |
+| **Codex**       | Bundled — the `codex` binary ships inside Callboard           | Only to log in        | `codex login` (needs the CLI), or an OpenAI key in Settings → API |
+| **Cline**       | Bundled — runs in the Callboard process, no binary            | No                    | A key for the provider you pick, in Settings → API                |
+| **pi**          | Bundled — runs in the Callboard process, no binary            | No                    | A key for the provider you pick, in Settings → API                |
+| **OpenCode**    | An `opencode` binary you install, spawned per turn            | **Yes** — required    | `opencode auth login`, in your own terminal                       |
+
+**Bundled** means the engine is an ordinary npm dependency of Callboard: you got it with `npm install -g @wolpertingerlabs/callboard`, and you update it by updating Callboard. Installing a bundled engine globally does not upgrade it — Node resolves the package from Callboard's own `node_modules` first, and global installs aren't on that search path, so the two copies coexist and Callboard keeps using its own. It doesn't break anything either; it just has no effect. To move a bundled engine forward, update Callboard.
+
+### Claude Code
+
+No engine to install: the Claude Agent SDK ships with Callboard, and carries a native `claude` binary for your platform with it. That binary is an *optional* dependency, so it is missing if you installed with `--omit=optional` or you're on a platform Anthropic doesn't publish one for — in which case the SDK throws on startup and asks you to reinstall or point it at a `claude` yourself.
+
+Callboard prefers a `claude` you installed anyway. For running chats it checks the `pathToClaudeCodeExecutable` setting in `~/.callboard/agent-settings.json`, then `which claude`, then the bundled binary. A second lookup — used by the login prompt and the About page — checks the `CLAUDE_BINARY` environment variable, then `which claude`, then a handful of well-known install paths, and never sees the bundled binary at all. Having the CLI on your `PATH` keeps both of them happy.
+
+Installing it is the recommended setup, and it is the only way to sign in with a Claude subscription:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude auth login
+```
+
+To use an API key or a gateway bearer token instead, set it under **Settings → API → Claude Code**, which also shows which token source is currently live. One caveat worth knowing before you pick that path: it authenticates your chats, but Callboard's "Claude Code Login Required" prompt runs `claude auth status` against the native CLI and doesn't consult the key, so you will keep being asked to log in each session.
+
+### Codex
+
+Nothing to install to *run* Codex: `@openai/codex-sdk` brings the `codex` binary for your platform with it, so the engine is always present. What varies is whether you are signed in. Two ways to do that:
+
+- **ChatGPT subscription.** This needs the Codex CLI as a separate install — Callboard's copy of the binary sits inside its own `node_modules` and never lands on your `PATH`, so `codex login` is not a command you have otherwise.
+
+  ```bash
+  npm install -g @openai/codex
+  codex login
+  ```
+
+  That writes `~/.codex/auth.json` (or wherever `CODEX_HOME` points) and Callboard reads it from there. The global CLI is only needed to log in — chats still run on Callboard's bundled copy.
+
+- **API key.** Switch the auth mode to API key under **Settings → API → Codex** and paste an OpenAI key. Nothing to install, no CLI involved.
+
+### Cline
+
+Nothing to install, and no binary at all — the `@cline/sdk` runtime runs inside the Callboard process.
+
+Pick a provider (`anthropic` by default) and give it a key under **Settings → API → Cline**. Leave the key blank and the runtime falls back to the usual environment variables — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the AWS credential chain, and so on.
+
+### pi
+
+Nothing to install. Like Cline, pi is an in-process library.
+
+Pick a provider (`openrouter` by default) and give it a key under **Settings → API → pi**. Blank falls back to the environment (`OPENROUTER_API_KEY`, …); a key set here wins over the environment when both are present. Callboard never writes to pi's own auth file.
+
+### OpenCode
+
+**The one engine you have to install.** Callboard talks to OpenCode over the [Agent Client Protocol](https://agentclientprotocol.com) by spawning the `opencode` binary, so if it isn't on the `PATH` of the user running the Callboard daemon, the engine does not work at all.
+
+```bash
+npm install -g opencode-ai
+```
+
+Or use OpenCode's own installer — see the [OpenCode docs](https://opencode.ai/docs/).
+
+Authentication is mostly OpenCode's own: run `opencode auth login` in a terminal. Callboard never touches OpenCode's credential file, which OpenCode shares with your own terminal sessions. The one credential Callboard does hold for it is **Give ACP agents an OpenRouter key**, under **Settings → API → OpenCode** — handed to the spawned process as `OPENROUTER_API_KEY` so OpenCode's own OpenRouter provider works.
+
+Note that "installed" and "signed in" are separate questions here, and Callboard can only answer the first — it checks that the binary resolves on your `PATH`. ACP gives no way to ask an agent who is logged in, so an OpenCode you installed but never signed into shows as available and then fails when you send your first message, with OpenCode's own error. When that happens, `opencode auth login` is the fix.
+
+### After installing an engine
+
+Callboard resolves engine binaries once and caches the answer for the life of the daemon, because `PATH` doesn't change underneath a running process. If you install `opencode` or the Claude Code CLI while Callboard is up, run `callboard restart` before expecting it to be found.
 
 ## What You Can Do
 
