@@ -12,7 +12,8 @@ const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // Load .env: ~/.callboard/.env is the base config, then the project-root .env
 // overrides it. This lets local dev runs use a local .env to override
 // the global ~/.callboard config (e.g. different ports, passwords, log levels).
-import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName, getClaudeBinaryPath } from "./utils/paths.js";
+import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName } from "./utils/paths.js";
+import { resolveClaudeBinary } from "./services/claude-binary.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
 migrateDrawlatchDirs();
@@ -323,8 +324,19 @@ app.get(
       return res.json(claudeStatusCache.data);
     }
 
+    // The one resolver — the same call a chat spawns through. Previously this
+    // used a *second* one that ignored `pathToClaudeCodeExecutable` and fell
+    // back to the bare string "claude", which a shell then failed to find: a
+    // machine running perfectly on the Agent SDK's bundled binary was told
+    // "CLI error: … claude: not found" forever. Absent now means absent, and
+    // says so.
+    const claudePath = resolveClaudeBinary().path;
+    if (!claudePath) {
+      return res.json({ loggedIn: false, error: "No native `claude` CLI on this machine, so there is no CLI login to check." });
+    }
+
     try {
-      const raw = execSync(`${getClaudeBinaryPath()} auth status`, { timeout: 1_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      const raw = execSync(`${claudePath} auth status`, { timeout: 1_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
       const parsed = JSON.parse(raw.trim());
       if (parsed.loggedIn) claudeStatusCache = { data: parsed, ts: now };
       res.json(parsed);
@@ -363,11 +375,19 @@ app.get(
       // ignore
     }
 
-    let claudeCliVersion = "unknown";
-    try {
-      claudeCliVersion = execSync(`${getClaudeBinaryPath()} --version`, { timeout: 5_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-    } catch {
-      // ignore
+    // Same resolver as chats and the login check. `"not installed"` rather than
+    // `"unknown"` when nothing resolved: this used to run the bare name
+    // `"claude"` through a shell and report `unknown` on the resulting
+    // not-found, which reads as "Callboard could not tell" when in fact it
+    // looked and there was nothing there.
+    const claudeCliBinary = resolveClaudeBinary().path;
+    let claudeCliVersion = claudeCliBinary ? "unknown" : "not installed";
+    if (claudeCliBinary) {
+      try {
+        claudeCliVersion = execSync(`${claudeCliBinary} --version`, { timeout: 5_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+      } catch {
+        // ignore
+      }
     }
 
     // Fetch latest version from npm (cached, best effort)
@@ -487,7 +507,7 @@ app.get(
       platform: `${process.platform} (${process.arch})`,
       sdkVersion,
       claudeCliVersion,
-      claudeCliBinary: getClaudeBinaryPath(),
+      claudeCliBinary,
       proxyMode: process.env.MCP_PROXY_MODE || undefined,
       environment: process.env.NODE_ENV || "development",
       account: sdkInfo.account || undefined,

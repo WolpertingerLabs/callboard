@@ -607,7 +607,7 @@ describe("binary overrides — the card must say which binary is in effect", () 
     expect(screen.getByText(/Nothing at/)).toBeTruthy();
   });
 
-  it("names the other Claude lookup when the two disagree", () => {
+  it("says where a well-known-directory find came from, since `which` did not see it", () => {
     render(
       <EngineStatusCard
         engine={{
@@ -619,20 +619,18 @@ describe("binary overrides — the card must say which binary is in effect", () 
             kind: "external-preferred",
             package: "@anthropic-ai/claude-code",
             command: "claude",
-            resolvedPath: "/opt/mine/claude",
+            resolvedPath: "/home/u/.local/bin/claude",
+            resolvedFrom: "well-known",
             fallbackPackage: "@anthropic-ai/claude-agent-sdk",
-            override: { path: "/opt/mine/claude", state: "active", detail: "ok", version: "2.9.9" },
-            otherLookupPath: "/home/u/.local/bin/claude",
           },
         }}
       />,
     );
 
-    expect(screen.getByText(/The About page/)).toBeTruthy();
-    expect(screen.getByText("/home/u/.local/bin/claude")).toBeTruthy();
+    expect(screen.getByText(/Not on the PATH this daemon inherited/)).toBeTruthy();
   });
 
-  it("says nothing about a second lookup when there is no disagreement", () => {
+  it("says nothing extra when it came off PATH, which is the ordinary case", () => {
     render(
       <EngineStatusCard
         engine={{
@@ -645,13 +643,15 @@ describe("binary overrides — the card must say which binary is in effect", () 
             package: "@anthropic-ai/claude-code",
             command: "claude",
             resolvedPath: "/usr/local/bin/claude",
+            resolvedFrom: "path",
             fallbackPackage: "@anthropic-ai/claude-agent-sdk",
           },
         }}
       />,
     );
 
-    expect(screen.queryByText(/The About page/)).toBeNull();
+    expect(screen.queryByText(/Not on the PATH this daemon inherited/)).toBeNull();
+    expect(screen.queryByText(/CLAUDE_BINARY/)).toBeNull();
   });
 });
 

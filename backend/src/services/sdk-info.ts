@@ -8,7 +8,8 @@
 import { getAgentProvider } from "../agents/factory.js";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
-import { getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
+import { getApiEnvOverrides } from "./agent-settings.js";
+import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 
 const log = createLogger("sdk-info");
 

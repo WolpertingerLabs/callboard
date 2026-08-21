@@ -216,15 +216,23 @@ function runtimeSummary(engine: EngineStatus): React.ReactNode {
             <code style={mono}>{runtime.fallbackPackage}</code>
             {runtime.fallbackVersion ? ` ${runtime.fallbackVersion}` : ""}.
             {runtime.override ? <OverrideLine override={runtime.override} /> : null}
-            {/* The two Claude lookups disagree. Named rather than reconciled:
-                they read different inputs by design, and quietly picking one to
-                report would leave a user staring at an About-page version that
-                never moves when they change this field. */}
-            {runtime.otherLookupPath ? (
+            {/* Which lookup won. There is only one lookup now — chats, this
+                card, the About page's version and the login prompt all resolve
+                through it — so this says where it landed rather than warning
+                that two of them disagreed. */}
+            {runtime.resolvedFrom === "env" || runtime.resolvedFrom === "well-known" ? (
               <div style={{ marginTop: 4, color: "var(--text-muted)" }}>
-                Chats run the path above. The About page&rsquo;s CLI version and the login prompt use a separate lookup, which landed on{" "}
-                <code style={mono}>{runtime.otherLookupPath}</code> — it reads <code style={mono}>$CLAUDE_BINARY</code> and well-known directories, and ignores
-                the override field.
+                {runtime.resolvedFrom === "env" ? (
+                  <>
+                    Found through <code style={mono}>$CLAUDE_BINARY</code> in the daemon&rsquo;s environment. The override field below wins over it if you set
+                    one.
+                  </>
+                ) : (
+                  <>
+                    Not on the PATH this daemon inherited — found in a well-known install directory instead. That is where{" "}
+                    <code style={mono}>claude.ai/install.sh</code> puts it, so this is normal for a daemon that started before the install.
+                  </>
+                )}
               </div>
             ) : null}
           </>

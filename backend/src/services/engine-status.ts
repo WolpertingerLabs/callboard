@@ -39,15 +39,8 @@ import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/ad
 import { DEFAULT_CLINE_PROVIDER_ID } from "../agents/adapters/cline/optionsAdapter.js";
 import { DEFAULT_PI_PROVIDER_ID } from "../agents/adapters/pi/optionsAdapter.js";
 import { createLogger } from "../utils/logger.js";
-import { getClaudeBinaryPath, resetClaudeBinaryPathCache } from "../utils/paths.js";
-import {
-  getAgentSettings,
-  getClaudeCodeExecutableOverride,
-  getClaudeCodeExecutablePath,
-  getCodexExecutableOverride,
-  isClaudeCodeRoutedThroughOpenRouter,
-  resetClaudeCodeExecutablePathCache,
-} from "./agent-settings.js";
+import { getAgentSettings, getCodexExecutableOverride, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
+import { resetClaudeBinaryCache, resolveClaudeBinary } from "./claude-binary.js";
 import { EXPECTED_CODEX_CLI_VERSION } from "../agents/adapters/codex/sessionParser.js";
 import { bundledPackageVersion as readPackageVersion } from "../utils/package-version.js";
 import type { BinaryPathCheck } from "../utils/binary-path.js";
@@ -223,18 +216,17 @@ export function resetEngineStatusCache(): void {
 /**
  * Forget every process-lifetime answer to "is this engine installed".
  *
- * **Five** caches memoize that question, and until now none was reachable
+ * **Four** caches memoize that question, and until Phase 2 none was reachable
  * outside its own module. That was correct while nothing could change PATH
  * under a running daemon — and it stops being correct the moment a user
  * installs something and asks Callboard to look again, which is exactly what
  * `POST /api/engines/refresh` does:
  *
  * - `availability.ts` — resolved path *and* `--version` output, per ACP command;
- * - `agent-settings.ts` — `resolvedClaudePath`, the path handed to the Agent
- *   SDK. Resetting it also fixes a standing papercut unrelated to installs:
- *   editing `pathToClaudeCodeExecutable` used to need a daemon restart;
- * - `paths.ts` — `_claudeBinaryPath`, the separate lookup the login prompt and
- *   About page use;
+ * - `claude-binary.ts` — the `which claude` / well-known-directory lookup that
+ *   now answers for chats, the status card, the About page and the login prompt
+ *   alike. It was two caches in two modules until those two resolvers were
+ *   merged;
  * - this module — the cached `claude --version` and manifest reads;
  * - `sdk-info.ts` — the **account info**, and this one is the reason the button
  *   was previously a lie. It is populated once at boot and invalidated from
@@ -244,7 +236,7 @@ export function resetEngineStatusCache(): void {
  *   restarted the daemon. Measured before the fix — three POSTs logged
  *   `Fetching SDK info` zero additional times.
  *
- * Four of the five are variable assignments. The fifth is not: `refreshSdkInfoCache`
+ * Three of the four are variable assignments. The fourth is not: `refreshSdkInfoCache`
  * spawns an Agent SDK query. That cost is accepted here and nowhere else — this
  * is an explicit button press, not a poll, and {@link refreshEngineStatuses}
  * bounds how often it can happen. Ordering matters: the executable-path cache is
@@ -258,8 +250,7 @@ export function resetEngineStatusCache(): void {
  * left holding a rejection.
  */
 export function resetEngineProbeCaches(): void {
-  resetClaudeCodeExecutablePathCache();
-  resetClaudeBinaryPathCache();
+  resetClaudeBinaryCache();
   resetAcpAvailabilityCache();
   resetEngineStatusCache();
   refreshSdkInfoCache().catch((err) => log.warn(`SDK info refresh failed: ${err instanceof Error ? err.message : String(err)}`));
@@ -420,48 +411,6 @@ const ACP_VENDOR_PACKAGES: Record<string, string> = {
   opencode: "opencode-ai",
 };
 
-// ── The CLI the user can type, as opposed to the one Callboard runs ──
-
-/**
- * A `claude` the **user** could invoke, when the Agent SDK's own lookup found
- * none.
- *
- * `getClaudeCodeExecutablePath()` decides what Callboard hands the SDK and
- * consults exactly two things: the `pathToClaudeCodeExecutable` setting, and
- * `which claude`. `getClaudeBinaryPath()` — already in the tree, already reset
- * by {@link resetEngineProbeCaches}, and what the login prompt and About page
- * use — additionally checks `CLAUDE_BINARY` and four well-known directories,
- * one of which is `~/.local/bin`.
- *
- * That is not a hypothetical gap. `~/.local/bin` is exactly where this feature's
- * own `install.sh` recipe puts the binary, and a daemon started before that
- * directory was on its `PATH` will never see it via `which` — so the narrow
- * lookup says "absent" while About prints a version. Asserting "no native
- * `claude` on your PATH" from the narrow lookup alone is how a card tells
- * someone to install what they are looking at.
- *
- * Returns `undefined` for the bare-name fallback (`"claude"`), which is that
- * function's "I gave up, let exec try" answer and not a discovery.
- */
-function discoverableClaudePath(): string | undefined {
-  try {
-    const found = getClaudeBinaryPath();
-    return found && found !== "claude" && existsSync(found) ? found : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Where a user-installed CLI resolves on the daemon's PATH, or `undefined`.
- *
- * Reuses `resolveAcpBinaryPath` — despite the ACP name it is simply a cached,
- * shell-free `which`, and it is already invalidated by
- * {@link resetEngineProbeCaches}, so a `codex` installed and then Rechecked is
- * seen. Wrapped rather than called directly so the intent reads at the call
- * site: this is not about ACP, it is about whether `<cli> login` is a command
- * the user has.
- */
 // ── Binary overrides ────────────────────────────────────────────────
 
 /**
@@ -787,38 +736,24 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
   // per-platform binary runs. That binary is an OPTIONAL dependency, so
   // "installed" is checked rather than assumed — with neither, the engine
   // genuinely cannot run.
-  const claudePath = (() => {
+  //
+  // One resolution, for every consumer. `resolveClaudeBinary()` is the same
+  // call `claude.ts` spawns a chat through and the same one
+  // `/api/auth/claude-status` runs `auth status` against — so the Runtime row,
+  // the login prompt and the About page cannot name three different binaries,
+  // which is exactly what they could do before those two resolvers were merged.
+  // It carries the checked override with it, so a *rejected* one is still
+  // reportable: from every other field on this row it looks identical to never
+  // having set the field at all.
+  const claude = (() => {
     try {
-      return getClaudeCodeExecutablePath();
+      return resolveClaudeBinary();
     } catch {
-      return undefined;
+      return {};
     }
   })();
   const sdkVersion = readPackageVersion(CLAUDE_AGENT_SDK_PACKAGE);
-  const claudeUserCli = claudePath ? undefined : discoverableClaudePath();
-  // The `pathToClaudeCodeExecutable` setting, whether or not it survived. A
-  // rejected override is invisible from every other field on this row — the
-  // resolver falls through and reports the same thing it would with the field
-  // blank — so it has to travel separately or the card cannot tell the user why
-  // the path they saved is not the path in the Runtime row.
-  const claudeOverride = await describeOverride(
-    (() => {
-      try {
-        return getClaudeCodeExecutableOverride();
-      } catch {
-        return undefined;
-      }
-    })(),
-  );
-  // The other Claude lookup, but only when there is something to say. The two
-  // resolvers read different inputs (this one ignores the override entirely and
-  // consults `$CLAUDE_BINARY` and four well-known directories), so on a machine
-  // with an override set they routinely disagree — and it is the About page's
-  // version and `claude auth login` that follow *this* one. Named only on a real
-  // disagreement, so the card stays quiet in the overwhelmingly common case
-  // where both land on the same binary.
-  const claudeOtherLookup = discoverableClaudePath();
-  const claudeLookupsDiffer = Boolean(claudePath && claudeOtherLookup && claudeOtherLookup !== claudePath);
+  const claudeOverride = await describeOverride(claude.override);
   engines.push({
     id: "claude-code",
     label: "Claude Code",
@@ -826,15 +761,20 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
       kind: "external-preferred",
       package: CLAUDE_CODE_CLI_PACKAGE,
       command: "claude",
-      ...(claudePath ? { resolvedPath: claudePath } : {}),
+      ...(claude.path ? { resolvedPath: claude.path } : {}),
+      ...(claude.source ? { resolvedFrom: claude.source } : {}),
       fallbackPackage: CLAUDE_AGENT_SDK_PACKAGE,
       ...(sdkVersion ? { fallbackVersion: sdkVersion } : {}),
       ...(claudeOverride ? { override: claudeOverride } : {}),
-      ...(claudeLookupsDiffer ? { otherLookupPath: claudeOtherLookup } : {}),
     },
-    installed: Boolean(claudePath) || bundledClaudeBinaryPresent(),
-    ...(claudeUserCli ? { userCliPath: claudeUserCli } : {}),
-    ...versionFields(claudePath ? await binaryVersion(claudePath) : undefined, CLAUDE_CODE_CLI_PACKAGE),
+    installed: Boolean(claude.path) || bundledClaudeBinaryPresent(),
+    // `userCliPath` — "a `claude` the user could type" — is now always the same
+    // binary as `resolvedPath`, because the wider lookup that used to find one
+    // the SDK could not (`~/.local/bin`, `$CLAUDE_BINARY`) *is* the resolver.
+    // Left populated so `installGuidanceFor` keeps reading a field that means
+    // what its name says.
+    ...(claude.path ? { userCliPath: claude.path } : {}),
+    ...versionFields(claude.path ? await binaryVersion(claude.path) : undefined, CLAUDE_CODE_CLI_PACKAGE),
     credentials: await claudeCodeCredentials(),
   });
 

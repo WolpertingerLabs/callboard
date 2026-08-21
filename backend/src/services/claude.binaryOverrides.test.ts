@@ -42,7 +42,8 @@ const workDir = mkdtempSync(join(tmpdir(), "callboard-binary-override-work-"));
 
 const { sendMessage } = await import("./claude.js");
 const { setAgentProviderForTesting } = await import("../agents/factory.js");
-const { updateAgentSettings, resetClaudeCodeExecutablePathCache } = await import("./agent-settings.js");
+const { updateAgentSettings } = await import("./agent-settings.js");
+const { resetClaudeBinaryCache } = await import("./claude-binary.js");
 
 /** An executable that exists and does nothing — enough to pass the resolver's checks. */
 function fakeBinary(name: string): string {
@@ -129,13 +130,13 @@ async function optionsForOneTurn(provider: AgentProvider, requests: AgentQueryRe
 
 beforeEach(() => {
   updateAgentSettings({ pathToClaudeCodeExecutable: undefined, codexPathOverride: undefined });
-  resetClaudeCodeExecutablePathCache();
+  resetClaudeBinaryCache();
 });
 
 afterEach(() => {
   setAgentProviderForTesting(null);
   updateAgentSettings({ pathToClaudeCodeExecutable: undefined, codexPathOverride: undefined });
-  resetClaudeCodeExecutablePathCache();
+  resetClaudeBinaryCache();
 });
 
 afterAll(() => {
@@ -149,7 +150,7 @@ describe("Claude Code — pathToClaudeCodeExecutable reaches the chat", () => {
     // fails exactly here and, before this file existed, nowhere at all.
     const bin = fakeBinary("my-claude");
     updateAgentSettings({ pathToClaudeCodeExecutable: bin });
-    resetClaudeCodeExecutablePathCache();
+    resetClaudeBinaryCache();
 
     const ctrl = recordingProvider();
     const options = await optionsForOneTurn(ctrl.provider, ctrl.requests, {});
@@ -164,7 +165,7 @@ describe("Claude Code — pathToClaudeCodeExecutable reaches the chat", () => {
     writeFileSync(notExecutable, "not a binary");
     chmodSync(notExecutable, 0o644);
     updateAgentSettings({ pathToClaudeCodeExecutable: notExecutable });
-    resetClaudeCodeExecutablePathCache();
+    resetClaudeBinaryCache();
 
     const ctrl = recordingProvider();
     const options = await optionsForOneTurn(ctrl.provider, ctrl.requests, {});
@@ -174,12 +175,12 @@ describe("Claude Code — pathToClaudeCodeExecutable reaches the chat", () => {
   it("picks up a changed setting on the next chat, with no cache reset in between", async () => {
     // The memoisation finding, at the seam that matters. The override is read
     // fresh on every resolution, so a second chat sees the second path —
-    // nothing here calls `resetClaudeCodeExecutablePathCache`, deliberately.
+    // nothing here calls `resetClaudeBinaryCache`, deliberately.
     const first = fakeBinary("claude-first");
     const second = fakeBinary("claude-second");
 
     updateAgentSettings({ pathToClaudeCodeExecutable: first });
-    resetClaudeCodeExecutablePathCache();
+    resetClaudeBinaryCache();
     const a = recordingProvider();
     expect((await optionsForOneTurn(a.provider, a.requests, {})).pathToClaudeCodeExecutable).toBe(first);
 
@@ -228,7 +229,7 @@ describe("Codex — codexPathOverride reaches the chat", () => {
     const claudeBin = fakeBinary("x-claude");
     const codexBin = fakeBinary("x-codex");
     updateAgentSettings({ pathToClaudeCodeExecutable: claudeBin, codexPathOverride: codexBin });
-    resetClaudeCodeExecutablePathCache();
+    resetClaudeBinaryCache();
 
     const a = recordingProvider();
     const claudeOptions = await optionsForOneTurn(a.provider, a.requests, {});

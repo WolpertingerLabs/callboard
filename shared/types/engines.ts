@@ -133,6 +133,17 @@ export type EngineRuntime =
       command: string;
       /** Absolute path of the external CLI, when one resolved. Absent ⇒ the bundled fallback runs. */
       resolvedPath?: string;
+      /**
+       * Which lookup produced {@link resolvedPath}: the settings override, the
+       * `$CLAUDE_BINARY` environment variable, `which`, or one of the
+       * well-known install directories.
+       *
+       * Worth reporting because the last two are the ones a user is most likely
+       * to be surprised by — `~/.local/bin/claude` is where Anthropic's own
+       * `install.sh` lands, and a daemon that started before that directory was
+       * on its PATH finds it only through the well-known list.
+       */
+      resolvedFrom?: "setting" | "env" | "path" | "well-known";
       fallbackPackage: string;
       fallbackVersion?: string;
       /**
@@ -144,20 +155,6 @@ export type EngineRuntime =
        * `"active"`, `resolvedPath` is this same path.
        */
       override?: EngineBinaryOverride;
-      /**
-       * Where the *other* Claude lookup landed, when it disagrees with
-       * `resolvedPath`.
-       *
-       * `getClaudeCodeExecutablePath()` (this row) decides what chats run;
-       * `getClaudeBinaryPath()` decides what the About page reports a version
-       * for and what the login prompt runs. They read different inputs — only
-       * the first honours {@link override}, only the second reads
-       * `$CLAUDE_BINARY` and `~/.local/bin` — so on a machine with both they can
-       * name two different binaries. Set only when they actually differ, so the
-       * card can say so instead of leaving the user to discover it from a
-       * version number that will not move.
-       */
-      otherLookupPath?: string;
     }
   /** An external binary spawned per turn, with nothing bundled behind it — the ACP vendors. */
   | { kind: "external"; command: string; resolvedPath?: string; package?: string };

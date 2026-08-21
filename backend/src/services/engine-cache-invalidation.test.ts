@@ -7,14 +7,17 @@
  * user to go and run something, it is wrong: they run it, press Recheck, and get
  * told again that nothing changed.
  *
- * There are **five**, and the suite is organised so that is checkable rather
+ * There are **four**, and the suite is organised so that is checkable rather
  * than asserted in a comment: {@link CACHES} names each one with a probe that
  * observes it, and the table-driven cases below run the same three-step shape
  * against every entry — seed, confirm the cache is real, reset and confirm it
  * moved. The previous cut said "three caches" in its own prose and had an
- * `it("clears all three at once")`, so the fourth and fifth could be added with
- * nothing failing; the credential cache in fact *was* missing, and that made the
+ * `it("clears all three at once")`, so a fourth could be added with nothing
+ * failing; the credential cache in fact *was* missing, and that made the
  * Recheck button unable to deliver the flow its own card prescribed.
+ *
+ * It was five until the two `claude` lookups were merged into one resolver —
+ * which is the honest way for that number to go down.
  *
  * Each case flips a stubbed `which` between calls, so the assertion is that the
  * *second* call still returns the first answer — a test that forgot to seed the
@@ -74,12 +77,19 @@ vi.mock("./npm-registry.js", async (importOriginal) => ({
 }));
 
 // A partial mock: everything else on `node:fs` stays real, because the modules
-// under test also read the settings file through it. Only the existence of the
-// invented `claude` paths is fabricated.
+// under test also read the settings file through it. Only the invented `claude`
+// paths are fabricated — and they have to be fabricated for `statSync` and
+// `accessSync` too, not just `existsSync`, because the resolver checks that a
+// candidate is a regular file this process may execute rather than merely that
+// something is there. That is the whole point of `utils/binary-path.ts`.
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
-  const existsSync = (p: Parameters<typeof real.existsSync>[0]) => mocks.fakePaths.has(String(p)) || real.existsSync(p);
-  return { ...real, default: { ...real, existsSync }, existsSync };
+  const faked = (p: unknown) => mocks.fakePaths.has(String(p));
+  const existsSync = (p: Parameters<typeof real.existsSync>[0]) => faked(p) || real.existsSync(p);
+  const statSync: any = (p: any, ...rest: any[]) =>
+    faked(p) ? { isFile: () => true, isDirectory: () => false, uid: process.getuid?.() ?? 0 } : (real.statSync as any)(p, ...rest);
+  const accessSync: any = (p: any, ...rest: any[]) => (faked(p) ? undefined : (real.accessSync as any)(p, ...rest));
+  return { ...real, default: { ...real, existsSync, statSync, accessSync }, existsSync, statSync, accessSync };
 });
 
 vi.mock("./sdk-info.js", () => ({
@@ -87,8 +97,7 @@ vi.mock("./sdk-info.js", () => ({
   refreshSdkInfoCache: mocks.refreshSdkInfoCache,
 }));
 
-const { getClaudeCodeExecutablePath, resetClaudeCodeExecutablePathCache } = await import("./agent-settings.js");
-const { getClaudeBinaryPath, resetClaudeBinaryPathCache } = await import("../utils/paths.js");
+const { getClaudeCodeExecutablePath, resetClaudeBinaryCache } = await import("./claude-binary.js");
 const { resolveAcpBinaryPath, acpProviderVersion, resetAcpAvailabilityCache } = await import("../agents/adapters/acp/availability.js");
 const { resetEngineProbeCaches, getEngineStatuses, resetEngineStatusCache } = await import("./engine-status.js");
 
@@ -109,7 +118,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.getSdkInfoAsync.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
   mocks.refreshSdkInfoCache.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
-  // `CLAUDE_BINARY` short-circuits paths.ts before `which` is ever consulted.
+  // `CLAUDE_BINARY` is checked ahead of `which`, so a developer who exports one
+  // would otherwise short-circuit every case below.
   delete process.env.CLAUDE_BINARY;
   resetEngineProbeCaches();
   vi.clearAllMocks();
@@ -118,21 +128,16 @@ beforeEach(() => {
 });
 
 /**
- * The five caches, each with a probe that reads it and the reset that clears it.
+ * The four caches, each with a probe that reads it and the reset that clears it.
  *
- * Adding a sixth means adding a row here; a row with no reset, or a reset that
+ * Adding a fifth means adding a row here; a row with no reset, or a reset that
  * does not clear, fails the table-driven cases below.
  */
 const CACHES: { name: string; probe: () => string | undefined | null; reset: () => void }[] = [
   {
-    name: "agent-settings — the path handed to the Agent SDK",
+    name: "claude-binary — the path handed to the Agent SDK, the login prompt and the About page alike",
     probe: () => getClaudeCodeExecutablePath(),
-    reset: resetClaudeCodeExecutablePathCache,
-  },
-  {
-    name: "paths.ts — the wider lookup the login prompt and About page use",
-    probe: () => getClaudeBinaryPath(),
-    reset: resetClaudeBinaryPathCache,
+    reset: resetClaudeBinaryCache,
   },
   {
     name: "acp availability — the PATH lookup for a vendor CLI",

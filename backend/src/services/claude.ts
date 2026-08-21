@@ -42,9 +42,9 @@ import {
   getApiEnvOverrides,
   resolveModelAlias,
   resolveSessionModel,
-  getClaudeCodeExecutablePath,
   getCodexExecutablePath,
 } from "./agent-settings.js";
+import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { isCodexRoutedThroughOpenRouter, detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
 import { appendActivity } from "./agent-activity.js";

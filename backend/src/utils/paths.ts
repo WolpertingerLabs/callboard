@@ -1,5 +1,4 @@
 import { statSync, existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, readdirSync } from "fs";
-import { execSync } from "child_process";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -119,93 +118,16 @@ export function listClaudeProjectDirs(): string[] {
   }
 }
 
-// ── Claude Binary Resolution ────────────────────────────────────────
-
-/**
- * Cached absolute path to the `claude` CLI binary.
- * Resolved once on first call, then reused for the lifetime of the process.
- */
-let _claudeBinaryPath: string | null = null;
-
-/**
- * Well-known locations where `claude` might be installed, checked as a
- * fallback when `which` / `command -v` can't find it (e.g. non-login
- * shell environments that don't source the user's profile).
- */
-const CLAUDE_BINARY_SEARCH_PATHS = [
-  join(homedir(), ".local", "bin", "claude"),
-  join(homedir(), ".claude", "bin", "claude"),
-  "/usr/local/bin/claude",
-  "/usr/bin/claude",
-  "/opt/homebrew/bin/claude",
-];
-
-/**
- * Resolve the absolute path to the `claude` CLI binary.
+/*
+ * ── Claude binary resolution lives in services/claude-binary.ts ─────
  *
- * Resolution order:
- * 1. `CLAUDE_BINARY` environment variable (explicit override)
- * 2. `which claude` (respects the user's PATH)
- * 3. Well-known install locations (handles non-login shells, daemons, etc.)
- * 4. Falls back to the bare name `"claude"` so execSync still gets a
- *    chance to find it through its own PATH lookup.
- *
- * The result is cached for the lifetime of the process.
+ * It used to live here, as a second resolver that ignored the
+ * `pathToClaudeCodeExecutable` setting and fell back to the bare string
+ * `"claude"`. Merging it with the settings-aware one in `agent-settings.ts` is
+ * what this module could not do: settings imports `DATA_DIR` from here, so
+ * importing settings from here is a cycle. The resolution moved *down* the
+ * graph instead — see `services/claude-binary.ts` for the whole argument.
  */
-export function getClaudeBinaryPath(): string {
-  if (_claudeBinaryPath !== null) return _claudeBinaryPath;
-
-  // 1. Explicit override via environment variable
-  if (process.env.CLAUDE_BINARY) {
-    _claudeBinaryPath = process.env.CLAUDE_BINARY;
-    return _claudeBinaryPath;
-  }
-
-  // 2. Ask the shell — works for login/interactive shells
-  try {
-    // `killSignal: "SIGKILL"` makes the timeout an actual bound. Node sends
-    // SIGTERM at the deadline by default and then waits indefinitely, so a
-    // child that ignores it holds this synchronous call — and therefore the
-    // whole single-threaded server — for as long as it likes.
-    const resolved = execSync("which claude", {
-      timeout: 3_000,
-      killSignal: "SIGKILL",
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    if (resolved) {
-      _claudeBinaryPath = resolved;
-      return _claudeBinaryPath;
-    }
-  } catch {
-    // `which` failed — claude not on PATH (or `which` not available)
-  }
-
-  // 3. Probe well-known install locations
-  for (const candidate of CLAUDE_BINARY_SEARCH_PATHS) {
-    if (existsSync(candidate)) {
-      _claudeBinaryPath = candidate;
-      return _claudeBinaryPath;
-    }
-  }
-
-  // 4. Bare fallback — let the OS resolve it at exec time
-  _claudeBinaryPath = "claude";
-  return _claudeBinaryPath;
-}
-
-/**
- * Forget the resolved `claude` path so the next call re-runs the search.
- *
- * The lifetime cache above is right while PATH cannot change under a running
- * daemon, and wrong the moment a user installs the CLI and asks Callboard to
- * look again — `POST /api/engines/refresh`. Note that step 4 caches the bare
- * string `"claude"`, so a daemon that has ever missed keeps missing until this
- * runs.
- */
-export function resetClaudeBinaryPathCache(): void {
-  _claudeBinaryPath = null;
-}
 
 /**
  * Absolute path to the Callboard data directory.
