@@ -86,6 +86,7 @@ import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
 import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
+import { getClaudeAuthStatus } from "./services/claude-auth-status.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
@@ -308,42 +309,18 @@ app.put("/api/user-contact", (req, res) => {
   res.json(saveUserContact(body));
 });
 
-// Claude Code auth status (requires auth — exposes server-side CLI state)
-let claudeStatusCache: { data: any; ts: number } | null = null;
-const CLAUDE_STATUS_TTL = 60_000; // 60 seconds
-
+// Claude Code auth status. The decision lives in
+// `services/claude-auth-status.ts` — it is the login modal's whole input, and
+// it needs a suite that can drive the "an API key is configured but the CLI is
+// not logged in" case, which importing this module cannot.
 app.get(
   "/api/auth/claude-status",
   // #swagger.tags = ['Auth']
-  // #swagger.summary = 'Check Claude Code CLI login status'
-  // #swagger.description = 'Returns whether the server host is logged into Claude Code via the CLI. Cached for 60 seconds.'
+  // #swagger.summary = 'Check whether Claude Code needs a login on this machine'
+  // #swagger.description = 'Reports whether Claude Code chats can authenticate here — from a configured API key or auth token, OpenRouter routing, a third-party provider, or a `claude auth login`. `loggedIn` false means no credential of any kind was found. Positive answers are cached for 60 seconds.'
   /* #swagger.responses[200] = { description: "Claude Code auth status" } */
-  (_req, res) => {
-    const now = Date.now();
-    if (claudeStatusCache && now - claudeStatusCache.ts < CLAUDE_STATUS_TTL) {
-      return res.json(claudeStatusCache.data);
-    }
-
-    // The one resolver — the same call a chat spawns through. Previously this
-    // used a *second* one that ignored `pathToClaudeCodeExecutable` and fell
-    // back to the bare string "claude", which a shell then failed to find: a
-    // machine running perfectly on the Agent SDK's bundled binary was told
-    // "CLI error: … claude: not found" forever. Absent now means absent, and
-    // says so.
-    const claudePath = resolveClaudeBinary().path;
-    if (!claudePath) {
-      return res.json({ loggedIn: false, error: "No native `claude` CLI on this machine, so there is no CLI login to check." });
-    }
-
-    try {
-      const raw = execSync(`${claudePath} auth status`, { timeout: 1_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-      const parsed = JSON.parse(raw.trim());
-      if (parsed.loggedIn) claudeStatusCache = { data: parsed, ts: now };
-      res.json(parsed);
-    } catch (err: any) {
-      const fallback = { loggedIn: false, error: err.code === "ENOENT" ? "Claude CLI not installed" : `CLI error: ${err.message}` };
-      res.json(fallback);
-    }
+  async (_req, res) => {
+    res.json(await getClaudeAuthStatus());
   },
 );
 

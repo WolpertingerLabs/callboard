@@ -1323,11 +1323,33 @@ export async function deleteApiKey(id: string): Promise<void> {
 
 // Claude Code auth status API
 
+/**
+ * Whether Claude Code can authenticate on the server — **not** whether the CLI
+ * is logged in.
+ *
+ * `loggedIn` keeps its name for older bundles, but the backend now answers it
+ * from every credential a chat could use: an API key or auth token configured
+ * in Settings, OpenRouter routing, a third-party provider, or a
+ * `claude auth login`. It used to shell out to `claude auth status` alone,
+ * which knows nothing about Callboard's settings, so an API-key user was shown
+ * the login modal on every page load forever.
+ */
 export interface ClaudeAuthStatus {
+  /** False means no credential of any kind was found — the only state that needs the modal. */
   loggedIn: boolean;
   email?: string;
+  /** Where the credential came from, e.g. "API key (ANTHROPIC_API_KEY)", "claude.ai", "openrouter". */
   authMethod?: string;
   subscriptionType?: string;
+  /** Extra context for the source, when there is any. */
+  note?: string;
+  /**
+   * The native `claude` the server resolved, when it has one.
+   *
+   * Absent means `claude auth login` is not a command this machine can run, so
+   * the modal must not tell anyone to run it.
+   */
+  cliPath?: string;
   error?: string;
 }
 

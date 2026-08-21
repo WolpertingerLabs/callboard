@@ -101,6 +101,7 @@ export default function App() {
 
   // Claude Code login state (default true to prevent flash)
   const [claudeLoggedIn, setClaudeLoggedIn] = useState(true);
+  const [claudeStatus, setClaudeStatus] = useState<ClaudeAuthStatus | undefined>(undefined);
   const [showClaudeModal, setShowClaudeModal] = useState(false);
 
   // Theme management
@@ -139,6 +140,7 @@ export default function App() {
     checkClaudeStatus()
       .then((status) => {
         setClaudeLoggedIn(status.loggedIn);
+        setClaudeStatus(status);
         if (!status.loggedIn) {
           // Show modal unless dismissed this session
           try {
@@ -157,6 +159,7 @@ export default function App() {
 
   const handleClaudeStatusChange = useCallback((status: ClaudeAuthStatus) => {
     setClaudeLoggedIn(status.loggedIn);
+    setClaudeStatus(status);
   }, []);
 
   const handleShowClaudeModal = useCallback(() => {
@@ -206,7 +209,7 @@ export default function App() {
           />
         </Routes>
       </BrowserRouter>
-      <CodeLoginModal isOpen={showClaudeModal} onClose={handleCloseClaudeModal} onStatusChange={handleClaudeStatusChange} />
+      <CodeLoginModal isOpen={showClaudeModal} onClose={handleCloseClaudeModal} onStatusChange={handleClaudeStatusChange} status={claudeStatus} />
     </SessionProvider>
   );
 }

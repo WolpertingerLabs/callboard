@@ -533,12 +533,21 @@ function resolveUserCliPath(command: string): string | undefined {
  * credential that does not exist — and it is exactly the state the install
  * guidance for Claude Code has to be able to see.
  */
+/*
+ * Exported because `/api/auth/claude-status` — the login modal's whole input —
+ * has to answer from the same evidence. It used to answer from
+ * `claude auth status` alone, which knows nothing about an API key configured
+ * in Settings, so an API-key user was told to log in forever while this
+ * function said `configured: true, source: "API key (ANTHROPIC_API_KEY)"` on
+ * the same daemon at the same moment. Two answers to one question is the bug;
+ * exporting one of them is the fix.
+ */
 function namedSource(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed || trimmed.toLowerCase() === "none") return undefined;
   return trimmed;
 }
-async function claudeCodeCredentials(): Promise<EngineCredentials> {
+export async function claudeCodeCredentials(): Promise<EngineCredentials> {
   try {
     if (isClaudeCodeRoutedThroughOpenRouter()) {
       return { configured: true, source: "openrouter", note: "Routed through OpenRouter — authenticated with the OpenRouter key on this tab." };

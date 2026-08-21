@@ -7,24 +7,34 @@ interface CodeLoginModalProps {
   isOpen: boolean;
   onClose: () => void;
   onStatusChange: (status: ClaudeAuthStatus) => void;
+  /** The status that opened this modal, so it can name the remedy that applies. */
+  status?: ClaudeAuthStatus;
 }
 
-export default function CodeLoginModal({ isOpen, onClose, onStatusChange }: CodeLoginModalProps) {
+export default function CodeLoginModal({ isOpen, onClose, onStatusChange, status }: CodeLoginModalProps) {
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
+  const [latest, setLatest] = useState<ClaudeAuthStatus | undefined>(undefined);
 
   if (!isOpen) return null;
+
+  // Whether this machine has a `claude` at all decides which of the two
+  // remedies is real. Telling someone with no native CLI to run
+  // `claude auth login` is the same defect as the modal appearing for an
+  // API-key user in the first place: instructions for a state they are not in.
+  const cliPath = (latest ?? status)?.cliPath;
 
   const handleCheckAgain = async () => {
     setChecking(true);
     setCheckError("");
     try {
-      const status = await checkClaudeStatus();
-      onStatusChange(status);
-      if (status.loggedIn) {
+      const next = await checkClaudeStatus();
+      setLatest(next);
+      onStatusChange(next);
+      if (next.loggedIn) {
         onClose();
       } else {
-        setCheckError("Still not logged in. Run the command below, then check again.");
+        setCheckError(next.error || "Still no Claude credentials. Try one of the options above, then check again.");
       }
     } catch {
       setCheckError("Failed to check status. Please try again.");
@@ -80,7 +90,7 @@ export default function CodeLoginModal({ isOpen, onClose, onStatusChange }: Code
             <AlertTriangle size={20} style={{ color: "var(--warning)" }} />
           </div>
           <div style={{ flex: 1 }}>
-            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Claude Code Login Required</h2>
+            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Claude Code Needs Credentials</h2>
           </div>
           <button
             onClick={handleDismiss}
@@ -111,35 +121,49 @@ export default function CodeLoginModal({ isOpen, onClose, onStatusChange }: Code
               lineHeight: 1.6,
             }}
           >
-            You need to be logged into Claude Code to start chat sessions. Open a terminal and run:
+            Callboard found no Claude credentials on the machine running the server — no API key or auth token in Settings, nothing in its environment
+            {cliPath ? ", and no CLI login" : ""}. Chats cannot start until one of these exists.
           </p>
 
-          {/* Command block */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "12px 16px",
-              marginBottom: 16,
-            }}
-          >
-            <Terminal size={16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
-            <code
-              style={{
-                fontFamily: '"SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace',
-                fontSize: 14,
-                color: "var(--text)",
-                userSelect: "all",
-                flex: 1,
-              }}
-            >
-              claude auth login
-            </code>
-          </div>
+          {cliPath ? (
+            <>
+              <p style={{ margin: "0 0 8px 0", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Sign in with your subscription — open a terminal on that machine and run:
+              </p>
+
+              {/* Command block */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: "12px 16px",
+                  marginBottom: 16,
+                }}
+              >
+                <Terminal size={16} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
+                <code
+                  style={{
+                    fontFamily: '"SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace',
+                    fontSize: 14,
+                    color: "var(--text)",
+                    userSelect: "all",
+                    flex: 1,
+                  }}
+                >
+                  claude auth login
+                </code>
+              </div>
+            </>
+          ) : (
+            <p style={{ margin: "0 0 16px 0", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
+              There is no native <code>claude</code> on that machine, so <code>claude auth login</code> is not a command it can run. Settings &rarr; API &rarr;
+              Claude Code has the install command for the CLI, if you want that route.
+            </p>
+          )}
 
           <p
             style={{
@@ -149,7 +173,8 @@ export default function CodeLoginModal({ isOpen, onClose, onStatusChange }: Code
               lineHeight: 1.5,
             }}
           >
-            This will open your browser to authenticate. Once complete, click &ldquo;Check Again&rdquo; below.
+            Or set an API key or auth token under Settings &rarr; API &rarr; Claude Code, which authenticates chats without any CLI. Then click &ldquo;Check
+            Again&rdquo;.
           </p>
 
           {/* Error message */}
