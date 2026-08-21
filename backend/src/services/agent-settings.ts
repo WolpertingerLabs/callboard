@@ -58,17 +58,27 @@ export interface AgentSettingsRead {
  * override should fall back to the default.
  *
  * It is **wrong for anything that reads a setting as a restriction**, because
- * defaults are permissive by design. A field whose absence means "allowed" —
- * `allowEngineInstalls`, and by the same logic `remoteAccessIpAllowlist`
- * (absent ⇒ no restriction) and `tunnelEnabled` — silently returns to its
- * permissive value the moment the file stops parsing, so a `chmod 000` or a
- * truncated write reads as the operator having turned the restriction *off*.
+ * defaults are permissive by design. A field whose absence means "allowed"
+ * silently returns to its permissive value the moment the file stops parsing,
+ * so a `chmod 000` or a truncated write reads as the operator having turned the
+ * restriction *off*.
  *
- * `getInstallCapability` is the first caller in this tree to lean on a setting
- * as a security control, and it is the reason this channel exists. It refuses
- * on `unreadable` rather than falling back to the default. The two other fields
- * named above still fail open; that is pre-existing and out of scope here, but
- * it is a real gap and this is where the tool to close it now lives.
+ * Three callers read a setting that way, and they are not all the same shape —
+ * which is the thing to check before assuming a pattern:
+ *
+ * - `getInstallCapability` (`allowEngineInstalls`, absent ⇒ installs allowed).
+ *   The first caller in this tree to lean on a setting as a security control,
+ *   and the reason this channel exists. Refuses on `unreadable`.
+ * - `requireAuth` (`remoteAccessIpAllowlist`, absent ⇒ **no restriction**).
+ *   The same failure, and the more serious one: an unreadable file removed an
+ *   operator's IP allowlist and let every public address reach the login
+ *   endpoint. Refuses remote clients on `unreadable`; loopback and LAN are
+ *   never gated at all, so the repair is always reachable.
+ * - `startLocalDaemon` (`tunnelEnabled`, absent ⇒ **tunnel off**). This one
+ *   fails the *other* way — absence is the safe side, because the flag is what
+ *   exposes the drawlatch daemon to the internet. Nothing to close; what it
+ *   does instead is log the divergence, because an operator whose tunnel
+ *   silently did not start has no other way to find out.
  */
 export function readAgentSettings(): AgentSettingsRead {
   ensureDataDir();

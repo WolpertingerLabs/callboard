@@ -6,7 +6,10 @@ import { verifyPassword, hashPassword, generateSalt, validateNewPassword } from 
 import { updateEnvFile } from "./utils/env-writer.js";
 import { getClientKey } from "./utils/client-ip.js";
 import { isIpAllowed, isPrivateOrLoopback } from "./utils/ip-allowlist.js";
-import { getAgentSettings } from "./services/agent-settings.js";
+import { readAgentSettings } from "./services/agent-settings.js";
+import { createLogger } from "./utils/logger.js";
+
+const log = createLogger("auth");
 
 // ── Password helpers ────────────────────────────────────────────────
 
@@ -197,8 +200,37 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   // empty allowlist means no restriction. See utils/ip-allowlist.ts.
   const clientIp = getClientKey(req);
   if (!isPrivateOrLoopback(clientIp)) {
-    const allowlist = getAgentSettings().remoteAccessIpAllowlist ?? [];
-    if (!isIpAllowed(clientIp, allowlist)) {
+    // `readAgentSettings`, not `getAgentSettings`, and the distinction is the
+    // whole of this branch.
+    //
+    // `getAgentSettings` folds "no file" and "file exists and did not parse"
+    // into the same `{ proxyMode: "local" }` — a valid object with
+    // `remoteAccessIpAllowlist` absent, which `?? []` turns into the empty
+    // list, which `isIpAllowed` reads as **no restriction**. It swallows the
+    // error internally, so there was nothing here to catch: a truncated write
+    // or a `chmod 000` silently removed an operator's IP restriction and let
+    // every public address through to the login endpoint. Measured: a request
+    // from a public address got 200 against a corrupt settings file that
+    // listed a single allowlist entry.
+    //
+    // A setting whose absence means "allowed" cannot be read through a channel
+    // that returns absence on failure. This reads the state explicitly and
+    // refuses on `unreadable`, while still treating a genuinely missing file as
+    // the documented default of no restriction.
+    //
+    // The cost is real and is accepted: an operator who reaches this daemon
+    // only through the tunnel is locked out until the file is repaired. It is
+    // the right way round — the alternative silently drops the restriction —
+    // and it is survivable because loopback and LAN clients are never gated at
+    // all, so a shell or a browser on the same network still gets in.
+    const { settings, state, error } = readAgentSettings();
+    if (state === "unreadable") {
+      log.error(`Refusing remote client ${clientIp}: agent-settings.json exists but could not be read (${error ?? "unknown error"}), so the IP allowlist is unknown`);
+      return res.status(403).json({
+        error: `Access denied: Callboard's settings file exists but could not be read (${error ?? "unknown error"}), so it cannot tell whether your address is on the allowlist — and it will not assume it is. Fix or remove agent-settings.json from a local or LAN client, which is never gated.`,
+      });
+    }
+    if (!isIpAllowed(clientIp, settings.remoteAccessIpAllowlist ?? [])) {
       return res.status(403).json({ error: "Access denied: your IP is not on the allowlist." });
     }
   }
