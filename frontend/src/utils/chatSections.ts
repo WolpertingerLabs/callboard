@@ -78,7 +78,7 @@ export function sectionByActive<T>(
   items: readonly T[],
   isActive: (item: T) => boolean,
   enabled: boolean,
-  /** Chats one item stands for; the tree layout's rows stand for more than one. */
+  /** Chats one item stands for; a row fronting a lineage group stands for more than one. */
   countOf: (item: T) => number = () => 1,
 ): ChatSection<T>[] | null {
   if (!enabled) return null;

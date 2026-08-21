@@ -348,17 +348,26 @@ chatsRouter.get("/", (req, res) => {
       }
     }
 
+    /**
+     * The bookmark verdict, read from the file record — the only place the flag
+     * lives. Shared by the two passes that need it (the session-id set below,
+     * and the lineage-append guard further down) so a chat cannot be starred
+     * for one and unstarred for the other.
+     */
+    const isBookmarked = (chat: { metadata?: string | null } | undefined): boolean => {
+      try {
+        return JSON.parse(chat?.metadata || "{}").bookmarked === true;
+      } catch {
+        return false;
+      }
+    };
+
     // Build set of bookmarked session IDs when filtering
     let bookmarkedSessionIds: Set<string> | null = null;
     if (bookmarkedFilter) {
       bookmarkedSessionIds = new Set<string>();
       for (const [sessionId, fileChat] of fileChatsBySessionId) {
-        try {
-          const meta = JSON.parse(fileChat?.metadata || "{}");
-          if (meta.bookmarked === true) {
-            bookmarkedSessionIds.add(sessionId);
-          }
-        } catch {}
+        if (isBookmarked(fileChat)) bookmarkedSessionIds.add(sessionId);
       }
     }
 
@@ -707,6 +716,14 @@ chatsRouter.get("/", (req, res) => {
         if (cardScopedChatIds && !cardScopedChatIds.has(id)) continue;
         const fc = fileById.get(id);
         if (!fc) continue;
+        // Same rule the cards-only guard above states, applied to the other
+        // scope filter: appending an unstarred relative would smuggle back
+        // exactly what "Bookmarked only" drops. It costs nothing to expansion —
+        // opening a group fetches the authoritative tree from
+        // GET /chats/:id/tree, which no list filter has ever narrowed — but it
+        // keeps the tally honest, because the section headers count the chats
+        // the list returned and would otherwise count relatives no row shows.
+        if (bookmarkedFilter && !isBookmarked(fc)) continue;
         const session = sessionByChatId.get(id);
         // This is the one path in the list route that can emit a chat
         // filesystem discovery did not return, so it is also the one that has

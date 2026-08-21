@@ -222,12 +222,15 @@ describe("GET /api/chats needs-you election", () => {
 
   it("flags a lineage-appended relative", async () => {
     // The append pass runs after pagination, so a relative pulled in from
-    // outside the window still has to be considered for the flag.
-    sessions = ["root", "kid"];
-    fileChats = [chat("root", { bookmarked: true }), chat("kid", { parentChatId: "root", jobRunId: "run-1", jobStepId: "sub", triggered: true })];
+    // outside the window still has to be considered for the flag. `kid` has a
+    // record but no discovered session, so it can only arrive through that
+    // pass — and it arrives as a bare `{...fileChat}`, which is the shape the
+    // flag's own parse has a catch for.
+    sessions = ["root"];
+    fileChats = [chat("root", {}), chat("kid", { parentChatId: "root", jobRunId: "run-1", jobStepId: "sub", triggered: true })];
     runs = { "run-1": parkedRun("run-1", ["kid"]) };
 
-    const body = await listChats({ limit: "10", offset: "0", bookmarked: "true", includeLineage: "true" });
+    const body = await listChats({ limit: "10", offset: "0", includeLineage: "true" });
     const kid = body.chats.find((c: any) => c.id === "kid");
     expect(kid._lineage_appended).toBe(true);
     expect(JSON.parse(kid.metadata).jobRunNeedsYou).toBe(true);
@@ -317,21 +320,21 @@ describe("GET /api/chats?excludeTriggered=true approval carve-out", () => {
   });
 
   it("applies the same carve-out to lineage-appended relatives", async () => {
-    // excludeTriggered + includeLineage is the default tree-layout request, and
-    // the append pass is a third filter site that is easy to miss. All three
-    // relatives sit outside the bookmarked page, so each one reaches the list
-    // only through that site: the plain one and the parked representative must
+    // excludeTriggered + includeLineage is the sidebar's default request, and
+    // the append pass is a third filter site that is easy to miss. None of the
+    // three relatives has a discovered session, so each reaches the list only
+    // through that site: the plain one and the parked representative must
     // arrive, the run's other step must not.
-    sessions = ["root", "kid-plain", "kid-noise", "kid-parked"];
+    sessions = ["root"];
     fileChats = [
-      chat("root", { bookmarked: true }),
+      chat("root", {}),
       chat("kid-plain", { parentChatId: "root", title: "mine" }),
       chat("kid-noise", { parentChatId: "root", jobRunId: "run-1", jobStepId: "noise", triggered: true }),
       chat("kid-parked", { parentChatId: "root", jobRunId: "run-1", jobStepId: "signoff", triggered: true }),
     ];
     runs = { "run-1": parkedRun("run-1", ["kid-noise", "kid-parked"]) };
 
-    const body = await listChats({ limit: "10", offset: "0", bookmarked: "true", includeLineage: "true", excludeTriggered: "true" });
+    const body = await listChats({ limit: "10", offset: "0", includeLineage: "true", excludeTriggered: "true" });
     expect(ids(body)).toEqual(["kid-parked", "kid-plain", "root"]);
     expect(needsYou(body)).toEqual(["kid-parked"]);
   });

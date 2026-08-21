@@ -315,8 +315,8 @@ describe("ChatTreeList active-first sections", () => {
   /**
    * The header's count and its collapse toggle.
    *
-   * Both have a tree-specific failure the flat list cannot have: a group is one
-   * ROW standing for several chats, so a count taken from what is rendered
+   * Both have a failure mode that only grouping introduces: a group is one ROW
+   * standing for several chats, so a count taken from what is rendered
    * under-reports it.
    */
   describe("counts and collapse", () => {

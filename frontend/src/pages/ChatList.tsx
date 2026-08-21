@@ -83,7 +83,7 @@ export default function ChatList({
   // fetched subtrees are snapshots and go stale when the list refreshes.
   const [listVersion, setListVersion] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  // Scope + layout, all edited together in the filters modal. All but one are
+  // Scope, all edited together in the filters modal. All but one are
   // remembered across reloads; `bookmarked` stays session-only, the way it has
   // always behaved.
   const [viewOptions, setViewOptions] = useState<ChatViewOptions>(() => ({

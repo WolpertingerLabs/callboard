@@ -17,8 +17,8 @@ interface ChatFilterBarProps {
  * Sidebar filter bar: one button that opens the filters modal, and the content
  * search box.
  *
- * Scope and layout toggles (bookmarks, triggered chats, cards-only, tree
- * layout) used to sit here as a row of icon buttons. They live in the modal
+ * Scope toggles (bookmarks, triggered chats, cards-only) used to sit here as a
+ * row of icon buttons. They live in the modal
  * now — a rail of same-sized icons gave no clue what any of them did, and the
  * row grew every time a new dimension appeared. The badge keeps the one thing
  * the rail was actually good at: telling you at a glance that the list you're
