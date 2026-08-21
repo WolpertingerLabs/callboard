@@ -321,6 +321,7 @@ describe("the install block — Phase 2's whole deliverable", () => {
         argv: ["npm", "install", "-g", "opencode-ai"],
         command: "npm install -g opencode-ai",
         docsUrl: "https://opencode.ai/docs/",
+        visibleAfterRecheck: true,
         caveats: ["Needs a writable npm global prefix."],
       },
       {
@@ -329,6 +330,8 @@ describe("the install block — Phase 2's whole deliverable", () => {
         label: "OpenCode's installer",
         command: "curl -fsSL https://opencode.ai/install | bash",
         docsUrl: "https://opencode.ai/docs/",
+        visibleAfterRecheck: false,
+        caveats: ["Installs to `~/.opencode/bin` — Recheck will not find this install; run `callboard restart`."],
       },
     ],
   };
@@ -430,5 +433,101 @@ describe("Recheck", () => {
   it("is not rendered when there is no handler", () => {
     render(<EngineStatusCard engine={base} />);
     expect(screen.queryByText("Recheck")).toBeNull();
+  });
+});
+
+describe("guidance with nothing to install", () => {
+  /** The Codex "you already have the CLI, just log in" shape. */
+  const loginOnly: EngineStatus = {
+    ...base,
+    id: "codex",
+    label: "Codex",
+    runtime: { kind: "bundled-overridable", package: "@openai/codex-sdk" },
+    credentials: { configured: false },
+    userCliPath: "/usr/local/bin/codex",
+    install: {
+      reason: "No Codex credentials yet, but you already have the CLI at `/usr/local/bin/codex`.",
+      alternative: "Or switch the auth mode below to API key.",
+      recipes: [],
+    },
+  };
+
+  it("says what to do rather than what to run", () => {
+    render(<EngineStatusCard engine={loginOnly} />);
+    expect(screen.getByText("What to do")).toBeTruthy();
+    expect(screen.queryByText("What to run")).toBeNull();
+  });
+
+  it("offers no command to copy", () => {
+    render(<EngineStatusCard engine={loginOnly} />);
+    expect(screen.queryByText(/npm install -g/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Copy:/ })).toBeNull();
+  });
+
+  it("does not tell the user Callboard will not run a command that does not exist", () => {
+    render(<EngineStatusCard engine={loginOnly} />);
+    expect(screen.queryByText(/Callboard does not run it for you/)).toBeNull();
+    // It still points at Recheck, because a login IS something Recheck sees now.
+    expect(screen.getByText(/re-reads the credential/)).toBeTruthy();
+  });
+});
+
+describe("what the card promises Recheck can see", () => {
+  const withScript = (visibleAfterRecheck: boolean): EngineStatus => ({
+    ...base,
+    id: "opencode",
+    label: "OpenCode",
+    runtime: { kind: "external", command: "opencode" },
+    installed: false,
+    install: {
+      reason: "No `opencode` on PATH.",
+      recipes: [
+        {
+          engineId: "opencode",
+          method: "script",
+          label: "OpenCode's installer",
+          command: "curl -fsSL https://opencode.ai/install | bash",
+          docsUrl: "https://opencode.ai/docs/",
+          visibleAfterRecheck,
+        },
+      ],
+    },
+  });
+
+  it("does not tell you to press Recheck after a script install", () => {
+    // Verified against the live installers: opencode's writes to
+    // `~/.opencode/bin` and edits the shell rc, Anthropic's lands in
+    // `~/.local/bin`. A running daemon's PATH is fixed at exec, so Recheck
+    // cannot ever see either — telling someone to press it is a button that
+    // does nothing, dressed as an instruction.
+    render(<EngineStatusCard engine={withScript(false)} />);
+    expect(screen.getByText(/Recheck will not see this/)).toBeTruthy();
+    expect(screen.getByText(/callboard restart/)).toBeTruthy();
+  });
+
+  it("does tell you to press Recheck when the install lands somewhere it can see", () => {
+    render(<EngineStatusCard engine={withScript(true)} />);
+    expect(screen.getByText(/Afterwards press/)).toBeTruthy();
+    expect(screen.queryByText(/Recheck will not see this/)).toBeNull();
+  });
+});
+
+describe("Recheck, when the server did not actually probe", () => {
+  it("says so rather than implying a fresh check", async () => {
+    // The endpoint is rate-limited because it spawns synchronously. A coalesced
+    // or throttled call returning silently would make the button claim work it
+    // did not do.
+    const onRecheck = vi.fn().mockResolvedValue({ probed: false, retryAfterMs: 6_000 });
+    render(<EngineStatusCard engine={base} onRecheck={onRecheck} />);
+    fireEvent.click(screen.getByText("Recheck"));
+    await waitFor(() => expect(screen.getByText(/Checked moments ago/)).toBeTruthy());
+  });
+
+  it("stays quiet when it did probe", async () => {
+    const onRecheck = vi.fn().mockResolvedValue({ probed: true });
+    render(<EngineStatusCard engine={base} onRecheck={onRecheck} />);
+    fireEvent.click(screen.getByText("Recheck"));
+    await waitFor(() => expect(onRecheck).toHaveBeenCalled());
+    expect(screen.queryByText(/Checked moments ago/)).toBeNull();
   });
 });

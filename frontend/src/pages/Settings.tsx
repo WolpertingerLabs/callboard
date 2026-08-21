@@ -42,15 +42,33 @@ export default function Settings({ onLogout }: SettingsProps) {
     return (location.state as { tab?: string } | null)?.tab || "general";
   });
 
-  // Follow `/settings/:tab` when it changes *after* mount. The initializer above
-  // only runs once, and this component does not remount when the param changes —
-  // so before this, a link from one settings pane to another (the engine cards'
-  // "Check for a Callboard update" → About) moved the URL and left the visible
-  // tab exactly where it was. The tab strip itself does not write to the URL, so
-  // this cannot fight it: `tabParam` only moves when something navigates.
+  // The URL is the single source of truth for which pane is showing. Both halves
+  // of that are load-bearing and the first cut only had one of them:
+  //
+  // - this effect follows `/settings/:tab` after mount (the initializer above
+  //   runs once, and the component does not remount on a param change);
+  // - `selectTab` below *navigates* rather than only calling setState.
+  //
+  // Without the second, the URL silently stopped matching the visible tab as
+  // soon as anyone clicked the strip — so from `/settings/about`, the engine
+  // card's `<Link to="/settings/about">` pushed an identical path, `tabParam`
+  // never changed, and the link visibly did nothing. Which is exactly the state
+  // the effect was added to fix.
   useEffect(() => {
     if (tabParam && validTabKeys.has(tabParam)) setActiveTab(tabParam);
   }, [tabParam]);
+
+  /**
+   * Show a pane, and say so in the URL.
+   *
+   * `setActiveTab` as well as navigating, rather than relying on the effect: the
+   * `/settings` route has no `:tab` param at all, so a click there would
+   * otherwise render nothing new until the navigation resolved.
+   */
+  const selectTab = (key: string) => {
+    setActiveTab(key);
+    navigate(`/settings/${key}`, { replace: true, state: { tab: key } });
+  };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -98,7 +116,7 @@ export default function Settings({ onLogout }: SettingsProps) {
           return (
             <button
               key={key}
-              onClick={() => setActiveTab(key)}
+              onClick={() => selectTab(key)}
               style={{
                 display: "flex",
                 alignItems: "center",

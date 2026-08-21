@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Key, Globe, Cpu, Eye, EyeOff, RefreshCw, Bot, Network, Terminal, Plug, Boxes, ExternalLink } from "lucide-react";
 import {
   getAgentSettings,
@@ -13,6 +13,7 @@ import {
 } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
 import EngineStatusCard, { EngineStatusDot, StatusRow } from "./EngineStatusCard";
+import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
 import type { SystemInfo, AcpProviderInfo, AcpModelCatalogInfo, EngineStatus } from "../../api";
 import OpenRouterModelSelector from "../../components/OpenRouterModelSelector";
@@ -220,8 +221,8 @@ function AcpProviderSection({
   /** This vendor's row from `GET /api/engines`; absent while it loads or if the call failed. */
   engine: EngineStatus | undefined;
   enginesLoading: boolean;
-  /** Drop the daemon's cached binary lookups and re-probe — the card's Recheck button. */
-  onRecheckEngines: () => Promise<void>;
+  /** Drop the daemon's cached lookups and re-probe — the card's Recheck button. */
+  onRecheckEngines: () => Promise<EngineRecheckOutcome>;
   useOpenRouter: boolean;
   onUseOpenRouterChange: (v: boolean) => void;
   openRouterApiKey: string;
@@ -358,6 +359,26 @@ function ReferenceLinksSection({ provider }: { provider: SettingsTab }) {
       </div>
     </div>
   );
+}
+
+/**
+ * A source field's value, or `undefined` when it names no source.
+ *
+ * The Agent SDK returns the literal string `"none"` rather than omitting these
+ * fields when there is no credential, so rendering them raw printed
+ * "Current token source: none" — three rows above a Credentials row that had
+ * just been taught to disregard exactly that value. One page, one SDK field,
+ * two answers.
+ *
+ * Mirrors `namedSource` in `backend/src/services/engine-status.ts`; kept as a
+ * small duplicate rather than shared because this is a display concern and that
+ * one is a status decision, and coupling them would mean a settings page
+ * importing from the engine-status service.
+ */
+function namedSource(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.toLowerCase() === "none") return undefined;
+  return trimmed;
 }
 
 function truncateSensitive(value: string | undefined, edgeChars = 4): string {
@@ -555,6 +576,18 @@ export default function ApiSettings() {
   // page must render without waiting for it.
   const [engines, setEngines] = useState<EngineStatus[]>([]);
   const [enginesLoading, setEnginesLoading] = useState(true);
+  /**
+   * Monotonic id for the newest engine request, so a slower earlier one cannot
+   * overwrite it.
+   *
+   * Two call sites write `engines`: the page load and the Recheck button. A
+   * Recheck is *deliberately* slower than a load — it drops the daemon's caches
+   * and re-probes — so a reload landing on top of one, or a second Recheck
+   * overtaking the first, would have restored the very answer the user pressed
+   * the button to get rid of. A ref rather than state: it must be readable
+   * synchronously and must not itself cause a render.
+   */
+  const enginesRequestId = useRef(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -633,10 +666,17 @@ export default function ApiSettings() {
     // load — leaving every tab saying "Checking engine status…" forever,
     // underneath the error banner.
     setEnginesLoading(true);
+    const requestId = ++enginesRequestId.current;
     getEngines()
-      .then(setEngines)
-      .catch(() => setEngines([]))
-      .finally(() => setEnginesLoading(false));
+      .then((fresh) => {
+        if (enginesRequestId.current === requestId) setEngines(fresh);
+      })
+      .catch(() => {
+        if (enginesRequestId.current === requestId) setEngines([]);
+      })
+      .finally(() => {
+        if (enginesRequestId.current === requestId) setEnginesLoading(false);
+      });
 
     try {
       const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo().catch(() => null)]);
@@ -813,16 +853,20 @@ export default function ApiSettings() {
    * Errors propagate: {@link EngineStatusCard}'s button owns the failure state,
    * and swallowing them here would leave it showing a success it did not have.
    */
-  const handleRecheckEngines = async () => {
-    const fresh = await refreshEngines();
+  const handleRecheckEngines = async (): Promise<EngineRecheckOutcome> => {
+    const requestId = ++enginesRequestId.current;
+    const { engines: fresh, probed, retryAfterMs } = await refreshEngines();
+    if (enginesRequestId.current !== requestId) return { probed, retryAfterMs };
     setEngines(fresh);
     setEnginesLoading(false);
     try {
-      setSystemInfo(await getSystemInfo());
+      const sys = await getSystemInfo();
+      if (enginesRequestId.current === requestId) setSystemInfo(sys);
     } catch {
       // The engine list is the answer the button promised; a stale tab strip is
       // a smaller lie than a failed Recheck that actually worked.
     }
+    return { probed, retryAfterMs };
   };
 
   if (loading) {
@@ -1000,11 +1044,13 @@ export default function ApiSettings() {
               <div style={{ marginBottom: 14 }}>
                 <div style={rowStyle}>
                   <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current token source</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{account?.tokenSource || "—"}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{namedSource(account?.tokenSource) ?? "—"}</span>
                 </div>
                 <div style={rowStyle}>
                   <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Current API key source</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>{truncateSensitive(account?.apiKeySource, 4)}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text)" }}>
+                    {truncateSensitive(namedSource(account?.apiKeySource), 4)}
+                  </span>
                 </div>
                 <div style={rowStyle}>
                   <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Account</span>

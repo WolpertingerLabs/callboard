@@ -379,7 +379,12 @@ function RecipeBlock({ recipe }: { recipe: EngineInstallRecipe }) {
         }}
       >
         <code style={{ ...mono, flex: 1, minWidth: 0, overflowX: "auto", whiteSpace: "pre", color: "var(--text)" }}>{recipe.command}</code>
-        <CopyButton text={recipe.command} title={`Copy: ${recipe.command}`} className="engine-install-copy-btn" size={12} />
+        {/* `copy-btn` is a real class in index.css, unlike the invented
+            `engine-install-copy-btn` this used to pass — CopyButton's prop is
+            the hook its hover-reveal CSS keys on, so a name nothing defines is
+            a name nothing styles. This block has no hover-reveal (the button is
+            always visible), but the class still carries the shared chrome. */}
+        <CopyButton text={recipe.command} title={`Copy: ${recipe.command}`} className="copy-btn" size={12} />
       </div>
       {recipe.caveats?.length ? (
         <ul style={{ ...noteStyle, margin: "6px 0 0", paddingLeft: 16 }}>
@@ -399,13 +404,30 @@ function RecipeBlock({ recipe }: { recipe: EngineInstallRecipe }) {
  * typed about it.
  *
  * Absent for every engine that is fine, and permanently absent for the bundled
- * ones — the backend decides, in `engine-install-recipes.ts`, so the three gates
- * are testable rather than spread through JSX.
+ * ones — the backend decides, in `engine-install-recipes.ts`, so the gates are
+ * testable rather than spread through JSX.
+ *
+ * Two shapes, and the difference matters:
+ *
+ * - **With recipes** — something to install. Heading "What to run".
+ * - **Without** — the CLI is already there and only a login is missing, so
+ *   there is a sentence and nothing to copy. Heading "What to do". Rendering
+ *   the install version here would tell someone to install what they have,
+ *   which is what the Codex block did to anyone who had just followed it.
+ *
+ * The closing line is conditional on {@link EngineInstallRecipe.visibleAfterRecheck}
+ * rather than fixed. Telling a user to press Recheck after running a vendor
+ * script is false by construction: those scripts install into a directory they
+ * add to the shell rc, and a running daemon's PATH cannot pick that up.
  */
 function InstallGuidance({ install }: { install: EngineInstallGuidance }) {
+  const hasRecipes = install.recipes.length > 0;
+  const anyRecheckable = install.recipes.some((r) => r.visibleAfterRecheck);
+  const allRecheckable = hasRecipes && install.recipes.every((r) => r.visibleAfterRecheck);
+
   return (
     <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>What to run</div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>{hasRecipes ? "What to run" : "What to do"}</div>
       <div style={{ ...noteStyle, marginTop: 0 }}>{withInlineCode(install.reason)}</div>
       {install.scope ? <div style={noteStyle}>{withInlineCode(install.scope)}</div> : null}
       {install.recipes.map((recipe) => (
@@ -413,8 +435,23 @@ function InstallGuidance({ install }: { install: EngineInstallGuidance }) {
       ))}
       {install.alternative ? <div style={noteStyle}>{withInlineCode(install.alternative)}</div> : null}
       <div style={noteStyle}>
-        Copy one of these into your own terminal — Callboard does not run it for you. Afterwards press <strong>Recheck</strong> above: binary lookups are
-        resolved once per daemon and cached, so until then this card keeps reporting what it found before.
+        {hasRecipes ? <>Copy one of these into your own terminal — Callboard does not run it for you. </> : null}
+        {anyRecheckable ? (
+          <>
+            Afterwards press <strong>Recheck</strong> above: binary lookups are resolved once per daemon and cached, so until then this card keeps reporting
+            what it found before.
+            {allRecheckable ? null : <> Recheck cannot see the installer script&rsquo;s result — see its note above.</>}
+          </>
+        ) : hasRecipes ? (
+          <>
+            Recheck will not see this: the installer puts the binary somewhere it adds to your shell&rsquo;s PATH, and a running daemon&rsquo;s PATH is fixed at
+            startup. Run <code style={mono}>callboard restart</code> from a terminal where the command works.
+          </>
+        ) : (
+          <>
+            Afterwards press <strong>Recheck</strong> above — it re-reads the credential too, not just the binary lookups.
+          </>
+        )}
       </div>
     </div>
   );
@@ -467,27 +504,44 @@ function BundledUpdateNote({ engine }: { engine: EngineStatus }) {
 }
 
 /**
- * "Recheck" — drop the daemon's cached binary lookups and probe again.
+ * What a Recheck actually did, as the server reports it.
  *
- * The button that makes the copy block above worth anything. Four caches
- * memoize "is it installed" for the process lifetime, and without clearing them
- * a user who follows the instructions is told, correctly as far as the daemon
- * knows, that nothing changed.
- *
- * It re-probes and never installs; the failure text says so rather than
- * suggesting a retry might do something different.
+ * `probed: false` means the call was coalesced with a concurrent one or landed
+ * inside the server's minimum interval. The endpoint drops five caches and
+ * re-runs a `which` per engine, two `--version` spawns and an Agent SDK query —
+ * two of them synchronously on a single-threaded server — so it is rate-limited,
+ * and the button has to be able to say "that did not re-probe" rather than
+ * flashing a success it did not earn.
  */
-function RecheckButton({ onRecheck }: { onRecheck: () => void | Promise<void> }) {
+export interface EngineRecheckOutcome {
+  probed: boolean;
+  retryAfterMs?: number;
+}
+
+/**
+ * "Recheck" — drop the daemon's cached lookups and probe again.
+ *
+ * The button that makes the copy block above worth anything. Five caches
+ * memoize "is it installed" and "who is signed in" for the process lifetime,
+ * and without clearing them a user who follows the instructions is told,
+ * correctly as far as the daemon knows, that nothing changed.
+ *
+ * It re-probes and never installs. Three terminal states, all of them honest:
+ * a success, a throttled call that says so, and a failure that does not suggest
+ * retrying would do something different.
+ */
+function RecheckButton({ onRecheck }: { onRecheck: () => void | Promise<void | EngineRecheckOutcome> }) {
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [status, setStatus] = useState<"idle" | "failed" | "throttled">("idle");
 
   const handle = useCallback(async () => {
     setBusy(true);
-    setFailed(false);
+    setStatus("idle");
     try {
-      await onRecheck();
+      const outcome = await onRecheck();
+      setStatus(outcome && outcome.probed === false ? "throttled" : "idle");
     } catch {
-      setFailed(true);
+      setStatus("failed");
     } finally {
       setBusy(false);
     }
@@ -499,7 +553,7 @@ function RecheckButton({ onRecheck }: { onRecheck: () => void | Promise<void> })
         type="button"
         onClick={handle}
         disabled={busy}
-        title="Re-probe every engine, ignoring the paths Callboard resolved earlier in this daemon's life"
+        title="Re-probe every engine, ignoring the paths and credentials Callboard resolved earlier in this daemon's life"
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -517,7 +571,12 @@ function RecheckButton({ onRecheck }: { onRecheck: () => void | Promise<void> })
         <RefreshCw size={11} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
         {busy ? "Rechecking…" : "Recheck"}
       </button>
-      {failed ? <span style={{ fontSize: 11, color: "var(--danger)" }}>Recheck failed — the daemon did not answer.</span> : null}
+      {status === "failed" ? <span style={{ fontSize: 11, color: "var(--danger)" }}>Recheck failed — the daemon did not answer.</span> : null}
+      {status === "throttled" ? (
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }} title="Re-probing spawns processes, so it is limited to once every few seconds">
+          Checked moments ago — showing that result.
+        </span>
+      ) : null}
     </>
   );
 }
@@ -530,7 +589,7 @@ export default function EngineStatusCard({
   engine: EngineStatus | undefined;
   loading?: boolean;
   /** Re-probe every engine. Omitted where there is no handler to give it — the button then does not render. */
-  onRecheck?: () => void | Promise<void>;
+  onRecheck?: () => void | Promise<void | EngineRecheckOutcome>;
 }) {
   if (!engine) {
     return (
