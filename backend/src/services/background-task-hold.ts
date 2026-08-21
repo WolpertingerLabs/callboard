@@ -54,8 +54,10 @@
  *
  * Two rules refine *when* a bound may act, without loosening it: an expiry that
  * lands mid-turn waits for the turn to end rather than closing stdin under it,
- * and a drained episode's clock is replaced rather than merely stopped (see
- * {@link HeldPrompt.armTimeout} and {@link HeldPrompt.disarmTimeout}).
+ * and a drained episode hands its timer slot to a separate liveness floor
+ * rather than merely stopping (see {@link HeldPrompt.armTimeout} and
+ * {@link HeldPrompt.disarmTimeout}). The floor is not a budget and keeps its
+ * own clock, so it can never be spent as one episode's window by the next.
  *
  * Both refinements are safe for the same reason, and it is the load-bearing
  * property of this file: **while a hold is open, a timer is always pending.**
@@ -211,16 +213,46 @@ export class HeldPrompt {
    * opened it and never extended. Cleared by {@link disarmTimeout} when the
    * episode ends, so the next one starts a fresh window — see the two methods
    * for why that is the whole of the rule.
+   *
+   * Strictly the *episode's* clock. The liveness floor keeps its own
+   * ({@link floorAt}) precisely so it cannot be mistaken for one: they answer
+   * different questions and share nothing but a timer slot.
    */
   private deadlineAt: number | null = null;
+  /**
+   * Absolute expiry of the liveness floor — the anti-hang timer a drain leaves
+   * behind. Null when no floor is pending.
+   *
+   * Separate from {@link deadlineAt} and not an alias for it. A shared field
+   * made the floor's remaining time double as the *next episode's* budget, so
+   * a session that drained and then worked for a while before starting another
+   * task gave that task the remainder rather than a window: drain at t=30s,
+   * a notification turn that runs 45s, and the new task arms with 15 seconds
+   * instead of 60. Worse when the gap exceeds a window — the floor has fired
+   * by then, and the new task got no hold at all. Since a fresh window per
+   * episode is the whole of what the per-episode budget promises, that was the
+   * promise being quietly withdrawn.
+   */
+  private floorAt: number | null = null;
   /**
    * Whether a turn is running on this stream right now, as reported by the
    * query loop. The hold is only safe to close between turns — see
    * {@link armTimeout}.
    */
   private turnActive = false;
-  /** An expiry that fired mid-turn, waiting on the boundary to close. */
+  /** An episode expiry that fired mid-turn, waiting on the boundary to close. */
   private expiryDeferred = false;
+  /**
+   * A liveness floor that fired while a turn was running, and is now watching
+   * for silence instead.
+   *
+   * Deliberately *not* `expiryDeferred`. A floor firing mid-turn has learned
+   * only that the run is alive — which is the opposite of the hang it exists to
+   * catch — so it declares nothing, latches nothing, and does not close at the
+   * next boundary. Conflating the two is what let a floor set an hour earlier
+   * kill the next task's hold before it began.
+   */
+  private floorWatchdog = false;
   /**
    * The window and callback of the most recent {@link armTimeout}, retained so
    * the bound can re-arm itself without the query loop being asked again.
@@ -298,12 +330,16 @@ export class HeldPrompt {
   }
 
   /**
-   * Epoch ms this hold episode expires, or null when nothing is armed.
+   * Epoch ms the current hold *episode* expires, or null when no episode is
+   * armed.
    *
    * Exposed so the UI can show the same deadline the bound is enforcing — the
    * dock counts down from it — rather than the caller re-deriving it from
    * `Date.now() + DEFAULT_MAX_HOLD_MS` and quietly disagreeing with the timer
    * on every turn after the first.
+   *
+   * Never reports the liveness floor. The dock's row exists for as long as the
+   * session is waiting on a task, and a floor means it is waiting on nothing.
    */
   get deadline(): number | null {
     return this.deadlineAt;
@@ -368,6 +404,11 @@ export class HeldPrompt {
         this.expire(onExpiry);
         return;
       }
+      // An episode supersedes the floor outright: from here the episode's own
+      // clock is the bound, and the floor has nothing left to guard. Clearing
+      // both is what makes the next line mint rather than inherit.
+      this.floorAt = null;
+      this.floorWatchdog = false;
     }
 
     if (this.deadlineAt === null) this.deadlineAt = Date.now() + ms;
@@ -412,14 +453,54 @@ export class HeldPrompt {
     // send. Measured from the last sign of life rather than from here — see
     // {@link markTurnActive} — because a turn that is still emitting events is
     // working, and cutting stdin under one is the damage the deferral exists
-    // to avoid. Total worst case is therefore two windows and then the
-    // pre-hold behaviour, which is what a bound should degrade into.
+    // to avoid.
+    //
+    // What actually bounds this: the watchdog slides on every event, so a turn
+    // that keeps working keeps its reprieve indefinitely — and that is correct,
+    // because a *working* turn is what is pinning the subprocess, not the hold.
+    // The turn itself is bounded elsewhere. `maxTurns` and `max_budget` both
+    // terminate the query with a `result`, which lands on `markTurnEnded()` and
+    // closes. So the bound here is "one query's worth of turns", and silence —
+    // the one failure the turn's own bounds cannot catch — costs a window.
     this.expiryDeferred = true;
-    this.armDeferralWatchdog();
+    this.armSilenceWatchdog();
   }
 
-  /** Restart the deferred expiry's patience. Silence, not time, is the signal. */
-  private armDeferralWatchdog(): void {
+  /**
+   * The liveness floor came due.
+   *
+   * Nothing like an expiry, despite sharing a timer slot with one. The floor
+   * asks a single question — "is this run parked with nothing left to wait
+   * for?" — and a live turn answers no. So it declares nothing in that case:
+   * no `onExpiry`, no latch, no close at the boundary. It keeps watching for
+   * the silence that would mean a real hang, and the next episode wipes it.
+   *
+   * Latching here is what made a `npm test &` that finished at minute two kill
+   * an `npm run build &` started at minute twenty — the floor came due at
+   * minute seventeen, mid-turn, and poisoned an episode that had not begun.
+   */
+  private expireFloor(onExpiry: () => void): void {
+    this.floorAt = null;
+    if (this.turnActive) {
+      this.floorWatchdog = true;
+      this.armSilenceWatchdog();
+      return;
+    }
+    // Idle, with nothing outstanding and no turn boundary in a whole window.
+    // Nothing is coming; this is the hang the floor exists for.
+    onExpiry();
+    this.close();
+  }
+
+  /**
+   * Arm (or restart) the watchdog that closes on silence.
+   *
+   * Shared by the two states that are waiting on something the CLI may never
+   * do — a deferred expiry waiting for a boundary, and a floor waiting to see
+   * whether a live turn is really live. Both want the same thing: patience
+   * while events keep arriving, and a close when they stop.
+   */
+  private armSilenceWatchdog(): void {
     const ms = this.lastArm?.ms;
     if (ms === undefined) return;
     this.schedule(ms, () => this.close());
@@ -432,10 +513,10 @@ export class HeldPrompt {
    */
   markTurnActive(): void {
     this.turnActive = true;
-    // Every event is proof the turn is alive, so a deferred expiry's watchdog
-    // starts again from here. A turn that keeps working keeps its reprieve; a
-    // turn that has gone silent runs out of one.
-    if (this.expiryDeferred) this.armDeferralWatchdog();
+    // Every event is proof the turn is alive, so anything waiting on silence
+    // starts its count again from here. A turn that keeps working keeps its
+    // reprieve; a turn that has gone quiet runs out of one.
+    if (this.expiryDeferred || this.floorWatchdog) this.armSilenceWatchdog();
   }
 
   /**
@@ -449,6 +530,11 @@ export class HeldPrompt {
   markTurnEnded(): void {
     this.turnActive = false;
     if (this.expiryDeferred) this.close();
+    // A floor watchdog deliberately survives the boundary rather than closing
+    // at it. The boundary itself settles the question — `decideHold` releases
+    // with nothing outstanding, or holds and opens an episode that wipes the
+    // floor — and both cancel this. It stays pending only if the caller does
+    // neither, which is the case it is here to cover.
   }
 
   /**
@@ -496,30 +582,36 @@ export class HeldPrompt {
    * no job-step harvest, registry entry never released, subprocess pinned.
    * Before the per-episode change the absolute timer would have closed it.
    *
-   * So a drain re-arms a fresh full window instead of clearing. If a boundary
+   * So a drain leaves a *floor* pending instead of clearing. If a boundary
    * arrives — the overwhelmingly common case — `decideHold` releases and
    * `close()` cancels this on the way out, so it never fires. If none does,
    * the run still ends, one window late, exactly as it did before the hold
    * existed.
    *
-   * One consequence worth naming: a *new* episode arming after a drain
-   * inherits this deadline rather than minting one, so its window is measured
-   * from the drain rather than from the arm. The gap between the two is a
-   * single turn boundary, and erring shorter is the safe direction for a
-   * bound.
+   * The floor keeps its own clock ({@link floorAt}) and its own expiry
+   * ({@link expireFloor}). It has to: it is not a budget, and anything that
+   * treats it as one takes the next episode's window away. That is the whole
+   * of why `deadlineAt` is left null here.
+   *
+   * A second drain with a floor already pending leaves it alone rather than
+   * pushing it out — the floor measures "how long since anything happened",
+   * and re-minting it on every duplicate task-ending event would let a chatty
+   * CLI extend it without bound.
    */
   disarmTimeout(): void {
     this.deadlineAt = null;
     this.expiryDeferred = false;
-    // The episode is over; the next arm opens a new one and is counted.
+    // The episode is over; the next arm opens a new one, is counted, and mints
+    // its own window rather than serving out what is left of this floor.
     this.inEpisode = false;
     if (this.isReleased || !this.lastArm) {
       this.schedule(null);
       return;
     }
+    if (this.floorAt !== null || this.floorWatchdog) return;
     const { ms, onExpiry } = this.lastArm;
-    this.deadlineAt = Date.now() + ms;
-    this.schedule(ms, () => this.expire(onExpiry));
+    this.floorAt = Date.now() + ms;
+    this.schedule(ms, () => this.expireFloor(onExpiry));
   }
 }
 

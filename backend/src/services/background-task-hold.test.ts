@@ -297,6 +297,86 @@ describe("HeldPrompt", () => {
     }
   });
 
+  it("gives a full window to an episode that starts after the floor has already come due", () => {
+    // The sharper form, and the one that cost a whole hold rather than part of
+    // one. `npm test &` finishes at minute two, so the floor is set for minute
+    // seventeen; the model keeps working and starts `npm run build &` at minute
+    // twenty. The floor came due mid-turn — but all that proves is that the run
+    // is alive, so it must not have latched anything on its way past.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+      held.markTurnActive();
+      held.armTimeout(60_000, onExpiry);
+      held.disarmTimeout(); // drained; floor due at t=60s
+
+      // The turn works on, well past the floor, saying so as it goes.
+      for (let i = 0; i < 5; i++) {
+        vi.advanceTimersByTime(30_000);
+        held.markTurnActive();
+      }
+      expect(onExpiry).not.toHaveBeenCalled();
+      expect(held.closed).toBe(false);
+
+      // A new task, and a real hold for it.
+      held.armTimeout(60_000, onExpiry);
+      expect(held.deadline! - Date.now()).toBe(60_000);
+      held.markTurnEnded();
+      expect(held.closed).toBe(false);
+
+      vi.advanceTimersByTime(59_999);
+      expect(held.closed).toBe(false);
+      vi.advanceTimersByTime(2);
+      expect(onExpiry).toHaveBeenCalledOnce();
+      expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still closes a drained hold when the turn the floor found alive goes silent", () => {
+    // The floor declining to latch must not cost liveness. It swaps its clock
+    // for a watchdog on the last sign of life, so silence still ends the run.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      held.markTurnActive();
+      held.armTimeout(60_000, vi.fn());
+      held.disarmTimeout();
+
+      vi.advanceTimersByTime(60_000); // floor comes due, turn looks alive
+      expect(held.closed).toBe(false);
+      vi.advanceTimersByTime(59_999); // ...and then says nothing more
+      expect(held.closed).toBe(false);
+      vi.advanceTimersByTime(2);
+      expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not push the floor out on a repeated drain", () => {
+    // claude.ts calls disarmTimeout on every ending task once the set is empty,
+    // and both `task_notification` and `task_updated` report the same ending.
+    // Re-minting the floor each time would let a chatty CLI extend it forever.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      held.armTimeout(60_000, vi.fn());
+      held.disarmTimeout();
+      for (let i = 0; i < 5; i++) {
+        vi.advanceTimersByTime(10_000);
+        held.disarmTimeout();
+      }
+      expect(held.closed).toBe(false);
+      vi.advanceTimersByTime(10_001); // t=60.001s, one window from the first drain
+      expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not fire a drained hold's expiry on the dead episode's clock", () => {
     // The 10:27 line in the production trace: the last task ended, nothing
     // cancelled the timer, and it fired 32 seconds later naming an empty list.
