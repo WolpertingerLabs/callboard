@@ -13,7 +13,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { CodexModelInfo } from "shared/types/index.js";
-import { getApiEnvOverrides } from "./agent-settings.js";
+import { getApiEnvOverrides, getCodexExecutablePath } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("codex-models");
@@ -66,7 +66,24 @@ interface RawCodexModel {
 let cache: CodexModelsCache | null = null;
 let fetchPromise: Promise<CodexModelsCache> | null = null;
 
+/**
+ * Which `codex` answers `debug models`.
+ *
+ * The configured override wins, for the reason the whole binary-override
+ * feature exists: this catalog populates the model picker, and a picker filled
+ * in by a *different* binary than the one running chats is a third opinion about
+ * which Codex this machine has. A user who points Callboard at a newer CLI to
+ * get a newer model would otherwise pick from the bundled copy's list and be
+ * told their model does not exist — or, worse, not be offered it at all.
+ *
+ * `getCodexExecutablePath` is the same resolver `claude.ts` and
+ * `engine-status.ts` use, so a rejected override falls back here exactly as it
+ * does there. Absent ⇒ the bundled `codex.js` shim, as before.
+ */
 function resolveCodexBin(): { command: string; argsPrefix: string[] } {
+  const override = getCodexExecutablePath();
+  if (override) return { command: override, argsPrefix: [] };
+
   try {
     const packageJsonPath = require.resolve("@openai/codex/package.json");
     return {

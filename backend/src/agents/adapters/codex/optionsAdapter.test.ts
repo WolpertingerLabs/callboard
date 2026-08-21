@@ -424,3 +424,38 @@ describe("translateCodexOptions — mcp_servers threaded into codexOpts.config",
     expect(toolServerHandles).toEqual([]);
   });
 });
+
+describe("translateCodexOptions — codexPathOverride (which binary the chat spawns)", () => {
+  it("passes an override through to CodexOptions.codexPathOverride", async () => {
+    const { codexOpts } = translateCodexOptions({ codex: { pathOverride: "/opt/codex/bin/codex" } });
+    expect(codexOpts.codexPathOverride).toBe("/opt/codex/bin/codex");
+  });
+
+  it("omits the key entirely when there is no override", () => {
+    // Absent is what Callboard did for its whole life before Phase 4, and it is
+    // still the default: the SDK then resolves the platform binary nested under
+    // @openai/codex-sdk. An empty string would NOT do that — the SDK's exec
+    // layer branches on truthiness, so a blank must not survive to here.
+    expect(translateCodexOptions({ codex: {} }).codexOpts.codexPathOverride).toBeUndefined();
+    expect(translateCodexOptions({}).codexOpts.codexPathOverride).toBeUndefined();
+    expect(translateCodexOptions({ codex: { pathOverride: "" } }).codexOpts.codexPathOverride).toBeUndefined();
+    expect(translateCodexOptions({ codex: { pathOverride: "   " } }).codexOpts.codexPathOverride).toBeUndefined();
+  });
+
+  it("changes nothing else — auth, env and config still ride alongside it", () => {
+    // The field moves the executable and only the executable. If it also
+    // reached env or config, an overridden binary would read different
+    // credentials than the bundled one and "same auth, different binary" would
+    // stop being true.
+    const { codexOpts, threadOptions } = translateCodexOptions({
+      codex: { pathOverride: "/opt/codex", authMode: "api-key", apiKey: "sk-test", baseUrl: "https://example.test/v1" },
+      env: { CODEX_HOME: "/home/u/.codex", PATH: "/usr/bin" },
+      cwd: "/work",
+    });
+    expect(codexOpts.codexPathOverride).toBe("/opt/codex");
+    expect(codexOpts.apiKey).toBe("sk-test");
+    expect(codexOpts.baseUrl).toBe("https://example.test/v1");
+    expect(codexOpts.env).toMatchObject({ CODEX_HOME: "/home/u/.codex" });
+    expect(threadOptions.workingDirectory).toBe("/work");
+  });
+});

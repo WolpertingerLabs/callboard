@@ -43,6 +43,7 @@ import {
   resolveModelAlias,
   resolveSessionModel,
   getClaudeCodeExecutablePath,
+  getCodexExecutablePath,
 } from "./agent-settings.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { isCodexRoutedThroughOpenRouter, detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
@@ -1519,8 +1520,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // start (Codex has no per-call canUseTool hook). Surface them so the
     // optionsAdapter can derive the sandbox tier when no explicit one is set.
     const permissions = getDefaultPermissions() ?? undefined;
+    // Which `codex` binary this chat spawns. `undefined` — the answer for every
+    // chat before Phase 4, and still the default — leaves the SDK to resolve the
+    // platform binary nested under `@openai/codex-sdk`. A configured override
+    // that failed its `stat`/execute check also lands here as `undefined`, with
+    // a warning already logged by the resolver: a typo in a settings field must
+    // not break every Codex chat, and the status card is where it is reported.
+    const codexBinary = getCodexExecutablePath(agentSettings);
     queryOpts.options.codex = {
       authMode,
+      ...(codexBinary && { pathOverride: codexBinary }),
       ...(useOpenRouter && { useOpenRouter: true }),
       ...(useOpenRouter && agentSettings.codexOpenRouterBaseUrl?.trim() && { openRouterBaseUrl: agentSettings.codexOpenRouterBaseUrl.trim() }),
       ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
@@ -1533,6 +1542,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     log.info(
       `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : authMode}, ` +
         `model=${requestedModel ?? "(default)"}, effort=${chatEffort ?? "(default)"}, ` +
+        `binary=${codexBinary ?? "(bundled)"}, ` +
         `sandbox=${agentSettings.codexSandboxMode ?? "(permission-derived)"}, ` +
         `codexHome=${agentSettings.codexHome?.trim() || "~/.codex"}` +
         `${useOpenRouter ? `, orBaseUrl=${agentSettings.codexOpenRouterBaseUrl?.trim() || "(default)"}` : ""}` +

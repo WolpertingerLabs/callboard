@@ -26,11 +26,12 @@ import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllCl
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
 import { isPasswordConfigured } from "../auth.js";
-import { getClientKey } from "../utils/client-ip.js";
+import { getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
 import { parseAllowlist, validateAllowlistEntry, isIpAllowed, isPrivateOrLoopback } from "../utils/ip-allowlist.js";
 import { startWebTunnel, stopWebTunnel, getWebTunnelStatus, isCloudflaredAvailable, resolveCallboardPort } from "../services/web-tunnel.js";
 import { importBundle, BundleImportError } from "../services/bundle-import.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
+import { resetEngineProbeCaches } from "../services/engine-status.js";
 import { refreshCodexModelsCache } from "../services/codex-models.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -69,6 +70,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     defaultSonnetModel,
     defaultHaikuModel,
     subagentModel,
+    pathToClaudeCodeExecutable,
     claudeCodeUseOpenRouter,
     claudeCodeOpenRouterApiKey,
     claudeCodeOpenRouterBaseUrl,
@@ -90,6 +92,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     codexBaseUrl,
     codexModel,
     codexHome,
+    codexPathOverride,
     codexSandboxMode,
     codexUseOpenRouter,
     codexOpenRouterApiKey,
@@ -184,11 +187,73 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     claudeCodeOpenRouterHaikuModel !== undefined ||
     claudeCodeOpenRouterSubagentModel !== undefined;
 
+  /**
+   * Did this save change *which binary* an engine spawns?
+   *
+   * Kept apart from {@link apiFieldsTouched} because the remedy is different and
+   * heavier: an API-key change needs the SDK account refetched, while a path
+   * change invalidates every memoized "where did this resolve" answer in the
+   * daemon. `getClaudeCodeExecutablePath` caches its result for the process
+   * lifetime, which is why editing `pathToClaudeCodeExecutable` used to require
+   * `callboard restart` before it took effect at all — a papercut Phase 2 built
+   * `resetEngineProbeCaches()` to fix and nothing was yet calling for this
+   * reason.
+   *
+   * Compared against the stored value rather than merely "was the field in the
+   * request": the settings page sends every field on every save, so keying on
+   * presence would drop five caches and re-run an Agent SDK query each time
+   * someone changed a model name on an unrelated tab.
+   */
+  const binaryOverrideFieldsTouched =
+    (pathToClaudeCodeExecutable !== undefined && normalize(pathToClaudeCodeExecutable) !== getAgentSettings().pathToClaudeCodeExecutable) ||
+    (codexPathOverride !== undefined && normalize(codexPathOverride) !== getAgentSettings().codexPathOverride);
+
+  /**
+   * ── Binary overrides are a local-client capability ──────────────────
+   *
+   * These two fields designate which executable the daemon spawns. Before this
+   * feature they could only be set by editing `agent-settings.json` on the host;
+   * putting them in this request body made "which binary does this machine run"
+   * remotely writable for the first time, and it went out ungated while Phase 3
+   * refused *the same client* the far weaker capability of running one command
+   * from a closed allowlist. Measured: a request with `X-Forwarded-For:
+   * 8.8.8.8` got 403 from `POST /api/engines/:id/install` and 200 from this
+   * route carrying `codexPathOverride`.
+   *
+   * That is not privilege escalation — the daemon runs as the user and any
+   * authenticated client can already run commands through a chat. It is a
+   * consistency failure, and the inconsistency is the security argument's own:
+   * Phase 3 gates because Remote Access can put this server on the public
+   * internet with a password as the only barrier. A supported UI for pointing
+   * the daemon at an arbitrary executable belongs on the same side of that line
+   * as a supported UI for `npm install -g`.
+   *
+   * Reads are untouched — a tunnelled client still sees which binary is in
+   * effect on the status card, and still gets `binary-check`, which executes
+   * nothing. Only the write is refused, and only when it would actually change
+   * something: an unrelated save from a tunnelled client that happens to echo
+   * the fields back unchanged is not an attempt to set them.
+   *
+   * @see plans/engine-availability-and-install.md — Decision 9
+   */
+  if (binaryOverrideFieldsTouched && !isDirectLocalClient(req)) {
+    log.warn(`Refused a binary-override change from a non-local client (${getClientKey(req)})`);
+    res.status(403).json({
+      error:
+        "Binary overrides can only be changed from a client on the local network. These fields decide which executable the Callboard daemon spawns, so they are held to the same scope as running an install — change them from a browser on the same machine or LAN, or by editing agent-settings.json on the host.",
+    });
+    return;
+  }
+
   const codexFieldsTouched =
     codexAuthMode !== undefined ||
     codexApiKey !== undefined ||
     codexBaseUrl !== undefined ||
     codexHome !== undefined ||
+    // A different binary can report a different model catalog — which is the
+    // point of pointing at a newer one — and `codex-models.ts` now resolves
+    // through the same override, so its cache is stale the moment this moves.
+    codexPathOverride !== undefined ||
     codexUseOpenRouter !== undefined ||
     codexOpenRouterApiKey !== undefined ||
     acpUseOpenRouter !== undefined ||
@@ -299,6 +364,11 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(defaultSonnetModel !== undefined && { defaultSonnetModel: normalize(defaultSonnetModel) }),
       ...(defaultHaikuModel !== undefined && { defaultHaikuModel: normalize(defaultHaikuModel) }),
       ...(subagentModel !== undefined && { subagentModel: normalize(subagentModel) }),
+      // Binary overrides. `normalize` trims and turns "" into undefined, which is
+      // what clearing the field must do — an empty string here would be a
+      // configured path of zero length, and the resolvers would report it as a
+      // missing binary forever.
+      ...(pathToClaudeCodeExecutable !== undefined && { pathToClaudeCodeExecutable: normalize(pathToClaudeCodeExecutable) }),
       ...(claudeCodeUseOpenRouter !== undefined && { claudeCodeUseOpenRouter: normalizeBool(claudeCodeUseOpenRouter) }),
       ...(claudeCodeOpenRouterApiKey !== undefined && { claudeCodeOpenRouterApiKey: normalize(claudeCodeOpenRouterApiKey) }),
       ...(claudeCodeOpenRouterBaseUrl !== undefined && { claudeCodeOpenRouterBaseUrl: normalize(claudeCodeOpenRouterBaseUrl) }),
@@ -326,6 +396,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(codexBaseUrl !== undefined && { codexBaseUrl: normalize(codexBaseUrl) }),
       ...(codexModel !== undefined && { codexModel: normalize(codexModel) }),
       ...(codexHome !== undefined && { codexHome: normalize(codexHome) }),
+      ...(codexPathOverride !== undefined && { codexPathOverride: normalize(codexPathOverride) }),
       ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
       ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
@@ -375,7 +446,21 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
         await stopWebTunnel().catch((err) => log.error(`Remote-access tunnel stop failed: ${err.message}`));
       }
     }
-    if (apiFieldsTouched) {
+    if (binaryOverrideFieldsTouched) {
+      // A different binary is now in effect, so every cached answer about which
+      // one resolved — and the account info the *old* one reported — is stale.
+      // This is the same reset Recheck performs; doing it here is what makes the
+      // field take effect on the next chat instead of on the next daemon
+      // restart, and what makes the status card agree with that chat.
+      //
+      // It subsumes the SDK-info refresh below (which is why that branch is now
+      // an `else if`): both would otherwise fire, and `resetEngineProbeCaches`
+      // deliberately drops the executable-path cache *before* re-spawning the
+      // SDK query, so running the bare refresh alongside it would race a fetch
+      // on the old path against one on the new.
+      log.info("Binary override changed — dropping engine probe caches so the next chat and the status card both see it.");
+      resetEngineProbeCaches();
+    } else if (apiFieldsTouched) {
       // Kick off a refresh so the About tab and any subsequent sessions see
       // the updated account / models. Don't await — the client gets back
       // quickly and the next poll of /api/system-info will pick it up.

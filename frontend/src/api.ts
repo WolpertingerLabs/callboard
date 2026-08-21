@@ -96,6 +96,10 @@ import type {
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
+  EngineBinaryCheckResponse,
+  EngineBinaryOverride,
+  EngineOverrideState,
+  EngineVersionDrift,
   EngineInstallGuidance,
   EngineInstallRecipe,
   EngineOneClickOffer,
@@ -203,6 +207,10 @@ export type {
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
+  EngineBinaryCheckResponse,
+  EngineBinaryOverride,
+  EngineOverrideState,
+  EngineVersionDrift,
   EngineInstallGuidance,
   EngineInstallRecipe,
   EngineOneClickOffer,
@@ -1413,6 +1421,26 @@ export async function getEngines(refresh = false): Promise<EngineStatus[]> {
   await assertOk(res, "Failed to get engine status");
   const data = (await res.json()) as EngineStatusResponse;
   return Array.isArray(data.engines) ? data.engines : [];
+}
+
+/**
+ * "Would Callboard accept this path as a binary override?", for the two
+ * override fields in Settings → API.
+ *
+ * Asks the daemon rather than guessing in the browser, for the obvious reason
+ * and a less obvious one: the path is on the *daemon's* filesystem, which a
+ * remote tab cannot see at all, and the check that matters is the one the
+ * resolver applies at chat time — existence, file-ness, and an execute bit for
+ * the daemon's own user. A browser could not evaluate any of the three.
+ *
+ * Runs nothing on the far side; see the route's doc-comment. Callers debounce.
+ */
+export async function checkEngineBinary(path: string, engineId: string, signal?: AbortSignal): Promise<EngineBinaryCheckResponse> {
+  const query = new URLSearchParams({ path, engineId });
+  const res = await fetch(`${BASE}/engines/binary-check?${query.toString()}`, { credentials: "include", signal });
+  await assertOk(res, "Failed to check the binary path");
+  const data = (await res.json()) as EngineBinaryCheckResponse;
+  return { path: String(data.path ?? ""), state: data.state ?? null, detail: String(data.detail ?? "") };
 }
 
 /**

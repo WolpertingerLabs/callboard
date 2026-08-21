@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   latestVersions: vi.fn(),
   claudeBinaryPath: vi.fn(),
   claudeExecutablePath: vi.fn(),
+  claudeOverride: vi.fn(),
+  codexOverride: vi.fn(),
   claudeRoutedThroughOpenRouter: vi.fn(),
   agentSettings: vi.fn(),
   sdkInfo: vi.fn(),
@@ -40,6 +42,8 @@ vi.mock("./npm-registry.js", async (importOriginal) => ({
 vi.mock("./agent-settings.js", () => ({
   getAgentSettings: mocks.agentSettings,
   getClaudeCodeExecutablePath: mocks.claudeExecutablePath,
+  getClaudeCodeExecutableOverride: mocks.claudeOverride,
+  getCodexExecutableOverride: mocks.codexOverride,
   isClaudeCodeRoutedThroughOpenRouter: mocks.claudeRoutedThroughOpenRouter,
 }));
 
@@ -63,6 +67,7 @@ vi.mock("../agents/adapters/acp/availability.js", () => ({
 
 import type { EngineStatus } from "shared/types/index.js";
 import { bundledClaudeBinaryPresent, bundledPackageVersion, getEngineStatuses, resetEngineStatusCache } from "./engine-status.js";
+import { EXPECTED_CODEX_CLI_VERSION } from "../agents/adapters/codex/sessionParser.js";
 
 const byId = (engines: EngineStatus[], id: string) => engines.find((e) => e.id === id)!;
 
@@ -73,6 +78,10 @@ beforeEach(() => {
   resetEngineStatusCache();
   mocks.latestVersions.mockResolvedValue({});
   mocks.claudeExecutablePath.mockReturnValue(undefined);
+  // No binary override configured — the answer on nearly every machine, and the
+  // baseline every case below deviates from explicitly.
+  mocks.claudeOverride.mockReturnValue(undefined);
+  mocks.codexOverride.mockReturnValue(undefined);
   mocks.claudeRoutedThroughOpenRouter.mockReturnValue(false);
   mocks.agentSettings.mockReturnValue({});
   mocks.sdkInfo.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
@@ -556,5 +565,221 @@ describe("userCliPath — the CLI the user can type, as opposed to the one Callb
     mocks.acpBinaryPath.mockReturnValue(null);
     const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
     expect(engine.userCliPath).toBeUndefined();
+  });
+});
+
+describe("binary overrides — what runs, versus what was typed into a settings field", () => {
+  /** A stand-in CLI that answers `--version` with `output`. */
+  function fakeCli(name: string, output: string): string {
+    const path = join(scratch, name);
+    writeFileSync(path, `#!/bin/sh\necho "${output}"\n`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  it("reports an active codex override, its version, and names it as what runs", async () => {
+    const bin = fakeCli("codex", "codex-cli 0.146.0");
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "active", detail: "`x` is executable." });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    if (engine.runtime.kind !== "bundled-overridable") throw new Error("unreachable");
+    expect(engine.runtime.overridePath).toBe(bin);
+    expect(engine.runtime.override).toMatchObject({ path: bin, state: "active", version: "0.146.0" });
+    // The Version row is about what executes, not about what happens to sit in
+    // node_modules. With an override active those are different facts, and the
+    // one worth printing is the first.
+    expect(engine.version).toBe("0.146.0");
+  });
+
+  it("does NOT set overridePath for a rejected override, but still reports it", async () => {
+    // The whole reason `override` exists separately. `overridePath` means "this
+    // is what runs" and must never carry a path Callboard declined, while a
+    // rejected override is precisely the state a user cannot see from any other
+    // field — the resolver falls through and every row reports the fallback.
+    mocks.codexOverride.mockReturnValue({ path: "/tmp/gone", state: "missing", detail: "Nothing at `/tmp/gone`." });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    if (engine.runtime.kind !== "bundled-overridable") throw new Error("unreachable");
+    expect(engine.runtime.overridePath).toBeUndefined();
+    expect(engine.runtime.override).toEqual({ path: "/tmp/gone", state: "missing", detail: "Nothing at `/tmp/gone`." });
+    // Falls back to the bundled version, which is genuinely what a chat runs.
+    expect(engine.version).toBe(bundledPackageVersion("@openai/codex-sdk"));
+  });
+
+  it("never spawns a rejected override to decorate the card", async () => {
+    // If it did, the module's central promise — that a status cannot disagree
+    // with what a chat does — would be false in the one case where the
+    // disagreement matters. A non-executable file cannot answer `--version`
+    // anyway, so the observable assertion is that no version is claimed.
+    const bin = join(scratch, "not-exec");
+    writeFileSync(bin, "#!/bin/sh\necho oops\n");
+    chmodSync(bin, 0o644);
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "not-executable", detail: "no execute bit" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    if (engine.runtime.kind !== "bundled-overridable") throw new Error("unreachable");
+    expect(engine.runtime.override?.version).toBeUndefined();
+  });
+
+  it("carries a claude override onto the runtime, alongside the path the SDK got", async () => {
+    const bin = fakeCli("claude", "2.9.9 (Claude Code)");
+    mocks.claudeExecutablePath.mockReturnValue(bin);
+    mocks.claudeOverride.mockReturnValue({ path: bin, state: "active", detail: "executable" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    if (engine.runtime.kind !== "external-preferred") throw new Error("unreachable");
+    expect(engine.runtime.resolvedPath).toBe(bin);
+    expect(engine.runtime.override).toMatchObject({ state: "active", version: "2.9.9" });
+  });
+
+  it("names the other Claude lookup only when the two disagree", async () => {
+    // They read different inputs by design — this one honours the override, the
+    // other reads $CLAUDE_BINARY and ~/.local/bin — so an override routinely
+    // splits them, and it is the *other* one behind the About page's version
+    // and `claude auth login`. Silently reporting one would leave a user
+    // watching a version that never moves when they change the field.
+    const chatBin = fakeCli("claude-chat", "2.9.9 (Claude Code)");
+    const loginBin = fakeCli("claude-login", "2.0.0 (Claude Code)");
+    mocks.claudeExecutablePath.mockReturnValue(chatBin);
+    mocks.claudeOverride.mockReturnValue({ path: chatBin, state: "active", detail: "executable" });
+    mocks.claudeBinaryPath.mockReturnValue(loginBin);
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    if (engine.runtime.kind !== "external-preferred") throw new Error("unreachable");
+    expect(engine.runtime.otherLookupPath).toBe(loginBin);
+  });
+
+  it("stays quiet when both lookups land on the same binary", async () => {
+    const bin = fakeCli("claude", "2.9.9 (Claude Code)");
+    mocks.claudeExecutablePath.mockReturnValue(bin);
+    mocks.claudeBinaryPath.mockReturnValue(bin);
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    if (engine.runtime.kind !== "external-preferred") throw new Error("unreachable");
+    expect(engine.runtime.otherLookupPath).toBeUndefined();
+  });
+
+  it("re-probes when the override moves, rather than answering from the old path's cache", async () => {
+    const first = fakeCli("codex-a", "codex-cli 1.0.0");
+    const second = fakeCli("codex-b", "codex-cli 2.0.0");
+    mocks.codexOverride.mockReturnValue({ path: first, state: "active", detail: "" });
+    expect(await getEngineStatuses().then((e) => byId(e, "codex").version)).toBe("1.0.0");
+
+    resetEngineStatusCache();
+    mocks.codexOverride.mockReturnValue({ path: second, state: "active", detail: "" });
+    expect(await getEngineStatuses().then((e) => byId(e, "codex").version)).toBe("2.0.0");
+  });
+});
+
+describe("the Codex rollout-format drift check", () => {
+  function fakeCodex(version: string): string {
+    const path = join(scratch, `codex-${version}`);
+    writeFileSync(path, `#!/bin/sh\necho "codex-cli ${version}"\n`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  it("is absent when the bundled SDK matches the version the parser targets", async () => {
+    // The state on a normal install, and the only one that means "checked and
+    // fine". Absence is the passing case, so it is asserted rather than assumed.
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(bundledPackageVersion("@openai/codex-sdk")).toBe(EXPECTED_CODEX_CLI_VERSION);
+    expect(engine.drift).toBeUndefined();
+  });
+
+  it("fires for an override running a different version, and says which binary", async () => {
+    // The case that only exists because of this phase: an override can be two
+    // releases ahead of Callboard's own node_modules, and no check that looks
+    // only at the bundled package could ever see it.
+    const bin = fakeCodex("0.999.0");
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "active", detail: "" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.drift).toMatchObject({ expected: EXPECTED_CODEX_CLI_VERSION, actual: "0.999.0", source: "override" });
+    expect(engine.drift?.detail).toContain(bin);
+    // The stake, in the sentence, and — this is the part that was wrong — in the
+    // right direction. `EXPECTED_CODEX_CLI_VERSION` is what the *parser*
+    // targets, so a drifted binary writes an unfamiliar format from now on:
+    // the transcripts at risk are the ones it is about to write, not the ones a
+    // matching version already wrote. The first cut said the reverse, which is
+    // the sentence a user would have acted on.
+    expect(engine.drift?.detail).toContain("writes from now on");
+    expect(engine.drift?.detail).toContain("Chats recorded by a matching version still read correctly");
+    expect(engine.drift?.detail).not.toContain("New chats are unaffected");
+  });
+
+  it("does not claim drift when the effective version could not be read", async () => {
+    // "Could not tell" is not drift. Warning on it would put a permanent amber
+    // row on every machine whose CLI prints an unusual --version banner.
+    const bin = join(scratch, "silent");
+    writeFileSync(bin, "#!/bin/sh\nexit 1\n");
+    chmodSync(bin, 0o755);
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "active", detail: "" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.drift).toBeUndefined();
+  });
+
+  it("reports no drift for engines that have no version contract", async () => {
+    const engines = await getEngineStatuses();
+    for (const id of ["claude-code", "cline", "pi"]) expect(byId(engines, id).drift).toBeUndefined();
+  });
+});
+
+describe("what counts as a version, and what does not", () => {
+  function cliPrinting(name: string, banner: string): string {
+    const path = join(scratch, name);
+    writeFileSync(path, `#!/bin/sh\necho "${banner}"\n`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  it("does not treat an unparseable banner as a version", async () => {
+    // A wrapper printing `my custom codex build` used to *become* the engine's
+    // version, which produced a permanent amber drift row asserting transcripts
+    // were at risk, and an `isNewerVersion(…)` comparison over NaN that reported
+    // an update was available. Three wrong claims from one string that was never
+    // a version.
+    const bin = cliPrinting("codex-odd", "my custom codex build");
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "active", detail: "" });
+    mocks.latestVersions.mockResolvedValue({ "@openai/codex-sdk": { version: "0.149.0", checkedAt: Date.now() } });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBeUndefined();
+    expect(engine.drift).toBeUndefined();
+    expect(engine.updateAvailable).toBeUndefined();
+    if (engine.runtime.kind !== "bundled-overridable") throw new Error("unreachable");
+    expect(engine.runtime.override?.version).toBeUndefined();
+  });
+
+  it("finds the version inside a normal banner", async () => {
+    const bin = cliPrinting("codex-normal", "codex-cli 0.150.1");
+    mocks.codexOverride.mockReturnValue({ path: bin, state: "active", detail: "" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBe("0.150.1");
+  });
+
+  it("never borrows the bundled version for an override it got no answer from", async () => {
+    // `codexActive?.version ?? readPackageVersion(…)` attributed the bundled
+    // 0.146.0 to a binary Callboard had got nothing out of, then issued a drift
+    // verdict on evidence about a copy nothing executes. "Did not look" and
+    // "looked at something else" are the two answers this module keeps apart.
+    const silent = join(scratch, "codex-silent");
+    writeFileSync(silent, "#!/bin/sh\nexit 3\n");
+    chmodSync(silent, 0o755);
+    mocks.codexOverride.mockReturnValue({ path: silent, state: "active", detail: "" });
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBeUndefined();
+    expect(engine.version).not.toBe(bundledPackageVersion("@openai/codex-sdk"));
+    expect(engine.drift).toBeUndefined();
+  });
+
+  it("still reports the bundled version when no override is configured", async () => {
+    // The guard on the above: an unconditional `undefined` would also pass those
+    // assertions and would be just as wrong.
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.version).toBe(bundledPackageVersion("@openai/codex-sdk"));
   });
 });

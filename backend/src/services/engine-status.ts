@@ -29,11 +29,10 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { EngineCredentials, EngineInstallCapability, EngineStatus } from "shared/types/index.js";
+import type { EngineBinaryOverride, EngineCredentials, EngineInstallCapability, EngineStatus, EngineVersionDrift } from "shared/types/index.js";
 import { ACP_VENDOR_PRESETS } from "../agents/adapters/acp/vendors.js";
 import { acpProviderVersion, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "../agents/adapters/acp/availability.js";
 import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
@@ -43,17 +42,21 @@ import { createLogger } from "../utils/logger.js";
 import { getClaudeBinaryPath, resetClaudeBinaryPathCache } from "../utils/paths.js";
 import {
   getAgentSettings,
+  getClaudeCodeExecutableOverride,
   getClaudeCodeExecutablePath,
+  getCodexExecutableOverride,
   isClaudeCodeRoutedThroughOpenRouter,
   resetClaudeCodeExecutablePathCache,
 } from "./agent-settings.js";
+import { EXPECTED_CODEX_CLI_VERSION } from "../agents/adapters/codex/sessionParser.js";
+import { bundledPackageVersion as readPackageVersion } from "../utils/package-version.js";
+import type { BinaryPathCheck } from "../utils/binary-path.js";
 import { installGuidanceFor } from "./engine-install-recipes.js";
 import { getLatestVersions, isNewerVersion } from "./npm-registry.js";
 import { getSdkInfoAsync, refreshSdkInfoCache } from "./sdk-info.js";
 
 const log = createLogger("engine-status");
 
-const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 // ── Package versions ────────────────────────────────────────────────
@@ -61,38 +64,13 @@ const execFileAsync = promisify(execFile);
 /**
  * Version of an installed npm package, read from its manifest on disk.
  *
- * **Not** `require("<pkg>/package.json").version`, which is the pattern
- * `CodexSessionProvider.checkSdkVersionOnce` uses and the plan proposed reusing.
- * That pattern does not work here: every engine package except `@openai/codex`
- * ships an `exports` map without a `"./package.json"` entry, so the require
- * throws `ERR_PACKAGE_PATH_NOT_EXPORTED` before it can read a version —
- * verified against the installed tree for `@anthropic-ai/claude-agent-sdk`,
- * `@openai/codex-sdk`, `@cline/sdk` and `@earendil-works/pi-coding-agent`.
- * (`/api/system-info` sidesteps the same problem by reading
- * `node_modules/@anthropic-ai/claude-agent-sdk/package.json` through an
- * absolute path.)
- *
- * `require.resolve.paths()` gives the `node_modules` directories Node itself
- * would search, walking up from this module — which covers a workspace checkout
- * (hoisted to the repo root) and a global install (hoisted to the npm prefix)
- * alike, without depending on an `exports` map we do not control.
- *
- * Returns `undefined` for a package that is not installed or whose manifest is
- * unreadable.
+ * Moved to `utils/package-version.ts` in Phase 4 so the Codex adapter can use
+ * the same implementation without an adapter→service→adapter cycle; re-exported
+ * here because this module's callers and its test suite have always reached for
+ * it under this name. The reasoning for why `require("<pkg>/package.json")` does
+ * not work — and the dead drift check that proved it — lives on the util.
  */
-export function bundledPackageVersion(pkg: string): string | undefined {
-  try {
-    for (const dir of require.resolve.paths(pkg) ?? []) {
-      const manifest = join(dir, ...pkg.split("/"), "package.json");
-      if (!existsSync(manifest)) continue;
-      const version = JSON.parse(readFileSync(manifest, "utf-8"))?.version;
-      if (typeof version === "string" && version) return version;
-    }
-  } catch (err) {
-    log.debug(`could not read version of ${pkg}: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return undefined;
-}
+export { bundledPackageVersion } from "../utils/package-version.js";
 
 /**
  * The version range callboard's own manifest declares for a dependency.
@@ -170,29 +148,48 @@ export function bundledClaudeBinaryPresent(): boolean {
     `${CLAUDE_AGENT_SDK_PACKAGE}-${process.platform}-${process.arch}`,
     `${CLAUDE_AGENT_SDK_PACKAGE}-${process.platform}-${process.arch}-musl`,
   ];
-  return candidates.some((pkg) => bundledPackageVersion(pkg) !== undefined);
+  return candidates.some((pkg) => readPackageVersion(pkg) !== undefined);
 }
 
 /**
- * `claude --version` for the resolved native CLI.
+ * `<binary> --version`, for a binary Callboard has already decided it will run.
  *
- * Only ever run against the path `getClaudeCodeExecutablePath()` returned, so a
- * machine with no native install spawns nothing. The CLI prints
- * `"2.0.1 (Claude Code)"`; the leading semver is what compares against npm, so
- * that is what is kept — the full string when it does not match that shape.
+ * Two callers, and the precondition they share is the point: the path handed in
+ * is always one this daemon *is going to spawn anyway* — the `claude`
+ * `getClaudeCodeExecutablePath()` resolved, or an active `codexPathOverride`
+ * that has passed its execute check. Nothing here probes a speculative path, and
+ * nothing here runs a string a request supplied. (The settings fields validate
+ * with `stat` only, for exactly that reason — see `utils/binary-path.ts`.)
+ *
+ * The CLIs print `"2.0.1 (Claude Code)"` and `"codex-cli 0.146.0"`, so the
+ * answer is the first **dotted numeric** token on the first line.
+ *
+ * A banner with no such token yields `undefined`, and it must: the previous cut
+ * fell back to the whole first line, which meant a wrapper printing
+ * `my custom codex build` became the engine's `version` — a permanent amber
+ * drift row asserting resume was unsafe, and an `isNewerVersion(…)` comparison
+ * over `NaN` that reported an update was available. Every consumer of this
+ * value compares it numerically or against a version constant, so a string that
+ * is not a version is not an answer to give them; the card says the binary
+ * printed nothing recognisable instead, which is both true and more useful.
  *
  * Async, with `killSignal: "SIGKILL"`, for the reason spelled out on
  * `acpProviderVersion`: `execFileSync`'s `timeout` does not bound wall-clock
  * (Node sends SIGTERM at the deadline and then waits indefinitely), and a sync
- * stall on a single-threaded server stalls every open SSE stream too. This is a
- * new call site, so it does not inherit that risk.
+ * stall on a single-threaded server stalls every open SSE stream too.
  *
- * Cached for the process lifetime, like every other engine probe: PATH does not
- * change under a running daemon, and Phase 2 owns invalidation.
+ * Cached per path for the process lifetime, like every other engine probe.
+ * Keyed by path rather than by engine so that pointing an override somewhere new
+ * and pressing Recheck cannot be answered from the old binary's cache entry —
+ * which would be this feature's signature bug arriving through the cache layer.
  */
-let claudeCliVersionCache: { path: string; version: string | undefined } | null = null;
-async function claudeCliVersion(execPath: string): Promise<string | undefined> {
-  if (claudeCliVersionCache?.path === execPath) return claudeCliVersionCache.version;
+const binaryVersionCache = new Map<string, string | undefined>();
+async function binaryVersion(execPath: string): Promise<string | undefined> {
+  // `has` rather than a truthiness check on `get`: a binary that ran and printed
+  // nothing usable caches as `undefined`, and re-spawning it on every assembly
+  // because the answer was "no version" is how a settings page starts costing a
+  // process per render.
+  if (binaryVersionCache.has(execPath)) return binaryVersionCache.get(execPath);
 
   let version: string | undefined;
   try {
@@ -203,19 +200,22 @@ async function claudeCliVersion(execPath: string): Promise<string | undefined> {
       maxBuffer: 1024 * 1024,
     });
     const out = stdout.trim();
-    version = /^\d[\w.+-]*/.exec(out)?.[0] ?? out.split("\n")[0].trim() ?? undefined;
+    const firstLine = out.split("\n")[0]?.trim() ?? "";
+    // `MAJOR.MINOR[.PATCH][-prerelease]`, anywhere on the line. No fallback to
+    // the raw banner — see the doc-comment.
+    version = /\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/.exec(firstLine)?.[0];
   } catch {
     // Present but unrunnable (wrong arch, permissions, killed at the deadline) —
     // no version to report.
     version = undefined;
   }
-  claudeCliVersionCache = { path: execPath, version };
+  binaryVersionCache.set(execPath, version);
   return version;
 }
 
-/** Forget the cached `claude --version` result, manifest read, and any in-flight assembly. */
+/** Forget the cached `--version` results, manifest read, and any in-flight assembly. */
 export function resetEngineStatusCache(): void {
-  claudeCliVersionCache = null;
+  binaryVersionCache.clear();
   callboardManifestCache = undefined;
   inFlight.clear();
 }
@@ -450,6 +450,78 @@ function discoverableClaudePath(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Where a user-installed CLI resolves on the daemon's PATH, or `undefined`.
+ *
+ * Reuses `resolveAcpBinaryPath` — despite the ACP name it is simply a cached,
+ * shell-free `which`, and it is already invalidated by
+ * {@link resetEngineProbeCaches}, so a `codex` installed and then Rechecked is
+ * seen. Wrapped rather than called directly so the intent reads at the call
+ * site: this is not about ACP, it is about whether `<cli> login` is a command
+ * the user has.
+ */
+// ── Binary overrides ────────────────────────────────────────────────
+
+/**
+ * Turn a checked override path into the shape the card renders — running it for
+ * a version only when it is the binary that actually wins.
+ *
+ * The `state === "active"` guard is the whole function. A rejected path is not
+ * spawned here for the same reason it is not spawned by a chat: Callboard
+ * decided it will not run it, and running it anyway to decorate a row would make
+ * this module's central promise — that a status cannot disagree with what a chat
+ * does — false in the one case where the disagreement matters.
+ */
+async function describeOverride(check: BinaryPathCheck | undefined): Promise<EngineBinaryOverride | undefined> {
+  if (!check || check.state === null) return undefined;
+  const override: EngineBinaryOverride = { path: check.path, state: check.state, detail: check.detail };
+  if (override.state !== "active") return override;
+  const version = await binaryVersion(check.path);
+  return version ? { ...override, version } : override;
+}
+
+/**
+ * Does the Codex binary in effect match the rollout version the parser targets?
+ *
+ * The check the plan assigned to Phase 4, moved out of a log line nobody reads
+ * and into the card. The stake is not cosmetic: `sessionParser.ts` hand-decodes
+ * an undocumented, version-dependent JSONL format, and a change to it does not
+ * throw — it drops messages from a resumed chat, quietly. That is precisely the
+ * failure the `EXPECTED_CODEX_CLI_VERSION` constant exists to make diagnosable,
+ * and the check that read it had never once run (see
+ * `CodexSessionProvider.checkSdkVersionOnce`).
+ *
+ * An **override** is the reason this needs its own function rather than a
+ * constant comparison at boot: point `codexPathOverride` at a `codex` two
+ * releases ahead of the bundled SDK and the drift is real, present, and invisible
+ * to any check that only ever looks at Callboard's own `node_modules`.
+ *
+ * Returns `undefined` when the versions match, and — deliberately — also when
+ * the effective version could not be read at all. "Could not tell" is not
+ * drift, and warning on it would put a permanent amber row on every machine
+ * where an override happens to print an unusual `--version` banner.
+ */
+function codexVersionDrift(actual: string | undefined, source: "bundled" | "override", overridePath?: string): EngineVersionDrift | undefined {
+  if (!actual || actual === EXPECTED_CODEX_CLI_VERSION) return undefined;
+  const what = source === "override" ? `The \`codex\` at \`${overridePath}\` reports ${actual}` : `Callboard's bundled \`@openai/codex-sdk\` is ${actual}`;
+  return {
+    expected: EXPECTED_CODEX_CLI_VERSION,
+    actual,
+    source,
+    // Which chats are at risk, stated in the direction the versions actually
+    // run. `EXPECTED_CODEX_CLI_VERSION` is what the *parser* targets, so a
+    // drifted binary writes a format Callboard was not written to read **from
+    // now on** — the rollouts at risk are the ones this binary is about to
+    // write, not the ones a matching version already wrote. And the parser
+    // renders every Codex transcript, not just a resume, so the symptom is not
+    // limited to continuing an old chat.
+    detail:
+      `${what}, and Callboard's rollout parser was written against ${EXPECTED_CODEX_CLI_VERSION}. ` +
+      `Codex's session format is undocumented and changes between releases, so transcripts this binary writes from now on may render with turns missing rather than fail loudly. ` +
+      `Chats recorded by a matching version still read correctly. If a Codex transcript looks short, this is the first thing to check.`,
+  };
 }
 
 /**
@@ -722,8 +794,31 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
       return undefined;
     }
   })();
-  const sdkVersion = bundledPackageVersion(CLAUDE_AGENT_SDK_PACKAGE);
+  const sdkVersion = readPackageVersion(CLAUDE_AGENT_SDK_PACKAGE);
   const claudeUserCli = claudePath ? undefined : discoverableClaudePath();
+  // The `pathToClaudeCodeExecutable` setting, whether or not it survived. A
+  // rejected override is invisible from every other field on this row — the
+  // resolver falls through and reports the same thing it would with the field
+  // blank — so it has to travel separately or the card cannot tell the user why
+  // the path they saved is not the path in the Runtime row.
+  const claudeOverride = await describeOverride(
+    (() => {
+      try {
+        return getClaudeCodeExecutableOverride();
+      } catch {
+        return undefined;
+      }
+    })(),
+  );
+  // The other Claude lookup, but only when there is something to say. The two
+  // resolvers read different inputs (this one ignores the override entirely and
+  // consults `$CLAUDE_BINARY` and four well-known directories), so on a machine
+  // with an override set they routinely disagree — and it is the About page's
+  // version and `claude auth login` that follow *this* one. Named only on a real
+  // disagreement, so the card stays quiet in the overwhelmingly common case
+  // where both land on the same binary.
+  const claudeOtherLookup = discoverableClaudePath();
+  const claudeLookupsDiffer = Boolean(claudePath && claudeOtherLookup && claudeOtherLookup !== claudePath);
   engines.push({
     id: "claude-code",
     label: "Claude Code",
@@ -734,25 +829,70 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
       ...(claudePath ? { resolvedPath: claudePath } : {}),
       fallbackPackage: CLAUDE_AGENT_SDK_PACKAGE,
       ...(sdkVersion ? { fallbackVersion: sdkVersion } : {}),
+      ...(claudeOverride ? { override: claudeOverride } : {}),
+      ...(claudeLookupsDiffer ? { otherLookupPath: claudeOtherLookup } : {}),
     },
     installed: Boolean(claudePath) || bundledClaudeBinaryPresent(),
     ...(claudeUserCli ? { userCliPath: claudeUserCli } : {}),
-    ...versionFields(claudePath ? await claudeCliVersion(claudePath) : undefined, CLAUDE_CODE_CLI_PACKAGE),
+    ...versionFields(claudePath ? await binaryVersion(claudePath) : undefined, CLAUDE_CODE_CLI_PACKAGE),
     credentials: await claudeCodeCredentials(),
   });
 
-  // Codex — bundled binary, overridable in principle (`codexPathOverride`) and
-  // not overridden by callboard today. The real gate is auth — and whether the
-  // user can *reach* `codex login`, which is a PATH question and is therefore
-  // looked up rather than inferred from the bundled layout.
+  // Codex — bundled binary, and since Phase 4 genuinely overridable. The real
+  // gate is still auth — and whether the user can *reach* `codex login`, which is
+  // a PATH question and is therefore looked up rather than inferred from the
+  // bundled layout.
+  //
+  // `getCodexExecutableOverride` is the same function `claude.ts` resolves a
+  // chat's binary through, so "what this card says runs" and "what runs" are one
+  // call, not two implementations that agree today.
   const codexUserCli = resolveUserCliPath("codex");
+  const codexOverride = await describeOverride(
+    (() => {
+      try {
+        return getCodexExecutableOverride(settings);
+      } catch {
+        return undefined;
+      }
+    })(),
+  );
+  const codexActive = codexOverride?.state === "active" ? codexOverride : undefined;
+  // The version of what actually runs, not of what is on disk in `node_modules`.
+  // When an override wins, the bundled version is no longer a fact about this
+  // machine's Codex — it is a fact about a copy nothing executes.
+  //
+  // Hence a conditional and **not** `codexActive?.version ?? readPackageVersion(…)`,
+  // which is what this was: an active override whose `--version` said nothing
+  // recognisable fell through to the bundled number, so the card attributed
+  // `0.146.0` to a binary it had got no version out of and then issued a drift
+  // verdict on evidence about a different file. "Callboard did not look" and
+  // "Callboard looked at something else" are the two answers this branch exists
+  // to keep apart. Undefined is the honest one, and the card renders it as
+  // Unknown with no drift row.
+  //
+  // Comparing an overriding *CLI*'s version against `@openai/codex-sdk`'s npm
+  // latest is sound rather than sloppy: the CLI and the SDK are published in
+  // lockstep off one version line (`@openai/codex` and `@openai/codex-sdk` were
+  // both 0.146.0 bundled and both 0.149.0 latest when this was written), so the
+  // Latest row stays a like-for-like comparison either way.
+  const codexEffectiveVersion = codexActive ? codexActive.version : readPackageVersion(CODEX_SDK_PACKAGE);
+  const drift = codexVersionDrift(codexEffectiveVersion, codexActive ? "override" : "bundled", codexActive?.path);
   engines.push({
     id: "codex",
     label: "Codex",
-    runtime: { kind: "bundled-overridable", package: CODEX_SDK_PACKAGE, ...callboardDependencyRange(CODEX_SDK_PACKAGE) },
+    runtime: {
+      kind: "bundled-overridable",
+      package: CODEX_SDK_PACKAGE,
+      // Set only for an active override, so a consumer reading `overridePath`
+      // alone still cannot be told a rejected path is what runs.
+      ...(codexActive ? { overridePath: codexActive.path } : {}),
+      ...(codexOverride ? { override: codexOverride } : {}),
+      ...callboardDependencyRange(CODEX_SDK_PACKAGE),
+    },
     installed: true,
     ...(codexUserCli ? { userCliPath: codexUserCli } : {}),
-    ...versionFields(bundledPackageVersion(CODEX_SDK_PACKAGE), CODEX_SDK_PACKAGE),
+    ...versionFields(codexEffectiveVersion, CODEX_SDK_PACKAGE),
+    ...(drift ? { drift } : {}),
     credentials: codexCredentials(),
   });
 
@@ -766,7 +906,7 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
     label: "Cline",
     runtime: { kind: "bundled", package: CLINE_SDK_PACKAGE, ...callboardDependencyRange(CLINE_SDK_PACKAGE) },
     installed: true,
-    ...versionFields(bundledPackageVersion(CLINE_SDK_PACKAGE), CLINE_SDK_PACKAGE),
+    ...versionFields(readPackageVersion(CLINE_SDK_PACKAGE), CLINE_SDK_PACKAGE),
     credentials: embeddedCredentials("Cline", settings?.clineProviderId?.trim() || DEFAULT_CLINE_PROVIDER_ID, settings?.clineApiKey),
   });
 
@@ -775,7 +915,7 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
     label: "pi",
     runtime: { kind: "bundled", package: PI_PACKAGE, ...callboardDependencyRange(PI_PACKAGE) },
     installed: true,
-    ...versionFields(bundledPackageVersion(PI_PACKAGE), PI_PACKAGE),
+    ...versionFields(readPackageVersion(PI_PACKAGE), PI_PACKAGE),
     credentials: embeddedCredentials("pi", settings?.piProviderId?.trim() || DEFAULT_PI_PROVIDER_ID, settings?.piApiKey),
   });
 

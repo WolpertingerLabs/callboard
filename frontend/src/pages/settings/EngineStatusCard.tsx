@@ -3,7 +3,14 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, Cpu, Download, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import CopyButton from "../../components/CopyButton";
 import { readEngineInstallStream, startEngineInstall } from "../../api";
-import type { EngineInstallEvent, EngineInstallGuidance, EngineInstallRecipe, EngineOneClickOffer, EngineStatus } from "../../api";
+import type {
+  EngineBinaryOverride,
+  EngineInstallEvent,
+  EngineInstallGuidance,
+  EngineInstallRecipe,
+  EngineOneClickOffer,
+  EngineStatus,
+} from "../../api";
 
 /**
  * The engine status card at the top of every engine tab in Settings → API.
@@ -129,6 +136,50 @@ export function EngineStatusDot({ engine }: { engine: EngineStatus | undefined }
   return <span title={title} aria-label={title} style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />;
 }
 
+/**
+ * The override line under Runtime: what was configured, and whether it is what
+ * runs.
+ *
+ * The reason this is its own line rather than a clause inside
+ * {@link runtimeSummary} is that a **rejected** override has to be visible, and
+ * from every other row on this card a rejected override looks exactly like
+ * never having set one — the resolver falls through, so Runtime, Version and
+ * Credentials all report the fallback and nothing anywhere says why. That is
+ * this feature's signature bug pointed at its own new field: a settings page
+ * showing a saved path while chats run something else.
+ *
+ * So `"active"` is the quiet state and every other state is amber, with the
+ * backend's sentence saying what was observed and what runs instead.
+ */
+function OverrideLine({ override }: { override: EngineBinaryOverride }) {
+  const active = override.state === "active";
+  return (
+    <div style={{ marginTop: 4, display: "flex", gap: 5, alignItems: "flex-start", justifyContent: "flex-end", textAlign: "right" }}>
+      {active ? null : <AlertTriangle size={11} style={{ color: "var(--warning)", flexShrink: 0, marginTop: 3 }} />}
+      <span style={{ color: active ? "var(--text)" : "var(--text-muted)" }}>
+        {active ? (
+          <>
+            Override in effect: <code style={mono}>{override.path}</code>
+            {override.version ? (
+              <>
+                {" "}
+                (<code style={mono}>{override.version}</code>)
+              </>
+            ) : (
+              // It ran and printed nothing version-shaped. Worth saying: it is
+              // usually a wrapper script or the wrong binary, and silence here
+              // would read as "no version to report" rather than "odd answer".
+              <> — it did not print a recognisable version.</>
+            )}
+          </>
+        ) : (
+          withInlineCode(override.detail)
+        )}
+      </span>
+    </div>
+  );
+}
+
 /** Prose for the Runtime row — the one fact that differs per runtime kind. */
 function runtimeSummary(engine: EngineStatus): React.ReactNode {
   const runtime = engine.runtime;
@@ -143,16 +194,18 @@ function runtimeSummary(engine: EngineStatus): React.ReactNode {
     case "bundled-overridable":
       return (
         <>
-          Bundled with Callboard — <code style={mono}>{runtime.package}</code>
           {runtime.overridePath ? (
             <>
-              , overridden by <code style={mono}>{runtime.overridePath}</code>
+              Running <code style={mono}>{runtime.overridePath}</code> — your own binary, in place of the copy bundled with{" "}
+              <code style={mono}>{runtime.package}</code>.
             </>
           ) : (
             <>
-              . Nothing to install: a global install of it cannot reach Callboard&rsquo;s own <code style={mono}>node_modules</code>.
+              Bundled with Callboard — <code style={mono}>{runtime.package}</code>. Nothing to install: a global install of it cannot reach Callboard&rsquo;s own{" "}
+              <code style={mono}>node_modules</code>. Point the binary override below at your own copy to run that instead.
             </>
           )}
+          {runtime.override ? <OverrideLine override={runtime.override} /> : null}
         </>
       );
     case "external-preferred":
@@ -162,20 +215,39 @@ function runtimeSummary(engine: EngineStatus): React.ReactNode {
             Native <code style={mono}>{runtime.command}</code> at <code style={mono}>{runtime.resolvedPath}</code>, preferred over the bundled{" "}
             <code style={mono}>{runtime.fallbackPackage}</code>
             {runtime.fallbackVersion ? ` ${runtime.fallbackVersion}` : ""}.
+            {runtime.override ? <OverrideLine override={runtime.override} /> : null}
+            {/* The two Claude lookups disagree. Named rather than reconciled:
+                they read different inputs by design, and quietly picking one to
+                report would leave a user staring at an About-page version that
+                never moves when they change this field. */}
+            {runtime.otherLookupPath ? (
+              <div style={{ marginTop: 4, color: "var(--text-muted)" }}>
+                Chats run the path above. The About page&rsquo;s CLI version and the login prompt use a separate lookup, which landed on{" "}
+                <code style={mono}>{runtime.otherLookupPath}</code> — it reads <code style={mono}>$CLAUDE_BINARY</code> and well-known directories, and ignores
+                the override field.
+              </div>
+            ) : null}
           </>
         );
       }
       // The bundled binary is an optional dependency, so "no native CLI" does
       // not imply "the bundled one runs" — say which of the two states it is.
-      return engine.installed ? (
+      // Either way an override may have been configured and rejected, which is
+      // very often *why* neither of them is what the user expected.
+      return (
         <>
-          No native <code style={mono}>{runtime.command}</code> on PATH — running the binary bundled with <code style={mono}>{runtime.fallbackPackage}</code>
-          {runtime.fallbackVersion ? ` ${runtime.fallbackVersion}` : ""}.
-        </>
-      ) : (
-        <>
-          No native <code style={mono}>{runtime.command}</code> on PATH, and no bundled binary for this platform in{" "}
-          <code style={mono}>{runtime.fallbackPackage}</code> — this engine cannot run until one of the two is installed.
+          {engine.installed ? (
+            <>
+              No native <code style={mono}>{runtime.command}</code> on PATH — running the binary bundled with <code style={mono}>{runtime.fallbackPackage}</code>
+              {runtime.fallbackVersion ? ` ${runtime.fallbackVersion}` : ""}.
+            </>
+          ) : (
+            <>
+              No native <code style={mono}>{runtime.command}</code> on PATH, and no bundled binary for this platform in{" "}
+              <code style={mono}>{runtime.fallbackPackage}</code> — this engine cannot run until one of the two is installed.
+            </>
+          )}
+          {runtime.override ? <OverrideLine override={runtime.override} /> : null}
         </>
       );
     case "external":
@@ -227,6 +299,16 @@ function trackedPackage(engine: EngineStatus): string | undefined {
  * read only off the variants that carry them.
  */
 function updateRemedy(runtime: EngineStatus["runtime"]): React.ReactNode {
+  // An **active** override outranks the runtime kind, because the kind
+  // describes where Callboard *would* get the engine and the override says
+  // where it actually did. Reading `kind` alone told a user running their own
+  // `codex` that "a Callboard update can pick it up" — which moves
+  // `node_modules` and cannot touch their binary. The remedy for a binary you
+  // installed is to update the binary you installed.
+  if (runtime.kind === "bundled-overridable" && runtime.overridePath) {
+    return " · update available — for the copy at the path above, which you update yourself";
+  }
+
   switch (runtime.kind) {
     case "external":
     case "external-preferred":
@@ -338,6 +420,39 @@ function credentialsSummary(engine: EngineStatus): React.ReactNode {
           reads as a command in both places instead of as prose in one of them. */}
       {note ? <div style={{ color: "var(--text-muted)", marginTop: 2 }}>{withInlineCode(note)}</div> : null}
     </>
+  );
+}
+
+/**
+ * "Callboard was written against a different version of this engine."
+ *
+ * Rendered as a row rather than logged, because the log was where it was
+ * supposed to be and the log is not where anyone found it. Until Phase 4 the
+ * boot-time check that produced this warning threw
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` into a bare `catch` on every start, so it had
+ * never fired on any machine — the one signal between a Codex rollout-format
+ * change and a resumed chat quietly losing messages.
+ *
+ * Amber rather than red, and it says so in the text: drift is a *risk to
+ * resuming old chats*, not a broken engine. New chats are unaffected either way,
+ * and telling someone their engine is broken when it demonstrably works is how a
+ * card gets ignored.
+ */
+function DriftRow({ engine }: { engine: EngineStatus }) {
+  const drift = engine.drift;
+  if (!drift) return null;
+  return (
+    <StatusRow label="Compatibility">
+      <div style={{ display: "flex", gap: 5, alignItems: "flex-start", justifyContent: "flex-end" }}>
+        <AlertTriangle size={11} style={{ color: "var(--warning)", flexShrink: 0, marginTop: 3 }} />
+        <span>
+          <span style={{ color: "var(--warning)" }}>
+            Running <code style={mono}>{drift.actual}</code>; parser targets <code style={mono}>{drift.expected}</code>
+          </span>
+          <div style={{ color: "var(--text-muted)", marginTop: 2 }}>{withInlineCode(drift.detail)}</div>
+        </span>
+      </div>
+    </StatusRow>
   );
 }
 
@@ -939,6 +1054,12 @@ function BundledUpdateNote({ engine }: { engine: EngineStatus }) {
   const runtime = engine.runtime;
   if (runtime.kind !== "bundled" && runtime.kind !== "bundled-overridable") return null;
   if (engine.updateAvailable !== true) return null;
+  // Not for an active override. Everything below argues "nothing to install,
+  // this moves when Callboard does" — true of the bundled copy and false of the
+  // binary that is actually running, which the user installed and updates
+  // themselves. The Latest row's remedy already says so; a second block
+  // contradicting it is worse than no block.
+  if (runtime.kind === "bundled-overridable" && runtime.overridePath) return null;
 
   return (
     <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
@@ -1104,6 +1225,10 @@ export default function EngineStatusCard({
       <StatusRow label="Version">{versionSummary(engine)}</StatusRow>
       <StatusRow label="Latest">{latestSummary(engine)}</StatusRow>
       <StatusRow label="Credentials">{credentialsSummary(engine)}</StatusRow>
+      {/* Only rendered when there *is* drift — an absent row is the check
+          passing, which is the state on nearly every machine. See
+          {@link DriftRow} for why this is not cosmetic. */}
+      {engine.drift ? <DriftRow engine={engine} /> : null}
 
       {engine.install ? <InstallGuidance install={engine.install} runner={runner} /> : <BundledUpdateNote engine={engine} />}
       {/* Outside the guidance on purpose: a successful install removes the

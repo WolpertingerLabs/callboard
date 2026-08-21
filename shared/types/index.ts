@@ -134,6 +134,10 @@ export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./prov
 
 export type {
   EngineRuntime,
+  EngineOverrideState,
+  EngineBinaryOverride,
+  EngineVersionDrift,
+  EngineBinaryCheckResponse,
   EngineCredentials,
   EngineCredentialState,
   EngineInstallMethod,

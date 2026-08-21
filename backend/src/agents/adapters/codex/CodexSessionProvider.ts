@@ -23,7 +23,6 @@
  * @see plans/codex-adapter-job.md (Step 9 session-provider)
  * @see plans/codex-spike-findings.md §5 (rollout format)
  */
-import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
@@ -37,6 +36,7 @@ import type {
   SubagentFile,
 } from "../../ports/SessionProvider.js";
 import { createLogger } from "../../../utils/logger.js";
+import { bundledPackageVersion } from "../../../utils/package-version.js";
 import { isIgnoredProjectFolder } from "../../../utils/paths.js";
 import {
   EXPECTED_CODEX_CLI_VERSION,
@@ -71,6 +71,19 @@ function isValidThreadId(sessionId: string): boolean {
 
 let warnedSdkDrift = false;
 
+/**
+ * Test seam: forget that the drift check has run, so the next construction
+ * performs it again.
+ *
+ * The latch is process-wide and the check fires from a constructor, so without
+ * this a suite can only ever observe the *first* provider built in the process —
+ * which is how a check that never fired went unnoticed for four phases. Only
+ * tests call it.
+ */
+export function resetCodexSdkDriftWarning(): void {
+  warnedSdkDrift = false;
+}
+
 export class CodexSessionProvider implements SessionProvider {
   readonly kind = "codex" as const;
 
@@ -83,21 +96,50 @@ export class CodexSessionProvider implements SessionProvider {
    * version this adapter targets (spike §1). The rollout format is undocumented
    * and version-dependent (spike risk #4) — a loud version mismatch makes a
    * future parse regression diagnosable instead of silent.
+   *
+   * ## This check did not work, on any machine, ever
+   *
+   * It read the version with `require("@openai/codex-sdk/package.json")`. That
+   * package ships an `exports` map with no `"./package.json"` entry, so the
+   * require throws `ERR_PACKAGE_PATH_NOT_EXPORTED` — **every** boot, straight
+   * into the bare `catch` below, which was written for "SDK not resolvable
+   * (tests / partial install)" and swallowed it as if that were what happened.
+   * The warning it exists to emit had therefore never fired and could not.
+   * Confirmed by execution across two independent sessions before it was
+   * replaced.
+   *
+   * It was not, however, the *only* drift check, and an earlier version of this
+   * comment said it was. {@link checkCliVersion} in `sessionParser.ts` compares
+   * the same constant against each rollout's recorded
+   * `session_meta.cli_version` and has always been live — real rollouts carry
+   * the field. It is arguably the better-aimed of the two, since it tests the
+   * file actually being decoded rather than the binary that might have written
+   * one. This check's distinct value is that it speaks at boot, before any
+   * mismatched rollout has been read.
+   *
+   * {@link bundledPackageVersion} resolves the manifest through
+   * `require.resolve.paths()` instead, which does not consult the `exports` map
+   * and works against the installed tree. Its `undefined` return now means what
+   * this `catch` was documented to mean, so there is a real skip and a real
+   * check rather than one branch pretending to be both.
+   *
+   * The status card carries the same drift as a rendered row
+   * (`EngineStatus.drift`) — a boot log nobody is watching is not where you
+   * learn that your transcripts may be rendering short.
    */
   private checkSdkVersionOnce(): void {
     if (warnedSdkDrift) return;
     warnedSdkDrift = true;
-    try {
-      const require = createRequire(import.meta.url);
-      const pkg = require("@openai/codex-sdk/package.json") as { version?: string };
-      if (pkg.version && pkg.version !== EXPECTED_CODEX_CLI_VERSION) {
-        log.warn(
-          `@openai/codex-sdk@${pkg.version} differs from the version this provider targets ` +
-            `(${EXPECTED_CODEX_CLI_VERSION}); session rollout format may have drifted.`,
-        );
-      }
-    } catch {
-      /* SDK not resolvable (tests / partial install) — skip the check. */
+    const version = bundledPackageVersion("@openai/codex-sdk");
+    if (!version) {
+      log.debug("Could not read @openai/codex-sdk's version — skipping the rollout-format drift check.");
+      return;
+    }
+    if (version !== EXPECTED_CODEX_CLI_VERSION) {
+      log.warn(
+        `@openai/codex-sdk@${version} differs from the version this provider targets ` +
+          `(${EXPECTED_CODEX_CLI_VERSION}); session rollout format may have drifted.`,
+      );
     }
   }
 
