@@ -65,7 +65,7 @@ import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
 import { workspacesRouter } from "./routes/workspaces.js";
-import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
+import { loginHandler, logoutHandler, checkAuthHandler, requireAllowedIp, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { installProcessGuards } from "./utils/process-guards.js";
 import { sweepTrash } from "./utils/worktree-trash.js";
@@ -140,6 +140,15 @@ const apiLimiter = rateLimit({
   },
 });
 
+// The remote-access IP allowlist gates EVERY /api route, and it has to be
+// mounted here — above the auth routes — to make that true. It used to be the
+// first block of `requireAuth`, which is registered below them, so an off-list
+// public client reached `/api/auth/login` and `/api/auth/check` unimpeded while
+// every other route returned 403. Login is precisely the endpoint an address
+// gate exists to protect: it is the one an off-list client can attack without a
+// credential. See `requireAllowedIp`.
+app.use("/api", requireAllowedIp);
+
 // Apply public rate limiter to unauthenticated auth endpoints
 app.use("/api/auth/login", publicLimiter);
 app.use("/api/auth/logout", publicLimiter);
@@ -187,7 +196,8 @@ app.get(
   checkAuthHandler,
 );
 
-// All /api routes below require auth + rate limiting
+// All /api routes below require auth + rate limiting. (The IP allowlist is
+// mounted further up, so that it also covers the auth routes above.)
 app.use("/api", requireAuth);
 app.use("/api", apiLimiter);
 

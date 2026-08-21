@@ -28,9 +28,10 @@
  * out the person who could fix it is its own outage.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { NextFunction, Request, Response } from "express";
 
 const DATA_DIR = mkdtempSync(join(tmpdir(), "callboard-allowlist-failure-"));
@@ -39,11 +40,7 @@ const SETTINGS_FILE = join(DATA_DIR, "agent-settings.json");
 // Must be set before anything imports `utils/paths.js`, which reads it at
 // module scope.
 process.env.CALLBOARD_DATA_DIR = DATA_DIR;
-// `requireAuth` reaches the password check after the allowlist gate; a
-// configured password keeps the non-allowlist cases off the 503 branch.
-process.env.AUTH_PASSWORD_HASH = "not-a-real-hash";
-
-const { requireAuth } = await import("./auth.js");
+const { requireAllowedIp } = await import("./auth.js");
 
 /** Root's `access()` ignores permission bits, so the chmod case proves nothing when run as root. */
 const notRoot = process.getuid === undefined || process.getuid() !== 0;
@@ -57,7 +54,7 @@ const PUBLIC_IP = "203.0.113.7";
  * the socket address unchanged — the shape a client arriving from the internet
  * has, and the only shape the allowlist gates.
  */
-function call(socketIp: string): { status?: number; body?: any; passed: boolean } {
+function call(socketIp: string, path = "/system-info"): { status?: number; body?: any; passed: boolean } {
   let status: number | undefined;
   let body: any;
   let passed = false;
@@ -75,8 +72,8 @@ function call(socketIp: string): { status?: number; body?: any; passed: boolean 
     },
     locals: {} as Record<string, unknown>,
   } as unknown as Response;
-  const req = { socket: { remoteAddress: socketIp }, headers: {}, path: "/api/auth/check", cookies: {} } as unknown as Request;
-  requireAuth(req, res, (() => {
+  const req = { socket: { remoteAddress: socketIp }, headers: {}, path, cookies: {} } as unknown as Request;
+  requireAllowedIp(req, res, (() => {
     passed = true;
   }) as NextFunction);
   return { status, body, passed };
@@ -90,7 +87,6 @@ afterAll(() => {
   }
   rmSync(DATA_DIR, { recursive: true, force: true });
   delete process.env.CALLBOARD_DATA_DIR;
-  delete process.env.AUTH_PASSWORD_HASH;
 });
 
 beforeEach(() => {
@@ -182,5 +178,46 @@ describe("the repair is always reachable", () => {
     // own machine with no way in but a shell.
     writeFileSync(SETTINGS_FILE, "{ this is not json");
     expect(call(ip).passed).toBe(true);
+  });
+});
+
+describe("what it gates", () => {
+  it("gates the login endpoint, which is the whole point of an address allowlist", () => {
+    // The gate does not look at the path at all — every /api route it is
+    // mounted over is covered. What used to make login exempt was *where* it
+    // was mounted, which the next case pins.
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ remoteAccessIpAllowlist: ["198.51.100.4"] }));
+    for (const path of ["/auth/login", "/auth/check", "/auth/logout", "/system-info"]) {
+      expect(call(PUBLIC_IP, path).passed, path).toBe(false);
+    }
+  });
+
+  /**
+   * A source-order assertion, deliberately, because the defect was one.
+   *
+   * `requireAuth` carried this gate as its first block and is mounted *after*
+   * `/api/auth/login`, `/api/auth/check` and `/api/auth/logout`, so it never ran
+   * for them — while its own comment said it "applies to ALL /api routes
+   * (including login), so a non-allowlisted remote client can't even reach the
+   * login endpoint". Measured against a settings file allowlisting one address
+   * that was not the caller's: `/api/system-info` 403, `/api/auth/login` 401 (it
+   * reached the password check), `/api/auth/check` 200.
+   *
+   * No behavioural test could have caught that, because every unit test of the
+   * middleware calls it directly and so passes whatever the mount order is.
+   * Importing `index.ts` is not an option either — it boots a listener, a cron
+   * scheduler and an SDK query. So this reads the registration order out of the
+   * source, which is the exact property that broke and the only place it is
+   * observable short of running a daemon.
+   */
+  it("is mounted above the auth routes in index.ts", () => {
+    const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf-8");
+    const gate = index.indexOf('app.use("/api", requireAllowedIp)');
+    expect(gate, "requireAllowedIp is no longer mounted in index.ts").toBeGreaterThan(-1);
+    for (const route of ["/api/auth/login", "/api/auth/check", "/api/auth/logout"]) {
+      expect(index.indexOf(`"${route}"`), route).toBeGreaterThan(gate);
+    }
+    // And below the gate, so a client that passes it still has to authenticate.
+    expect(index.indexOf('app.use("/api", requireAuth)')).toBeGreaterThan(gate);
   });
 });
