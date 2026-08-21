@@ -19,6 +19,7 @@ import { join } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   latestVersions: vi.fn(),
+  claudeBinaryPath: vi.fn(),
   claudeExecutablePath: vi.fn(),
   claudeRoutedThroughOpenRouter: vi.fn(),
   agentSettings: vi.fn(),
@@ -42,7 +43,13 @@ vi.mock("./agent-settings.js", () => ({
   isClaudeCodeRoutedThroughOpenRouter: mocks.claudeRoutedThroughOpenRouter,
 }));
 
-vi.mock("./sdk-info.js", () => ({ getSdkInfoAsync: mocks.sdkInfo }));
+vi.mock("./sdk-info.js", () => ({ getSdkInfoAsync: mocks.sdkInfo, refreshSdkInfoCache: vi.fn().mockResolvedValue(undefined) }));
+
+vi.mock("../utils/paths.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/paths.js")>()),
+  getClaudeBinaryPath: mocks.claudeBinaryPath,
+  resetClaudeBinaryPathCache: vi.fn(),
+}));
 
 vi.mock("../agents/adapters/codex/codexAuth.js", () => ({
   getCodexAuthSource: mocks.codexAuthSource,
@@ -73,6 +80,9 @@ beforeEach(() => {
   mocks.codexRoutedThroughOpenRouter.mockReturnValue(false);
   mocks.acpBinaryPath.mockReturnValue(null);
   mocks.acpVersion.mockResolvedValue(undefined);
+  // The wider lookup's "I gave up" answer, so it contributes nothing unless a
+  // case says otherwise.
+  mocks.claudeBinaryPath.mockReturnValue("claude");
 });
 
 afterEach(() => {
@@ -488,5 +498,63 @@ describe("bundledPackageVersion", () => {
 
   it("returns undefined for a package that is not installed", () => {
     expect(bundledPackageVersion("@not-a-real-scope/definitely-not-installed")).toBeUndefined();
+  });
+});
+
+describe("userCliPath — the CLI the user can type, as opposed to the one Callboard runs", () => {
+  it("reports a claude the wider lookup found when the SDK's own lookup did not", async () => {
+    // `getClaudeCodeExecutablePath()` sees the setting and `which claude`.
+    // `getClaudeBinaryPath()` also sees CLAUDE_BINARY and ~/.local/bin — which
+    // is where this feature's own `install.sh` recipe puts the binary. A daemon
+    // started before that was on its PATH has exactly this split, and reporting
+    // only the narrow answer let the card tell someone to install a binary the
+    // About page was printing the version of.
+    const claudeInUserBin = fakeClaudeCli("2.0.1 (Claude Code)");
+    mocks.claudeExecutablePath.mockReturnValue(undefined);
+    mocks.claudeBinaryPath.mockReturnValue(claudeInUserBin);
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.userCliPath).toBe(claudeInUserBin);
+    if (engine.runtime.kind !== "external-preferred") throw new Error("unreachable");
+    // Still absent from `resolvedPath`: chats do not run this copy, and saying
+    // they did would be the opposite lie.
+    expect(engine.runtime.resolvedPath).toBeUndefined();
+  });
+
+  it("does not report one when the SDK already resolved a native claude", async () => {
+    // Nothing to disambiguate — the two lookups agree, so a second path on the
+    // card would be noise dressed as a distinction.
+    mocks.claudeExecutablePath.mockReturnValue("/usr/local/bin/claude");
+    mocks.claudeBinaryPath.mockReturnValue("/usr/local/bin/claude");
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.userCliPath).toBeUndefined();
+  });
+
+  it("treats the bare-name fallback as no discovery at all", async () => {
+    // `getClaudeBinaryPath()` returns the literal "claude" when it gave up and
+    // wants exec to try its luck. That is not a binary anyone found.
+    mocks.claudeExecutablePath.mockReturnValue(undefined);
+    mocks.claudeBinaryPath.mockReturnValue("claude");
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.userCliPath).toBeUndefined();
+  });
+
+  it("looks up codex on PATH so the card can stop guessing", async () => {
+    // The engine is bundled and always runnable, so nothing else in the status
+    // needs this. `codex login` does: it is a command the user either has or
+    // does not, and Phase 2's first cut asserted "does not" without looking.
+    mocks.acpBinaryPath.mockImplementation((command: string) => (command === "codex" ? "/usr/local/bin/codex" : null));
+
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.userCliPath).toBe("/usr/local/bin/codex");
+    expect(mocks.acpBinaryPath).toHaveBeenCalledWith("codex");
+  });
+
+  it("reports none when there is no codex on PATH", async () => {
+    mocks.acpBinaryPath.mockReturnValue(null);
+    const engine = await getEngineStatuses().then((e) => byId(e, "codex"));
+    expect(engine.userCliPath).toBeUndefined();
   });
 });

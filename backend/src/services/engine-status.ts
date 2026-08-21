@@ -40,7 +40,7 @@ import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/ad
 import { DEFAULT_CLINE_PROVIDER_ID } from "../agents/adapters/cline/optionsAdapter.js";
 import { DEFAULT_PI_PROVIDER_ID } from "../agents/adapters/pi/optionsAdapter.js";
 import { createLogger } from "../utils/logger.js";
-import { resetClaudeBinaryPathCache } from "../utils/paths.js";
+import { getClaudeBinaryPath, resetClaudeBinaryPathCache } from "../utils/paths.js";
 import {
   getAgentSettings,
   getClaudeCodeExecutablePath,
@@ -49,7 +49,7 @@ import {
 } from "./agent-settings.js";
 import { installGuidanceFor } from "./engine-install-recipes.js";
 import { getLatestVersions, isNewerVersion } from "./npm-registry.js";
-import { getSdkInfoAsync } from "./sdk-info.js";
+import { getSdkInfoAsync, refreshSdkInfoCache } from "./sdk-info.js";
 
 const log = createLogger("engine-status");
 
@@ -223,10 +223,10 @@ export function resetEngineStatusCache(): void {
 /**
  * Forget every process-lifetime answer to "is this engine installed".
  *
- * Four caches memoize that question, and until now none of them was reachable
- * outside its own module. That was correct while nothing could change PATH under
- * a running daemon — and it stops being correct the moment a user installs
- * something and asks Callboard to look again, which is exactly what
+ * **Five** caches memoize that question, and until now none was reachable
+ * outside its own module. That was correct while nothing could change PATH
+ * under a running daemon — and it stops being correct the moment a user
+ * installs something and asks Callboard to look again, which is exactly what
  * `POST /api/engines/refresh` does:
  *
  * - `availability.ts` — resolved path *and* `--version` output, per ACP command;
@@ -235,17 +235,115 @@ export function resetEngineStatusCache(): void {
  *   editing `pathToClaudeCodeExecutable` used to need a daemon restart;
  * - `paths.ts` — `_claudeBinaryPath`, the separate lookup the login prompt and
  *   About page use;
- * - this module — the cached `claude --version` and manifest reads.
+ * - this module — the cached `claude --version` and manifest reads;
+ * - `sdk-info.ts` — the **account info**, and this one is the reason the button
+ *   was previously a lie. It is populated once at boot and invalidated from
+ *   exactly one other place (the agent-settings save route), so the Credentials
+ *   row could not move: a user who followed this card's own instruction to run
+ *   `claude auth login` and press Recheck got "Not configured" until they
+ *   restarted the daemon. Measured before the fix — three POSTs logged
+ *   `Fetching SDK info` zero additional times.
  *
- * Cheap by construction: each is a variable assignment, and the next status
- * assembly re-probes. Nothing here spawns a process; the re-probe that follows
- * does what it always did.
+ * Four of the five are variable assignments. The fifth is not: `refreshSdkInfoCache`
+ * spawns an Agent SDK query. That cost is accepted here and nowhere else — this
+ * is an explicit button press, not a poll, and {@link refreshEngineStatuses}
+ * bounds how often it can happen. Ordering matters: the executable-path cache is
+ * dropped *first*, so the re-spawn uses the path the user just installed rather
+ * than the one this call is invalidating.
+ *
+ * Fire-and-forget by design. `refreshSdkInfoCache` publishes its promise into
+ * `sdk-info`'s module state synchronously, so the `getSdkInfoAsync()` that
+ * happens moments later during assembly awaits *this* fetch rather than
+ * starting a second one — while a caller that never reaches that line is not
+ * left holding a rejection.
  */
 export function resetEngineProbeCaches(): void {
-  resetAcpAvailabilityCache();
   resetClaudeCodeExecutablePathCache();
   resetClaudeBinaryPathCache();
+  resetAcpAvailabilityCache();
   resetEngineStatusCache();
+  refreshSdkInfoCache().catch((err) => log.warn(`SDK info refresh failed: ${err instanceof Error ? err.message : String(err)}`));
+}
+
+/** How long after a real probe a second `POST /api/engines/refresh` is served from cache instead. */
+export const MIN_REFRESH_INTERVAL_MS = 10_000;
+
+let lastProbeAt = 0;
+let lastProbeResult: EngineStatus[] | null = null;
+let refreshInFlight: Promise<EngineRefreshResult> | null = null;
+
+/** What `POST /api/engines/refresh` answers with. */
+export interface EngineRefreshResult {
+  engines: EngineStatus[];
+  /** Did this call actually drop the caches and re-probe, or was it coalesced/throttled? */
+  probed: boolean;
+  /** When `probed` is false, roughly how long until a probe would run. */
+  retryAfterMs?: number;
+}
+
+/**
+ * Re-probe every engine, at most once per {@link MIN_REFRESH_INTERVAL_MS}.
+ *
+ * ## Why this needs a throttle at all
+ *
+ * A GET is nearly free after the first one — the caches are the whole point.
+ * A POST is the opposite by construction: it *deletes* those caches, so it pays
+ * for `which claude`, one `which` per ACP vendor, two `--version` spawns, an SDK
+ * query and five registry fetches, **every time**. Measured on the unthrottled
+ * version: three GETs produced one spawn; three POSTs produced four, one more
+ * per call. Two of those spawns are synchronous on a single-threaded server, so
+ * the cost is not merely CPU — one POST held the event loop long enough that an
+ * unrelated `/api/auth/check` issued half a second later took six seconds.
+ *
+ * The generic 300-requests-per-minute API limiter is roughly sixty times too
+ * loose for an endpoint that shape.
+ *
+ * ## What it does instead
+ *
+ * - **Single-flight.** Concurrent callers share one assembly rather than each
+ *   starting their own. The previous cut actively destroyed the dedup that
+ *   protected the GET, because `resetEngineStatusCache()` clears the in-flight
+ *   map — so two simultaneous POSTs meant two full probe sets.
+ * - **Minimum interval.** Inside the window the cached statuses come back
+ *   immediately, with `probed: false` so the UI can say a probe did not happen
+ *   rather than implying one did. Coalescing rather than a 429: the caller
+ *   pressed a button, and refusing them while holding a perfectly good answer
+ *   would be worse than telling them it is a moment old.
+ */
+export async function refreshEngineStatuses(): Promise<EngineRefreshResult> {
+  if (refreshInFlight) return refreshInFlight;
+
+  const now = Date.now();
+  const elapsed = now - lastProbeAt;
+  if (lastProbeAt > 0 && elapsed < MIN_REFRESH_INTERVAL_MS) {
+    // The result of the probe that *did* run, not a fresh assembly of it.
+    // Re-assembling would re-read settings and re-consult the registry cache
+    // for an answer that cannot have changed since — and it would make the
+    // throttled path cost something, which is the whole thing being avoided.
+    // The fallback covers the one case where there is nothing to replay: a
+    // first refresh that threw still moved `lastProbeAt`.
+    const engines = lastProbeResult ?? (await getEngineStatuses());
+    return { engines, probed: false, retryAfterMs: MIN_REFRESH_INTERVAL_MS - elapsed };
+  }
+
+  lastProbeAt = now;
+  const run = (async (): Promise<EngineRefreshResult> => {
+    resetEngineProbeCaches();
+    const engines = await getEngineStatuses({ refresh: true });
+    lastProbeResult = engines;
+    return { engines, probed: true };
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+  refreshInFlight = run;
+  return run;
+}
+
+/** Test seam: forget when the last real probe ran, so the next refresh is not throttled. */
+export function resetEngineRefreshThrottle(): void {
+  lastProbeAt = 0;
+  lastProbeResult = null;
+  refreshInFlight = null;
 }
 
 // ── The engine table ────────────────────────────────────────────────
@@ -270,6 +368,56 @@ const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 const ACP_VENDOR_PACKAGES: Record<string, string> = {
   opencode: "opencode-ai",
 };
+
+// ── The CLI the user can type, as opposed to the one Callboard runs ──
+
+/**
+ * A `claude` the **user** could invoke, when the Agent SDK's own lookup found
+ * none.
+ *
+ * `getClaudeCodeExecutablePath()` decides what Callboard hands the SDK and
+ * consults exactly two things: the `pathToClaudeCodeExecutable` setting, and
+ * `which claude`. `getClaudeBinaryPath()` — already in the tree, already reset
+ * by {@link resetEngineProbeCaches}, and what the login prompt and About page
+ * use — additionally checks `CLAUDE_BINARY` and four well-known directories,
+ * one of which is `~/.local/bin`.
+ *
+ * That is not a hypothetical gap. `~/.local/bin` is exactly where this feature's
+ * own `install.sh` recipe puts the binary, and a daemon started before that
+ * directory was on its `PATH` will never see it via `which` — so the narrow
+ * lookup says "absent" while About prints a version. Asserting "no native
+ * `claude` on your PATH" from the narrow lookup alone is how a card tells
+ * someone to install what they are looking at.
+ *
+ * Returns `undefined` for the bare-name fallback (`"claude"`), which is that
+ * function's "I gave up, let exec try" answer and not a discovery.
+ */
+function discoverableClaudePath(): string | undefined {
+  try {
+    const found = getClaudeBinaryPath();
+    return found && found !== "claude" && existsSync(found) ? found : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Where a user-installed CLI resolves on the daemon's PATH, or `undefined`.
+ *
+ * Reuses `resolveAcpBinaryPath` — despite the ACP name it is simply a cached,
+ * shell-free `which`, and it is already invalidated by
+ * {@link resetEngineProbeCaches}, so a `codex` installed and then Rechecked is
+ * seen. Wrapped rather than called directly so the intent reads at the call
+ * site: this is not about ACP, it is about whether `<cli> login` is a command
+ * the user has.
+ */
+function resolveUserCliPath(command: string): string | undefined {
+  try {
+    return resolveAcpBinaryPath(command) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // ── Credentials ─────────────────────────────────────────────────────
 
@@ -520,6 +668,7 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
     }
   })();
   const sdkVersion = bundledPackageVersion(CLAUDE_AGENT_SDK_PACKAGE);
+  const claudeUserCli = claudePath ? undefined : discoverableClaudePath();
   engines.push({
     id: "claude-code",
     label: "Claude Code",
@@ -532,17 +681,22 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
       ...(sdkVersion ? { fallbackVersion: sdkVersion } : {}),
     },
     installed: Boolean(claudePath) || bundledClaudeBinaryPresent(),
+    ...(claudeUserCli ? { userCliPath: claudeUserCli } : {}),
     ...versionFields(claudePath ? await claudeCliVersion(claudePath) : undefined, CLAUDE_CODE_CLI_PACKAGE),
     credentials: await claudeCodeCredentials(),
   });
 
   // Codex — bundled binary, overridable in principle (`codexPathOverride`) and
-  // not overridden by callboard today. The real gate is auth.
+  // not overridden by callboard today. The real gate is auth — and whether the
+  // user can *reach* `codex login`, which is a PATH question and is therefore
+  // looked up rather than inferred from the bundled layout.
+  const codexUserCli = resolveUserCliPath("codex");
   engines.push({
     id: "codex",
     label: "Codex",
     runtime: { kind: "bundled-overridable", package: CODEX_SDK_PACKAGE, ...callboardDependencyRange(CODEX_SDK_PACKAGE) },
     installed: true,
+    ...(codexUserCli ? { userCliPath: codexUserCli } : {}),
     ...versionFields(bundledPackageVersion(CODEX_SDK_PACKAGE), CODEX_SDK_PACKAGE),
     credentials: codexCredentials(),
   });

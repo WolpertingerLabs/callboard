@@ -9,10 +9,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
 import type { EngineStatus } from "shared/types/index.js";
 
-const mocks = vi.hoisted(() => ({ getEngineStatuses: vi.fn(), resetEngineProbeCaches: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getEngineStatuses: vi.fn(), refreshEngineStatuses: vi.fn() }));
 vi.mock("../services/engine-status.js", () => ({
   getEngineStatuses: mocks.getEngineStatuses,
-  resetEngineProbeCaches: mocks.resetEngineProbeCaches,
+  refreshEngineStatuses: mocks.refreshEngineStatuses,
 }));
 
 const { enginesRouter } = await import("./engines.js");
@@ -56,6 +56,7 @@ const refresh = () => call(refreshHandler);
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getEngineStatuses.mockResolvedValue([engine]);
+  mocks.refreshEngineStatuses.mockResolvedValue({ engines: [engine], probed: true });
 });
 
 describe("GET /api/engines", () => {
@@ -95,42 +96,42 @@ describe("GET /api/engines", () => {
 });
 
 describe("POST /api/engines/refresh", () => {
-  it("drops the memoized lookups before re-probing", async () => {
-    // Order is the assertion: re-probing first and clearing after would answer
-    // with exactly the stale paths the caller asked to get rid of.
-    const order: string[] = [];
-    mocks.resetEngineProbeCaches.mockImplementation(() => order.push("reset"));
-    mocks.getEngineStatuses.mockImplementation(async () => {
-      order.push("probe");
-      return [engine];
-    });
-
+  it("answers with the re-probed list", async () => {
     const { status, body } = await refresh();
     expect(status).toBe(200);
-    expect(body).toEqual({ engines: [engine] });
-    expect(order).toEqual(["reset", "probe"]);
+    expect(body).toEqual({ engines: [engine], probed: true });
   });
 
-  it("re-fetches latest versions too, rather than serving the cached ones", async () => {
+  it("passes the throttle verdict through instead of claiming a probe", async () => {
+    // The service rate-limits this endpoint, because it deletes the caches that
+    // make the GET cheap and then spawns — twice, synchronously. A call that was
+    // coalesced or fell inside the window must not read to the UI as a fresh
+    // check, so `probed` and `retryAfterMs` travel to the client verbatim.
+    mocks.refreshEngineStatuses.mockResolvedValue({ engines: [engine], probed: false, retryAfterMs: 7_000 });
+    const { body } = await refresh();
+    expect(body).toEqual({ engines: [engine], probed: false, retryAfterMs: 7_000 });
+  });
+
+  it("omits retryAfterMs when the service did not supply one", async () => {
+    const { body } = await refresh();
+    expect(body).not.toHaveProperty("retryAfterMs");
+  });
+
+  it("delegates the throttling rather than re-implementing it", async () => {
+    // Deliberately at the service boundary: a bound that lived in the router
+    // would apply only to HTTP callers, and could not be measured without one.
+    // `engine-refresh-throttle.test.ts` counts the spawns; this only checks the
+    // router asks the one function that enforces it, once per request.
     await refresh();
-    expect(mocks.getEngineStatuses).toHaveBeenCalledWith({ refresh: true });
+    await refresh();
+    expect(mocks.refreshEngineStatuses).toHaveBeenCalledTimes(2);
+    expect(mocks.getEngineStatuses).not.toHaveBeenCalled();
   });
 
-  it("still re-probes when a reset throws", async () => {
-    // Half-cleared caches plus a fresh probe beats refusing to answer: the user
-    // pressed this button because what they were being shown was wrong.
-    mocks.resetEngineProbeCaches.mockImplementation(() => {
-      throw new Error("boom");
-    });
+  it("degrades to an empty list rather than a 500, and admits it did not probe", async () => {
+    mocks.refreshEngineStatuses.mockRejectedValue(new Error("boom"));
     const { status, body } = await refresh();
     expect(status).toBe(200);
-    expect(body).toEqual({ engines: [engine] });
-  });
-
-  it("degrades to an empty list rather than a 500", async () => {
-    mocks.getEngineStatuses.mockRejectedValue(new Error("boom"));
-    const { status, body } = await refresh();
-    expect(status).toBe(200);
-    expect(body).toEqual({ engines: [] });
+    expect(body).toEqual({ engines: [], probed: false });
   });
 });
