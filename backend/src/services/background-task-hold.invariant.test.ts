@@ -44,11 +44,18 @@ type OpName = keyof typeof OPERATIONS;
 const OP_NAMES = Object.keys(OPERATIONS) as OpName[];
 
 /**
- * How many timers Node currently has queued for this prompt.
+ * How many timers Node currently has queued.
  *
  * Read off the fake-timer clock rather than the object, on purpose: asking
  * `HeldPrompt` whether it thinks it has a timer would let a bug in its own
  * bookkeeping answer the question the test is asking.
+ *
+ * The count is process-global, which is why every sequence starts by clearing
+ * it (see {@link check}). Without that, a timer left behind by an earlier
+ * sequence's abandoned prompt counts towards this one and a genuine
+ * `!closed && nothing pending` state reads as healthy. The first draft of this
+ * file had exactly that hole: a depth-6 run reported up to 11 timers pending
+ * for a class that never has more than one.
  */
 const pendingTimers = () => vi.getTimerCount();
 
@@ -59,9 +66,12 @@ interface Violation {
 
 /** Run one sequence from a freshly armed prompt, checking after every step. */
 function check(sequence: readonly OpName[]): Violation | null {
+  // Isolation, and load-bearing: see `pendingTimers`.
+  vi.clearAllTimers();
   const held = new HeldPrompt("hello");
   const onExpiry = () => {};
   held.armTimeout(WINDOW, onExpiry);
+  if (pendingTimers() !== 1) throw new Error(`fixture broken: armed prompt has ${pendingTimers()} timers, expected exactly 1`);
 
   const done: OpName[] = [];
   for (const name of sequence) {
@@ -71,6 +81,10 @@ function check(sequence: readonly OpName[]): Violation | null {
     done.push(name);
 
     if (!held.closed && pendingTimers() === 0) return { sequence: [...done], timers: 0 };
+    // One slot, one timer. `schedule()` is the only scheduler and always
+    // replaces, so more than one pending means a path bypassed it — which
+    // would make "is anything pending?" ambiguous and this search unsound.
+    if (pendingTimers() > 1) return { sequence: [...done], timers: pendingTimers() };
   }
   return null;
 }
@@ -92,20 +106,22 @@ function* sequences(depth: number): Generator<OpName[]> {
 }
 
 describe("HeldPrompt — while open, a timer is always pending", () => {
-  it("holds across every operation sequence to depth 5", () => {
+  it("holds across every operation sequence to depth 6", () => {
     vi.useFakeTimers();
     try {
       let checked = 0;
       const violations: Violation[] = [];
-      for (const sequence of sequences(5)) {
+      for (const sequence of sequences(6)) {
         checked++;
         const violation = check(sequence);
         if (violation) violations.push(violation);
       }
 
-      // 6 + 6^2 + ... + 6^5. Asserted so a generator that quietly stopped
+      // 6 + 6^2 + ... + 6^6. Asserted so a generator that quietly stopped
       // enumerating cannot pass as a clean search.
-      expect(checked).toBe(9330);
+      expect(checked).toBe(55_986);
+      // Sliced first, so a failure prints counterexamples rather than a
+      // five-figure diff nobody can read.
       expect(violations.slice(0, 5)).toEqual([]);
       expect(violations).toHaveLength(0);
     } finally {
