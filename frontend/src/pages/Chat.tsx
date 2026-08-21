@@ -86,6 +86,7 @@ import { getActivePlugins } from "../utils/plugins";
 import { findLatestTaskListIndex } from "../utils/taskListNav";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
 import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
+import { sameActivityPayload } from "../utils/activitySnapshot";
 
 /**
  * Detect if the messages contain an unresolved ExitPlanMode tool_use
@@ -298,16 +299,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    * Re-read what the chat is blocked on. Best-effort: a failure here must
    * never break the transcript, so it falls back to "nothing in flight"
    * rather than surfacing an error the user can do nothing about.
+   *
+   * Stores through an equality check because this is polled on a timer while a
+   * run is live: every response is a freshly-parsed object, so an
+   * unconditional `setActivity` would make every tick a new reference and
+   * re-render the page on a schedule rather than on a change. Returning the
+   * previous value from the updater is what makes React bail out — and doing
+   * it in the updater rather than against a captured `activity` is what keeps
+   * this callback dependency-free, so the interval that calls it is not torn
+   * down and rebuilt on every render.
    */
   const refreshActivity = useCallback((chatId: string) => {
+    const store = (next: ChatActivityResponse) => setActivity((prev) => (sameActivityPayload(prev, next) ? prev : next));
     getActivity(chatId)
       .then((next) => {
         if (currentIdRef.current !== chatId) return;
-        setActivity(next);
+        store(next);
       })
       .catch(() => {
         if (currentIdRef.current !== chatId) return;
-        setActivity({ activities: [], conditionWatch: null, awaitingChildren: 0 });
+        store({ activities: [], conditionWatch: null, awaitingChildren: 0 });
       });
   }, []);
 
