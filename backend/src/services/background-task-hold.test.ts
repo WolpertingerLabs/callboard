@@ -15,7 +15,7 @@
  *   a leak, and an idle expiry that deferred would be no bound at all.
  */
 import { describe, it, expect, vi } from "vitest";
-import { decideHold, HeldPrompt, OutstandingTasks, MAX_TRACKED_TASKS, MAX_HOLD_EPISODES } from "./background-task-hold.js";
+import { decideHold, HeldPrompt, OutstandingTasks, MAX_TRACKED_TASKS, MAX_HOLD_EPISODES, createHoldEpisodeBudget } from "./background-task-hold.js";
 
 /** Drain an async iterable to an array, with a timeout so a hang fails loudly. */
 async function drain(iterable: AsyncIterable<unknown>, timeoutMs = 1000): Promise<unknown[]> {
@@ -513,6 +513,38 @@ describe("HeldPrompt", () => {
       held.armTimeout(60_000, onExpiry);
       expect(onExpiry).toHaveBeenCalledOnce();
       expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("spends one run allowance across every prompt the run installs", () => {
+    // A run does not have one HeldPrompt: a nudge and a stream recovery each
+    // install a replacement, up to seven in a run. A count living on the object
+    // was therefore a per-prompt cap wearing a per-run cap's name — seven
+    // allowances of twenty, or thirty-five hours of holding against a
+    // documented five.
+    vi.useFakeTimers();
+    try {
+      const budget = createHoldEpisodeBudget();
+      const onExpiry = vi.fn();
+
+      // The first prompt burns the whole allowance, one episode at a time.
+      const first = new HeldPrompt("hello", budget);
+      for (let i = 0; i < MAX_HOLD_EPISODES; i++) {
+        first.armTimeout(60_000, onExpiry);
+        vi.advanceTimersByTime(1_000);
+        first.disarmTimeout();
+      }
+      expect(onExpiry).not.toHaveBeenCalled();
+      first.close();
+
+      // A recovery installs a replacement, which inherits the spent allowance
+      // rather than a fresh one.
+      const second = new HeldPrompt("hello", budget);
+      second.armTimeout(60_000, onExpiry);
+      expect(onExpiry).toHaveBeenCalledOnce();
+      expect(second.closed).toBe(true);
     } finally {
       vi.useRealTimers();
     }

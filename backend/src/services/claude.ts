@@ -23,7 +23,7 @@ import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
 import { clearActivitiesForChat, migrateActivities, getWatch, startActivity, endActivity } from "./chat-activity.js";
 import { decideNudge } from "./nudge-decision.js";
-import { decideHold, HeldPrompt, OutstandingTasks, DEFAULT_MAX_HOLD_MS } from "./background-task-hold.js";
+import { decideHold, HeldPrompt, OutstandingTasks, DEFAULT_MAX_HOLD_MS, createHoldEpisodeBudget } from "./background-task-hold.js";
 import { getRun as getJobRun } from "./job-store.js";
 import {
   isStreamClosedToolFailure,
@@ -1109,6 +1109,17 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // plain binding stays narrowed to `null` and every later use is a type error.
   const heldPromptRef: { current: HeldPrompt | null } = { current: null };
   /**
+   * This run's allowance of hold episodes, shared by every {@link HeldPrompt}
+   * the run installs.
+   *
+   * Out here with `heldPromptRef` because `setQueryPrompt` mints a replacement
+   * on every nudge and every stream recovery, and the cap it feeds is a
+   * property of the *run*. Left on the object it would have been up to seven
+   * separate allowances of twenty — thirty-five hours of holding against the
+   * five that `background-task-hold.ts` documents.
+   */
+  const holdEpisodeBudget = createHoldEpisodeBudget();
+  /**
    * Background tasks this session started and has not seen end.
    *
    * Out here rather than inside the run's `try`, alongside `heldPromptRef` and
@@ -1790,7 +1801,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           return;
         }
         heldPromptRef.current?.close();
-        const held = new HeldPrompt(source);
+        const held = new HeldPrompt(source, holdEpisodeBudget);
         heldPromptRef.current = held;
         queryOpts.prompt = held.iterable();
         // The row belonged to the hold just closed, and the replacement has

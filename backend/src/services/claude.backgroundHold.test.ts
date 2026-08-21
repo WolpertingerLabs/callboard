@@ -44,7 +44,7 @@ process.env.CALLBOARD_MAX_BACKGROUND_HOLD_MS = String(HOLD_MS);
 
 const { sendMessage } = await import("./claude.js");
 const { setAgentProviderForTesting } = await import("../agents/factory.js");
-const { DEFAULT_MAX_HOLD_MS } = await import("./background-task-hold.js");
+const { DEFAULT_MAX_HOLD_MS, MAX_HOLD_EPISODES } = await import("./background-task-hold.js");
 const { listActivities } = await import("./chat-activity.js");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -335,6 +335,49 @@ describe("background-task hold — query loop wiring", () => {
     expect(ctrl.turns[1].promptOpen).toBe(false);
     expect(run.events.at(-1)!.type).toBe("done");
     expect(run.events.at(-1)!.abandonedBackgroundTaskIds).toBeUndefined();
+  });
+
+  it("spends one episode allowance for the whole run, not one per query", async () => {
+    // `setQueryPrompt` installs a fresh HeldPrompt on every nudge and every
+    // stream recovery. With the episode counter on the object, each of those
+    // handed the run another full allowance — up to seven of them — so the
+    // documented run bound of `MAX_HOLD_EPISODES × window` was really seven
+    // times that. The run's cell is passed to every prompt so it cannot be.
+    //
+    // No sleeps: every episode here is opened and drained immediately, so the
+    // cap is reached without waiting on a single window.
+    const ctrl = controllableProvider();
+    const run = startSession(ctrl.provider);
+    ctrl.push({ type: "session_started", sessionId: "bh-sd-1" });
+    for (let i = 0; i < MAX_HOLD_EPISODES; i++) {
+      ctrl.push(started(`e${i}`), { type: "result", status: "success" }, ended(`e${i}`));
+    }
+    await sleep(HOLD_MS / 4);
+    expect(ctrl.turns[0].promptOpen).toBe(true);
+
+    // A recovery, and a replacement prompt.
+    ctrl.push(
+      { type: "tool_use", toolName: "Bash", input: {}, callId: "sd-1" },
+      { type: "tool_result", callId: "sd-1", content: "Error: Stream closed", isError: true },
+      { type: "tool_use", toolName: "Read", input: {}, callId: "sd-2" },
+      { type: "tool_result", callId: "sd-2", content: "Error: Stream closed", isError: true },
+    );
+    await ctrl.waitForQuery(2);
+
+    // The allowance is spent, so this task is refused a hold and dies with the
+    // subprocess — the pre-hold behaviour, which is what the cap degrades into.
+    ctrl.push({ type: "session_started", sessionId: "bh-sd-2" }, started("over"), { type: "result", status: "success" });
+    await sleep(HOLD_MS / 4);
+    // The discriminating assertion, and deliberately not a timing one: a run
+    // handed a fresh allowance *holds* this task, and a held task has a dock
+    // row. Both spellings end the run eventually — the refused one at the
+    // boundary, the held one a window later when the bound expires — so
+    // "did it finish?" cannot tell them apart, and "was it ever held?" can.
+    expect(listActivities(run.chatIdOf()!).filter((a) => a.kind === "holding")).toHaveLength(0);
+
+    await run.finished;
+    expect(ctrl.turns[1].promptOpen).toBe(false);
+    expect(run.events.at(-1)!.abandonedBackgroundTaskIds).toEqual(["over"]);
   });
 
   it("names tasks abandoned by a provider error, which ends the run without a `done`", async () => {

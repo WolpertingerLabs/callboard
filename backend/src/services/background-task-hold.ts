@@ -47,6 +47,9 @@
  *    per-episode budget with unlimited episodes is not a bound: a run that
  *    alternates background `sleep` and notification turn would mint a fresh
  *    window forever, which is precisely the shape a polling agent falls into.
+ *    Counted against the *run* via {@link HoldEpisodeBudget}, because a run
+ *    installs a new {@link HeldPrompt} on every nudge and stream recovery and a
+ *    per-object count would be up to seven allowances wearing one's name.
  *
  * Together they bound a run at `MAX_HOLD_EPISODES × DEFAULT_MAX_HOLD_MS` of
  * holding, and both degrade into the pre-hold behaviour: we stop waiting, and
@@ -149,6 +152,28 @@ export const MAX_TRACKED_TASKS = 50;
  * different problem.
  */
 export const MAX_HOLD_EPISODES = 20;
+
+/**
+ * The run's episode allowance, shared by every {@link HeldPrompt} in it.
+ *
+ * A cell rather than a number because a run does not have one `HeldPrompt`: a
+ * nudge and a stream recovery each install a replacement, up to
+ * `MAX_NUDGES + MAX_STREAM_RECOVERIES + 1` of them. A counter living on the
+ * object would therefore have been a per-*prompt* cap wearing a per-run cap's
+ * name — seven allowances of twenty rather than one, which is thirty-five hours
+ * of holding against a documented five.
+ *
+ * The runaway {@link MAX_HOLD_EPISODES} exists to catch is a property of the
+ * run, so the counter has to be too, and passing the cell is what makes that
+ * structural instead of a rule someone has to remember at each `new`.
+ */
+export interface HoldEpisodeBudget {
+  spent: number;
+}
+
+export function createHoldEpisodeBudget(): HoldEpisodeBudget {
+  return { spent: 0 };
+}
 
 /**
  * The set of background tasks a session is currently waiting on.
@@ -271,8 +296,6 @@ export class HeldPrompt {
    * skipped counting the real episode that followed it.
    */
   private inEpisode = false;
-  /** Episodes opened so far, against {@link MAX_HOLD_EPISODES}. */
-  private episodes = 0;
 
   /**
    * @param source the messages this turn is sending, in whatever shape the
@@ -285,8 +308,17 @@ export class HeldPrompt {
    * regardless of what this class does. Handing the SDK a string would defeat
    * the hold entirely and silently — the session would end exactly as it did
    * before, with no error to explain why.
+   *
+   * @param episodeBudget the *run's* episode allowance — see
+   *   {@link HoldEpisodeBudget}. Production must pass the run's cell, since a
+   *   run installs a new prompt on every nudge and recovery and a per-prompt
+   *   count is not the bound this file documents. The default exists for tests
+   *   that construct a prompt in isolation and care about one.
    */
-  constructor(private readonly source: AsyncIterable<unknown> | string) {
+  constructor(
+    private readonly source: AsyncIterable<unknown> | string,
+    private readonly episodeBudget: HoldEpisodeBudget = createHoldEpisodeBudget(),
+  ) {
     this.released = new Promise<void>((resolve) => {
       this.release = resolve;
     });
@@ -397,9 +429,14 @@ export class HeldPrompt {
     // notification mints a fresh window forever. See MAX_HOLD_EPISODES.
     if (!this.inEpisode) {
       this.inEpisode = true;
-      this.episodes++;
-      if (this.episodes > MAX_HOLD_EPISODES) {
-        log.warn(`Refusing a ${this.episodes}th background-task hold in one run — the run has stopped making progress it needs a held subprocess for`);
+      // Against the run's allowance, not this object's: the prompt is replaced
+      // on every nudge and stream recovery, and a fresh count each time would
+      // multiply the cap by however many replacements a run happened to make.
+      this.episodeBudget.spent++;
+      if (this.episodeBudget.spent > MAX_HOLD_EPISODES) {
+        log.warn(
+          `Refusing a ${this.episodeBudget.spent}th background-task hold in one run — the run has stopped making progress it needs a held subprocess for`,
+        );
         this.schedule(null);
         this.expire(onExpiry);
         return;
