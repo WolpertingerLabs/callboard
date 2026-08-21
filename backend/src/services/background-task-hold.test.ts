@@ -15,7 +15,7 @@
  *   a leak, and an idle expiry that deferred would be no bound at all.
  */
 import { describe, it, expect, vi } from "vitest";
-import { decideHold, HeldPrompt, OutstandingTasks, MAX_TRACKED_TASKS } from "./background-task-hold.js";
+import { decideHold, HeldPrompt, OutstandingTasks, MAX_TRACKED_TASKS, MAX_HOLD_EPISODES } from "./background-task-hold.js";
 
 /** Drain an async iterable to an array, with a timeout so a hang fails loudly. */
 async function drain(iterable: AsyncIterable<unknown>, timeoutMs = 1000): Promise<unknown[]> {
@@ -395,6 +395,75 @@ describe("HeldPrompt", () => {
       expect(held.deadline).not.toBeNull();
 
       held.markTurnEnded();
+      expect(held.closed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops granting fresh windows once a run has opened too many episodes", () => {
+    // Per-episode budgeting with unlimited episodes is not a bound. `sleep
+    // 300 &` → ends → notification turn → `sleep 300 &` is a shape a polling
+    // agent falls into naturally, and each round would mint a fresh window
+    // forever. Pre-PR the whole run was capped; this is what restores that.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+
+      // Each round: hold, wait a little, drain. Well inside every window.
+      for (let i = 0; i < MAX_HOLD_EPISODES; i++) {
+        held.armTimeout(60_000, onExpiry);
+        vi.advanceTimersByTime(1_000);
+        expect(held.closed).toBe(false);
+        held.disarmTimeout();
+      }
+      expect(onExpiry).not.toHaveBeenCalled();
+
+      // One episode too many: refused outright rather than granted a window.
+      held.armTimeout(60_000, onExpiry);
+      expect(onExpiry).toHaveBeenCalledOnce();
+      expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts episodes, not turn boundaries — a long hold is still one episode", () => {
+    // `armTimeout` runs at every held turn boundary, and a task reporting
+    // progress can produce many. Counting those would refuse a hold that has
+    // never once drained, which is the opposite of what the cap is for.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+      for (let i = 0; i < MAX_HOLD_EPISODES * 3; i++) {
+        held.armTimeout(600_000, onExpiry);
+        vi.advanceTimersByTime(1_000);
+      }
+      expect(onExpiry).not.toHaveBeenCalled();
+      expect(held.closed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not count the post-drain floor as an episode", () => {
+    // The floor re-arms `deadlineAt`, so inferring "new episode" from a null
+    // deadline would both count the floor and then miss the real episode after
+    // it — burning the budget at twice the rate on one path and not at all on
+    // the other.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+      held.armTimeout(60_000, onExpiry);
+      for (let i = 0; i < MAX_HOLD_EPISODES - 1; i++) {
+        held.disarmTimeout(); // floor armed
+        vi.advanceTimersByTime(1_000);
+        held.armTimeout(60_000, onExpiry); // real episode, inherits the floor's deadline
+      }
+      expect(onExpiry).not.toHaveBeenCalled();
       expect(held.closed).toBe(false);
     } finally {
       vi.useRealTimers();

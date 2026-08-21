@@ -32,16 +32,30 @@
  * ## Why the bounds are not optional
  *
  * A held session pins a live CLI subprocess. `sleep infinity` in the background
- * would pin one forever, so every hold is bounded by wall-clock and every exit
- * path — release, timeout, abort, error — must release the stream exactly once.
- * {@link HeldPrompt} owns that guarantee so the query loop cannot forget it.
+ * would pin one forever, so holding is bounded and every exit path — release,
+ * timeout, abort, error — must release the stream exactly once.
+ * {@link HeldPrompt} owns those guarantees so the query loop cannot forget
+ * them.
  *
- * Two rules refine that bound, and both are about *when* it is safe to act on:
- * the budget is per hold episode rather than per run (see
- * {@link HeldPrompt.disarmTimeout}), and an expiry that lands mid-turn waits
- * for the turn to end rather than closing stdin under it (see
- * {@link HeldPrompt.armTimeout}). Neither loosens the bound; they only stop it
- * firing at a moment when firing does damage.
+ * There are **two** bounds, and it takes both to make a bound at all:
+ *
+ * 1. {@link DEFAULT_MAX_HOLD_MS} caps one *episode* — one contiguous stretch of
+ *    waiting. It is measured absolutely from the episode's first arm, so a task
+ *    that reports periodically cannot extend it, and it resets only when the
+ *    task set genuinely empties.
+ * 2. {@link MAX_HOLD_EPISODES} caps how many times that reset may happen. A
+ *    per-episode budget with unlimited episodes is not a bound: a run that
+ *    alternates background `sleep` and notification turn would mint a fresh
+ *    window forever, which is precisely the shape a polling agent falls into.
+ *
+ * Together they bound a run at `MAX_HOLD_EPISODES × DEFAULT_MAX_HOLD_MS` of
+ * holding, and both degrade into the pre-hold behaviour: we stop waiting, and
+ * tasks still running die with the subprocess.
+ *
+ * Two rules refine *when* a bound may act, without loosening it: an expiry that
+ * lands mid-turn waits for the turn to end rather than closing stdin under it,
+ * and a drained episode's clock is replaced rather than merely stopped (see
+ * {@link HeldPrompt.armTimeout} and {@link HeldPrompt.disarmTimeout}).
  *
  * Both refinements are safe for the same reason, and it is the load-bearing
  * property of this file: **while a hold is open, a timer is always pending.**
@@ -107,6 +121,32 @@ export const DEFAULT_MAX_HOLD_MS = resolveMaxHoldMs();
  * nobody; the cap is a tripwire for that, not a resource limit.
  */
 export const MAX_TRACKED_TASKS = 50;
+
+/**
+ * Separate hold episodes one run may open. The second of this file's two
+ * bounds, and the reason the first one is safe to reset.
+ *
+ * {@link DEFAULT_MAX_HOLD_MS} bounds a single stretch of waiting, and that
+ * budget resets whenever the task set empties — which is right, because the
+ * work it was being patient for actually finished. But "resets" with nothing
+ * counting the resets is not a bound at all: `sleep 300 &` → ends → the CLI's
+ * notification opens a turn → `sleep 300 &` again is a shape a polling agent
+ * falls into naturally, and each round would mint a fresh window forever. Once
+ * a run has done that this many times it is not making progress it needs a
+ * held subprocess for.
+ *
+ * The two together bound a run at `MAX_HOLD_EPISODES × DEFAULT_MAX_HOLD_MS` of
+ * holding — loose on purpose, since the point is to catch a runaway rather
+ * than to ration legitimate work. Hitting it degrades into the pre-hold
+ * behaviour exactly as the wall-clock cap does: we stop waiting, and tasks
+ * still running die with the subprocess.
+ *
+ * Not tunable, unlike the window. The window encodes a policy about how long
+ * *your* background work takes and deployments genuinely differ; this encodes
+ * "something has gone wrong", and a deployment that needs it raised has a
+ * different problem.
+ */
+export const MAX_HOLD_EPISODES = 20;
 
 /**
  * The set of background tasks a session is currently waiting on.
@@ -190,6 +230,17 @@ export class HeldPrompt {
    * {@link disarmTimeout}.
    */
   private lastArm: { ms: number; onExpiry: () => void } | null = null;
+  /**
+   * Whether the hold is inside an episode right now — armed for tasks that are
+   * actually outstanding, as opposed to merely carrying the post-drain floor.
+   *
+   * Tracked explicitly rather than inferred from `deadlineAt`, which the floor
+   * also sets: inferring would have counted the floor as an episode and, worse,
+   * skipped counting the real episode that followed it.
+   */
+  private inEpisode = false;
+  /** Episodes opened so far, against {@link MAX_HOLD_EPISODES}. */
+  private episodes = 0;
 
   /**
    * @param source the messages this turn is sending, in whatever shape the
@@ -303,6 +354,22 @@ export class HeldPrompt {
   armTimeout(ms: number, onExpiry: () => void): void {
     if (this.isReleased) return;
     this.lastArm = { ms, onExpiry };
+
+    // A new stretch of waiting, as opposed to another turn boundary inside the
+    // one already running. The per-episode budget is what makes counting these
+    // necessary: without a cap on the resets, a run that alternates task and
+    // notification mints a fresh window forever. See MAX_HOLD_EPISODES.
+    if (!this.inEpisode) {
+      this.inEpisode = true;
+      this.episodes++;
+      if (this.episodes > MAX_HOLD_EPISODES) {
+        log.warn(`Refusing a ${this.episodes}th background-task hold in one run — the run has stopped making progress it needs a held subprocess for`);
+        this.schedule(null);
+        this.expire(onExpiry);
+        return;
+      }
+    }
+
     if (this.deadlineAt === null) this.deadlineAt = Date.now() + ms;
 
     const remaining = this.deadlineAt - Date.now();
@@ -444,6 +511,8 @@ export class HeldPrompt {
   disarmTimeout(): void {
     this.deadlineAt = null;
     this.expiryDeferred = false;
+    // The episode is over; the next arm opens a new one and is counted.
+    this.inEpisode = false;
     if (this.isReleased || !this.lastArm) {
       this.schedule(null);
       return;
