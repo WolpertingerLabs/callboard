@@ -1188,6 +1188,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return () => document.removeEventListener("visibilitychange", handleVisibilityResume);
   }, [id]);
 
+  // Keep the dock honest while a run is live.
+  //
+  // Every other refresh hangs off a stream frame, which works for activities a
+  // tool opens — the tool_use that opens one is itself a frame. A
+  // background-task hold is opened at a *turn boundary*, which emits nothing,
+  // and the whole point of the hold is that no frames follow it until the CLI
+  // has something to report. Without a poll the row would appear only on the
+  // next unrelated event, i.e. usually after the thing it was describing had
+  // already ended. Cheap (an in-memory read), and it stops with the run.
+  useEffect(() => {
+    if (!streaming || !id) return;
+    const timer = setInterval(() => refreshActivity(id), 5000);
+    return () => clearInterval(timer);
+  }, [streaming, id, refreshActivity]);
+
   // Fetch slash commands and plugins for the chat
   const loadSlashCommands = useCallback(async () => {
     if (!id) return;

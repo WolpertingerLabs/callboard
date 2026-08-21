@@ -230,6 +230,18 @@ export class HeldPrompt {
   }
 
   /**
+   * Epoch ms this hold episode expires, or null when nothing is armed.
+   *
+   * Exposed so the UI can show the same deadline the bound is enforcing — the
+   * dock counts down from it — rather than the caller re-deriving it from
+   * `Date.now() + DEFAULT_MAX_HOLD_MS` and quietly disagreeing with the timer
+   * on every turn after the first.
+   */
+  get deadline(): number | null {
+    return this.deadlineAt;
+  }
+
+  /**
    * Arm the wall-clock bound, measured from the *first* arm of the current
    * hold episode.
    *

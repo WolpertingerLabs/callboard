@@ -19,8 +19,25 @@
  * may end early — everything else is the agent waiting on work it delegated,
  * where returning without the result would hand the agent a confusing empty
  * response while the delegate kept running.
+ *
+ * `holding` is the background-task hold (`background-task-hold.ts`): the turn
+ * is over but the session is deliberately kept alive so a Bash command started
+ * with `run_in_background` can finish and report. It was the third way a chat
+ * could legitimately be busy and the only one with nothing on screen — a chat
+ * patiently holding a subprocess open rendered as idle and finished.
+ *
+ * ## Adding a kind
+ *
+ * Unlike a `StreamEvent` `type`, this is not gated behind a client capability,
+ * and the reason is the transport: activities cross REST, where a client asks
+ * and the server answers — there is no negotiated session to gate on, and the
+ * wire-surface snapshot (`stream.ts` / `protocol.ts`) does not cover this file.
+ * The hazard an old client faces is therefore not "drops the event" but "looks
+ * this kind up in a map and renders nothing", so the obligation lands on the
+ * consumer instead: anything keying a lookup on {@link ActivityKind} must fall
+ * back for a kind it has never heard of. See `ActivityDock.tsx`.
  */
-export type ActivityKind = "wait" | "await_chat" | "await_agent" | "generating" | "scanning";
+export type ActivityKind = "wait" | "await_chat" | "await_agent" | "generating" | "scanning" | "holding";
 
 /** The condition attached to a polling `wait`, denormalized onto the activity. */
 export interface ActivityCondition {

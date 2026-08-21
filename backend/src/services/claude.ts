@@ -21,7 +21,7 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
-import { clearActivitiesForChat, migrateActivities, getWatch } from "./chat-activity.js";
+import { clearActivitiesForChat, migrateActivities, getWatch, startActivity, endActivity } from "./chat-activity.js";
 import { decideNudge } from "./nudge-decision.js";
 import { decideHold, HeldPrompt, OutstandingTasks, DEFAULT_MAX_HOLD_MS } from "./background-task-hold.js";
 import { getRun as getJobRun } from "./job-store.js";
@@ -1108,6 +1108,30 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // closure (`setQueryPrompt`): control-flow analysis cannot follow that, so a
   // plain binding stays narrowed to `null` and every later use is a type error.
   const heldPromptRef: { current: HeldPrompt | null } = { current: null };
+  /**
+   * The `holding` ChatActivity open for the current hold episode, if any.
+   *
+   * A hold is the third way a chat can legitimately be busy — after the `wait`
+   * tool and an `onComplete` callback — and until this it was the only one with
+   * nothing on screen: a session patiently keeping a subprocess alive rendered
+   * as idle and finished.
+   *
+   * Out here with `heldPromptRef`, and a ref cell for the same two reasons: the
+   * run's `finally` has to be able to end it, and it is assigned from a closure.
+   *
+   * `chat-activity.ts` has no lifecycle listeners of its own by design (see its
+   * header), so the session owner drives it. Every path that ends a hold calls
+   * {@link endHoldActivity} — the turn-boundary release, the wall-clock expiry,
+   * the task set draining to zero, a replacement prompt being installed, the
+   * abort listener, and the run's `finally`. A phantom countdown that never
+   * clears would be worse than no row at all.
+   */
+  const holdActivityRef: { current: string | null } = { current: null };
+  const endHoldActivity = (): void => {
+    if (!holdActivityRef.current) return;
+    endActivity(holdActivityRef.current);
+    holdActivityRef.current = null;
+  };
   sessionRegistry.register(trackingId, {
     type: "web",
     abortController,
@@ -1700,6 +1724,31 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
        */
       let holdExpired = false;
       /**
+       * Open (or re-open) the dock row for the hold this turn boundary is
+       * arming.
+       *
+       * Re-minted rather than mutated on each held turn: the task set changes
+       * across an episode as one task ends and another starts, and the record
+       * in `chat-activity.ts` is immutable once written. The deadline it counts
+       * down to is the hold's own, so a re-mint mid-episode keeps the same
+       * expiry rather than restarting the clock.
+       */
+      const beginHoldActivity = (taskIds: string[], expiresAt: number | null): void => {
+        endHoldActivity();
+        const activity = startActivity(trackingId, {
+          kind: "holding",
+          label: `${taskIds.length} background task${taskIds.length === 1 ? "" : "s"}`,
+          detail: taskIds.join(", "),
+          ...(expiresAt !== null && { expiresAt }),
+          // Not interruptible. Releasing would close the input stream, which
+          // kills the very shells the hold exists to let finish — the opposite
+          // of what "end this early" means everywhere else in the dock. Ending
+          // the run is what /stop is for, and it already closes the hold.
+          interruptible: false,
+        });
+        holdActivityRef.current = activity.id;
+      };
+      /**
        * Install this turn's prompt, wrapping it so it can be held open. Closes
        * any previous hold first — a continuation (nudge, stream recovery) has
        * already finished with the stream it replaces.
@@ -1713,6 +1762,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         const held = new HeldPrompt(source);
         heldPromptRef.current = held;
         queryOpts.prompt = held.iterable();
+        // The row belonged to the hold just closed, and the replacement has
+        // not held anything yet.
+        endHoldActivity();
         // The new hold has a new (unset) deadline, so it must not inherit the
         // old one's verdict. Left latched, a single expiry killed the hold for
         // the rest of the run: a stream recovery installs a fresh HeldPrompt,
@@ -1727,12 +1779,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // subprocess down on abort anyway, but a held input stream is the one
       // thing that stop cannot reach on its own: nothing else ever resolves
       // that promise, so the release has to be wired to the signal directly.
-      abortController.signal.addEventListener("abort", () => heldPromptRef.current?.close(), { once: true });
+      abortController.signal.addEventListener(
+        "abort",
+        () => {
+          heldPromptRef.current?.close();
+          endHoldActivity();
+        },
+        { once: true },
+      );
       // Registration happens well after the session was registered and after at
       // least one await, so a stop can land in the gap — and `abort` has then
       // already dispatched, leaving the listener above inert. Cover the gap
       // rather than leave the guarantee the comment claims quietly false.
-      if (abortController.signal.aborted) heldPromptRef.current?.close();
+      if (abortController.signal.aborted) {
+        heldPromptRef.current?.close();
+        endHoldActivity();
+      }
 
       // ── Query loop ──
       // Runs exactly once for normal sessions. When requireExplicitCompletion
@@ -1832,15 +1894,27 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   );
                   held.armTimeout(DEFAULT_MAX_HOLD_MS, () => {
                     holdExpired = true;
+                    // The wait is over whatever the stream does next, so the
+                    // row goes now rather than at the deferred close — leaving
+                    // it up would show a countdown that has already run out.
+                    endHoldActivity();
                     log.warn(
                       `Session ${trackingId} held ${Math.round(DEFAULT_MAX_HOLD_MS / 60_000)}m for background task(s) ` +
                         `[${outstandingTasks.ids().join(", ")}] — giving up waiting; they end with the subprocess`,
                     );
                   });
+                  // After arming, so the row carries the deadline the bound is
+                  // actually enforcing — on the second and later turns of an
+                  // episode that is the original deadline, not a fresh one.
+                  // Skipped when arming expired on the spot (an already-elapsed
+                  // deadline), which would otherwise post a countdown that is
+                  // over before it renders.
+                  if (!holdExpired) beginHoldActivity(outstandingTasks.ids(), held.deadline);
                 } else {
                   if (hold.reason !== "none-outstanding") {
                     log.info(`Session ${trackingId} releasing background-task hold (${hold.reason})`);
                   }
+                  endHoldActivity();
                   held.close();
                 }
               }
@@ -2069,7 +2143,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               // Not a release: the stream stays open until the turn boundary,
               // which is where `decideHold` sees nothing outstanding and closes
               // it on the one path that also reports why.
-              if (outstandingTasks.size === 0) heldPromptRef.current?.disarmTimeout();
+              if (outstandingTasks.size === 0) {
+                heldPromptRef.current?.disarmTimeout();
+                // Nothing left to be patient for, so the dock stops saying we
+                // are. The turn boundary re-opens a row if a later task starts.
+                endHoldActivity();
+              }
               break;
             }
 
@@ -2298,10 +2377,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
       }
     } finally {
-      // Release any background-task hold. Idempotent, and unconditional on
-      // purpose: every other exit from the loop closes its own hold, and this
-      // is the one that catches the paths that throw past them.
+      // Release any background-task hold, and take its dock row down with it.
+      // Idempotent, and unconditional on purpose: every other exit from the
+      // loop closes its own hold, and this is the one that catches the paths
+      // that throw past them. The `clearActivitiesForChat` below only runs when
+      // the registry entry is still ours, so it is not a substitute — a run
+      // whose entry was taken over by a replacement would leave the row up.
       heldPromptRef.current?.close();
+      endHoldActivity();
       // This run's query is done with — drop the handle so a late stop on a
       // replacement session can never close it a second time.
       activeQuery = null;
