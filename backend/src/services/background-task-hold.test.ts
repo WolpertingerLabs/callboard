@@ -188,12 +188,14 @@ describe("HeldPrompt", () => {
     }
   });
 
-  it("measures its deadline from the first arm, not the latest", () => {
+  it("measures its deadline from the first arm of an unbroken hold, not the latest", () => {
     // `armTimeout` runs at every held turn boundary, and each delivered
     // notification opens another turn. If re-arming restarted the window, a
     // task reporting periodically could extend the cap forever — the exact
     // runaway the bound exists to stop. Armed at t=0 for 60s and re-armed at
-    // t=30s, it must still fire at t=60s, not t=90s.
+    // t=30s with the hold never having broken, it must still fire at t=60s,
+    // not t=90s. A single `tail -f` gets one window, however many turns it
+    // spans.
     vi.useFakeTimers();
     try {
       const held = new HeldPrompt("hello");
@@ -210,6 +212,56 @@ describe("HeldPrompt", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("gives the next hold episode a full window once the task set has emptied", () => {
+    // The other half of the invariant above. `disarmTimeout` is called only
+    // when the outstanding count reaches zero — the work finished — so the
+    // next task is not made to serve out the remainder of a dead task's
+    // budget. Armed at t=0, disarmed at t=30s, re-armed at t=30s: it must fire
+    // at t=90s, a full 60s later.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+      held.armTimeout(60_000, onExpiry);
+      vi.advanceTimersByTime(30_000);
+      held.disarmTimeout();
+      held.armTimeout(60_000, onExpiry);
+
+      vi.advanceTimersByTime(59_999);
+      expect(onExpiry).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(2);
+      expect(onExpiry).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not fire an expiry for a hold that already drained", () => {
+    // The 10:27 line in the production trace: the last task ended, nothing
+    // cancelled the timer, and it fired 32 seconds later naming an empty list.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+      held.armTimeout(60_000, onExpiry);
+      held.disarmTimeout();
+
+      vi.advanceTimersByTime(600_000);
+      expect(onExpiry).not.toHaveBeenCalled();
+      expect(held.closed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tolerates a disarm with nothing armed", () => {
+    // Every ending task calls it, including one whose hold was never armed
+    // because the turn it started in has not ended yet.
+    const held = new HeldPrompt("hello");
+    expect(() => held.disarmTimeout()).not.toThrow();
+    expect(held.closed).toBe(false);
   });
 
 

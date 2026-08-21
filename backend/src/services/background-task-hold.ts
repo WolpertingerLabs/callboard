@@ -151,7 +151,12 @@ export class HeldPrompt {
   private readonly released: Promise<void>;
   private isReleased = false;
   private timer: NodeJS.Timeout | null = null;
-  /** Absolute expiry, fixed by the first `armTimeout` and never extended. */
+  /**
+   * Absolute expiry of the current hold episode, fixed by the `armTimeout` that
+   * opened it and never extended. Cleared by {@link disarmTimeout} when the
+   * episode ends, so the next one starts a fresh window — see the two methods
+   * for why that is the whole of the rule.
+   */
   private deadlineAt: number | null = null;
 
   /**
@@ -210,7 +215,8 @@ export class HeldPrompt {
   }
 
   /**
-   * Arm the wall-clock bound, measured from the *first* time this is called.
+   * Arm the wall-clock bound, measured from the *first* arm of the current
+   * hold episode.
    *
    * Called at every held turn boundary, not once — each delivered notification
    * opens a new turn that can itself end still holding. So the deadline is
@@ -219,6 +225,13 @@ export class HeldPrompt {
    * "15 minutes since the last turn ended", which a task that reports
    * periodically could extend indefinitely — the exact runaway the bound exists
    * to stop.
+   *
+   * The budget is per *episode*, not per run: what resets it is
+   * {@link disarmTimeout}, and the only thing that calls that is the task set
+   * genuinely emptying. So one `tail -f` gets one window and no more, however
+   * many turns it spans, while a session that starts a task, finishes it, and
+   * later starts another gets a full window for the second — because between
+   * them the work it was being patient for actually completed.
    */
   armTimeout(ms: number, onExpiry: () => void): void {
     if (this.isReleased) return;
@@ -239,6 +252,32 @@ export class HeldPrompt {
     }, remaining);
     // A pending hold must not be the reason the daemon stays up.
     this.timer.unref?.();
+  }
+
+  /**
+   * End the current hold episode without closing the stream: cancel the armed
+   * timer and clear the deadline, so a later {@link armTimeout} starts a fresh
+   * window.
+   *
+   * Called when the outstanding task count drops to zero. At that moment there
+   * is nothing left to be patient for, so a timer that keeps running can only
+   * do harm — it fires on an empty task set, at whatever the session has since
+   * gone on to do. The production trace was a session that polled with
+   * successive background sleeps: each one inherited what was left of the first
+   * one's fifteen minutes, and the last was killed 84 seconds short of
+   * finishing, under a log line naming an empty list of tasks.
+   *
+   * Deliberately not `close()`: draining to zero is not the end of the run.
+   * The turn boundary decides that — `decideHold` sees `outstanding: 0` and
+   * releases there, on the one path that also ends the activity and reports
+   * the reason.
+   */
+  disarmTimeout(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.deadlineAt = null;
   }
 }
 

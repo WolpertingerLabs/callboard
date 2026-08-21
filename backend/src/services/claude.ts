@@ -2027,12 +2027,26 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               if (event.phase === "started") {
                 outstandingTasks.start(event.taskId);
                 log.info(`Session ${trackingId} started background task ${event.taskId}${event.summary ? ` — ${event.summary}` : ""}`);
-              } else if (outstandingTasks.end(event.taskId)) {
+                break;
+              }
+              if (outstandingTasks.end(event.taskId)) {
                 log.info(
                   `Session ${trackingId} background task ${event.taskId} ended` +
                     `${event.status ? ` (${event.status})` : ""} — ${outstandingTasks.size} still outstanding`,
                 );
               }
+              // Draining to zero ends the hold *episode*, and with it the
+              // fifteen-minute budget: the work we were being patient for
+              // actually finished, so anything started later deserves a fresh
+              // window rather than the remainder of this one. Without this the
+              // budget is per-run, and a session polling with successive
+              // background sleeps has its last one killed part-way through on a
+              // timer armed for the first.
+              //
+              // Not a release: the stream stays open until the turn boundary,
+              // which is where `decideHold` sees nothing outstanding and closes
+              // it on the one path that also reports why.
+              if (outstandingTasks.size === 0) heldPromptRef.current?.disarmTimeout();
               break;
             }
 
