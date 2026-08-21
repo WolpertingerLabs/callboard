@@ -52,14 +52,31 @@ describe("resolveAcpBinaryPath", () => {
 });
 
 describe("acpProviderVersion", () => {
-  it("reports the first line of what the CLI printed", () => {
+  it("reports the first line of what the CLI printed", async () => {
     // `node --version` prints `v22.x.y` — kept verbatim, because vendors print
     // anything from a bare semver to a banner and parsing further would guess.
-    expect(acpProviderVersion("node")).toMatch(/^v\d+\./);
+    expect(await acpProviderVersion("node")).toMatch(/^v\d+\./);
   });
 
-  it("says nothing for a binary that is not installed, and never spawns it", () => {
-    expect(acpProviderVersion("callboard-definitely-not-a-real-binary")).toBeUndefined();
+  it("says nothing for a binary that is not installed, and never spawns it", async () => {
+    expect(await acpProviderVersion("callboard-definitely-not-a-real-binary")).toBeUndefined();
+  });
+
+  it("runs off the event loop, so a hung vendor binary cannot stall the daemon", async () => {
+    // The reason this one probe is async while `which` next door is not:
+    // execFileSync's `timeout` sends killSignal and then keeps waiting, so a
+    // child that ignores SIGTERM blocks the single thread for as long as it
+    // likes — every open SSE stream with it. Asserting the *shape* (a promise
+    // resolved from the microtask queue) is what keeps it that way; the
+    // SIGKILL escalation that makes the deadline enforceable is on the call.
+    const pending = acpProviderVersion("node");
+    expect(pending).toBeInstanceOf(Promise);
+    await pending;
+  });
+
+  it("shares one probe between concurrent callers", async () => {
+    const [a, b] = await Promise.all([acpProviderVersion("node"), acpProviderVersion("node")]);
+    expect(a).toBe(b);
   });
 
   it("is not on the availability payload, which /api/system-info serializes", () => {

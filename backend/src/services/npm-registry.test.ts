@@ -79,7 +79,8 @@ describe("getLatestVersions", () => {
 
     const versions = await getLatestVersions(["alpha", "beta", "alpha"]);
 
-    expect(versions).toEqual({ alpha: "1.0.0", beta: "2.0.0" });
+    expect(versions.alpha).toMatchObject({ version: "1.0.0", stale: false });
+    expect(versions.beta).toMatchObject({ version: "2.0.0", stale: false });
     // Duplicates collapse, so three names are two requests.
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(Object.keys(JSON.parse(readFileSync(CACHE_FILE, "utf-8")))).toEqual(expect.arrayContaining(["alpha", "beta"]));
@@ -108,6 +109,38 @@ describe("degrading offline", () => {
     fetchSpy.mockRejectedValue(new TypeError("fetch failed"));
 
     expect(await getLatestVersion("@scope/pkg")).toBe("0.9.0");
+  });
+
+  it("marks that fallback stale and says how old it is", async () => {
+    // Without this the UI renders "up to date" off arbitrarily old data, which
+    // asserts a present-tense fact nobody checked.
+    const checkedAt = Date.now() - 5 * 60 * 60 * 1000;
+    writeFileSync(CACHE_FILE, JSON.stringify({ "@scope/pkg": { latestVersion: "0.9.0", ts: checkedAt } }));
+    fetchSpy.mockRejectedValue(new TypeError("fetch failed"));
+
+    expect(await getLatestVersions(["@scope/pkg"])).toEqual({ "@scope/pkg": { version: "0.9.0", checkedAt, stale: true } });
+  });
+
+  it("clears the stale flag once a refetch lands", async () => {
+    writeFileSync(CACHE_FILE, JSON.stringify({ "@scope/pkg": { latestVersion: "0.9.0", ts: Date.now() - 5 * 60 * 60 * 1000 } }));
+    fetchSpy.mockResolvedValue(okResponse("1.0.0"));
+
+    const answer = (await getLatestVersions(["@scope/pkg"]))["@scope/pkg"];
+    expect(answer).toMatchObject({ version: "1.0.0", stale: false });
+    expect(answer.checkedAt).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  it("reports a fresh cache hit as fresh, with the original fetch time", async () => {
+    const checkedAt = Date.now() - 60_000;
+    writeFileSync(CACHE_FILE, JSON.stringify({ "@scope/pkg": { latestVersion: "1.0.0", ts: checkedAt } }));
+
+    expect(await getLatestVersions(["@scope/pkg"])).toEqual({ "@scope/pkg": { version: "1.0.0", checkedAt, stale: false } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not call a package with no answer stale — nothing was ever known", async () => {
+    fetchSpy.mockRejectedValue(new TypeError("fetch failed"));
+    expect(await getLatestVersions(["@scope/pkg"])).toEqual({ "@scope/pkg": { stale: false } });
   });
 
   it("treats a corrupt cache file as an empty cache", async () => {

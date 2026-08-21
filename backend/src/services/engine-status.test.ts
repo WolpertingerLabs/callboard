@@ -55,7 +55,7 @@ vi.mock("../agents/adapters/acp/availability.js", () => ({
 }));
 
 import type { EngineStatus } from "shared/types/index.js";
-import { bundledPackageVersion, getEngineStatuses, resetEngineStatusCache } from "./engine-status.js";
+import { bundledClaudeBinaryPresent, bundledPackageVersion, getEngineStatuses, resetEngineStatusCache } from "./engine-status.js";
 
 const byId = (engines: EngineStatus[], id: string) => engines.find((e) => e.id === id)!;
 
@@ -72,7 +72,7 @@ beforeEach(() => {
   mocks.codexAuthSource.mockReturnValue(null);
   mocks.codexRoutedThroughOpenRouter.mockReturnValue(false);
   mocks.acpBinaryPath.mockReturnValue(null);
-  mocks.acpVersion.mockReturnValue(undefined);
+  mocks.acpVersion.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -110,17 +110,47 @@ describe("bundled engines", () => {
     // `codexPathOverride` exists in the SDK and callboard does not pass it —
     // that is Phase 4. The kind still says the option exists.
     const codex = await getEngineStatuses().then((e) => byId(e, "codex"));
-    expect(codex.runtime).toEqual({ kind: "bundled-overridable", package: "@openai/codex-sdk" });
+    expect(codex.runtime).toMatchObject({ kind: "bundled-overridable", package: "@openai/codex-sdk" });
+    expect(codex.runtime).not.toHaveProperty("overridePath");
     expect(codex.installed).toBe(true);
   });
 
+  it("carry the manifest range, so pinned and ranged deps are distinguishable", async () => {
+    // The UI's remedy line turns on this. `@cline/sdk` and pi are pinned
+    // exactly, so "updating Callboard picks it up" is false for them: the pin
+    // does not move until a maintainer moves it. `@openai/codex-sdk` carries a
+    // caret, where the same sentence is true.
+    const engines = await getEngineStatuses();
+
+    for (const id of ["cline", "pi"]) {
+      const runtime = byId(engines, id).runtime;
+      if (runtime.kind !== "bundled") throw new Error("unreachable");
+      expect(runtime.pinned).toBe(true);
+      expect(runtime.dependencyRange).toMatch(/^\d+\.\d+\.\d+/);
+    }
+
+    const codex = byId(engines, "codex").runtime;
+    if (codex.kind !== "bundled-overridable") throw new Error("unreachable");
+    expect(codex.pinned).toBe(false);
+    expect(codex.dependencyRange).toMatch(/^[\^~]/);
+  });
+
   it("flag a newer published version as a fact, without an install path", async () => {
-    mocks.latestVersions.mockResolvedValue({ "@cline/sdk": "999.0.0" });
+    mocks.latestVersions.mockResolvedValue({ "@cline/sdk": { version: "999.0.0", checkedAt: 1_700_000_000_000, stale: false } });
     const cline = await getEngineStatuses().then((e) => byId(e, "cline"));
 
     expect(cline.latestVersion).toBe("999.0.0");
     expect(cline.updateAvailable).toBe(true);
+    expect(cline.latestVersionCheckedAt).toBe(new Date(1_700_000_000_000).toISOString());
     expect(cline).not.toHaveProperty("install");
+  });
+
+  it("pass the registry's staleness through, so the UI can age its claim", async () => {
+    mocks.latestVersions.mockResolvedValue({ "@cline/sdk": { version: "0.0.69", checkedAt: 1_700_000_000_000, stale: true } });
+    const cline = await getEngineStatuses().then((e) => byId(e, "cline"));
+
+    expect(cline.latestVersionStale).toBe(true);
+    expect(cline.latestVersionCheckedAt).toBe(new Date(1_700_000_000_000).toISOString());
   });
 });
 
@@ -163,6 +193,23 @@ describe("claude-code — the external-preferred kind", () => {
     expect(engine.installed).toBe(true);
   });
 
+  it("earns `installed` from the bundled binary rather than asserting it", async () => {
+    // The SDK ships its binary as eight OPTIONAL per-platform deps.
+    // `--omit=optional`, a partial install or an unpublished platform leaves
+    // none, and with no native CLI either the engine genuinely cannot run — so
+    // this is a check, not a constant. On a normal dev tree both halves are
+    // true, so the assertion is that the answer tracks the probe.
+    mocks.claudeExecutablePath.mockReturnValue(undefined);
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.installed).toBe(bundledClaudeBinaryPresent());
+  });
+
+  it("is installed on the strength of a native CLI even with no bundled binary", async () => {
+    mocks.claudeExecutablePath.mockReturnValue(fakeClaudeCli("9.9.9 (Claude Code)"));
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.installed).toBe(true);
+  });
+
   it("runs the version probe once per resolved path", async () => {
     const path = fakeClaudeCli("1.0.0 (Claude Code)");
     mocks.claudeExecutablePath.mockReturnValue(path);
@@ -193,8 +240,8 @@ describe("acp vendors — the external kind", () => {
 
   it("report the resolved path and the CLI's own version when installed", async () => {
     mocks.acpBinaryPath.mockReturnValue("/usr/local/bin/opencode");
-    mocks.acpVersion.mockReturnValue("1.18.18");
-    mocks.latestVersions.mockResolvedValue({ "opencode-ai": "1.19.0" });
+    mocks.acpVersion.mockResolvedValue("1.18.18");
+    mocks.latestVersions.mockResolvedValue({ "opencode-ai": { version: "1.19.0", checkedAt: 1_700_000_000_000, stale: false } });
 
     const engine = await getEngineStatuses().then((e) => byId(e, "opencode"));
 
@@ -228,9 +275,17 @@ describe("credentials", () => {
   });
 
   it("reports Claude Code as unconfigured, with what to do, when the SDK has no account", async () => {
+    // `false` is earned here: the SDK looked at exactly the place Claude Code
+    // credentials live and found nothing.
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     expect(engine.credentials.configured).toBe(false);
     expect(engine.credentials.note).toContain("claude login");
+  });
+
+  it("says unknown, not unconfigured, when the SDK could not be asked at all", async () => {
+    mocks.sdkInfo.mockRejectedValue(new Error("sdk unavailable"));
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials.configured).toBe("unknown");
   });
 
   it("prefers OpenRouter routing over the SDK's account for Claude Code", async () => {
@@ -260,20 +315,88 @@ describe("credentials", () => {
     expect(JSON.stringify(engine)).not.toContain("sk-or-secret");
   });
 
-  it("says an unset embedded key may still work from the environment", async () => {
-    const engine = await getEngineStatuses().then((e) => byId(e, "pi"));
-    expect(engine.credentials.configured).toBe(false);
-    expect(engine.credentials.note).toContain("openrouter");
-    expect(engine.credentials.note).toContain("environment");
+  it("counts an API key, and names which of the five sources it was", async () => {
+    mocks.sdkInfo.mockResolvedValue({ account: { apiKeySource: "project" }, models: [], fetchedAt: 0 });
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials).toEqual({ configured: true, source: "API key (project)" });
   });
 
-  it("gives ACP the honest non-answer rather than inferring a login", async () => {
+  it("does not call an oauth login an API key", async () => {
+    // `apiKeySource` is `user | project | org | temporary | oauth`. Only four of
+    // those are keys; labelling the fifth one "API key" names the wrong
+    // credential and points the user at the wrong field to change.
+    mocks.sdkInfo.mockResolvedValue({ account: { apiKeySource: "oauth" }, models: [], fetchedAt: 0 });
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials.configured).toBe(true);
+    expect(engine.credentials.source).toBe("subscription (OAuth)");
+  });
+
+  it("counts a third-party backend, where every other account field is absent", async () => {
+    // The SDK's own doc: for a 3P provider the other fields are absent and auth
+    // is external (AWS creds, gcloud ADC, an enterprise gateway). Without this
+    // branch a fully-authenticated Bedrock user is reported unconfigured and
+    // told to run `claude login`, which would not help them.
+    for (const apiProvider of ["bedrock", "vertex", "gateway"] as const) {
+      mocks.sdkInfo.mockResolvedValue({ account: { apiProvider }, models: [], fetchedAt: 0 });
+      resetEngineStatusCache();
+      const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+      expect(engine.credentials.configured).toBe(true);
+      expect(engine.credentials.source).toBe(apiProvider);
+      expect(engine.credentials.note).not.toContain("claude login");
+    }
+  });
+
+  it("still reports firstParty with no other field as unconfigured", async () => {
+    // The negative half of the case above: `firstParty` means Anthropic OAuth
+    // applies, so an account with nothing else really has not logged in.
+    mocks.sdkInfo.mockResolvedValue({ account: { apiProvider: "firstParty" }, models: [], fetchedAt: 0 });
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials.configured).toBe(false);
+  });
+
+  it("says an unset embedded key is unknown, not absent", async () => {
+    // Callboard did not look and could not have: which env var the runtime
+    // reads depends on the provider id. "Not configured" over a note saying a
+    // chat may still work is a row arguing with itself.
+    const engine = await getEngineStatuses().then((e) => byId(e, "pi"));
+    expect(engine.credentials.configured).toBe("unknown");
+    expect(engine.credentials.note).toContain("openrouter");
+    expect(engine.credentials.note).toContain("environment lookup");
+  });
+
+  it("gives ACP a genuine non-answer, not a wrong answer", async () => {
+    // Reproduced live before this changed: a machine with a valid opencode
+    // auth.json rendered "Not configured". A flag that is false on every
+    // machine forever varies with nothing — it is the dishonest-✓ column with
+    // its sign flipped, and it made the tab's dot unable to ever go green.
     mocks.acpBinaryPath.mockReturnValue("/usr/local/bin/opencode");
     const engine = await getEngineStatuses().then((e) => byId(e, "opencode"));
-    // Installed but never "signed in": ACP has no auth introspection.
     expect(engine.installed).toBe(true);
-    expect(engine.credentials.configured).toBe(false);
+    expect(engine.credentials.configured).toBe("unknown");
+    expect(engine.credentials.configured).not.toBe(false);
     expect(engine.credentials.note).toContain("never by Callboard");
+  });
+
+  it("never claims a credential state it did not observe", async () => {
+    // The general form of the two cases above, and the test the tri-state was
+    // introduced to make writable: `false` is a claim about the user's machine,
+    // so it is only allowed where the backend actually inspected the place that
+    // engine's credentials live. Everything else must say "unknown".
+    mocks.acpBinaryPath.mockReturnValue("/usr/local/bin/opencode");
+    const engines = await getEngineStatuses();
+
+    /** Engines whose credentials Callboard can actually read. */
+    const observable = new Set(["claude-code", "codex"]);
+
+    for (const engine of engines) {
+      if (engine.credentials.configured !== false) continue;
+      expect(observable, `${engine.id} reported a definite "not configured" for credentials it cannot see`).toContain(engine.id);
+    }
+
+    // And the unobservable ones say so rather than defaulting to a negative.
+    for (const id of ["cline", "pi", "opencode"]) {
+      expect(byId(engines, id).credentials.configured).toBe("unknown");
+    }
   });
 
   it("still answers when settings cannot be read at all", async () => {
@@ -312,6 +435,23 @@ describe("degrading offline", () => {
   it("passes ?refresh=1 through to the registry lookup", async () => {
     await getEngineStatuses({ refresh: true });
     expect(mocks.latestVersions).toHaveBeenCalledWith(expect.any(Array), { refresh: true });
+  });
+
+  it("shares one assembly between concurrent callers", async () => {
+    // A single call fans out to five registry fetches and, on a cold cache, a
+    // spawn. Two settings tabs, or Phase 2's Recheck button under a heavy
+    // finger, would otherwise multiply that with nothing throttling it.
+    const [a, b] = await Promise.all([getEngineStatuses(), getEngineStatuses()]);
+    expect(a).toBe(b);
+    expect(mocks.latestVersions).toHaveBeenCalledOnce();
+  });
+
+  it("does not serve a refresh from the in-flight plain load it asked to bypass", async () => {
+    const [plain, refreshed] = await Promise.all([getEngineStatuses(), getEngineStatuses({ refresh: true })]);
+    expect(plain).not.toBe(refreshed);
+    expect(mocks.latestVersions).toHaveBeenCalledTimes(2);
+    expect(mocks.latestVersions).toHaveBeenCalledWith(expect.any(Array), { refresh: true });
+    expect(mocks.latestVersions).toHaveBeenCalledWith(expect.any(Array), { refresh: false });
   });
 
   it("asks the registry once for every engine's package", async () => {
