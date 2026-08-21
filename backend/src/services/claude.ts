@@ -21,9 +21,9 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
-import { clearActivitiesForChat, migrateActivities, getWatch } from "./chat-activity.js";
+import { clearActivitiesForChat, migrateActivities, getWatch, startActivity, endActivity } from "./chat-activity.js";
 import { decideNudge } from "./nudge-decision.js";
-import { decideHold, HeldPrompt, OutstandingTasks, DEFAULT_MAX_HOLD_MS } from "./background-task-hold.js";
+import { decideHold, HeldPrompt, OutstandingTasks, DEFAULT_MAX_HOLD_MS, createHoldEpisodeBudget } from "./background-task-hold.js";
 import { getRun as getJobRun } from "./job-store.js";
 import {
   isStreamClosedToolFailure,
@@ -1108,6 +1108,70 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // closure (`setQueryPrompt`): control-flow analysis cannot follow that, so a
   // plain binding stays narrowed to `null` and every later use is a type error.
   const heldPromptRef: { current: HeldPrompt | null } = { current: null };
+  /**
+   * This run's allowance of hold episodes, shared by every {@link HeldPrompt}
+   * the run installs.
+   *
+   * Out here with `heldPromptRef` because `setQueryPrompt` mints a replacement
+   * on every nudge and every stream recovery, and the cap it feeds is a
+   * property of the *run*. Left on the object it would have been up to seven
+   * separate allowances of twenty — thirty-five hours of holding against the
+   * five that `background-task-hold.ts` documents.
+   */
+  const holdEpisodeBudget = createHoldEpisodeBudget();
+  /**
+   * Background tasks this session started and has not seen end.
+   *
+   * Out here rather than inside the run's `try`, alongside `heldPromptRef` and
+   * for a related reason: the `catch` blocks have to be able to read it. A
+   * provider error and a user stop are the two endings *most* likely to leave
+   * tasks running, and both need to name them on the way out or the client
+   * draws a killed task exactly as it draws a finished one.
+   */
+  const outstandingTasks = new OutstandingTasks();
+  /**
+   * The `abandonedBackgroundTaskIds` payload for whichever ending is being
+   * emitted, and the log line that goes with it.
+   *
+   * A helper rather than three inline copies because there are three endings
+   * and it is the *unusual* ones that matter most here — a provider error and
+   * a user stop are far likelier to leave shells running than a clean finish,
+   * and both used to say nothing, so the client drew a killed task exactly as
+   * it draws a completed one.
+   *
+   * Spreads to `{}` when nothing was left running, so the key stays absent
+   * rather than becoming an empty array on every ordinary session.
+   */
+  const abandonedTaskFields = (): { abandonedBackgroundTaskIds?: string[] } => {
+    const ids = outstandingTasks.ids();
+    if (ids.length === 0) return {};
+    log.warn(`Session ${trackingId} ended with ${ids.length} background task(s) still outstanding [${ids.join(", ")}] — they die with the subprocess`);
+    return { abandonedBackgroundTaskIds: ids };
+  };
+  /**
+   * The `holding` ChatActivity open for the current hold episode, if any.
+   *
+   * A hold is the third way a chat can legitimately be busy — after the `wait`
+   * tool and an `onComplete` callback — and until this it was the only one with
+   * nothing on screen: a session patiently keeping a subprocess alive rendered
+   * as idle and finished.
+   *
+   * Out here with `heldPromptRef`, and a ref cell for the same two reasons: the
+   * run's `finally` has to be able to end it, and it is assigned from a closure.
+   *
+   * `chat-activity.ts` has no lifecycle listeners of its own by design (see its
+   * header), so the session owner drives it. Every path that ends a hold calls
+   * {@link endHoldActivity} — the turn-boundary release, the wall-clock expiry,
+   * the task set draining to zero, a replacement prompt being installed, the
+   * abort listener, and the run's `finally`. A phantom countdown that never
+   * clears would be worse than no row at all.
+   */
+  const holdActivityRef: { current: string | null } = { current: null };
+  const endHoldActivity = (): void => {
+    if (!holdActivityRef.current) return;
+    endActivity(holdActivityRef.current);
+    holdActivityRef.current = null;
+  };
   sessionRegistry.register(trackingId, {
     type: "web",
     abortController,
@@ -1691,10 +1755,41 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // Claude Code only: it is the sole provider that reports background tasks
       // (`background_task` events), so for every other provider `heldPrompt`
       // stays null and the prompt is passed through exactly as before.
-      const outstandingTasks = new OutstandingTasks();
+      //
+      // `outstandingTasks` itself lives out with `heldPromptRef`, because the
+      // catch blocks need it — see its declaration.
       const holdEnabled = providerKind === "claude-code";
-      /** Set once the wall-clock bound elapses, so later turns stop re-holding. */
+      /**
+       * Set once the current hold's wall-clock bound elapses, so later turns
+       * stop re-holding it. Scoped to the {@link HeldPrompt} it describes, not
+       * to the run — see `setQueryPrompt`, which clears it.
+       */
       let holdExpired = false;
+      /**
+       * Open (or re-open) the dock row for the hold this turn boundary is
+       * arming.
+       *
+       * Re-minted rather than mutated on each held turn: the task set changes
+       * across an episode as one task ends and another starts, and the record
+       * in `chat-activity.ts` is immutable once written. The deadline it counts
+       * down to is the hold's own, so a re-mint mid-episode keeps the same
+       * expiry rather than restarting the clock.
+       */
+      const beginHoldActivity = (taskIds: string[], expiresAt: number | null): void => {
+        endHoldActivity();
+        const activity = startActivity(trackingId, {
+          kind: "holding",
+          label: `${taskIds.length} background task${taskIds.length === 1 ? "" : "s"}`,
+          detail: taskIds.join(", "),
+          ...(expiresAt !== null && { expiresAt }),
+          // Not interruptible. Releasing would close the input stream, which
+          // kills the very shells the hold exists to let finish — the opposite
+          // of what "end this early" means everywhere else in the dock. Ending
+          // the run is what /stop is for, and it already closes the hold.
+          interruptible: false,
+        });
+        holdActivityRef.current = activity.id;
+      };
       /**
        * Install this turn's prompt, wrapping it so it can be held open. Closes
        * any previous hold first — a continuation (nudge, stream recovery) has
@@ -1706,21 +1801,42 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           return;
         }
         heldPromptRef.current?.close();
-        const held = new HeldPrompt(source);
+        const held = new HeldPrompt(source, holdEpisodeBudget);
         heldPromptRef.current = held;
         queryOpts.prompt = held.iterable();
+        // The row belonged to the hold just closed, and the replacement has
+        // not held anything yet.
+        endHoldActivity();
+        // The new hold has a new (unset) deadline, so it must not inherit the
+        // old one's verdict. Left latched, a single expiry killed the hold for
+        // the rest of the run: a stream recovery installs a fresh HeldPrompt,
+        // but `decideHold` still saw `expired: true` and released every
+        // subsequent turn at once — in production a task started 47 seconds
+        // after a recovery was released, and killed, 13 seconds later, having
+        // never been held at all.
+        holdExpired = false;
       };
       if (holdEnabled) setQueryPrompt(effectivePrompt as AsyncIterable<unknown> | string);
       // A stop pressed *during* a hold must not wait it out. The SDK tears the
       // subprocess down on abort anyway, but a held input stream is the one
       // thing that stop cannot reach on its own: nothing else ever resolves
       // that promise, so the release has to be wired to the signal directly.
-      abortController.signal.addEventListener("abort", () => heldPromptRef.current?.close(), { once: true });
+      abortController.signal.addEventListener(
+        "abort",
+        () => {
+          heldPromptRef.current?.close();
+          endHoldActivity();
+        },
+        { once: true },
+      );
       // Registration happens well after the session was registered and after at
       // least one await, so a stop can land in the gap — and `abort` has then
       // already dispatched, leaving the listener above inert. Cover the gap
       // rather than leave the guarantee the comment claims quietly false.
-      if (abortController.signal.aborted) heldPromptRef.current?.close();
+      if (abortController.signal.aborted) {
+        heldPromptRef.current?.close();
+        endHoldActivity();
+      }
 
       // ── Query loop ──
       // Runs exactly once for normal sessions. When requireExplicitCompletion
@@ -1763,6 +1879,20 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
         for await (const event of guardedEvents()) {
           if (abortController.signal.aborted) break;
+
+          // Anything that isn't the turn-ending `result` means the CLI is
+          // working, and a hold that expires while it is must not close stdin
+          // out from under it — see HeldPrompt.armTimeout. The matching
+          // markTurnEnded() is at the bottom of the `result` case, after the
+          // hold decision has had its say.
+          //
+          // `background_task` is excluded, and not as a nicety: it is the one
+          // event class the hold exists to receive, and it arrives precisely
+          // *because* nothing else is happening. Counting it as a live turn
+          // made the common case — a task ending during a hold — look like
+          // work in progress, so the expiry would defer and then wait on a
+          // `result` that a hold has no reason to produce.
+          if (event.type !== "result" && event.type !== "background_task") heldPromptRef.current?.markTurnActive();
 
           switch (event.type) {
             case "result": {
@@ -1813,18 +1943,45 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   );
                   held.armTimeout(DEFAULT_MAX_HOLD_MS, () => {
                     holdExpired = true;
+                    // The wait is over whatever the stream does next, so the
+                    // row goes now rather than at the deferred close — leaving
+                    // it up would show a countdown that has already run out.
+                    endHoldActivity();
+                    const stillRunning = outstandingTasks.ids();
+                    const minutes = Math.round(DEFAULT_MAX_HOLD_MS / 60_000);
+                    // Two different events wear this callback. With tasks
+                    // outstanding it is the cap doing its job. With none, it is
+                    // the post-drain floor firing because no turn boundary ever
+                    // came to release us — a hang averted, not a task
+                    // abandoned, and saying "gave up on []" for it is how the
+                    // production log came to name an empty list.
                     log.warn(
-                      `Session ${trackingId} held ${Math.round(DEFAULT_MAX_HOLD_MS / 60_000)}m for background task(s) ` +
-                        `[${outstandingTasks.ids().join(", ")}] — giving up waiting; they end with the subprocess`,
+                      stillRunning.length > 0
+                        ? `Session ${trackingId} held ${minutes}m for background task(s) [${stillRunning.join(", ")}] — ` +
+                            `giving up waiting; they end with the subprocess`
+                        : `Session ${trackingId} held ${minutes}m with no background task outstanding and no turn boundary — ` +
+                            `closing the input stream rather than waiting on one that may never come`,
                     );
                   });
+                  // After arming, so the row carries the deadline the bound is
+                  // actually enforcing — on the second and later turns of an
+                  // episode that is the original deadline, not a fresh one.
+                  // Skipped when arming expired on the spot (an already-elapsed
+                  // deadline), which would otherwise post a countdown that is
+                  // over before it renders.
+                  if (!holdExpired) beginHoldActivity(outstandingTasks.ids(), held.deadline);
                 } else {
                   if (hold.reason !== "none-outstanding") {
                     log.info(`Session ${trackingId} releasing background-task hold (${hold.reason})`);
                   }
+                  endHoldActivity();
                   held.close();
                 }
               }
+              // The turn is over. An expiry that fired while it was running
+              // deferred its close to here; on the ordinary path the decision
+              // above has already closed and this is a no-op backstop.
+              heldPromptRef.current?.markTurnEnded();
               break;
             }
 
@@ -2027,11 +2184,37 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               if (event.phase === "started") {
                 outstandingTasks.start(event.taskId);
                 log.info(`Session ${trackingId} started background task ${event.taskId}${event.summary ? ` — ${event.summary}` : ""}`);
-              } else if (outstandingTasks.end(event.taskId)) {
+                break;
+              }
+              if (outstandingTasks.end(event.taskId)) {
                 log.info(
                   `Session ${trackingId} background task ${event.taskId} ended` +
                     `${event.status ? ` (${event.status})` : ""} — ${outstandingTasks.size} still outstanding`,
                 );
+              }
+              // Draining to zero ends the hold *episode*, and with it the
+              // fifteen-minute budget: the work we were being patient for
+              // actually finished, so anything started later deserves a fresh
+              // window rather than the remainder of this one. Without this the
+              // budget is per-run, and a session polling with successive
+              // background sleeps has its last one killed part-way through on a
+              // timer armed for the first.
+              //
+              // Not a release: the stream stays open until the turn boundary,
+              // which is where `decideHold` sees nothing outstanding and closes
+              // it on the one path that also reports why.
+              if (outstandingTasks.size === 0) {
+                heldPromptRef.current?.disarmTimeout();
+                // The episode's *verdict*, not just its clock. `disarmTimeout`
+                // clears the deadline and the HeldPrompt's own deferred-expiry
+                // flag; this is the third latch, and a fresh window with any
+                // one of the three still set is vetoed the moment it opens —
+                // `decideHold` would read `expired: true` at the next boundary
+                // and release a task that has been running for seconds.
+                holdExpired = false;
+                // Nothing left to be patient for, so the dock stops saying we
+                // are. The turn boundary re-opens a row if a later task starts.
+                endHoldActivity();
               }
               break;
             }
@@ -2229,7 +2412,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // done/clear/budget path below — those describe a successful run.
       if (errorDetail !== undefined) {
         log.debug(`Session ${trackingId} surfaced provider error to user: ${errorDetail}`);
-        emitter.emit("event", { type: "error", content: errorDetail } as StreamEvent);
+        // This path returns instead of falling through to `done`, so it has to
+        // name its own casualties. A provider error is one of the two endings
+        // most likely to have left shells running.
+        emitter.emit("event", { type: "error", content: errorDetail, ...abandonedTaskFields() } as StreamEvent);
         return;
       }
 
@@ -2248,6 +2434,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // Whether the explicit-completion requirement was satisfied — only
         // attached when the requirement was on for this run.
         ...(requireCompletion && { objectiveComplete: isObjectiveSatisfied() }),
+        // Background tasks that never reported an outcome. The run is ending,
+        // so the subprocess that owns their shells goes with it and they are
+        // dead whatever they were doing.
+        ...abandonedTaskFields(),
       } as StreamEvent);
     } catch (err: any) {
       if (err.name === "AbortError") {
@@ -2255,16 +2445,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // rather than silently swallowing the event.
         log.warn(`Session ${trackingId} (provider=${providerKind}) ended: aborted`);
         chatFileService.updateChat(trackingId, {});
-        emitter.emit("event", { type: "done", content: "", reason: "aborted" } as StreamEvent);
+        // A stop is the other ending most likely to leave shells running — the
+        // user pressed it precisely because something was still going.
+        emitter.emit("event", { type: "done", content: "", reason: "aborted", ...abandonedTaskFields() } as StreamEvent);
       } else {
         log.error(`Session ${trackingId} (provider=${providerKind}) error: ${err.message}${err.stack ? `\n${err.stack}` : ""}`);
-        emitter.emit("event", { type: "error", content: err.message } as StreamEvent);
+        emitter.emit("event", { type: "error", content: err.message, ...abandonedTaskFields() } as StreamEvent);
       }
     } finally {
-      // Release any background-task hold. Idempotent, and unconditional on
-      // purpose: every other exit from the loop closes its own hold, and this
-      // is the one that catches the paths that throw past them.
+      // Release any background-task hold, and take its dock row down with it.
+      // Idempotent, and unconditional on purpose: every other exit from the
+      // loop closes its own hold, and this is the one that catches the paths
+      // that throw past them. The `clearActivitiesForChat` below only runs when
+      // the registry entry is still ours, so it is not a substitute — a run
+      // whose entry was taken over by a replacement would leave the row up.
       heldPromptRef.current?.close();
+      endHoldActivity();
       // This run's query is done with — drop the handle so a late stop on a
       // replacement session can never close it a second time.
       activeQuery = null;

@@ -7,7 +7,9 @@ import ConfirmModal from "./ConfirmModal";
  *
  * A chat sitting inside a 300-second `wait` used to render exactly like a
  * finished one. This is where "the agent is doing something that takes time,
- * here is what and for how long" lives.
+ * here is what and for how long" lives — for all three ways a chat can
+ * legitimately be busy with its turn over: a `wait`, an outstanding
+ * `onComplete` callback, and a background-task hold.
  *
  * The countdown is computed locally from `expiresAt` rather than pushed from
  * the server — the client already knows the deadline, so ticking is arithmetic
@@ -30,7 +32,21 @@ const KIND_VERB: Record<ChatActivity["kind"], string> = {
   await_agent: "Awaiting agent",
   generating: "Generating",
   scanning: "Scanning",
+  holding: "Holding the session open",
 };
+
+/**
+ * The verb, or a neutral one for a kind this bundle predates.
+ *
+ * Activities cross REST rather than the SSE wire, so `ActivityKind` carries no
+ * capability gate and a tab running an older bundle can be handed a kind that
+ * is not in the map above — the row would then render "· undefined". The
+ * fallback is the whole mitigation, and it is why `shared/types/activity.ts`
+ * puts the obligation on consumers: this lookup is the one that would break.
+ */
+function verbFor(kind: ChatActivity["kind"]): string {
+  return KIND_VERB[kind] ?? "Busy";
+}
 
 interface ActivityDockProps {
   activities: ChatActivity[];
@@ -115,7 +131,7 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
               </span>
             )}
 
-            {!primary.condition && primary.kind !== "wait" && <span style={{ opacity: 0.8 }}>· {KIND_VERB[primary.kind]}</span>}
+            {!primary.condition && primary.kind !== "wait" && <span style={{ opacity: 0.8 }}>· {verbFor(primary.kind)}</span>}
 
             {primary.interruptible && (
               <button

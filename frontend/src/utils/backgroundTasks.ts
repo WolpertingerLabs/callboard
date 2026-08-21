@@ -54,3 +54,51 @@ export function pendingBackgroundTaskIds(messages: readonly ParsedMessage[]): Re
   for (const id of reported) launched.delete(id);
   return launched;
 }
+
+/**
+ * The terminal marker for tasks a run left running when it ended.
+ *
+ * The gate documented above has a corollary nobody wanted: at `done` the
+ * spinner is dropped for *every* pending task at once, so one that was killed
+ * — the hold gave up, the user stopped the run, the provider errored — renders
+ * exactly like one that completed. The failure is drawn as a success.
+ *
+ * The engine's own `<task-notification status="stopped">` does eventually say
+ * so, but it lands at the top of the *next* run: production has an 08:48 kill
+ * reported at 14:10, by which point nothing on screen connects the two. This
+ * closes that gap by synthesising the notice the session never got to file, in
+ * the same shape the parser produces for a real one — so it settles the task
+ * through {@link pendingBackgroundTaskIds} and renders through the existing
+ * `background_task` bubble, with no second code path for a synthetic marker.
+ *
+ * Scoped to what the transcript still shows as pending, so a task the engine
+ * did manage to report on is never accused of dying twice. Returns null when
+ * that leaves nothing to say.
+ *
+ * The marker is not persisted — the transcript belongs to the engine, and
+ * callboard only reads it. It is a client-side record of what this run ended
+ * with, which is exactly as long as the ambiguity it exists to resolve lasts:
+ * on a later load the engine's own notice is in the file.
+ */
+export function abandonedTaskMarker(abandonedIds: readonly string[], messages: readonly ParsedMessage[]): ParsedMessage | null {
+  const stillPending = pendingBackgroundTaskIds(messages);
+  const killed = abandonedIds.filter((id) => stillPending.has(id));
+  if (killed.length === 0) return null;
+
+  const plural = killed.length > 1;
+  return {
+    role: "system",
+    type: "system",
+    subtype: "background_task",
+    // "stopped" is the engine's own word for a task that was cut short, and
+    // the bubble already tones it as a warning rather than a success.
+    backgroundTaskStatus: "stopped",
+    backgroundTaskIds: [...killed],
+    // Attribution needs exactly one id; stay silent when several are covered,
+    // for the reason spelled out on `backgroundTaskIds` in shared/types.
+    ...(killed.length === 1 && { backgroundTaskId: killed[0] }),
+    content:
+      `Background task${plural ? "s" : ""} ${killed.join(", ")} ${plural ? "were" : "was"} killed when the session ended` +
+      ` — ${plural ? "they" : "it"} never reported a result.`,
+  };
+}

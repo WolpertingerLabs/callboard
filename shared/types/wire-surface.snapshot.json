@@ -7,6 +7,10 @@
       ],
       "interfaces": {
         "StreamEvent": {
+          "abandonedBackgroundTaskIds": {
+            "optional": true,
+            "type": "string[]"
+          },
           "chat": {
             "optional": true,
             "type": "any"

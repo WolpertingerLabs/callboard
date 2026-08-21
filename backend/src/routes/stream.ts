@@ -288,12 +288,21 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
           ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
           ...(typeof event.objectiveComplete === "boolean" && { objectiveComplete: event.objectiveComplete }),
+          // Mirrors createSSEHandler in utils/sse.ts — background tasks that
+          // died with the subprocess, so a killed one can be drawn as killed.
+          ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
         });
         emitter.removeListener("event", onEvent);
         res.end();
       } else if (event.type === "error") {
         log.error(`SSE error — ${event.content}`);
-        sendSSE(res, { type: "message_error", content: event.content });
+        sendSSE(res, {
+          type: "message_error",
+          content: event.content,
+          // Mirrors createSSEHandler — an error ends the run without a `done`,
+          // so this is its only chance to name the shells that died with it.
+          ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
+        });
         emitter.removeListener("event", onEvent);
         res.end();
       } else if (event.type === "permission_request" || event.type === "user_question" || event.type === "plan_review") {

@@ -89,11 +89,21 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
         ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
         ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
         ...(typeof event.objectiveComplete === "boolean" && { objectiveComplete: event.objectiveComplete }),
+        // Tasks that died with the subprocess. Forwarded with the payload for
+        // the same reason `budget` is: collapsing it away would leave the
+        // client unable to tell a killed background task from a finished one.
+        ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
       });
       emitter.removeListener("event", onEvent);
       res.end();
     } else if (event.type === "error") {
-      sendSSE(res, { type: "message_error", content: event.content });
+      sendSSE(res, {
+        type: "message_error",
+        content: event.content,
+        // An error ends the run without a `done`, so this is its only chance to
+        // say which background shells died with it.
+        ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
+      });
       emitter.removeListener("event", onEvent);
       res.end();
     } else if (event.type === "permission_request" || event.type === "user_question" || event.type === "plan_review") {

@@ -85,7 +85,8 @@ import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { getActivePlugins } from "../utils/plugins";
 import { findLatestTaskListIndex } from "../utils/taskListNav";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
-import { pendingBackgroundTaskIds } from "../utils/backgroundTasks";
+import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
+import { sameActivityPayload } from "../utils/activitySnapshot";
 
 /**
  * Detect if the messages contain an unresolved ExitPlanMode tool_use
@@ -298,16 +299,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    * Re-read what the chat is blocked on. Best-effort: a failure here must
    * never break the transcript, so it falls back to "nothing in flight"
    * rather than surfacing an error the user can do nothing about.
+   *
+   * Stores through an equality check because this is polled on a timer while a
+   * run is live: every response is a freshly-parsed object, so an
+   * unconditional `setActivity` would make every tick a new reference and
+   * re-render the page on a schedule rather than on a change. Returning the
+   * previous value from the updater is what makes React bail out — and doing
+   * it in the updater rather than against a captured `activity` is what keeps
+   * this callback dependency-free, so the interval that calls it is not torn
+   * down and rebuilt on every render.
    */
   const refreshActivity = useCallback((chatId: string) => {
+    const store = (next: ChatActivityResponse) => setActivity((prev) => (sameActivityPayload(prev, next) ? prev : next));
     getActivity(chatId)
       .then((next) => {
         if (currentIdRef.current !== chatId) return;
-        setActivity(next);
+        store(next);
       })
       .catch(() => {
         if (currentIdRef.current !== chatId) return;
-        setActivity({ activities: [], conditionWatch: null, awaitingChildren: 0 });
+        store({ activities: [], conditionWatch: null, awaitingChildren: 0 });
       });
   }, []);
 
@@ -911,11 +922,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // marker is in the transcript; other reasons have no
                   // persisted equivalent and are always appended.
                   const redundant = reasonMsg === INTERRUPTED_MESSAGE && endsWithInterruptMarker(msgArray);
-                  if (reasonMsg && !redundant) {
-                    setMessages([...msgArray, { role: "system", type: "system", content: reasonMsg }]);
-                  } else {
-                    setMessages(msgArray);
-                  }
+                  // Tasks the run left running. Their shells died with the
+                  // subprocess, and without this the spinner would simply stop
+                  // — the same thing it does for a task that finished. First in
+                  // the trailer, because the reason message (if any) explains
+                  // the end of the run that killed them.
+                  const trailing: ParsedMessage[] = [];
+                  const killed = abandonedTaskMarker(
+                    Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [],
+                    msgArray,
+                  );
+                  if (killed) trailing.push(killed);
+                  if (reasonMsg && !redundant) trailing.push({ role: "system", type: "system", content: reasonMsg });
+                  setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                   // Retire optimistic bubbles only once the transcript shows
                   // them — a message sent while this run was finishing has to
                   // stay on screen until its own turn is persisted.
@@ -941,9 +960,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   if (currentIdRef.current !== streamChatId) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
                   const alreadyPersisted = msgArray.slice(-3).some((m) => m.subtype === "session_error" && m.content === event.content);
-                  setMessages(
-                    alreadyPersisted ? msgArray : [...msgArray, { role: "system", type: "system", subtype: "session_error", content: event.content ?? "" }],
-                  );
+                  // Same trailer the clean ending builds, for the same reason —
+                  // an error kills the subprocess and every shell it owned, and
+                  // this path ends the run without a `message_complete`, so it
+                  // is the only chance to say so. Before the marker.
+                  const trailing: ParsedMessage[] = [];
+                  const killed = abandonedTaskMarker(Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [], msgArray);
+                  if (killed) trailing.push(killed);
+                  if (!alreadyPersisted) trailing.push({ role: "system", type: "system", subtype: "session_error", content: event.content ?? "" });
+                  setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                 });
                 return;
               }
@@ -1187,6 +1212,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     document.addEventListener("visibilitychange", handleVisibilityResume);
     return () => document.removeEventListener("visibilitychange", handleVisibilityResume);
   }, [id]);
+
+  // Keep the dock honest while a run is live.
+  //
+  // Every other refresh hangs off a stream frame, which works for activities a
+  // tool opens — the tool_use that opens one is itself a frame. A
+  // background-task hold is opened at a *turn boundary*, which emits nothing,
+  // and the whole point of the hold is that no frames follow it until the CLI
+  // has something to report. Without a poll the row would appear only on the
+  // next unrelated event, i.e. usually after the thing it was describing had
+  // already ended. Cheap (an in-memory read), and it stops with the run.
+  useEffect(() => {
+    if (!streaming || !id) return;
+    const timer = setInterval(() => refreshActivity(id), 5000);
+    return () => clearInterval(timer);
+  }, [streaming, id, refreshActivity]);
 
   // Fetch slash commands and plugins for the chat
   const loadSlashCommands = useCallback(async () => {
