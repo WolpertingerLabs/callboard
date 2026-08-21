@@ -868,18 +868,31 @@ export function buildCallboardToolsSpec(
               ...(workspaceId && { workspaceId }),
             });
 
-            // Listen for chat_created to get the chatId
+            // Listen for chat_created to get the chatId.
+            //
+            // The listener is named and detached on all three exits. The
+            // emitter outlives this promise by the whole length of the spawned
+            // run, so an anonymous handler left attached would go on being
+            // called for every event of a session this tool stopped caring
+            // about the moment it had the id — and one spawner that starts many
+            // children accumulates one dead listener per child.
             const chatId = await new Promise<string>((resolve, reject) => {
-              const timeout = setTimeout(() => reject(new Error("Timed out waiting for session to start")), 30000);
-              emitter.on("event", (event: any) => {
+              const onEvent = (event: any) => {
                 if (event.type === "chat_created" && event.chatId) {
                   clearTimeout(timeout);
+                  emitter.off("event", onEvent);
                   resolve(event.chatId);
                 } else if (event.type === "error") {
                   clearTimeout(timeout);
+                  emitter.off("event", onEvent);
                   reject(new Error(event.content || "Session failed to start"));
                 }
-              });
+              };
+              const timeout = setTimeout(() => {
+                emitter.off("event", onEvent);
+                reject(new Error("Timed out waiting for session to start"));
+              }, 30000);
+              emitter.on("event", onEvent);
             });
 
             log.info(`Started chat session ${chatId} in ${effectiveFolder}`);
