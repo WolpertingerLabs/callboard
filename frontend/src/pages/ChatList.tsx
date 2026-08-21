@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Plus, Settings, Bot, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText } from "lucide-react";
 import {
@@ -17,18 +17,16 @@ import {
 } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
-import ChatListItem, { type ChatCardMenu } from "../components/ChatListItem";
+import { type ChatCardMenu } from "../components/ChatListItem";
 import ChatTreeList from "../components/ChatTreeList";
-import ChatSectionHeader from "../components/ChatSectionHeader";
 import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import CardPicker from "../components/board/CardPicker";
 import { useChatSearch } from "../hooks/useChatSearch";
-import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
-import { activeSectionPredicate, sectionByActive } from "../utils/chatSections";
+import { activeSectionPredicate } from "../utils/chatSections";
 import {
   DEFAULT_CHAT_FILTERS,
   DEFAULT_CHAT_VIEW_OPTIONS,
@@ -47,8 +45,6 @@ import {
   saveChatsDimCardless,
   getChatsSortByCardActive,
   saveChatsSortByCardActive,
-  getChatListLayout,
-  saveChatListLayout,
   type SidebarViewMode,
 } from "../utils/localStorage";
 
@@ -74,21 +70,20 @@ export default function ChatList({
   const { activeSessions, metadataVersion } = useSessionContext();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
-  // Pagination units currently shown (grows via "load more"): chats in flat
-  // layout, tree rows in tree layout — a parentage group folds into one row,
-  // and the server paginates by rows so a page is always a full page of
-  // visible entries. Refreshes refetch this many so an expanded list isn't
-  // cut back to the first page.
+  // Tree rows currently shown (grows via "load more"): a parentage group folds
+  // into one row, and the server paginates by rows so a page is always a full
+  // page of visible entries. Refreshes refetch this many so an expanded list
+  // isn't cut back to the first page.
   const loadedCountRef = useRef(20);
   // Bumped every time a full refresh replaces the list (which re-baselines
-  // loadedCountRef, whose units depend on the layout). An in-flight "load
-  // more" page from before the bump has a stale offset — drop it.
+  // loadedCountRef). An in-flight "load more" page from before the bump has a
+  // stale offset — drop it.
   const loadGenRef = useRef(0);
   // Same signal as loadGenRef, but as state so the tree view can react to it:
   // fetched subtrees are snapshots and go stale when the list refreshes.
   const [listVersion, setListVersion] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  // Scope + layout, all edited together in the filters modal. All but one are
+  // Scope, all edited together in the filters modal. All but one are
   // remembered across reloads; `bookmarked` stays session-only, the way it has
   // always behaved.
   const [viewOptions, setViewOptions] = useState<ChatViewOptions>(() => ({
@@ -97,7 +92,6 @@ export default function ChatList({
     cardsOnly: getChatsCardsOnly(),
     dimCardless: getChatsDimCardless(),
     sortByCardActive: getChatsSortByCardActive(),
-    treeLayout: getChatListLayout() === "tree",
   }));
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
@@ -186,7 +180,7 @@ export default function ChatList({
   const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
 
   const load = useCallback(async () => {
-    const { bookmarked, showTriggered, treeLayout, cardsOnly } = viewOptions;
+    const { bookmarked, showTriggered, cardsOnly } = viewOptions;
     // When advanced filters or content search are active, fetch all chats
     // to avoid missing matches due to pagination
     const shouldFetchAll = anyFilterActive || bookmarked;
@@ -194,10 +188,9 @@ export default function ChatList({
     // When triggered chats are hidden, tell the API to exclude them so we
     // always get LIMIT real chats back (not LIMIT minus triggered ones)
     const excludeTriggered = !showTriggered;
-    // Tree layout needs every member of a parentage tree the page touches,
-    // even those outside the pagination window
-    const includeLineage = treeLayout || undefined;
-    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, includeLineage, cardsOnly || undefined);
+    // includeLineage is always on: the list needs every member of a parentage
+    // tree the page touches, even those outside the pagination window
+    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, true, cardsOnly || undefined);
     loadGenRef.current += 1;
     setListVersion((v) => v + 1);
     setChats(response.chats);
@@ -206,7 +199,7 @@ export default function ChatList({
 
     // If the response was stale (cached), immediately fetch fresh data
     if (response.stale) {
-      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, includeLineage, cardsOnly || undefined);
+      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, cardsOnly || undefined);
       loadGenRef.current += 1;
       setListVersion((v) => v + 1);
       setChats(freshResponse.chats);
@@ -230,21 +223,20 @@ export default function ChatList({
     try {
       const gen = loadGenRef.current;
       const excludeTriggered = !viewOptions.showTriggered;
-      // Offset advances by the server-reported window size (rows in tree
-      // layout, chats in flat) — lineage-appended relatives sit outside
-      // the pagination window
+      // Offset advances by the server-reported window size (tree rows) —
+      // lineage-appended relatives sit outside the pagination window
       const response = await listChats(
         20,
         loadedCountRef.current,
         viewOptions.bookmarked || undefined,
         excludeTriggered || undefined,
         undefined,
-        viewOptions.treeLayout || undefined,
+        true,
         viewOptions.cardsOnly || undefined,
       );
-      // A refresh (layout/filter toggle, SSE event, poll) replaced the list
-      // while this page was in flight — its offset no longer lines up (and
-      // may be in the other layout's units), so drop the stale page.
+      // A refresh (filter toggle, SSE event, poll) replaced the list while
+      // this page was in flight — its offset no longer lines up, so drop the
+      // stale page.
       if (gen !== loadGenRef.current) return;
       // Later pages can re-include chats already appended as lineage relatives
       setChats((prev) => {
@@ -478,7 +470,6 @@ export default function ChatList({
     saveChatsCardsOnly(nextView.cardsOnly);
     saveChatsDimCardless(nextView.dimCardless);
     saveChatsSortByCardActive(nextView.sortByCardActive);
-    saveChatListLayout(nextView.treeLayout ? "tree" : "flat");
   };
 
   // Client-side filtering for advanced filters and content search
@@ -525,30 +516,6 @@ export default function ChatList({
 
     return result;
   }, [chats, filters, matchingChatIds]);
-
-  /**
-   * "Active cards first" applied to the flat layout, or `null` for "render the
-   * list exactly as the option-off path does" — which covers the option being
-   * off, the cards not having loaded, and every chat landing in one bucket.
-   */
-  const flatSections = sectionByActive(filteredChats, (chat) => !!isCardActive?.(chat), !!isCardActive);
-
-  /** Collapse state for those headers, shared with the tree layout via localStorage. */
-  const sectionExpansion = useChatSectionExpansion();
-
-  const renderChatRow = (chat: Chat) => (
-    <ChatListItem
-      key={chat.id}
-      chat={chat}
-      isActive={chat.id === activeChatId}
-      onClick={() => handleChatClick(chat)}
-      onDelete={() => handleDelete(chat)}
-      onToggleBookmark={(bookmarked) => handleToggleBookmark(chat, bookmarked)}
-      cardMenu={cardMenuFor(chat)}
-      sessionStatus={activeSessions.has(chat.id) ? { active: true, type: activeSessions.get(chat.id)!.type } : undefined}
-      dimmed={isDimmed(chat)}
-    />
-  );
 
   // Count triggered chats currently in the response (visible when "Show triggered chats" is ON)
   const triggeredCount = useMemo(() => {
@@ -767,36 +734,20 @@ export default function ChatList({
             {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
           </p>
         )}
-        {viewOptions.treeLayout ? (
-          <ChatTreeList
-            chats={filteredChats}
-            refreshToken={listVersion}
-            activeChatId={activeChatId}
-            onChatClick={handleChatClick}
-            onDelete={handleDelete}
-            onToggleBookmark={handleToggleBookmark}
-            cardMenuFor={cardMenuFor}
-            sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
-            isDimmed={isDimmed}
-            // The predicate, not a pre-sorted list: the tree collapses a
-            // lineage group into one row and must file it whole.
-            isCardActive={isCardActive}
-          />
-        ) : flatSections ? (
-          flatSections.map((section) => (
-            <Fragment key={section.key}>
-              <ChatSectionHeader
-                label={section.label}
-                count={section.count}
-                expanded={sectionExpansion.isExpanded(section.key)}
-                onToggle={() => sectionExpansion.toggle(section.key)}
-              />
-              {sectionExpansion.isExpanded(section.key) && section.items.map(renderChatRow)}
-            </Fragment>
-          ))
-        ) : (
-          filteredChats.map(renderChatRow)
-        )}
+        <ChatTreeList
+          chats={filteredChats}
+          refreshToken={listVersion}
+          activeChatId={activeChatId}
+          onChatClick={handleChatClick}
+          onDelete={handleDelete}
+          onToggleBookmark={handleToggleBookmark}
+          cardMenuFor={cardMenuFor}
+          sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
+          isDimmed={isDimmed}
+          // The predicate, not a pre-sorted list: the tree collapses a
+          // lineage group into one row and must file it whole.
+          isCardActive={isCardActive}
+        />
 
         {viewOptions.showTriggered && triggeredCount > 0 && (
           <div

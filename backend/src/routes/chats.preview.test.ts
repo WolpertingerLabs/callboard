@@ -10,7 +10,8 @@
  *
  * So these tests assert two things at once, and the pair is the point:
  *  - every returned row still carries the preview it carried before, including
- *    lineage-appended relatives and rows the cards filter admits; and
+ *    rows the cards filter admits and lineage-appended relatives (which have a
+ *    preview only when discovery found them a log at all); and
  *  - the number of files opened equals the number of rows returned, not the
  *    number of sessions discovered.
  *
@@ -279,10 +280,17 @@ describe("GET /api/chats?cardsOnly=true preview reads", () => {
 
 describe("GET /api/chats?includeLineage=true preview reads", () => {
   beforeEach(() => {
-    // Bookmarks + tree layout: the page is the bookmarked root alone, and its
-    // two relatives come back through the lineage-append pass. One of them has
-    // a session log; the other has only a record, which is the branch that
-    // falls back to `{...fileChat}` and has nothing to read.
+    // A three-chat family: root and kid have session logs, ghost has only a
+    // record. Ghost is the lineage-append pass's remaining job — a tree member
+    // discovery never returned, which is the branch that falls back to
+    // `{...fileChat}` and has nothing to read.
+    //
+    // The 30 fillers are not scenery. `includeLineage` forces the route to
+    // discover everything (needsPostFilter), so the file's second invariant —
+    // reads scale with rows SHIPPED, not sessions discovered — only has a
+    // margin to measure when those two numbers differ. Every other strong
+    // margin in this file sits on a query without `includeLineage`, i.e. a
+    // shape the sidebar no longer sends.
     sessionsByProvider = {
       "claude-code": ["claude-code-root", "claude-code-kid", ...Array.from({ length: 30 }, (_, i) => `claude-code-fill-${String(i).padStart(2, "0")}`)],
       codex: [],
@@ -296,31 +304,52 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     ];
   });
 
-  const bookmarkedTree = () => listChats({ limit: "20", offset: "0", bookmarked: "true", includeLineage: "true" });
-
-  it("previews lineage-appended relatives that have a session", async () => {
-    const body = await bookmarkedTree();
-    const kid = body.chats.find((c: any) => c.id === "claude-code-kid");
-    expect(kid?._lineage_appended).toBe(true);
-    expect(JSON.parse(kid.metadata).preview).toBe("preview of /logs/claude-code-kid.jsonl");
-  });
+  const tree = () => listChats({ limit: "20", offset: "0", includeLineage: "true" });
 
   it("appends a session-less relative without inventing a preview for it", async () => {
-    const body = await bookmarkedTree();
+    const body = await tree();
     const ghost = body.chats.find((c: any) => c.id === "claude-code-ghost");
     expect(ghost?._lineage_appended).toBe(true);
     expect(JSON.parse(ghost.metadata).preview).toBeUndefined();
     expect(previewCalls["claude-code"] ?? []).not.toContain("/logs/claude-code-ghost.jsonl");
   });
 
-  it("returns the whole family and reads a preview only for the ones with logs", async () => {
-    const body = await bookmarkedTree();
-    expect(body.chats.map((c: any) => c.id).sort()).toEqual(["claude-code-ghost", "claude-code-kid", "claude-code-root"]);
-    // The bookmarked page is one row; the two relatives sit outside it.
-    expect(body).toMatchObject({ total: 1, windowRows: 1, hasMore: false });
-    expect(totalPreviewCalls()).toBe(2);
-    // 32 sessions were discovered and augmented to get here.
+  it("reads one preview per shipped log, not one per session discovered", async () => {
+    const body = await tree();
+    // 31 rows: the family folds into one, then 30 fillers. A 20-row window is
+    // the family (root + kid) plus 19 fillers, and ghost rides along appended.
+    expect(body).toMatchObject({ total: 31, windowRows: 20, hasMore: true });
+    expect(body.chats).toHaveLength(22);
+
+    // 21 of those 22 rows have a log; ghost is the one that does not.
+    expect(totalPreviewCalls()).toBe(21);
+    expect(previewCalls["claude-code"]).not.toContain("/logs/claude-code-ghost.jsonl");
+    // The margin that is the point: 32 sessions were discovered to build this
+    // page, because includeLineage makes the route fetch the whole corpus.
+    // Files opened must track the rows that ship, not that fetch.
     expect(totalPreviewCalls()).toBeLessThan(sessionsByProvider["claude-code"].length);
+  });
+
+  /**
+   * The append pass re-applies every scope filter the page was narrowed by —
+   * cards, triggered, and bookmarks — because appending a relative the filter
+   * dropped would smuggle back exactly what the user asked to hide. Bookmarks
+   * were the one that did not, which was invisible while the tree was opt-in
+   * and is not now that it is the only layout.
+   *
+   * The visible symptom this pins is the tally, not a phantom row: appended
+   * chats sort last and `ChatTreeList` fronts a row with the FIRST chat of a
+   * group, so an unstarred relative could never front a row — but it counted
+   * toward the "Active (N)" header above one.
+   */
+  it("does not append unstarred relatives under Bookmarked only", async () => {
+    const body = await listChats({ limit: "20", offset: "0", bookmarked: "true", includeLineage: "true" });
+    expect(body.chats.map((c: any) => c.id)).toEqual(["claude-code-root"]);
+    expect(body).toMatchObject({ total: 1, windowRows: 1, hasMore: false });
+    // The starred root still gets its preview — the guard drops relatives, not rows.
+    expect(previewOf(body, "claude-code-root")).toBe("preview of /logs/claude-code-root.jsonl");
+    // One file opened out of 32 sessions discovered.
+    expect(totalPreviewCalls()).toBe(1);
   });
 
   it("folds a whole tree into one row and previews every member of it", async () => {

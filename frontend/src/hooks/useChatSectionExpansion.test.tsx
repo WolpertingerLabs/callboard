@@ -2,13 +2,18 @@
 /**
  * The sidebar's Active/Inactive collapse state.
  *
- * The bug this suite exists for: `ChatList` and `ChatTreeList` BOTH call this
- * hook, and in tree layout both are mounted at once. With per-caller
- * `useState` the two copies drifted — collapsing a section in the tree layout
- * left `ChatList`'s copy expanded, and because `treeLayout` is `ChatList`'s own
- * state (so it never remounts), switching to the flat layout handed the user
- * back a section they had just collapsed. Every "two consumers" test below is
- * that bug; a single-consumer test cannot see it, which is exactly why the
+ * The bug this suite exists for: back when the sidebar had a flat layout beside
+ * the tree, `ChatList` and `ChatTreeList` BOTH called this hook and both were
+ * mounted at once. With per-caller `useState` the two copies drifted —
+ * collapsing a section in the tree layout left `ChatList`'s copy expanded, and
+ * because the layout was `ChatList`'s own state (so it never remounted),
+ * switching back to flat handed the user a section they had just collapsed.
+ *
+ * The tree is now the only layout and `ChatTreeList` the only caller, so the
+ * "two consumers" tests below no longer mirror a live arrangement. They stay
+ * because they pin the property that made the fix work — one shared store, not
+ * one per caller — which a second consumer would otherwise be free to break
+ * again. A single-consumer test cannot see it, which is exactly why the
  * component-level remount test did not.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -47,8 +52,8 @@ describe("useChatSectionExpansion", () => {
   });
 
   it("keeps two simultaneously mounted consumers in sync", () => {
-    // The tree layout's arrangement: ChatList (flat) and ChatTreeList are both
-    // mounted, and the one NOT clicked is the one that used to go stale.
+    // Two lists mounted at once — the arrangement the flat/tree split used to
+    // produce. The one NOT clicked is the one that used to go stale.
     render(
       <>
         <Consumer name="flat" />

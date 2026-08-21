@@ -71,8 +71,8 @@ describe("sectionByActive", () => {
   });
 
   it("counts by countOf, so a tree row can speak for its whole group", () => {
-    // The tree layout's rows stand for a lineage group each. Counting rows
-    // would report 1 for a three-chat group — the header must count chats.
+    // A row stands for a whole lineage group. Counting rows would report 1
+    // for a three-chat group — the header must count chats.
     const rows = [
       { chat: chat("closed", "closed-card"), size: 1 },
       { chat: chat("open", "open-card"), size: 3 },
@@ -96,8 +96,8 @@ describe("sectionByActive", () => {
   });
 
   it("sections whatever the caller's item type is, not just chats", () => {
-    // The tree layout sections ROWS, each wrapping the chat that fronts a
-    // lineage group — so the generic is load-bearing, not decoration.
+    // The sidebar sections ROWS, each wrapping the chat that fronts a lineage
+    // group — so the generic is load-bearing, not decoration.
     const rows = [
       { rootKey: "r1", chat: chat("closed", "closed-card") },
       { rootKey: "r2", chat: chat("open", "open-card") },

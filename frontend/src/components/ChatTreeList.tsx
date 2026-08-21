@@ -9,11 +9,13 @@ import { sectionByActive } from "../utils/chatSections";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 
 /**
- * Tree-layout rendering of the sidebar chat list.
+ * The sidebar chat list.
  *
  * Chats are grouped by their parentage-tree root (metadata `rootChatId`,
- * aliasing legacy `parentChatId`/`forkedFrom` pointers). Chats without any
- * lineage render exactly like the flat list. Groups render their most
+ * aliasing legacy `parentChatId`/`forkedFrom` pointers). A chat without any
+ * lineage — the common case — renders as a plain `ChatListItem` row, with no
+ * chevron and nothing to expand, so a list of unrelated chats looks exactly
+ * like an ungrouped one. Groups render their most
  * recently updated loaded chat as the header row with a chevron; expanding
  * fetches the authoritative full tree from GET /api/chats/:id/tree (which
  * includes members outside the currently loaded page) and renders it
@@ -34,10 +36,10 @@ interface Props {
   onChatClick: (chat: Chat) => void;
   onDelete: (chat: Chat) => void;
   onToggleBookmark: (chat: Chat, bookmarked: boolean) => void;
-  /** Card (ticket) actions for a row's kebab menu — same shape the flat list uses. */
+  /** Card (ticket) actions for a row's kebab menu. */
   cardMenuFor: (chat: Chat) => ChatCardMenu;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
-  /** "Dim inactive chats" verdict per row — same predicate the flat list uses. */
+  /** "Dim inactive chats" verdict per row. */
   isDimmed?: (chat: Chat) => boolean;
   /**
    * "Active cards first": whether a chat is on an open card. A predicate rather
@@ -71,8 +73,7 @@ interface Row {
    * off" and more rows can appear than this counted. Following that would make
    * the header's number jump on every expand, and jump to a figure the section
    * above it does not share. The count answers "how many of the chats this
-   * list loaded are filed here", which is stable and is what the flat layout
-   * answers too.
+   * list loaded are filed here", which is stable.
    */
   size: number;
 }
@@ -238,7 +239,7 @@ export default function ChatTreeList({
   const [trees, setTrees] = useState<Record<string, ChatTreeResponse>>({});
   const [loading, setLoading] = useState<Set<string>>(new Set());
 
-  // Group loaded chats by lineage root, preserving the flat list's order:
+  // Group loaded chats by lineage root, preserving the server's recency order:
   // each group appears at the position of its most recently updated member.
   const rows = useMemo(() => {
     const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
@@ -357,7 +358,7 @@ export default function ChatTreeList({
     (row) => row.size,
   );
 
-  /** Collapse state for those headers, shared with the flat layout via localStorage. */
+  /** Collapse state for those headers, persisted via localStorage. */
   const sectionExpansion = useChatSectionExpansion();
 
   const renderRow = ({ chat, rootKey, isGroup }: Row) => {

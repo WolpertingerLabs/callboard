@@ -161,6 +161,32 @@ describe("GET /api/chats?cardsOnly=true", () => {
     expect([...idsOf(first), ...idsOf(second)].sort()).toEqual(["member", "member-child", "member-grandchild", "member-triggered"]);
   });
 
+  /**
+   * The shape the sidebar actually sends: `cardsOnly` and `includeLineage`
+   * together, across a page boundary. The pair above it tests the same filter
+   * in CHAT units, which is still a valid API request but no longer one the UI
+   * makes — so without this, the units the sidebar paginates in were pinned
+   * only at the `paginateTreeRows` unit level, never through the route.
+   *
+   * The distinction that matters: `limit: 1` returns THREE chats, because a
+   * page is a page of rows and the member/child/grandchild chain is one row.
+   * A regression that reverted to chat units would return one chat here and
+   * quietly cut two chats off the sidebar's first page.
+   */
+  it("paginates the card-filtered set in tree rows when includeLineage is on", async () => {
+    const first = await listChats({ cardsOnly: "true", includeLineage: "true", limit: "1", offset: "0" });
+    expect(idsOf(first)).toEqual(["member", "member-child", "member-grandchild"]);
+    // Two rows in the filtered set: the chain, and the lineage-less triggered chat.
+    expect(first).toMatchObject({ total: 2, windowRows: 1, hasMore: true });
+
+    const second = await listChats({ cardsOnly: "true", includeLineage: "true", limit: "1", offset: "1" });
+    expect(idsOf(second)).toEqual(["member-triggered"]);
+    expect(second).toMatchObject({ total: 2, windowRows: 1, hasMore: false });
+
+    // No overlap, and together the two pages are the whole filtered set.
+    expect([...idsOf(first), ...idsOf(second)].sort()).toEqual(["member", "member-child", "member-grandchild", "member-triggered"]);
+  });
+
   it("keeps tree-layout lineage appending inside the filter", async () => {
     const body = await listChats({ cardsOnly: "true", includeLineage: "true", limit: "50" });
     // "no-card-child" is a lineage relative of nothing in the page; more to the

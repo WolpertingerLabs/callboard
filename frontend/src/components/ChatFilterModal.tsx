@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowUpNarrowWide, Bookmark, Zap, LayoutGrid, ListTree, SunDim } from "lucide-react";
+import { ArrowUpNarrowWide, Bookmark, Zap, LayoutGrid, SunDim } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import { DEFAULT_CHAT_VIEW_OPTIONS, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
@@ -190,8 +190,9 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
       >
         <h2 style={{ margin: "0 0 20px 0", fontSize: 18 }}>Chat Filters</h2>
 
-        {/* View — what the sidebar is scoped to and how it's laid out. Server
-            side (or layout), unlike the client-side field filters below. */}
+        {/* View — what the sidebar is scoped to. Resolved server-side (or by
+            how the list renders what it holds), unlike the client-side field
+            filters below. */}
         <div style={{ marginBottom: 20 }}>
           <div style={sectionHeadingStyle}>View</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -241,13 +242,6 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
               hint="Include runs started by cron, triggers and jobs"
               checked={localView.showTriggered}
               onChange={() => toggleView("showTriggered")}
-            />
-            <SwitchRow
-              icon={<ListTree size={16} />}
-              label="Tree layout"
-              hint="Group chats under the chat that spawned them"
-              checked={localView.treeLayout}
-              onChange={() => toggleView("treeLayout")}
             />
           </div>
         </div>
