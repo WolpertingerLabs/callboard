@@ -348,6 +348,20 @@ export class HeldPrompt {
    * The turn boundary decides that — `decideHold` sees `outstanding: 0` and
    * releases there, on the one path that also ends the activity and reports
    * the reason.
+   *
+   * ## Everything the old episode decided has to go, not just its clock
+   *
+   * The deadline is one of *two* pieces of state an expiry leaves behind, and
+   * clearing only that one buys nothing: `expiryDeferred` still says "the
+   * moment this turn ends, close", so a fresh window opens and is vetoed on
+   * the spot. (The caller's own latch is the third — see the `holdExpired`
+   * reset beside the call site in `claude.ts`. All three are needed; any one
+   * left set kills the new episode by itself.)
+   *
+   * That is reachable, not theoretical: a turn straddles the deadline with a
+   * task outstanding so the expiry defers, the task ends mid-turn, the model
+   * starts another, and at the boundary the new task's brand-new window closes
+   * immediately and its shell dies.
    */
   disarmTimeout(): void {
     if (this.timer) {
@@ -355,6 +369,7 @@ export class HeldPrompt {
       this.timer = null;
     }
     this.deadlineAt = null;
+    this.expiryDeferred = false;
   }
 }
 

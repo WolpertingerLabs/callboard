@@ -315,6 +315,35 @@ describe("HeldPrompt", () => {
     }
   });
 
+  it("clears a deferred expiry when the task set drains, so the next episode is not vetoed on arrival", () => {
+    // The two-latch bug. Making the *budget* per-episode reset `deadlineAt`,
+    // but an expiry that fired mid-turn also left `expiryDeferred` set — and
+    // that alone says "close at the next boundary". So the new episode opened
+    // with a full window and was killed the instant the turn ended.
+    //
+    // Reachable, not theoretical: a turn straddles the deadline with a task
+    // outstanding (expiry defers), that task ends mid-turn (drain to zero),
+    // the model starts another, and the boundary kills the new one.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+      held.markTurnActive();
+      held.armTimeout(60_000, onExpiry);
+      vi.advanceTimersByTime(60_000);
+      expect(held.closed).toBe(false); // deferred, as designed
+
+      held.disarmTimeout(); // the task set drained to zero, mid-turn
+      held.armTimeout(60_000, onExpiry); // a new task, a new window
+      expect(held.deadline).not.toBeNull();
+
+      held.markTurnEnded();
+      expect(held.closed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("tolerates a disarm with nothing armed", () => {
     // Every ending task calls it, including one whose hold was never armed
     // because the turn it started in has not ended yet.

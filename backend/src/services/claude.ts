@@ -2145,6 +2145,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               // it on the one path that also reports why.
               if (outstandingTasks.size === 0) {
                 heldPromptRef.current?.disarmTimeout();
+                // The episode's *verdict*, not just its clock. `disarmTimeout`
+                // clears the deadline and the HeldPrompt's own deferred-expiry
+                // flag; this is the third latch, and a fresh window with any
+                // one of the three still set is vetoed the moment it opens —
+                // `decideHold` would read `expired: true` at the next boundary
+                // and release a task that has been running for seconds.
+                holdExpired = false;
                 // Nothing left to be patient for, so the dock stops saying we
                 // are. The turn boundary re-opens a row if a later task starts.
                 endHoldActivity();
