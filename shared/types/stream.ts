@@ -121,4 +121,22 @@ export interface StreamEvent {
    * stream ends without the call and the session is re-prompted.
    */
   objectiveComplete?: boolean;
+  /**
+   * Background tasks still outstanding when the run ended, attached to "done".
+   *
+   * These are shells that died with the CLI subprocess — the hold gave up
+   * waiting, or the run was stopped or errored out from under them. They are
+   * named because the alternative is drawing a failure as a success: the only
+   * UI signal for a background task is a spinner gated on the chat streaming,
+   * so at `done` the spinner on a task that was just *killed* vanishes exactly
+   * as it does for one that completed. The CLI's own `<task-notification
+   * status="stopped">` does eventually arrive, but at the top of the *next*
+   * run — in production, an 08:48 kill reported at 14:10, long detached from
+   * anything that would explain it.
+   *
+   * An optional field rather than a new event `type`, which is the cheap side
+   * of the asymmetry at the top of this file: an old client ignores a key it
+   * does not know and goes on rendering exactly as it does today.
+   */
+  abandonedBackgroundTaskIds?: string[];
 }

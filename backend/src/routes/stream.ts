@@ -288,6 +288,9 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
           ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
           ...(typeof event.objectiveComplete === "boolean" && { objectiveComplete: event.objectiveComplete }),
+          // Mirrors createSSEHandler in utils/sse.ts — background tasks that
+          // died with the subprocess, so a killed one can be drawn as killed.
+          ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
         });
         emitter.removeListener("event", onEvent);
         res.end();

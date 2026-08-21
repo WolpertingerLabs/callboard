@@ -2355,6 +2355,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         emitter.emit("event", { type: "cleared", content: "Conversation was cleared" } as StreamEvent);
       }
 
+      // Background tasks that never reported an outcome. The run is ending, so
+      // the subprocess that owns their shells is about to go with it and they
+      // are dead whatever they were doing — the hold gave up, or a stop or an
+      // error got here first. Naming them is what lets the UI draw a killed
+      // task as killed: the spinner is gated on the chat streaming, so at
+      // `done` a task that was cut short otherwise disappears in exactly the
+      // way one that finished does.
+      const abandonedTaskIds = outstandingTasks.ids();
+      if (abandonedTaskIds.length > 0) {
+        log.warn(`Session ${trackingId} ended with ${abandonedTaskIds.length} background task(s) still outstanding [${abandonedTaskIds.join(", ")}] — they die with the subprocess`);
+      }
+
       log.debug(`Session complete — trackingId=${trackingId}, reason=${endReason || "normal"}, costUsd=${lastCostUsd ?? "n/a"}`);
       emitter.emit("event", {
         type: "done",
@@ -2364,6 +2376,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // Whether the explicit-completion requirement was satisfied — only
         // attached when the requirement was on for this run.
         ...(requireCompletion && { objectiveComplete: isObjectiveSatisfied() }),
+        ...(abandonedTaskIds.length > 0 && { abandonedBackgroundTaskIds: abandonedTaskIds }),
       } as StreamEvent);
     } catch (err: any) {
       if (err.name === "AbortError") {

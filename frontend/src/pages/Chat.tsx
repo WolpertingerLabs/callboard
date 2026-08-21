@@ -85,7 +85,7 @@ import ProviderConfigPicker from "../components/ProviderConfigPicker";
 import { getActivePlugins } from "../utils/plugins";
 import { findLatestTaskListIndex } from "../utils/taskListNav";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
-import { pendingBackgroundTaskIds } from "../utils/backgroundTasks";
+import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 
 /**
  * Detect if the messages contain an unresolved ExitPlanMode tool_use
@@ -911,11 +911,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // marker is in the transcript; other reasons have no
                   // persisted equivalent and are always appended.
                   const redundant = reasonMsg === INTERRUPTED_MESSAGE && endsWithInterruptMarker(msgArray);
-                  if (reasonMsg && !redundant) {
-                    setMessages([...msgArray, { role: "system", type: "system", content: reasonMsg }]);
-                  } else {
-                    setMessages(msgArray);
-                  }
+                  // Tasks the run left running. Their shells died with the
+                  // subprocess, and without this the spinner would simply stop
+                  // — the same thing it does for a task that finished. First in
+                  // the trailer, because the reason message (if any) explains
+                  // the end of the run that killed them.
+                  const trailing: ParsedMessage[] = [];
+                  const killed = abandonedTaskMarker(
+                    Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [],
+                    msgArray,
+                  );
+                  if (killed) trailing.push(killed);
+                  if (reasonMsg && !redundant) trailing.push({ role: "system", type: "system", content: reasonMsg });
+                  setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                   // Retire optimistic bubbles only once the transcript shows
                   // them — a message sent while this run was finishing has to
                   // stay on screen until its own turn is persisted.

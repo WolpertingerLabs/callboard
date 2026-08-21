@@ -4,10 +4,14 @@
  * The failure this guards against is quiet in both directions: a task wrongly
  * called pending spins forever in a finished transcript, and one wrongly called
  * finished makes the longest-running call in the chat look like the fastest.
+ *
+ * `abandonedTaskMarker` covers the third direction, which is quieter still: a
+ * task that was *killed* by the run ending renders identically to one that
+ * completed, because both just stop spinning.
  */
 import { describe, it, expect } from "vitest";
 import type { ParsedMessage } from "../api";
-import { pendingBackgroundTaskIds } from "./backgroundTasks";
+import { abandonedTaskMarker, pendingBackgroundTaskIds } from "./backgroundTasks";
 
 /** The `tool_result` that launched a background task. */
 const launch = (taskId: string): ParsedMessage => ({
@@ -112,5 +116,48 @@ describe("pendingBackgroundTaskIds", () => {
       backgroundTaskId: "a",
     };
     expect(pendingBackgroundTaskIds([launch("a"), legacy]).size).toBe(0);
+  });
+});
+
+describe("abandonedTaskMarker", () => {
+  it("names a task the run left running", () => {
+    const marker = abandonedTaskMarker(["a"], [launch("a")]);
+    expect(marker?.subtype).toBe("background_task");
+    expect(marker?.backgroundTaskStatus).toBe("stopped");
+    expect(marker?.backgroundTaskIds).toEqual(["a"]);
+    expect(marker?.content).toContain("was killed when the session ended");
+  });
+
+  it("settles the task it reports, so the spinner clears through the normal path", () => {
+    // The marker is the notice the session never got to file, in the shape
+    // the parser produces — so it goes through pendingBackgroundTaskIds
+    // rather than needing a second code path.
+    const messages = [launch("a")];
+    expect(pendingBackgroundTaskIds(messages).size).toBe(1);
+    expect(pendingBackgroundTaskIds([...messages, abandonedTaskMarker(["a"], messages)!]).size).toBe(0);
+  });
+
+  it("attributes a single task to its launching call, and several to none", () => {
+    // Attribution needs exactly one id; a multi-task notice must stay silent.
+    expect(abandonedTaskMarker(["a"], [launch("a")])?.backgroundTaskId).toBe("a");
+    const many = abandonedTaskMarker(["a", "b"], [launch("a"), launch("b")]);
+    expect(many?.backgroundTaskId).toBeUndefined();
+    expect(many?.backgroundTaskIds).toEqual(["a", "b"]);
+    expect(many?.content).toContain("were killed");
+  });
+
+  it("says nothing about a task the engine already reported on", () => {
+    // A task that finished in the same breath as the run ending is not a
+    // casualty of it, and accusing it twice would put two markers on screen.
+    expect(abandonedTaskMarker(["a"], [launch("a"), report("a")])).toBeNull();
+  });
+
+  it("reports only the still-pending subset", () => {
+    const marker = abandonedTaskMarker(["a", "b"], [launch("a"), launch("b"), report("b")]);
+    expect(marker?.backgroundTaskIds).toEqual(["a"]);
+  });
+
+  it("is null when the run ended owing nothing", () => {
+    expect(abandonedTaskMarker([], [launch("a"), report("a")])).toBeNull();
   });
 });
