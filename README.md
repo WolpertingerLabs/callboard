@@ -102,7 +102,12 @@ Note that "installed" and "signed in" are separate questions here, and Callboard
 
 ### After installing an engine
 
-Callboard resolves engine binaries once and caches the answer for the life of the daemon, because `PATH` doesn't change underneath a running process. If you install `opencode` or the Claude Code CLI while Callboard is up, run `callboard restart` before expecting it to be found.
+Callboard resolves engine binaries once and caches the answer for the life of the daemon, because `PATH` doesn't change underneath a running process. If you install `opencode` or the Claude Code CLI while Callboard is up, press **Recheck** on the engine's card in **Settings → API** — that drops the cached lookups and probes again, so a running daemon picks up the new binary without a restart. (`callboard restart` still works, and is the only option if the daemon itself is wedged.)
+
+Two things can make a successful `npm install -g` invisible anyway, and Callboard can't detect either — it says so on the card rather than pretending it checked:
+
+- **A global prefix you can't write to.** A system-wide Node install fails with `EACCES` until you point npm somewhere you own (`npm config set prefix ~/.npm-global`, then make sure that `bin/` is on your `PATH`).
+- **nvm.** The global prefix belongs to the active Node version, so a binary installed under one version is invisible to a daemon running under another. Compare `node -v` in the terminal you installed from against the Node running Callboard.
 
 ## What You Can Do
 
