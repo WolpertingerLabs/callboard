@@ -42,7 +42,7 @@
  *
  * @see plans/engine-availability-and-install.md — Phase 2, Decisions 4 and 5
  */
-import type { EngineInstallGuidance, EngineInstallRecipe, EngineStatus } from "shared/types/index.js";
+import type { EngineInstallCapability, EngineInstallGuidance, EngineInstallRecipe, EngineStatus } from "shared/types/index.js";
 
 // ── Package literals ────────────────────────────────────────────────
 //
@@ -201,6 +201,42 @@ export function recipesFor(engineId: string): EngineInstallRecipe[] {
   return ENGINE_INSTALL_RECIPES.filter((recipe) => recipe.engineId === engineId);
 }
 
+/**
+ * The one recipe for `engineId` that Phase 3 is permitted to spawn, if any.
+ *
+ * **This function is the security argument for `POST /api/engines/:id/install`,
+ * so the endpoint routes through it rather than around it.** An engine id off
+ * the wire selects a recipe here; it is never interpolated into a command, and
+ * nothing the caller sends reaches argv. Four conditions, all of them checked
+ * against the registry above rather than against the request:
+ *
+ * 1. the recipe's `method` is `npm-global` — a `script` recipe can never be
+ *    reached with an intent to execute, which is Decision 5 made structural
+ *    rather than remembered;
+ * 2. it carries a `package`, and that package is in {@link INSTALLABLE_PACKAGES}
+ *    — which is *derived* from this same table, so the set cannot drift open;
+ * 3. it carries an `argv` array whose last element **is** that package, so the
+ *    thing spawned and the thing allowlisted are provably the same string;
+ * 4. `visibleAfterRecheck` is true. A recipe flagged false installs somewhere a
+ *    running daemon's PATH cannot reach, so a one-click install of it would
+ *    report success and change nothing observable — a lie with a progress bar.
+ *    No `npm-global` recipe is flagged false today; the check is here so that
+ *    adding one does not silently become a button.
+ *
+ * Returns `undefined` for every bundled engine, every unknown id, and any recipe
+ * that fails a condition. The caller's only correct response to `undefined` is a
+ * refusal that points at the copy block.
+ */
+export function oneClickRecipeFor(engineId: string): EngineInstallRecipe | undefined {
+  const recipe = recipesFor(engineId).find((r) => r.method === "npm-global");
+  if (!recipe) return undefined;
+  if (!recipe.package || !INSTALLABLE_PACKAGES.has(recipe.package)) return undefined;
+  if (!recipe.argv || recipe.argv.length < 2) return undefined;
+  if (recipe.argv[recipe.argv.length - 1] !== recipe.package) return undefined;
+  if (!recipe.visibleAfterRecheck) return undefined;
+  return recipe;
+}
+
 // ── When a card offers them ─────────────────────────────────────────
 
 /**
@@ -233,8 +269,77 @@ export function recipesFor(engineId: string): EngineInstallRecipe[] {
  * The result may carry **no recipes** — "you have the CLI, you just have not
  * logged in" is guidance with nothing to install. See
  * {@link EngineInstallGuidance}.
+ *
+ * ## What `capability` does, and what it deliberately cannot do
+ *
+ * Everything above gates on **engine state alone**, and that is load-bearing
+ * for Decision 8 rather than incidental: {@link withOneClick} runs afterwards
+ * and can only *add* a button or a refusal line, never remove a recipe. So no
+ * value of `capability` — not a tunnelled client, not the setting switched off,
+ * not a read-only npm prefix — can take the copyable command away. Omitting the
+ * argument is the honest encoding of "install capability was never evaluated",
+ * and leaves the Phase 2 shape untouched.
  */
-export function installGuidanceFor(engine: EngineStatus): EngineInstallGuidance | undefined {
+export function installGuidanceFor(engine: EngineStatus, capability?: EngineInstallCapability): EngineInstallGuidance | undefined {
+  const guidance = baseGuidanceFor(engine);
+  return guidance ? withOneClick(engine.id, guidance, capability) : undefined;
+}
+
+/**
+ * Attach Phase 3's button — or the one-line reason there is not one.
+ *
+ * Decision 8 in one function. The guidance handed in was decided entirely by
+ * **engine state**, and this only ever *adds* to it: there is no branch here
+ * that removes a recipe, empties the list, or replaces the block. Turning the
+ * capability off anywhere therefore cannot make the copy-and-paste command
+ * disappear — the worst it can do is leave the copy block exactly as Phase 2
+ * shipped it, with a sentence saying why.
+ *
+ * `capability === undefined` means nobody evaluated it — an internal caller, a
+ * test, a probe with no HTTP request behind it. That leaves both fields absent
+ * rather than inventing a refusal, because "Callboard will not run this for you"
+ * would be a claim about a decision that was never made.
+ */
+function withOneClick(engineId: string, guidance: EngineInstallGuidance, capability: EngineInstallCapability | undefined): EngineInstallGuidance {
+  if (!capability) return guidance;
+
+  // Nothing to install (the CLI is there, only a login is missing) — a button
+  // would have nothing to run, and a refusal would answer a question nobody
+  // asked. This is `recipes: []`, the state Phase 2 added deliberately.
+  if (guidance.recipes.length === 0) return guidance;
+
+  const recipe = oneClickRecipeFor(engineId);
+
+  if (!recipe) {
+    // Every recipe on offer is copy-only. No `npm-global` entry exists for this
+    // engine — today that is unreachable (all three engines with recipes have
+    // one), and it is handled anyway so that adding a script-only engine cannot
+    // produce a card that silently has no button and no explanation.
+    return {
+      ...guidance,
+      refusal: "Callboard has no install for this engine that it can run itself — the only path is the vendor's own script, and Callboard never pipes an installer into a shell for you. Copy it into a terminal.",
+    };
+  }
+
+  if (!capability.oneClick) {
+    return {
+      ...guidance,
+      refusal: capability.refusal ?? "Callboard cannot run this install itself on this machine. Copy the command into a terminal instead.",
+    };
+  }
+
+  return {
+    ...guidance,
+    oneClick: {
+      engineId,
+      package: recipe.package!,
+      command: recipe.command,
+      ...(capability.note ? { note: capability.note } : {}),
+    },
+  };
+}
+
+function baseGuidanceFor(engine: EngineStatus): EngineInstallGuidance | undefined {
   const recipes = recipesFor(engine.id);
   if (recipes.length === 0) return undefined;
 

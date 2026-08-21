@@ -33,7 +33,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { EngineCredentials, EngineStatus } from "shared/types/index.js";
+import type { EngineCredentials, EngineInstallCapability, EngineStatus } from "shared/types/index.js";
 import { ACP_VENDOR_PRESETS } from "../agents/adapters/acp/vendors.js";
 import { acpProviderVersion, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "../agents/adapters/acp/availability.js";
 import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
@@ -281,6 +281,50 @@ export interface EngineRefreshResult {
   retryAfterMs?: number;
 }
 
+export interface EngineRefreshOptions {
+  /** This client's install capability, so the returned guidance offers a button only where one is honest. */
+  capability?: EngineInstallCapability;
+  /**
+   * Ignore both the minimum interval and the in-flight share, and probe now.
+   *
+   * Exactly one caller sets this, and it is not a user: the install runner, once
+   * `npm install -g` has exited 0. That refresh is the *only* thing standing
+   * between a zero exit and the UI claiming an engine is installed, so it cannot
+   * be allowed to return a cached answer — a fast, npm-cache-warm install
+   * finishing within {@link MIN_REFRESH_INTERVAL_MS} of the user's last Recheck
+   * would otherwise be verified against statuses probed before it ran, and
+   * report success on evidence that predates the event.
+   *
+   * It is bounded by the thing it follows: one forced probe per completed
+   * install, and installs are a module-level singleton.
+   */
+  force?: boolean;
+}
+
+/**
+ * Decorate a probed list with *this client's* install capability.
+ *
+ * Kept out of the assembly and out of the caches on purpose. Capability is a
+ * property of the requester — a browser on the LAN and the same browser
+ * arriving through the remote-access tunnel get different answers from one
+ * daemon — while the probe result is a property of the machine. Caching them
+ * together would let whichever client happened to warm the cache decide what
+ * every later client is offered, and the first of those two mistakes hands a
+ * tunnelled client a button.
+ *
+ * With no capability there is nothing to decorate and the input array comes back
+ * **by identity**, which is what keeps the single-flight guarantee observable
+ * (`engine-refresh-throttle.test.ts` asserts concurrent callers share one array,
+ * not merely one probe).
+ */
+function withInstallCapability(engines: EngineStatus[], capability: EngineInstallCapability | undefined): EngineStatus[] {
+  if (!capability) return engines;
+  return engines.map((engine) => {
+    const install = installGuidanceFor(engine, capability);
+    return install ? { ...engine, install } : engine;
+  });
+}
+
 /**
  * Re-probe every engine, at most once per {@link MIN_REFRESH_INTERVAL_MS}.
  *
@@ -310,12 +354,15 @@ export interface EngineRefreshResult {
  *   pressed a button, and refusing them while holding a perfectly good answer
  *   would be worse than telling them it is a moment old.
  */
-export async function refreshEngineStatuses(): Promise<EngineRefreshResult> {
-  if (refreshInFlight) return refreshInFlight;
+export async function refreshEngineStatuses(opts: EngineRefreshOptions = {}): Promise<EngineRefreshResult> {
+  if (refreshInFlight && !opts.force) {
+    const shared = await refreshInFlight;
+    return { ...shared, engines: withInstallCapability(shared.engines, opts.capability) };
+  }
 
   const now = Date.now();
   const elapsed = now - lastProbeAt;
-  if (lastProbeAt > 0 && elapsed < MIN_REFRESH_INTERVAL_MS) {
+  if (!opts.force && lastProbeAt > 0 && elapsed < MIN_REFRESH_INTERVAL_MS) {
     // The result of the probe that *did* run, not a fresh assembly of it.
     // Re-assembling would re-read settings and re-consult the registry cache
     // for an answer that cannot have changed since — and it would make the
@@ -323,7 +370,7 @@ export async function refreshEngineStatuses(): Promise<EngineRefreshResult> {
     // The fallback covers the one case where there is nothing to replay: a
     // first refresh that threw still moved `lastProbeAt`.
     const engines = lastProbeResult ?? (await getEngineStatuses());
-    return { engines, probed: false, retryAfterMs: MIN_REFRESH_INTERVAL_MS - elapsed };
+    return { engines: withInstallCapability(engines, opts.capability), probed: false, retryAfterMs: MIN_REFRESH_INTERVAL_MS - elapsed };
   }
 
   lastProbeAt = now;
@@ -333,10 +380,14 @@ export async function refreshEngineStatuses(): Promise<EngineRefreshResult> {
     lastProbeResult = engines;
     return { engines, probed: true };
   })().finally(() => {
-    refreshInFlight = null;
+    // A forced probe never became the shared in-flight promise, so it must not
+    // clear one it does not own — otherwise an install finishing mid-Recheck
+    // would drop the latch that is coalescing that Recheck's callers.
+    if (refreshInFlight === run) refreshInFlight = null;
   });
-  refreshInFlight = run;
-  return run;
+  if (!opts.force) refreshInFlight = run;
+  const result = await run;
+  return { ...result, engines: withInstallCapability(result.engines, opts.capability) };
 }
 
 /** Test seam: forget when the last real probe ran, so the next refresh is not throttled. */
@@ -598,11 +649,15 @@ const inFlight = new Map<boolean, Promise<EngineStatus[]>>();
  *   It does **not** re-probe PATH or re-read settings caches — those resets are
  *   Phase 2, and inventing half of one here would make a successful install read
  *   as a failure in a way that looks fixed.
+ * @param opts.capability this client's Phase-3 install capability. Absent ⇒ the
+ *   statuses come back exactly as Phase 2 assembled them, with copy-only
+ *   guidance and no claim either way about a button. Deliberately **not** part
+ *   of the cache key — see {@link withInstallCapability}.
  */
-export async function getEngineStatuses(opts: { refresh?: boolean } = {}): Promise<EngineStatus[]> {
+export async function getEngineStatuses(opts: { refresh?: boolean; capability?: EngineInstallCapability } = {}): Promise<EngineStatus[]> {
   const refresh = Boolean(opts.refresh);
   const existing = inFlight.get(refresh);
-  if (existing) return existing;
+  if (existing) return withInstallCapability(await existing, opts.capability);
 
   // Deletes its own entry and not merely "the entry at this key": Phase 2's
   // refresh endpoint clears this map mid-flight, so by the time an older
@@ -611,7 +666,7 @@ export async function getEngineStatuses(opts: { refresh?: boolean } = {}): Promi
     if (inFlight.get(refresh) === run) inFlight.delete(refresh);
   });
   inFlight.set(refresh, run);
-  return run;
+  return withInstallCapability(await run, opts.capability);
 }
 
 async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]> {
