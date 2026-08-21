@@ -100,13 +100,16 @@ Authentication is mostly OpenCode's own: run `opencode auth login` in a terminal
 
 Note that "installed" and "signed in" are separate questions here, and Callboard can only answer the first — it checks that the binary resolves on your `PATH`. ACP gives no way to ask an agent who is logged in, so an OpenCode you installed but never signed into shows as available and then fails when you send your first message, with OpenCode's own error. When that happens, `opencode auth login` is the fix.
 
-### After installing an engine
+### After installing an engine, or signing in
 
-Callboard resolves engine binaries once and caches the answer for the life of the daemon, because `PATH` doesn't change underneath a running process. If you install `opencode` or the Claude Code CLI while Callboard is up, press **Recheck** on the engine's card in **Settings → API** — that drops the cached lookups and probes again, so a running daemon picks up the new binary without a restart. (`callboard restart` still works, and is the only option if the daemon itself is wedged.)
+Callboard resolves engine binaries — and the Claude Code account — once, and caches the answers for the life of the daemon, because `PATH` doesn't change underneath a running process. So after you install a CLI or run a `login` command, the card in **Settings → API** is still reporting what it found before.
 
-Two things can make a successful `npm install -g` invisible anyway, and Callboard can't detect either — it says so on the card rather than pretending it checked:
+Press **Recheck** on that card. It drops every cached lookup (each engine's binary path and version, the executable handed to the Agent SDK, and the Agent SDK's account info) and probes again, so a running daemon picks up both a new binary and a fresh login without a restart. Re-probing spawns processes, so it's limited to one real check every ten seconds; press it again inside that and you'll be told you're seeing the previous result.
 
-- **A global prefix you can't write to.** A system-wide Node install fails with `EACCES` until you point npm somewhere you own (`npm config set prefix ~/.npm-global`, then make sure that `bin/` is on your `PATH`).
+**Recheck cannot see everything.** Three cases need `callboard restart` instead, and Callboard states each one on the card rather than pretending it checked:
+
+- **A vendor install script.** `https://opencode.ai/install` installs to `~/.opencode/bin` and `https://claude.ai/install.sh` lands in `~/.local/bin`; both put that directory on your `PATH` by editing your shell rc. New terminals get it — a process that's already running never does, because its `PATH` was fixed when it started. This is the common case, not an edge one: restart Callboard from a terminal where the command works.
+- **A global prefix you can't write to.** A system-wide Node install fails `npm install -g` with `EACCES` until you point npm somewhere you own (`npm config set prefix ~/.npm-global`, then make sure that `bin/` is on your `PATH`).
 - **nvm.** The global prefix belongs to the active Node version, so a binary installed under one version is invisible to a daemon running under another. Compare `node -v` in the terminal you installed from against the Node running Callboard.
 
 ## What You Can Do
