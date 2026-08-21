@@ -297,19 +297,76 @@ describe("HeldPrompt", () => {
     }
   });
 
-  it("does not fire an expiry for a hold that already drained", () => {
+  it("does not fire a drained hold's expiry on the dead episode's clock", () => {
     // The 10:27 line in the production trace: the last task ended, nothing
     // cancelled the timer, and it fired 32 seconds later naming an empty list.
+    //
+    // The invariant is about *which* clock, not about there being none — a
+    // drain re-arms a full window as the liveness floor, so the second half
+    // asserts the floor still fires. Without it a run whose last task reported
+    // only `task_updated` has no timer anywhere and hangs forever.
     vi.useFakeTimers();
     try {
       const held = new HeldPrompt("hello");
       const onExpiry = vi.fn();
-      held.armTimeout(60_000, onExpiry);
-      held.disarmTimeout();
+      held.armTimeout(60_000, onExpiry); // episode deadline: t=60s
+      vi.advanceTimersByTime(30_000);
+      held.disarmTimeout(); // drained at t=30s → fresh floor at t=90s
 
-      vi.advanceTimersByTime(600_000);
+      vi.advanceTimersByTime(30_001); // t=60.001s, past the dead episode's deadline
       expect(onExpiry).not.toHaveBeenCalled();
       expect(held.closed).toBe(false);
+
+      vi.advanceTimersByTime(30_000); // t=90s, the floor
+      expect(onExpiry).toHaveBeenCalledOnce();
+      expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a hold whose turn never ends, rather than waiting on it forever", () => {
+    // M2's hang. A deferred expiry hands the close to the turn boundary, but
+    // the CLI is not obliged to produce one: a task that ends reporting only
+    // `task_updated` enqueues no prompt, so no turn opens and no `result`
+    // arrives (see messageAdapter.ts). The watchdog is what keeps that from
+    // parking the run forever with nothing armed anywhere in it.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      held.markTurnActive();
+      held.armTimeout(60_000, vi.fn());
+      vi.advanceTimersByTime(60_000); // expiry defers — the turn looks alive
+      expect(held.closed).toBe(false);
+
+      vi.advanceTimersByTime(59_999); // silence, and no boundary
+      expect(held.closed).toBe(false);
+      vi.advanceTimersByTime(2);
+      expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a deferred expiry a fresh reprieve for as long as the turn keeps working", () => {
+    // Silence is the signal, not elapsed time. A turn still emitting events is
+    // doing something, and cutting stdin under one is the damage the deferral
+    // exists to avoid — so the watchdog restarts on every sign of life.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      held.markTurnActive();
+      held.armTimeout(60_000, vi.fn());
+      vi.advanceTimersByTime(60_000); // deferred
+
+      for (let i = 0; i < 5; i++) {
+        vi.advanceTimersByTime(50_000);
+        held.markTurnActive(); // still working
+      }
+      expect(held.closed).toBe(false);
+
+      held.markTurnEnded(); // the boundary finally arrives
+      expect(held.closed).toBe(true);
     } finally {
       vi.useRealTimers();
     }

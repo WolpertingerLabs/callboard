@@ -1843,7 +1843,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           // out from under it — see HeldPrompt.armTimeout. The matching
           // markTurnEnded() is at the bottom of the `result` case, after the
           // hold decision has had its say.
-          if (event.type !== "result") heldPromptRef.current?.markTurnActive();
+          //
+          // `background_task` is excluded, and not as a nicety: it is the one
+          // event class the hold exists to receive, and it arrives precisely
+          // *because* nothing else is happening. Counting it as a live turn
+          // made the common case — a task ending during a hold — look like
+          // work in progress, so the expiry would defer and then wait on a
+          // `result` that a hold has no reason to produce.
+          if (event.type !== "result" && event.type !== "background_task") heldPromptRef.current?.markTurnActive();
 
           switch (event.type) {
             case "result": {
@@ -1898,9 +1905,20 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                     // row goes now rather than at the deferred close — leaving
                     // it up would show a countdown that has already run out.
                     endHoldActivity();
+                    const stillRunning = outstandingTasks.ids();
+                    const minutes = Math.round(DEFAULT_MAX_HOLD_MS / 60_000);
+                    // Two different events wear this callback. With tasks
+                    // outstanding it is the cap doing its job. With none, it is
+                    // the post-drain floor firing because no turn boundary ever
+                    // came to release us — a hang averted, not a task
+                    // abandoned, and saying "gave up on []" for it is how the
+                    // production log came to name an empty list.
                     log.warn(
-                      `Session ${trackingId} held ${Math.round(DEFAULT_MAX_HOLD_MS / 60_000)}m for background task(s) ` +
-                        `[${outstandingTasks.ids().join(", ")}] — giving up waiting; they end with the subprocess`,
+                      stillRunning.length > 0
+                        ? `Session ${trackingId} held ${minutes}m for background task(s) [${stillRunning.join(", ")}] — ` +
+                            `giving up waiting; they end with the subprocess`
+                        : `Session ${trackingId} held ${minutes}m with no background task outstanding and no turn boundary — ` +
+                            `closing the input stream rather than waiting on one that may never come`,
                     );
                   });
                   // After arming, so the row carries the deadline the bound is

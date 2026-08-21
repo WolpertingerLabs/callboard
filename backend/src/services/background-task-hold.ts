@@ -42,6 +42,14 @@
  * for the turn to end rather than closing stdin under it (see
  * {@link HeldPrompt.armTimeout}). Neither loosens the bound; they only stop it
  * firing at a moment when firing does damage.
+ *
+ * Both refinements are safe for the same reason, and it is the load-bearing
+ * property of this file: **while a hold is open, a timer is always pending.**
+ * Deferring an expiry keeps a watchdog; draining an episode re-arms rather
+ * than cancels. Neither ever hands liveness to an event the CLI is under no
+ * obligation to emit, because it does not always emit one — a task can end
+ * reporting only `task_updated`, which enqueues no prompt, opens no turn, and
+ * produces no `result` to be waiting for.
  */
 import { createLogger } from "../utils/logger.js";
 
@@ -173,6 +181,15 @@ export class HeldPrompt {
   private turnActive = false;
   /** An expiry that fired mid-turn, waiting on the boundary to close. */
   private expiryDeferred = false;
+  /**
+   * The window and callback of the most recent {@link armTimeout}, retained so
+   * the bound can re-arm itself without the query loop being asked again.
+   *
+   * This is what makes "a timer is always pending while the hold is open" a
+   * property of this class rather than a habit of its caller — see
+   * {@link disarmTimeout}.
+   */
+  private lastArm: { ms: number; onExpiry: () => void } | null = null;
 
   /**
    * @param source the messages this turn is sending, in whatever shape the
@@ -277,45 +294,81 @@ export class HeldPrompt {
    *   AbortError: Stream closed`, then the transport-failure recovery cycle,
    *   from a timer that fired while the session was working.
    *
-   * The release-exactly-once guarantee is unchanged. The mid-turn path defers
-   * to a boundary that always arrives — the turn either produces a `result`,
-   * or ends the stream, or throws — and the run's `finally` closes the hold
-   * unconditionally behind all three.
+   * The release-exactly-once guarantee is unchanged, and neither is liveness:
+   * the mid-turn path defers to a boundary, but does not *trust* one to
+   * arrive. A deferred expiry keeps a watchdog running, so a turn that stops
+   * producing events entirely is closed rather than waited on forever. See
+   * {@link disarmTimeout} for the standing invariant both halves serve.
    */
   armTimeout(ms: number, onExpiry: () => void): void {
     if (this.isReleased) return;
+    this.lastArm = { ms, onExpiry };
     if (this.deadlineAt === null) this.deadlineAt = Date.now() + ms;
-    if (this.timer) clearTimeout(this.timer);
 
     const remaining = this.deadlineAt - Date.now();
     if (remaining <= 0) {
-      this.timer = null;
+      this.schedule(null);
       this.expire(onExpiry);
       return;
     }
+    this.schedule(remaining, () => this.expire(onExpiry));
+  }
+
+  /**
+   * Replace whatever is pending. `delayMs === null` just cancels.
+   *
+   * Everything this class schedules goes through here and shares the one timer
+   * slot, so "is anything pending?" has a single answer and cannot drift
+   * between the episode deadline, the deferral watchdog, and the post-drain
+   * floor.
+   */
+  private schedule(delayMs: number | null, fire?: () => void): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    if (delayMs === null || !fire) return;
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.expire(onExpiry);
-    }, remaining);
+      fire();
+    }, delayMs);
     // A pending hold must not be the reason the daemon stays up.
     this.timer.unref?.();
   }
 
   private expire(onExpiry: () => void): void {
     onExpiry();
-    if (this.turnActive) {
-      this.expiryDeferred = true;
+    if (!this.turnActive) {
+      this.close();
       return;
     }
-    this.close();
+    // Mid-turn: hand the close to the boundary, but keep a watchdog running so
+    // liveness does not depend on a `result` the CLI is under no obligation to
+    // send. Measured from the last sign of life rather than from here — see
+    // {@link markTurnActive} — because a turn that is still emitting events is
+    // working, and cutting stdin under one is the damage the deferral exists
+    // to avoid. Total worst case is therefore two windows and then the
+    // pre-hold behaviour, which is what a bound should degrade into.
+    this.expiryDeferred = true;
+    this.armDeferralWatchdog();
+  }
+
+  /** Restart the deferred expiry's patience. Silence, not time, is the signal. */
+  private armDeferralWatchdog(): void {
+    const ms = this.lastArm?.ms;
+    if (ms === undefined) return;
+    this.schedule(ms, () => this.close());
   }
 
   /**
    * Report that the CLI is working — anything the query loop sees other than
-   * the `result` that ends a turn.
+   * the `result` that ends a turn, and other than `background_task`, which by
+   * construction arrives while the hold is *idle*.
    */
   markTurnActive(): void {
     this.turnActive = true;
+    // Every event is proof the turn is alive, so a deferred expiry's watchdog
+    // starts again from here. A turn that keeps working keeps its reprieve; a
+    // turn that has gone silent runs out of one.
+    if (this.expiryDeferred) this.armDeferralWatchdog();
   }
 
   /**
@@ -362,14 +415,42 @@ export class HeldPrompt {
    * task outstanding so the expiry defers, the task ends mid-turn, the model
    * starts another, and at the boundary the new task's brand-new window closes
    * immediately and its shell dies.
+   *
+   * ## The invariant: while the hold is open, something is always pending
+   *
+   * "Disarm" names the old episode's clock, not the bound. Cancelling outright
+   * would leave the run with no timer anywhere in it, and the assumption that
+   * covers for that — the turn boundary will close us — is exactly the
+   * assumption the CLI does not honour. `messageAdapter.ts` says so in as many
+   * words: a task can end reporting only `task_updated`, which enqueues no
+   * prompt, so no turn opens and no `result` ever arrives. The `for await`
+   * then parks on a stream this object is holding open, and the run hangs
+   * permanently — no `done`, no `session_stopped`, no onComplete phone-home,
+   * no job-step harvest, registry entry never released, subprocess pinned.
+   * Before the per-episode change the absolute timer would have closed it.
+   *
+   * So a drain re-arms a fresh full window instead of clearing. If a boundary
+   * arrives — the overwhelmingly common case — `decideHold` releases and
+   * `close()` cancels this on the way out, so it never fires. If none does,
+   * the run still ends, one window late, exactly as it did before the hold
+   * existed.
+   *
+   * One consequence worth naming: a *new* episode arming after a drain
+   * inherits this deadline rather than minting one, so its window is measured
+   * from the drain rather than from the arm. The gap between the two is a
+   * single turn boundary, and erring shorter is the safe direction for a
+   * bound.
    */
   disarmTimeout(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
     this.deadlineAt = null;
     this.expiryDeferred = false;
+    if (this.isReleased || !this.lastArm) {
+      this.schedule(null);
+      return;
+    }
+    const { ms, onExpiry } = this.lastArm;
+    this.deadlineAt = Date.now() + ms;
+    this.schedule(ms, () => this.expire(onExpiry));
   }
 }
 
