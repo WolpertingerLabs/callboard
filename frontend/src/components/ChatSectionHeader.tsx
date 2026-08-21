@@ -1,7 +1,5 @@
 /**
- * The header above an "Active cards first" section, rendered by both list
- * layouts (which is why it is its own file rather than a style object copied
- * into each).
+ * The header above an "Active cards first" section.
  *
  * Typography and chevron are the sidebar's existing "Staging" header, down to
  * the count in parentheses — these are the same kind of control on the same
@@ -15,8 +13,8 @@
  * own `--chatlist-header-bg` is transparent in both themes.
  *
  * The count is chats, passed in rather than derived from the rows below: the
- * tree layout renders one row per lineage group, so counting what it renders
- * would under-report every group with more than one member.
+ * list renders one row per lineage group, so counting what it renders would
+ * under-report every group with more than one member.
  */
 
 import { ChevronDown, ChevronRight } from "lucide-react";

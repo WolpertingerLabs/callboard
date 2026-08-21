@@ -9,11 +9,13 @@ import { sectionByActive } from "../utils/chatSections";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 
 /**
- * Tree-layout rendering of the sidebar chat list.
+ * The sidebar chat list.
  *
  * Chats are grouped by their parentage-tree root (metadata `rootChatId`,
- * aliasing legacy `parentChatId`/`forkedFrom` pointers). Chats without any
- * lineage render exactly like the flat list. Groups render their most
+ * aliasing legacy `parentChatId`/`forkedFrom` pointers). A chat without any
+ * lineage — the common case — renders as a plain `ChatListItem` row, with no
+ * chevron and nothing to expand, so a list of unrelated chats looks exactly
+ * like an ungrouped one. Groups render their most
  * recently updated loaded chat as the header row with a chevron; expanding
  * fetches the authoritative full tree from GET /api/chats/:id/tree (which
  * includes members outside the currently loaded page) and renders it

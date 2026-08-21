@@ -1,11 +1,12 @@
 /**
  * The "Active cards first" split.
  *
- * Generic over the item type on purpose: the flat list sections **chats**, but
- * the tree layout sections **rows** — a parentage group collapses into one row
- * and can straddle both buckets (parent on an open card, child card-less), so
- * it must be filed whole, by its header row, rather than have its members
- * partitioned out from under it.
+ * The sidebar sections **rows**, not chats — a parentage group collapses into
+ * one row and can straddle both buckets (parent on an open card, child
+ * card-less), so it must be filed whole, by its header row, rather than have
+ * its members partitioned out from under it. Hence the generic item type and
+ * the separate `countOf`: the thing being partitioned and the thing being
+ * counted are not the same thing.
  */
 
 import type { CardSummary, Chat } from "../api";
@@ -16,25 +17,17 @@ export interface ChatSection<T> {
   label: string;
   items: T[];
   /**
-   * Chats in this section, which is **not** `items.length` in the tree layout:
-   * one row there stands for a whole lineage group. The header counts chats in
-   * both layouts, so a group's members are counted where they are filed.
+   * Chats in this section, which is **not** `items.length`: one row stands for
+   * a whole lineage group, so a group's members are counted where the group is
+   * filed.
    *
-   * "Where they are filed" is per-layout, and the two layouts can legitimately
-   * disagree about the same chats — the count reports each layout honestly
-   * rather than papering over a split that is already visible in the rows:
-   *
-   * - A lineage group is filed **whole**, by its header row, so a group whose
-   *   members straddle both buckets counts entirely under the header row's
-   *   section. The flat layout files those same chats individually. This is
-   *   the tree's deliberate filing rule, not a counting bug — a group is one
-   *   row and cannot be in two sections.
-   * - The tree layout requests `includeLineage`, so it loads group members
-   *   from outside the pagination window. Those chats are on screen (folded
-   *   into their group) and are counted; the flat layout never loaded them.
-   *
-   * Both mean the tree's totals can exceed the flat layout's for the same
-   * page. Both are the layouts differing about what they are showing.
+   * A lineage group is filed **whole**, by its header row, so a group whose
+   * members straddle both buckets counts entirely under its header row's
+   * section. That is the deliberate filing rule, not a counting bug — a group
+   * is one row and cannot be in two sections. The list also requests
+   * `includeLineage`, so group members from outside the pagination window are
+   * on screen (folded into their group) and counted too; totals can therefore
+   * exceed the page size, which is honest about what is being shown.
    */
   count: number;
 }
@@ -62,8 +55,8 @@ export interface SectionContext {
 }
 
 /**
- * The per-chat verdict both layouts section on, or `undefined` for "render as
- * if the option were off".
+ * The per-chat verdict the list sections on, or `undefined` for "render as if
+ * the option were off".
  *
  * A function rather than an expression inline in the list for the same reason
  * {@link isChatDimmed} is one: the case it exists for is a state no render of

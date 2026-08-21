@@ -18,12 +18,12 @@ export const DEFAULT_CHAT_FILTERS: ChatFilters = {
 };
 
 /**
- * Sidebar scope + layout, edited alongside {@link ChatFilters} in the filters
- * modal but deliberately a separate type: these are resolved SERVER-side (or
- * by the list's layout), while ChatFilters is client-side post-filtering.
- * Folding them together would drag them into {@link hasActiveFilters}, which
- * forces the list to fetch everything and hides "Load next page" — wrong for
- * options that paginate perfectly well.
+ * Sidebar scope, edited alongside {@link ChatFilters} in the filters modal but
+ * deliberately a separate type: these are resolved SERVER-side (or by how the
+ * list renders what it already holds), while ChatFilters is client-side
+ * post-filtering. Folding them together would drag them into
+ * {@link hasActiveFilters}, which forces the list to fetch everything and hides
+ * "Load next page" — wrong for options that paginate perfectly well.
  */
 export interface ChatViewOptions {
   /** Only bookmarked chats. Session-only — deliberately not persisted. */
@@ -45,8 +45,6 @@ export interface ChatViewOptions {
    * removes a row.
    */
   sortByCardActive: boolean;
-  /** Group chats by parentage tree instead of a flat list. */
-  treeLayout: boolean;
 }
 
 export const DEFAULT_CHAT_VIEW_OPTIONS: ChatViewOptions = {
@@ -55,7 +53,6 @@ export const DEFAULT_CHAT_VIEW_OPTIONS: ChatViewOptions = {
   cardsOnly: false,
   dimCardless: false,
   sortByCardActive: false,
-  treeLayout: false,
 };
 
 /** How many view options are off their default — drives the filter button's badge. */

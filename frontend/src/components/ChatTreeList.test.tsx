@@ -354,9 +354,8 @@ describe("ChatTreeList active-first sections", () => {
       fireEvent.click(screen.getByText(/^Active \(3\)$/));
       cleanup();
 
-      // This component remounting — not the flat/tree layout toggle, which is
-      // ChatList keeping its own mount and swapping which branch it renders.
-      // That case is two consumers of one preference, and lives in
+      // This component remounting. The neighbouring case — two consumers of
+      // one preference, mounted at once — lives in
       // hooks/useChatSectionExpansion.test.tsx.
       const { container } = renderSectioned(STRADDLING);
       expect(outline(container)).toEqual(["Active", "Inactive", "chat solo-none"]);

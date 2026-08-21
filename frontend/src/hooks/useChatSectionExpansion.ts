@@ -1,15 +1,15 @@
 /**
  * Expand/collapse state for the sidebar's Active/Inactive card sections.
  *
- * One module-level store rather than `useState` per caller, because the two
- * consumers are **both mounted at once**: `ChatList` calls this hook
- * unconditionally and renders the flat sections from it, while `ChatTreeList`
- * — which it also renders, in tree layout — calls it too. `treeLayout` is
- * `ChatList`'s own state, so switching layouts does not remount `ChatList`.
- * With per-caller `useState`, collapsing a section in the tree layout left
- * `ChatList`'s copy untouched, and switching to flat handed back an expanded
- * section that contradicted both localStorage and the click the user had just
- * made. Two components reading one preference is not two states.
+ * One module-level store rather than `useState` per caller. `ChatTreeList` is
+ * currently the only consumer, but the store is the point: this is a stored
+ * *preference*, and every component that reads it must see the same value the
+ * moment any one of them changes it. When the sidebar still had a flat layout
+ * beside the tree, both lists called this hook while mounted together and
+ * per-caller `useState` let the two copies drift — collapsing a section in one
+ * left the other's copy expanded, contradicting both localStorage and the
+ * click the user had just made. Two components reading one preference is not
+ * two states, and a second consumer must not be able to reintroduce that.
  *
  * localStorage is the durable copy; `snapshot` is the in-memory one every
  * subscriber shares. `useSyncExternalStore` requires a referentially stable
