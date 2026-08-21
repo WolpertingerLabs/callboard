@@ -35,12 +35,19 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { EngineCredentials, EngineStatus } from "shared/types/index.js";
 import { ACP_VENDOR_PRESETS } from "../agents/adapters/acp/vendors.js";
-import { acpProviderVersion, resolveAcpBinaryPath } from "../agents/adapters/acp/availability.js";
+import { acpProviderVersion, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "../agents/adapters/acp/availability.js";
 import { getCodexAuthSource, isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
 import { DEFAULT_CLINE_PROVIDER_ID } from "../agents/adapters/cline/optionsAdapter.js";
 import { DEFAULT_PI_PROVIDER_ID } from "../agents/adapters/pi/optionsAdapter.js";
 import { createLogger } from "../utils/logger.js";
-import { getAgentSettings, getClaudeCodeExecutablePath, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
+import { resetClaudeBinaryPathCache } from "../utils/paths.js";
+import {
+  getAgentSettings,
+  getClaudeCodeExecutablePath,
+  isClaudeCodeRoutedThroughOpenRouter,
+  resetClaudeCodeExecutablePathCache,
+} from "./agent-settings.js";
+import { installGuidanceFor } from "./engine-install-recipes.js";
 import { getLatestVersions, isNewerVersion } from "./npm-registry.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
 
@@ -206,11 +213,39 @@ async function claudeCliVersion(execPath: string): Promise<string | undefined> {
   return version;
 }
 
-/** Test seam: forget the cached `claude --version` result and manifest read. */
+/** Forget the cached `claude --version` result, manifest read, and any in-flight assembly. */
 export function resetEngineStatusCache(): void {
   claudeCliVersionCache = null;
   callboardManifestCache = undefined;
   inFlight.clear();
+}
+
+/**
+ * Forget every process-lifetime answer to "is this engine installed".
+ *
+ * Four caches memoize that question, and until now none of them was reachable
+ * outside its own module. That was correct while nothing could change PATH under
+ * a running daemon — and it stops being correct the moment a user installs
+ * something and asks Callboard to look again, which is exactly what
+ * `POST /api/engines/refresh` does:
+ *
+ * - `availability.ts` — resolved path *and* `--version` output, per ACP command;
+ * - `agent-settings.ts` — `resolvedClaudePath`, the path handed to the Agent
+ *   SDK. Resetting it also fixes a standing papercut unrelated to installs:
+ *   editing `pathToClaudeCodeExecutable` used to need a daemon restart;
+ * - `paths.ts` — `_claudeBinaryPath`, the separate lookup the login prompt and
+ *   About page use;
+ * - this module — the cached `claude --version` and manifest reads.
+ *
+ * Cheap by construction: each is a variable assignment, and the next status
+ * assembly re-probes. Nothing here spawns a process; the re-probe that follows
+ * does what it always did.
+ */
+export function resetEngineProbeCaches(): void {
+  resetAcpAvailabilityCache();
+  resetClaudeCodeExecutablePathCache();
+  resetClaudeBinaryPathCache();
+  resetEngineStatusCache();
 }
 
 // ── The engine table ────────────────────────────────────────────────
@@ -258,11 +293,31 @@ const ACP_VENDOR_PACKAGES: Record<string, string> = {
  *   gateway — *the other fields are absent* and auth is external (AWS creds,
  *   gcloud ADC, an enterprise gateway). A Bedrock user is fully authenticated
  *   with none of the four fields above set, so without this branch they are
- *   told to run `claude login`, which would not help them.
+ *   told to run `claude auth login`, which would not help them.
  * - `apiKeySource` is one of `user | project | org | temporary | oauth`. Four of
  *   those are keys; `oauth` is a subscription login, and labelling it "API key"
  *   names the wrong credential.
+ * - Both of those fields are *free strings*, and on a machine with no
+ *   credentials at all the SDK returns the literal `"none"` rather than omitting
+ *   them — measured against a daemon booted with an empty `HOME`. A present-but-
+ *   `"none"` field is truthy, so keying on presence alone reported an
+ *   unauthenticated machine as `configured: true, source: "none"`. See
+ *   {@link namedSource}.
  */
+
+/**
+ * A source field's value, or `undefined` when it names no source.
+ *
+ * `"none"` is the SDK's way of saying "nothing here", spelled as a value rather
+ * than as an absence. Treating it as a source is how a card ends up asserting a
+ * credential that does not exist — and it is exactly the state the install
+ * guidance for Claude Code has to be able to see.
+ */
+function namedSource(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.toLowerCase() === "none") return undefined;
+  return trimmed;
+}
 async function claudeCodeCredentials(): Promise<EngineCredentials> {
   try {
     if (isClaudeCodeRoutedThroughOpenRouter()) {
@@ -274,11 +329,11 @@ async function claudeCodeCredentials(): Promise<EngineCredentials> {
 
   try {
     const { account } = await getSdkInfoAsync();
-    if (account?.tokenSource) return { configured: true, source: account.tokenSource };
-    if (account?.apiKeySource) {
-      return account.apiKeySource === "oauth"
-        ? { configured: true, source: "subscription (OAuth)" }
-        : { configured: true, source: `API key (${account.apiKeySource})` };
+    const tokenSource = namedSource(account?.tokenSource);
+    if (tokenSource) return { configured: true, source: tokenSource };
+    const apiKeySource = namedSource(account?.apiKeySource);
+    if (apiKeySource) {
+      return apiKeySource === "oauth" ? { configured: true, source: "subscription (OAuth)" } : { configured: true, source: `API key (${apiKeySource})` };
     }
     if (account?.subscriptionType) return { configured: true, source: `${account.subscriptionType} subscription` };
     if (account?.email) return { configured: true, source: "subscription" };
@@ -293,7 +348,11 @@ async function claudeCodeCredentials(): Promise<EngineCredentials> {
     }
     return {
       configured: false,
-      note: "The Agent SDK reported no account. Run `claude login` once in a terminal, or set an API key or auth token on this tab.",
+      // `claude auth login`, not `claude login` — the CLI's subcommand is under
+      // `auth`, and it is what README.md and CodeLoginModal both tell users to
+      // run. A note that names a command the binary does not have is the same
+      // failure as one that names a command the user cannot reach.
+      note: "The Agent SDK reported no account. Run `claude auth login` once in a terminal — which needs the native CLI — or set an API key or auth token on this tab.",
     };
   } catch {
     return { configured: "unknown", note: "Could not read account info from the Agent SDK." };
@@ -320,7 +379,11 @@ function codexCredentials(): EngineCredentials {
   if (source) return { configured: true, source };
   return {
     configured: false,
-    note: "Run `codex login` once in a terminal, set an API key on this tab, or declare a model_provider in $CODEX_HOME/config.toml.",
+    // `codex login` is named with the condition attached rather than bare: the
+    // bundled binary is nested inside Callboard's node_modules and never reaches
+    // the user's PATH, so on a clean install that command does not exist yet.
+    // The install recipe on the card is what closes that gap.
+    note: "No stored login, no API key on this tab, and no model_provider in $CODEX_HOME/config.toml. `codex login` is the subscription path, but it needs the Codex CLI installed globally — Callboard's bundled copy never reaches your PATH.",
   };
 }
 
@@ -393,7 +456,12 @@ export async function getEngineStatuses(opts: { refresh?: boolean } = {}): Promi
   const existing = inFlight.get(refresh);
   if (existing) return existing;
 
-  const run = assembleEngineStatuses(refresh).finally(() => inFlight.delete(refresh));
+  // Deletes its own entry and not merely "the entry at this key": Phase 2's
+  // refresh endpoint clears this map mid-flight, so by the time an older
+  // assembly settles the slot may already belong to a newer one.
+  const run: Promise<EngineStatus[]> = assembleEngineStatuses(refresh).finally(() => {
+    if (inFlight.get(refresh) === run) inFlight.delete(refresh);
+  });
   inFlight.set(refresh, run);
   return run;
 }
@@ -522,5 +590,12 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
     });
   }
 
-  return engines;
+  // The copyable command, last, so the decision reads the finished status rather
+  // than a half-built one. `installGuidanceFor` returns undefined for every
+  // engine that is fine and for every engine that is bundled, which is most of
+  // them most of the time — see engine-install-recipes.ts for the three gates.
+  return engines.map((engine) => {
+    const install = installGuidanceFor(engine);
+    return install ? { ...engine, install } : engine;
+  });
 }

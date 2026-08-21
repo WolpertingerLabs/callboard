@@ -101,6 +101,86 @@ export interface EngineCredentials {
   note?: string;
 }
 
+/**
+ * How a recipe's command reaches the machine.
+ *
+ * - `npm-global` — an `npm install -g <literal package>` with an argv array
+ *   behind it. This is the only method Phase 3 will ever be allowed to run.
+ * - `script` — a vendor's own `curl … | bash` installer. **Copy-only, forever.**
+ *   Callboard offers the text and never runs it: piping the internet into a
+ *   shell on a user's behalf is not something a settings page gets to do, and
+ *   the type enforces it — a `script` recipe carries no {@link
+ *   EngineInstallRecipe.argv}, so there is nothing to hand `execFile`.
+ *
+ * @see plans/engine-availability-and-install.md — Decisions 4 and 5
+ */
+export type EngineInstallMethod = "npm-global" | "script";
+
+/**
+ * One command a user can copy, for one engine.
+ *
+ * The package name is a **literal in the recipe registry** and never assembled
+ * from a request — see `backend/src/services/engine-install-recipes.ts`.
+ */
+export interface EngineInstallRecipe {
+  /** The {@link EngineStatus.id} this belongs to. */
+  engineId: string;
+  method: EngineInstallMethod;
+  /** Short name for the method, as the card labels it — "npm (global)", "Official installer". */
+  label: string;
+  /** The npm package, verbatim. Present on `npm-global` only. */
+  package?: string;
+  /**
+   * `execFile`-style argv. Present on `npm-global` only, absent on `script`.
+   *
+   * Nothing in Phase 2 executes this — it exists so Phase 3 has a closed,
+   * literal set to spawn without ever building argv from user input.
+   */
+  argv?: readonly string[];
+  /** Exactly what to type. This is the string the copy button puts on the clipboard. */
+  command: string;
+  /** Vendor documentation for this install path. */
+  docsUrl: string;
+  /**
+   * Conditions under which the command above would not do what it says.
+   *
+   * Rendered verbatim, because a copyable command *is an instruction*: a recipe
+   * that tells a user to run something that cannot work on their machine (a
+   * bash-only script on Windows, a global install under a non-writable prefix,
+   * an nvm-managed Node where the install lands under a different version) is
+   * the same class of bug as an "installed ✓" that is always ✓. Callboard does
+   * not detect these in Phase 2 — it states them.
+   */
+  caveats?: readonly string[];
+}
+
+/**
+ * What a user can actually do about an engine that is not ready, if anything.
+ *
+ * Attached to {@link EngineStatus.install} only when there is a real action.
+ * Absent means "nothing to install" — which for four of the five engines is the
+ * permanent answer, and for a working install is the current one.
+ *
+ * Deliberately a *set* of recipes rather than the single one the plan's sketch
+ * named: the same engine has both an npm path and a vendor-script path, and
+ * only one of the two can be a Phase-3 button.
+ */
+export interface EngineInstallGuidance {
+  /** Why this is being offered — "no `opencode` on PATH", "`codex login` needs the CLI". */
+  reason: string;
+  /**
+   * What installing does and does not change, when that is not obvious.
+   *
+   * The Codex recipe is the reason this field exists: installing `@openai/codex`
+   * makes `codex login` runnable, and changes nothing about which binary a chat
+   * runs. A card that read "install Codex" would be actively wrong.
+   */
+  scope?: string;
+  /** The alternative that needs nothing installed, where there is one (an API key on this tab). */
+  alternative?: string;
+  recipes: EngineInstallRecipe[];
+}
+
 /** One engine, as Settings → API renders it. */
 export interface EngineStatus {
   /** `"claude-code" | "codex" | "cline" | "pi"`, or an ACP vendor id. */
@@ -137,8 +217,14 @@ export interface EngineStatus {
   /** The cached answer is past its TTL and the refetch failed — treat {@link latestVersion} as "last known". */
   latestVersionStale?: boolean;
   credentials: EngineCredentials;
-  // Phase 2 adds `install?: EngineInstallRecipe` here — the copyable command for
-  // the two engines that have one. Deliberately absent in Phase 1.
+  /**
+   * The copyable command(s), when this engine is in a state one would help.
+   *
+   * Absent is the common and correct case: a bundled engine has nothing to
+   * install *ever* (a global install cannot reach Callboard's nested
+   * `node_modules`), and a working external one has nothing to install *now*.
+   */
+  install?: EngineInstallGuidance;
 }
 
 /** `GET /api/engines`. */

@@ -234,8 +234,9 @@ describe("acp vendors — the external kind", () => {
     if (engine.runtime.kind !== "external") throw new Error("unreachable");
     expect(engine.runtime.resolvedPath).toBeUndefined();
     expect(engine.version).toBeUndefined();
-    // Phase 2 attaches the `npm install -g opencode-ai` recipe here.
-    expect(engine).not.toHaveProperty("install");
+    // Phase 2 attaches the copyable commands here. The gating itself is
+    // engine-install-recipes.test.ts's subject; this asserts the wiring.
+    expect(engine.install?.recipes.map((r) => r.command)).toEqual(["npm install -g opencode-ai", "curl -fsSL https://opencode.ai/install | bash"]);
   });
 
   it("report the resolved path and the CLI's own version when installed", async () => {
@@ -265,6 +266,17 @@ describe("credentials", () => {
     expect(engine.credentials).toEqual({ configured: true, source: "ANTHROPIC_AUTH_TOKEN" });
   });
 
+  it("does not read the literal string \"none\" as a credential", async () => {
+    // Measured against a daemon booted with an empty HOME: the SDK answers
+    // `{ tokenSource: "none" }` rather than omitting the field, and a
+    // present-but-"none" string is truthy — so an unauthenticated machine was
+    // reported as `configured: true, source: "none"`. Which also meant Phase 2's
+    // install guidance for Claude Code could never fire.
+    mocks.sdkInfo.mockResolvedValue({ account: { tokenSource: "none", apiKeySource: "none" }, models: [], fetchedAt: 0 });
+    const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
+    expect(engine.credentials.configured).toBe(false);
+  });
+
   it("counts a subscription login, which reports no token source at all", async () => {
     // The regression this guards: the SDK returns { email, subscriptionType }
     // and no `tokenSource` for a subscription login, so keying on that field
@@ -279,7 +291,10 @@ describe("credentials", () => {
     // credentials live and found nothing.
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     expect(engine.credentials.configured).toBe(false);
-    expect(engine.credentials.note).toContain("claude login");
+    // `claude auth login`, the CLI's actual subcommand — a note that names a
+    // command the binary does not have is as wrong as one that names a command
+    // the user cannot reach.
+    expect(engine.credentials.note).toContain("claude auth login");
   });
 
   it("says unknown, not unconfigured, when the SDK could not be asked at all", async () => {
