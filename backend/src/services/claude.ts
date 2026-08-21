@@ -1776,6 +1776,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         for await (const event of guardedEvents()) {
           if (abortController.signal.aborted) break;
 
+          // Anything that isn't the turn-ending `result` means the CLI is
+          // working, and a hold that expires while it is must not close stdin
+          // out from under it — see HeldPrompt.armTimeout. The matching
+          // markTurnEnded() is at the bottom of the `result` case, after the
+          // hold decision has had its say.
+          if (event.type !== "result") heldPromptRef.current?.markTurnActive();
+
           switch (event.type) {
             case "result": {
               // Always the last yielded event: tells us why the conversation ended.
@@ -1837,6 +1844,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                   held.close();
                 }
               }
+              // The turn is over. An expiry that fired while it was running
+              // deferred its close to here; on the ordinary path the decision
+              // above has already closed and this is a no-op backstop.
+              heldPromptRef.current?.markTurnEnded();
               break;
             }
 

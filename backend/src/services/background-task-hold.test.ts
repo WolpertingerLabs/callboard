@@ -9,7 +9,10 @@
  * - `HeldPrompt` failing to release *hangs the session*. It is released from
  *   four places (normal end, timeout, abort, the run's `finally`), so the
  *   tests below lean on idempotency and on the released-before-iteration order
- *   that the abort path actually produces.
+ *   that the abort path actually produces. The timeout is the subtle one: it
+ *   closes when the hold is idle and defers to the turn boundary when it is
+ *   not, so both halves are covered — a deferral that never settled would be
+ *   a leak, and an idle expiry that deferred would be no bound at all.
  */
 import { describe, it, expect, vi } from "vitest";
 import { decideHold, HeldPrompt, OutstandingTasks, MAX_TRACKED_TASKS } from "./background-task-hold.js";
@@ -157,7 +160,10 @@ describe("HeldPrompt", () => {
     await expect(drain(held.iterable())).resolves.toHaveLength(1);
   });
 
-  it("releases itself when the armed timeout expires", async () => {
+  it("releases itself when the armed timeout expires between turns", async () => {
+    // The ordinary case: the turn ended, the hold is parked waiting on a
+    // notification that never comes. Nothing else will close it, so the timer
+    // must — deferring here would leave the bound with nothing to bite on.
     vi.useFakeTimers();
     try {
       const held = new HeldPrompt("hello");
@@ -168,6 +174,59 @@ describe("HeldPrompt", () => {
       vi.advanceTimersByTime(60_000);
       expect(onExpiry).toHaveBeenCalledOnce();
       expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not close the stream when the timeout expires mid-turn", async () => {
+    // Closing stdin under a live turn is what produced the "Stream closed"
+    // tool failures and the transport-recovery cycles in production. The latch
+    // still fires immediately — the caller needs it to decide at the boundary.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      const onExpiry = vi.fn();
+      held.markTurnActive();
+      held.armTimeout(60_000, onExpiry);
+
+      vi.advanceTimersByTime(60_000);
+      expect(onExpiry).toHaveBeenCalledOnce();
+      expect(held.closed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a deferred expiry at the next turn boundary", async () => {
+    // The backstop half: the turn boundary normally closes via decideHold's
+    // `expired` release, but the bound is owned here so a caller that forgets
+    // cannot leak a held stream.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      held.markTurnActive();
+      held.armTimeout(60_000, vi.fn());
+      vi.advanceTimersByTime(60_000);
+      expect(held.closed).toBe(false);
+
+      held.markTurnEnded();
+      expect(held.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves an unexpired hold open across a turn boundary", () => {
+    // markTurnEnded runs at every turn boundary, held or not. Only a deferred
+    // expiry may make it close.
+    vi.useFakeTimers();
+    try {
+      const held = new HeldPrompt("hello");
+      held.markTurnActive();
+      held.armTimeout(60_000, vi.fn());
+      held.markTurnEnded();
+      expect(held.closed).toBe(false);
     } finally {
       vi.useRealTimers();
     }

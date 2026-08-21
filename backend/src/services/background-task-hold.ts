@@ -35,6 +35,13 @@
  * would pin one forever, so every hold is bounded by wall-clock and every exit
  * path — release, timeout, abort, error — must release the stream exactly once.
  * {@link HeldPrompt} owns that guarantee so the query loop cannot forget it.
+ *
+ * Two rules refine that bound, and both are about *when* it is safe to act on:
+ * the budget is per hold episode rather than per run (see
+ * {@link HeldPrompt.disarmTimeout}), and an expiry that lands mid-turn waits
+ * for the turn to end rather than closing stdin under it (see
+ * {@link HeldPrompt.armTimeout}). Neither loosens the bound; they only stop it
+ * firing at a moment when firing does damage.
  */
 import { createLogger } from "../utils/logger.js";
 
@@ -158,6 +165,14 @@ export class HeldPrompt {
    * for why that is the whole of the rule.
    */
   private deadlineAt: number | null = null;
+  /**
+   * Whether a turn is running on this stream right now, as reported by the
+   * query loop. The hold is only safe to close between turns — see
+   * {@link armTimeout}.
+   */
+  private turnActive = false;
+  /** An expiry that fired mid-turn, waiting on the boundary to close. */
+  private expiryDeferred = false;
 
   /**
    * @param source the messages this turn is sending, in whatever shape the
@@ -232,6 +247,28 @@ export class HeldPrompt {
    * many turns it spans, while a session that starts a task, finishes it, and
    * later starts another gets a full window for the second — because between
    * them the work it was being patient for actually completed.
+   *
+   * ## What expiry does, and when
+   *
+   * Expiry always runs `onExpiry` — the caller's latch, which makes the next
+   * turn boundary release. What it does about the *stream* depends on whether
+   * a turn is in flight, and the distinction is not cosmetic:
+   *
+   * - **Idle** (the usual case: the turn ended, we are parked waiting on a
+   *   notification that never came) — close immediately. Nothing else will:
+   *   there is no next turn boundary to defer to, and a deferral here would
+   *   turn the bound into no bound at all, which is the `sleep infinity`
+   *   runaway it exists to stop.
+   * - **Mid-turn** — latch and wait for {@link markTurnEnded}. Closing here
+   *   pulls stdin out from under a live turn, and the CLI reports that as
+   *   tools failing: production saw `Tool permission request failed:
+   *   AbortError: Stream closed`, then the transport-failure recovery cycle,
+   *   from a timer that fired while the session was working.
+   *
+   * The release-exactly-once guarantee is unchanged. The mid-turn path defers
+   * to a boundary that always arrives — the turn either produces a `result`,
+   * or ends the stream, or throws — and the run's `finally` closes the hold
+   * unconditionally behind all three.
    */
   armTimeout(ms: number, onExpiry: () => void): void {
     if (this.isReleased) return;
@@ -241,17 +278,45 @@ export class HeldPrompt {
     const remaining = this.deadlineAt - Date.now();
     if (remaining <= 0) {
       this.timer = null;
-      onExpiry();
-      this.close();
+      this.expire(onExpiry);
       return;
     }
     this.timer = setTimeout(() => {
       this.timer = null;
-      onExpiry();
-      this.close();
+      this.expire(onExpiry);
     }, remaining);
     // A pending hold must not be the reason the daemon stays up.
     this.timer.unref?.();
+  }
+
+  private expire(onExpiry: () => void): void {
+    onExpiry();
+    if (this.turnActive) {
+      this.expiryDeferred = true;
+      return;
+    }
+    this.close();
+  }
+
+  /**
+   * Report that the CLI is working — anything the query loop sees other than
+   * the `result` that ends a turn.
+   */
+  markTurnActive(): void {
+    this.turnActive = true;
+  }
+
+  /**
+   * Report that a turn has ended, and settle any expiry that fired during it.
+   *
+   * Called after the turn boundary has had its say, so the ordinary path
+   * (`decideHold` seeing `expired` and releasing with a reason logged) is what
+   * normally closes the stream and this is only the backstop. It exists so the
+   * bound is owned here rather than by a caller that could forget it.
+   */
+  markTurnEnded(): void {
+    this.turnActive = false;
+    if (this.expiryDeferred) this.close();
   }
 
   /**
