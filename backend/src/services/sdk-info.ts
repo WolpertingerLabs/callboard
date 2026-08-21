@@ -12,12 +12,24 @@ import { getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-setting
 
 const log = createLogger("sdk-info");
 
+/**
+ * Mirrors the SDK's `AccountInfo`. Every field is optional and *which* ones are
+ * present depends on how the user authenticated, so no single one of them
+ * answers "is this configured" — see `services/engine-status.ts`.
+ */
 export interface CachedAccountInfo {
   email?: string;
   organization?: string;
   subscriptionType?: string;
   tokenSource?: string;
+  /** `user | project | org | temporary | oauth` — the last of which is a subscription login, not a key. */
   apiKeySource?: string;
+  /**
+   * Active API backend. Anthropic OAuth login only applies when `"firstParty"`;
+   * for a third-party provider the other fields are absent and auth is external
+   * (AWS credentials, gcloud ADC, an enterprise gateway).
+   */
+  apiProvider?: "firstParty" | "bedrock" | "vertex" | "foundry" | "anthropicAws" | "mantle" | "gateway";
 }
 
 export interface CachedModelInfo {

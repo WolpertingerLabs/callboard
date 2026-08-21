@@ -38,14 +38,14 @@
  */
 export type EngineRuntime =
   /** In-process library shipped inside the callboard package. Nothing to install, nothing to point elsewhere. */
-  | { kind: "bundled"; package: string }
+  | { kind: "bundled"; package: string; dependencyRange?: string; pinned?: boolean }
   /**
    * Bundled, but the engine accepts a path to a user-supplied binary.
    *
    * `overridePath` is always absent in Phase 1 — the Codex SDK's
    * `codexPathOverride` exists and callboard does not pass it yet (Phase 4).
    */
-  | { kind: "bundled-overridable"; package: string; overridePath?: string }
+  | { kind: "bundled-overridable"; package: string; overridePath?: string; dependencyRange?: string; pinned?: boolean }
   /**
    * A bundled fallback exists, but an external install on PATH is *preferred*
    * and wins when present — the Claude Code shape.
@@ -71,12 +71,31 @@ export type EngineRuntime =
 /**
  * Whether the engine has usable credentials, and where they came from.
  *
- * `note` carries the honest non-answer where one is the truth: ACP has no auth
- * introspection, and the embedded runtimes fall back to the backend process's
- * own environment, which callboard cannot enumerate per provider.
+ * ## Why this is not a boolean
+ *
+ * For several engines callboard genuinely **cannot tell**, and a `false` there
+ * is the dishonest-✓ failure inverted: it is wrong on every machine that *is*
+ * authenticated, and — because it varies with nothing — it can never become
+ * `true`, so the tab's status dot could never go green.
+ *
+ * - **ACP vendors**: the protocol carries no auth introspection. `initialize`
+ *   advertises `authMethods`, never who is signed in. A vendor may well have
+ *   credentials on disk (OpenCode keeps them under its own data dir); callboard
+ *   does not read other tools' credential stores to find out.
+ * - **Cline and pi**: an unset key in Settings means the embedded runtime falls
+ *   back to the backend process's own environment, and which variable that is
+ *   depends on the configured provider id.
+ *
+ * So `configured` is tri-state. `"unknown"` means "callboard did not and cannot
+ * observe this", which is a different claim from `false` ("callboard looked at
+ * the place credentials live for this engine, and there are none").
+ *
+ * Consumers must compare against `true` explicitly — `"unknown"` is truthy.
  */
+export type EngineCredentialState = boolean | "unknown";
+
 export interface EngineCredentials {
-  configured: boolean;
+  configured: EngineCredentialState;
   /** Human-readable source label — `"auth.json"`, `"settings"`, an SDK `tokenSource`, … */
   source?: string;
   note?: string;
@@ -91,18 +110,32 @@ export interface EngineStatus {
   /**
    * Can this engine run at all?
    *
-   * Bundled and bundled-overridable ⇒ always `true`. `external` ⇒ a PATH
-   * lookup. `external-preferred` ⇒ also `true`: the bundled fallback runs when
-   * the preferred CLI is missing, and `runtime.resolvedPath` is what says which
-   * one of the two you got.
+   * Bundled and bundled-overridable ⇒ `true`: the library is a dependency, so
+   * its presence is the install tree's problem, not the user's. `external` ⇒ a
+   * PATH lookup. `external-preferred` ⇒ *checked*, not assumed: the bundled
+   * fallback is an **optional** dependency (a per-platform native binary), so
+   * `--omit=optional` or an unpublished platform can leave neither it nor a
+   * native CLI — and `runtime.resolvedPath` says which of the two you got when
+   * one is there.
    */
   installed: boolean;
   /** Version of whatever `runtime.package` / `runtime.command` names, when it could be read. */
   version?: string;
-  /** Latest version npm publishes for that package. Absent when offline or unknown — never an error. */
+  /** Latest version npm publishes for that package. Absent when offline, or when nothing was asked — never an error. */
   latestVersion?: string;
   /** `version` < `latestVersion`. A fact, not an affordance: bundled engines still update only with callboard. */
   updateAvailable?: boolean;
+  /**
+   * When {@link latestVersion} was actually fetched, ISO-8601.
+   *
+   * Present whenever a version is. Paired with {@link latestVersionStale} it
+   * lets the UI age the claim: a cached answer that could not be refreshed is
+   * still worth showing, but "up to date" asserted from a week-old fetch is not
+   * the same statement as one asserted from a fresh one.
+   */
+  latestVersionCheckedAt?: string;
+  /** The cached answer is past its TTL and the refetch failed — treat {@link latestVersion} as "last known". */
+  latestVersionStale?: boolean;
   credentials: EngineCredentials;
   // Phase 2 adds `install?: EngineInstallRecipe` here — the copyable command for
   // the two engines that have one. Deliberately absent in Phase 1.

@@ -354,9 +354,14 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
  *   2. `claude` found on PATH via `which` (native install)
  *   3. undefined — let the SDK use its bundled binary
  *
- * The SDK bundles a musl-linked binary that won't work on glibc systems.
- * This function detects the native install and returns its path so the
- * SDK uses it instead.
+ * The SDK ships its binary as eight per-platform **optional** dependencies
+ * (`@anthropic-ai/claude-agent-sdk-<platform>-<arch>`, with `-musl` variants on
+ * linux), so on a normal install the right one is there — the historical
+ * "bundles a musl-linked binary that won't work on glibc" is no longer true.
+ * A native install is still preferred: it is the copy the user updates, and
+ * `--omit=optional` or an unpublished platform can leave no bundled binary at
+ * all. This function detects the native install and returns its path so the SDK
+ * uses it instead.
  */
 let resolvedClaudePath: string | undefined | null = null; // null = not yet resolved
 export function getClaudeCodeExecutablePath(): string | undefined {

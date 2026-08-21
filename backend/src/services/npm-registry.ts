@@ -110,46 +110,71 @@ async function fetchLatest(pkg: string): Promise<string | undefined> {
 }
 
 /**
+ * What is known about one package's latest version, and how old that is.
+ *
+ * `stale` exists because a cached answer that could not be refreshed is still
+ * worth showing — but it is a weaker claim than a fresh one, and a UI that
+ * renders "up to date" from a week-old fetch is asserting something nobody
+ * checked. Callers get the age so they can say so.
+ */
+export interface NpmVersionAnswer {
+  version?: string;
+  /** Epoch ms of the fetch that produced {@link version}. Absent when there is no version. */
+  checkedAt?: number;
+  /** The value is past its TTL and the refetch failed, so it is "last known" rather than current. */
+  stale: boolean;
+}
+
+/**
  * Latest published version for each package, from cache when fresh.
  *
  * Batched rather than looped so a fan-out over every engine is one cache read,
- * N parallel requests, and one cache write — a per-package write would let the
- * last writer clobber its siblings' entries.
+ * N parallel requests, and one cache write instead of N of each.
+ *
+ * That batching is per *call*, and deliberately nothing more: two overlapping
+ * calls (two settings tabs, or a `?refresh=1` landing on top of a page load)
+ * each read, fetch and write independently, so the later write can drop entries
+ * the earlier one had just added. The cost is a repeated fetch on the next call
+ * for those packages, which is why this is not worth a lock — but it is not the
+ * same as "concurrent writers cannot clobber each other", and the earlier
+ * version of this comment claimed that it was.
  *
  * @param packages package names; duplicates are collapsed
  * @param opts.refresh ignore cached entries and re-fetch (the `?refresh=1` path)
- * @returns one key per requested package; `undefined` where nothing could be learned
+ * @returns one key per requested package; `{ stale: false }` with no version where nothing could be learned
  */
-export async function getLatestVersions(packages: string[], opts: { refresh?: boolean } = {}): Promise<Record<string, string | undefined>> {
+export async function getLatestVersions(packages: string[], opts: { refresh?: boolean } = {}): Promise<Record<string, NpmVersionAnswer>> {
   const wanted = [...new Set(packages.filter((p) => typeof p === "string" && p.trim().length > 0))];
-  const result: Record<string, string | undefined> = {};
+  const result: Record<string, NpmVersionAnswer> = {};
   if (wanted.length === 0) return result;
 
   const cache = readCache();
   const now = Date.now();
-  const stale: string[] = [];
+  const toFetch: string[] = [];
 
   for (const pkg of wanted) {
     const entry = cache[pkg];
-    const fresh = entry && typeof entry.ts === "number" && now - entry.ts < TTL_MS && typeof entry.latestVersion === "string";
+    const known = typeof entry?.latestVersion === "string" ? entry.latestVersion : undefined;
+    const fresh = known !== undefined && typeof entry?.ts === "number" && now - entry.ts < TTL_MS;
     if (fresh && !opts.refresh) {
-      result[pkg] = entry.latestVersion;
+      result[pkg] = { version: known, checkedAt: entry.ts, stale: false };
     } else {
-      stale.push(pkg);
-      // Seed with the stale value so a failed refetch degrades to "what we last
-      // knew" rather than to nothing. Overwritten below when the fetch lands.
-      result[pkg] = typeof entry?.latestVersion === "string" ? entry.latestVersion : undefined;
+      toFetch.push(pkg);
+      // Seed with the last known value so a failed refetch degrades to "what we
+      // last knew, and here is when" rather than to nothing. Marked stale until
+      // the fetch below replaces it.
+      result[pkg] = known !== undefined ? { version: known, checkedAt: entry?.ts, stale: true } : { stale: false };
     }
   }
 
-  if (stale.length === 0) return result;
+  if (toFetch.length === 0) return result;
 
-  const fetched = await Promise.all(stale.map(async (pkg) => [pkg, await fetchLatest(pkg)] as const));
+  const fetched = await Promise.all(toFetch.map(async (pkg) => [pkg, await fetchLatest(pkg)] as const));
 
   let dirty = false;
   for (const [pkg, version] of fetched) {
     if (!version) continue;
-    result[pkg] = version;
+    result[pkg] = { version, checkedAt: now, stale: false };
     cache[pkg] = { latestVersion: version, ts: now };
     dirty = true;
   }
@@ -158,10 +183,10 @@ export async function getLatestVersions(packages: string[], opts: { refresh?: bo
   return result;
 }
 
-/** {@link getLatestVersions} for a single package. */
+/** {@link getLatestVersions} for a single package, when the age is not needed. */
 export async function getLatestVersion(pkg: string, opts: { refresh?: boolean } = {}): Promise<string | undefined> {
   const versions = await getLatestVersions([pkg], opts);
-  return versions[pkg];
+  return versions[pkg]?.version;
 }
 
 /**
