@@ -1,6 +1,6 @@
 /**
- * `GET /api/engines` — shape, the `?refresh=1` passthrough, and the promise
- * that this route cannot 500.
+ * `GET /api/engines` and `POST /api/engines/refresh` — shape, the `?refresh=1`
+ * passthrough, and the promise that neither route can 500.
  *
  * Driven with a fake req/res off the router stack, matching the no-supertest
  * style the other route suites use.
@@ -9,15 +9,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
 import type { EngineStatus } from "shared/types/index.js";
 
-const mocks = vi.hoisted(() => ({ getEngineStatuses: vi.fn() }));
-vi.mock("../services/engine-status.js", () => ({ getEngineStatuses: mocks.getEngineStatuses }));
+const mocks = vi.hoisted(() => ({ getEngineStatuses: vi.fn(), resetEngineProbeCaches: vi.fn() }));
+vi.mock("../services/engine-status.js", () => ({
+  getEngineStatuses: mocks.getEngineStatuses,
+  resetEngineProbeCaches: mocks.resetEngineProbeCaches,
+}));
 
 const { enginesRouter } = await import("./engines.js");
 
-const handler = (enginesRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods.get).route.stack[0].handle as (
-  req: Request,
-  res: Response,
-) => Promise<void>;
+type Handler = (req: Request, res: Response) => Promise<void>;
+const routeHandler = (path: string, method: "get" | "post"): Handler =>
+  (enginesRouter as any).stack.find((layer: any) => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle;
+
+const handler = routeHandler("/", "get");
+const refreshHandler = routeHandler("/refresh", "post");
 
 const engine: EngineStatus = {
   id: "cline",
@@ -28,7 +33,7 @@ const engine: EngineStatus = {
   credentials: { configured: false },
 };
 
-async function get(query: Record<string, unknown> = {}): Promise<{ status: number; body: any }> {
+async function call(run: Handler, query: Record<string, unknown> = {}): Promise<{ status: number; body: any }> {
   let status = 200;
   let body: unknown = null;
   const res = {
@@ -41,9 +46,12 @@ async function get(query: Record<string, unknown> = {}): Promise<{ status: numbe
       return this;
     },
   } as unknown as Response;
-  await handler({ query } as unknown as Request, res);
+  await run({ query } as unknown as Request, res);
   return { status, body };
 }
+
+const get = (query: Record<string, unknown> = {}) => call(handler, query);
+const refresh = () => call(refreshHandler);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -81,6 +89,47 @@ describe("GET /api/engines", () => {
     // service's braces — a settings page that renders beats a page that errors.
     mocks.getEngineStatuses.mockRejectedValue(new Error("boom"));
     const { status, body } = await get();
+    expect(status).toBe(200);
+    expect(body).toEqual({ engines: [] });
+  });
+});
+
+describe("POST /api/engines/refresh", () => {
+  it("drops the memoized lookups before re-probing", async () => {
+    // Order is the assertion: re-probing first and clearing after would answer
+    // with exactly the stale paths the caller asked to get rid of.
+    const order: string[] = [];
+    mocks.resetEngineProbeCaches.mockImplementation(() => order.push("reset"));
+    mocks.getEngineStatuses.mockImplementation(async () => {
+      order.push("probe");
+      return [engine];
+    });
+
+    const { status, body } = await refresh();
+    expect(status).toBe(200);
+    expect(body).toEqual({ engines: [engine] });
+    expect(order).toEqual(["reset", "probe"]);
+  });
+
+  it("re-fetches latest versions too, rather than serving the cached ones", async () => {
+    await refresh();
+    expect(mocks.getEngineStatuses).toHaveBeenCalledWith({ refresh: true });
+  });
+
+  it("still re-probes when a reset throws", async () => {
+    // Half-cleared caches plus a fresh probe beats refusing to answer: the user
+    // pressed this button because what they were being shown was wrong.
+    mocks.resetEngineProbeCaches.mockImplementation(() => {
+      throw new Error("boom");
+    });
+    const { status, body } = await refresh();
+    expect(status).toBe(200);
+    expect(body).toEqual({ engines: [engine] });
+  });
+
+  it("degrades to an empty list rather than a 500", async () => {
+    mocks.getEngineStatuses.mockRejectedValue(new Error("boom"));
+    const { status, body } = await refresh();
     expect(status).toBe(200);
     expect(body).toEqual({ engines: [] });
   });
