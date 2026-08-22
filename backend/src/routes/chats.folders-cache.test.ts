@@ -8,14 +8,18 @@
  * session registry and the pending-permission map, and a cached "stopped" for a
  * session that just went live is a visible lie about what the daemon is doing.
  *
- * The cache guards that with a fingerprint of exactly those two inputs rather
- * than with invalidation hooks, because a session starts and stops without any
- * request reaching this route. So the tests that matter here are the last three
- * in the file: they move each status input and assert the response moves with
- * it, TTL notwithstanding.
+ * The same is true of the workspace fields — `displayName`, `workspaceId`,
+ * `workspaces[]`, `directoryState` — which come from the workspace registry.
+ * `renameWorkspace` writes a record and returns; it is not one of the writers
+ * that invalidate a listing, and neither would the next one be.
  *
- * The registry and pending map are stubbed through mutable locals so a test can
- * flip them mid-flight the way a real session would.
+ * The cache guards both with a fingerprint of those inputs rather than with
+ * invalidation hooks, because none of them needs a request to change. So the
+ * tests that matter here are the last two blocks: they move each input and
+ * assert the response moves with it.
+ *
+ * The registry, pending map and workspace version are stubbed through mutable
+ * locals so a test can flip them mid-flight the way a real session would.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -27,8 +31,16 @@ import type { Request, Response } from "express";
 /** In-memory session state the route reads. Mutated per test. */
 const registryState = vi.hoisted(() => ({ ongoing: new Set<string>(), version: 0, metadataVersion: 0 }));
 const pendingState = vi.hoisted(() => ({ waiting: new Set<string>() }));
-/** Session ids the stubbed provider discovers, newest first. */
-const discovered = vi.hoisted(() => ({ ids: [] as string[] }));
+/**
+ * Sessions the stubbed provider discovers, newest first. `ageDays` and `folder`
+ * default per-index so the common case stays a bare id; the key-separation
+ * cases set them to build a row set that `maxAgeDays` actually partitions.
+ */
+const discovered = vi.hoisted(() => ({
+  ids: [] as string[],
+  ageDaysById: {} as Record<string, number>,
+  folderById: {} as Record<string, string>,
+}));
 
 vi.mock("../services/claude.js", () => ({
   hasPendingRequest: (id: string) => pendingState.waiting.has(id),
@@ -64,16 +76,20 @@ vi.mock("../agents/factory.js", () => ({
     {
       kind: "claude-code",
       discoverSessions: ({ limit, offset }: { limit: number; offset: number }) => {
-        const sessions = discovered.ids.map((id, i) => ({
-          sessionId: id,
-          folder: projectFolder,
-          displayFolder: projectFolder,
-          filePath: join(projectsDir, encodedDir, `${id}.jsonl`),
+        const sessions = discovered.ids.map((id, i) => {
           // Now-relative: the route applies a day-based cutoff, so fixed dates
           // would silently empty the listing as the calendar moves.
-          createdAt: new Date(Date.now() - i * 60_000),
-          updatedAt: new Date(Date.now() - i * 60_000),
-        }));
+          const ageMs = discovered.ageDaysById[id] !== undefined ? discovered.ageDaysById[id] * 86_400_000 : i * 60_000;
+          const folder = discovered.folderById[id] ?? projectFolder;
+          return {
+            sessionId: id,
+            folder,
+            displayFolder: folder,
+            filePath: join(projectsDir, encodedDir, `${id}.jsonl`),
+            createdAt: new Date(Date.now() - ageMs),
+            updatedAt: new Date(Date.now() - ageMs),
+          };
+        });
         return { sessions: sessions.slice(offset, offset + limit), total: sessions.length };
       },
       getSessionPreview: () => null,
@@ -87,6 +103,10 @@ process.env.HOME = tmpRoot;
 
 const projectFolder = join(tmpRoot, "proj");
 mkdirSync(projectFolder, { recursive: true });
+// A second real directory, so a row can exist for it. `buildFolderSummaries`
+// drops rows whose directory is gone unless a workspace record claims them.
+const olderFolder = join(tmpRoot, "older-proj");
+mkdirSync(olderFolder, { recursive: true });
 const projectsDir = join(tmpRoot, ".claude", "projects");
 const encodedDir = projectFolder.replace(/[^a-zA-Z0-9]/g, "-");
 mkdirSync(join(projectsDir, encodedDir), { recursive: true });
@@ -95,6 +115,11 @@ const { chatsRouter } = await import("./chats.js");
 const { folderListCache, clearFolderListCache, FOLDER_LIST_CACHE_TTL } = await import("../services/folder-list-cache.js");
 const { clearProjectDirFolderCache } = await import("../utils/paths.js");
 const { chatFileService } = await import("../services/chat-file-service.js");
+// Not stubbed: the workspace registry's version counter is what the fingerprint
+// reads, and driving the real store is what proves the counter is wired to the
+// writers rather than merely present. `buildWorkspaceIndex` reads the same
+// store, so a record created here also reaches the row.
+const { createWorkspace, renameWorkspace, archiveWorkspace } = await import("../services/workspace-store.js");
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
@@ -125,6 +150,10 @@ let sessionId: string;
 beforeEach(() => {
   clearFolderListCache();
   clearProjectDirFolderCache();
+  // Records accumulate on one cwd otherwise, and two records on a directory
+  // deliberately suppress the workspace name in favour of the basename.
+  rmSync(join(tmpRoot, "workspaces"), { recursive: true, force: true });
+  mkdirSync(join(tmpRoot, "workspaces"), { recursive: true });
   registryState.ongoing.clear();
   pendingState.waiting.clear();
   registryState.version = 0;
@@ -132,6 +161,8 @@ beforeEach(() => {
 
   sessionId = randomUUID();
   discovered.ids = [sessionId];
+  discovered.ageDaysById = {};
+  discovered.folderById = {};
   writeFileSync(join(projectsDir, encodedDir, `${sessionId}.jsonl`), `{"type":"user","timestamp":"2026-01-01T00:00:00.000Z"}\n`);
   chatFileService.createChat(projectFolder, sessionId, JSON.stringify({ title: "first" }));
 });
@@ -140,7 +171,6 @@ describe("hit and miss", () => {
   it("serves the second request from cache", async () => {
     const first = await listFolders();
     expect(first.folders).toHaveLength(1);
-    expect(first.stale).toBe(false);
     expect(folderListCache.size).toBe(1);
 
     // Rewrite the record under the handler. A cache hit is the only way the
@@ -172,33 +202,50 @@ describe("hit and miss", () => {
     expect((await listFolders()).folders[0].chatTitle).toBe("second");
   });
 
-  it("marks a response served past the freshness window as stale", async () => {
+  it("recomputes past the TTL rather than serving the entry on", async () => {
     await listFolders();
+    chatFileService.updateChat(sessionId, { metadata: JSON.stringify({ title: "second" }) });
+
+    // An earlier revision served this on with `stale: true` for another 295s
+    // and never revalidated, which made the practical staleness window the
+    // backstop rather than the TTL. There is no such branch now.
     const entry = [...folderListCache.values()][0];
-    entry.createdAt -= FOLDER_LIST_CACHE_TTL + 1_000;
+    entry.createdAt -= FOLDER_LIST_CACHE_TTL + 1;
 
     const served = await listFolders();
-    expect(served.stale).toBe(true);
-    expect(served.folders).toHaveLength(1);
+    expect(served.folders[0].chatTitle).toBe("second");
+    expect(served.stale).toBeUndefined();
   });
 });
 
 describe("key separation", () => {
-  it("keys on maxAgeDays", async () => {
-    await listFolders({ maxAgeDays: "5" });
-    expect(folderListCache.size).toBe(1);
+  // These assert on the *rows returned*, not on the key strings. A key-format
+  // assertion fails for a spelling change and passes for a cache that serves
+  // one window's rows to the other window, which is the bug worth catching.
+  it("does not serve a narrow window's rows to a wider one", async () => {
+    const old = randomUUID();
+    discovered.ids = [sessionId, old];
+    discovered.ageDaysById[old] = 10;
+    discovered.folderById[old] = olderFolder;
 
-    await listFolders({ maxAgeDays: "30" });
-    expect(folderListCache.size).toBe(2);
-    expect([...folderListCache.keys()].sort()).toEqual(["30:false", "5:false"]);
+    const narrow = await listFolders({ maxAgeDays: "5" });
+    expect(narrow.folders.map((f: any) => f.folder)).toEqual([projectFolder]);
+
+    // The 10-day-old session is outside 5 days and inside 30. Sharing one entry
+    // would hand this request the single row computed above.
+    const wide = await listFolders({ maxAgeDays: "30" });
+    expect(wide.folders.map((f: any) => f.folder).sort()).toEqual([olderFolder, projectFolder].sort());
   });
 
-  it("keys on includeDiskUsage", async () => {
-    await listFolders({ maxAgeDays: "5" });
-    await listFolders({ maxAgeDays: "5", includeDiskUsage: "true" });
+  it("does not serve a wide window's rows to a narrower one", async () => {
+    const old = randomUUID();
+    discovered.ids = [sessionId, old];
+    discovered.ageDaysById[old] = 10;
+    discovered.folderById[old] = olderFolder;
 
-    expect(folderListCache.size).toBe(2);
-    expect([...folderListCache.keys()].sort()).toEqual(["5:false", "5:true"]);
+    // Warm the wide window first, so a shared entry would over-report.
+    expect((await listFolders({ maxAgeDays: "30" })).folders).toHaveLength(2);
+    expect((await listFolders({ maxAgeDays: "5" })).folders).toHaveLength(1);
   });
 
   it("does not serve a sizeless response to a request that asked for sizes", async () => {
@@ -227,8 +274,6 @@ describe("a live session's status is never masked by the cache", () => {
 
     const after = await listFolders();
     expect(after.folders[0].status).toBe("ongoing");
-    // ...and it is a genuine recompute, not a stale read that happened to be right.
-    expect(after.stale).toBe(false);
   });
 
   it("reports a session that parks a permission prompt after the response was cached", async () => {
@@ -254,18 +299,17 @@ describe("a live session's status is never masked by the cache", () => {
     expect((await listFolders()).folders[0].status).toBe("stopped");
   });
 
-  it("beats the stale window too, not just the freshness window", async () => {
+  it("reports the transition on an entry that is still inside its TTL", async () => {
     await listFolders();
-    // Old enough that a TTL-only cache would serve it without recomputing.
+    // Well inside the freshness window: only the fingerprint can force this
+    // recompute, which is the whole point of having one.
     const entry = [...folderListCache.values()][0];
-    entry.createdAt -= FOLDER_LIST_CACHE_TTL + 60_000;
+    expect(Date.now() - entry.createdAt).toBeLessThan(FOLDER_LIST_CACHE_TTL);
 
     registryState.ongoing.add(sessionId);
     registryState.version++;
 
-    const after = await listFolders();
-    expect(after.folders[0].status).toBe("ongoing");
-    expect(after.stale).toBe(false);
+    expect((await listFolders()).folders[0].status).toBe("ongoing");
   });
 
   it("does not recompute when nothing about the session state moved", async () => {
@@ -275,5 +319,58 @@ describe("a live session's status is never masked by the cache", () => {
     // No registry or pending-map movement — the fingerprint must not be
     // spuriously unstable, or the cache never hits and buys nothing.
     expect((await listFolders()).folders[0].chatTitle).toBe("first");
+  });
+});
+
+/**
+ * The regression this file exists to prevent recurring.
+ *
+ * A folder row's `displayName` comes from the workspace record claiming the
+ * directory (`folder-summaries.ts`, `displayNameFor`), and so do `workspaceId`,
+ * `workspaces[]` and `directoryState`. `renameWorkspace` and `archiveWorkspace`
+ * write a record and return — they call no invalidation, bump no session
+ * version, and notify nothing. With a cache keyed only on session state, a
+ * rename was invisible until the backstop expired, with no way for a client to
+ * ask for the truth.
+ *
+ * These drive the real store rather than a stub: the claim is that the version
+ * counter is wired to the writers, and a stub would assert only that the
+ * fingerprint reads *something*.
+ */
+describe("workspace-record changes are not masked by the cache", () => {
+  it("shows a renamed workspace on the next request", async () => {
+    const ws = createWorkspace({ cwd: projectFolder, isolation: "local", name: "before-rename" });
+    expect((await listFolders()).folders[0].displayName).toBe("before-rename");
+
+    renameWorkspace(ws.id, "after-rename");
+
+    // No clearListCaches(), no session-registry movement — only the workspace
+    // registry's version changed, and that has to be enough.
+    expect((await listFolders()).folders[0].displayName).toBe("after-rename");
+  });
+
+  it("drops an archived workspace's record from the row", async () => {
+    const ws = createWorkspace({ cwd: projectFolder, isolation: "local", name: "doomed" });
+    const before = await listFolders();
+    expect(before.folders[0].displayName).toBe("doomed");
+    expect(before.folders[0].workspaces).toHaveLength(1);
+
+    // The state the archive path *requires* before it will quarantine a
+    // worktree is exactly the one with no session running — so nothing else
+    // moves here either.
+    archiveWorkspace(ws.id);
+
+    const after = await listFolders();
+    expect(after.folders[0].workspaces).toBeUndefined();
+    // Falls back to the directory basename once no record claims it.
+    expect(after.folders[0].displayName).toBe("proj");
+  });
+
+  it("shows a workspace created after the response was cached", async () => {
+    expect((await listFolders()).folders[0].displayName).toBe("proj");
+
+    createWorkspace({ cwd: projectFolder, isolation: "local", name: "brand-new" });
+
+    expect((await listFolders()).folders[0].displayName).toBe("brand-new");
   });
 });

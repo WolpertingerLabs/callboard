@@ -30,6 +30,7 @@ const {
   recordWorktreeWorkspace,
   captureWorktreeWorkspace,
   workspaceNameError,
+  workspaceRegistryVersion,
   WORKSPACE_NAME_MAX,
 } = await import("./workspace-store.js");
 
@@ -607,5 +608,71 @@ describe("captureWorktreeWorkspace on the main checkout", () => {
     expect(id).not.toBe(legacy.id);
     expect(getWorkspace(id!)?.isolation).toBe("local");
     expect(getWorkspace(legacy.id)?.status).toBe("active");
+  });
+});
+
+/**
+ * The registry's version counter.
+ *
+ * It exists because folder rows carry `displayName`, `workspaceId`,
+ * `workspaces[]` and `directoryState` straight from these records, and the
+ * folder-list cache has no other way to notice a record changed:
+ * `renameWorkspace` and `archiveWorkspace` write and return, touching no
+ * listing cache and no session registry. A rename that does not move this
+ * number is a sidebar row stuck under the old name.
+ *
+ * Asserted as "changes", never as "increments by one" — the contract is that a
+ * reader can tell two states apart, not how far apart they are.
+ */
+describe("workspaceRegistryVersion", () => {
+  it("moves when a record is created", () => {
+    const before = workspaceRegistryVersion();
+    createWorkspace({ cwd: join(tmpRoot, "vers-create"), isolation: "local" });
+    expect(workspaceRegistryVersion()).not.toBe(before);
+  });
+
+  it("moves when a record is renamed", () => {
+    const ws = createWorkspace({ cwd: join(tmpRoot, "vers-rename"), isolation: "local", name: "before" });
+    const before = workspaceRegistryVersion();
+    renameWorkspace(ws.id, "after");
+    expect(workspaceRegistryVersion()).not.toBe(before);
+  });
+
+  it("moves when a record is archived", () => {
+    const ws = createWorkspace({ cwd: join(tmpRoot, "vers-archive"), isolation: "local" });
+    const before = workspaceRegistryVersion();
+    archiveWorkspace(ws.id);
+    expect(workspaceRegistryVersion()).not.toBe(before);
+  });
+
+  it("moves when a record is deleted", () => {
+    const ws = createWorkspace({ cwd: join(tmpRoot, "vers-delete"), isolation: "local" });
+    const before = workspaceRegistryVersion();
+    expect(deleteWorkspace(ws.id)).toBe(true);
+    expect(workspaceRegistryVersion()).not.toBe(before);
+  });
+
+  it("holds still for reads, so a cache built on it can actually hit", () => {
+    createWorkspace({ cwd: join(tmpRoot, "vers-read"), isolation: "local" });
+    const settled = workspaceRegistryVersion();
+    listWorkspaces();
+    listWorkspacesByCwd(join(tmpRoot, "vers-read"));
+    expect(workspaceRegistryVersion()).toBe(settled);
+  });
+
+  it("does not move when an archive is a no-op", () => {
+    const ws = createWorkspace({ cwd: join(tmpRoot, "vers-noop"), isolation: "local" });
+    archiveWorkspace(ws.id);
+    const settled = workspaceRegistryVersion();
+    // Re-archiving returns early without writing; a counter bumped at the route
+    // rather than at the write funnel would move here.
+    archiveWorkspace(ws.id);
+    expect(workspaceRegistryVersion()).toBe(settled);
+  });
+
+  it("does not move when a delete finds nothing", () => {
+    const settled = workspaceRegistryVersion();
+    expect(deleteWorkspace("ws-does-not-exist")).toBe(false);
+    expect(workspaceRegistryVersion()).toBe(settled);
   });
 });

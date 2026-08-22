@@ -25,7 +25,8 @@ import { newDiskUsageBudget } from "../utils/disk-usage.js";
 // them without closing an import cycle back through this route, and
 // `clearListCaches` is the one call that empties both — see list-caches.ts.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
-import { folderListCache, FOLDER_LIST_CACHE_TTL, FOLDER_LIST_CACHE_MAX_AGE, clearFolderListCache } from "../services/folder-list-cache.js";
+import { folderListCache, FOLDER_LIST_CACHE_TTL, clearFolderListCache } from "../services/folder-list-cache.js";
+import { workspaceRegistryVersion } from "../services/workspace-store.js";
 import { clearListCaches } from "../services/list-caches.js";
 export { clearChatListCache, clearFolderListCache, clearListCaches };
 
@@ -200,7 +201,6 @@ chatsRouter.get("/folders", (req, res) => {
   /* #swagger.parameters['maxAgeDays'] = { in: 'query', type: 'integer', description: 'Maximum age in days (default: 5)' } */
   /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each listed directory with du -sk. Off by default: it is the slow part, and this endpoint is polled. Measurements are memoised for five minutes.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass the response cache and force fresh data' } */
-  /* #swagger.responses[200] = { description: "Folder list, with a stale flag when the response was served from cache past its freshness window" } */
   try {
     const maxAgeDays = parseInt(req.query.maxAgeDays as string, 10) || 5;
     const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
@@ -209,26 +209,20 @@ chatsRouter.get("/folders", (req, res) => {
     // Both parameters change the response body — `maxAgeDays` the row set,
     // `includeDiskUsage` the per-row `diskUsage` — so both are in the key.
     const cacheKey = `${maxAgeDays}:${includeDiskUsage}`;
-    // The in-memory state behind `status`. Recomputed per request and compared
-    // against what the entry was built from, because a session can start, stop
-    // or park a permission prompt without any request reaching this route —
-    // see the header of services/folder-list-cache.ts.
-    const fingerprint = `${sessionRegistry.version}:${sessionRegistry.metadataVersion}:${pendingRequestFingerprint()}`;
+    // The in-memory state a row reports that no request need touch to change:
+    // `status` (session registry + parked permission prompts) and the workspace
+    // record fields (`displayName`, `workspaceId`, `workspaces[]`,
+    // `directoryState`, …). Recomputed per request and compared against what
+    // the entry was built from; a mismatch is a miss. See the header of
+    // services/folder-list-cache.ts for why these are checked, not hooked.
+    const fingerprint = `${sessionRegistry.version}:${sessionRegistry.metadataVersion}:${pendingRequestFingerprint()}:${workspaceRegistryVersion()}`;
     const bypassCache = req.query.cached === "false";
     const now = Date.now();
 
     if (!bypassCache) {
       const cached = folderListCache.get(cacheKey);
-      // A fingerprint mismatch is a miss ahead of both windows: no folder row
-      // may outlive the session state it reported.
-      if (cached && cached.fingerprint === fingerprint) {
-        const age = now - cached.createdAt;
-        if (age < FOLDER_LIST_CACHE_TTL) {
-          return res.json({ ...cached.data, stale: false });
-        }
-        if (age < FOLDER_LIST_CACHE_MAX_AGE) {
-          return res.json({ ...cached.data, stale: true });
-        }
+      if (cached && cached.fingerprint === fingerprint && now - cached.createdAt < FOLDER_LIST_CACHE_TTL) {
+        return res.json(cached.data);
       }
     }
     // One budget across the listing, not one timeout per row: `du` is
@@ -272,7 +266,7 @@ chatsRouter.get("/folders", (req, res) => {
     // only be as fresh as that read, so recording a later one would claim a
     // freshness they do not have and hide a transition that landed mid-build.
     folderListCache.set(cacheKey, { data: responseData, createdAt: Date.now(), fingerprint });
-    res.json({ ...responseData, stale: false });
+    res.json(responseData);
   } catch (err: any) {
     log.error(`Error listing folders: ${err}`);
     res.status(500).json({ error: "Failed to list folders", details: err.message });

@@ -531,7 +531,16 @@ const projectDirFolderCache = new Map<string, { folder: string; resolvedAt: numb
  */
 const PROJECT_DIR_CACHE_TTL = 300_000;
 
-/** Drop every memoised decode. Exported for tests and for callers that move directories. */
+/**
+ * Drop every memoised decode.
+ *
+ * Called wherever Callboard itself moves a directory it might have decoded:
+ * `quarantineDirectory` (utils/worktree-trash.ts) when a worktree goes to the
+ * trash, and `restoreTrashEntry` (services/workspace-trash.ts) when it comes
+ * back. Those two are a pair and the restore is the one that needs it — see the
+ * note on {@link projectDirToFolder}. Also used by tests that re-ask one name
+ * against different filesystems.
+ */
 export function clearProjectDirFolderCache(): void {
   projectDirFolderCache.clear();
 }
@@ -547,21 +556,31 @@ export function clearProjectDirFolderCache(): void {
  * calls across 83 distinct names on the machine this was profiled on, an 18x
  * redundancy factor, for 79 ms of blocked event loop on every listing request.
  *
- * ## Why reusing the answer is safe
+ * ## Why reusing the answer is safe, and the one case where it is not
  *
- * The decode is a function of the name *and* of which directories exist. Both
- * of the ways that pair changes are already handled:
+ * The decode is a function of the name *and* of which directories exist, so a
+ * memoised answer can only be wrong when the second half changes underneath it.
+ * The common shapes are benign:
  *
- * - A directory that appears gets a **new project-dir name**, so it is a new
- *   key and is decoded fresh. Starting a chat in a new worktree is never stale.
+ * - A directory at a path Callboard has never seen gets a project-dir name it
+ *   has never decoded, so it is a new key and is decoded fresh.
  * - A directory that is deleted keeps its name and its decoded path, which is
  *   still the right answer — the path is simply gone now, and callers that care
  *   (`GET /api/chats/folders` via `directoryExists`) test for that themselves.
  *
- * What is left is the narrow case where a name that resolved to a *missing*
- * best-effort path would resolve differently once some other directory is
- * created — `/x/y-z` becoming `/x/y/z`. The TTL bounds that, and it is also the
- * case that costs the most to compute, which is the case worth memoising.
+ * The case that is **not** benign is a path that comes *back*: a worktree
+ * removed and recreated where it was, or archive-then-restore. The name is not
+ * new, so it is not decoded fresh, and a decode taken while the directory was
+ * absent is a best-effort guess that may name a path which never existed. That
+ * guess would outlive the directory's return and hide its row for up to the
+ * TTL. It is why {@link clearProjectDirFolderCache} is wired into both halves
+ * of the quarantine/restore pair rather than left for tests.
+ *
+ * What the TTL is left covering is the residue: a name that resolved to a
+ * missing best-effort path resolving differently once some *unrelated*
+ * directory appears — `/x/y-z` becoming `/x/y/z`, by a hand-made directory
+ * Callboard had no part in. That is also the case that costs the most to
+ * compute, which is the case worth memoising.
  */
 export function projectDirToFolder(dirName: string): string {
   const cached = projectDirFolderCache.get(dirName);

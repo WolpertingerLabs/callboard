@@ -12,9 +12,18 @@ export interface CachedChatListResponse {
 }
 
 export const chatListCache = new Map<string, CachedChatListResponse>();
-/** Serve without revalidating below this age. */
+/** Serve as fresh (`stale: false`) below this age. */
 export const CHAT_LIST_CACHE_TTL = 5_000;
-/** Serve stale (and revalidate) up to this age; beyond it, recompute. */
+/**
+ * Serve flagged `stale: true` up to this age; beyond it, recompute.
+ *
+ * Note this is **not** stale-while-revalidate, despite the shape: nothing
+ * refreshes the entry on a stale hit and no client currently re-requests on
+ * seeing the flag, so between the TTL and this bound a response simply ages in
+ * place. What keeps that from being visible is invalidation — `clearListCaches`
+ * runs on every write that changes a listing — which makes this a backstop for
+ * whatever no writer covers, not a freshness window anyone should rely on.
+ */
 export const CHAT_LIST_CACHE_MAX_AGE = 300_000;
 
 export function clearChatListCache(): void {

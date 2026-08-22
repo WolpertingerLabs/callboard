@@ -182,14 +182,9 @@ export interface FolderListResponse {
   folders: FolderSummary[];
   /** Set when the disk-usage budget ran out before every row was measured. */
   diskUsageNote?: string;
-  /**
-   * True when the response came from the folder-list cache past its freshness
-   * window. Mirrors the same field on {@link ChatListResponse}. A `status`
-   * transition is never stale regardless of this flag — the cache treats the
-   * session state behind it as part of the key; see
-   * backend/src/services/folder-list-cache.ts.
-   */
-  stale?: boolean;
+  // Deliberately no `stale` flag to mirror ChatListResponse's. The folder-list
+  // cache never serves an entry past its TTL, so there is no stale response for
+  // a flag to describe — see backend/src/services/folder-list-cache.ts.
 }
 
 // ── Chat parentage tree ─────────────────────────────────────────────
