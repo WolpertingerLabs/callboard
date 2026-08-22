@@ -74,8 +74,11 @@ import type {
   CardListResponse,
   CardResponse,
   Workspace,
+  WorkspaceEntry,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
+  WorkspaceVerdictListResponse,
+  WorkspaceRemovabilityResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
   WorkspaceRefusalReason,
@@ -185,8 +188,11 @@ export type {
   CardListResponse,
   CardResponse,
   Workspace,
+  WorkspaceEntry,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
+  WorkspaceVerdictListResponse,
+  WorkspaceRemovabilityResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
   WorkspaceRefusalReason,
@@ -2081,13 +2087,75 @@ export function retryJobStep(runId: string): Promise<JobRun> {
 // adopt-everything and no archive-many — the backend does not offer them and
 // the UI must not synthesise them out of a loop.
 
+/**
+ * The rows: records, the observed state of each directory, and (opt-in) sizes.
+ *
+ * Deliberately **without** removal verdicts. One verdict is ~5 synchronous git
+ * subprocesses, so a listing that carried them cost 1.6s of frozen daemon at 65
+ * records — every other request, SSE included, waited behind it. Ask
+ * {@link fetchWorkspaceRemovability} for the one record a user is acting on.
+ *
+ * `includeRemovability=false` is sent explicitly — see {@link workspaceListing}
+ * for why neither caller may rely on the route's default. The verdict-bearing
+ * variant is {@link listWorkspacesWithVerdicts}, and it is not a substitute for
+ * this: nothing automatic may call it.
+ */
 export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceListResponse> {
-  const params = new URLSearchParams();
+  return workspaceListing(status, includeDiskUsage, false);
+}
+
+/**
+ * The same listing, with a removal verdict on every entry — **the expensive one**.
+ *
+ * Roughly five synchronous git subprocesses per record, so ~150 of them on a
+ * real registry and 1.5–3s in which the daemon serves nobody. That is the whole
+ * cost this PR exists to take off the automatic paths, so it lives behind its
+ * own name rather than a boolean argument to {@link listWorkspaces}: a call site
+ * has to say what it is doing, and there is exactly one — the "Check all" button
+ * a user presses on purpose.
+ *
+ * **Never call this on mount, on a tab switch, on a timer, or after a mutation.**
+ * The answer it returns is a point in time and the UI has to render it as one;
+ * it is decoration for scanning a list, and never what an action is gated on.
+ * The archive confirmation re-fetches a single fresh verdict regardless of
+ * whether this has ever run — see {@link fetchWorkspaceRemovability}.
+ */
+export async function listWorkspacesWithVerdicts(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceVerdictListResponse> {
+  return workspaceListing(status, includeDiskUsage, true) as Promise<WorkspaceVerdictListResponse>;
+}
+
+async function workspaceListing(
+  status: "active" | "archived" | undefined,
+  includeDiskUsage: boolean | undefined,
+  includeRemovability: boolean,
+): Promise<WorkspaceListResponse> {
+  // Sent explicitly in both directions, never omitted. The route defaults it to
+  // *true* for browser tabs running a bundle from before the verdict was
+  // splittable — they read the field unconditionally and take the whole app down
+  // without it — and that default is a temporary shim which will flip. A caller
+  // that relied on it would silently change behaviour on the day it does.
+  const params = new URLSearchParams({ includeRemovability: String(includeRemovability) });
   if (status) params.append("status", status);
   if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  const res = await fetch(`${BASE}/workspaces${params.toString() ? `?${params}` : ""}`);
+  const res = await fetch(`${BASE}/workspaces?${params}`);
   await assertOk(res, "Failed to list workspaces");
   return res.json();
+}
+
+/**
+ * The removal verdict for one workspace, evaluated now.
+ *
+ * Read-only, and **not** what makes an archive safe: `archiveWorkspace` runs
+ * every gate again server-side and there is no way to hand this back to it. What
+ * it is for is telling a user what their click is about to do before they make
+ * it — which of the two archives they are looking at, and which gitignored files
+ * would travel into the trash.
+ */
+export async function fetchWorkspaceRemovability(id: string): Promise<WorkspaceWithRemovability> {
+  const res = await fetch(`${BASE}/workspaces/${id}/removability`);
+  await assertOk(res, "Failed to evaluate the workspace");
+  const body: WorkspaceRemovabilityResponse = await res.json();
+  return body.workspace;
 }
 
 /** Read-only discovery. Creates no record and writes nothing. */

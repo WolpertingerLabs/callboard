@@ -20,6 +20,13 @@ import { formatDiskUsage } from "../utils/workspaceFormat";
 import ModalOverlay from "./ModalOverlay";
 
 interface Props {
+  /**
+   * **Removability-bearing on purpose.** Listings return `WorkspaceEntry`, which
+   * has no verdict, so this prop cannot be satisfied by a row — only by a record
+   * that has been evaluated. That is what keeps `ignored` (the reason this
+   * screen exists) from quietly becoming undefined the day the listing stops
+   * carrying verdicts, which is exactly the day this comment was written.
+   */
   workspace: WorkspaceWithRemovability;
   /**
    * Chats that will be interrupted and archived along with it.

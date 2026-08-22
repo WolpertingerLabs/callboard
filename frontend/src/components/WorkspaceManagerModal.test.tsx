@@ -8,17 +8,26 @@
  *  - **No bulk archive exists.** Not "is discouraged" — there is no control
  *    that archives more than one workspace, so there is no path by which forty
  *    gigabytes moves on one click.
- *  - **A blocked workspace is not actionable as a removal.** It offers to
- *    archive the *record*, which touches nothing, and says why the directory
- *    stays.
+ *  - **A blocked workspace is not actionable as a removal.** Its confirmation
+ *    offers to archive the *record*, which touches nothing, and says why the
+ *    directory stays.
  *  - **Adoption acts only on ticked paths**, and there is no select-all. The
  *    request that goes out carries exactly the paths the user chose.
+ *  - **The listing costs no removal verdicts.** Rows come back without one and
+ *    the component never asks for one until a user clicks — the property the
+ *    whole surface was reshaped around, because 65 verdicts is 350 synchronous
+ *    git subprocesses on a single-threaded daemon.
+ *  - **"Check all" is the only thing that buys them in bulk**, it does so on a
+ *    click and never on its own, and what it produces decorates rows without
+ *    ever becoming what an archive is decided on.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { UnmanagedWorktreeListing, WorkspaceWithRemovability } from "../api";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { UnmanagedWorktreeListing, WorkspaceEntry, WorkspaceWithRemovability } from "../api";
 
 const listWorkspaces = vi.fn();
+const listWorkspacesWithVerdicts = vi.fn();
+const fetchWorkspaceRemovability = vi.fn();
 const listUnmanagedWorktrees = vi.fn();
 const adoptWorktrees = vi.fn();
 const archiveWorkspace = vi.fn();
@@ -28,6 +37,8 @@ const renameWorkspace = vi.fn();
 
 vi.mock("../api", () => ({
   listWorkspaces: (...args: any[]) => listWorkspaces(...args),
+  listWorkspacesWithVerdicts: (...args: any[]) => listWorkspacesWithVerdicts(...args),
+  fetchWorkspaceRemovability: (...args: any[]) => fetchWorkspaceRemovability(...args),
   listUnmanagedWorktrees: (...args: any[]) => listUnmanagedWorktrees(...args),
   adoptWorktrees: (...args: any[]) => adoptWorktrees(...args),
   archiveWorkspace: (...args: any[]) => archiveWorkspace(...args),
@@ -39,6 +50,10 @@ vi.mock("../api", () => ({
 
 const WorkspaceManagerModal = (await import("./WorkspaceManagerModal")).default;
 
+/**
+ * The evaluated shape — what `GET /:id/removability` hands back for one record.
+ * The listing returns {@link row}, which is this with the verdict taken off.
+ */
 function workspace(over: Partial<WorkspaceWithRemovability> = {}): WorkspaceWithRemovability {
   return {
     id: "ws-clean",
@@ -64,9 +79,12 @@ const blocked = workspace({
   worktree: { owned: false, mode: "branch-off", branch: "feat/dirty" },
   removability: {
     removable: false,
+    // Unterminated, like the real blocker details ("<cwd> has uncommitted
+    // changes"). The confirmation has to punctuate them or the last one runs
+    // into the sentence after it.
     blockers: [
-      { code: "not-owned", detail: "Callboard did not create this worktree, so it will not remove it." },
-      { code: "uncommitted-changes", detail: "There are staged or unstaged modifications to tracked files." },
+      { code: "not-owned", detail: "Callboard did not create /home/cybil/callboard.feat-dirty — it was found on disk, so it is not ours to remove" },
+      { code: "uncommitted-changes", detail: "/home/cybil/callboard.feat-dirty has uncommitted changes" },
     ],
   },
 });
@@ -79,6 +97,30 @@ const missing = workspace({
   directory: { state: "missing", detail: "/home/cybil/callboard.feat-gone does not exist. Callboard has not touched it." },
   removability: { removable: false, blockers: [{ code: "cwd-missing", detail: "The directory is already gone." }] },
 });
+
+/**
+ * What the listing actually returns: the row, with the verdict stripped.
+ *
+ * Stripped rather than merely ignored, so a component that reached for
+ * `removability` on a row would crash the test rather than quietly read a value
+ * production does not send.
+ */
+function row({ removability: _verdict, ...rest }: WorkspaceWithRemovability): WorkspaceEntry {
+  return rest;
+}
+
+/**
+ * Every fixture, answered three ways — exactly as the backend answers them.
+ *
+ * The cheap listing drops the verdict; the "Check all" listing carries it; the
+ * per-workspace fetch answers by id. Keeping the three consistent here is what
+ * lets a test assert *which* of them a given interaction used.
+ */
+function evaluates(...evaluated: WorkspaceWithRemovability[]) {
+  listWorkspaces.mockResolvedValue({ workspaces: evaluated.map(row) });
+  listWorkspacesWithVerdicts.mockResolvedValue({ workspaces: evaluated });
+  fetchWorkspaceRemovability.mockImplementation(async (id: string) => evaluated.find((w) => w.id === id));
+}
 
 const unmanagedListing: UnmanagedWorktreeListing = {
   repoPath: "/home/cybil/callboard",
@@ -123,7 +165,7 @@ const unmanagedListing: UnmanagedWorktreeListing = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  listWorkspaces.mockResolvedValue({ workspaces: [workspace(), blocked, missing] });
+  evaluates(workspace(), blocked, missing);
   listUnmanagedWorktrees.mockResolvedValue(unmanagedListing);
   listTrash.mockResolvedValue({ root: "/home/cybil/.callboard/trash", retentionDays: 30, entries: [] });
   adoptWorktrees.mockResolvedValue({ outcomes: [], adopted: 0, refused: 0 });
@@ -144,22 +186,316 @@ function click(element: Element | null | undefined) {
   fireEvent.click(element as Element);
 }
 
+/**
+ * Click the Archive button in the directory group for `cwd`, and wait for that
+ * record's verdict to come back. The verdict is what chooses the confirmation,
+ * so nothing is on screen to assert against until it has.
+ */
+async function archiveRow(cwd: string) {
+  const group = (await screen.findByText(cwd)).parentElement as HTMLElement;
+  click(
+    within(group)
+      .getAllByText(/^Archive…$/)[0]
+      .closest("button"),
+  );
+  await waitFor(() => expect(fetchWorkspaceRemovability).toHaveBeenCalled());
+}
+
+/**
+ * The scan, and the line it must not cross.
+ *
+ * Verdicts in bulk are ~150 synchronous git subprocesses — the cost this PR
+ * exists to take off the automatic paths. They are worth paying for a scan
+ * ("which of my sixty worktrees can I clean up?"), which is why the button
+ * exists; they are never worth paying for someone who merely opened a modal,
+ * which is why every test here is about *when* they are not fetched.
+ */
+describe("checking every workspace at once", () => {
+  /**
+   * The regression guard for the entire PR.
+   *
+   * Opening the modal, switching tabs and coming back, renaming, and archiving
+   * must all leave the expensive listing untouched. Each of these was, at some
+   * point in this feature's design, a plausible-sounding place to "just refresh
+   * the verdicts".
+   */
+  it("fetches no verdicts on open, on tab switches, or after a mutation", async () => {
+    renameWorkspace.mockResolvedValue({ ...workspace(), name: "Renamed" });
+    archiveWorkspace.mockResolvedValue({
+      workspace: workspace(),
+      chats: [],
+      worktree: { removed: true, disposition: "quarantined", path: "/x", trashPath: "/trash/x", blockers: [] },
+    });
+
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    expect(listWorkspacesWithVerdicts).not.toHaveBeenCalled();
+
+    // Round trip through both other tabs and back.
+    click(screen.getByText("Unmanaged worktrees"));
+    click(screen.getByText("Trash"));
+    click(screen.getByText("Workspaces"));
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    expect(listWorkspacesWithVerdicts).not.toHaveBeenCalled();
+
+    // A rename.
+    click(screen.getAllByTitle(/Rename this workspace/)[0]);
+    const input = screen.getByLabelText("Rename callboard.feat-clean") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(renameWorkspace).toHaveBeenCalled());
+    expect(listWorkspacesWithVerdicts).not.toHaveBeenCalled();
+
+    // And a completed archive, which reloads the list.
+    await archiveRow("/home/cybil/callboard.feat-clean");
+    click((await screen.findByText("Archive and move to trash")).closest("button"));
+    await waitFor(() => expect(archiveWorkspace).toHaveBeenCalled());
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
+    expect(listWorkspacesWithVerdicts).not.toHaveBeenCalled();
+  });
+
+  it("issues exactly one request, and only when the button is pressed", async () => {
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    expect(listWorkspacesWithVerdicts).not.toHaveBeenCalled();
+
+    click(screen.getByText("Check all").closest("button"));
+    await waitFor(() => expect(listWorkspacesWithVerdicts).toHaveBeenCalledTimes(1));
+    expect(listWorkspacesWithVerdicts).toHaveBeenCalledWith("active", true);
+  });
+
+  it("decorates every row with its blockers, which is the scan that was lost", async () => {
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    // Nothing before the click: this is what the regression looked like. The
+    // group chip already says the directory is gone; the *blocker* does not.
+    expect(screen.queryByText("uncommitted changes")).toBeNull();
+    expect(screen.getAllByText("directory is gone")).toHaveLength(1);
+
+    click(screen.getByText("Check all").closest("button"));
+
+    // Every blocker on the blocked record, labelled, with the backend's sentence.
+    expect(await screen.findByText("uncommitted changes")).toBeTruthy();
+    expect(screen.getByText(/has uncommitted changes/)).toBeTruthy();
+    expect(screen.getAllByText("not owned by Callboard").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Adopting this worktree from the Unmanaged tab would clear that/)).toBeTruthy();
+    // The record whose directory is gone now says so as a blocker as well as on
+    // the group chip above it.
+    expect(screen.getAllByText("directory is gone")).toHaveLength(2);
+    // ...and the removable one is marked as such.
+    expect(screen.getByText(/can be trashed/)).toBeTruthy();
+  });
+
+  /**
+   * The cost is a foreground cost now, so it has to look like one.
+   */
+  it("disables the button and says it is working while the check runs", async () => {
+    let release: (value: unknown) => void = () => {};
+    listWorkspacesWithVerdicts.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+
+    click(screen.getByText("Check all").closest("button"));
+    const checking = await screen.findByText("Checking…");
+    expect((checking.closest("button") as HTMLButtonElement).disabled).toBe(true);
+    // A second press while it runs would double the ~150 subprocesses.
+    click(checking.closest("button"));
+    expect(listWorkspacesWithVerdicts).toHaveBeenCalledTimes(1);
+
+    // The rows go inert too. A single-workspace verdict fired mid-scan is
+    // correct — right record, fresh answer — but it queues behind ~1.7s of
+    // synchronous git on a one-threaded daemon, so the button would sit there
+    // looking broken. Refusing the click says more than accepting it.
+    for (const button of screen.getAllByText(/^Archive…$/)) {
+      expect((button.closest("button") as HTMLButtonElement).disabled).toBe(true);
+    }
+    click(screen.getAllByText(/^Archive…$/)[0].closest("button"));
+    expect(fetchWorkspaceRemovability).not.toHaveBeenCalled();
+
+    release({ workspaces: [workspace(), blocked, missing] });
+    await waitFor(() => expect(screen.getByText("Check all again")).toBeTruthy());
+    // ...and live again the moment it lands.
+    expect((screen.getAllByText(/^Archive…$/)[0].closest("button") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("leaves the list usable and explains itself when the check fails", async () => {
+    listWorkspacesWithVerdicts.mockRejectedValue(new Error("Failed to list workspaces: 500"));
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+
+    click(screen.getByText("Check all").closest("button"));
+
+    expect(await screen.findByText(/Failed to list workspaces: 500/)).toBeTruthy();
+    // The rows are still there, still archivable, and the button is live again.
+    expect(screen.getByText("/home/cybil/callboard.feat-clean")).toBeTruthy();
+    expect(screen.getAllByText(/^Archive…$/).length).toBe(3);
+    expect((screen.getByText("Check all").closest("button") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * Decoration is a point-in-time answer and has to read as one. Saying "checked
+   * at 14:32" is the difference between a label and a promise.
+   */
+  it("dates the answer, and says so louder once something has changed underneath it", async () => {
+    archiveWorkspace.mockResolvedValue({
+      workspace: workspace(),
+      chats: [],
+      worktree: { removed: true, disposition: "quarantined", path: "/x", trashPath: "/trash/x", blockers: [] },
+    });
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    click(screen.getByText("Check all").closest("button"));
+    expect(await screen.findByText(/Checked at .*A point in time, not a live view/)).toBeTruthy();
+
+    // Archiving can move another row's verdict — the ref-count is the obvious
+    // case — so what is on screen is now out of date and must say so.
+    await archiveRow("/home/cybil/callboard.feat-clean");
+    click((await screen.findByText("Archive and move to trash")).closest("button"));
+
+    expect(await screen.findByText(/before your last change/)).toBeTruthy();
+    // Marked, not silently re-fetched: that would be the automatic bulk listing.
+    expect(listWorkspacesWithVerdicts).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The other two mutations that move a verdict.
+   *
+   * Archive has its own test above. These two did not, and the suite stayed
+   * green with either marker deleted — which is the whole failure mode: a
+   * decorated row quietly outliving the thing that made it true, with nothing
+   * on screen admitting it. Adoption is the sharper of the two, since flipping
+   * `owned` is precisely what turns "not owned by Callboard" into removable.
+   *
+   * Both assert the same pair: the banner downgrades, and the expensive listing
+   * was **not** re-run to produce that. Marking is the whole point; re-fetching
+   * would be the automatic bulk listing this feature exists to prevent.
+   */
+  async function checkAllThen(mutate: () => Promise<void>) {
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    click(screen.getByText("Check all").closest("button"));
+    expect(await screen.findByText(/A point in time, not a live view/)).toBeTruthy();
+
+    await mutate();
+
+    // Back to the list the decoration is on.
+    click(screen.getByText("Workspaces"));
+    expect(await screen.findByText(/before your last change/)).toBeTruthy();
+    expect(listWorkspacesWithVerdicts).toHaveBeenCalledTimes(1);
+  }
+
+  it("marks the verdicts stale after an adoption, which is what flips `owned`", async () => {
+    adoptWorktrees.mockResolvedValue({
+      outcomes: [{ path: "/home/cybil/callboard.feat-b", adopted: true }],
+      adopted: 1,
+      refused: 0,
+    });
+
+    await checkAllThen(async () => {
+      click(screen.getByText("Unmanaged worktrees"));
+      click(screen.getByText("Scan"));
+      await screen.findByText("/home/cybil/callboard.feat-a");
+      click((screen.getAllByRole("checkbox") as HTMLInputElement[])[1]);
+      click(screen.getByText("Adopt selected…").closest("button"));
+      click((await screen.findByText("Adopt this worktree")).closest("button"));
+      await waitFor(() => expect(adoptWorktrees).toHaveBeenCalled());
+    });
+  });
+
+  it("marks the verdicts stale after a restore, which can put a missing directory back", async () => {
+    listTrash.mockResolvedValue({
+      root: "/home/cybil/.callboard/trash",
+      retentionDays: 30,
+      entries: [
+        {
+          entry: "ws-1-2026",
+          originalPath: "/home/cybil/callboard.feat-gone",
+          branch: "feat/gone",
+          quarantinedAt: "2026-08-01T00:00:00.000Z",
+          expiresAt: "2026-08-31T00:00:00.000Z",
+          restore: [],
+          restorable: true,
+        },
+      ],
+    });
+    restoreTrashEntry.mockResolvedValue({
+      ok: true,
+      entry: "ws-1-2026",
+      originalPath: "/home/cybil/callboard.feat-gone",
+      copiedEntries: 3,
+      trashRetained: true,
+    });
+
+    await checkAllThen(async () => {
+      click(screen.getByText("Trash"));
+      click((await screen.findByText("Restore")).closest("button"));
+      click(screen.getAllByRole("button", { name: "Restore" }).at(-1));
+      await waitFor(() => expect(restoreTrashEntry).toHaveBeenCalled());
+    });
+  });
+
+  /**
+   * The constraint that keeps one code path and one stale-verdict story: a
+   * decorated row does not become the confirmation's source of truth. A bulk
+   * verdict can be minutes old by the time somebody clicks.
+   */
+  it("still fetches a fresh verdict on click even when the row is already decorated", async () => {
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    click(screen.getByText("Check all").closest("button"));
+    await screen.findByText(/can be trashed/);
+
+    // The bulk answer said removable. The fresh one says otherwise — someone
+    // wrote into the worktree in between — and the fresh one is what decides.
+    fetchWorkspaceRemovability.mockResolvedValue({
+      ...workspace(),
+      removability: { removable: false, blockers: [{ code: "untracked-files", detail: "/home/cybil/callboard.feat-clean has untracked files" }] },
+    });
+    await archiveRow("/home/cybil/callboard.feat-clean");
+
+    expect(await screen.findByText(/Archive the record for/)).toBeTruthy();
+    expect(screen.queryByText("Archive and move to trash")).toBeNull();
+  });
+});
+
 describe("the workspaces tab", () => {
+  /**
+   * The listing is the thing that used to freeze the daemon, and it did it by
+   * asking for a verdict per record. Drawing the list must therefore cost zero
+   * of them — not "fewer", zero.
+   */
+  it("draws the whole list without evaluating a single workspace for removal", async () => {
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    expect(listWorkspaces).toHaveBeenCalledTimes(1);
+    expect(fetchWorkspaceRemovability).not.toHaveBeenCalled();
+  });
+
   it("offers exactly one archive control per workspace and none that acts on many", async () => {
     open();
     await screen.findByText("/home/cybil/callboard.feat-clean");
-    // One removable workspace → one danger action. Two blocked ones → two
-    // record-only actions. No control anywhere claims a selection.
-    expect(screen.getAllByText(/Archive & trash…/)).toHaveLength(1);
-    expect(screen.getAllByText("Archive record…")).toHaveLength(2);
+    // Three records, three archive controls — and each one names a single
+    // workspace. No control anywhere claims a selection.
+    expect(screen.getAllByText(/^Archive…$/)).toHaveLength(3);
     expect(screen.queryByText(/Archive all|Archive selected|Clean up all|Select all/i)).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
   });
 
+  /**
+   * The verdict is fetched for the record the user pointed at, and for no
+   * other. A click that evaluated its neighbours would put the freeze back one
+   * button at a time.
+   */
+  it("evaluates only the workspace whose archive was clicked", async () => {
+    open();
+    await archiveRow("/home/cybil/callboard.feat-dirty");
+    expect(fetchWorkspaceRemovability).toHaveBeenCalledTimes(1);
+    expect(fetchWorkspaceRemovability).toHaveBeenCalledWith("ws-dirty");
+  });
+
   it("does not archive anything until the confirmation is passed", async () => {
     open();
-    await screen.findByText("/home/cybil/callboard.feat-clean");
-    click(screen.getByText(/Archive & trash…/).closest("button"));
+    await archiveRow("/home/cybil/callboard.feat-clean");
     // The confirmation opened; the call has not gone out.
     expect(archiveWorkspace).not.toHaveBeenCalled();
     expect(await screen.findByText(/Archive .*and move its worktree to the trash\?/)).toBeTruthy();
@@ -176,13 +512,37 @@ describe("the workspaces tab", () => {
    * does offer — archiving the record — is a genuinely different action, and it
    * is the only way to clear the seven live records that point at directories
    * which no longer exist.
+   *
+   * Since the row no longer carries a verdict, the confirmation is where every
+   * blocker has to be named. All of them, with their labels: a user who fixes
+   * one and finds another waiting has learned nothing about what to do next.
    */
   it("shows every blocker instead of an action it cannot perform", async () => {
     open();
+    await archiveRow("/home/cybil/callboard.feat-dirty");
+    expect(await screen.findByText(/Archive the record for/)).toBeTruthy();
+    expect(screen.queryByText("Archive and move to trash")).toBeNull();
+
+    const message = document.body.textContent ?? "";
+    expect(message).toContain("not owned by Callboard — Callboard did not create /home/cybil/callboard.feat-dirty");
+    expect(message).toContain("uncommitted changes — /home/cybil/callboard.feat-dirty has uncommitted changes.");
+    expect(message).toContain("Adopting this worktree from the Unmanaged tab would clear that.");
+    // Each blocker is terminated, so the last one does not run into the
+    // sentence that follows it.
+    expect(message).toContain("so it is not ours to remove. uncommitted changes");
+    expect(message).not.toContain("uncommitted changes Adopting");
+  });
+
+  /**
+   * The one thing about removability a row can say without asking git: a
+   * worktree Callboard did not create is never removable, and that is on the
+   * record itself.
+   */
+  it("marks an unowned worktree on the row, from the record alone", async () => {
+    open();
     await screen.findByText("/home/cybil/callboard.feat-dirty");
     expect(screen.getByText("not owned by Callboard")).toBeTruthy();
-    expect(screen.getByText("uncommitted changes")).toBeTruthy();
-    expect(screen.getByText(/Adopting this worktree from the Unmanaged tab would clear that/)).toBeTruthy();
+    expect(fetchWorkspaceRemovability).not.toHaveBeenCalled();
   });
 
   it("says plainly that a record's directory is gone", async () => {
@@ -204,10 +564,9 @@ describe("the workspaces tab", () => {
    * is there.
    */
   it("tells the user how many chats the archive will interrupt", async () => {
-    listWorkspaces.mockResolvedValue({ workspaces: [workspace({ chatCount: 4 })] });
+    evaluates(workspace({ chatCount: 4 }));
     open();
-    await screen.findByText("/home/cybil/callboard.feat-clean");
-    click(screen.getByText(/Archive & trash…/).closest("button"));
+    await archiveRow("/home/cybil/callboard.feat-clean");
 
     expect(await screen.findByText(/4 chats in this workspace will be interrupted and archived/)).toBeTruthy();
   });
@@ -219,13 +578,104 @@ describe("the workspaces tab", () => {
    * evaluated, so it runs on exactly this path too.
    */
   it("does not pretend the record-only archive leaves running chats alone", async () => {
-    listWorkspaces.mockResolvedValue({ workspaces: [blocked] });
+    evaluates(blocked);
     open();
-    await screen.findByText("/home/cybil/callboard.feat-dirty");
-    click(screen.getByText("Archive record…").closest("button"));
+    await archiveRow("/home/cybil/callboard.feat-dirty");
 
     expect(await screen.findByText(/3 chats linked to this workspace are interrupted and archived first/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("archived and nothing else");
+  });
+
+  /**
+   * The verdict call does not measure disk usage — putting a synchronous `du`
+   * on the click path is the thing this change exists to stop — so the size the
+   * listing already measured has to survive the merge into the confirmation.
+   * "This directory moves → ~/.callboard/trash" with no size next to it is the
+   * regression.
+   */
+  it("shows the size the listing measured, without re-measuring on the click", async () => {
+    const measured = workspace();
+    listWorkspaces.mockResolvedValue({ workspaces: [row(measured)] });
+    // What the verdict endpoint really returns: no diskUsage key at all.
+    fetchWorkspaceRemovability.mockResolvedValue({ ...measured, diskUsage: undefined });
+    open();
+    await archiveRow("/home/cybil/callboard.feat-clean");
+
+    expect(await screen.findByText(/~\/\.callboard\/trash · 5\.0 GB/)).toBeTruthy();
+  });
+
+  /**
+   * The click path now has a network hop, so it now has a way to fail. A
+   * verdict that did not arrive is not a verdict: no confirmation may open on
+   * one, because the two confirmations describe *different actions* and picking
+   * between them is the only thing the verdict is for. Guessing would mean
+   * showing "this directory moves to the trash" for a workspace nobody has
+   * established is removable.
+   */
+  it("opens no confirmation when the verdict cannot be fetched, and says so", async () => {
+    fetchWorkspaceRemovability.mockRejectedValue(new Error("Failed to evaluate the workspace: 500"));
+    open();
+    await archiveRow("/home/cybil/callboard.feat-clean");
+
+    expect(await screen.findByText(/Failed to evaluate the workspace: 500/)).toBeTruthy();
+    // Neither confirmation, in either direction.
+    expect(screen.queryByText(/and move its worktree to the trash\?/)).toBeNull();
+    expect(screen.queryByText(/Archive the record for/)).toBeNull();
+    expect(archiveWorkspace).not.toHaveBeenCalled();
+    // And the row is usable again rather than stuck on "Checking…".
+    await waitFor(() => expect(screen.getAllByText(/^Archive…$/).length).toBeGreaterThan(0));
+    expect((screen.getAllByText(/^Archive…$/)[0].closest("button") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * The window the verdict fetch opened. Before it, a click opened a modal
+   * synchronously and the overlay swallowed everything after it; now there is a
+   * gap in which a second row's button is still on screen — and this is a
+   * surface whose whole premise is a daemon under load, so the gap is not
+   * always ~120ms. Two stacked confirmations, each correctly scoped to its own
+   * record, with the second click silently discarded behind the first.
+   */
+  it("will not let a second archive be started while a verdict is in flight", async () => {
+    let release: (value: WorkspaceWithRemovability) => void = () => {};
+    fetchWorkspaceRemovability.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+
+    const buttons = () => screen.getAllByText(/^Archive…$|^Checking…$/).map((el) => el.closest("button") as HTMLButtonElement);
+    click(buttons()[0]);
+    await waitFor(() => expect(screen.getByText("Checking…")).toBeTruthy());
+
+    // Every archive button is inert while one verdict is outstanding, so the
+    // second click is refused rather than dropped.
+    for (const button of buttons()) expect(button.disabled).toBe(true);
+    click(buttons()[1]);
+    expect(fetchWorkspaceRemovability).toHaveBeenCalledTimes(1);
+
+    release(workspace());
+    // Exactly one confirmation, for the record that was actually clicked.
+    expect(await screen.findByText(/Archive .*and move its worktree to the trash\?/)).toBeTruthy();
+    expect(screen.queryByText(/Archive the record for/)).toBeNull();
+    expect(screen.getAllByRole("button", { name: /Archive and move to trash/ })).toHaveLength(1);
+  });
+
+  /**
+   * The other half of "exactly one": the two targets are set as a pair, so a
+   * verdict that opens one confirmation closes the other. Without that, a
+   * blocked record evaluated after a removable one would stack its dialog on
+   * top of a still-mounted first.
+   */
+  it("replaces the open confirmation rather than stacking a second one", async () => {
+    open();
+    await archiveRow("/home/cybil/callboard.feat-clean");
+    expect(await screen.findByText(/and move its worktree to the trash\?/)).toBeTruthy();
+
+    // Dismiss nothing — go straight at the blocked record, as a user who
+    // clicked past the overlay would.
+    fetchWorkspaceRemovability.mockClear();
+    await archiveRow("/home/cybil/callboard.feat-dirty");
+
+    expect(await screen.findByText(/Archive the record for/)).toBeTruthy();
+    expect(screen.queryByText(/and move its worktree to the trash\?/)).toBeNull();
   });
 
   /**
@@ -241,8 +691,7 @@ describe("the workspaces tab", () => {
       trashSweep: { removed: ["ws-old-2026-01-01", "ws-older-2025-12-01"] },
     });
     open();
-    await screen.findByText("/home/cybil/callboard.feat-clean");
-    click(screen.getByText(/Archive & trash…/).closest("button"));
+    await archiveRow("/home/cybil/callboard.feat-clean");
     click((await screen.findByText("Archive and move to trash")).closest("button"));
 
     expect(await screen.findByText(/permanently deleted 2 trash entries/)).toBeTruthy();
@@ -252,6 +701,9 @@ describe("the workspaces tab", () => {
   it("asks for sizes, since that is the number the cleanup is about", async () => {
     open();
     await screen.findByText("/home/cybil/callboard.feat-clean");
+    // Sizes yes, verdicts no: `du` is memoised for five minutes and bounded by
+    // a shared wall-clock budget, which is what makes it affordable per listing
+    // where the removal verdict is not.
     expect(listWorkspaces).toHaveBeenCalledWith("active", true);
     expect(screen.getAllByText("5.0 GB").length).toBeGreaterThan(0);
   });
@@ -279,8 +731,9 @@ describe("renaming a workspace", () => {
 
     await waitFor(() => expect(renameWorkspace).toHaveBeenCalledWith("ws-clean", "Clean one"));
     expect(await screen.findByText(/Nothing on disk moved/)).toBeTruthy();
-    // Patched in place — a rename cannot have changed any removal verdict, and
-    // re-listing costs several git subprocesses per record.
+    // Patched in place: the rename response already carries the only field a
+    // rename can change, so a refetch would re-`du` every directory and redraw
+    // the list under a user who is still reading it.
     expect(listWorkspaces).toHaveBeenCalledTimes(1);
     // Both the record and the group heading it names, since one record claims
     // this directory — the same rule the sidebar row follows.

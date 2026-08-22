@@ -224,9 +224,18 @@ export interface WorkspaceDirectory {
   detail: string;
 }
 
-/** A workspace plus the freshly observed state of its directory. */
-export interface WorkspaceWithRemovability extends Workspace {
-  removability: WorkspaceRemovability;
+/**
+ * A workspace plus the freshly observed state of its directory.
+ *
+ * **This is the cheap shape, and that is the point.** Everything here is a
+ * registry read plus an `lstat` of one `.git` entry (and, opt-in, a `du`) — no
+ * `git status`, no `rev-list`, no submodule scan. The removal verdict is
+ * {@link WorkspaceWithRemovability}, which is a strictly more expensive thing to
+ * ask for and therefore a separate type rather than an optional field: a listing
+ * hands back `WorkspaceEntry[]`, and anything that needs a verdict has to have
+ * gone and fetched one.
+ */
+export interface WorkspaceEntry extends Workspace {
   /**
    * Observed at read time, never persisted. A `missing` or `not-a-worktree`
    * entry is something to *offer* a user ("this record points at a directory
@@ -255,11 +264,73 @@ export interface WorkspaceWithRemovability extends Workspace {
   chatCount?: number;
 }
 
-/** `GET /api/workspaces`. */
+/**
+ * A {@link WorkspaceEntry} with the removal verdict attached.
+ *
+ * ## Why nothing should ask for a list of these
+ *
+ * Producing one verdict is roughly five sequential git subprocesses —
+ * `rev-parse` (deliberately uncached), `status --porcelain` + `for-each-ref` +
+ * `rev-list` via the cleanliness check, a submodule scan, and `status --ignored`
+ * on top when the answer comes back removable. All of them are synchronous, so
+ * they do not merely make the caller wait: they hold the whole daemon. Measured
+ * against 65 active records, `GET /api/workspaces?includeDiskUsage=true` took
+ * 1.6 s and a trivial `GET /api/auth/status` fired 150 ms into it took 1.53 s —
+ * the express thread was simply gone, SSE and chat input with it.
+ *
+ * So a listing is {@link WorkspaceEntry}, and a verdict is asked for per
+ * workspace at the moment it decides something — the click on Archive, and
+ * nowhere else. `GET /api/workspaces` does still fill this in unless a caller
+ * passes `includeRemovability=false`, but that default is a temporary shim for
+ * browser tabs running a bundle that predates the split (they read the field
+ * unconditionally and crash without it), not an invitation: every caller in this
+ * repo declines it. See the constant in backend/src/routes/workspaces.ts for the
+ * condition under which the default flips back.
+ *
+ * **The verdict is an affordance, never the gate.** `archiveWorkspace`
+ * re-evaluates removability server-side on every call and acts only on its own
+ * answer; there is no route that accepts a verdict from a caller, and adding one
+ * would hand the safety property to the client.
+ */
+export interface WorkspaceWithRemovability extends WorkspaceEntry {
+  removability: WorkspaceRemovability;
+}
+
+/**
+ * `GET /api/workspaces`.
+ *
+ * Typed as {@link WorkspaceEntry}: the shape a caller gets when it passes
+ * `includeRemovability=false`, which every caller in this repo does. Without
+ * that parameter the route still fills `removability` in on every entry (a
+ * `WorkspaceWithRemovability[]` is assignable here) for the benefit of bundles
+ * that predate the split — but a reader that did not ask for it must not be able
+ * to reach for it, so the response type does not promise it.
+ */
 export interface WorkspaceListResponse {
-  workspaces: WorkspaceWithRemovability[];
+  workspaces: WorkspaceEntry[];
   /** Set when the disk-usage budget ran out before every workspace was measured. */
   diskUsageNote?: string;
+}
+
+/**
+ * `GET /api/workspaces?includeRemovability=true` — the same listing with a
+ * verdict on every entry.
+ *
+ * A separate type from {@link WorkspaceListResponse} so that a caller which has
+ * paid for the verdicts can read them without a cast, and — more to the point —
+ * so that one which has not, cannot. The cost is stated on
+ * {@link WorkspaceWithRemovability}: this is the response that holds the daemon
+ * for seconds, and nothing should reach for this type without a user having
+ * asked for it in as many words.
+ */
+export interface WorkspaceVerdictListResponse {
+  workspaces: WorkspaceWithRemovability[];
+  diskUsageNote?: string;
+}
+
+/** `GET /api/workspaces/:id/removability` — one workspace, freshly evaluated. */
+export interface WorkspaceRemovabilityResponse {
+  workspace: WorkspaceWithRemovability;
 }
 
 /**
