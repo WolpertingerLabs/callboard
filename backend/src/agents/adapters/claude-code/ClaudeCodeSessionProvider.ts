@@ -11,7 +11,7 @@
  * @see plans/agent-abstraction-layer.md
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { dirname, join } from "path";
 import { randomUUID } from "node:crypto";
 import type {
@@ -91,26 +91,58 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
   }
 
   /**
-   * Primary discovery: uses `find` command for speed, stats all files,
-   * sorts globally by mtime, then paginates.
+   * Primary discovery: uses `find` for speed, stats all files, sorts globally
+   * by mtime, then paginates.
+   *
+   * ## Why this is `execFileSync` with an argv array and not a command string
+   *
+   * It was `execSync` on an interpolated string, and the interpolated values
+   * come from `~/.callboard/ignored-project-dirs.json` — written over HTTP by
+   * `PUT /api/ignored-project-dirs`, which validated only "an array of
+   * strings". That is remote command execution on the daemon's machine by an
+   * authenticated client, and it was demonstrated end to end:
+   *
+   *   PUT  /api/ignored-project-dirs {"prefixes":["evil$(id > /tmp/proof)"]} → 200
+   *   GET  /api/chats                                                        → 200
+   *   cat /tmp/proof → uid=1001(cybil) …
+   *
+   * With an argv array there is no shell, so there is nothing for a prefix to
+   * escape into — the same structural argument `engine-install.ts` makes for
+   * the install endpoint, which this endpoint quietly undercut. Note the glob
+   * still works: `-path` matching is done by `find` itself, not by a shell, so
+   * the `*` must NOT be shell-expanded and passing it as a literal argv token
+   * is both safer and more correct.
+   *
+   * `timeout` + `killSignal: "SIGKILL"` because this had neither, and a bare
+   * timeout is not a bound anyway (Node sends SIGTERM at the deadline and then
+   * waits indefinitely). `maxBuffer` because the default 1 MB is reachable —
+   * `-print0` over a few thousand transcripts — and blowing it throws, which
+   * `discoverSessions` then absorbs into the slower fallback path rather than
+   * failing loudly.
+   *
+   * This is still synchronous, which is a separate defect with a separate
+   * argument: it blocks the event loop on the chat-listing path. Converting it
+   * belongs with the rest of that work, not with closing an injection.
    */
   private _discoverPaginated(limit: number, offset: number): DiscoverResult {
     if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
 
-    // Prune directories matching any configured ignore prefix. We use a
-    // glob (`prefix*`) inside find's -path so prefix-based ignores prune
-    // correctly without walking into matching trees.
-    const pruneArgs = getIgnoredProjectDirPrefixes()
-      .map((d) => `-path "${CLAUDE_PROJECTS_DIR}/${d}*" -prune -o`)
-      .join(" ");
-    const findCommand = `find "${CLAUDE_PROJECTS_DIR}" ${pruneArgs} -maxdepth 2 -name "*.jsonl" -type f -print0`;
-    const output = execSync(findCommand, { encoding: "utf8" });
+    // Prune directories matching any configured ignore prefix. The glob
+    // (`prefix*`) is interpreted by `find`, so it is passed as a literal token.
+    const pruneArgs = getIgnoredProjectDirPrefixes().flatMap((d) => ["-path", `${CLAUDE_PROJECTS_DIR}/${d}*`, "-prune", "-o"]);
+    const output = execFileSync("find", [CLAUDE_PROJECTS_DIR, ...pruneArgs, "-maxdepth", "2", "-name", "*.jsonl", "-type", "f", "-print0"], {
+      encoding: "utf8",
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     if (!output) return { sessions: [], total: 0 };
 
-    // Belt-and-suspenders: filter again in JS in case the shell didn't
-    // honor a prune (e.g. if the user later edits the config without
-    // restarting the server and we somehow got a stale find output).
+    // Belt-and-suspenders: filter again in JS in case a prune did not apply
+    // (e.g. if the user edits the config without restarting the server and we
+    // somehow got a stale find output).
     const filePaths = output.split("\0").filter((p) => {
       if (!p.endsWith(".jsonl")) return false;
       const projectDir = p.split("/").slice(0, -1).pop();

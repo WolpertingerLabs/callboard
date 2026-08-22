@@ -28,6 +28,33 @@ const IGNORED_DIRS_CONFIG_FILE = join(
 let _ignoredPrefixesCache: string[] | null = null;
 
 /**
+ * What a project-dir prefix may contain.
+ *
+ * Project dirs under `~/.claude/projects/` are slugified absolute paths — every
+ * non-alphanumeric character becomes `-` (see {@link folderToProjectDir}) — so a
+ * prefix that can ever match one contains nothing but `[A-Za-z0-9-]`. Anything
+ * else was already inert: it could not match a directory name however it was
+ * spelled.
+ *
+ * It was not inert everywhere, though, and that is why this exists.
+ * `ClaudeCodeSessionProvider._discoverPaginated` interpolated these values into
+ * a shell command string, so `PUT /api/ignored-project-dirs` — which validated
+ * only "an array of strings" — was remote command execution for any
+ * authenticated client. The `find` call is an argv array now, which closes it
+ * structurally; this is the second layer, and the one that also protects any
+ * future consumer that reaches for a string again.
+ *
+ * Applied on **read** as well as on write, because the file is on disk and a
+ * hand-edited or restored one must not be trusted either.
+ */
+export const IGNORED_PREFIX_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/** True when `prefix` could name (the start of) a real slugified project dir. */
+export function isValidIgnoredPrefix(prefix: unknown): prefix is string {
+  return typeof prefix === "string" && prefix.length > 0 && prefix.length <= 128 && IGNORED_PREFIX_PATTERN.test(prefix);
+}
+
+/**
  * Read the user-configured ignored project-dir prefixes from disk.
  * Falls back to defaults if no config file exists or it's malformed.
  * Results are cached in-memory and invalidated by saveIgnoredProjectDirPrefixes().
@@ -39,7 +66,11 @@ export function getIgnoredProjectDirPrefixes(): string[] {
       const raw = readFileSync(IGNORED_DIRS_CONFIG_FILE, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.prefixes)) {
-        const cleaned = parsed.prefixes.filter((p: unknown): p is string => typeof p === "string" && p.length > 0);
+        // Filtered rather than merely type-checked — see IGNORED_PREFIX_PATTERN.
+        // A prefix outside the slug charset can never match a project dir, so
+        // dropping it costs nothing and keeps a hand-edited file from smuggling
+        // one past the route's validation.
+        const cleaned = parsed.prefixes.filter(isValidIgnoredPrefix);
         _ignoredPrefixesCache = cleaned;
         return cleaned;
       }
@@ -62,7 +93,7 @@ export function saveIgnoredProjectDirPrefixes(prefixes: string[]): string[] {
   for (const p of prefixes) {
     if (typeof p !== "string") continue;
     const trimmed = p.trim();
-    if (!trimmed) continue;
+    if (!isValidIgnoredPrefix(trimmed)) continue;
     if (seen.has(trimmed)) continue;
     seen.add(trimmed);
     cleaned.push(trimmed);

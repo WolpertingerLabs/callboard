@@ -13,7 +13,7 @@ const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // Load .env: ~/.callboard/.env is the base config, then the project-root .env
 // overrides it. This lets local dev runs use a local .env to override
 // the global ~/.callboard config (e.g. different ports, passwords, log levels).
-import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName } from "./utils/paths.js";
+import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName, isValidIgnoredPrefix } from "./utils/paths.js";
 import { resolveClaudeBinary } from "./services/claude-binary.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
@@ -293,6 +293,18 @@ app.put("/api/ignored-project-dirs", (req, res) => {
   }
   if (prefixes.some((p) => typeof p !== "string")) {
     return res.status(400).json({ error: "every prefix must be a string" });
+  }
+  // Project dirs are slugified paths, so a prefix that can ever match one holds
+  // nothing but `[A-Za-z0-9-]`. Rejecting the rest is not a new restriction on
+  // anything useful — such a prefix could never match a directory — and it is
+  // the layer above the argv array that now carries these values into `find`.
+  // Until that array existed, this endpoint was remote command execution: a
+  // prefix of `evil$(id > /tmp/proof)` ran on the next `GET /api/chats`.
+  const invalid = prefixes.filter((p: string) => !isValidIgnoredPrefix(p.trim()));
+  if (invalid.length > 0) {
+    return res.status(400).json({
+      error: `A project-dir prefix may contain only letters, digits and hyphens — project dirs are slugified paths, so anything else can never match one. Rejected: ${invalid.map((p: string) => JSON.stringify(p)).join(", ")}`,
+    });
   }
   const saved = saveIgnoredProjectDirPrefixes(prefixes);
   // Invalidate chat list cache so the next /api/chats call reflects the change
