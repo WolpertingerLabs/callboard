@@ -193,7 +193,8 @@ describe("what it gates", () => {
   });
 
   /**
-   * A source-order assertion, deliberately, because the defect was one.
+   * A source-order assertion, deliberately, because the defect was one — with
+   * its limits stated rather than left to be discovered.
    *
    * `requireAuth` carried this gate as its first block and is mounted *after*
    * `/api/auth/login`, `/api/auth/check` and `/api/auth/logout`, so it never ran
@@ -203,20 +204,46 @@ describe("what it gates", () => {
    * that was not the caller's: `/api/system-info` 403, `/api/auth/login` 401 (it
    * reached the password check), `/api/auth/check` 200.
    *
-   * No behavioural test could have caught that, because every unit test of the
-   * middleware calls it directly and so passes whatever the mount order is.
-   * Importing `index.ts` is not an option either — it boots a listener, a cron
-   * scheduler and an SDK query. So this reads the registration order out of the
-   * source, which is the exact property that broke and the only place it is
-   * observable short of running a daemon.
+   * **This is a weaker check than a behavioural one, and it is not true that a
+   * behavioural test could not have found the bug** — booting a built daemon on
+   * a scratch port and sending three requests finds it in about two minutes,
+   * which is how it *was* found. What blocks that inside the suite is narrower:
+   * importing `index.ts` boots an HTTP listener, a cron scheduler, the drawlatch
+   * supervisor and an Agent SDK query, because the app is assembled at module
+   * scope. Reading the registration order out of the source is what is available
+   * until that changes.
+   *
+   * Two things it cannot see, both real:
+   *   - a mount that is present in the source but unreachable (inside a branch
+   *     that never runs) satisfies it;
+   *   - it matches text, so a refactor that mounts the gate through a helper
+   *     rather than this literal call fails it without anything being wrong.
+   *
+   * TODO: extract a `buildApp()` from `index.ts` that returns the configured
+   * express app without listening, and replace this with a supertest case that
+   * drives the real middleware stack. Out of scope here — that extraction
+   * touches every route registration in the file.
    */
   it("is mounted above the auth routes in index.ts", () => {
     const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf-8");
     const gate = index.indexOf('app.use("/api", requireAllowedIp)');
     expect(gate, "requireAllowedIp is no longer mounted in index.ts").toBeGreaterThan(-1);
-    for (const route of ["/api/auth/login", "/api/auth/check", "/api/auth/logout"]) {
-      expect(index.indexOf(`"${route}"`), route).toBeGreaterThan(gate);
+
+    // The route *registration*, not the first mention of the path. An earlier
+    // cut searched for the bare string and matched
+    // `app.use("/api/auth/login", publicLimiter)` twelve lines above the real
+    // registration — a landmark that happens to sit on the right side of the
+    // gate and so proved nothing about the route it was named for.
+    for (const [method, route] of [
+      ["post", "/api/auth/login"],
+      ["get", "/api/auth/check"],
+      ["post", "/api/auth/logout"],
+    ] as const) {
+      const registration = new RegExp(`app\\.${method}\\(\\s*"${route}"`).exec(index);
+      expect(registration, `no app.${method}("${route}", …) registration found`).not.toBeNull();
+      expect(registration!.index, route).toBeGreaterThan(gate);
     }
+
     // And below the gate, so a client that passes it still has to authenticate.
     expect(index.indexOf('app.use("/api", requireAuth)')).toBeGreaterThan(gate);
   });

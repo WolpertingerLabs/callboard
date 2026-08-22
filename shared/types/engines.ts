@@ -561,13 +561,13 @@ export interface EngineStatus {
    * it" are different questions, and the login commands this feature points
    * people at (`claude auth login`, `codex login`) only need the first:
    *
-   * - **Claude Code** — `getClaudeCodeExecutablePath()` decides what the Agent
-   *   SDK runs and looks only at the setting and `which claude`.
-   *   `getClaudeBinaryPath()` — the lookup the About page and the login prompt
-   *   use — additionally checks `CLAUDE_BINARY` and `~/.local/bin`,
-   *   `~/.claude/bin`, `/usr/local/bin`, `/opt/homebrew/bin`. A daemon started
-   *   before those were on its `PATH` sees the second and not the first, which
-   *   is the *normal* outcome of the `install.sh` recipe.
+   * - **Claude Code** — one resolver decides both, so this is simply the same
+   *   path as {@link EngineRuntime.resolvedPath}. It was two: the SDK's lookup
+   *   saw only the setting and `which claude`, while the About page's saw
+   *   `$CLAUDE_BINARY` and four well-known directories — so a daemon started
+   *   before `~/.local/bin` was on its `PATH` (the *normal* outcome of the
+   *   `install.sh` recipe) had a CLI the user could type and chats that ran
+   *   something else. `resolvedFrom` now reports which lookup won instead.
    * - **Codex** — Callboard always runs the binary nested inside
    *   `@openai/codex-sdk`, so a user-installed `codex` on `PATH` changes
    *   nothing about chats and everything about whether `codex login` exists.

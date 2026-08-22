@@ -332,7 +332,7 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
       oneClick: false,
       code: "unsupported-platform",
       refusal:
-        "Callboard does not run installs itself on Windows: it spawns without a shell, and `npm` here is a batch script that needs one. That is a limitation of Callboard rather than of npm — the command below works normally when you run it yourself.",
+        "Callboard does not run installs itself on Windows. It can spawn npm here without a shell, but the checks it makes first — whether npm's global directories are actually writable, and whether the result would land somewhere Callboard can see — do not hold on Windows, and Callboard will not offer a button whose safety check it knows is incomplete. That is a limitation of Callboard rather than of npm: the command below works normally when you run it yourself.",
     };
   }
 

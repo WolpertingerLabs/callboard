@@ -147,10 +147,18 @@ beforeEach(() => {
 });
 
 /**
- * The four caches, each with a probe that reads it and the reset that clears it.
+ * The two caches that memoize a **PATH lookup**, each with a probe that reads it
+ * and the reset that clears it.
  *
- * Adding a fifth means adding a row here; a row with no reset, or a reset that
- * does not clear, fails the table-driven cases below.
+ * Deliberately not every cache `resetEngineProbeCaches` drops — the other two
+ * (this module's `--version` + manifest reads, and `sdk-info`'s account info)
+ * are not PATH lookups and cannot be driven by flipping a stubbed `which`, so
+ * they have their own cases further down rather than a row here. An earlier
+ * version of this comment said "the four caches" over these same two rows,
+ * which is exactly the kind of claim this suite exists to stop.
+ *
+ * Adding a third PATH lookup means adding a row; a row with no reset, or a
+ * reset that does not clear, fails the table-driven cases below.
  */
 const CACHES: { name: string; probe: () => Promise<string | undefined | null>; reset: () => void }[] = [
   {
