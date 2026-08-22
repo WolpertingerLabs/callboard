@@ -23,6 +23,13 @@
  *   tedium is the point.
  * - **The naming heuristic only ever offers.** It is rendered as a labelled
  *   guess next to a candidate and is never read by anything that decides.
+ * - **The removal verdict is fetched per click, never per row.** Evaluating one
+ *   is ~5 synchronous git subprocesses; a listing that carried 65 of them froze
+ *   the whole daemon for 1.6s, SSE and chat input included. So the rows say what
+ *   is cheap to know and the Archive button asks for the verdict, which is the
+ *   only moment it decides anything. It decides what the *user* is shown — the
+ *   backend re-runs every gate on the archive itself and takes no verdict from
+ *   here.
  *
  * Phase 4b adds rename, and it is per record rather than per directory for the
  * same reason the archive is: the name belongs to a record, and a directory may
@@ -33,6 +40,7 @@ import { AlertTriangle, Ban, Check, FolderGit2, HardDrive, Loader2, Pencil, Rota
 import {
   adoptWorktrees,
   archiveWorkspace,
+  fetchWorkspaceRemovability,
   listTrash,
   listUnmanagedWorktrees,
   listWorkspaces,
@@ -42,6 +50,7 @@ import {
   type TrashRestoreResult,
   type UnmanagedWorktree,
   type UnmanagedWorktreeListing,
+  type WorkspaceEntry,
   type WorkspaceWithRemovability,
   WORKSPACE_NAME_MAX,
 } from "../api";
@@ -111,18 +120,6 @@ function primaryButton(disabled?: boolean) {
   };
 }
 
-function dangerButton() {
-  return {
-    padding: "6px 12px",
-    borderRadius: 6,
-    fontSize: 12,
-    background: "var(--danger-solid)",
-    color: "var(--text-on-danger)",
-    border: "none",
-    cursor: "pointer" as const,
-  };
-}
-
 /** Days until an ISO timestamp, floored. Negative means it is already due. */
 function daysUntil(iso: string, now: number): number {
   return Math.floor((Date.parse(iso) - now) / 86_400_000);
@@ -131,6 +128,19 @@ function daysUntil(iso: string, now: number): number {
 /** `1 file` / `4 files`. */
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
+}
+
+/**
+ * Join backend sentences into a paragraph, terminating each one.
+ *
+ * Blocker details are written as sentences but only some end in a full stop, so
+ * concatenating them raw runs the last one into whatever follows ("…no longer
+ * exists It is not inert, though"). Added here rather than in the backend
+ * strings because the same details are also rendered on their own, where a
+ * trailing stop the author did not write would be equally wrong.
+ */
+function sentences(parts: string[]): string {
+  return parts.map((part) => (/[.!?]$/.test(part.trim()) ? part.trim() : `${part.trim()}.`)).join(" ");
 }
 
 /**
@@ -182,9 +192,15 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
   const [busy, setBusy] = useState(false);
 
   // ── Managed workspaces ────────────────────────────────────────────
-  const [workspaces, setWorkspaces] = useState<WorkspaceWithRemovability[] | null>(null);
+  //
+  // The rows carry no verdict (see the header). Both confirmation targets do,
+  // and their type says so — an archive confirmation cannot be constructed from
+  // a row, only from something that has been evaluated.
+  const [workspaces, setWorkspaces] = useState<WorkspaceEntry[] | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<WorkspaceWithRemovability | null>(null);
   const [recordOnlyTarget, setRecordOnlyTarget] = useState<WorkspaceWithRemovability | null>(null);
+  /** The record whose verdict is in flight, so its own button can say so. */
+  const [evaluating, setEvaluating] = useState<string | null>(null);
 
   const [workspacesNote, setWorkspacesNote] = useState<string | undefined>(undefined);
 
@@ -247,6 +263,36 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
   }, [tab, workspaces, trash, loadWorkspaces, loadTrash]);
 
   // ── Actions ───────────────────────────────────────────────────────
+
+  /**
+   * Evaluate one workspace and open the confirmation its verdict calls for.
+   *
+   * This is where the removal verdict is paid for — once, for the record the
+   * user pointed at, rather than 65 times for a list they were only reading.
+   * The two outcomes are genuinely different actions and have always had
+   * different confirmations; what changed is that the *verdict* now arrives with
+   * the click instead of with the page, so it is also fresher than a row could
+   * ever be.
+   *
+   * The listing's row is spread in underneath so the size it already measured
+   * survives — the verdict call does not run `du`, and re-running it per click
+   * would put a synchronous `du` back on the path this whole change exists to
+   * get off it.
+   */
+  const openArchive = async (entry: WorkspaceEntry) => {
+    setEvaluating(entry.id);
+    setError(null);
+    try {
+      const evaluated = await fetchWorkspaceRemovability(entry.id);
+      const target: WorkspaceWithRemovability = { ...entry, ...evaluated, diskUsage: evaluated.diskUsage ?? entry.diskUsage };
+      if (target.removability.removable) setArchiveTarget(target);
+      else setRecordOnlyTarget(target);
+    } catch (err: any) {
+      setError(err.message || "Failed to work out whether this workspace can be removed");
+    } finally {
+      setEvaluating(null);
+    }
+  };
 
   /**
    * One workspace, one call. There is no loop over a selection here and there
@@ -328,14 +374,15 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
    * Returns whether it landed, so the inline editor closes on success and stays
    * open — with the text still in it — on a rejected name.
    */
-  const runRename = async (workspace: WorkspaceWithRemovability, name: string): Promise<boolean> => {
+  const runRename = async (workspace: WorkspaceEntry, name: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       const renamed = await renameWorkspace(workspace.id, name);
-      // Patch in place rather than refetching: the listing costs a removability
-      // evaluation per record (several git subprocesses each) and not one of
-      // those verdicts can have changed because of a rename.
+      // Patch in place rather than refetching. The listing is cheap now, but the
+      // response already carries the only field a rename can have changed, and a
+      // refetch would re-`du` every directory and redraw the list under a user
+      // who is still reading it.
       setWorkspaces((current) => current?.map((w) => (w.id === renamed.id ? { ...w, name: renamed.name } : w)) ?? current);
       setNotice(`Renamed to “${renamed.name}”. Nothing on disk moved — ${renamed.cwd} is exactly where it was.`);
       onChanged?.();
@@ -374,7 +421,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
   // ── Managed tab, grouped by directory ─────────────────────────────
 
   const byDirectory = useMemo(() => {
-    const groups = new Map<string, WorkspaceWithRemovability[]>();
+    const groups = new Map<string, WorkspaceEntry[]>();
     for (const workspace of workspaces ?? []) {
       const bucket = groups.get(workspace.cwd);
       if (bucket) bucket.push(workspace);
@@ -498,7 +545,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
               <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
                 Directories Callboard holds a workspace record for
                 {totalManagedBytes > 0 && <> · {formatDiskUsage({ bytes: totalManagedBytes })} in total</>}. A worktree is only ever moved to the trash when
-                every gate passes; where one does not, the reason is shown instead of the action.
+                every gate passes; “Archive…” checks this one against all of them and tells you which it is — a removal, or a record archived with the directory
+                left exactly where it is — before anything happens.
                 {workspacesNote && <span style={{ display: "block", marginTop: 4 }}>{workspacesNote}</span>}
               </p>
               {/*
@@ -545,15 +593,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
                 />
               ) : (
                 visibleDirectories.map(([cwd, records]) => (
-                  <DirectoryGroup
-                    key={cwd}
-                    cwd={cwd}
-                    records={records}
-                    busy={busy}
-                    onArchive={setArchiveTarget}
-                    onArchiveRecordOnly={setRecordOnlyTarget}
-                    onRename={runRename}
-                  />
+                  <DirectoryGroup key={cwd} cwd={cwd} records={records} busy={busy} evaluating={evaluating} onArchive={openArchive} onRename={runRename} />
                 ))
               )}
             </>
@@ -681,10 +721,19 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
             linked to the workspace and stamps it archived *before* the
             removability gate runs, so it happens on this path too — the
             directory is what stays untouched, not the sessions.
+
+            Every blocker is named here, with its short label as well as the
+            backend's sentence. This screen is now the *only* place a user reads
+            them — the rows no longer carry a verdict to render — so it may not
+            summarise: a user who fixes one blocker and finds another waiting
+            has learned nothing about what to do next.
           */
           message={
             `This marks the workspace record archived. The directory at ${recordOnlyTarget.cwd} is not moved, not deleted and not modified — Callboard will ` +
-            `not touch it, because ${recordOnlyTarget.removability.blockers.map((b) => b.detail).join(" ")}` +
+            `not touch it, because: ${sentences(recordOnlyTarget.removability.blockers.map((b) => `${blockerLabel(b.code)} — ${b.detail}`))}` +
+            (recordOnlyTarget.removability.blockers.some((b) => isFixedByAdoption(b.code))
+              ? " Adopting this worktree from the Unmanaged tab would clear that."
+              : "") +
             (recordOnlyTarget.chatCount
               ? ` It is not inert, though: ${recordOnlyTarget.chatCount} chat${recordOnlyTarget.chatCount === 1 ? "" : "s"} linked to this workspace ` +
                 `${recordOnlyTarget.chatCount === 1 ? "is" : "are"} interrupted and archived first. Their logs are kept.`
@@ -742,16 +791,16 @@ function DirectoryGroup({
   cwd,
   records,
   busy,
+  evaluating,
   onArchive,
-  onArchiveRecordOnly,
   onRename,
 }: {
   cwd: string;
-  records: WorkspaceWithRemovability[];
+  records: WorkspaceEntry[];
   busy: boolean;
-  onArchive: (workspace: WorkspaceWithRemovability) => void;
-  onArchiveRecordOnly: (workspace: WorkspaceWithRemovability) => void;
-  onRename: (workspace: WorkspaceWithRemovability, name: string) => Promise<boolean>;
+  evaluating: string | null;
+  onArchive: (workspace: WorkspaceEntry) => void;
+  onRename: (workspace: WorkspaceEntry, name: string) => Promise<boolean>;
 }) {
   const size = formatDiskUsage(records[0].diskUsage);
   const directory = records[0].directory;
@@ -794,7 +843,7 @@ function DirectoryGroup({
 
       <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
         {records.map((record) => (
-          <RecordRow key={record.id} record={record} busy={busy} onArchive={onArchive} onArchiveRecordOnly={onArchiveRecordOnly} onRename={onRename} />
+          <RecordRow key={record.id} record={record} busy={busy} evaluating={evaluating === record.id} onArchive={onArchive} onRename={onRename} />
         ))}
       </div>
     </div>
@@ -819,9 +868,9 @@ function RecordName({
   busy,
   onRename,
 }: {
-  record: WorkspaceWithRemovability;
+  record: WorkspaceEntry;
   busy: boolean;
-  onRename: (workspace: WorkspaceWithRemovability, name: string) => Promise<boolean>;
+  onRename: (workspace: WorkspaceEntry, name: string) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(record.name);
@@ -902,22 +951,30 @@ function RecordName({
   );
 }
 
+/**
+ * One record, and the one button that acts on it.
+ *
+ * The row deliberately does not know whether this workspace is removable — the
+ * verdict that answers it is ~5 synchronous git subprocesses, and 65 rows of
+ * them is what froze the daemon. So the button does not promise an outcome:
+ * clicking it evaluates *this* record and opens whichever of the two
+ * confirmations the answer calls for, and each of those still states in full
+ * what it is about to do. Nothing archives without passing one.
+ */
 function RecordRow({
   record,
   busy,
+  evaluating,
   onArchive,
-  onArchiveRecordOnly,
   onRename,
 }: {
-  record: WorkspaceWithRemovability;
+  record: WorkspaceEntry;
   busy: boolean;
-  onArchive: (workspace: WorkspaceWithRemovability) => void;
-  onArchiveRecordOnly: (workspace: WorkspaceWithRemovability) => void;
-  onRename: (workspace: WorkspaceWithRemovability, name: string) => Promise<boolean>;
+  /** This record's verdict is in flight. */
+  evaluating: boolean;
+  onArchive: (workspace: WorkspaceEntry) => void;
+  onRename: (workspace: WorkspaceEntry, name: string) => Promise<boolean>;
 }) {
-  const { removable, blockers } = record.removability;
-  const adoptionWouldHelp = blockers.some((b) => isFixedByAdoption(b.code));
-
   return (
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "flex", gap: 12, alignItems: "flex-start" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -926,47 +983,32 @@ function RecordRow({
           {record.worktree?.branch && <span style={chipStyle()}>{record.worktree.branch}</span>}
           <span style={chipStyle()}>{record.isolation}</span>
           {record.worktree?.owned && <span style={chipStyle()}>owned by Callboard</span>}
+          {/*
+            The one thing about removability a row can say for free: a worktree
+            Callboard did not create is never removable, and adoption is the way
+            out. It comes off the record, not off a git check.
+          */}
+          {record.isolation === "worktree" && !record.worktree?.owned && (
+            <span
+              style={chipStyle("warn")}
+              title="Callboard cannot prove it created this worktree, so it will never remove it. Adopt it from the Unmanaged tab to change that."
+            >
+              <Ban size={10} />
+              not owned by Callboard
+            </span>
+          )}
         </div>
-
-        {/*
-          Every blocker, not just the first. A user who fixes one and finds
-          another waiting has learned nothing about what to do next.
-        */}
-        {!removable && (
-          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-            {blockers.map((blocker) => (
-              <div key={blocker.code} style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
-                <Ban size={11} style={{ flexShrink: 0, marginTop: 2 }} />
-                <span>
-                  <strong style={{ color: "var(--text)" }}>{blockerLabel(blocker.code)}</strong> — {blocker.detail}
-                </span>
-              </div>
-            ))}
-            {adoptionWouldHelp && (
-              <div style={{ fontSize: 11, color: "var(--text-muted)", paddingLeft: 17 }}>Adopting this worktree from the Unmanaged tab would clear that.</div>
-            )}
-          </div>
-        )}
       </div>
 
       <div style={{ flexShrink: 0 }}>
-        {removable ? (
-          <button onClick={() => onArchive(record)} disabled={busy} style={dangerButton()} title="Archive this workspace and move its worktree to the trash">
-            Archive &amp; trash…
-          </button>
-        ) : (
-          // Archiving the *record* is still useful — it is how the seven stale
-          // records pointing at removed directories get cleared — and it is a
-          // strictly different action from moving a directory, so it says so.
-          <button
-            onClick={() => onArchiveRecordOnly(record)}
-            disabled={busy}
-            style={{ ...primaryButton(false), background: "var(--bg-secondary)", color: "var(--text)", border: "1px solid var(--border)" }}
-            title="Mark the record archived. The directory is not touched."
-          >
-            Archive record…
-          </button>
-        )}
+        <button
+          onClick={() => onArchive(record)}
+          disabled={busy || evaluating}
+          style={{ ...primaryButton(false), background: "var(--bg-secondary)", color: "var(--text)", border: "1px solid var(--border)" }}
+          title="Check what archiving this would do, and confirm it. Nothing happens until you do."
+        >
+          {evaluating ? "Checking…" : "Archive…"}
+        </button>
       </div>
     </div>
   );

@@ -74,8 +74,10 @@ import type {
   CardListResponse,
   CardResponse,
   Workspace,
+  WorkspaceEntry,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
+  WorkspaceRemovabilityResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
   WorkspaceRefusalReason,
@@ -185,8 +187,10 @@ export type {
   CardListResponse,
   CardResponse,
   Workspace,
+  WorkspaceEntry,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
+  WorkspaceRemovabilityResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
   WorkspaceRefusalReason,
@@ -2081,6 +2085,14 @@ export function retryJobStep(runId: string): Promise<JobRun> {
 // adopt-everything and no archive-many — the backend does not offer them and
 // the UI must not synthesise them out of a loop.
 
+/**
+ * The rows: records, the observed state of each directory, and (opt-in) sizes.
+ *
+ * Deliberately **without** removal verdicts. One verdict is ~5 synchronous git
+ * subprocesses, so a listing that carried them cost 1.6s of frozen daemon at 65
+ * records — every other request, SSE included, waited behind it. Ask
+ * {@link fetchWorkspaceRemovability} for the one record a user is acting on.
+ */
 export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceListResponse> {
   const params = new URLSearchParams();
   if (status) params.append("status", status);
@@ -2088,6 +2100,22 @@ export async function listWorkspaces(status?: "active" | "archived", includeDisk
   const res = await fetch(`${BASE}/workspaces${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list workspaces");
   return res.json();
+}
+
+/**
+ * The removal verdict for one workspace, evaluated now.
+ *
+ * Read-only, and **not** what makes an archive safe: `archiveWorkspace` runs
+ * every gate again server-side and there is no way to hand this back to it. What
+ * it is for is telling a user what their click is about to do before they make
+ * it — which of the two archives they are looking at, and which gitignored files
+ * would travel into the trash.
+ */
+export async function fetchWorkspaceRemovability(id: string): Promise<WorkspaceWithRemovability> {
+  const res = await fetch(`${BASE}/workspaces/${id}/removability`);
+  await assertOk(res, "Failed to evaluate the workspace");
+  const body: WorkspaceRemovabilityResponse = await res.json();
+  return body.workspace;
 }
 
 /** Read-only discovery. Creates no record and writes nothing. */

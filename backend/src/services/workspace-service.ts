@@ -45,6 +45,7 @@ import type {
   Chat,
   Workspace,
   WorkspaceDirectory,
+  WorkspaceEntry,
   WorkspaceIgnoredPreview,
   WorkspaceRemovability,
   WorkspaceRemovalReason,
@@ -154,8 +155,12 @@ function repoPathNamesSameRepo(recorded: string, resolvedMainRepo: string): bool
 // at N=44, roughly 1,900 parses on a synchronous route.
 
 interface RemovalContext {
-  /** Every active workspace, read once. The ref-count is a filter over this. */
-  activeWorkspaces: Workspace[];
+  /**
+   * Every active workspace, read once. The ref-count is a filter over this.
+   * Lazy: a listing that asks for no verdict never consults the ref-count, and
+   * the read is a directory scan plus a JSON parse per record.
+   */
+  activeWorkspaces: Workspace[] | null;
   /** Cleanliness memoised per resolved cwd; workspaces may share a directory. */
   cleanliness: Map<string, WorktreeCleanliness>;
   /** Directories that a live agent session is running in. Lazy — usually empty. */
@@ -165,7 +170,13 @@ interface RemovalContext {
 }
 
 function newRemovalContext(): RemovalContext {
-  return { activeWorkspaces: listWorkspaces({ status: "active" }), cleanliness: new Map(), liveSessionFolders: null, chatCounts: null };
+  return { activeWorkspaces: null, cleanliness: new Map(), liveSessionFolders: null, chatCounts: null };
+}
+
+function activeWorkspaces(ctx: RemovalContext): Workspace[] {
+  if (ctx.activeWorkspaces) return ctx.activeWorkspaces;
+  ctx.activeWorkspaces = listWorkspaces({ status: "active" });
+  return ctx.activeWorkspaces;
 }
 
 /**
@@ -221,7 +232,7 @@ function cleanlinessFor(ctx: RemovalContext, cwd: string): WorktreeCleanliness {
  * comparison resolves paths — strictly more matches, never fewer.
  */
 function otherActiveWorkspacesOn(ctx: RemovalContext, workspace: Workspace, cwd: string): Workspace[] {
-  return ctx.activeWorkspaces.filter((other) => other.id !== workspace.id && samePath(other.cwd, cwd));
+  return activeWorkspaces(ctx).filter((other) => other.id !== workspace.id && samePath(other.cwd, cwd));
 }
 
 /**
@@ -413,44 +424,98 @@ export function describeWorkspaceDirectory(workspace: Workspace): WorkspaceDirec
 }
 
 /**
- * Every workspace with its removability verdict and the observed state of its
- * directory. Both are read-only: listing workspaces writes nothing, archives
- * nothing and removes nothing, however stale a record turns out to be.
+ * Disk usage is opt-in for the same reason it is on discovery: `du -sk` over a
+ * worktree with a cold `node_modules` is seconds, and a caller that only wants
+ * the records should not pay for it. Measurements are memoised for five
+ * minutes, so a management view that re-polls costs nothing.
  */
-export function listWorkspacesWithRemovability(
-  filter?: { status?: Workspace["status"] },
+interface ListingOptions {
+  includeDiskUsage?: boolean;
   /**
-   * Disk usage is opt-in for the same reason it is on discovery: `du -sk` over
-   * a worktree with a cold `node_modules` is seconds, and a caller that only
-   * wants the removal verdict should not pay for it. Measurements are memoised
-   * for five minutes, so a management view that re-polls costs nothing.
+   * The listing's `du` budget. A caller passes one in when it wants to read
+   * {@link DiskUsageBudget.note} afterwards; when it does not, one is created
+   * here anyway — `execFileSync` blocks the event loop, so there must be no
+   * path through these functions that measures N directories unbounded.
    */
-  opts?: {
-    includeDiskUsage?: boolean;
-    /**
-     * The listing's `du` budget. A caller passes one in when it wants to read
-     * {@link DiskUsageBudget.note} afterwards; when it does not, one is created
-     * here anyway — `execFileSync` blocks the event loop, so there must be no
-     * path through this function that measures N directories unbounded.
-     */
-    budget?: DiskUsageBudget;
-  },
-): WorkspaceWithRemovability[] {
+  budget?: DiskUsageBudget;
+}
+
+function newBudget(opts?: ListingOptions): DiskUsageBudget | undefined {
+  return opts?.includeDiskUsage ? (opts.budget ?? newDiskUsageBudget()) : undefined;
+}
+
+function toEntry(workspace: Workspace, ctx: RemovalContext, budget?: DiskUsageBudget): WorkspaceEntry {
+  const directory = describeWorkspaceDirectory(workspace);
+  return {
+    ...workspace,
+    directory,
+    chatCount: chatCounts(ctx).get(workspace.id) ?? 0,
+    // Nothing to measure when the directory is gone — and `du` on a missing
+    // path returns an error string, which reads as a failure rather than as
+    // the "there is nothing here" that `directory.state` already says.
+    ...(budget && directory.state !== "missing" && { diskUsage: budget.measure(workspace.cwd) }),
+  };
+}
+
+/**
+ * Every workspace with the observed state of its directory — and **no removal
+ * verdict**. This is what a listing should call.
+ *
+ * The cost here is a registry read, an `lstat` of one `.git` entry per record,
+ * one pass over the chat store, and (opt-in) `du`. No `git status`, no
+ * `rev-list`, no submodule scan — which is the difference between a listing that
+ * costs milliseconds and one that spawns ~350 synchronous subprocesses and holds
+ * the daemon for a second and a half. See {@link WorkspaceWithRemovability} for
+ * the measurement, and {@link getWorkspaceWithRemovability} for the verdict when
+ * something actually needs one.
+ *
+ * Read-only, like every listing here: it writes nothing, archives nothing and
+ * removes nothing, however stale a record turns out to be.
+ */
+export function listWorkspaceEntries(filter?: { status?: Workspace["status"] }, opts?: ListingOptions): WorkspaceEntry[] {
   const ctx = newRemovalContext();
-  const budget = opts?.includeDiskUsage ? (opts.budget ?? newDiskUsageBudget()) : undefined;
-  return listWorkspaces(filter).map((workspace) => {
-    const directory = describeWorkspaceDirectory(workspace);
-    return {
-      ...workspace,
-      removability: evaluateWorktreeRemoval(workspace, ctx),
-      directory,
-      chatCount: chatCounts(ctx).get(workspace.id) ?? 0,
-      // Nothing to measure when the directory is gone — and `du` on a missing
-      // path returns an error string, which reads as a failure rather than as
-      // the "there is nothing here" that `directory.state` already says.
-      ...(budget && directory.state !== "missing" && { diskUsage: budget.measure(workspace.cwd) }),
-    };
-  });
+  const budget = newBudget(opts);
+  return listWorkspaces(filter).map((workspace) => toEntry(workspace, ctx, budget));
+}
+
+/**
+ * Every workspace with its removability verdict attached.
+ *
+ * **Expensive, and linear in git subprocesses** — see
+ * {@link WorkspaceWithRemovability}. Nothing user-facing polls this; the HTTP
+ * listing only produces it behind an explicit `includeRemovability=true`, and
+ * the agent-facing `list_workspaces` tool asks for it because a verdict per
+ * record is the entire content of what it reports.
+ */
+export function listWorkspacesWithRemovability(filter?: { status?: Workspace["status"] }, opts?: ListingOptions): WorkspaceWithRemovability[] {
+  const ctx = newRemovalContext();
+  const budget = newBudget(opts);
+  return listWorkspaces(filter).map((workspace) => ({
+    ...toEntry(workspace, ctx, budget),
+    removability: evaluateWorktreeRemoval(workspace, ctx),
+  }));
+}
+
+/**
+ * One workspace, freshly evaluated — the verdict at the moment it decides
+ * something.
+ *
+ * This is the shape of the fix for the listing above: a management view loads
+ * cheap rows and asks this for the single record whose archive confirmation is
+ * opening, so the git subprocesses are paid once per click instead of N times
+ * per page load.
+ *
+ * It remains an *affordance*. {@link archiveWorkspace} evaluates removability
+ * itself, from the record, on every call — it does not accept a verdict, and no
+ * route offers a way to supply one.
+ *
+ * Returns null when there is no such record.
+ */
+export function getWorkspaceWithRemovability(id: string, opts?: ListingOptions): WorkspaceWithRemovability | null {
+  const workspace = getWorkspace(id);
+  if (!workspace) return null;
+  const ctx = newRemovalContext();
+  return { ...toEntry(workspace, ctx, newBudget(opts)), removability: evaluateWorktreeRemoval(workspace, ctx) };
 }
 
 /**

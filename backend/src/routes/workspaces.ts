@@ -2,8 +2,13 @@
  * Workspace routes — the minimum surface that makes the worktree lifecycle
  * reachable.
  *
- * Phase 2: see the workspaces (with the removability verdict for each, so a
- * refusal is legible) and archive one.
+ * Phase 2: see the workspaces, ask why one cannot be removed (so a refusal is
+ * legible), and archive one. The verdict is a *separate* call rather than a
+ * field on the listing, because producing one is several synchronous git
+ * subprocesses and this daemon has one thread; `GET /` is what a view polls and
+ * `GET /:id/removability` is what a click asks. Neither is what makes an
+ * archive safe — `POST /:id/archive` re-evaluates from the record every time and
+ * accepts no verdict from anyone.
  *
  * Phase 2b: see the worktrees that have *no* record (read-only), and adopt
  * named ones. The split between those two is the whole safety property —
@@ -29,7 +34,7 @@ import { Router } from "express";
 import { adoptWorktrees } from "../services/workspace-adoption.js";
 import { createLocalWorkspace } from "../services/workspace-create.js";
 import { listUnmanagedWorktrees } from "../services/workspace-discovery.js";
-import { archiveWorkspace, listWorkspacesWithRemovability } from "../services/workspace-service.js";
+import { archiveWorkspace, getWorkspaceWithRemovability, listWorkspaceEntries, listWorkspacesWithRemovability } from "../services/workspace-service.js";
 import { getWorkspace, renameWorkspace } from "../services/workspace-store.js";
 import { listTrash, restoreTrashEntry } from "../services/workspace-trash.js";
 import { newDiskUsageBudget } from "../utils/disk-usage.js";
@@ -47,14 +52,16 @@ export const workspacesRouter = Router();
  */
 const ADOPT_PATH_LIMIT = 100;
 
-// List workspaces, each with why its worktree may or may not be removed
+// List workspaces and the observed state of each one's directory. The removal
+// verdict is NOT included unless it is asked for — see the note below.
 workspacesRouter.get("/", (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'List workspaces'
-  // #swagger.description = 'List workspaces with a removability verdict for each — whether its worktree can be removed, and every reason it cannot — plus `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Read-only: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
+  // #swagger.description = 'List workspaces with `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Removability is NOT included by default — it costs roughly five synchronous git subprocesses per record, which at 65 records held the whole daemon for 1.6s; pass includeRemovability=true when a caller genuinely needs every verdict, or ask GET /:id/removability for the one workspace that is about to be acted on. Read-only either way: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
   /* #swagger.parameters['status'] = { in: 'query', type: 'string', description: 'Filter by status - active or archived. Omit for both.' } */
+  /* #swagger.parameters['includeRemovability'] = { in: 'query', type: 'string', description: 'Pass the string true to attach a removability verdict to every entry — whether its worktree can be removed, and every reason it cannot. Off by default because it is ~5 sequential git subprocesses per record and all of them are synchronous. Prefer GET /api/workspaces/{id}/removability for the single record a user is acting on.' } */
   /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each workspace with du -sk. Off by default: it is the slow part. Measurements are memoised for five minutes, a workspace whose directory is missing is not measured, and the whole listing shares one wall-clock budget — entries past it carry an error saying so and the response carries a diskUsageNote.' } */
-  /* #swagger.responses[200] = { description: "Workspaces with removability" } */
+  /* #swagger.responses[200] = { description: "Workspaces, with removability only when it was asked for" } */
   /* #swagger.responses[400] = { description: "Invalid status filter" } */
   try {
     const status = req.query.status as "active" | "archived" | undefined;
@@ -62,15 +69,39 @@ workspacesRouter.get("/", (req, res) => {
       return res.status(400).json({ error: 'status must be "active" or "archived"' });
     }
     const includeDiskUsage = req.query.includeDiskUsage === "true";
+    const includeRemovability = req.query.includeRemovability === "true";
     // One budget for the whole listing. `du` is synchronous, so N entries with
     // only a per-entry timeout is N × 15s of frozen daemon.
     const budget = newDiskUsageBudget();
-    const workspaces = listWorkspacesWithRemovability(status ? { status } : undefined, { includeDiskUsage, budget });
+    const filter = status ? { status } : undefined;
+    const workspaces = includeRemovability
+      ? listWorkspacesWithRemovability(filter, { includeDiskUsage, budget })
+      : listWorkspaceEntries(filter, { includeDiskUsage, budget });
     const diskUsageNote = budget.note(workspaces.length);
     res.json({ workspaces, ...(diskUsageNote && { diskUsageNote }) });
   } catch (err: any) {
     log.error(`Error listing workspaces: ${err.message}`);
     res.status(500).json({ error: "Failed to list workspaces", details: err.message });
+  }
+});
+
+// The verdict for one workspace — what the listing above deliberately does not
+// carry, fetched at the moment something is about to be decided by it.
+workspacesRouter.get("/:id/removability", (req, res) => {
+  // #swagger.tags = ['Workspaces']
+  // #swagger.summary = 'Evaluate one workspace for removal'
+  // #swagger.description = 'Evaluate whether archiving this one workspace would quarantine its worktree, and every reason it would not. Pure inspection: it reads the registry, the filesystem and git, and writes nothing — it does not archive, prune, or remove. Costs roughly five synchronous git subprocesses, which is exactly why the listing does not do it per record. THE VERDICT IS AN AFFORDANCE, NOT A GATE: POST /:id/archive re-evaluates removability itself on every call and acts only on its own answer, so a verdict fetched here can go stale (a file written into the worktree in between) without that ever being able to cause a removal that should not have happened. There is no way to hand a verdict back to the archive.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Workspace ID' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure this workspace with du -sk. Off by default; a caller that already listed has the memoised measurement.' } */
+  /* #swagger.responses[200] = { description: "The workspace, with its removability verdict and observed directory state" } */
+  /* #swagger.responses[404] = { description: "Workspace not found" } */
+  try {
+    const workspace = getWorkspaceWithRemovability(req.params.id, { includeDiskUsage: req.query.includeDiskUsage === "true" });
+    if (!workspace) return res.status(404).json({ error: "Workspace not found" });
+    res.json({ workspace });
+  } catch (err: any) {
+    log.error(`Error evaluating workspace ${req.params.id}: ${err.message}`);
+    res.status(500).json({ error: "Failed to evaluate workspace", details: err.message });
   }
 });
 
@@ -138,10 +169,15 @@ workspacesRouter.post("/:id/rename", (req, res) => {
 
 // Archive a workspace: cascade to its chats, then quarantine the worktree if —
 // and only if — it is owned, token-verified, unreferenced, idle and clean.
+//
+// The id in the path is the whole input. Nothing in the body is read, and in
+// particular no removability verdict is accepted: the gate is re-evaluated here
+// from the record and the filesystem, so a client that fetched an optimistic
+// verdict — or invented one — changes nothing about what this does.
 workspacesRouter.post("/:id/archive", async (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'Archive a workspace'
-  // #swagger.description = 'Interrupt and archive the chats of the workspace, mark the workspace archived, and quarantine its git worktree only when Callboard created it, its identity token verifies, no other active workspace shares the directory, no session is running in it, it has no submodules, and it is clean (no uncommitted changes, no untracked files, no commits that exist nowhere else). Quarantine moves the directory to ~/.callboard/trash (ignored files included, nothing deleted) and prunes the worktree registration; restore with "git worktree add <path> <branch>" plus copying back untracked files. A worktree is never force-removed; refusals are returned as blockers.'
+  // #swagger.description = 'Interrupt and archive the chats of the workspace, mark the workspace archived, and quarantine its git worktree only when Callboard created it, its identity token verifies, no other active workspace shares the directory, no session is running in it, it has no submodules, and it is clean (no uncommitted changes, no untracked files, no commits that exist nowhere else). Every one of those gates is evaluated HERE, server-side, from the record — the endpoint takes an id and nothing else, and a removability verdict fetched from GET /:id/removability is a UI affordance that this call neither reads nor trusts. Quarantine moves the directory to ~/.callboard/trash (ignored files included, nothing deleted) and prunes the worktree registration; restore with "git worktree add <path> <branch>" plus copying back untracked files. A worktree is never force-removed; refusals are returned as blockers.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Workspace ID' } */
   /* #swagger.responses[200] = { description: "Archive result, including whether the worktree was removed and why not" } */
   /* #swagger.responses[404] = { description: "Workspace not found" } */

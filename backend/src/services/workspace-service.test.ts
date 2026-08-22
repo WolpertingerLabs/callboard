@@ -20,21 +20,53 @@
  * is set before any of the modules are imported (hence the top-level dynamic
  * imports).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative as relativePath } from "node:path";
 
+/**
+ * Real git, counted.
+ *
+ * Every wrapper below spawns a `git` subprocess, and the cost of a listing is
+ * measured in exactly those. The mock is a pass-through — the behaviour under
+ * test is still real git against real worktrees — and exists only so a test can
+ * assert that the cheap listing spawns *none* of them. A timing assertion would
+ * be the flaky way to make the same claim.
+ */
+vi.mock("../utils/git.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils/git.js")>();
+  return {
+    ...actual,
+    checkWorktreeClean: vi.fn(actual.checkWorktreeClean),
+    listIgnoredEntries: vi.fn(actual.listIgnoredEntries),
+    worktreeContainsSubmodules: vi.fn(actual.worktreeContainsSubmodules),
+    resolveRepoCommonRoot: vi.fn(actual.resolveRepoCommonRoot),
+  };
+});
+
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-service-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
-const { checkWorktreeClean } = await import("../utils/git.js");
+const gitUtils = await import("../utils/git.js");
+const { checkWorktreeClean } = gitUtils;
+/** The four wrappers that spawn `git`, as spies. */
+const gitSpies = [gitUtils.checkWorktreeClean, gitUtils.listIgnoredEntries, gitUtils.worktreeContainsSubmodules, gitUtils.resolveRepoCommonRoot].map((fn) =>
+  vi.mocked(fn),
+);
 const { WORKTREE_TOKEN_FILE, readWorktreeToken, worktreeTokenPath } = await import("../utils/worktree-token.js");
 const { TRASH_MANIFEST_FILE } = await import("../utils/worktree-trash.js");
 const { directoryDiskUsageCached, newDiskUsageBudget } = await import("../utils/disk-usage.js");
 const { createWorkspace, getWorkspace, listWorkspaces, recordWorktreeWorkspace } = await import("./workspace-store.js");
-const { archiveWorkspace, describeWorkspaceDirectory, evaluateWorktreeRemoval, listWorkspacesWithRemovability } = await import("./workspace-service.js");
+const {
+  archiveWorkspace,
+  describeWorkspaceDirectory,
+  evaluateWorktreeRemoval,
+  getWorkspaceWithRemovability,
+  listWorkspaceEntries,
+  listWorkspacesWithRemovability,
+} = await import("./workspace-service.js");
 const { chatFileService } = await import("./chat-file-service.js");
 const { sessionRegistry } = await import("./session-registry.js");
 
@@ -889,6 +921,128 @@ describe("listWorkspacesWithRemovability", () => {
 
     git(["worktree", "remove", cwd], repoDir);
     git(["worktree", "remove", join(gitRoot, "repo.ctx-solo")], repoDir);
+  });
+});
+
+// ── The cheap listing, and the verdict on demand ────────────────────
+//
+// A verdict is ~5 sequential git subprocesses and all of them are synchronous.
+// At 65 active records `GET /api/workspaces?includeDiskUsage=true` took 1.6s and
+// a trivial `GET /api/auth/status` fired 150ms into it took 1.53s — the express
+// thread was simply gone, and SSE and chat input went with it. So the listing
+// stopped producing verdicts, and the click that needs one asks for one.
+//
+// The claim being defended here is not "faster". It is **zero**: a listing must
+// spawn no git at all, or the freeze comes back the moment the record count
+// does.
+
+describe("listWorkspaceEntries", () => {
+  it("describes every workspace without spawning a single git subprocess", () => {
+    const { workspace, cwd } = ownedWorktree("cheap/one");
+    const { workspace: other, cwd: otherCwd } = ownedWorktree("cheap/two");
+    chatFileService.createChat(cwd, "sess-cheap", "{}", workspace.id);
+    for (const spy of gitSpies) spy.mockClear();
+
+    const listed = listWorkspaceEntries({ status: "active" });
+    const byId = new Map(listed.map((w) => [w.id, w]));
+
+    // The rows still say everything a list needs: which directory, what state
+    // it is in, and how much would be interrupted.
+    expect(byId.get(workspace.id)!.directory.state).toBe("present");
+    expect(byId.get(workspace.id)!.chatCount).toBe(1);
+    expect(byId.get(other.id)!.chatCount).toBe(0);
+    // ...and no verdict, because nobody asked for one.
+    expect((byId.get(workspace.id) as any).removability).toBeUndefined();
+    // The whole point. `checkWorktreeClean` alone is three of them.
+    for (const spy of gitSpies) expect(spy).not.toHaveBeenCalled();
+
+    git(["worktree", "remove", cwd], repoDir);
+    git(["worktree", "remove", otherCwd], repoDir);
+  });
+
+  it("still measures disk usage when asked, under the same shared budget", () => {
+    const { cwd } = ownedWorktree("cheap/budget");
+    const budget = newDiskUsageBudget({ budgetMs: 0 });
+
+    const listed = listWorkspaceEntries({ status: "active" }, { includeDiskUsage: true, budget });
+
+    expect(listed.length).toBeGreaterThan(0);
+    for (const entry of listed) {
+      if (entry.directory.state === "missing") continue;
+      expect(entry.diskUsage?.bytes).toBeUndefined();
+      expect(entry.diskUsage?.error).toContain("budget");
+    }
+    expect(budget.note(listed.length)).toContain("budget");
+
+    git(["worktree", "remove", cwd], repoDir);
+  });
+});
+
+describe("getWorkspaceWithRemovability", () => {
+  it("gives one record the same verdict a full listing would, and touches nothing", () => {
+    const { workspace: clean, cwd: cleanCwd } = ownedWorktree("one/clean");
+    const { workspace: dirty, cwd: dirtyCwd } = ownedWorktree("one/dirty");
+    writeFileSync(join(dirtyCwd, "wip.txt"), "in progress\n");
+    // Gitignored, so the cleanliness check cannot see it — and so the archive
+    // confirmation is the only place a user ever finds out it is about to move.
+    writeFileSync(join(cleanCwd, ".env"), "SECRET=1\n");
+
+    const evaluated = getWorkspaceWithRemovability(clean.id)!;
+    expect(evaluated.removability).toEqual(evaluateWorktreeRemoval(getWorkspace(clean.id)!));
+    expect(evaluated.removability.removable).toBe(true);
+    // The preview that is the entire reason the archive confirmation exists.
+    expect(evaluated.removability.ignored!.entries).toContain(".env");
+    // The row fields travel with it, so a confirmation is not missing half its
+    // sentence — but `du` is not run, because a click is not the place for it.
+    expect(evaluated.directory.state).toBe("present");
+    expect(evaluated.chatCount).toBe(0);
+    expect(evaluated.diskUsage).toBeUndefined();
+
+    const refused = getWorkspaceWithRemovability(dirty.id)!;
+    expect(blockerCodes(refused.removability.blockers)).toEqual(["untracked-files"]);
+
+    // Inspection only: both directories are exactly where they were.
+    expect(existsSync(cleanCwd)).toBe(true);
+    expect(existsSync(dirtyCwd)).toBe(true);
+    expect(trashEntries()).toEqual([]);
+    expect(getWorkspace(clean.id)!.status).toBe("active");
+
+    rmSync(join(dirtyCwd, "wip.txt"));
+    git(["worktree", "remove", cleanCwd], repoDir);
+    git(["worktree", "remove", dirtyCwd], repoDir);
+  });
+
+  it("returns null for an id that names no record", () => {
+    expect(getWorkspaceWithRemovability("ws-does-not-exist")).toBeNull();
+  });
+
+  /**
+   * The safety property, stated as a test rather than as a comment.
+   *
+   * The verdict moved to a separate call so a listing could stop paying for it.
+   * That is only affordable because the verdict was never the gate: the archive
+   * re-evaluates from the record every time. So a *stale* optimistic verdict —
+   * fetched while the worktree was clean, acted on after work landed in it —
+   * must still refuse, and the directory must still be there afterwards.
+   */
+  it("does not let a verdict fetched before the worktree got dirty remove it", async () => {
+    const { workspace, cwd } = ownedWorktree("one/stale");
+
+    const verdict = getWorkspaceWithRemovability(workspace.id)!;
+    expect(verdict.removability.removable).toBe(true);
+
+    // The window between the confirmation opening and the click landing.
+    writeFileSync(join(cwd, "written-after-the-verdict.txt"), "work\n");
+
+    const result = (await archiveWorkspace(workspace.id))!;
+    expect(result.worktree.disposition).toBe("kept");
+    expect(result.worktree.removed).toBe(false);
+    expect(blockerCodes(result.worktree.blockers)).toEqual(["untracked-files"]);
+    expect(existsSync(join(cwd, "written-after-the-verdict.txt"))).toBe(true);
+    expect(trashEntries()).toEqual([]);
+
+    rmSync(join(cwd, "written-after-the-verdict.txt"));
+    git(["worktree", "remove", cwd], repoDir);
   });
 });
 
