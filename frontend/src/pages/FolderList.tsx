@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { PanelLeftOpen, HardDrive, FolderGit2 } from "lucide-react";
 import { listFolders, type FolderSummary } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import SidebarHeader from "../components/SidebarHeader";
 import FolderListItem from "../components/FolderListItem";
 import NewChatPanel from "../components/NewChatPanel";
@@ -36,6 +37,67 @@ const AGE_OPTIONS = [
   { label: "30 days", value: 30 },
 ];
 
+/** Heartbeat while at least one session is live. Unchanged; only the fan-in around it is new. */
+const ACTIVE_POLL_MS = 15_000;
+
+/**
+ * How long the ambient triggers wait before turning into a request.
+ *
+ * 300ms is what the metadata trigger already used, and it is what sets the
+ * observable responsiveness of the sidebar after a status/title/summon change.
+ * What is new is that the session-count trigger and the heartbeat share the
+ * window, so triggers that land together produce one request instead of three.
+ */
+const REFRESH_DEBOUNCE_MS = 300;
+
+/**
+ * Granularity of the `now` the rows are given.
+ *
+ * `now` exists so the rows can format relative times without calling
+ * `Date.now()` in render. It was recomputed on every listing, so every poll
+ * handed all ~40 rows a new value and re-rendered them — for a listing that
+ * usually came back identical. The rows render minute-granular strings
+ * ("3m ago") and a 12-hour staleness cutoff, so a value that only moves every
+ * 30 seconds is indistinguishable on screen and holds still between polls.
+ */
+const NOW_QUANTUM_MS = 30_000;
+
+/** A fetch we abandoned is not a failure — it must not log, and must not blank the list. */
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+/**
+ * Carry forward the previous row object wherever the new listing says the same
+ * thing about that directory.
+ *
+ * The listing is polled and, the overwhelming majority of the time, identical
+ * to the last one — but it arrives as JSON, so every row is a fresh object and
+ * every array a fresh array. Without this, `React.memo` on the row can never
+ * hit, `repoCandidates` recomputes, and `now` moves. Comparing serialisations
+ * is safe here because both sides come from the same server serialiser, so key
+ * order is stable; ~40 small objects is nothing against a ~120ms uncached
+ * disk sweep.
+ *
+ * Returns `prev` itself when nothing at all changed, which is the case that
+ * matters: a no-op poll then re-renders nothing.
+ */
+function reuseUnchangedRows(prev: FolderSummary[], next: FolderSummary[]): FolderSummary[] {
+  if (prev.length === 0) return next;
+  const byPath = new Map(prev.map((folder) => [folder.folder, folder]));
+  let changed = prev.length !== next.length;
+  const merged = next.map((folder, index) => {
+    const previous = byPath.get(folder.folder);
+    if (previous && JSON.stringify(previous) === JSON.stringify(folder)) {
+      if (prev[index] !== previous) changed = true;
+      return previous;
+    }
+    changed = true;
+    return folder;
+  });
+  return changed ? merged : prev;
+}
+
 export default function FolderList({
   activeChatId,
   onRefresh,
@@ -59,18 +121,128 @@ export default function FolderList({
    */
   const [managerFocus, setManagerFocus] = useState<string | undefined>(undefined);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; folder: string }>({ isOpen: false, folder: "" });
-  const now = useMemo(() => Date.now(), [folders]);
+  /**
+   * The clock the rows format against, advanced when a listing lands.
+   *
+   * Was `useMemo(() => Date.now(), [folders])` — an impure read during render,
+   * and one that produced a new value on every poll whether or not anything
+   * had changed. Setting it where the response is handled makes it pure, and
+   * quantising it makes it hold still: it lands in the same batch as
+   * `setFolders`, so a poll that changes neither is still a single no-op
+   * render.
+   */
+  const [now, setNow] = useState(0);
 
-  const load = useCallback(async () => {
-    try {
-      const response = await listFolders(maxAgeDays, showSizes);
-      setFolders(response.folders);
-    } catch (err) {
-      console.error("Failed to load folders:", err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [maxAgeDays, showSizes]);
+  /**
+   * The single request in flight, if there is one.
+   *
+   * Held in a ref rather than state because nothing renders it and every
+   * trigger needs to see the current value synchronously — a trigger that read
+   * a render-old value would be exactly the duplicate this is here to stop.
+   */
+  const inFlightRef = useRef<{ controller: AbortController; promise: Promise<void> } | null>(null);
+
+  /**
+   * Fetch the listing, at most once at a time.
+   *
+   * `GET /api/chats/folders` is an uncached disk sweep — ~120ms of blocked
+   * event loop per call, against ~1ms for the cached chat list. Four
+   * independent triggers used to call this with no coordination at all, so a
+   * single metadata bump during an active session could put three overlapping
+   * sweeps on the wire and throw two of the answers away.
+   *
+   * Two rules, and which one applies is about *why* the caller is asking:
+   *
+   * - Ambient (`force` unset): the caller wants current data. A request
+   *   already in flight is going to produce exactly that, so ride it. This is
+   *   the dedupe.
+   * - Forced: the caller knows something the in-flight request does not — the
+   *   filter parameters just changed, or a write just landed. Its answer is
+   *   already wrong, so abort it and start again. This is what keeps
+   *   `WorkspaceManagerModal`'s `onChanged` a real invalidation instead of
+   *   something the dedupe quietly swallows.
+   */
+  const load = useCallback(
+    (options?: { force?: boolean }): Promise<void> => {
+      const current = inFlightRef.current;
+      if (current) {
+        if (!options?.force) return current.promise;
+        current.controller.abort();
+      }
+
+      const controller = new AbortController();
+      const entry: { controller: AbortController; promise: Promise<void> } = { controller, promise: Promise.resolve() };
+      // Assigned before the fetch is started so that a synchronous rejection
+      // still finds the entry it needs to clear.
+      inFlightRef.current = entry;
+      const settle = () => {
+        if (inFlightRef.current === entry) inFlightRef.current = null;
+      };
+
+      entry.promise = listFolders(maxAgeDays, showSizes, controller.signal).then(
+        (response) => {
+          settle();
+          // A superseding load owns the list and the spinner now.
+          if (controller.signal.aborted) return;
+          setFolders((prev) => reuseUnchangedRows(prev, response.folders));
+          setNow((prev) => {
+            const quantised = Math.floor(Date.now() / NOW_QUANTUM_MS) * NOW_QUANTUM_MS;
+            return quantised === prev ? prev : quantised;
+          });
+          setIsLoading(false);
+        },
+        (err: unknown) => {
+          settle();
+          // Abandoned on purpose: no console noise, and the list keeps showing
+          // what it was showing until the request that replaced this one lands.
+          if (isAbortError(err) || controller.signal.aborted) return;
+          console.error("Failed to load folders:", err);
+          setIsLoading(false);
+        },
+      );
+      return entry.promise;
+    },
+    [maxAgeDays, showSizes],
+  );
+
+  /**
+   * Post-write invalidation, and the manual refresh the parent holds. Always
+   * forced: the caller has just changed something the server has not been
+   * asked about yet.
+   */
+  const forceRefresh = useCallback(() => {
+    void load({ force: true });
+  }, [load]);
+
+  /**
+   * Every ambient trigger goes through here, so triggers that arrive together
+   * cost one request.
+   *
+   * This is a trailing-only debounce with no maximum wait, so in principle a
+   * trigger stream faster than one per 300ms would reset the timer forever and
+   * the sidebar would stop refreshing entirely. That is unreachable here, and
+   * the reason lives in another file, so: `SessionContext` drives every ambient
+   * trigger from a fixed `setInterval(poll, POLL_INTERVAL_MS)` — 1s,
+   * `SessionContext.tsx:163` — and it is an interval rather than a
+   * subscription, so no amount of server activity makes it fire faster. React
+   * batches one poll response into one effect run, which keeps the trigger rate
+   * at ~1Hz even when the response changes several things at once.
+   *
+   * The starvation itself is real, just out of reach: driven at 100ms for 10s,
+   * this produces zero requests — including the heartbeat, which rides the same
+   * debounce. At the real 1Hz every trigger gets its own request.
+   *
+   * If that interval ever becomes adaptive or event-driven, this needs a
+   * maximum wait. Do not add one pre-emptively: `useDebouncedCallback` is
+   * shared with other callers, and today this is a comment-shaped problem
+   * rather than a code-shaped one.
+   */
+  const requestRefresh = useDebouncedCallback(
+    useCallback(() => {
+      void load();
+    }, [load]),
+    REFRESH_DEBOUNCE_MS,
+  );
 
   /**
    * Repositories the manager's unmanaged scan can be pointed at.
@@ -89,34 +261,51 @@ export default function FolderList({
     return [...repos].sort();
   }, [folders]);
 
+  /**
+   * Mount, and any change to the filter parameters.
+   *
+   * Not debounced: both cases are a user staring at a spinner, and both must
+   * supersede rather than ride — a request for the previous `maxAgeDays` would
+   * answer the previous question. `load`'s identity changes with exactly those
+   * two parameters, so this effect fires on exactly those two occasions.
+   */
   useEffect(() => {
-    load();
+    void load({ force: true });
   }, [load]);
 
   // Register refresh callback
   useEffect(() => {
-    onRefresh(load);
-  }, [onRefresh, load]);
+    onRefresh(forceRefresh);
+  }, [onRefresh, forceRefresh]);
 
-  // Periodic refresh when sessions are active
+  /**
+   * The ambient triggers: how many sessions are live, and the metadata counter
+   * the 1s session poll bumps on any status/title/summon change.
+   *
+   * They used to be two effects with two timers, neither aware of the other or
+   * of the heartbeat below. They now share one debounce window, and the first
+   * run is skipped because the effect above has already fetched.
+   */
+  const ambientTriggersSeen = useRef(false);
+  useEffect(() => {
+    if (!ambientTriggersSeen.current) {
+      ambientTriggersSeen.current = true;
+      return;
+    }
+    requestRefresh();
+  }, [requestRefresh, activeSessions.size, metadataVersion]);
+
+  // Heartbeat while sessions are active. Still 15s, and still nothing at all
+  // when nothing is running; it just lands in the same debounce window as
+  // anything else that happens to be due.
   useEffect(() => {
     if (activeSessions.size === 0) return;
-    const interval = setInterval(load, 15_000);
+    const interval = setInterval(requestRefresh, ACTIVE_POLL_MS);
     return () => clearInterval(interval);
-  }, [activeSessions.size, load]);
+  }, [activeSessions.size, requestRefresh]);
 
-  // Refresh when sessions change
-  useEffect(() => {
-    const timer = setTimeout(load, 500);
-    return () => clearTimeout(timer);
-  }, [activeSessions.size, load]);
-
-  // Refetch when chat metadata changes (status, summon, title) via SSE
-  useEffect(() => {
-    if (metadataVersion === 0) return;
-    const timer = setTimeout(() => load(), 300);
-    return () => clearTimeout(timer);
-  }, [metadataVersion, load]);
+  // Nothing in flight should outlive the view.
+  useEffect(() => () => inFlightRef.current?.controller.abort(), []);
 
   const handleMaxAgeChange = (days: number) => {
     setMaxAgeDays(days);
@@ -130,15 +319,38 @@ export default function FolderList({
     setIsLoading(true);
   };
 
-  const handleNewChat = (folder: FolderSummary) => {
-    if (folder.status === "waiting") {
-      setConfirmModal({ isOpen: true, folder: folder.folder });
-    } else {
-      navigate(`/chat/new?folder=${encodeURIComponent(folder.folder)}`, {
-        state: { defaultPermissions: getDefaultPermissions() },
-      });
-    }
-  };
+  /*
+    The row's three callbacks, hoisted and stabilised.
+
+    They were inline arrows closed over `folder`, which meant a new function
+    identity per row per render — enough on its own to defeat the `React.memo`
+    the row now carries. The row hands its own folder back instead, so one
+    function serves every row and survives every poll.
+  */
+  const handleOpenFolder = useCallback(
+    (folder: FolderSummary) => {
+      navigate(`/chat/${folder.mostRecentChatId}`);
+    },
+    [navigate],
+  );
+
+  const handleNewChat = useCallback(
+    (folder: FolderSummary) => {
+      if (folder.status === "waiting") {
+        setConfirmModal({ isOpen: true, folder: folder.folder });
+      } else {
+        navigate(`/chat/new?folder=${encodeURIComponent(folder.folder)}`, {
+          state: { defaultPermissions: getDefaultPermissions() },
+        });
+      }
+    },
+    [navigate],
+  );
+
+  const handleManageWorkspaces = useCallback((folder: FolderSummary) => {
+    setManagerFocus(folder.folder);
+    setShowManager(true);
+  }, []);
 
   // Collapsed sidebar state
   if (sidebarCollapsed) {
@@ -283,13 +495,10 @@ export default function FolderList({
               key={folder.folder}
               folder={folder}
               isActive={activeChatId === folder.mostRecentChatId}
-              onClick={() => navigate(`/chat/${folder.mostRecentChatId}`)}
-              onNewChat={() => handleNewChat(folder)}
+              onClick={handleOpenFolder}
+              onNewChat={handleNewChat}
               now={now}
-              onManageWorkspaces={() => {
-                setManagerFocus(folder.folder);
-                setShowManager(true);
-              }}
+              onManageWorkspaces={handleManageWorkspaces}
             />
           ))
         )}
@@ -317,7 +526,9 @@ export default function FolderList({
           repoCandidates={repoCandidates}
           focusCwd={managerFocus}
           onClose={() => setShowManager(false)}
-          onChanged={load}
+          // Forced, not debounced: adopt/archive/rename have already written,
+          // so any request in flight is answering from before the write.
+          onChanged={forceRefresh}
         />
       )}
     </div>

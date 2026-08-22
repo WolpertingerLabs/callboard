@@ -265,12 +265,18 @@ export async function listChats(
   return res.json();
 }
 
-export async function listFolders(maxAgeDays?: number, includeDiskUsage?: boolean): Promise<FolderListResponse> {
+/**
+ * `signal` is optional and trailing, so existing callers are unaffected. The
+ * sidebar passes one because this listing is polled and uncached on the server
+ * — a request whose answer is already superseded should stop occupying the
+ * connection rather than run to completion and be thrown away.
+ */
+export async function listFolders(maxAgeDays?: number, includeDiskUsage?: boolean, signal?: AbortSignal): Promise<FolderListResponse> {
   const params = new URLSearchParams();
   if (maxAgeDays !== undefined) params.append("maxAgeDays", maxAgeDays.toString());
   // Off unless asked: `du` is the slow part and this endpoint is polled.
   if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  const res = await fetch(`${BASE}/chats/folders${params.toString() ? `?${params}` : ""}`);
+  const res = await fetch(`${BASE}/chats/folders${params.toString() ? `?${params}` : ""}`, { signal });
   await assertOk(res, "Failed to list folders");
   return res.json();
 }
