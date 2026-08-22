@@ -217,7 +217,14 @@ chatsRouter.get("/folders", (req, res) => {
       workspaces,
       directoryExists: (folder) => existsSync(folder),
       chatMetadata: (sessionId) => {
-        const storedChat = chatFileService.getChat(sessionId);
+        // Session id straight from discovery, so this is the direct-filename
+        // read with no fallback scan. This bounds a spike rather than saving
+        // steady-state work: rows whose newest chat has a record cost the same
+        // either way, but one started from a terminal `claude` used to make
+        // getChat readdir + parse the whole chats directory (~88 ms) to prove
+        // the record is absent — once per such row, on a route the sidebar
+        // polls every 15 seconds.
+        const storedChat = chatFileService.getChatBySessionId(sessionId);
         return storedChat ? JSON.parse(storedChat.metadata || "{}") : {};
       },
       isOngoing: (sessionId) => sessionRegistry.has(sessionId),

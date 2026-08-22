@@ -195,7 +195,28 @@ function loadChatMetadata(sessionId: string): {
   lastBranch: string | null;
 } {
   try {
-    const chat = chatFileService.getChat(sessionId);
+    // sessionId is a JSONL filename from listSessionFiles, so the record — if
+    // there is one — is at `<sessionId>.json`. This runs once per *candidate
+    // session*, unbounded, not once per rendered row: of 1,864 discovered
+    // sessions on a real machine 354 have no record, and the worst project dir
+    // holds 164 untracked sessions. At ~88 ms per futile scan that search was
+    // paying ~14 s of readdir + parse to learn nothing.
+    //
+    // Accepted divergence: a session whose id was superseded mid-run
+    // (claude.ts:2151 refiles the record under the new session id and leaves
+    // `chat.id` as the old one) still has a transcript on disk, so it surfaces
+    // here as a candidate, and the scan used to resolve its metadata. It now
+    // reports agentAlias/triggered/lastBranch as null, which changes what an
+    // agentAlias or triggered filter returns for that one stale row.
+    //
+    // Not guarded, deliberately. A fallback to getChat on a miss would restore
+    // the entire 14 s — the miss *is* the common case. The damage is bounded:
+    // the record is still reachable under its current session id, so the live
+    // row comes back complete and only the superseded duplicate is degraded.
+    // And the shape is unexercised — 0 of 8,039 records have `id !==
+    // session_id` or more than one entry in `session_ids`. If that stops being
+    // true, the fix is an id index, not a per-lookup scan.
+    const chat = chatFileService.getChatBySessionId(sessionId);
     if (!chat) return { chatId: null, agentAlias: null, triggered: false, lastBranch: null };
 
     const meta = JSON.parse(chat.metadata || "{}");
