@@ -214,7 +214,29 @@ export default function FolderList({
     void load({ force: true });
   }, [load]);
 
-  /** Every ambient trigger goes through here, so triggers that arrive together cost one request. */
+  /**
+   * Every ambient trigger goes through here, so triggers that arrive together
+   * cost one request.
+   *
+   * This is a trailing-only debounce with no maximum wait, so in principle a
+   * trigger stream faster than one per 300ms would reset the timer forever and
+   * the sidebar would stop refreshing entirely. That is unreachable here, and
+   * the reason lives in another file, so: `SessionContext` drives every ambient
+   * trigger from a fixed `setInterval(poll, POLL_INTERVAL_MS)` — 1s,
+   * `SessionContext.tsx:163` — and it is an interval rather than a
+   * subscription, so no amount of server activity makes it fire faster. React
+   * batches one poll response into one effect run, which keeps the trigger rate
+   * at ~1Hz even when the response changes several things at once.
+   *
+   * The starvation itself is real, just out of reach: driven at 100ms for 10s,
+   * this produces zero requests — including the heartbeat, which rides the same
+   * debounce. At the real 1Hz every trigger gets its own request.
+   *
+   * If that interval ever becomes adaptive or event-driven, this needs a
+   * maximum wait. Do not add one pre-emptively: `useDebouncedCallback` is
+   * shared with other callers, and today this is a comment-shaped problem
+   * rather than a code-shaped one.
+   */
   const requestRefresh = useDebouncedCallback(
     useCallback(() => {
       void load();

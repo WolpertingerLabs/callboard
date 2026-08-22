@@ -60,6 +60,37 @@ vi.mock("../components/WorkspaceManagerModal", () => ({
 vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));
 
+/**
+ * The render probe, and why it is a leaf rather than the row itself.
+ *
+ * `FolderListItem` is memoised, so the question these tests ask is "did the
+ * row re-render?" — and the only honest place to count that from is *inside*
+ * the memo boundary. A counter wrapped around the row would sit outside it and
+ * tick on every parent render regardless; re-memoising the wrapper would only
+ * test the wrapper's own `memo`, so deleting `memo` from the product would
+ * still pass.
+ *
+ * Every row renders exactly one `<ProviderBadge>`, unconditionally, so its
+ * render count *is* the row's. Deliberately not memoised here, so it renders
+ * exactly when the row containing it does. Each test asserts a non-zero
+ * baseline first, which keeps the probe honest: if the row ever stops
+ * rendering a badge, the baseline fails loudly instead of the later
+ * `toBe(0)` passing for the wrong reason.
+ *
+ * What this replaced: `expect(screen.getByText(name)).toBe(firstRow)`. That
+ * asserted DOM node identity, which React preserves through reconciliation
+ * whenever type and key match — so it passed whether or not the row
+ * re-rendered, and every one of memo / reuseUnchangedRows / hoisted callbacks
+ * / quantised `now` could be deleted with the suite still green.
+ */
+const rowRenders = { count: 0 };
+vi.mock("../components/ProviderBadge", () => ({
+  default: () => {
+    rowRenders.count += 1;
+    return <span data-testid="provider-badge" />;
+  },
+}));
+
 const mockListFolders = vi.mocked(listFolders);
 
 function makeFolder(overrides: Partial<FolderSummary> = {}): FolderSummary {
@@ -140,7 +171,19 @@ function renderSidebar() {
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  // Pinned to a whole minute, which is a multiple of the 30s quantum the rows'
+  // `now` is rounded to. Without this the clock starts wherever the wall clock
+  // happens to be, and a test that advances across a quantum boundary would
+  // see `now` change and one extra row render — passing or failing by the time
+  // of day it ran.
+  vi.setSystemTime(Date.parse("2026-08-20T12:00:00.000Z"));
   mockListFolders.mockReset();
+  // `maxAgeDays` and `showSizes` persist. Without clearing, a test that sets
+  // the filter to 1 day leaves it there, and the next test to select "1 day"
+  // gets no `change` event at all (the value is already 1) — which surfaces as
+  // a stuck spinner that reads like a product bug.
+  localStorage.clear();
+  rowRenders.count = 0;
   sessionState.activeSessions = new Map();
   sessionState.metadataVersion = 0;
 });
@@ -317,6 +360,11 @@ describe("a request that is about to be wrong", () => {
 
     expect(mockListFolders).toHaveBeenCalledTimes(2);
     expect(mockListFolders.mock.calls[1][0]).toBe(1);
+    // The 30-day request was actually aborted, not merely left to finish and
+    // have its answer discarded. Asserted on the signal the mock was handed,
+    // because that is the only thing that proves the signal is being passed at
+    // all — drop the third argument at the call site and this is `undefined`.
+    expect(mockListFolders.mock.calls[0][2]?.aborted).toBe(true);
     expect(await screen.findByText("one-day-window")).toBeTruthy();
   });
 
@@ -356,7 +404,11 @@ describe("a request that is about to be wrong", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
 
-    // The superseded request has rejected with AbortError by now.
+    // The superseded request was aborted and has rejected with AbortError.
+    // Without this line the test is vacuous: with no signal reaching the mock,
+    // the superseded deferred simply never settles, nothing is ever thrown,
+    // and "logs nothing" is true for the wrong reason.
+    expect(mockListFolders.mock.calls[1][2]?.aborted).toBe(true);
     expect(consoleError).not.toHaveBeenCalled();
     expect(screen.getByText("still-here")).toBeTruthy();
 
@@ -379,39 +431,60 @@ describe("a request that is about to be wrong", () => {
   });
 });
 
+/**
+ * The rows must not re-render when the listing says nothing new.
+ *
+ * Four separate mechanisms have to hold for that, and any one of them removed
+ * puts all the renders back: `memo` on the row, `reuseUnchangedRows` carrying
+ * unchanged row objects forward across a JSON round-trip, the per-row
+ * callbacks being hoisted rather than inline arrows, and `now` being
+ * quantised. None of them is individually visible on screen, which is exactly
+ * why they need counting rather than eyeballing — a "simplification" of any
+ * one of them looks like dead-code removal at review time.
+ */
 describe("a poll that changes nothing", () => {
-  /**
-   * The row is memoised, but the listing arrives as JSON — every row is a new
-   * object every poll, so shallow comparison would never hit. The page carries
-   * unchanged rows forward, which is what makes the memo real; this asserts
-   * the identity, because that is the whole mechanism.
-   */
-  it("hands the rows back the objects they already had", async () => {
-    const payload = () => response([makeFolder(), makeFolder({ folder: "/home/cybil/other", displayName: "other" })]);
-    mockListFolders.mockImplementation(async () => JSON.parse(JSON.stringify(payload())) as FolderListResponse);
+  /** Two rows, re-serialised each call the way a real response is. */
+  function servePayload(rows: FolderSummary[]) {
+    mockListFolders.mockImplementation(async () => JSON.parse(JSON.stringify(response(rows))) as FolderListResponse);
+  }
+
+  it("re-renders no rows at all across three no-op polls", async () => {
+    const rows = [makeFolder(), makeFolder({ folder: "/home/cybil/other", displayName: "other" })];
+    servePayload(rows);
 
     const { bumpMetadata } = renderSidebar();
     await settle();
-    const firstRow = screen.getByText("callboard.feat-x");
+    // Baseline: the probe is live and both rows rendered once.
+    expect(rowRenders.count).toBe(2);
 
-    await bumpMetadata();
-    await settle();
-    expect(mockListFolders).toHaveBeenCalledTimes(2);
-    // Same DOM node: React never re-rendered the row, because the props it
-    // was given compared equal.
-    expect(screen.getByText("callboard.feat-x")).toBe(firstRow);
+    rowRenders.count = 0;
+    for (let i = 0; i < 3; i++) {
+      await bumpMetadata();
+      await settle();
+    }
+
+    // Three polls actually happened — this is not passing because nothing ran.
+    expect(mockListFolders).toHaveBeenCalledTimes(4);
+    expect(rowRenders.count).toBe(0);
   });
 
-  it("still re-renders the row when the listing actually changes", async () => {
-    mockListFolders.mockResolvedValueOnce(response([makeFolder({ chatTitle: "before" })]));
-    mockListFolders.mockResolvedValue(response([makeFolder({ chatTitle: "after" })]));
+  it("re-renders exactly the one row that changed", async () => {
+    const unchanged = makeFolder();
+    const changing = makeFolder({ folder: "/home/cybil/other", displayName: "other" });
+    const rows = [unchanged, changing];
+    servePayload(rows);
 
     const { bumpMetadata } = renderSidebar();
     await settle();
-    expect(screen.getByText("before")).toBeTruthy();
+    expect(rowRenders.count).toBe(2);
 
+    rowRenders.count = 0;
+    changing.chatTitle = "now with a title";
     await bumpMetadata();
     await settle();
-    expect(await screen.findByText("after")).toBeTruthy();
+
+    // One of two, and the visible title says which — the row whose data moved.
+    expect(rowRenders.count).toBe(1);
+    expect(screen.getByText("now with a title")).toBeTruthy();
   });
 });
