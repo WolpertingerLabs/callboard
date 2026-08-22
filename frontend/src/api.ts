@@ -77,6 +77,7 @@ import type {
   WorkspaceEntry,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
+  WorkspaceVerdictListResponse,
   WorkspaceRemovabilityResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
@@ -190,6 +191,7 @@ export type {
   WorkspaceEntry,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
+  WorkspaceVerdictListResponse,
   WorkspaceRemovabilityResponse,
   WorkspaceRemovalBlocker,
   WorkspaceCleanliness,
@@ -2093,16 +2095,46 @@ export function retryJobStep(runId: string): Promise<JobRun> {
  * records — every other request, SSE included, waited behind it. Ask
  * {@link fetchWorkspaceRemovability} for the one record a user is acting on.
  *
- * `includeRemovability=false` is sent **explicitly**, and has to be. The route
- * defaults it to *true*, because a browser tab still running a bundle from
- * before this call existed reads `removability` unconditionally and takes the
- * whole app down with it when the field is absent. That default is a temporary
- * shim for those tabs and will flip; this caller must not rely on it either way,
- * so it states what it wants. Removing this parameter silently restores the
- * 1.6s listing.
+ * `includeRemovability=false` is sent explicitly — see {@link workspaceListing}
+ * for why neither caller may rely on the route's default. The verdict-bearing
+ * variant is {@link listWorkspacesWithVerdicts}, and it is not a substitute for
+ * this: nothing automatic may call it.
  */
 export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceListResponse> {
-  const params = new URLSearchParams({ includeRemovability: "false" });
+  return workspaceListing(status, includeDiskUsage, false);
+}
+
+/**
+ * The same listing, with a removal verdict on every entry — **the expensive one**.
+ *
+ * Roughly five synchronous git subprocesses per record, so ~150 of them on a
+ * real registry and 1.5–3s in which the daemon serves nobody. That is the whole
+ * cost this PR exists to take off the automatic paths, so it lives behind its
+ * own name rather than a boolean argument to {@link listWorkspaces}: a call site
+ * has to say what it is doing, and there is exactly one — the "Check all" button
+ * a user presses on purpose.
+ *
+ * **Never call this on mount, on a tab switch, on a timer, or after a mutation.**
+ * The answer it returns is a point in time and the UI has to render it as one;
+ * it is decoration for scanning a list, and never what an action is gated on.
+ * The archive confirmation re-fetches a single fresh verdict regardless of
+ * whether this has ever run — see {@link fetchWorkspaceRemovability}.
+ */
+export async function listWorkspacesWithVerdicts(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceVerdictListResponse> {
+  return workspaceListing(status, includeDiskUsage, true) as Promise<WorkspaceVerdictListResponse>;
+}
+
+async function workspaceListing(
+  status: "active" | "archived" | undefined,
+  includeDiskUsage: boolean | undefined,
+  includeRemovability: boolean,
+): Promise<WorkspaceListResponse> {
+  // Sent explicitly in both directions, never omitted. The route defaults it to
+  // *true* for browser tabs running a bundle from before the verdict was
+  // splittable — they read the field unconditionally and take the whole app down
+  // without it — and that default is a temporary shim which will flip. A caller
+  // that relied on it would silently change behaviour on the day it does.
+  const params = new URLSearchParams({ includeRemovability: String(includeRemovability) });
   if (status) params.append("status", status);
   if (includeDiskUsage) params.append("includeDiskUsage", "true");
   const res = await fetch(`${BASE}/workspaces?${params}`);

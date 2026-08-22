@@ -312,6 +312,22 @@ export interface WorkspaceListResponse {
   diskUsageNote?: string;
 }
 
+/**
+ * `GET /api/workspaces?includeRemovability=true` — the same listing with a
+ * verdict on every entry.
+ *
+ * A separate type from {@link WorkspaceListResponse} so that a caller which has
+ * paid for the verdicts can read them without a cast, and — more to the point —
+ * so that one which has not, cannot. The cost is stated on
+ * {@link WorkspaceWithRemovability}: this is the response that holds the daemon
+ * for seconds, and nothing should reach for this type without a user having
+ * asked for it in as many words.
+ */
+export interface WorkspaceVerdictListResponse {
+  workspaces: WorkspaceWithRemovability[];
+  diskUsageNote?: string;
+}
+
 /** `GET /api/workspaces/:id/removability` — one workspace, freshly evaluated. */
 export interface WorkspaceRemovabilityResponse {
   workspace: WorkspaceWithRemovability;
