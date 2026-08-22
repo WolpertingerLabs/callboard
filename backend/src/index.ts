@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
-import { execSync, spawn } from "child_process";
+import { execFile, spawn } from "child_process";
+import { promisify } from "node:util";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import express from "express";
 import path from "path";
@@ -12,7 +13,8 @@ const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // Load .env: ~/.callboard/.env is the base config, then the project-root .env
 // overrides it. This lets local dev runs use a local .env to override
 // the global ~/.callboard config (e.g. different ports, passwords, log levels).
-import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName, getClaudeBinaryPath } from "./utils/paths.js";
+import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName, isValidIgnoredPrefix } from "./utils/paths.js";
+import { resolveClaudeBinary } from "./services/claude-binary.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
 migrateDrawlatchDirs();
@@ -64,7 +66,7 @@ import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
 import { workspacesRouter } from "./routes/workspaces.js";
-import { loginHandler, logoutHandler, checkAuthHandler, requireAuth, changePasswordHandler } from "./auth.js";
+import { loginHandler, logoutHandler, checkAuthHandler, requireAllowedIp, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { installProcessGuards } from "./utils/process-guards.js";
 import { sweepTrash } from "./utils/worktree-trash.js";
@@ -85,12 +87,14 @@ import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
 import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
+import { getClaudeAuthStatus } from "./services/claude-auth-status.js";
 import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 import { listAcpProviderAvailability } from "./agents/adapters/acp/availability.js";
 
 const log = createLogger("server");
+const execFileAsync = promisify(execFile);
 
 // Process-level guards: survive stray unhandled rejections (e.g. from
 // provider SDKs), log-and-exit on uncaught exceptions. Must be installed
@@ -137,6 +141,15 @@ const apiLimiter = rateLimit({
     return req.path.endsWith("/stream") || req.path.endsWith("/poll");
   },
 });
+
+// The remote-access IP allowlist gates EVERY /api route, and it has to be
+// mounted here — above the auth routes — to make that true. It used to be the
+// first block of `requireAuth`, which is registered below them, so an off-list
+// public client reached `/api/auth/login` and `/api/auth/check` unimpeded while
+// every other route returned 403. Login is precisely the endpoint an address
+// gate exists to protect: it is the one an off-list client can attack without a
+// credential. See `requireAllowedIp`.
+app.use("/api", requireAllowedIp);
 
 // Apply public rate limiter to unauthenticated auth endpoints
 app.use("/api/auth/login", publicLimiter);
@@ -185,7 +198,8 @@ app.get(
   checkAuthHandler,
 );
 
-// All /api routes below require auth + rate limiting
+// All /api routes below require auth + rate limiting. (The IP allowlist is
+// mounted further up, so that it also covers the auth routes above.)
 app.use("/api", requireAuth);
 app.use("/api", apiLimiter);
 
@@ -280,6 +294,18 @@ app.put("/api/ignored-project-dirs", (req, res) => {
   if (prefixes.some((p) => typeof p !== "string")) {
     return res.status(400).json({ error: "every prefix must be a string" });
   }
+  // Project dirs are slugified paths, so a prefix that can ever match one holds
+  // nothing but `[A-Za-z0-9-]`. Rejecting the rest is not a new restriction on
+  // anything useful — such a prefix could never match a directory — and it is
+  // the layer above the argv array that now carries these values into `find`.
+  // Until that array existed, this endpoint was remote command execution: a
+  // prefix of `evil$(id > /tmp/proof)` ran on the next `GET /api/chats`.
+  const invalid = prefixes.filter((p: string) => !isValidIgnoredPrefix(p.trim()));
+  if (invalid.length > 0) {
+    return res.status(400).json({
+      error: `A project-dir prefix may contain only letters, digits and hyphens — project dirs are slugified paths, so anything else can never match one. Rejected: ${invalid.map((p: string) => JSON.stringify(p)).join(", ")}`,
+    });
+  }
   const saved = saveIgnoredProjectDirPrefixes(prefixes);
   // Invalidate chat list cache so the next /api/chats call reflects the change
   clearChatListCache();
@@ -307,31 +333,18 @@ app.put("/api/user-contact", (req, res) => {
   res.json(saveUserContact(body));
 });
 
-// Claude Code auth status (requires auth — exposes server-side CLI state)
-let claudeStatusCache: { data: any; ts: number } | null = null;
-const CLAUDE_STATUS_TTL = 60_000; // 60 seconds
-
+// Claude Code auth status. The decision lives in
+// `services/claude-auth-status.ts` — it is the login modal's whole input, and
+// it needs a suite that can drive the "an API key is configured but the CLI is
+// not logged in" case, which importing this module cannot.
 app.get(
   "/api/auth/claude-status",
   // #swagger.tags = ['Auth']
-  // #swagger.summary = 'Check Claude Code CLI login status'
-  // #swagger.description = 'Returns whether the server host is logged into Claude Code via the CLI. Cached for 60 seconds.'
+  // #swagger.summary = 'Check whether Claude Code needs a login on this machine'
+  // #swagger.description = 'Reports whether Claude Code chats can authenticate here — from a configured API key or auth token, OpenRouter routing, a third-party provider, or a `claude auth login`. `loggedIn` false means no credential of any kind was found. Positive answers are cached for 60 seconds.'
   /* #swagger.responses[200] = { description: "Claude Code auth status" } */
-  (_req, res) => {
-    const now = Date.now();
-    if (claudeStatusCache && now - claudeStatusCache.ts < CLAUDE_STATUS_TTL) {
-      return res.json(claudeStatusCache.data);
-    }
-
-    try {
-      const raw = execSync(`${getClaudeBinaryPath()} auth status`, { timeout: 1_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-      const parsed = JSON.parse(raw.trim());
-      if (parsed.loggedIn) claudeStatusCache = { data: parsed, ts: now };
-      res.json(parsed);
-    } catch (err: any) {
-      const fallback = { loggedIn: false, error: err.code === "ENOENT" ? "Claude CLI not installed" : `CLI error: ${err.message}` };
-      res.json(fallback);
-    }
+  async (_req, res) => {
+    res.json(await getClaudeAuthStatus());
   },
 );
 
@@ -363,11 +376,34 @@ app.get(
       // ignore
     }
 
-    let claudeCliVersion = "unknown";
-    try {
-      claudeCliVersion = execSync(`${getClaudeBinaryPath()} --version`, { timeout: 5_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-    } catch {
-      // ignore
+    // Same resolver as chats and the login check. `"not installed"` rather than
+    // `"unknown"` when nothing resolved: this used to run the bare name
+    // `"claude"` through a shell and report `unknown` on the resulting
+    // not-found, which reads as "Callboard could not tell" when in fact it
+    // looked and there was nothing there.
+    //
+    // `execFile`, not `execSync`, and for the reason the rest of this chain
+    // moved off the event loop: this is a *polled* endpoint, and a synchronous
+    // spawn on a single-threaded server stalls every open SSE stream and
+    // in-flight chat rather than just its caller. It also had a bare `timeout`,
+    // which is not a bound — Node sends SIGTERM at the deadline and then waits
+    // indefinitely, so a `claude` that ignores it held the daemon for as long as
+    // it liked. `killSignal: "SIGKILL"` is what makes five seconds mean five
+    // seconds.
+    const claudeCliBinary = (await resolveClaudeBinary()).path;
+    let claudeCliVersion = claudeCliBinary ? "unknown" : "not installed";
+    if (claudeCliBinary) {
+      try {
+        const { stdout } = await execFileAsync(claudeCliBinary, ["--version"], {
+          timeout: 5_000,
+          killSignal: "SIGKILL",
+          encoding: "utf-8",
+          maxBuffer: 1024 * 1024,
+        });
+        claudeCliVersion = stdout.trim();
+      } catch {
+        // ignore
+      }
     }
 
     // Fetch latest version from npm (cached, best effort)
@@ -459,9 +495,9 @@ app.get(
     // ACP vendors are one kind covering many CLIs, so there is no single
     // "acpConfigured" flag — the picker needs the per-vendor list. Cached after
     // the first PATH lookup, so this is cheap on every subsequent poll.
-    let acpProviders: ReturnType<typeof listAcpProviderAvailability> = [];
+    let acpProviders: Awaited<ReturnType<typeof listAcpProviderAvailability>> = [];
     try {
-      acpProviders = listAcpProviderAvailability();
+      acpProviders = await listAcpProviderAvailability();
     } catch {
       // A failed PATH probe must not take the whole system-info payload down;
       // an empty list reads as "no ACP vendors", which is the safe answer.
@@ -487,7 +523,7 @@ app.get(
       platform: `${process.platform} (${process.arch})`,
       sdkVersion,
       claudeCliVersion,
-      claudeCliBinary: getClaudeBinaryPath(),
+      claudeCliBinary,
       proxyMode: process.env.MCP_PROXY_MODE || undefined,
       environment: process.env.NODE_ENV || "development",
       account: sdkInfo.account || undefined,

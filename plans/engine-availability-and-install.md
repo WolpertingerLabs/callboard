@@ -407,6 +407,42 @@ resume. And `updateRemedy` offered "a Callboard update can pick it up" for an
 active override, which moves `node_modules` and cannot touch a binary the user
 installed.
 
+## Windows one-click — looked at, and declined
+
+Phase 3 refuses `oneClick` on Windows because `npm` there is `npm.cmd` and
+`spawn` rejects a `.cmd` without `shell: true` (post-CVE-2024-27980), which this
+endpoint deliberately does not get. The review noted that
+`spawn(process.execPath, [<npm-cli.js>, "install", "-g", pkg])` needs no shell
+and would work. That is correct, and it was measured rather than assumed:
+`node $(npm root -g)/npm/bin/npm-cli.js root -g` runs shell-free and prints the
+right answer. The derivation is even platform-neutral, since `npm root -g` names
+the directory npm itself lives in on both platforms — so the spawn half could
+have shipped exercised on Linux with only the Windows `npm-cli.js` *location*
+untested.
+
+**It is still declined, and the spawn is not the reason.** The preflight is what
+makes this button defensible at all under Decision 8 — a failure is predicted
+and degraded to the copy block, rather than met with an EACCES wall of text —
+and two of its parts do not port. Both were checked against Windows-shaped
+inputs:
+
+| Preflight part | On Windows |
+|---|---|
+| `globalBinDirFor` | Requires a `.../lib/node_modules` suffix. Windows `npm root -g` is `<prefix>\node_modules`, so it returns `undefined` and the **bin-directory** writability check silently does not run — the check #359 added *because* testing only the package root missed a reproduced failure. |
+| `isOnDaemonPath` | Compares PATH entries with exact string equality. Windows paths are case-insensitive, so `C:\Users\U\...\npm` vs a derived `C:\Users\u\...\npm` reads as "not on PATH" and warns falsely. |
+
+Underneath both sits a question nobody here can answer: whether
+`fs.access(W_OK)` reflects Windows ACLs at all, which is the whole basis of
+"npm could not write here". Shipping the button would mean shipping a
+*capability check with a hole in it* — a UI asserting something nothing checked,
+which is the defect this series exists to stop — rather than merely a missing
+feature. The copy-and-paste command works normally on Windows, so refusing costs
+one click.
+
+An implementer with a Windows machine should reopen this. The spawn mechanism is
+the easy part and is already reasoned through above; what needs a real machine is
+the preflight, and it needs one before the button, not after.
+
 ## Testing
 
 - `engine-status.test.ts` — one case per runtime kind; bundled engines report

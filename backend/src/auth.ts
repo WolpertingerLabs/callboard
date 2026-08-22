@@ -4,9 +4,12 @@ import { getSession, createSession, deleteSession, extendSession, cleanupExpired
 import { verifyApiToken } from "./services/api-keys.js";
 import { verifyPassword, hashPassword, generateSalt, validateNewPassword } from "./utils/password.js";
 import { updateEnvFile } from "./utils/env-writer.js";
-import { getClientKey } from "./utils/client-ip.js";
-import { isIpAllowed, isPrivateOrLoopback } from "./utils/ip-allowlist.js";
-import { getAgentSettings } from "./services/agent-settings.js";
+import { allowlistSubject, getClientKey } from "./utils/client-ip.js";
+import { isIpAllowed } from "./utils/ip-allowlist.js";
+import { readAgentSettings } from "./services/agent-settings.js";
+import { createLogger } from "./utils/logger.js";
+
+const log = createLogger("auth");
 
 // ── Password helpers ────────────────────────────────────────────────
 
@@ -190,24 +193,94 @@ export async function changePasswordHandler(req: Request, res: Response) {
 
 // ── Middleware ───────────────────────────────────────────────────────
 
+/**
+ * The remote-access IP allowlist, as its own middleware — and mounted **before**
+ * the login route, which is the whole reason it is separate.
+ *
+ * It used to be the first block inside {@link requireAuth}, whose comment said
+ * it "applies to ALL /api routes (including login), so a non-allowlisted remote
+ * client can't even reach the login endpoint". That was false twice over, and
+ * neither half was checked by anything:
+ *
+ * - `app.use("/api", requireAuth)` is registered **after**
+ *   `/api/auth/login`, `/api/auth/logout` and `/api/auth/check`, so the
+ *   middleware never ran for them at all. Measured against a settings file
+ *   allowlisting one address that was not the caller's: `/api/system-info`
+ *   returned 403, `/api/auth/login` returned **401** — it had reached the
+ *   password check — and `/api/auth/check` returned **200**.
+ * - Even had it run, the pass-through below it compared `req.path` against
+ *   `"/api/auth/login"`. Under `app.use("/api", …)` Express rewrites the url to
+ *   the mount-relative `"/auth/login"`, so that comparison could never match
+ *   either.
+ *
+ * Login is the endpoint an allowlist most exists to protect: it is the one an
+ * off-list client can attack without a credential. Per-IP login throttling is
+ * not a substitute — through the tunnel every request arrives from loopback and
+ * the client's own `X-Forwarded-For` picks the bucket, so an attacker can mint
+ * fresh ones by varying one header. That is correct for rate limiting (see
+ * `utils/client-ip.ts`) and it is exactly why the address gate has to come
+ * first.
+ *
+ * Loopback and private/LAN clients are never gated, and an empty or absent
+ * allowlist means no restriction. See `utils/ip-allowlist.ts`.
+ */
+export function requireAllowedIp(req: Request, res: Response, next: NextFunction) {
+  // `allowlistSubject`, not `getClientKey`, and the difference is a bypass.
+  // `getClientKey` takes the HEAD of `X-Forwarded-For`, which a client writes:
+  // measured against this gate with an allowlist configured, `X-Forwarded-For:
+  // 127.0.0.1, 8.8.8.8` skipped it entirely and `POST /api/auth/login` returned
+  // `{"ok":true}` — a session issued to an address the operator had excluded.
+  // That header handling is correct for rate-limit buckets and wrong here; see
+  // `utils/client-ip.ts` for the rule this uses instead.
+  const { address: clientIp, exempt } = allowlistSubject(req);
+  if (exempt) return next();
+
+  // `readAgentSettings`, not `getAgentSettings`, and the distinction is the
+  // whole of this branch.
+  //
+  // `getAgentSettings` folds "no file" and "file exists and did not parse"
+  // into the same `{ proxyMode: "local" }` — a valid object with
+  // `remoteAccessIpAllowlist` absent, which `?? []` turns into the empty
+  // list, which `isIpAllowed` reads as **no restriction**. It swallows the
+  // error internally, so there was nothing here to catch: a truncated write
+  // or a `chmod 000` silently removed an operator's IP restriction. Measured:
+  // a request from an off-list public address got 200 against a corrupt
+  // settings file that listed a single allowlist entry.
+  //
+  // A setting whose absence means "allowed" cannot be read through a channel
+  // that returns absence on failure. This reads the state explicitly and
+  // refuses on `unreadable`, while still treating a genuinely missing file as
+  // the documented default of no restriction.
+  //
+  // The cost is real and is accepted: an operator who reaches this daemon
+  // only through the tunnel is locked out until the file is repaired. It is
+  // the right way round — the alternative silently drops the restriction —
+  // and it is survivable because loopback and LAN clients are never gated at
+  // all, so a shell or a browser on the same network still gets in.
+  const { settings, state, error } = readAgentSettings();
+  if (state === "unreadable") {
+    log.error(`Refusing remote client ${clientIp}: agent-settings.json exists but could not be read (${error ?? "unknown error"}), so the IP allowlist is unknown`);
+    return res.status(403).json({
+      error: `Access denied: Callboard's settings file exists but could not be read (${error ?? "unknown error"}), so it cannot tell whether your address is on the allowlist — and it will not assume it is. Fix or remove agent-settings.json from a local or LAN client, which is never gated.`,
+    });
+  }
+  if (!isIpAllowed(clientIp, settings.remoteAccessIpAllowlist ?? [])) {
+    return res.status(403).json({ error: "Access denied: your IP is not on the allowlist." });
+  }
+  next();
+}
+
+/**
+ * Session / bearer-key authentication for every `/api` route registered after
+ * it — which deliberately does not include login, logout or auth-check.
+ *
+ * Those three are registered earlier in `index.ts` and so never reach this. The
+ * pass-through that used to sit here for them was doubly dead (unreachable, and
+ * comparing a path that could not match under the mount) and is gone with the
+ * allowlist it followed; {@link requireAllowedIp} is what now runs ahead of
+ * them.
+ */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  // Remote-access IP allowlist — applies to ALL /api routes (including login),
-  // so a non-allowlisted remote client can't even reach the login endpoint.
-  // Local & LAN clients (loopback / private ranges) are never gated, and an
-  // empty allowlist means no restriction. See utils/ip-allowlist.ts.
-  const clientIp = getClientKey(req);
-  if (!isPrivateOrLoopback(clientIp)) {
-    const allowlist = getAgentSettings().remoteAccessIpAllowlist ?? [];
-    if (!isIpAllowed(clientIp, allowlist)) {
-      return res.status(403).json({ error: "Access denied: your IP is not on the allowlist." });
-    }
-  }
-
-  // Allow login/auth-check endpoints through
-  if (req.path === "/api/auth/login" || req.path === "/api/auth/check" || req.path === "/api/auth/logout") {
-    return next();
-  }
-
   if (!isPasswordConfigured()) {
     return res.status(503).json({ error: "Server misconfigured: no password is set." });
   }

@@ -143,20 +143,21 @@ export interface AgentSettings {
    * Absolute path to a `claude` binary to run instead of the one Callboard would
    * find for itself.
    *
-   * Highest-priority input to `getClaudeCodeExecutablePath()`, ahead of
-   * `which claude` and ahead of the Agent SDK's own bundled per-platform binary.
-   * It is checked before it is used — a path that does not exist, is not a file,
-   * or carries no execute bit for the user running the daemon is **rejected**,
-   * logged, and reported on the Claude Code status card, and resolution falls
-   * through as if the field were blank. Silently handing an unspawnable path to
-   * the SDK would break every chat; silently ignoring a broken one without
-   * saying so would be worse.
+   * Highest-priority input to `services/claude-binary.ts`'s
+   * `resolveClaudeBinary()`, ahead of `$CLAUDE_BINARY`, `which claude`, the four
+   * well-known install directories, and the Agent SDK's own bundled
+   * per-platform binary. It is checked before it is used — a path that does not
+   * exist, is not a file, or carries no execute bit for the user running the
+   * daemon is **rejected**, logged, and reported on the Claude Code status card,
+   * and resolution falls through as if the field were blank. Silently handing an
+   * unspawnable path to the SDK would break every chat; silently ignoring a
+   * broken one without saying so would be worse.
    *
-   * Note it does **not** feed `utils/paths.ts`'s `getClaudeBinaryPath()`, which
-   * is a separate lookup (it reads `$CLAUDE_BINARY` and four well-known
-   * directories) behind the About page's CLI version and the login prompt. The
-   * two can therefore name different binaries, and the status card says so when
-   * they do rather than pretending one answer covers both.
+   * There used to be a second resolver — `utils/paths.ts`'s
+   * `getClaudeBinaryPath()`, which ignored this field and answered for the About
+   * page's CLI version and the login prompt — so the two could name different
+   * binaries and the status card carried an extra row saying so. They are one
+   * resolver now, and this field feeds all of them.
    */
   pathToClaudeCodeExecutable?: string;
 

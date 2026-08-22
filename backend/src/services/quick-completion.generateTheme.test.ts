@@ -14,9 +14,19 @@ import { setAgentProviderForTesting } from "../agents/factory.js";
 import { MockAgentProvider } from "../agents/adapters/mock/MockAgentProvider.js";
 
 vi.mock("./agent-settings.js", () => ({
-  getClaudeCodeExecutablePath: () => undefined,
   getApiEnvOverrides: vi.fn(() => ({}) as Record<string, string>),
   getAgentSettings: vi.fn((): AgentSettings => ({ proxyMode: "local" })),
+}));
+
+// `getClaudeCodeExecutablePath` moved to `claude-binary.js` when the two Claude
+// resolvers were merged, and this mock kept naming the old module — so it
+// stubbed nothing and the SUT ran the real resolver: two `which claude` spawns
+// per file, then a read of the developer's `$CLAUDE_BINARY`, `PATH` and
+// `~/.local/bin`. The suite passed either way, which is what made it worth
+// fixing: a test that reaches the developer's machine is one that passes or
+// fails for reasons it does not name.
+vi.mock("./claude-binary.js", () => ({
+  getClaudeCodeExecutablePath: async () => undefined,
 }));
 
 import { generateThemeCSS } from "./quick-completion.js";

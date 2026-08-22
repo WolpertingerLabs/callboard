@@ -24,7 +24,7 @@ import { spawn, type ChildProcess } from "child_process";
 import { existsSync, openSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { getActiveMcpConfigDir, getAgentSettings } from "./agent-settings.js";
+import { getActiveMcpConfigDir, readAgentSettings } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("local-daemon");
@@ -169,7 +169,25 @@ export async function startLocalDaemon(): Promise<boolean> {
       return false;
     }
 
-    const settings = getAgentSettings();
+    // `tunnelEnabled` fails the *other* way from the IP allowlist, and it is
+    // worth naming rather than pattern-matching: absence means the drawlatch
+    // daemon is **not** exposed (`DRAWLATCH_TUNNEL=1` is what makes it spawn a
+    // Cloudflare Quick Tunnel — see `server.js`'s `useTunnel`), so an unreadable
+    // settings file lands on the safe side of that switch, not the permissive
+    // one. There is nothing to fail closed here; it is already closed.
+    //
+    // What is wrong is the silence. An operator who turned the tunnel on gets
+    // no tunnel, no error, and a webhook ingestor that quietly stops receiving
+    // anything — the daemon disagreeing with the configuration and saying
+    // nothing. So the state is read explicitly and the divergence is logged at
+    // error level, which is the whole of the change.
+    const { settings, state: settingsState, error: settingsError } = readAgentSettings();
+    if (settingsState === "unreadable") {
+      log.error(
+        `agent-settings.json exists but could not be read (${settingsError ?? "unknown error"}); starting the local drawlatch daemon WITHOUT the webhook tunnel. ` +
+          `If you had \`tunnelEnabled\` on, it is not on now — repair the file and restart.`,
+      );
+    }
     const logDir = join(configDir, "logs");
     mkdirSync(logDir, { recursive: true });
     const logFd = openSync(join(logDir, "daemon.log"), "a");

@@ -5,8 +5,10 @@
  * presence is knowable rather than mocking the child-process layer: `node` is
  * running this test, and a random name is not installed by construction.
  */
-import { beforeEach, describe, expect, it } from "vitest";
-import { isAbsolute } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { acpProviderAvailability, acpProviderVersion, listAcpProviderAvailability, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "./availability.js";
 import { ACP_VENDOR_PRESETS, OPENCODE_CONFIG_CONTENT_ENV, type AcpVendorPreset } from "./vendors.js";
 import type { DefaultPermissions } from "shared/types/index.js";
@@ -18,19 +20,19 @@ beforeEach(() => {
 });
 
 describe("acpProviderAvailability", () => {
-  it("finds a binary that is on PATH", () => {
+  it("finds a binary that is on PATH", async () => {
     // `node` is necessarily present — it is running this test.
-    expect(acpProviderAvailability(preset("node"))).toMatchObject({ available: true, command: "node" });
+    expect(await acpProviderAvailability(preset("node"))).toMatchObject({ available: true, command: "node" });
   });
 
-  it("reports a missing binary as unavailable rather than throwing", () => {
+  it("reports a missing binary as unavailable rather than throwing", async () => {
     // An ENOENT here must degrade to a disabled picker entry, never a crash on
     // the settings endpoint.
-    expect(acpProviderAvailability(preset("callboard-definitely-not-a-real-binary"))).toMatchObject({ available: false });
+    expect(await acpProviderAvailability(preset("callboard-definitely-not-a-real-binary"))).toMatchObject({ available: false });
   });
 
-  it("carries the id, label and probed command through for the UI", () => {
-    const result = acpProviderAvailability({ id: "opencode", label: "OpenCode", command: ["opencode", "acp"] });
+  it("carries the id, label and probed command through for the UI", async () => {
+    const result = await acpProviderAvailability({ id: "opencode", label: "OpenCode", command: ["opencode", "acp"] });
     // The command is the binary, not the whole argv — a "not installed" message
     // should say `opencode`, not `opencode acp`.
     expect(result).toMatchObject({ id: "opencode", label: "OpenCode", command: "opencode" });
@@ -38,16 +40,83 @@ describe("acpProviderAvailability", () => {
 });
 
 describe("resolveAcpBinaryPath", () => {
-  it("returns where the binary resolved, not just that it did", () => {
+  it("returns where the binary resolved, not just that it did", async () => {
     // The engine status card names the path it found; `available` is derived
     // from the same lookup, so the two cannot disagree.
-    const path = resolveAcpBinaryPath("node");
+    const path = await resolveAcpBinaryPath("node");
     expect(path).toBeTruthy();
     expect(isAbsolute(path!)).toBe(true);
   });
 
-  it("returns null for a binary that is not installed", () => {
-    expect(resolveAcpBinaryPath("callboard-definitely-not-a-real-binary")).toBeNull();
+  it("returns null for a binary that is not installed", async () => {
+    expect(await resolveAcpBinaryPath("callboard-definitely-not-a-real-binary")).toBeNull();
+  });
+});
+
+describe("off the event loop", () => {
+  /**
+   * The property item 4 exists for, asserted against a **real** spawn and a
+   * **real** slow `PATH`.
+   *
+   * A `which` is only fast while every entry on `PATH` is — one autofs mount or
+   * one dead NFS export makes it arbitrarily slow — and while this was
+   * `execFileSync` that cost landed on the whole single-threaded process rather
+   * than on its caller. Measured against a daemon with the same shim at 2.5s
+   * (under the 3s timeout, so the stall the daemon *accepts* rather than the
+   * kill path): an unrelated `/api/auth/check` took 2.4-2.7s against a 2ms
+   * baseline.
+   *
+   * The shim is the lever rather than a mock, because a mocked `child_process`
+   * would be asserting that the test's own promise is a promise. Note that an
+   * ordinary `which` is fast enough to beat a `setTimeout(0)` even when it is
+   * properly async — verified — so a fast binary could not have discriminated
+   * here at all, which is exactly why this one sleeps.
+   */
+  const SLOW_MS = 300;
+  let shimDir: string;
+  let realPath: string | undefined;
+
+  beforeEach(() => {
+    shimDir = mkdtempSync(join(tmpdir(), "cb-slow-which-"));
+    const shim = join(shimDir, "which");
+    writeFileSync(shim, `#!/bin/sh\nsleep ${SLOW_MS / 1000}\nexec /usr/bin/which "$@"\n`);
+    chmodSync(shim, 0o755);
+    realPath = process.env.PATH;
+    process.env.PATH = `${shimDir}:${realPath ?? ""}`;
+    resetAcpAvailabilityCache();
+  });
+
+  afterEach(() => {
+    if (realPath === undefined) delete process.env.PATH;
+    else process.env.PATH = realPath;
+    rmSync(shimDir, { recursive: true, force: true });
+    resetAcpAvailabilityCache();
+  });
+
+  it.skipIf(process.platform === "win32")("lets other work run while the PATH lookup is in flight", async () => {
+    const order: string[] = [];
+    const lookup = resolveAcpBinaryPath("node").then((p) => {
+      order.push("lookup");
+      return p;
+    });
+
+    await new Promise((r) => setTimeout(r, SLOW_MS / 3));
+    order.push("other work");
+
+    expect(await lookup).toBeTruthy();
+    expect(order).toEqual(["other work", "lookup"]);
+  });
+
+  it.skipIf(process.platform === "win32")("shares one slow probe between concurrent callers", async () => {
+    // Five vendors on a settings-page load must not become five spawns of a
+    // binary that takes a third of a second each.
+    const started = Date.now();
+    const all = await Promise.all([resolveAcpBinaryPath("node"), resolveAcpBinaryPath("node"), resolveAcpBinaryPath("node")]);
+    const elapsed = Date.now() - started;
+
+    expect(new Set(all).size).toBe(1);
+    // Three serialised spawns would be ~3x SLOW_MS; one shared probe is ~1x.
+    expect(elapsed).toBeLessThan(SLOW_MS * 2);
   });
 });
 
@@ -79,24 +148,24 @@ describe("acpProviderVersion", () => {
     expect(a).toBe(b);
   });
 
-  it("is not on the availability payload, which /api/system-info serializes", () => {
+  it("is not on the availability payload, which /api/system-info serializes", async () => {
     // Deliberate: availability is a `which` lookup, this executes a third-party
     // binary. Adding it to the polled payload would fork a CLI per poll — and
     // system-info is under orders not to grow.
-    expect(acpProviderAvailability(preset("node"))).not.toHaveProperty("version");
+    expect(await acpProviderAvailability(preset("node"))).not.toHaveProperty("version");
   });
 });
 
 describe("listAcpProviderAvailability", () => {
-  it("lists every built-in preset, present or not", () => {
-    const ids = listAcpProviderAvailability().map((p) => p.id);
+  it("lists every built-in preset, present or not", async () => {
+    const ids = (await listAcpProviderAvailability()).map((p) => p.id);
     // Unavailable vendors stay in the list: the picker shows them disabled with
     // the binary name, which is how a user learns what to install.
     expect(new Set(ids)).toEqual(new Set(Object.keys(ACP_VENDOR_PRESETS)));
   });
 
-  it("sorts installed vendors first", () => {
-    const list = listAcpProviderAvailability();
+  it("sorts installed vendors first", async () => {
+    const list = await listAcpProviderAvailability();
     const firstUnavailable = list.findIndex((p) => !p.available);
     if (firstUnavailable === -1) return; // everything installed on this machine
     expect(list.slice(firstUnavailable).every((p) => !p.available)).toBe(true);

@@ -31,7 +31,8 @@ import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { z } from "zod";
 import { tmpdir } from "os";
 import { createLogger } from "../utils/logger.js";
-import { getApiEnvOverrides, getClaudeCodeExecutablePath } from "./agent-settings.js";
+import { getApiEnvOverrides } from "./agent-settings.js";
+import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { isOpenRouterUtilityCompletionEnabled, resolveUtilityModel, runOpenRouterCompletion } from "./openrouter-completion.js";
 import type { CustomTheme, ThemeVariables, ThemeContrastFailure } from "shared/types/index.js";
 import type { Correction } from "./theme-contrast.js";
@@ -179,7 +180,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   let assistantText = "";
 
   try {
-    const claudeExecutable = getClaudeCodeExecutablePath();
+    const claudeExecutable = await getClaudeCodeExecutablePath();
 
     const conversation = agentProvider.query({
       prompt: promptGenerator,
