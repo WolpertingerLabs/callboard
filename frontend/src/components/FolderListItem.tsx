@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { GitBranch, Plus, Zap, Clock, Bell, Workflow, GitFork, HardDrive, AlertTriangle, Lock, Layers } from "lucide-react";
 import type { FolderSummary } from "../api";
 import { formatDiskUsage } from "../utils/workspaceFormat";
@@ -6,11 +6,19 @@ import ProviderBadge from "./ProviderBadge";
 
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
 
+/*
+  The callbacks take the row's own folder back rather than closing over it.
+
+  This is what lets the parent hoist them: one `onClick` for the whole list
+  instead of one per row per render. Closed-over arrows gave every row a new
+  function identity on every poll, which would defeat the `React.memo` at the
+  bottom of this file no matter what else held still.
+*/
 interface Props {
   folder: FolderSummary;
   isActive?: boolean;
-  onClick: () => void;
-  onNewChat: () => void;
+  onClick: (folder: FolderSummary) => void;
+  onNewChat: (folder: FolderSummary) => void;
   /** Current time in ms, passed from parent to avoid impure render calls */
   now: number;
   /**
@@ -22,7 +30,7 @@ interface Props {
    * two names and the row shows neither, so the chip is where you find out
    * which is which. Optional, so a row can be rendered without a manager.
    */
-  onManageWorkspaces?: () => void;
+  onManageWorkspaces?: (folder: FolderSummary) => void;
 }
 
 /**
@@ -88,7 +96,7 @@ function formatRelativeTime(isoDate: string, now: number): string {
   return `${days}d ago`;
 }
 
-export default function FolderListItem({ folder, isActive, onClick, onNewChat, now, onManageWorkspaces }: Props) {
+function FolderListItem({ folder, isActive, onClick, onNewChat, now, onManageWorkspaces }: Props) {
   const isStale = useMemo(() => now - new Date(folder.lastUpdatedAt).getTime() > TWELVE_HOURS_MS, [now, folder.lastUpdatedAt]);
   const isMissing = folder.directoryState === "missing";
   // There is nowhere to start a chat when the directory is gone. Better to say
@@ -100,7 +108,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
 
   return (
     <div
-      onClick={onClick}
+      onClick={() => onClick(folder)}
       style={{
         padding: "14px 20px",
         borderBottom: "1px solid var(--chatlist-item-border)",
@@ -395,7 +403,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
                 onManageWorkspaces &&
                 ((e) => {
                   e.stopPropagation();
-                  onManageWorkspaces();
+                  onManageWorkspaces(folder);
                 })
               }
               title={
@@ -451,7 +459,7 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
         <button
           onClick={(e) => {
             e.stopPropagation();
-            if (!newChatDisabled) onNewChat();
+            if (!newChatDisabled) onNewChat(folder);
           }}
           disabled={newChatDisabled}
           title={isMissing ? "The directory no longer exists" : newChatDisabled ? "Chat in progress" : "New chat in this folder"}
@@ -474,3 +482,18 @@ export default function FolderListItem({ folder, isActive, onClick, onNewChat, n
     </div>
   );
 }
+
+/**
+ * Memoised because the list it lives in is polled.
+ *
+ * The sidebar refetches on a heartbeat and on every metadata bump, and the row
+ * is not cheap — a dozen conditional badges, two `Date` parses and a tooltip
+ * per timestamp, times however many directories the user has (44 on the
+ * author's machine). A poll that changes nothing should cost nothing.
+ *
+ * The default shallow comparison is the right one, but it only works because
+ * of what the parent does: it carries forward unchanged row objects across
+ * polls, quantises `now`, and passes hoisted callbacks. Wrapping this in
+ * `memo` without those three would be decoration.
+ */
+export default memo(FolderListItem);
