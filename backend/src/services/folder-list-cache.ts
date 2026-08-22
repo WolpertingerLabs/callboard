@@ -8,20 +8,32 @@
  *
  * ## What this cache is for, and what it deliberately is not
  *
- * It is a **burst absorber**, not a poll optimiser, and the TTL is short on
- * purpose. The sidebar polls every 15 s (`ACTIVE_POLL_MS`), so a 5 s window
- * never spans two polls; what it does collapse is the requests that arrive
- * together — several browser tabs or devices, and an event-driven refresh
- * landing on top of a scheduled poll.
+ * It serves **requests that arrive within 5 s of a completed one**, and that
+ * phrasing is the whole of the claim. Three things it is *not*, each measured
+ * rather than assumed:
  *
- * It is not a poll optimiser because it cannot honestly be one. Making a hit
- * safe across a 15 s poll would mean fingerprinting *discovery's* input — every
- * provider's session directory — and discovery (the `find` spawn plus a stat
- * per transcript) is ~11 ms of the ~21 ms a full recompute costs after the
- * `projectDirToFolder` memo landed. A fingerprint that costs half the recompute
- * is not worth building, so the recompute is simply allowed to happen. The memo
- * in utils/paths.ts is what made that affordable; this is the smaller, second
- * win and it is scoped to say so.
+ *  - **Not a poll optimiser.** The sidebar polls every 15 s
+ *    (`ACTIVE_POLL_MS`), so a 5 s entry never spans two polls and every
+ *    scheduled poll pays a full recompute. Making a hit safe across 15 s would
+ *    mean fingerprinting *discovery's* input — every provider's session
+ *    directory — and discovery (the `find` spawn plus a stat per transcript) is
+ *    ~11 ms of the ~21 ms a recompute costs. A fingerprint costing half the
+ *    recompute is not worth building, so the recompute is allowed to happen.
+ *  - **Not a stampede guard.** An entry is only written *after* its response
+ *    computes, and there is no in-flight promise sharing, so genuinely
+ *    simultaneous requests all miss and all recompute. Four at once measured
+ *    259 ms against 315 ms uncached — ~18%, near noise. Staggered arrivals are
+ *    what hit.
+ *  - **Not a help to event-driven refreshes.** Those are misses *by
+ *    construction*: the refresh fires because session or workspace state moved,
+ *    and that is the same movement the fingerprint watches, so the entry is
+ *    invalid for exactly the reason the request exists.
+ *
+ * What is left is real but small, and deliberately on the record here as the
+ * evidence for a later simplification pass: if the remaining hits do not
+ * justify the machinery, delete it and keep the memo. The memo in
+ * utils/paths.ts is what took this route from ~115 ms to ~21 ms; this is the
+ * second, much smaller win and it is scoped to say so.
  *
  * An earlier revision served entries past the TTL with `stale: true` and no
  * revalidation, copying the chat list's shape. That was wrong here on both
@@ -94,13 +106,15 @@ export const folderListCache = new Map<string, CachedFolderListResponse>();
 /**
  * How long an entry may be served.
  *
- * Shorter than the sidebar's 15 s poll on purpose: this collapses simultaneous
- * requests, it does not span polls. It is also the worst-case window for the
- * one thing no fingerprint here watches — a folder that appears on disk with
- * nothing in Callboard's memory, such as a chat started from a terminal
- * `claude` in a directory Callboard has never seen. That is bounded by this
- * constant, and in practice by the 15 s poll that would have to fetch it
- * anyway.
+ * Shorter than the sidebar's 15 s poll on purpose: an entry is served to
+ * requests arriving within 5 s of the one that computed it, and never spans two
+ * polls. See the module header for what that does and does not cover.
+ *
+ * It is also the worst-case window for the one thing no fingerprint here
+ * watches — a folder that appears on disk with nothing in Callboard's memory,
+ * such as a chat started from a terminal `claude` in a directory Callboard has
+ * never seen. That is bounded by this constant, and in practice by the 15 s
+ * poll that would have to fetch it anyway.
  */
 export const FOLDER_LIST_CACHE_TTL = 5_000;
 

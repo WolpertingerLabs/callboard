@@ -17,12 +17,17 @@ export const CHAT_LIST_CACHE_TTL = 5_000;
 /**
  * Serve flagged `stale: true` up to this age; beyond it, recompute.
  *
- * Note this is **not** stale-while-revalidate, despite the shape: nothing
- * refreshes the entry on a stale hit and no client currently re-requests on
- * seeing the flag, so between the TTL and this bound a response simply ages in
- * place. What keeps that from being visible is invalidation — `clearListCaches`
- * runs on every write that changes a listing — which makes this a backstop for
- * whatever no writer covers, not a freshness window anyone should rely on.
+ * This *is* stale-while-revalidate — but the revalidation lives in the client,
+ * not here. The server never refreshes an entry on a stale hit; what closes the
+ * loop is `ChatList.tsx`, which paints the stale response and immediately
+ * re-requests with `cached=false`, and that bypass is a read-through, so it
+ * refills the entry on the way past. Between the TTL and this bound a response
+ * is therefore shown once and replaced, not left to age.
+ *
+ * The folder list deliberately has no equivalent (see folder-list-cache.ts).
+ * The asymmetry is a cost argument, not an oversight: hiding a ~270 ms
+ * recompute behind an instant stale paint is worth a second round trip, and
+ * hiding a ~21 ms one is not.
  */
 export const CHAT_LIST_CACHE_MAX_AGE = 300_000;
 
