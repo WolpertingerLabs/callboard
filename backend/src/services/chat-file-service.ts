@@ -46,18 +46,50 @@ export class ChatFileService {
     }
   }
 
+  // Get a chat by session id — the direct filename read, and nothing else.
+  //
+  // Records are filed as `<session_id>.json` (see saveChat), so this is a
+  // single stat + read. Use it wherever the caller's id is provably a session
+  // id, because getChat's miss path is a readdir + parse of every record in
+  // the directory — ~88 ms median across 8k records on a real data dir, paid
+  // per lookup.
+  //
+  // `chat.id` and `session_id` are NOT separate namespaces: the dominant
+  // creation path is `upsertChat(sessionId, folder, sessionId)`
+  // (claude.ts:2056), which makes them equal, and all 8,039 records on the
+  // profiled data dir have `id === session_id === filename`. createChat's
+  // randomUUID is reached only from the two chats.ts routes. So for a session
+  // id the fallback scan almost always just re-derives what the direct read
+  // already answered — and when there is no record it is guaranteed to find
+  // nothing.
+  //
+  // The one shape it can still resolve, and this method deliberately will not:
+  // a record whose session id changed after creation (claude.ts:2151 resumes
+  // with a new session id, so upsertChat refiles it and leaves `chat.id` as
+  // the *superseded* session id). Looking that superseded id up here returns
+  // null where getChat would have found the record by scanning. Accepted
+  // rather than guarded — see the call site in utils/chat-search.ts for the
+  // reasoning and the bound on what it costs.
+  //
+  // Callers with an ambiguous id, or ones that genuinely want the by-`chat.id`
+  // lookup, still want getChat.
+  getChatBySessionId(sessionId: string): Chat | null {
+    const filepath = join(chatsDir, `${sessionId}.json`);
+    if (!existsSync(filepath)) return null;
+
+    try {
+      return JSON.parse(readFileSync(filepath, "utf8"));
+    } catch (error) {
+      log.error(`Error reading chat file for session ${sessionId}: ${error}`);
+      return null;
+    }
+  }
+
   // Get a specific chat by ID
   getChat(id: string): Chat | null {
     // Try to find by session_id first (filename)
-    const sessionFilepath = join(chatsDir, `${id}.json`);
-    if (existsSync(sessionFilepath)) {
-      try {
-        const content = readFileSync(sessionFilepath, "utf8");
-        return JSON.parse(content);
-      } catch (error) {
-        log.error(`Error reading chat file for session ${id}: ${error}`);
-      }
-    }
+    const bySession = this.getChatBySessionId(id);
+    if (bySession) return bySession;
 
     // If not found by session_id, search all files for matching chat id
     try {
