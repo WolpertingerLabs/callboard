@@ -49,8 +49,15 @@ mkdirSync(join(projectsDir, encodedDir), { recursive: true });
 /** Session ids the stubbed provider discovers, newest first. */
 let sessionIds: string[] = [];
 
-vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false, getPendingRequest: () => null, getActiveSession: () => null }));
-vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
+vi.mock("../services/claude.js", () => ({
+  hasPendingRequest: () => false,
+  getPendingRequest: () => null,
+  getActiveSession: () => null,
+  pendingRequestFingerprint: () => "",
+}));
+vi.mock("../services/session-registry.js", () => ({
+  sessionRegistry: { has: () => false, notifyMetadata: () => {}, version: 0, metadataVersion: 0 },
+}));
 // Real git calls would shell out once per distinct folder.
 vi.mock("../utils/git.js", () => ({
   getGitInfo: () => ({ isGitRepo: false }),
@@ -82,6 +89,8 @@ vi.mock("../agents/factory.js", () => ({
 const { chatFileService } = await import("./chat-file-service.js");
 const { chatsRouter } = await import("../routes/chats.js");
 const { searchChats } = await import("../utils/chat-search.js");
+const { clearFolderListCache } = await import("./folder-list-cache.js");
+const { clearProjectDirFolderCache } = await import("../utils/paths.js");
 
 const chatsDir = join(tmpRoot, "chats");
 probe.chatsDir = chatsDir;
@@ -116,6 +125,12 @@ function listFolders(): Promise<any> {
  * scan to learn nothing.
  */
 beforeEach(() => {
+  // These cases rewrite the transcripts and records under the handler, which in
+  // production only ever happens through a route that invalidates. The mocked
+  // registry reports a constant version, so without this the second case would
+  // be served the first one's rows.
+  clearFolderListCache();
+  clearProjectDirFolderCache();
   for (const file of readdirSync(chatsDir)) rmSync(join(chatsDir, file), { force: true, recursive: true });
   for (const file of readdirSync(join(projectsDir, encodedDir))) rmSync(join(projectsDir, encodedDir, file), { force: true });
 

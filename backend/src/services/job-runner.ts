@@ -56,7 +56,7 @@ import {
   type RunParentLink,
 } from "./job-store.js";
 import { buildRunContext, interpolate, evaluateGate, resolveRunOutputs } from "./job-template.js";
-import { clearChatListCache } from "./chat-list-cache.js";
+import { clearListCaches } from "./list-caches.js";
 import { announcedApprovalChat, clearApprovalParked, isApprovalAnnounced, markApprovalParked } from "./job-approval-signal.js";
 import { registerEphemeralEventListener, unregisterEphemeralEventListener } from "./trigger-dispatcher.js";
 import { getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
@@ -1839,9 +1839,10 @@ function notifyRunUpdated(run: JobRun): void {
  * `notify: false` nothing does. The same silence runs in reverse after you
  * approve, leaving rows insisting they still need you.
  *
- * Clearing the chat-list cache is the other half of one fix: the bump makes
+ * Clearing the listing caches is the other half of one fix: the bump makes
  * the client ask, and this makes the answer describe the transition instead of
- * a response computed up to `CHAT_LIST_CACHE_TTL` before it.
+ * a response computed up to a TTL before it. Both listings carry the approval
+ * signal's consequences, so both are cleared — see services/list-caches.ts.
  *
  * Deliberately scoped to approvals. `notifyRunUpdated` being chatId-scoped
  * drops every other session-less transition too (gate, sleep-wake, terminal);
@@ -1868,7 +1869,7 @@ function syncApprovalSignal(run: JobRun): void {
 }
 
 function announceApprovalChange(run: JobRun, chatId: string | undefined): void {
-  clearChatListCache();
+  clearListCaches();
   if (chatId) sessionRegistry.notifyMetadata(chatId, { jobRunId: run.runId, jobRunStatus: run.status });
 }
 

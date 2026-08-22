@@ -6,7 +6,7 @@ import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from ".
 import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
-import { hasPendingRequest } from "../services/claude.js";
+import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
 import { getCard, listCards } from "../services/card-store.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
@@ -21,10 +21,13 @@ import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 import { describeWorkspaceDirectory } from "../services/workspace-service.js";
 import { newDiskUsageBudget } from "../utils/disk-usage.js";
-// Chat-list response cache lives in a standalone module so services can
-// invalidate it without closing an import cycle back through this route.
+// Both listing caches live in standalone modules so services can invalidate
+// them without closing an import cycle back through this route, and
+// `clearListCaches` is the one call that empties both — see list-caches.ts.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
-export { clearChatListCache };
+import { folderListCache, FOLDER_LIST_CACHE_TTL, FOLDER_LIST_CACHE_MAX_AGE, clearFolderListCache } from "../services/folder-list-cache.js";
+import { clearListCaches } from "../services/list-caches.js";
+export { clearChatListCache, clearFolderListCache, clearListCaches };
 
 const log = createLogger("chats");
 
@@ -196,10 +199,38 @@ chatsRouter.get("/folders", (req, res) => {
   // #swagger.description = 'Returns folders with aggregated chat info, ordered by most recently created chat. Folders that no longer exist on disk are filtered out, except when an active workspace record claims them — those are listed with directoryState "missing" so the stale record can be seen and archived. Each row also carries the active workspace records claiming the directory (id, name, isolation, owned, branch, directory state); it deliberately carries no removal verdict, which costs several git subprocesses per record — ask GET /api/workspaces for that.'
   /* #swagger.parameters['maxAgeDays'] = { in: 'query', type: 'integer', description: 'Maximum age in days (default: 5)' } */
   /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each listed directory with du -sk. Off by default: it is the slow part, and this endpoint is polled. Measurements are memoised for five minutes.' } */
+  /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass the response cache and force fresh data' } */
+  /* #swagger.responses[200] = { description: "Folder list, with a stale flag when the response was served from cache past its freshness window" } */
   try {
     const maxAgeDays = parseInt(req.query.maxAgeDays as string, 10) || 5;
     const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
     const includeDiskUsage = req.query.includeDiskUsage === "true";
+
+    // Both parameters change the response body — `maxAgeDays` the row set,
+    // `includeDiskUsage` the per-row `diskUsage` — so both are in the key.
+    const cacheKey = `${maxAgeDays}:${includeDiskUsage}`;
+    // The in-memory state behind `status`. Recomputed per request and compared
+    // against what the entry was built from, because a session can start, stop
+    // or park a permission prompt without any request reaching this route —
+    // see the header of services/folder-list-cache.ts.
+    const fingerprint = `${sessionRegistry.version}:${sessionRegistry.metadataVersion}:${pendingRequestFingerprint()}`;
+    const bypassCache = req.query.cached === "false";
+    const now = Date.now();
+
+    if (!bypassCache) {
+      const cached = folderListCache.get(cacheKey);
+      // A fingerprint mismatch is a miss ahead of both windows: no folder row
+      // may outlive the session state it reported.
+      if (cached && cached.fingerprint === fingerprint) {
+        const age = now - cached.createdAt;
+        if (age < FOLDER_LIST_CACHE_TTL) {
+          return res.json({ ...cached.data, stale: false });
+        }
+        if (age < FOLDER_LIST_CACHE_MAX_AGE) {
+          return res.json({ ...cached.data, stale: true });
+        }
+      }
+    }
     // One budget across the listing, not one timeout per row: `du` is
     // synchronous, so an unbounded listing is an unbounded freeze. What it did
     // not get to is reported rather than silently absent — `diskUsageNote` has
@@ -236,7 +267,12 @@ chatsRouter.get("/folders", (req, res) => {
     });
 
     const diskUsageNote = budget.note(folders.length);
-    res.json({ folders, ...(diskUsageNote && { diskUsageNote }) });
+    const responseData = { folders, ...(diskUsageNote && { diskUsageNote }) };
+    // Store the fingerprint read *before* the rows were built. The rows can
+    // only be as fresh as that read, so recording a later one would claim a
+    // freshness they do not have and hide a transition that landed mid-build.
+    folderListCache.set(cacheKey, { data: responseData, createdAt: Date.now(), fingerprint });
+    res.json({ ...responseData, stale: false });
   } catch (err: any) {
     log.error(`Error listing folders: ${err}`);
     res.status(500).json({ error: "Failed to list folders", details: err.message });
@@ -878,7 +914,7 @@ chatsRouter.post("/", (req, res) => {
 
   try {
     const chat = chatFileService.createChat(folder, sessionId, JSON.stringify(metadata));
-    clearChatListCache();
+    clearListCaches();
     res.status(201).json({
       ...chat,
       is_git_repo: gitInfo.isGitRepo,
@@ -1068,7 +1104,7 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // of a worktree chat would be missing from the set Phase 2's archive
     // cascade interrupts when that directory is removed underneath it.
     const newChat = chatFileService.createChat(chat.folder, newSessionId, JSON.stringify(forkMeta), chat.workspaceId);
-    clearChatListCache();
+    clearListCaches();
     res.status(201).json(newChat);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1140,7 +1176,7 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
     // Upsert: creates file storage record if it only existed on filesystem
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
-    clearChatListCache();
+    clearListCaches();
     res.json(updatedChat);
   } catch (err: any) {
     log.error(`Error toggling bookmark: ${err}`);
@@ -1209,7 +1245,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     // Upsert: creates file storage record if it only existed on filesystem
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
-    clearChatListCache();
+    clearListCaches();
     res.json(updatedChat);
   } catch (err: any) {
     log.error(`Error updating permissions: ${err}`);
@@ -1241,7 +1277,7 @@ chatsRouter.patch("/:id/read", (req, res) => {
     // Upsert: creates file storage record if it only existed on filesystem
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
-    clearChatListCache();
+    clearListCaches();
     res.json(updatedChat);
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
@@ -1302,7 +1338,7 @@ chatsRouter.patch("/:id/summon", (req, res) => {
 
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
-    clearChatListCache();
+    clearListCaches();
 
     // Clear summon from registry and notify metadata change
     sessionRegistry.clearSummon(chat.id);
@@ -1338,7 +1374,7 @@ chatsRouter.delete("/:id", (req, res) => {
       provider.deleteSessionFiles(sessionId);
     }
 
-    clearChatListCache();
+    clearListCaches();
     res.json({ ok: true });
   } catch (err: any) {
     log.error(`Error deleting chat: ${err}`);

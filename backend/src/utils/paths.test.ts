@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, afterAll, afterEach, beforeEach } from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+// The `fs` mock below replaces `statSync` with a spy; the memoisation suite
+// asserts on its call count, so it needs the mocked binding, not `node:fs`.
+import { statSync as mockedStatSync } from "fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isIgnoredProjectFolder, projectDirToFolder, saveIgnoredProjectDirPrefixes } from "./paths.js";
+import { clearProjectDirFolderCache, isIgnoredProjectFolder, projectDirToFolder, saveIgnoredProjectDirPrefixes } from "./paths.js";
 
 /**
  * Tests for projectDirToFolder — decoding Claude SDK encoded project directory
@@ -53,6 +56,13 @@ function setupFS(opts: {
   mockDirectories = new Set(opts.dirs ?? []);
   mockFiles = new Set(opts.files ?? []);
   mockDirEntries = new Map(Object.entries(opts.listings ?? {}));
+  // `projectDirToFolder` memoises its answer per project-dir name, and these
+  // cases deliberately re-ask the same name against a different filesystem —
+  // `-repo-feature` resolves one way when `/repo/feature` exists and another
+  // when only `/repo.feature` does. Redefining the filesystem is exactly the
+  // event that voids a cached decode, so it is voided here rather than in a
+  // `beforeEach` that could drift away from the setup it belongs to.
+  clearProjectDirFolderCache();
 }
 
 beforeEach(() => {
@@ -60,6 +70,7 @@ beforeEach(() => {
   mockDirectories = new Set();
   mockFiles = new Set();
   mockDirEntries = new Map();
+  clearProjectDirFolderCache();
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -762,5 +773,69 @@ describe("isIgnoredProjectFolder", () => {
 
   it("returns false for empty input", () => {
     expect(isIgnoredProjectFolder("")).toBe(false);
+  });
+});
+
+/**
+ * The memo, which is the reason `GET /api/chats/folders` is affordable.
+ *
+ * The decoder probes the filesystem — a `statSync` per candidate split, a
+ * `readdirSync` scan, and for a name that resolves to nothing a combinatorial
+ * dash/dot search. Session discovery asks it **once per transcript file**, and
+ * on a real machine that was 1518 calls across 83 distinct names: an 18x
+ * redundancy factor, and 79 ms of blocked event loop per listing request.
+ *
+ * These assert on syscall counts rather than on wall-clock, because the claim
+ * is "it does not ask the filesystem twice", not "it is fast today".
+ */
+describe("projectDirToFolder memoisation", () => {
+  it("probes the filesystem once for repeated asks about the same name", () => {
+    setupFS({ dirs: ["/a", "/a/b"], files: [], listings: {} });
+    const statSync = vi.mocked(mockedStatSync);
+
+    expect(projectDirToFolder("-a-b-c")).toBe("/a/b/c");
+    const afterFirst = statSync.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    for (let i = 0; i < 20; i++) expect(projectDirToFolder("-a-b-c")).toBe("/a/b/c");
+    expect(statSync.mock.calls.length).toBe(afterFirst);
+  });
+
+  it("still probes for a name it has not seen", () => {
+    setupFS({ dirs: ["/a", "/a/b", "/x", "/x/y"], files: [], listings: {} });
+    const statSync = vi.mocked(mockedStatSync);
+
+    projectDirToFolder("-a-b-c");
+    const afterFirst = statSync.mock.calls.length;
+
+    // A different name is a different key — the memo must not answer for it.
+    expect(projectDirToFolder("-x-y-z")).toBe("/x/y/z");
+    expect(statSync.mock.calls.length).toBeGreaterThan(afterFirst);
+  });
+
+  it("is the expensive unresolvable case that benefits most", () => {
+    // Nothing exists, so the greedy pass fails and both recovery strategies
+    // run to exhaustion before returning a best-effort answer. This is the
+    // shape of a deleted worktree's project dir — 50 of 83 on the profiled
+    // machine — and it used to pay in full on every request, forever.
+    setupFS({ dirs: [], files: [], listings: {} });
+    const statSync = vi.mocked(mockedStatSync);
+
+    expect(projectDirToFolder("-a-b-c-d-e")).toBe("/a-b-c-d-e");
+    const afterFirst = statSync.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(5);
+
+    expect(projectDirToFolder("-a-b-c-d-e")).toBe("/a-b-c-d-e");
+    expect(statSync.mock.calls.length).toBe(afterFirst);
+  });
+
+  it("re-probes after the cache is cleared", () => {
+    setupFS({ dirs: ["/repo", "/repo/feature"], listings: { "/": ["repo"] } });
+    expect(projectDirToFolder("-repo-feature")).toBe("/repo/feature");
+
+    // The directory moved: /repo/feature is gone, /repo.feature is there.
+    // A cleared memo must observe the new filesystem, not the old answer.
+    setupFS({ dirs: ["/repo", "/repo.feature"], listings: { "/": ["repo", "repo.feature"] } });
+    expect(projectDirToFolder("-repo-feature")).toBe("/repo.feature");
   });
 });

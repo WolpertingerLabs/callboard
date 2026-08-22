@@ -271,7 +271,7 @@ app.post("/api/instance-name/randomize", (_req, res) => {
 
 // Ignored project directories endpoints (requires auth)
 import { DEFAULT_IGNORED_PROJECT_DIR_PREFIXES, getIgnoredProjectDirPrefixes, saveIgnoredProjectDirPrefixes } from "./utils/paths.js";
-import { clearChatListCache } from "./routes/chats.js";
+import { clearListCaches } from "./services/list-caches.js";
 
 app.get("/api/ignored-project-dirs", (_req, res) => {
   // #swagger.tags = ['Settings']
@@ -307,8 +307,9 @@ app.put("/api/ignored-project-dirs", (req, res) => {
     });
   }
   const saved = saveIgnoredProjectDirPrefixes(prefixes);
-  // Invalidate chat list cache so the next /api/chats call reflects the change
-  clearChatListCache();
+  // Invalidate both listing caches so the next /api/chats and
+  // /api/chats/folders calls reflect the change.
+  clearListCaches();
   res.json({ prefixes: saved, defaults: [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES] });
 });
 

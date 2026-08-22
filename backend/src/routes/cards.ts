@@ -15,7 +15,7 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setChatCardMembership, unassignAllChatsFromCard } from "../services/card-membership.js";
 import { listRuns } from "../services/job-store.js";
-import { clearChatListCache } from "../services/chat-list-cache.js";
+import { clearListCaches } from "../services/list-caches.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -138,7 +138,7 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     if (updated.length > 0) {
       // Once for the batch, same reason as the single-card patch: a lifecycle
       // flip moves which chats the sidebar's cards-only filter admits.
-      clearChatListCache();
+      clearListCaches();
       // Also once for the batch, not once per card. The board refetches its
       // whole card list on any metadata bump (300ms debounce), so N
       // notifications would be N SSE frames driving one identical refetch.
@@ -210,7 +210,7 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     // A lifecycle flip changes which chats the sidebar's cards-only filter
     // admits, and that list is cached by query string — drop it so the next
     // poll reflects the close/reopen instead of serving the old membership.
-    if (patch.lifecycle !== undefined) clearChatListCache();
+    if (patch.lifecycle !== undefined) clearListCaches();
     sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
     res.json({ card: summarize([card])[0] });
   } catch (err: any) {
