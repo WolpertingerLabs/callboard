@@ -273,9 +273,16 @@ export async function listChats(
 
 /**
  * `signal` is optional and trailing, so existing callers are unaffected. The
- * sidebar passes one because this listing is polled and uncached on the server
- * — a request whose answer is already superseded should stop occupying the
- * connection rather than run to completion and be thrown away.
+ * sidebar passes one because a request whose answer is already superseded
+ * should stop occupying the connection rather than run to completion and be
+ * thrown away.
+ *
+ * The server caches this response for 5 s, which is shorter than the sidebar's
+ * 15 s poll — so a scheduled poll still costs a full recompute, and aborting a
+ * superseded request still saves real work. Nor does an event-driven refresh
+ * get a hit: it fires because session or workspace state moved, which is the
+ * same movement that invalidates the entry. Assume every request from here
+ * costs a recompute; see backend/src/services/folder-list-cache.ts.
  */
 export async function listFolders(maxAgeDays?: number, includeDiskUsage?: boolean, signal?: AbortSignal): Promise<FolderListResponse> {
   const params = new URLSearchParams();

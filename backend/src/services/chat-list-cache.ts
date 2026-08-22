@@ -12,9 +12,23 @@ export interface CachedChatListResponse {
 }
 
 export const chatListCache = new Map<string, CachedChatListResponse>();
-/** Serve without revalidating below this age. */
+/** Serve as fresh (`stale: false`) below this age. */
 export const CHAT_LIST_CACHE_TTL = 5_000;
-/** Serve stale (and revalidate) up to this age; beyond it, recompute. */
+/**
+ * Serve flagged `stale: true` up to this age; beyond it, recompute.
+ *
+ * This *is* stale-while-revalidate — but the revalidation lives in the client,
+ * not here. The server never refreshes an entry on a stale hit; what closes the
+ * loop is `ChatList.tsx`, which paints the stale response and immediately
+ * re-requests with `cached=false`, and that bypass is a read-through, so it
+ * refills the entry on the way past. Between the TTL and this bound a response
+ * is therefore shown once and replaced, not left to age.
+ *
+ * The folder list deliberately has no equivalent (see folder-list-cache.ts).
+ * The asymmetry is a cost argument, not an oversight: hiding a ~270 ms
+ * recompute behind an instant stale paint is worth a second round trip, and
+ * hiding a ~21 ms one is not.
+ */
 export const CHAT_LIST_CACHE_MAX_AGE = 300_000;
 
 export function clearChatListCache(): void {

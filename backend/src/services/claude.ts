@@ -432,6 +432,25 @@ export function hasPendingRequest(chatId: string): boolean {
   return pendingRequests.has(chatId);
 }
 
+/**
+ * A value that changes whenever the set of chats awaiting a permission answer
+ * changes — the "waiting" half of a folder row's `status`.
+ *
+ * Derived from the map rather than maintained as a counter alongside it. There
+ * are seven places that add to or remove from `pendingRequests` (permission
+ * request, response, abort, two unregister paths, the tracking-id rekey, and
+ * cleanup), and a hand-bumped counter is one forgotten call site away from
+ * silently pinning a folder row to "waiting" forever. Reading the keys cannot
+ * drift, and the map holds one entry per chat currently blocked on a prompt —
+ * normally zero, a handful at worst — so it costs nothing to ask.
+ *
+ * Consumed by the folder-list cache; see services/folder-list-cache.ts.
+ */
+export function pendingRequestFingerprint(): string {
+  if (pendingRequests.size === 0) return "";
+  return [...pendingRequests.keys()].sort().join(",");
+}
+
 export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve"> | null {
   const p = pendingRequests.get(chatId);
   if (!p) return null;

@@ -129,10 +129,40 @@ function atomicWrite(filepath: string, content: string): void {
   renameSync(tmp, filepath);
 }
 
+/**
+ * Bumped on every write to the registry — see {@link workspaceRegistryVersion}.
+ *
+ * It lives here rather than beside the callers because `saveWorkspace` and
+ * `deleteWorkspace` are the only two ways a record ever changes on disk, and
+ * nothing outside this module writes `~/.callboard/workspaces/`. A counter at
+ * the funnel cannot be forgotten by a future writer the way an invalidation
+ * call at each route can.
+ */
+let _workspaceRegistryVersion = 0;
+
+/**
+ * A value that changes whenever any workspace record is created, renamed,
+ * archived or deleted.
+ *
+ * Folder rows carry `displayName`, `workspaceId`, `workspaceCount`, `repoPath`,
+ * `workspaces[]`, `directoryState` and `directoryDetail`, all of which come
+ * from this registry — so a listing cache that does not watch this will happily
+ * serve a renamed workspace under its old name. It is read by the folder-list
+ * cache's fingerprint; see services/folder-list-cache.ts.
+ *
+ * Deliberately a version rather than a `clearListCaches()` call at each writer:
+ * `renameWorkspace` and `archiveWorkspace` were never among the writers that
+ * invalidate, and the next one added would not be either.
+ */
+export function workspaceRegistryVersion(): number {
+  return _workspaceRegistryVersion;
+}
+
 function saveWorkspace(workspace: Workspace): void {
   const filepath = workspaceFilePath(workspace.id);
   if (!filepath) throw new Error(`Invalid workspace id: ${workspace.id}`);
   atomicWrite(filepath, JSON.stringify(workspace, null, 2));
+  _workspaceRegistryVersion++;
 }
 
 /** Fall back to the directory name when the caller supplies no name. */
@@ -311,6 +341,7 @@ export function deleteWorkspace(id: string): boolean {
   if (!filepath || !existsSync(filepath)) return false;
   try {
     rmSync(filepath);
+    _workspaceRegistryVersion++;
     return true;
   } catch (err: any) {
     log.error(`Failed to delete workspace ${id}: ${err.message}`);

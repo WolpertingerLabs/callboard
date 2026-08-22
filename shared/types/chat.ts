@@ -182,6 +182,9 @@ export interface FolderListResponse {
   folders: FolderSummary[];
   /** Set when the disk-usage budget ran out before every row was measured. */
   diskUsageNote?: string;
+  // Deliberately no `stale` flag to mirror ChatListResponse's. The folder-list
+  // cache never serves an entry past its TTL, so there is no stale response for
+  // a flag to describe — see backend/src/services/folder-list-cache.ts.
 }
 
 // ── Chat parentage tree ─────────────────────────────────────────────

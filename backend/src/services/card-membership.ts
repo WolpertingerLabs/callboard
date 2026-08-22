@@ -12,7 +12,7 @@
 import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { sessionRegistry } from "./session-registry.js";
-import { clearChatListCache } from "./chat-list-cache.js";
+import { clearListCaches } from "./list-caches.js";
 
 /** The chat's card, or undefined. `cardId: null` (unassigned) reads as undefined. */
 export function getChatCardId(chatId: string): string | undefined {
@@ -36,7 +36,7 @@ export function getChatCardId(chatId: string): string | undefined {
 function writeViewMeta(chatId: string, fields: Record<string, unknown>): boolean {
   // Fast path: an existing file-storage record (covers agent/UI chats).
   if (chatFileService.updateChatMetadata(chatId, fields, { touch: false })) {
-    clearChatListCache();
+    clearListCaches();
     sessionRegistry.notifyMetadata(chatId, fields);
     return true;
   }
@@ -54,7 +54,7 @@ function writeViewMeta(chatId: string, fields: Record<string, unknown>): boolean
     ...(chat.created_at && { created_at: chat.created_at }),
     ...(chat.updated_at && { updated_at: chat.updated_at }),
   });
-  clearChatListCache();
+  clearListCaches();
   sessionRegistry.notifyMetadata(chat.id, fields);
   return true;
 }

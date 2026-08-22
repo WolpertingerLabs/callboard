@@ -40,6 +40,7 @@ import type {
 import { TRASH_MANIFEST_FILE, TRASH_RETENTION_MS, trashRoot, type TrashManifest } from "../utils/worktree-trash.js";
 import { newDiskUsageBudget } from "../utils/disk-usage.js";
 import { resolveCommit } from "../utils/git.js";
+import { clearProjectDirFolderCache } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("workspace-trash");
@@ -419,6 +420,14 @@ export function restoreTrashEntry(entryName: string, opts?: { root?: string }): 
       `git ${add.args.join(" ")} failed: ${detail}. Nothing was copied and ${full} is untouched.`,
     );
   }
+
+  // The checkout is back at `originalPath`. Drop the decode memo before
+  // anything reads a listing again: while the directory was in the trash, any
+  // decode of its project-dir name fell through to a best-effort guess, and a
+  // guess cached for five minutes would hide the row that just came back. This
+  // is the restore half of the pair; the quarantine half is in
+  // utils/worktree-trash.ts.
+  clearProjectDirFolderCache();
 
   // Copy back what git does not track. Every failure below is per-path: the
   // walk continues, and what it could not bring back is returned rather than

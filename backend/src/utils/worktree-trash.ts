@@ -44,7 +44,7 @@
 import type { Dirent } from "fs";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { DATA_DIR } from "./paths.js";
+import { clearProjectDirFolderCache, DATA_DIR } from "./paths.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("worktree-trash");
@@ -202,6 +202,15 @@ export function quarantineDirectory(source: string, opts: QuarantineOptions): Qu
     // fallback on purpose: nothing has moved, and the caller reports a refusal.
     return { ok: false, code: "move-failed", error: `Could not move ${source} to ${trashPath}: ${err.message}` };
   }
+
+  // A directory just stopped existing at `source`, and `projectDirToFolder`
+  // decides where a project-dir name points by asking the filesystem. Its memo
+  // would keep answering for up to five minutes — harmless on its own (the old
+  // path is still where the chats were), but it is the half of an
+  // archive-then-restore cycle that makes the *restore* wrong: a decode taken
+  // while the directory is absent falls through to a best-effort guess, and
+  // that guess would then outlive the directory coming back.
+  clearProjectDirFolderCache();
 
   const manifest: TrashManifest = {
     ...opts.manifest,
