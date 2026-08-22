@@ -120,6 +120,90 @@ const FORWARDING_HEADERS = [
  * An unparseable or absent address is not local: `isPrivateOrLoopback` fails
  * closed.
  */
+/**
+ * The address the remote-access IP allowlist should judge, and whether this
+ * request is exempt from it at all.
+ *
+ * ## Why this is not {@link getClientKey}
+ *
+ * It was, and that was a hole. `getClientKey` takes the **head** of
+ * `X-Forwarded-For`, which is the original client in a well-formed chain and
+ * anything the caller likes in a hostile one. Measured against the gate before
+ * this function existed, with the allowlist set to a single address that was not
+ * the caller's:
+ *
+ *     X-Forwarded-For: 8.8.8.8               → 403          (gate works)
+ *     X-Forwarded-For: 127.0.0.1, 8.8.8.8    → 200 {"ok":true} on /api/auth/login
+ *
+ * — the gate skipped entirely, and a session issued. The same header shape is
+ * *correct* for `getClientKey`'s own job (rate-limit buckets must not collapse
+ * into one shared `127.0.0.1` under the tunnel), which is exactly why the loose
+ * question and the strict one need different answers. `client-ip.ts` already
+ * said so about `isDirectLocalClient`; the gate reached for the loose helper
+ * anyway.
+ *
+ * ## The rule
+ *
+ * 1. **Socket is public** — a direct connection from the internet. Judge the
+ *    socket address and ignore every header: they are the caller's to write.
+ * 2. **Socket is loopback/LAN with no forwarding header** — a genuine local or
+ *    LAN client. **Exempt**, and this case is load-bearing: it is the path by
+ *    which an operator repairs a settings file that has locked everyone else
+ *    out.
+ * 3. **Socket is loopback/LAN with a forwarding header** — something proxied
+ *    this, so it is not local however the header spells itself. Never exempt.
+ *    The address is `CF-Connecting-IP` (the supported cloudflared path, which
+ *    that proxy overwrites), else the **last** `X-Forwarded-For` entry — the one
+ *    a proxy appends, rather than the head a client controls — else the socket
+ *    address, which will not be on any allowlist and so refuses.
+ *
+ * Case 3 is deliberately fail-closed and it has a cost: an operator running
+ * their own loopback reverse proxy *and* a non-empty allowlist must put their
+ * address on it. That is the honest meaning of "the allowlist gates every /api
+ * route", it only bites when a list is configured (an empty one still means no
+ * restriction, so the default install is untouched), and a self-managed proxy
+ * was already outside the supported set — see {@link getClientKey}'s last note.
+ */
+export interface AllowlistSubject {
+  /** The address to test against the allowlist. */
+  address: string;
+  /** True ⇒ do not gate at all. Only a direct loopback/LAN client with no forwarding header. */
+  exempt: boolean;
+}
+
+export function allowlistSubject(req: Request): AllowlistSubject {
+  const headers = req.headers ?? {};
+  const socketIp = req.socket?.remoteAddress || req.ip || "";
+
+  // 1. A direct connection from a public address. Its headers are its own.
+  if (!isPrivateOrLoopback(socketIp)) return { address: socketIp || "unknown", exempt: false };
+
+  const forwarded = FORWARDING_HEADERS.some((name) => headers[name] !== undefined && headers[name] !== null);
+
+  // 2. Genuinely local. The repair path.
+  if (!forwarded) return { address: socketIp, exempt: true };
+
+  // 3. Proxied. Attribute as conservatively as the headers allow.
+  const cf = headers["cf-connecting-ip"];
+  const cfValue = (typeof cf === "string" ? cf : Array.isArray(cf) ? cf[0] : "")?.trim();
+  if (cfValue) return { address: cfValue, exempt: false };
+
+  const xff = headers["x-forwarded-for"];
+  const chain = (typeof xff === "string" ? xff : Array.isArray(xff) ? xff.join(",") : "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  // The LAST entry, not the first: entries are appended as a request crosses
+  // proxies, so the rightmost is the hop nearest this daemon and the leftmost is
+  // whatever the client chose to claim.
+  const nearest = chain[chain.length - 1];
+  if (nearest) return { address: nearest, exempt: false };
+
+  // A hop announced itself (`x-forwarded-proto`, `forwarded`, …) without giving
+  // an address. Nothing to attribute, so nothing to exempt.
+  return { address: socketIp, exempt: false };
+}
+
 export function isDirectLocalClient(req: Request): boolean {
   const headers = req.headers ?? {};
   for (const name of FORWARDING_HEADERS) {

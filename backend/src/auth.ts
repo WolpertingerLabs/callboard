@@ -4,8 +4,8 @@ import { getSession, createSession, deleteSession, extendSession, cleanupExpired
 import { verifyApiToken } from "./services/api-keys.js";
 import { verifyPassword, hashPassword, generateSalt, validateNewPassword } from "./utils/password.js";
 import { updateEnvFile } from "./utils/env-writer.js";
-import { getClientKey } from "./utils/client-ip.js";
-import { isIpAllowed, isPrivateOrLoopback } from "./utils/ip-allowlist.js";
+import { allowlistSubject, getClientKey } from "./utils/client-ip.js";
+import { isIpAllowed } from "./utils/ip-allowlist.js";
 import { readAgentSettings } from "./services/agent-settings.js";
 import { createLogger } from "./utils/logger.js";
 
@@ -225,8 +225,15 @@ export async function changePasswordHandler(req: Request, res: Response) {
  * allowlist means no restriction. See `utils/ip-allowlist.ts`.
  */
 export function requireAllowedIp(req: Request, res: Response, next: NextFunction) {
-  const clientIp = getClientKey(req);
-  if (isPrivateOrLoopback(clientIp)) return next();
+  // `allowlistSubject`, not `getClientKey`, and the difference is a bypass.
+  // `getClientKey` takes the HEAD of `X-Forwarded-For`, which a client writes:
+  // measured against this gate with an allowlist configured, `X-Forwarded-For:
+  // 127.0.0.1, 8.8.8.8` skipped it entirely and `POST /api/auth/login` returned
+  // `{"ok":true}` — a session issued to an address the operator had excluded.
+  // That header handling is correct for rate-limit buckets and wrong here; see
+  // `utils/client-ip.ts` for the rule this uses instead.
+  const { address: clientIp, exempt } = allowlistSubject(req);
+  if (exempt) return next();
 
   // `readAgentSettings`, not `getAgentSettings`, and the distinction is the
   // whole of this branch.

@@ -54,7 +54,7 @@ const PUBLIC_IP = "203.0.113.7";
  * the socket address unchanged — the shape a client arriving from the internet
  * has, and the only shape the allowlist gates.
  */
-function call(socketIp: string, path = "/system-info"): { status?: number; body?: any; passed: boolean } {
+function call(socketIp: string, path = "/system-info", headers: Record<string, string> = {}): { status?: number; body?: any; passed: boolean } {
   let status: number | undefined;
   let body: any;
   let passed = false;
@@ -72,7 +72,7 @@ function call(socketIp: string, path = "/system-info"): { status?: number; body?
     },
     locals: {} as Record<string, unknown>,
   } as unknown as Response;
-  const req = { socket: { remoteAddress: socketIp }, headers: {}, path, cookies: {} } as unknown as Request;
+  const req = { socket: { remoteAddress: socketIp }, headers, path, cookies: {} } as unknown as Request;
   requireAllowedIp(req, res, (() => {
     passed = true;
   }) as NextFunction);
@@ -219,5 +219,63 @@ describe("what it gates", () => {
     }
     // And below the gate, so a client that passes it still has to authenticate.
     expect(index.indexOf('app.use("/api", requireAuth)')).toBeGreaterThan(gate);
+  });
+});
+
+describe("the header bypass, reproduced and closed", () => {
+  const LIST = JSON.stringify({ remoteAccessIpAllowlist: ["198.51.100.4"] });
+
+  it("REFUSES a loopback socket whose X-Forwarded-For claims to start at loopback", () => {
+    // Measured against a real daemon before this was fixed: with the allowlist
+    // set to one address that was not the caller's, `X-Forwarded-For:
+    // 127.0.0.1, 8.8.8.8` skipped the gate entirely and `POST /api/auth/login`
+    // returned `{"ok":true}` — a session issued to an excluded address.
+    //
+    // `getClientKey` takes the HEAD of that list, which the client writes. That
+    // is right for rate-limit buckets and wrong for an address gate.
+    writeFileSync(SETTINGS_FILE, LIST);
+    const result = call("127.0.0.1", "/auth/login", { "x-forwarded-for": "127.0.0.1, 8.8.8.8" });
+    expect(result.passed).toBe(false);
+    expect(result.status).toBe(403);
+  });
+
+  it("judges the LAST forwarded entry, which is the hop nearest this daemon", () => {
+    // Entries are appended as a request crosses proxies, so the rightmost is
+    // what a proxy added and the leftmost is what a client claimed.
+    writeFileSync(SETTINGS_FILE, LIST);
+    expect(call("127.0.0.1", "/system-info", { "x-forwarded-for": "10.0.0.9, 198.51.100.4" }).passed).toBe(true);
+    expect(call("127.0.0.1", "/system-info", { "x-forwarded-for": "198.51.100.4, 8.8.8.8" }).passed).toBe(false);
+  });
+
+  it("prefers CF-Connecting-IP, which cloudflared overwrites", () => {
+    // The supported remote-access path. cloudflared sets this itself, so it is
+    // not the client's to forge — and it wins over any XFF the client appended.
+    writeFileSync(SETTINGS_FILE, LIST);
+    expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "198.51.100.4", "x-forwarded-for": "127.0.0.1" }).passed).toBe(true);
+    expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "8.8.8.8", "x-forwarded-for": "127.0.0.1" }).passed).toBe(false);
+  });
+
+  it("refuses a hop that announced itself without giving an address", () => {
+    // `x-forwarded-proto` and friends carry no address but are still evidence
+    // of a hop. Nothing to attribute means nothing to exempt.
+    writeFileSync(SETTINGS_FILE, LIST);
+    expect(call("127.0.0.1", "/system-info", { "x-forwarded-proto": "https" }).passed).toBe(false);
+  });
+
+  it("still exempts a genuine local or LAN client, headers absent", () => {
+    // The regression that would matter most: this is the repair path, and the
+    // shape a browser on the same machine actually has.
+    writeFileSync(SETTINGS_FILE, LIST);
+    for (const ip of ["127.0.0.1", "::1", "192.168.1.50", "fd00::1"]) {
+      expect(call(ip).passed, ip).toBe(true);
+    }
+  });
+
+  it("leaves the default install untouched: no allowlist means no restriction", () => {
+    // The gate only bites when an operator configured a list. A proxied request
+    // against an empty list still passes, so nobody who has not opted in sees
+    // any of this.
+    rmSync(SETTINGS_FILE, { force: true });
+    expect(call("127.0.0.1", "/auth/login", { "x-forwarded-for": "127.0.0.1, 8.8.8.8" }).passed).toBe(true);
   });
 });
