@@ -291,11 +291,43 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
     // CVE-2024-27980 Node refuses to `spawn` one without `shell: true` — which
     // is the one thing this endpoint does not get to have.
     //
-    // This is a limit of *this implementation*, not of the platform, and the
-    // copy says so. Spawning `process.execPath` with npm's own `npm-cli.js`
-    // would work shell-free; it is not done here because it would ship
-    // untested on a platform I cannot exercise, and the copy-and-paste command
-    // works perfectly meanwhile.
+    // ## Why the obvious fix is not enough, having now been looked at
+    //
+    // The reviewer's suggestion is sound and was checked: spawning
+    // `process.execPath` with npm's own `npm-cli.js` needs no shell, and
+    // `node <npm root -g>/npm/bin/npm-cli.js root -g` was run here and works.
+    // That derivation is even platform-neutral — `npm root -g` prints the
+    // directory npm itself lives in on both platforms — so the *spawn* half
+    // could ship exercised on Linux with only the Windows `npm-cli.js`
+    // location untested.
+    //
+    // The spawn is not the load-bearing half. The **preflight** is: Decision 8
+    // only permits this button because a failure is predicted and degraded to
+    // the copy block rather than met with an EACCES wall of text. Two of its
+    // parts do not port, and both were checked against Windows-shaped inputs
+    // rather than assumed:
+    //
+    //   - `globalBinDirFor` requires a `.../lib/node_modules` suffix. Windows
+    //     `npm root -g` is `<prefix>\node_modules` with no `lib`, so it returns
+    //     `undefined` and the **bin-directory** writability check silently does
+    //     not run — the very check #359 added because testing only the package
+    //     root missed a reproduced real-world failure (a user-owned prefix
+    //     whose `bin/` belonged to root).
+    //   - `isOnDaemonPath` compares PATH entries with exact string equality.
+    //     Windows paths are case-insensitive, so a PATH carrying
+    //     `C:\Users\U\AppData\Roaming\npm` against a derived
+    //     `C:\Users\u\AppData\Roaming\npm` reads as "not on PATH" and produces
+    //     a warning that is false.
+    //
+    // Both are fixable, and neither fix is verifiable from here — nor is the
+    // question underneath them, which is whether `fs.access(W_OK)` answers
+    // "could npm write here" correctly against Windows ACLs at all. Shipping
+    // the button would mean shipping a capability check with a hole in it,
+    // which is this series' signature defect (a UI asserting something nothing
+    // checked) rather than a missing feature. The copy-and-paste command works
+    // perfectly meanwhile, so the cost of refusing is one click.
+    //
+    // @see plans/engine-availability-and-install.md — "Windows one-click"
     return {
       oneClick: false,
       code: "unsupported-platform",
