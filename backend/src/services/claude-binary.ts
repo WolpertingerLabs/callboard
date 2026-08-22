@@ -75,6 +75,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { BINARY_OVERRIDE_PHRASING, checkBinaryPathAsync, type BinaryPathCheck } from "../utils/binary-path.js";
+import { binaryVersion } from "../utils/binary-version.js";
 import { createLogger } from "../utils/logger.js";
 import { getAgentSettings } from "./agent-settings.js";
 
@@ -157,6 +158,53 @@ function logRejectionOnce(what: string, check: BinaryPathCheck): void {
 }
 
 /**
+ * Is this candidate plausibly a Claude Code CLI, and not merely *an executable
+ * named `claude`*?
+ *
+ * ## Why this exists, and why only for two of the four candidates
+ *
+ * `checkBinaryPathAsync` answers "could this be spawned". That is necessary and
+ * not sufficient, and the gap is not academic: hand the Agent SDK a path to a
+ * shell script that prints a line and exits, and the SDK writes to a child that
+ * is already gone. The resulting **EPIPE is uncaught**, and `installProcessGuards`
+ * treats an uncaught exception as unrecoverable and exits the process. So the
+ * cost of adopting the wrong binary is not a broken chat — it is a daemon that
+ * will not boot, since `sdk-info.ts` resolves at startup.
+ *
+ * Measured, with a stub `claude` that echoes one line and exits, against an
+ * isolated daemon:
+ *
+ * | scenario | before this probe | with it |
+ * |---|---|---|
+ * | stub in `~/.local/bin`, not on PATH | 3 uncaught, `EXIT=1` | boots, ignores it |
+ * | `CLAUDE_BINARY=<stub>`              | 3 uncaught, `EXIT=1` | boots, ignores it |
+ *
+ * **The probe is applied to `env` and `well-known` only, and that asymmetry is
+ * the point rather than an oversight.** Those two are the candidates this merge
+ * *added* to the spawn path; `setting` and `path` were already there before it.
+ * For the two new ones, failing the probe falls through to the next candidate
+ * and ultimately to the SDK's bundled binary — which is exactly what the daemon
+ * did before, so a false negative costs nothing. For the two old ones, falling
+ * through would *remove* a binary the daemon previously used, which is a
+ * behaviour change in the opposite direction and not this change's to make. A
+ * stray `claude` on `PATH`, or a settings override pointed at one, still takes
+ * the daemon down; that is pre-existing, unchanged, and reported rather than
+ * quietly half-fixed.
+ *
+ * It is a **sanity** probe and not an identity proof. A different tool that
+ * prints a dotted version passes it. What it removes is the realistic case — a
+ * wrapper, a stale shim, a placeholder script — and it removes it at the price
+ * of one cached `--version` spawn per daemon lifetime.
+ */
+async function looksLikeClaudeCode(path: string): Promise<boolean> {
+  // Deliberately the same check the status card trusts for the Version row, so
+  // "Callboard will run this" and "Callboard can name its version" cannot come
+  // apart: a candidate this rejects is one the card would have shown as
+  // Unknown.
+  return (await binaryVersion(path)) !== undefined;
+}
+
+/**
  * `which claude` plus the well-known directories, memoized for the process
  * lifetime.
  *
@@ -218,11 +266,17 @@ async function discoverClaude(): Promise<{ path: string; source: ClaudeBinarySou
     let found: { path: string; source: ClaudeBinarySource } | null = null;
     for (const candidate of candidates) {
       const check = await checkBinaryPathAsync(candidate.path, "Claude Code binary", "");
-      if (check.state === "active") {
-        found = candidate;
-        log.info(`Found Claude Code CLI at ${candidate.path} (${candidate.source})`);
-        break;
+      if (check.state !== "active") continue;
+      // See {@link looksLikeClaudeCode}: only the candidate kind this merge
+      // added is sanity-probed, because only there does falling through restore
+      // what the daemon did before rather than take something away.
+      if (candidate.source === "well-known" && !(await looksLikeClaudeCode(candidate.path))) {
+        log.warn(`Ignoring ${candidate.path}: it is executable but did not answer \`--version\` with anything recognisable, so it is probably not the Claude Code CLI`);
+        continue;
       }
+      found = candidate;
+      log.info(`Found Claude Code CLI at ${candidate.path} (${candidate.source})`);
+      break;
     }
 
     if (generation === discoveryGeneration) {
@@ -254,8 +308,12 @@ export async function resolveClaudeBinary(): Promise<ClaudeBinaryResolution> {
   const fromEnv = process.env.CLAUDE_BINARY?.trim();
   if (fromEnv) {
     const check = await checkBinaryPathAsync(fromEnv, "Claude Code binary", "");
-    if (check.state === "active") return { path: check.path, source: "env", ...(override ? { override } : {}) };
-    logRejectionOnce("$CLAUDE_BINARY", check);
+    if (check.state === "active") {
+      if (await looksLikeClaudeCode(check.path)) return { path: check.path, source: "env", ...(override ? { override } : {}) };
+      logRejectionOnce("$CLAUDE_BINARY (did not answer `--version` recognisably)", check);
+    } else {
+      logRejectionOnce("$CLAUDE_BINARY", check);
+    }
   }
 
   const found = await discoverClaude();

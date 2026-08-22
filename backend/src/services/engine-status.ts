@@ -27,11 +27,9 @@
  *
  * @see plans/engine-availability-and-install.md — Phase 1
  */
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import type { EngineBinaryOverride, EngineCredentials, EngineInstallCapability, EngineStatus, EngineVersionDrift } from "shared/types/index.js";
 import { ACP_VENDOR_PRESETS } from "../agents/adapters/acp/vendors.js";
 import { acpProviderVersion, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "../agents/adapters/acp/availability.js";
@@ -43,14 +41,13 @@ import { getAgentSettings, getCodexExecutableOverride, isClaudeCodeRoutedThrough
 import { resetClaudeBinaryCache, resolveClaudeBinary, type ClaudeBinaryResolution } from "./claude-binary.js";
 import { EXPECTED_CODEX_CLI_VERSION } from "../agents/adapters/codex/sessionParser.js";
 import { bundledPackageVersion as readPackageVersion } from "../utils/package-version.js";
+import { binaryVersion, resetBinaryVersionCache } from "../utils/binary-version.js";
 import type { BinaryPathCheck } from "../utils/binary-path.js";
 import { installGuidanceFor } from "./engine-install-recipes.js";
 import { getLatestVersions, isNewerVersion } from "./npm-registry.js";
 import { getSdkInfoAsync, refreshSdkInfoCache } from "./sdk-info.js";
 
 const log = createLogger("engine-status");
-
-const execFileAsync = promisify(execFile);
 
 // ── Package versions ────────────────────────────────────────────────
 
@@ -144,71 +141,9 @@ export function bundledClaudeBinaryPresent(): boolean {
   return candidates.some((pkg) => readPackageVersion(pkg) !== undefined);
 }
 
-/**
- * `<binary> --version`, for a binary Callboard has already decided it will run.
- *
- * Two callers, and the precondition they share is the point: the path handed in
- * is always one this daemon *is going to spawn anyway* — the `claude`
- * `getClaudeCodeExecutablePath()` resolved, or an active `codexPathOverride`
- * that has passed its execute check. Nothing here probes a speculative path, and
- * nothing here runs a string a request supplied. (The settings fields validate
- * with `stat` only, for exactly that reason — see `utils/binary-path.ts`.)
- *
- * The CLIs print `"2.0.1 (Claude Code)"` and `"codex-cli 0.146.0"`, so the
- * answer is the first **dotted numeric** token on the first line.
- *
- * A banner with no such token yields `undefined`, and it must: the previous cut
- * fell back to the whole first line, which meant a wrapper printing
- * `my custom codex build` became the engine's `version` — a permanent amber
- * drift row asserting resume was unsafe, and an `isNewerVersion(…)` comparison
- * over `NaN` that reported an update was available. Every consumer of this
- * value compares it numerically or against a version constant, so a string that
- * is not a version is not an answer to give them; the card says the binary
- * printed nothing recognisable instead, which is both true and more useful.
- *
- * Async, with `killSignal: "SIGKILL"`, for the reason spelled out on
- * `acpProviderVersion`: `execFileSync`'s `timeout` does not bound wall-clock
- * (Node sends SIGTERM at the deadline and then waits indefinitely), and a sync
- * stall on a single-threaded server stalls every open SSE stream too.
- *
- * Cached per path for the process lifetime, like every other engine probe.
- * Keyed by path rather than by engine so that pointing an override somewhere new
- * and pressing Recheck cannot be answered from the old binary's cache entry —
- * which would be this feature's signature bug arriving through the cache layer.
- */
-const binaryVersionCache = new Map<string, string | undefined>();
-async function binaryVersion(execPath: string): Promise<string | undefined> {
-  // `has` rather than a truthiness check on `get`: a binary that ran and printed
-  // nothing usable caches as `undefined`, and re-spawning it on every assembly
-  // because the answer was "no version" is how a settings page starts costing a
-  // process per render.
-  if (binaryVersionCache.has(execPath)) return binaryVersionCache.get(execPath);
-
-  let version: string | undefined;
-  try {
-    const { stdout } = await execFileAsync(execPath, ["--version"], {
-      timeout: 5_000,
-      killSignal: "SIGKILL",
-      encoding: "utf-8",
-      maxBuffer: 1024 * 1024,
-    });
-    const out = stdout.trim();
-    const firstLine = out.split("\n")[0]?.trim() ?? "";
-    // `MAJOR.MINOR[.PATCH][-prerelease]`, anywhere on the line. No fallback to
-    // the raw banner — see the doc-comment.
-    version = /\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/.exec(firstLine)?.[0];
-  } catch {
-    // Present but unrunnable (wrong arch, permissions, killed at the deadline) —
-    // no version to report.
-    version = undefined;
-  }
-  binaryVersionCache.set(execPath, version);
-  return version;
-}
-
 /** Forget the cached `--version` results, manifest read, and any in-flight assembly. */
 export function resetEngineStatusCache(): void {
-  binaryVersionCache.clear();
+  resetBinaryVersionCache();
   callboardManifestCache = undefined;
   inFlight.clear();
 }

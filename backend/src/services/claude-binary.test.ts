@@ -35,8 +35,14 @@ vi.mock("node:child_process", async (importOriginal) => {
   const execFile: any = () => {
     throw new Error("callback-style execFile is not used by the module under test");
   };
-  execFile[promisify.custom] = async (...args: unknown[]) => {
-    const out = mocks.which(...args);
+  const real = await importOriginal<typeof import("node:child_process")>();
+  const realExecFileAsync = promisify(real.execFile);
+  execFile[promisify.custom] = async (file: string, ...rest: unknown[]) => {
+    // Only `which` is stubbed. The `--version` sanity probe has to reach a real
+    // spawn, because what it is testing is whether a real candidate answers —
+    // stubbing it would assert that the test's own string is a version.
+    if (file !== "which") return (realExecFileAsync as any)(file, ...rest);
+    const out = mocks.which(file, ...rest);
     // `mocks.which` may return a promise (the slow-PATH cases below); awaiting
     // it here is what lets a test hold the lookup open.
     return { stdout: await out, stderr: "" };
@@ -60,9 +66,24 @@ const SYSTEM_CLAUDE = ["/usr/local/bin/claude", "/usr/bin/claude", "/opt/homebre
 let scratch: string;
 let realHome: string | undefined;
 
+/**
+ * A stand-in that answers `--version` the way the real CLI does.
+ *
+ * The body matters now: `env` and `well-known` candidates are sanity-probed
+ * with `--version` before being adopted, so a script that prints nothing is
+ * *correctly* ignored on those paths. {@link inertExecutable} is the other half.
+ */
 function executable(name: string): string {
   const path = join(scratch, name);
-  writeFileSync(path, "#!/bin/sh\nexit 0\n");
+  writeFileSync(path, '#!/bin/sh\necho "2.1.238 (Claude Code)"\nexit 0\n');
+  chmodSync(path, 0o755);
+  return path;
+}
+
+/** Executable, and not a Claude Code CLI — the shape that took the daemon down. */
+function inertExecutable(name: string): string {
+  const path = join(scratch, name);
+  writeFileSync(path, '#!/bin/sh\necho "not really claude"\nexit 0\n');
   chmodSync(path, 0o755);
   return path;
 }
@@ -140,7 +161,7 @@ describe("the resolution order", () => {
     const home = process.env.HOME!;
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
     const inLocalBin = join(home, ".local", "bin", "claude");
-    writeFileSync(inLocalBin, "#!/bin/sh\nexit 0\n");
+    writeFileSync(inLocalBin, '#!/bin/sh\necho "2.1.238 (Claude Code)"\nexit 0\n');
     chmodSync(inLocalBin, 0o755);
 
     expect(await resolveClaudeBinary()).toMatchObject({ path: inLocalBin, source: "well-known" });
@@ -150,7 +171,7 @@ describe("the resolution order", () => {
     const home = process.env.HOME!;
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
     const inLocalBin = join(home, ".local", "bin", "claude");
-    writeFileSync(inLocalBin, "#!/bin/sh\nexit 0\n");
+    writeFileSync(inLocalBin, '#!/bin/sh\necho "2.1.238 (Claude Code)"\nexit 0\n');
     chmodSync(inLocalBin, 0o755);
     const onPath = executable("path-claude");
     mocks.which.mockReturnValue(`${onPath}\n`);
@@ -264,7 +285,7 @@ describe("the resolver and the card cannot drift apart", () => {
     expect(await getClaudeCodeExecutablePath()).toBe(onPath);
     expect((await getClaudeCodeExecutableOverride())?.state).toBe("missing");
 
-    writeFileSync(target, "#!/bin/sh\nexit 0\n");
+    writeFileSync(target, '#!/bin/sh\necho "2.1.238 (Claude Code)"\nexit 0\n');
     chmodSync(target, 0o755);
 
     expect((await getClaudeCodeExecutableOverride())?.state).toBe("active");
@@ -387,5 +408,72 @@ describe("off the event loop", () => {
     releaseStale(`${stale}\n`);
     await first;
     expect((await resolveClaudeBinary()).path).toBe(fresh);
+  });
+});
+
+describe("adopting a stray `claude` must not take the daemon down", () => {
+  /**
+   * The regression this suite exists for, and the reason the probe is narrow.
+   *
+   * Widening the resolver to `$CLAUDE_BINARY` and the well-known directories
+   * widened what gets handed to the Agent SDK as `pathToClaudeCodeExecutable` —
+   * at boot (`sdk-info.ts`) and per chat (`claude.ts`). `checkBinaryPathAsync`
+   * cannot tell "an executable named claude" from "a working Claude Code CLI",
+   * and when the SDK writes to a child that has already exited the EPIPE is
+   * uncaught, which `installProcessGuards` turns into process exit.
+   *
+   * Measured against an isolated daemon with a stub that echoes one line and
+   * exits — `main` survived both, the widened resolver died on both:
+   *
+   *   stub in ~/.local/bin, not on PATH   3 uncaught, EXIT=1
+   *   CLAUDE_BINARY=<stub>                3 uncaught, EXIT=1
+   */
+  it("ignores an inert executable in a well-known directory", async () => {
+    const home = process.env.HOME!;
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    const stub = join(home, ".local", "bin", "claude");
+    writeFileSync(stub, '#!/bin/sh\necho "not really claude"\nexit 0\n');
+    chmodSync(stub, 0o755);
+
+    // Nothing adopted — the SDK falls back to its bundled binary, which is
+    // exactly what this daemon did before the resolvers were merged.
+    expect((await resolveClaudeBinary()).path).toBe(SYSTEM_CLAUDE);
+  });
+
+  it("ignores an inert $CLAUDE_BINARY", async () => {
+    process.env.CLAUDE_BINARY = inertExecutable("env-claude");
+    expect((await resolveClaudeBinary()).path).toBe(SYSTEM_CLAUDE);
+  });
+
+  it("still adopts a real CLI in a well-known directory — the case the merge exists for", async () => {
+    const home = process.env.HOME!;
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    const real = join(home, ".local", "bin", "claude");
+    writeFileSync(real, '#!/bin/sh\necho "2.1.238 (Claude Code)"\nexit 0\n');
+    chmodSync(real, 0o755);
+
+    expect(await resolveClaudeBinary()).toMatchObject({ path: real, source: "well-known" });
+  });
+
+  it("still adopts a real $CLAUDE_BINARY", async () => {
+    const real = executable("env-claude");
+    process.env.CLAUDE_BINARY = real;
+    expect(await resolveClaudeBinary()).toMatchObject({ path: real, source: "env" });
+  });
+
+  it("does NOT probe the two candidate kinds that predate the merge", async () => {
+    // The asymmetry, asserted so it cannot be "tidied" into symmetry later.
+    // Falling through would take away a binary the daemon used before this
+    // change, which is a behaviour change in the opposite direction and is not
+    // this commit's to make. A stray `claude` on PATH still takes the daemon
+    // down; that is pre-existing and reported rather than half-fixed.
+    const inertOnPath = inertExecutable("path-claude");
+    mocks.which.mockReturnValue(`${inertOnPath}\n`);
+    expect((await resolveClaudeBinary()).path).toBe(inertOnPath);
+
+    resetClaudeBinaryCache();
+    const inertOverride = inertExecutable("override-claude");
+    updateAgentSettings({ pathToClaudeCodeExecutable: inertOverride });
+    expect((await resolveClaudeBinary()).path).toBe(inertOverride);
   });
 });
