@@ -302,8 +302,20 @@ describe("checking every workspace at once", () => {
     click(checking.closest("button"));
     expect(listWorkspacesWithVerdicts).toHaveBeenCalledTimes(1);
 
+    // The rows go inert too. A single-workspace verdict fired mid-scan is
+    // correct — right record, fresh answer — but it queues behind ~1.7s of
+    // synchronous git on a one-threaded daemon, so the button would sit there
+    // looking broken. Refusing the click says more than accepting it.
+    for (const button of screen.getAllByText(/^Archive…$/)) {
+      expect((button.closest("button") as HTMLButtonElement).disabled).toBe(true);
+    }
+    click(screen.getAllByText(/^Archive…$/)[0].closest("button"));
+    expect(fetchWorkspaceRemovability).not.toHaveBeenCalled();
+
     release({ workspaces: [workspace(), blocked, missing] });
     await waitFor(() => expect(screen.getByText("Check all again")).toBeTruthy());
+    // ...and live again the moment it lands.
+    expect((screen.getAllByText(/^Archive…$/)[0].closest("button") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("leaves the list usable and explains itself when the check fails", async () => {
@@ -343,6 +355,83 @@ describe("checking every workspace at once", () => {
     expect(await screen.findByText(/before your last change/)).toBeTruthy();
     // Marked, not silently re-fetched: that would be the automatic bulk listing.
     expect(listWorkspacesWithVerdicts).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The other two mutations that move a verdict.
+   *
+   * Archive has its own test above. These two did not, and the suite stayed
+   * green with either marker deleted — which is the whole failure mode: a
+   * decorated row quietly outliving the thing that made it true, with nothing
+   * on screen admitting it. Adoption is the sharper of the two, since flipping
+   * `owned` is precisely what turns "not owned by Callboard" into removable.
+   *
+   * Both assert the same pair: the banner downgrades, and the expensive listing
+   * was **not** re-run to produce that. Marking is the whole point; re-fetching
+   * would be the automatic bulk listing this feature exists to prevent.
+   */
+  async function checkAllThen(mutate: () => Promise<void>) {
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+    click(screen.getByText("Check all").closest("button"));
+    expect(await screen.findByText(/A point in time, not a live view/)).toBeTruthy();
+
+    await mutate();
+
+    // Back to the list the decoration is on.
+    click(screen.getByText("Workspaces"));
+    expect(await screen.findByText(/before your last change/)).toBeTruthy();
+    expect(listWorkspacesWithVerdicts).toHaveBeenCalledTimes(1);
+  }
+
+  it("marks the verdicts stale after an adoption, which is what flips `owned`", async () => {
+    adoptWorktrees.mockResolvedValue({
+      outcomes: [{ path: "/home/cybil/callboard.feat-b", adopted: true }],
+      adopted: 1,
+      refused: 0,
+    });
+
+    await checkAllThen(async () => {
+      click(screen.getByText("Unmanaged worktrees"));
+      click(screen.getByText("Scan"));
+      await screen.findByText("/home/cybil/callboard.feat-a");
+      click((screen.getAllByRole("checkbox") as HTMLInputElement[])[1]);
+      click(screen.getByText("Adopt selected…").closest("button"));
+      click((await screen.findByText("Adopt this worktree")).closest("button"));
+      await waitFor(() => expect(adoptWorktrees).toHaveBeenCalled());
+    });
+  });
+
+  it("marks the verdicts stale after a restore, which can put a missing directory back", async () => {
+    listTrash.mockResolvedValue({
+      root: "/home/cybil/.callboard/trash",
+      retentionDays: 30,
+      entries: [
+        {
+          entry: "ws-1-2026",
+          originalPath: "/home/cybil/callboard.feat-gone",
+          branch: "feat/gone",
+          quarantinedAt: "2026-08-01T00:00:00.000Z",
+          expiresAt: "2026-08-31T00:00:00.000Z",
+          restore: [],
+          restorable: true,
+        },
+      ],
+    });
+    restoreTrashEntry.mockResolvedValue({
+      ok: true,
+      entry: "ws-1-2026",
+      originalPath: "/home/cybil/callboard.feat-gone",
+      copiedEntries: 3,
+      trashRetained: true,
+    });
+
+    await checkAllThen(async () => {
+      click(screen.getByText("Trash"));
+      click((await screen.findByText("Restore")).closest("button"));
+      click(screen.getAllByRole("button", { name: "Restore" }).at(-1));
+      await waitFor(() => expect(restoreTrashEntry).toHaveBeenCalled());
+    });
   });
 
   /**

@@ -748,6 +748,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
                     records={records}
                     busy={busy}
                     evaluating={evaluating}
+                    verdictsBusy={evaluating !== null || checkingAll}
                     verdicts={verdicts}
                     onArchive={openArchive}
                     onRename={runRename}
@@ -950,6 +951,7 @@ function DirectoryGroup({
   records,
   busy,
   evaluating,
+  verdictsBusy,
   verdicts,
   onArchive,
   onRename,
@@ -957,7 +959,10 @@ function DirectoryGroup({
   cwd: string;
   records: WorkspaceEntry[];
   busy: boolean;
+  /** The record whose own verdict is in flight, if any — it says "Checking…". */
   evaluating: string | null;
+  /** Any verdict request at all is in flight, including the bulk check. */
+  verdictsBusy: boolean;
   /** Null until a user pressed "Check all". Decoration only. */
   verdicts: { byId: Map<string, WorkspaceRemovability>; stale: boolean } | null;
   onArchive: (workspace: WorkspaceEntry) => void;
@@ -1008,11 +1013,14 @@ function DirectoryGroup({
             key={record.id}
             record={record}
             busy={busy}
-            // Any verdict in flight makes every Archive button inert — that is
-            // what closes the two-dialogs window. Only the record actually being
-            // evaluated says "Checking…"; the rest just stop accepting clicks,
-            // and renaming (which touches no directory) stays available.
-            evaluatingAny={evaluating !== null}
+            // Any verdict work in flight makes every Archive button inert —
+            // that is what closes the two-dialogs window, and it covers the bulk
+            // check too: a click during "Check all" queues behind ~1.7s of
+            // synchronous git and reads as a hung button. Only the record
+            // actually being evaluated says "Checking…"; the rest just stop
+            // accepting clicks, and renaming (which touches no directory) stays
+            // available throughout.
+            verdictsBusy={verdictsBusy}
             evaluating={evaluating === record.id}
             verdict={verdicts?.byId.get(record.id)}
             verdictStale={verdicts?.stale ?? false}
@@ -1148,7 +1156,7 @@ function RecordRow({
   record,
   busy,
   evaluating,
-  evaluatingAny,
+  verdictsBusy,
   verdict,
   verdictStale,
   onArchive,
@@ -1158,8 +1166,11 @@ function RecordRow({
   busy: boolean;
   /** This record's verdict is in flight — the button says so. */
   evaluating: boolean;
-  /** Some record's verdict is in flight — every archive button is inert. */
-  evaluatingAny: boolean;
+  /**
+   * Some verdict request is in flight — this record's, another record's, or the
+   * bulk "Check all". Every archive button is inert until it lands.
+   */
+  verdictsBusy: boolean;
   /** From "Check all". Absent until a user asked; decoration when present. */
   verdict?: WorkspaceRemovability;
   /** Something has changed since that verdict was taken. */
@@ -1233,7 +1244,7 @@ function RecordRow({
       <div style={{ flexShrink: 0 }}>
         <button
           onClick={() => onArchive(record)}
-          disabled={busy || evaluatingAny}
+          disabled={busy || verdictsBusy}
           style={{ ...primaryButton(false), background: "var(--bg-secondary)", color: "var(--text)", border: "1px solid var(--border)" }}
           title="Check what archiving this would do, and confirm it. Nothing happens until you do."
         >
