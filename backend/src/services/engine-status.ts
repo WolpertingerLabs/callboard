@@ -40,7 +40,7 @@ import { DEFAULT_CLINE_PROVIDER_ID } from "../agents/adapters/cline/optionsAdapt
 import { DEFAULT_PI_PROVIDER_ID } from "../agents/adapters/pi/optionsAdapter.js";
 import { createLogger } from "../utils/logger.js";
 import { getAgentSettings, getCodexExecutableOverride, isClaudeCodeRoutedThroughOpenRouter } from "./agent-settings.js";
-import { resetClaudeBinaryCache, resolveClaudeBinary } from "./claude-binary.js";
+import { resetClaudeBinaryCache, resolveClaudeBinary, type ClaudeBinaryResolution } from "./claude-binary.js";
 import { EXPECTED_CODEX_CLI_VERSION } from "../agents/adapters/codex/sessionParser.js";
 import { bundledPackageVersion as readPackageVersion } from "../utils/package-version.js";
 import type { BinaryPathCheck } from "../utils/binary-path.js";
@@ -483,9 +483,9 @@ function codexVersionDrift(actual: string | undefined, source: "bundled" | "over
  * site: this is not about ACP, it is about whether `<cli> login` is a command
  * the user has.
  */
-function resolveUserCliPath(command: string): string | undefined {
+async function resolveUserCliPath(command: string): Promise<string | undefined> {
   try {
-    return resolveAcpBinaryPath(command) ?? undefined;
+    return (await resolveAcpBinaryPath(command)) ?? undefined;
   } catch {
     return undefined;
   }
@@ -754,13 +754,7 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
   // It carries the checked override with it, so a *rejected* one is still
   // reportable: from every other field on this row it looks identical to never
   // having set the field at all.
-  const claude = (() => {
-    try {
-      return resolveClaudeBinary();
-    } catch {
-      return {};
-    }
-  })();
+  const claude: ClaudeBinaryResolution = await resolveClaudeBinary().catch(() => ({}));
   const sdkVersion = readPackageVersion(CLAUDE_AGENT_SDK_PACKAGE);
   const claudeOverride = await describeOverride(claude.override);
   engines.push({
@@ -795,7 +789,7 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
   // `getCodexExecutableOverride` is the same function `claude.ts` resolves a
   // chat's binary through, so "what this card says runs" and "what runs" are one
   // call, not two implementations that agree today.
-  const codexUserCli = resolveUserCliPath("codex");
+  const codexUserCli = await resolveUserCliPath("codex");
   const codexOverride = await describeOverride(
     (() => {
       try {
@@ -871,7 +865,7 @@ async function assembleEngineStatuses(refresh: boolean): Promise<EngineStatus[]>
   // ACP vendors — the one genuinely install-or-not row on the page.
   for (const vendor of acpVendors) {
     const command = vendor.command[0];
-    const resolvedPath = resolveAcpBinaryPath(command);
+    const resolvedPath = await resolveAcpBinaryPath(command);
     const pkg = ACP_VENDOR_PACKAGES[vendor.id];
     engines.push({
       id: vendor.id,

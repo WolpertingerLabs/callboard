@@ -1398,7 +1398,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     log.info(`MCP servers for session: [${serverSummary}], allowedTools: [${allowedTools.join(", ")}]`);
   }
 
-  const claudeExecutable = getClaudeCodeExecutablePath();
+  const claudeExecutable = await getClaudeCodeExecutablePath();
 
   // When explicit completion is required, tell the agent up front via the
   // system prompt — the nudge loop below is the enforcement, this is the

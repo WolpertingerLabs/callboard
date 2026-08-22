@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
-import { execSync, spawn } from "child_process";
+import { execFile, spawn } from "child_process";
+import { promisify } from "node:util";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import express from "express";
 import path from "path";
@@ -93,6 +94,7 @@ import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenR
 import { listAcpProviderAvailability } from "./agents/adapters/acp/availability.js";
 
 const log = createLogger("server");
+const execFileAsync = promisify(execFile);
 
 // Process-level guards: survive stray unhandled rejections (e.g. from
 // provider SDKs), log-and-exit on uncaught exceptions. Must be installed
@@ -367,11 +369,26 @@ app.get(
     // `"claude"` through a shell and report `unknown` on the resulting
     // not-found, which reads as "Callboard could not tell" when in fact it
     // looked and there was nothing there.
-    const claudeCliBinary = resolveClaudeBinary().path;
+    //
+    // `execFile`, not `execSync`, and for the reason the rest of this chain
+    // moved off the event loop: this is a *polled* endpoint, and a synchronous
+    // spawn on a single-threaded server stalls every open SSE stream and
+    // in-flight chat rather than just its caller. It also had a bare `timeout`,
+    // which is not a bound — Node sends SIGTERM at the deadline and then waits
+    // indefinitely, so a `claude` that ignores it held the daemon for as long as
+    // it liked. `killSignal: "SIGKILL"` is what makes five seconds mean five
+    // seconds.
+    const claudeCliBinary = (await resolveClaudeBinary()).path;
     let claudeCliVersion = claudeCliBinary ? "unknown" : "not installed";
     if (claudeCliBinary) {
       try {
-        claudeCliVersion = execSync(`${claudeCliBinary} --version`, { timeout: 5_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+        const { stdout } = await execFileAsync(claudeCliBinary, ["--version"], {
+          timeout: 5_000,
+          killSignal: "SIGKILL",
+          encoding: "utf-8",
+          maxBuffer: 1024 * 1024,
+        });
+        claudeCliVersion = stdout.trim();
       } catch {
         // ignore
       }
@@ -466,9 +483,9 @@ app.get(
     // ACP vendors are one kind covering many CLIs, so there is no single
     // "acpConfigured" flag — the picker needs the per-vendor list. Cached after
     // the first PATH lookup, so this is cheap on every subsequent poll.
-    let acpProviders: ReturnType<typeof listAcpProviderAvailability> = [];
+    let acpProviders: Awaited<ReturnType<typeof listAcpProviderAvailability>> = [];
     try {
-      acpProviders = listAcpProviderAvailability();
+      acpProviders = await listAcpProviderAvailability();
     } catch {
       // A failed PATH probe must not take the whole system-info payload down;
       // an empty list reads as "no ACP vendors", which is the safe answer.

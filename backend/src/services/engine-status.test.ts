@@ -77,7 +77,7 @@ beforeEach(() => {
   mocks.latestVersions.mockResolvedValue({});
   // No native `claude` anywhere and no binary override configured — the
   // baseline every case below deviates from explicitly.
-  mocks.claudeResolution.mockReturnValue({});
+  mocks.claudeResolution.mockResolvedValue({});
   mocks.codexOverride.mockReturnValue(undefined);
   mocks.claudeRoutedThroughOpenRouter.mockReturnValue(false);
   mocks.agentSettings.mockReturnValue({});
@@ -169,7 +169,7 @@ describe("bundled engines", () => {
 
 describe("claude-code — the external-preferred kind", () => {
   it("reports the native CLI when one resolves, and the version it printed", async () => {
-    mocks.claudeResolution.mockReturnValue({ path: fakeClaudeCli("9.9.9 (Claude Code)"), source: "path" });
+    mocks.claudeResolution.mockResolvedValue({ path: fakeClaudeCli("9.9.9 (Claude Code)"), source: "path" });
 
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
 
@@ -186,7 +186,7 @@ describe("claude-code — the external-preferred kind", () => {
   });
 
   it("stays installed with no resolvedPath when there is no native CLI — the bundled binary runs", async () => {
-    mocks.claudeResolution.mockReturnValue({});
+    mocks.claudeResolution.mockResolvedValue({});
 
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
 
@@ -198,7 +198,7 @@ describe("claude-code — the external-preferred kind", () => {
   });
 
   it("survives a resolved path that cannot be executed", async () => {
-    mocks.claudeResolution.mockReturnValue({ path: join(scratch, "does-not-exist"), source: "path" });
+    mocks.claudeResolution.mockResolvedValue({ path: join(scratch, "does-not-exist"), source: "path" });
 
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
 
@@ -212,20 +212,20 @@ describe("claude-code — the external-preferred kind", () => {
     // none, and with no native CLI either the engine genuinely cannot run — so
     // this is a check, not a constant. On a normal dev tree both halves are
     // true, so the assertion is that the answer tracks the probe.
-    mocks.claudeResolution.mockReturnValue({});
+    mocks.claudeResolution.mockResolvedValue({});
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     expect(engine.installed).toBe(bundledClaudeBinaryPresent());
   });
 
   it("is installed on the strength of a native CLI even with no bundled binary", async () => {
-    mocks.claudeResolution.mockReturnValue({ path: fakeClaudeCli("9.9.9 (Claude Code)"), source: "path" });
+    mocks.claudeResolution.mockResolvedValue({ path: fakeClaudeCli("9.9.9 (Claude Code)"), source: "path" });
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     expect(engine.installed).toBe(true);
   });
 
   it("runs the version probe once per resolved path", async () => {
     const path = fakeClaudeCli("1.0.0 (Claude Code)");
-    mocks.claudeResolution.mockReturnValue({ path: path, source: "path" });
+    mocks.claudeResolution.mockResolvedValue({ path: path, source: "path" });
 
     await getEngineStatuses();
     // Removing the binary would break a second probe; the cached answer stands.
@@ -512,7 +512,7 @@ describe("userCliPath — the CLI the user can type, as opposed to the one Callb
     // user had and chats ran something else. There is one lookup now, so the
     // two paths are one path.
     const claudeInUserBin = fakeClaudeCli("2.0.1 (Claude Code)");
-    mocks.claudeResolution.mockReturnValue({ path: claudeInUserBin, source: "well-known" });
+    mocks.claudeResolution.mockResolvedValue({ path: claudeInUserBin, source: "well-known" });
 
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     expect(engine.userCliPath).toBe(claudeInUserBin);
@@ -523,7 +523,7 @@ describe("userCliPath — the CLI the user can type, as opposed to the one Callb
   });
 
   it("reports none when this machine has no native claude at all", async () => {
-    mocks.claudeResolution.mockReturnValue({});
+    mocks.claudeResolution.mockResolvedValue({});
 
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     expect(engine.userCliPath).toBeUndefined();
@@ -605,7 +605,7 @@ describe("binary overrides — what runs, versus what was typed into a settings 
 
   it("carries a claude override onto the runtime, alongside the path the SDK got", async () => {
     const bin = fakeCli("claude", "2.9.9 (Claude Code)");
-    mocks.claudeResolution.mockReturnValue({ path: bin, source: "setting", override: { path: bin, state: "active", detail: "executable" } });
+    mocks.claudeResolution.mockResolvedValue({ path: bin, source: "setting", override: { path: bin, state: "active", detail: "executable" } });
 
     const engine = await getEngineStatuses().then((e) => byId(e, "claude-code"));
     if (engine.runtime.kind !== "external-preferred") throw new Error("unreachable");
@@ -620,7 +620,7 @@ describe("binary overrides — what runs, versus what was typed into a settings 
     // this the card renders a typo'd path as if the user had never set one.
     const typo = join(scratch, "no-such-claude");
     const real = fakeCli("claude", "2.9.9 (Claude Code)");
-    mocks.claudeResolution.mockReturnValue({
+    mocks.claudeResolution.mockResolvedValue({
       path: real,
       source: "path",
       override: { path: typo, state: "missing", detail: "nothing there" },

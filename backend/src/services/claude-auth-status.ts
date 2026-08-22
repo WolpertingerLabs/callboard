@@ -76,7 +76,7 @@ export async function getClaudeAuthStatus(): Promise<ClaudeAuthStatusResult> {
   if (cache && Date.now() - cache.ts < CLAUDE_STATUS_TTL_MS) return cache.data;
 
   // The one resolver — the same call a chat spawns through.
-  const cliPath = resolveClaudeBinary().path;
+  const cliPath = (await resolveClaudeBinary()).path;
 
   let credentials: Awaited<ReturnType<typeof claudeCodeCredentials>> | undefined;
   try {

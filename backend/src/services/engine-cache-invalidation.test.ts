@@ -28,8 +28,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  execSync: vi.fn(),
-  execFileSync: vi.fn(),
+  /** Stands in for `which <binary>`; throws to mean "not found". */
+  which: vi.fn(),
   refreshSdkInfoCache: vi.fn(),
   getSdkInfoAsync: vi.fn(),
   /** Paths `existsSync` should claim exist on top of the real filesystem. */
@@ -50,23 +50,28 @@ const pendingVersionProbes: { resolve: (stdout: string) => void }[] = [];
 /** When false (the default) probes settle immediately, so no other case has to care. */
 let holdVersionProbes = false;
 
+/** Let the awaited PATH lookup ahead of a `--version` probe settle. */
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+// One `execFile` mock now serves both kinds of probe, because both are async:
+// a `which` lookup answers immediately from `mocks.which`, and anything else is
+// a `--version` probe and goes on the deferred queue.
 vi.mock("node:child_process", async (importOriginal) => {
   const { promisify } = await import("node:util");
   const execFile: any = () => {
     throw new Error("callback-style execFile is not used by the modules under test");
   };
-  execFile[promisify.custom] = () =>
-    new Promise<{ stdout: string; stderr: string }>((resolve) => {
+  execFile[promisify.custom] = (file: string) => {
+    if (file === "which" || file === "where") {
+      return Promise.resolve({ stdout: mocks.which(), stderr: "" });
+    }
+    return new Promise<{ stdout: string; stderr: string }>((resolve) => {
       const entry = { resolve: (stdout: string) => resolve({ stdout, stderr: "" }) };
       pendingVersionProbes.push(entry);
       if (!holdVersionProbes) entry.resolve("0.0.0");
     });
-  return {
-    ...(await importOriginal<typeof import("node:child_process")>()),
-    execSync: mocks.execSync,
-    execFileSync: mocks.execFileSync,
-    execFile,
   };
+  return { ...(await importOriginal<typeof import("node:child_process")>()), execFile };
 });
 
 // No network. The registry lookup is best-effort by contract and irrelevant
@@ -82,6 +87,21 @@ vi.mock("./npm-registry.js", async (importOriginal) => ({
 // `accessSync` too, not just `existsSync`, because the resolver checks that a
 // candidate is a regular file this process may execute rather than merely that
 // something is there. That is the whole point of `utils/binary-path.ts`.
+// The async twin of the `node:fs` mock below, and it has to exist for the same
+// reason: `utils/binary-path.ts` checks a candidate with `stat` + `access`, and
+// the resolver is async now, so it reaches for `node:fs/promises`. Without this
+// the invented paths fail their execute check and a *real* `claude` in the
+// developer's `~/.local/bin` wins instead — which is how this suite failed
+// first, and a fair warning that the check is doing its job.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const faked = (p: unknown) => mocks.fakePaths.has(String(p));
+  const stat: any = async (p: any, ...rest: any[]) =>
+    faked(p) ? { isFile: () => true, isDirectory: () => false, uid: process.getuid?.() ?? 0 } : (real.stat as any)(p, ...rest);
+  const access: any = async (p: any, ...rest: any[]) => (faked(p) ? undefined : (real.access as any)(p, ...rest));
+  return { ...real, default: { ...real, stat, access }, stat, access };
+});
+
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
   const faked = (p: unknown) => mocks.fakePaths.has(String(p));
@@ -107,8 +127,7 @@ const B = "/fake/b/claude";
 /** Point the stubbed `which` at `path`, and make that path exist. */
 function whichReturns(path: string) {
   mocks.fakePaths.add(path);
-  mocks.execSync.mockReturnValue(`${path}\n`);
-  mocks.execFileSync.mockReturnValue(`${path}\n`);
+  mocks.which.mockReturnValue(`${path}\n`);
 }
 
 beforeEach(() => {
@@ -133,7 +152,7 @@ beforeEach(() => {
  * Adding a fifth means adding a row here; a row with no reset, or a reset that
  * does not clear, fails the table-driven cases below.
  */
-const CACHES: { name: string; probe: () => string | undefined | null; reset: () => void }[] = [
+const CACHES: { name: string; probe: () => Promise<string | undefined | null>; reset: () => void }[] = [
   {
     name: "claude-binary — the path handed to the Agent SDK, the login prompt and the About page alike",
     probe: () => getClaudeCodeExecutablePath(),
@@ -147,42 +166,42 @@ const CACHES: { name: string; probe: () => string | undefined | null; reset: () 
 ];
 
 describe.each(CACHES)("$name", ({ probe, reset }) => {
-  it("caches the resolution, and re-probes after its own reset", () => {
+  it("caches the resolution, and re-probes after its own reset", async () => {
     whichReturns(A);
-    expect(probe()).toBe(A);
+    expect(await probe()).toBe(A);
 
     whichReturns(B);
-    expect(probe()).toBe(A);
+    expect(await probe()).toBe(A);
 
     reset();
-    expect(probe()).toBe(B);
+    expect(await probe()).toBe(B);
   });
 
-  it("re-probes after resetEngineProbeCaches too", () => {
+  it("re-probes after resetEngineProbeCaches too", async () => {
     whichReturns(A);
-    expect(probe()).toBe(A);
+    expect(await probe()).toBe(A);
 
     whichReturns(B);
     resetEngineProbeCaches();
-    expect(probe()).toBe(B);
+    expect(await probe()).toBe(B);
   });
 });
 
 describe("acp availability — the --version probe alongside the path", () => {
-  it("re-probes a binary that was previously absent", () => {
+  it("re-probes a binary that was previously absent", async () => {
     // The state the whole feature exists for: `which` came back empty, the card
     // said "not installed", the user installed it. A cached `null` is just as
     // stale as a cached path.
-    mocks.execFileSync.mockImplementation(() => {
+    mocks.which.mockImplementation(() => {
       throw new Error("not found");
     });
-    expect(resolveAcpBinaryPath("opencode")).toBeNull();
+    expect(await resolveAcpBinaryPath("opencode")).toBeNull();
 
     whichReturns("/fake/b/opencode");
-    expect(resolveAcpBinaryPath("opencode")).toBeNull();
+    expect(await resolveAcpBinaryPath("opencode")).toBeNull();
 
     resetAcpAvailabilityCache();
-    expect(resolveAcpBinaryPath("opencode")).toBe("/fake/b/opencode");
+    expect(await resolveAcpBinaryPath("opencode")).toBe("/fake/b/opencode");
   });
 
   it("does not let a probe started before a reset write its answer afterwards", async () => {
@@ -194,13 +213,17 @@ describe("acp availability — the --version probe alongside the path", () => {
     whichReturns("/fake/a/opencode");
     holdVersionProbes = true;
 
-    // Probe 1 starts and is left hanging.
+    // Probe 1 starts and is left hanging. `acpProviderVersion` now awaits the
+    // PATH lookup before spawning `--version`, so the queue is populated a tick
+    // later rather than synchronously.
     const stale = acpProviderVersion("opencode");
+    await tick();
     expect(pendingVersionProbes).toHaveLength(1);
 
     // The user presses Recheck. Probe 2 starts in the new generation.
     resetAcpAvailabilityCache();
     const fresh = acpProviderVersion("opencode");
+    await tick();
     expect(pendingVersionProbes).toHaveLength(2);
 
     // Probe 2 answers first with the truth, then the stale one finally lands.
@@ -226,21 +249,24 @@ describe("sdk-info — the cache that owns the Credentials row", () => {
     expect(mocks.refreshSdkInfoCache).toHaveBeenCalledTimes(1);
   });
 
-  it("is refreshed after the executable path, not before", () => {
+  it("is refreshed after the executable path, not before", async () => {
     // Ordering, because `refreshSdkInfoCache` spawns an SDK query that calls
     // `getClaudeCodeExecutablePath()`. Refreshing first would re-spawn against
     // the very path this call is invalidating.
     whichReturns(A);
-    expect(getClaudeCodeExecutablePath()).toBe(A);
+    expect(await getClaudeCodeExecutablePath()).toBe(A);
 
     whichReturns(B);
     let pathAtRefresh: string | undefined;
     mocks.refreshSdkInfoCache.mockImplementation(async () => {
-      pathAtRefresh = getClaudeCodeExecutablePath();
+      pathAtRefresh = await getClaudeCodeExecutablePath();
       return { account: null, models: [], fetchedAt: 0 };
     });
 
     resetEngineProbeCaches();
+    // The reset is fire-and-forget by design, so the re-spawn it kicks off has
+    // to be allowed to settle before its observation is read.
+    await new Promise((r) => setTimeout(r, 0));
     expect(pathAtRefresh).toBe(B);
   });
 

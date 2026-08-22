@@ -180,7 +180,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   let assistantText = "";
 
   try {
-    const claudeExecutable = getClaudeCodeExecutablePath();
+    const claudeExecutable = await getClaudeCodeExecutablePath();
 
     const conversation = agentProvider.query({
       prompt: promptGenerator,

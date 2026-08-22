@@ -70,14 +70,16 @@
  *
  * @see plans/engine-availability-and-install.md — Phase 4, departure 3
  */
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BINARY_OVERRIDE_PHRASING, checkBinaryPath, type BinaryPathCheck } from "../utils/binary-path.js";
+import { promisify } from "node:util";
+import { BINARY_OVERRIDE_PHRASING, checkBinaryPathAsync, type BinaryPathCheck } from "../utils/binary-path.js";
 import { createLogger } from "../utils/logger.js";
 import { getAgentSettings } from "./agent-settings.js";
 
 const log = createLogger("claude-binary");
+const execFileAsync = promisify(execFile);
 
 /** How a native `claude` was found. Reported so a status card can say which lookup won. */
 export type ClaudeBinarySource = "setting" | "env" | "path" | "well-known";
@@ -135,10 +137,10 @@ export function wellKnownClaudePaths(): string[] {
  * not in a loop. Only the `which` lookup is worth memoizing, because only it
  * spawns a process.
  */
-export function getClaudeCodeExecutableOverride(): BinaryPathCheck | undefined {
+export async function getClaudeCodeExecutableOverride(): Promise<BinaryPathCheck | undefined> {
   const configured = getAgentSettings().pathToClaudeCodeExecutable?.trim();
   if (!configured) return undefined;
-  return checkBinaryPath(configured, BINARY_OVERRIDE_PHRASING["claude-code"].what, BINARY_OVERRIDE_PHRASING["claude-code"].fallback);
+  return checkBinaryPathAsync(configured, BINARY_OVERRIDE_PHRASING["claude-code"].what, BINARY_OVERRIDE_PHRASING["claude-code"].fallback);
 }
 
 /**
@@ -162,45 +164,76 @@ function logRejectionOnce(what: string, check: BinaryPathCheck): void {
  * one thing that *can* make this answer stale — a user installing the CLI and
  * pressing Recheck — goes through {@link resetClaudeBinaryCache}.
  *
- * `execFileSync` with `killSignal: "SIGKILL"` rather than `execSync("which
- * claude")`: no shell, and a deadline that is actually a bound. Node sends
- * SIGTERM at a bare `timeout` and then waits indefinitely, so a child that
- * ignores it holds this synchronous call — and therefore the whole
- * single-threaded server — for as long as it likes.
+ * ## Why it is off the event loop
+ *
+ * This was `execFileSync`, and a `which` is only fast while every entry on
+ * `PATH` is. One autofs mount or one dead NFS export makes it arbitrarily slow,
+ * and a synchronous spawn on a single-threaded server does not stall the caller
+ * — it stalls **everything**: every open SSE stream, every in-flight chat, every
+ * unrelated request. Measured with a deliberately slow `which` (2.5s, under the
+ * timeout, so this is the stall the daemon *accepts* rather than the kill path):
+ * an unrelated `/api/auth/check` took **2.42s and 2.70s** on two of three
+ * samples against a 2ms baseline, while one `POST /api/engines/refresh` ran.
+ *
+ * The `timeout` is not a fix for that and never was — it bounds a hung child,
+ * not a slow one, and a bare `timeout` does not even bound a hung one (Node
+ * sends SIGTERM at the deadline and then waits indefinitely, which is why
+ * `killSignal: "SIGKILL"` is here). Both stay; they are the ceiling. Being
+ * async is what makes the cost land on the caller alone.
+ *
+ * Concurrent callers share one probe rather than racing several, and the
+ * generation counter means a probe started before a {@link resetClaudeBinaryCache}
+ * cannot write its pre-reset answer afterwards — clearing a variable cannot
+ * cancel a promise already in flight, and the ordering that loses is the likely
+ * one: a slow probe is the usual reason someone pressed Recheck.
  */
 let discovered: { path: string; source: ClaudeBinarySource } | null | undefined;
+let discoveryInFlight: Promise<{ path: string; source: ClaudeBinarySource } | null> | null = null;
+let discoveryGeneration = 0;
 
-function discoverClaude(): { path: string; source: ClaudeBinarySource } | null {
+async function discoverClaude(): Promise<{ path: string; source: ClaudeBinarySource } | null> {
   if (discovered !== undefined) return discovered;
+  if (discoveryInFlight) return discoveryInFlight;
 
-  let onPath = "";
-  try {
-    onPath = execFileSync("which", ["claude"], {
-      timeout: 3_000,
-      killSignal: "SIGKILL",
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-  } catch {
-    // Non-zero exit is the normal "not on PATH" answer, not an error.
-  }
-
-  const candidates: Array<{ path: string; source: ClaudeBinarySource }> = [
-    ...(onPath ? [{ path: onPath, source: "path" as const }] : []),
-    ...wellKnownClaudePaths().map((path) => ({ path, source: "well-known" as const })),
-  ];
-
-  for (const candidate of candidates) {
-    const check = checkBinaryPath(candidate.path, "Claude Code binary", "");
-    if (check.state === "active") {
-      discovered = candidate;
-      log.info(`Found Claude Code CLI at ${candidate.path} (${candidate.source})`);
-      return discovered;
+  const generation = discoveryGeneration;
+  const probe = (async () => {
+    let onPath = "";
+    try {
+      const { stdout } = await execFileAsync("which", ["claude"], {
+        timeout: 3_000,
+        killSignal: "SIGKILL",
+        encoding: "utf-8",
+        maxBuffer: 1024 * 1024,
+      });
+      onPath = stdout.trim();
+    } catch {
+      // Non-zero exit is the normal "not on PATH" answer, not an error.
     }
-  }
 
-  discovered = null;
-  return discovered;
+    const candidates: Array<{ path: string; source: ClaudeBinarySource }> = [
+      ...(onPath ? [{ path: onPath, source: "path" as const }] : []),
+      ...wellKnownClaudePaths().map((path) => ({ path, source: "well-known" as const })),
+    ];
+
+    let found: { path: string; source: ClaudeBinarySource } | null = null;
+    for (const candidate of candidates) {
+      const check = await checkBinaryPathAsync(candidate.path, "Claude Code binary", "");
+      if (check.state === "active") {
+        found = candidate;
+        log.info(`Found Claude Code CLI at ${candidate.path} (${candidate.source})`);
+        break;
+      }
+    }
+
+    if (generation === discoveryGeneration) {
+      discovered = found;
+      discoveryInFlight = null;
+    }
+    return found;
+  })();
+
+  discoveryInFlight = probe;
+  return probe;
 }
 
 /**
@@ -211,8 +244,8 @@ function discoverClaude(): { path: string; source: ClaudeBinarySource } | null {
  * those used to answer from a different lookup, so a user could be told to log
  * in to a binary their chats were not running.
  */
-export function resolveClaudeBinary(): ClaudeBinaryResolution {
-  const override = getClaudeCodeExecutableOverride();
+export async function resolveClaudeBinary(): Promise<ClaudeBinaryResolution> {
+  const override = await getClaudeCodeExecutableOverride();
   if (override) {
     if (override.state === "active") return { path: override.path, source: "setting", override };
     logRejectionOnce("pathToClaudeCodeExecutable", override);
@@ -220,12 +253,12 @@ export function resolveClaudeBinary(): ClaudeBinaryResolution {
 
   const fromEnv = process.env.CLAUDE_BINARY?.trim();
   if (fromEnv) {
-    const check = checkBinaryPath(fromEnv, "Claude Code binary", "");
+    const check = await checkBinaryPathAsync(fromEnv, "Claude Code binary", "");
     if (check.state === "active") return { path: check.path, source: "env", ...(override ? { override } : {}) };
     logRejectionOnce("$CLAUDE_BINARY", check);
   }
 
-  const found = discoverClaude();
+  const found = await discoverClaude();
   if (found) return { ...found, ...(override ? { override } : {}) };
   return { ...(override ? { override } : {}) };
 }
@@ -238,8 +271,8 @@ export function resolveClaudeBinary(): ClaudeBinaryResolution {
  * `quick-completion.ts`, and by `engine-status.ts` when it describes the engine
  * — so the card and the chat cannot disagree about which binary runs.
  */
-export function getClaudeCodeExecutablePath(): string | undefined {
-  return resolveClaudeBinary().path;
+export async function getClaudeCodeExecutablePath(): Promise<string | undefined> {
+  return (await resolveClaudeBinary()).path;
 }
 
 /**
@@ -255,6 +288,8 @@ export function getClaudeCodeExecutablePath(): string | undefined {
  * is the only version of the guarantee a status card can be built on.
  */
 export function resetClaudeBinaryCache(): void {
+  discoveryGeneration++;
   discovered = undefined;
+  discoveryInFlight = null;
   lastLoggedRejection = null;
 }

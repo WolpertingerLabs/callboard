@@ -72,6 +72,19 @@ interface TurnRecord {
 function controllableProvider() {
   const turns: TurnRecord[] = [];
 
+  /**
+   * Events pushed before the first query exists.
+   *
+   * `startSession` kicks `sendMessage` off and returns at its first `await`, so
+   * whether `provider.query()` has been reached by the time a test calls `push`
+   * depends on how many awaits precede it — which is an implementation detail of
+   * `sendMessage`, not something these tests are about. It used to be zero;
+   * resolving the Claude binary off the event loop added one, and ten tests
+   * started dereferencing `turns[-1]`. Buffering here makes the harness say what
+   * it means: deliver these to the run, whenever its first query opens.
+   */
+  let pending: AgentEvent[] = [];
+
   const nudge = (turn: TurnRecord) => {
     const w = turn.wake;
     turn.wake = null;
@@ -81,7 +94,8 @@ function controllableProvider() {
   const provider: AgentProvider = {
     kind: "mock",
     query(req: AgentQueryRequest): AgentQuery {
-      const turn: TurnRecord = { promptOpen: true, queued: [], wake: null, ended: false };
+      const turn: TurnRecord = { promptOpen: true, queued: pending, wake: null, ended: false };
+      pending = [];
       turns.push(turn);
       // The SDK's side of the contract: drain the prompt, and when it returns
       // (stdin closed) the conversation ends.
@@ -121,6 +135,10 @@ function controllableProvider() {
     /** Deliver events to the query currently running. */
     push(...events: AgentEvent[]) {
       const turn = turns[turns.length - 1];
+      if (!turn) {
+        pending = pending.concat(events);
+        return;
+      }
       turn.queued = turn.queued.concat(events);
       nudge(turn);
     },

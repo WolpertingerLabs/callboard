@@ -68,7 +68,7 @@ async function fetchSdkInfo(): Promise<SdkInfoCache> {
       };
     })();
 
-    const claudeExecutable = getClaudeCodeExecutablePath();
+    const claudeExecutable = await getClaudeCodeExecutablePath();
 
     const conversation = getAgentProvider().query({
       prompt: inputStream,

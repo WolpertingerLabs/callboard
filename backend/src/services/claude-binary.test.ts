@@ -26,10 +26,23 @@ import { join } from "node:path";
 
 const mocks = vi.hoisted(() => ({ which: vi.fn() }));
 
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:child_process")>()),
-  execFileSync: (...args: unknown[]) => mocks.which(...args),
-}));
+// `promisify.custom` rather than a bare `execFile`: the module under test
+// captures `promisify(execFile)` at load, and without the custom symbol
+// promisify falls back to the callback convention and resolves with a bare
+// stdout string, which the `{ stdout }` destructuring would read as undefined.
+vi.mock("node:child_process", async (importOriginal) => {
+  const { promisify } = await import("node:util");
+  const execFile: any = () => {
+    throw new Error("callback-style execFile is not used by the module under test");
+  };
+  execFile[promisify.custom] = async (...args: unknown[]) => {
+    const out = mocks.which(...args);
+    // `mocks.which` may return a promise (the slow-PATH cases below); awaiting
+    // it here is what lets a test hold the lookup open.
+    return { stdout: await out, stderr: "" };
+  };
+  return { ...(await importOriginal<typeof import("node:child_process")>()), execFile };
+});
 
 import { updateAgentSettings } from "./agent-settings.js";
 import { getClaudeCodeExecutableOverride, getClaudeCodeExecutablePath, resetClaudeBinaryCache, resolveClaudeBinary, wellKnownClaudePaths } from "./claude-binary.js";
@@ -86,16 +99,16 @@ afterEach(() => {
 });
 
 describe("the resolution order", () => {
-  it("prefers an executable override over a `claude` on PATH", () => {
+  it("prefers an executable override over a `claude` on PATH", async () => {
     const bin = executable("my-claude");
     const onPath = executable("path-claude");
     mocks.which.mockReturnValue(`${onPath}\n`);
     updateAgentSettings({ pathToClaudeCodeExecutable: bin });
 
-    expect(resolveClaudeBinary()).toMatchObject({ path: bin, source: "setting" });
+    expect(await resolveClaudeBinary()).toMatchObject({ path: bin, source: "setting" });
   });
 
-  it("MERGED: prefers the settings override over $CLAUDE_BINARY", () => {
+  it("MERGED: prefers the settings override over $CLAUDE_BINARY", async () => {
     // The two resolvers disagreed here by construction. `$CLAUDE_BINARY` was
     // step 1 of the lookup behind the login prompt and the About page's version,
     // and was invisible to the one behind chats — so with both set, a user was
@@ -106,19 +119,19 @@ describe("the resolution order", () => {
     process.env.CLAUDE_BINARY = fromEnv;
     updateAgentSettings({ pathToClaudeCodeExecutable: fromSetting });
 
-    expect(resolveClaudeBinary()).toMatchObject({ path: fromSetting, source: "setting" });
+    expect(await resolveClaudeBinary()).toMatchObject({ path: fromSetting, source: "setting" });
   });
 
-  it("MERGED: $CLAUDE_BINARY now decides which binary chats spawn, not just which one About reports", () => {
+  it("MERGED: $CLAUDE_BINARY now decides which binary chats spawn, not just which one About reports", async () => {
     const fromEnv = executable("env-claude");
     const onPath = executable("path-claude");
     mocks.which.mockReturnValue(`${onPath}\n`);
     process.env.CLAUDE_BINARY = fromEnv;
 
-    expect(getClaudeCodeExecutablePath()).toBe(fromEnv);
+    expect(await getClaudeCodeExecutablePath()).toBe(fromEnv);
   });
 
-  it("MERGED: a well-known directory now decides it too", () => {
+  it("MERGED: a well-known directory now decides it too", async () => {
     // `~/.local/bin` is where `claude.ai/install.sh` — the script this feature's
     // own install card offers — puts the binary, and a daemon that started
     // before that directory was on its PATH never sees it through `which`. The
@@ -130,10 +143,10 @@ describe("the resolution order", () => {
     writeFileSync(inLocalBin, "#!/bin/sh\nexit 0\n");
     chmodSync(inLocalBin, 0o755);
 
-    expect(resolveClaudeBinary()).toMatchObject({ path: inLocalBin, source: "well-known" });
+    expect(await resolveClaudeBinary()).toMatchObject({ path: inLocalBin, source: "well-known" });
   });
 
-  it("prefers PATH over a well-known directory", () => {
+  it("prefers PATH over a well-known directory", async () => {
     const home = process.env.HOME!;
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
     const inLocalBin = join(home, ".local", "bin", "claude");
@@ -142,12 +155,12 @@ describe("the resolution order", () => {
     const onPath = executable("path-claude");
     mocks.which.mockReturnValue(`${onPath}\n`);
 
-    expect(resolveClaudeBinary()).toMatchObject({ path: onPath, source: "path" });
+    expect(await resolveClaudeBinary()).toMatchObject({ path: onPath, source: "path" });
   });
 });
 
 describe("what is not accepted", () => {
-  it("falls through to PATH when the override is not executable", () => {
+  it("falls through to PATH when the override is not executable", async () => {
     // `existsSync` alone accepted this path, the SDK spawned it, and every
     // Claude chat died at the first turn with EACCES against a path Settings was
     // simultaneously calling configured.
@@ -158,20 +171,20 @@ describe("what is not accepted", () => {
     mocks.which.mockReturnValue(`${onPath}\n`);
 
     updateAgentSettings({ pathToClaudeCodeExecutable: notExecutable });
-    expect(getClaudeCodeExecutablePath()).toBe(onPath);
+    expect(await getClaudeCodeExecutablePath()).toBe(onPath);
   });
 
-  it("falls through to PATH when the override is a directory", () => {
+  it("falls through to PATH when the override is a directory", async () => {
     const dir = join(scratch, "claude-dir");
     mkdirSync(dir);
     const onPath = executable("path-claude");
     mocks.which.mockReturnValue(`${onPath}\n`);
 
     updateAgentSettings({ pathToClaudeCodeExecutable: dir });
-    expect(getClaudeCodeExecutablePath()).toBe(onPath);
+    expect(await getClaudeCodeExecutablePath()).toBe(onPath);
   });
 
-  it("MERGED: rejects a $CLAUDE_BINARY that cannot be spawned, rather than passing it on", () => {
+  it("MERGED: rejects a $CLAUDE_BINARY that cannot be spawned, rather than passing it on", async () => {
     // The old lookup took `$CLAUDE_BINARY` entirely on trust — no stat, no
     // execute bit, not even an absolute-path check — and handed it to a shell.
     const notExecutable = join(scratch, "env-claude");
@@ -181,21 +194,21 @@ describe("what is not accepted", () => {
     mocks.which.mockReturnValue(`${onPath}\n`);
     process.env.CLAUDE_BINARY = notExecutable;
 
-    expect(resolveClaudeBinary()).toMatchObject({ path: onPath, source: "path" });
+    expect(await resolveClaudeBinary()).toMatchObject({ path: onPath, source: "path" });
   });
 
-  it("rejects a relative override rather than resolving it against the daemon's cwd", () => {
+  it("rejects a relative override rather than resolving it against the daemon's cwd", async () => {
     // The engine spawns with the chat's folder as cwd, so a path that works
     // from here works nowhere that matters.
     const onPath = executable("path-claude");
     mocks.which.mockReturnValue(`${onPath}\n`);
     updateAgentSettings({ pathToClaudeCodeExecutable: "relwrap" });
 
-    expect(getClaudeCodeExecutableOverride()?.state).toBe("not-absolute");
-    expect(getClaudeCodeExecutablePath()).toBe(onPath);
+    expect((await getClaudeCodeExecutableOverride())?.state).toBe("not-absolute");
+    expect(await getClaudeCodeExecutablePath()).toBe(onPath);
   });
 
-  it.skipIf(SYSTEM_CLAUDE)("MERGED: returns undefined when this machine has no native claude, instead of the bare name", () => {
+  it.skipIf(SYSTEM_CLAUDE)("MERGED: returns undefined when this machine has no native claude, instead of the bare name", async () => {
     // The whole of the login-modal bug in one assertion. The old lookup returned
     // the literal string `"claude"` here, `/api/auth/claude-status` ran
     // `claude auth status` through a shell, the shell could not find it, and a
@@ -204,8 +217,8 @@ describe("what is not accepted", () => {
     // daemon: `{"loggedIn": false, "error": "CLI error: Command failed:
     // claude auth status … claude: not found"}`.
     updateAgentSettings({ pathToClaudeCodeExecutable: join(scratch, "gone") });
-    expect(resolveClaudeBinary().path).toBeUndefined();
-    expect(getClaudeCodeExecutablePath()).toBeUndefined();
+    expect((await resolveClaudeBinary()).path).toBeUndefined();
+    expect(await getClaudeCodeExecutablePath()).toBeUndefined();
   });
 });
 
@@ -220,7 +233,7 @@ describe("the resolver and the card cannot drift apart", () => {
    * have to *agree*, because the card's central claim is "this is the binary
    * Callboard runs".
    */
-  it("stops using an override whose binary disappears after it resolved", () => {
+  it("stops using an override whose binary disappears after it resolved", async () => {
     // Direction A. Reproduced as: card reads "Native `claude` at X · Ready"
     // beside "⚠ Nothing at X", while every chat dies with `native binary not
     // found`. The reassuring line was the false one.
@@ -229,17 +242,17 @@ describe("the resolver and the card cannot drift apart", () => {
     mocks.which.mockReturnValue(`${onPath}\n`);
     updateAgentSettings({ pathToClaudeCodeExecutable: bin });
 
-    expect(getClaudeCodeExecutablePath()).toBe(bin);
-    expect(getClaudeCodeExecutableOverride()?.state).toBe("active");
+    expect(await getClaudeCodeExecutablePath()).toBe(bin);
+    expect((await getClaudeCodeExecutableOverride())?.state).toBe("active");
 
     rmSync(bin, { force: true });
 
     // No cache reset in between — that is the point.
-    expect(getClaudeCodeExecutableOverride()?.state).toBe("missing");
-    expect(getClaudeCodeExecutablePath()).toBe(onPath);
+    expect((await getClaudeCodeExecutableOverride())?.state).toBe("missing");
+    expect(await getClaudeCodeExecutablePath()).toBe(onPath);
   });
 
-  it("starts using an override whose binary appears after it was rejected", () => {
+  it("starts using an override whose binary appears after it was rejected", async () => {
     // Direction B. Reproduced as: card says "Override in effect", chats ignore
     // it. The resolver had cached its answer at a moment the path did not exist
     // and never looked again.
@@ -248,17 +261,17 @@ describe("the resolver and the card cannot drift apart", () => {
     mocks.which.mockReturnValue(`${onPath}\n`);
     updateAgentSettings({ pathToClaudeCodeExecutable: target });
 
-    expect(getClaudeCodeExecutablePath()).toBe(onPath);
-    expect(getClaudeCodeExecutableOverride()?.state).toBe("missing");
+    expect(await getClaudeCodeExecutablePath()).toBe(onPath);
+    expect((await getClaudeCodeExecutableOverride())?.state).toBe("missing");
 
     writeFileSync(target, "#!/bin/sh\nexit 0\n");
     chmodSync(target, 0o755);
 
-    expect(getClaudeCodeExecutableOverride()?.state).toBe("active");
-    expect(getClaudeCodeExecutablePath()).toBe(target);
+    expect((await getClaudeCodeExecutableOverride())?.state).toBe("active");
+    expect(await getClaudeCodeExecutablePath()).toBe(target);
   });
 
-  it("carries the checked override alongside the resolved path, even when it lost", () => {
+  it("carries the checked override alongside the resolved path, even when it lost", async () => {
     // What lets the card distinguish a typo from a blank field: resolution falls
     // through to exactly where it would have gone with the field empty, so from
     // `path` alone the two states are identical.
@@ -267,34 +280,112 @@ describe("the resolver and the card cannot drift apart", () => {
     mocks.which.mockReturnValue(`${onPath}\n`);
     updateAgentSettings({ pathToClaudeCodeExecutable: typo });
 
-    expect(resolveClaudeBinary()).toMatchObject({ path: onPath, source: "path", override: { path: typo, state: "missing" } });
+    expect(await resolveClaudeBinary()).toMatchObject({ path: onPath, source: "path", override: { path: typo, state: "missing" } });
   });
 
-  it("still memoizes the expensive half — `which` runs once", () => {
+  it("still memoizes the expensive half — `which` runs once", async () => {
     // The guard on the fix. Reading the override fresh is one `stat`; re-running
     // `which claude` on every resolution would be a spawn per chat start.
     mocks.which.mockReturnValue(`${executable("path-claude")}\n`);
 
-    getClaudeCodeExecutablePath();
-    getClaudeCodeExecutablePath();
-    getClaudeCodeExecutablePath();
+    await getClaudeCodeExecutablePath();
+    await getClaudeCodeExecutablePath();
+    await getClaudeCodeExecutablePath();
     expect(mocks.which).toHaveBeenCalledTimes(1);
   });
 
-  it("looks again after a reset, so a freshly installed CLI is found", () => {
+  it("looks again after a reset, so a freshly installed CLI is found", async () => {
     // `POST /api/engines/refresh`'s reason for existing.
-    expect(getClaudeCodeExecutablePath()).toBe(SYSTEM_CLAUDE);
+    expect(await getClaudeCodeExecutablePath()).toBe(SYSTEM_CLAUDE);
 
     const installed = executable("path-claude");
     mocks.which.mockReturnValue(`${installed}\n`);
     resetClaudeBinaryCache();
 
-    expect(getClaudeCodeExecutablePath()).toBe(installed);
+    expect(await getClaudeCodeExecutablePath()).toBe(installed);
   });
 });
 
 describe("wellKnownClaudePaths", () => {
-  it("follows $HOME rather than a value captured at import", () => {
+  it("follows $HOME rather than a value captured at import", async () => {
     expect(wellKnownClaudePaths()[0]).toBe(join(process.env.HOME!, ".local", "bin", "claude"));
+  });
+});
+
+describe("off the event loop", () => {
+  /**
+   * The property item 4 exists for, asserted rather than described.
+   *
+   * A `which` is only fast while every entry on `PATH` is; one autofs mount or
+   * one dead NFS export makes it arbitrarily slow. While this was
+   * `execFileSync`, that cost did not land on the caller — it landed on the
+   * whole process, because the server is single-threaded. Measured against a
+   * daemon with a deliberately slow `which` (2.5s, under the 3s timeout, so this
+   * is the stall the daemon *accepts* rather than the kill path): an unrelated
+   * `/api/auth/check` took 2.42s and 2.70s on two of three samples, against a
+   * 2ms baseline.
+   *
+   * The `timeout` was never a fix for that. It bounds a hung child, not a slow
+   * one — and a bare `timeout` does not even bound a hung one, since Node sends
+   * SIGTERM at the deadline and then waits indefinitely, which is why
+   * `killSignal: "SIGKILL"` is there. Being async is the part that keeps the
+   * cost on the caller.
+   */
+  it("lets other work run while the lookup is in flight", async () => {
+    let released!: (path: string) => void;
+    mocks.which.mockReturnValue(new Promise<string>((resolve) => (released = resolve)));
+
+    const order: string[] = [];
+    const resolution = resolveClaudeBinary().then((r) => {
+      order.push("lookup");
+      return r;
+    });
+
+    // A timer queued *after* the lookup started. Under `execFileSync` the
+    // lookup would have completed before this line ever ran.
+    await new Promise((r) => setTimeout(r, 0));
+    order.push("other work");
+    released(`${executable("path-claude")}\n`);
+
+    await resolution;
+    expect(order).toEqual(["other work", "lookup"]);
+  });
+
+  it("shares one probe between concurrent callers rather than racing several", async () => {
+    // Three chats starting at once must not become three `which` spawns.
+    let released!: (path: string) => void;
+    mocks.which.mockReturnValue(new Promise<string>((resolve) => (released = resolve)));
+
+    const all = Promise.all([getClaudeCodeExecutablePath(), getClaudeCodeExecutablePath(), getClaudeCodeExecutablePath()]);
+    await new Promise((r) => setTimeout(r, 0));
+    const bin = executable("path-claude");
+    released(`${bin}\n`);
+
+    expect(await all).toEqual([bin, bin, bin]);
+    expect(mocks.which).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a probe started before a reset write its answer afterwards", async () => {
+    // Clearing a variable cannot cancel a promise already in flight, and the
+    // ordering that loses is the likely one: a slow probe is the usual reason
+    // someone pressed Recheck, so the stale answer tends to settle last and
+    // would win for the rest of the process's life.
+    const stale = executable("stale-claude");
+    const fresh = executable("fresh-claude");
+
+    let releaseStale!: (path: string) => void;
+    mocks.which.mockReturnValue(new Promise<string>((resolve) => (releaseStale = resolve)));
+    const first = resolveClaudeBinary();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The user presses Recheck mid-probe.
+    resetClaudeBinaryCache();
+    mocks.which.mockResolvedValue(`${fresh}\n`);
+    expect((await resolveClaudeBinary()).path).toBe(fresh);
+
+    // The pre-reset probe finally lands — and must not overwrite the answer.
+    releaseStale(`${stale}\n`);
+    await first;
+    expect((await resolveClaudeBinary()).path).toBe(fresh);
   });
 });

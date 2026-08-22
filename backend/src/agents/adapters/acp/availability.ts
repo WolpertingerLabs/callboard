@@ -29,7 +29,7 @@
  * Results are cached for the process lifetime: PATH does not change under a
  * running daemon, and the alternative is an `execFile` per settings poll.
  */
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger } from "../../../utils/logger.js";
 import { ACP_VENDOR_PRESETS, type AcpVendorPreset } from "./vendors.js";
@@ -51,40 +51,69 @@ export interface AcpProviderAvailability {
 /** Resolved absolute path per command, or `null` for "looked, not there". */
 const cache = new Map<string, string | null>();
 
+/** In-flight PATH lookups, so concurrent callers share one spawn rather than racing several. */
+const pathProbes = new Map<string, Promise<string | null>>();
+
 /**
  * Where does `command` resolve to on PATH, if anywhere?
  *
- * `execFileSync` rather than `execSync` so the binary name is an argument and
- * never reaches a shell — preset commands are data, and Phase 3 will let users
- * supply them.
+ * `execFile` rather than `exec` so the binary name is an argument and never
+ * reaches a shell — preset commands are data, and Phase 3 lets users supply
+ * them.
  *
  * The cache holds the resolved *path* rather than a boolean so the engine status
  * card can name the binary it found; `available` is derived from it, which is
  * exactly the answer the boolean cache gave before.
+ *
+ * ## Why it is async
+ *
+ * It was `execFileSync`, and a `which` is only fast while every entry on `PATH`
+ * is: one autofs mount or one dead NFS export makes it arbitrarily slow, and a
+ * synchronous spawn on a single-threaded server stalls every open SSE stream and
+ * in-flight chat rather than just its caller. Measured with a deliberately slow
+ * `which` (2.5s — under the timeout, so this is the stall the daemon *accepts*):
+ * an unrelated `/api/auth/check` took 2.4-2.7s against a 2ms baseline while one
+ * `POST /api/engines/refresh` ran. The `timeout` bounds a hung child, not a slow
+ * one; `killSignal: "SIGKILL"` is what makes even that bound real. Being async is
+ * what keeps the cost on the caller.
  */
-export function resolveAcpBinaryPath(command: string): string | null {
+export async function resolveAcpBinaryPath(command: string): Promise<string | null> {
   const cached = cache.get(command);
   if (cached !== undefined) return cached;
+  const inFlight = pathProbes.get(command);
+  if (inFlight) return inFlight;
 
-  let resolved: string | null = null;
-  try {
-    const which = process.platform === "win32" ? "where" : "which";
-    const out = execFileSync(which, [command], { timeout: 3_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-    // `where` can list several matches; the first line is the one that wins.
-    resolved = out.split("\n")[0].trim() || null;
-  } catch {
-    // Non-zero exit is the normal "not found" answer, not an error worth raising.
-    resolved = null;
-  }
-  cache.set(command, resolved);
-  log.debug(`ACP binary "${command}" ${resolved ? `found at ${resolved}` : "not found"} on PATH`);
-  return resolved;
+  const generation = cacheGeneration;
+  const probe = (async (): Promise<string | null> => {
+    let resolved: string | null = null;
+    try {
+      const which = process.platform === "win32" ? "where" : "which";
+      const { stdout } = await execFileAsync(which, [command], { timeout: 3_000, killSignal: "SIGKILL", encoding: "utf-8", maxBuffer: 1024 * 1024 });
+      // `where` can list several matches; the first line is the one that wins.
+      resolved = stdout.split("\n")[0].trim() || null;
+    } catch {
+      // Non-zero exit is the normal "not found" answer, not an error worth raising.
+      resolved = null;
+    }
+    // Same generation guard as the `--version` probe below, and for the same
+    // reason: a reset cannot cancel a promise already in flight, and a slow
+    // probe is the usual reason someone pressed Recheck.
+    if (generation === cacheGeneration) {
+      cache.set(command, resolved);
+      pathProbes.delete(command);
+    }
+    log.debug(`ACP binary "${command}" ${resolved ? `found at ${resolved}` : "not found"} on PATH`);
+    return resolved;
+  })();
+
+  pathProbes.set(command, probe);
+  return probe;
 }
 
 /** Availability of one preset. */
-export function acpProviderAvailability(preset: AcpVendorPreset): AcpProviderAvailability {
+export async function acpProviderAvailability(preset: AcpVendorPreset): Promise<AcpProviderAvailability> {
   const command = preset.command[0];
-  return { id: preset.id, label: preset.label, available: resolveAcpBinaryPath(command) !== null, command };
+  return { id: preset.id, label: preset.label, available: (await resolveAcpBinaryPath(command)) !== null, command };
 }
 
 /** Version probes per command, or `null` when the CLI would not say. */
@@ -139,7 +168,7 @@ export async function acpProviderVersion(command: string): Promise<string | unde
   const generation = cacheGeneration;
   const probe = (async (): Promise<string | undefined> => {
     let version: string | null = null;
-    if (resolveAcpBinaryPath(command) !== null) {
+    if ((await resolveAcpBinaryPath(command)) !== null) {
       try {
         const { stdout } = await execFileAsync(command, ["--version"], {
           timeout: 5_000,
@@ -182,10 +211,9 @@ export async function acpProviderVersion(command: string): Promise<string | unde
  * shows them disabled with the binary name, which is how a user learns that
  * installing `opencode` is all that stands between them and the provider.
  */
-export function listAcpProviderAvailability(): AcpProviderAvailability[] {
-  return Object.values(ACP_VENDOR_PRESETS)
-    .map(acpProviderAvailability)
-    .sort((a, b) => Number(b.available) - Number(a.available) || a.label.localeCompare(b.label));
+export async function listAcpProviderAvailability(): Promise<AcpProviderAvailability[]> {
+  const all = await Promise.all(Object.values(ACP_VENDOR_PRESETS).map(acpProviderAvailability));
+  return all.sort((a, b) => Number(b.available) - Number(a.available) || a.label.localeCompare(b.label));
 }
 
 /**
@@ -206,6 +234,7 @@ export function listAcpProviderAvailability(): AcpProviderAvailability[] {
 export function resetAcpAvailabilityCache(): void {
   cacheGeneration++;
   cache.clear();
+  pathProbes.clear();
   versionCache.clear();
   versionProbes.clear();
 }
