@@ -336,6 +336,80 @@ describe("the workspaces tab", () => {
   });
 
   /**
+   * The click path now has a network hop, so it now has a way to fail. A
+   * verdict that did not arrive is not a verdict: no confirmation may open on
+   * one, because the two confirmations describe *different actions* and picking
+   * between them is the only thing the verdict is for. Guessing would mean
+   * showing "this directory moves to the trash" for a workspace nobody has
+   * established is removable.
+   */
+  it("opens no confirmation when the verdict cannot be fetched, and says so", async () => {
+    fetchWorkspaceRemovability.mockRejectedValue(new Error("Failed to evaluate the workspace: 500"));
+    open();
+    await archiveRow("/home/cybil/callboard.feat-clean");
+
+    expect(await screen.findByText(/Failed to evaluate the workspace: 500/)).toBeTruthy();
+    // Neither confirmation, in either direction.
+    expect(screen.queryByText(/and move its worktree to the trash\?/)).toBeNull();
+    expect(screen.queryByText(/Archive the record for/)).toBeNull();
+    expect(archiveWorkspace).not.toHaveBeenCalled();
+    // And the row is usable again rather than stuck on "Checking…".
+    await waitFor(() => expect(screen.getAllByText(/^Archive…$/).length).toBeGreaterThan(0));
+    expect((screen.getAllByText(/^Archive…$/)[0].closest("button") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * The window the verdict fetch opened. Before it, a click opened a modal
+   * synchronously and the overlay swallowed everything after it; now there is a
+   * gap in which a second row's button is still on screen — and this is a
+   * surface whose whole premise is a daemon under load, so the gap is not
+   * always ~120ms. Two stacked confirmations, each correctly scoped to its own
+   * record, with the second click silently discarded behind the first.
+   */
+  it("will not let a second archive be started while a verdict is in flight", async () => {
+    let release: (value: WorkspaceWithRemovability) => void = () => {};
+    fetchWorkspaceRemovability.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    open();
+    await screen.findByText("/home/cybil/callboard.feat-clean");
+
+    const buttons = () => screen.getAllByText(/^Archive…$|^Checking…$/).map((el) => el.closest("button") as HTMLButtonElement);
+    click(buttons()[0]);
+    await waitFor(() => expect(screen.getByText("Checking…")).toBeTruthy());
+
+    // Every archive button is inert while one verdict is outstanding, so the
+    // second click is refused rather than dropped.
+    for (const button of buttons()) expect(button.disabled).toBe(true);
+    click(buttons()[1]);
+    expect(fetchWorkspaceRemovability).toHaveBeenCalledTimes(1);
+
+    release(workspace());
+    // Exactly one confirmation, for the record that was actually clicked.
+    expect(await screen.findByText(/Archive .*and move its worktree to the trash\?/)).toBeTruthy();
+    expect(screen.queryByText(/Archive the record for/)).toBeNull();
+    expect(screen.getAllByRole("button", { name: /Archive and move to trash/ })).toHaveLength(1);
+  });
+
+  /**
+   * The other half of "exactly one": the two targets are set as a pair, so a
+   * verdict that opens one confirmation closes the other. Without that, a
+   * blocked record evaluated after a removable one would stack its dialog on
+   * top of a still-mounted first.
+   */
+  it("replaces the open confirmation rather than stacking a second one", async () => {
+    open();
+    await archiveRow("/home/cybil/callboard.feat-clean");
+    expect(await screen.findByText(/and move its worktree to the trash\?/)).toBeTruthy();
+
+    // Dismiss nothing — go straight at the blocked record, as a user who
+    // clicked past the overlay would.
+    fetchWorkspaceRemovability.mockClear();
+    await archiveRow("/home/cybil/callboard.feat-dirty");
+
+    expect(await screen.findByText(/Archive the record for/)).toBeTruthy();
+    expect(screen.queryByText(/and move its worktree to the trash\?/)).toBeNull();
+  });
+
+  /**
    * Archiving ends by running the retention sweep, which permanently deletes
    * every past-retention trash entry — including entries from workspaces the
    * user never touched. It was logged and never surfaced.

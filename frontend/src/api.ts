@@ -2092,12 +2092,20 @@ export function retryJobStep(runId: string): Promise<JobRun> {
  * subprocesses, so a listing that carried them cost 1.6s of frozen daemon at 65
  * records — every other request, SSE included, waited behind it. Ask
  * {@link fetchWorkspaceRemovability} for the one record a user is acting on.
+ *
+ * `includeRemovability=false` is sent **explicitly**, and has to be. The route
+ * defaults it to *true*, because a browser tab still running a bundle from
+ * before this call existed reads `removability` unconditionally and takes the
+ * whole app down with it when the field is absent. That default is a temporary
+ * shim for those tabs and will flip; this caller must not rely on it either way,
+ * so it states what it wants. Removing this parameter silently restores the
+ * 1.6s listing.
  */
 export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceListResponse> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ includeRemovability: "false" });
   if (status) params.append("status", status);
   if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  const res = await fetch(`${BASE}/workspaces${params.toString() ? `?${params}` : ""}`);
+  const res = await fetch(`${BASE}/workspaces?${params}`);
   await assertOk(res, "Failed to list workspaces");
   return res.json();
 }

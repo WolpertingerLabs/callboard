@@ -27,34 +27,45 @@ import { tmpdir } from "node:os";
 import { join, relative as relativePath } from "node:path";
 
 /**
- * Real git, counted.
+ * Subprocesses, counted at the boundary rather than at the wrapper.
  *
- * Every wrapper below spawns a `git` subprocess, and the cost of a listing is
- * measured in exactly those. The mock is a pass-through — the behaviour under
- * test is still real git against real worktrees — and exists only so a test can
- * assert that the cheap listing spawns *none* of them. A timing assertion would
- * be the flaky way to make the same claim.
+ * The claim a cheap listing has to defend is "spawns no subprocess", and the
+ * only place that is literally true is `child_process` itself. An earlier
+ * version of this spied four named wrappers in `utils/git.js` and described them
+ * as "the wrappers that spawn git" — they are the four *this path reaches*, out
+ * of two dozen exports, so a future listing that reached for a fifth would slip
+ * past a test whose stated claim was zero.
+ *
+ * Both mocks are pass-throughs: the behaviour under test is still real git
+ * against real worktrees, and only the call count is added. This covers the
+ * synchronous spawns, which is all `utils/git.js` and `utils/disk-usage.ts` use;
+ * an async `spawn` would need adding here, and there are none on these paths.
+ *
+ * Production code imports the bare `"child_process"`; the fixture helpers below
+ * import `"node:child_process"` and set up real worktrees, so the counters are
+ * cleared immediately before each assertion regardless of how the two resolve.
  */
-vi.mock("../utils/git.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../utils/git.js")>();
-  return {
-    ...actual,
-    checkWorktreeClean: vi.fn(actual.checkWorktreeClean),
-    listIgnoredEntries: vi.fn(actual.listIgnoredEntries),
-    worktreeContainsSubmodules: vi.fn(actual.worktreeContainsSubmodules),
-    resolveRepoCommonRoot: vi.fn(actual.resolveRepoCommonRoot),
-  };
+vi.mock("child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("child_process")>();
+  return { ...actual, execSync: vi.fn(actual.execSync), execFileSync: vi.fn(actual.execFileSync) };
 });
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-service-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
-const gitUtils = await import("../utils/git.js");
-const { checkWorktreeClean } = gitUtils;
-/** The four wrappers that spawn `git`, as spies. */
-const gitSpies = [gitUtils.checkWorktreeClean, gitUtils.listIgnoredEntries, gitUtils.worktreeContainsSubmodules, gitUtils.resolveRepoCommonRoot].map((fn) =>
-  vi.mocked(fn),
-);
+const { checkWorktreeClean } = await import("../utils/git.js");
+const childProcess = await import("child_process");
+/** Every synchronous spawn, whoever makes it. */
+const subprocessSpies = [vi.mocked(childProcess.execSync), vi.mocked(childProcess.execFileSync)];
+
+/** Command lines spawned since the last {@link clearSpawns}, for a failure message. */
+function spawnedCommands(): string[] {
+  return subprocessSpies.flatMap((spy) => spy.mock.calls.map((call) => [call[0], ...(Array.isArray(call[1]) ? call[1] : [])].join(" ")));
+}
+
+function clearSpawns() {
+  for (const spy of subprocessSpies) spy.mockClear();
+}
 const { WORKTREE_TOKEN_FILE, readWorktreeToken, worktreeTokenPath } = await import("../utils/worktree-token.js");
 const { TRASH_MANIFEST_FILE } = await import("../utils/worktree-trash.js");
 const { directoryDiskUsageCached, newDiskUsageBudget } = await import("../utils/disk-usage.js");
@@ -941,7 +952,7 @@ describe("listWorkspaceEntries", () => {
     const { workspace, cwd } = ownedWorktree("cheap/one");
     const { workspace: other, cwd: otherCwd } = ownedWorktree("cheap/two");
     chatFileService.createChat(cwd, "sess-cheap", "{}", workspace.id);
-    for (const spy of gitSpies) spy.mockClear();
+    clearSpawns();
 
     const listed = listWorkspaceEntries({ status: "active" });
     const byId = new Map(listed.map((w) => [w.id, w]));
@@ -953,8 +964,9 @@ describe("listWorkspaceEntries", () => {
     expect(byId.get(other.id)!.chatCount).toBe(0);
     // ...and no verdict, because nobody asked for one.
     expect((byId.get(workspace.id) as any).removability).toBeUndefined();
-    // The whole point. `checkWorktreeClean` alone is three of them.
-    for (const spy of gitSpies) expect(spy).not.toHaveBeenCalled();
+    // The whole point, asserted at the boundary: not "fewer subprocesses", none.
+    // `checkWorktreeClean` alone would be three.
+    expect(spawnedCommands()).toEqual([]);
 
     git(["worktree", "remove", cwd], repoDir);
     git(["worktree", "remove", otherCwd], repoDir);
@@ -987,7 +999,12 @@ describe("getWorkspaceWithRemovability", () => {
     // confirmation is the only place a user ever finds out it is about to move.
     writeFileSync(join(cleanCwd, ".env"), "SECRET=1\n");
 
+    clearSpawns();
     const evaluated = getWorkspaceWithRemovability(clean.id)!;
+    // The control for the "zero" assertion in listWorkspaceEntries: if the
+    // counters were broken, both numbers would read zero and both tests pass.
+    expect(spawnedCommands().length).toBeGreaterThan(0);
+
     expect(evaluated.removability).toEqual(evaluateWorktreeRemoval(getWorkspace(clean.id)!));
     expect(evaluated.removability.removable).toBe(true);
     // The preview that is the entire reason the archive confirmation exists.

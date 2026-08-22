@@ -3,12 +3,13 @@
  * reachable.
  *
  * Phase 2: see the workspaces, ask why one cannot be removed (so a refusal is
- * legible), and archive one. The verdict is a *separate* call rather than a
- * field on the listing, because producing one is several synchronous git
- * subprocesses and this daemon has one thread; `GET /` is what a view polls and
- * `GET /:id/removability` is what a click asks. Neither is what makes an
- * archive safe — `POST /:id/archive` re-evaluates from the record every time and
- * accepts no verdict from anyone.
+ * legible), and archive one. The verdict is available as a *separate* call
+ * rather than only as a field on the listing, because producing one is several
+ * synchronous git subprocesses and this daemon has one thread; `GET /` is what a
+ * view polls (with `includeRemovability=false`) and `GET /:id/removability` is
+ * what a click asks. Neither is what makes an archive safe —
+ * `POST /:id/archive` re-evaluates from the record every time and accepts no
+ * verdict from anyone.
  *
  * Phase 2b: see the worktrees that have *no* record (read-only), and adopt
  * named ones. The split between those two is the whole safety property —
@@ -52,16 +53,55 @@ export const workspacesRouter = Router();
  */
 const ADOPT_PATH_LIMIT = 100;
 
-// List workspaces and the observed state of each one's directory. The removal
-// verdict is NOT included unless it is asked for — see the note below.
+/**
+ * `includeRemovability` **defaults to true, and that default is a dated
+ * compatibility shim rather than the intended shape.**
+ *
+ * The verdict is expensive (see the route description) and default-off is the
+ * right long-term design: no caller in this repo wants a verdict per record,
+ * and the one HTTP caller passes `false` explicitly. It shipped default-off and
+ * had to be inverted, because of the upgrade window rather than anything about
+ * the API:
+ *
+ * > A browser tab open across `callboard restart` keeps its old bundle
+ * > indefinitely — SSE reconnects, nothing reloads the page. A pre-#364 bundle
+ * > destructures `record.removability` unconditionally. Against a default-off
+ * > daemon that throws inside render, React retries, throws again and unmounts
+ * > the **entire root**: not a broken modal, a white page with no sidebar, no
+ * > chat list and no composer. There is no error boundary anywhere in
+ * > `frontend/src` and no version-mismatch prompt, so nothing catches it and
+ * > nothing tells the user to refresh.
+ *
+ * Defaulting on makes that tab *exactly correct* rather than merely alive — the
+ * response is byte-for-byte the pre-#364 shape. The cost is that an un-updated
+ * caller silently gets the slow path, which is a regression in the direction
+ * that was already the status quo, against a crash in the other.
+ *
+ * A stub verdict in the cheap listing was considered and rejected: an old tab
+ * would render "the directory is not moved" from a fabricated blocker while the
+ * backend quarantined it anyway. Wrong is worse than slow.
+ *
+ * **Flip it back to false** once no pre-#364 bundle can plausibly still be in a
+ * browser — concretely, one release after this one has been out long enough
+ * that every long-lived tab has been through a restart *and* a reload. The
+ * mechanical condition: this repo's minimum supported client is a build that
+ * contains `fetchWorkspaceRemovability` (frontend/src/api.ts), so once #364 is
+ * two releases back, delete this constant and read the query param the same way
+ * `includeDiskUsage` is read. The tests in workspaces.removability.test.ts pin
+ * both directions and will tell you what to update.
+ */
+const REMOVABILITY_DEFAULT_ON_FOR_OLD_CLIENTS = true;
+
+// List workspaces and the observed state of each one's directory, plus — for
+// now, and only for now — the removal verdict for each. See the constant above.
 workspacesRouter.get("/", (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'List workspaces'
-  // #swagger.description = 'List workspaces with `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Removability is NOT included by default — it costs roughly five synchronous git subprocesses per record, which at 65 records held the whole daemon for 1.6s; pass includeRemovability=true when a caller genuinely needs every verdict, or ask GET /:id/removability for the one workspace that is about to be acted on. Read-only either way: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
+  // #swagger.description = 'List workspaces with `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Removability — whether each worktree can be removed and every reason it cannot — is controlled by includeRemovability. PASS includeRemovability=false. It costs roughly five synchronous git subprocesses per record, which at 65 records held the whole daemon for 1.6s with SSE and chat input queued behind it; ask GET /:id/removability for the one workspace that is about to be acted on instead. It is on by default only as a compatibility shim for browser tabs still running a bundle from before that split existed, which crash on a listing without it, and the default will flip to false in a later release. Read-only either way: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
   /* #swagger.parameters['status'] = { in: 'query', type: 'string', description: 'Filter by status - active or archived. Omit for both.' } */
-  /* #swagger.parameters['includeRemovability'] = { in: 'query', type: 'string', description: 'Pass the string true to attach a removability verdict to every entry — whether its worktree can be removed, and every reason it cannot. Off by default because it is ~5 sequential git subprocesses per record and all of them are synchronous. Prefer GET /api/workspaces/{id}/removability for the single record a user is acting on.' } */
+  /* #swagger.parameters['includeRemovability'] = { in: 'query', type: 'string', description: 'Pass the string false to skip the removability verdict, which is ~5 sequential synchronous git subprocesses PER RECORD and the reason this route was ever slow. New callers should pass false and use GET /api/workspaces/{id}/removability for the single record they are acting on. Defaults to true only so that pre-existing browser tabs, which read the verdict unconditionally, do not crash against an upgraded daemon; that default is temporary.' } */
   /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each workspace with du -sk. Off by default: it is the slow part. Measurements are memoised for five minutes, a workspace whose directory is missing is not measured, and the whole listing shares one wall-clock budget — entries past it carry an error saying so and the response carries a diskUsageNote.' } */
-  /* #swagger.responses[200] = { description: "Workspaces, with removability only when it was asked for" } */
+  /* #swagger.responses[200] = { description: "Workspaces, with removability unless it was explicitly declined" } */
   /* #swagger.responses[400] = { description: "Invalid status filter" } */
   try {
     const status = req.query.status as "active" | "archived" | undefined;
@@ -69,7 +109,11 @@ workspacesRouter.get("/", (req, res) => {
       return res.status(400).json({ error: 'status must be "active" or "archived"' });
     }
     const includeDiskUsage = req.query.includeDiskUsage === "true";
-    const includeRemovability = req.query.includeRemovability === "true";
+    // Opt-*out*, and deliberately spelled as the mirror image of the opt-in
+    // above so the asymmetry is visible: only the exact string "false" declines
+    // the verdict. An old client sends no parameter at all and must get one.
+    const includeRemovability =
+      req.query.includeRemovability === undefined ? REMOVABILITY_DEFAULT_ON_FOR_OLD_CLIENTS : req.query.includeRemovability !== "false";
     // One budget for the whole listing. `du` is synchronous, so N entries with
     // only a per-entry timeout is N × 15s of frozen daemon.
     const budget = newDiskUsageBudget();

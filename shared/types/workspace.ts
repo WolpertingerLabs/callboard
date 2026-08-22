@@ -267,7 +267,7 @@ export interface WorkspaceEntry extends Workspace {
 /**
  * A {@link WorkspaceEntry} with the removal verdict attached.
  *
- * ## Why this is opt-in everywhere it appears
+ * ## Why nothing should ask for a list of these
  *
  * Producing one verdict is roughly five sequential git subprocesses —
  * `rev-parse` (deliberately uncached), `status --porcelain` + `for-each-ref` +
@@ -278,9 +278,14 @@ export interface WorkspaceEntry extends Workspace {
  * 1.6 s and a trivial `GET /api/auth/status` fired 150 ms into it took 1.53 s —
  * the express thread was simply gone, SSE and chat input with it.
  *
- * So nothing gets a verdict by default. A listing is
- * {@link WorkspaceEntry}; a verdict is asked for per workspace, at the moment it
- * decides something — which is the click on Archive, and nowhere else.
+ * So a listing is {@link WorkspaceEntry}, and a verdict is asked for per
+ * workspace at the moment it decides something — the click on Archive, and
+ * nowhere else. `GET /api/workspaces` does still fill this in unless a caller
+ * passes `includeRemovability=false`, but that default is a temporary shim for
+ * browser tabs running a bundle that predates the split (they read the field
+ * unconditionally and crash without it), not an invitation: every caller in this
+ * repo declines it. See the constant in backend/src/routes/workspaces.ts for the
+ * condition under which the default flips back.
  *
  * **The verdict is an affordance, never the gate.** `archiveWorkspace`
  * re-evaluates removability server-side on every call and acts only on its own
@@ -294,11 +299,12 @@ export interface WorkspaceWithRemovability extends WorkspaceEntry {
 /**
  * `GET /api/workspaces`.
  *
- * Typed as {@link WorkspaceEntry}, the shape the default (cheap) listing
- * returns. `?includeRemovability=true` fills `removability` in on every entry —
- * a `WorkspaceWithRemovability[]` is assignable here — but a reader that has not
- * asked for it must not be able to reach for it, so the response type does not
- * promise it.
+ * Typed as {@link WorkspaceEntry}: the shape a caller gets when it passes
+ * `includeRemovability=false`, which every caller in this repo does. Without
+ * that parameter the route still fills `removability` in on every entry (a
+ * `WorkspaceWithRemovability[]` is assignable here) for the benefit of bundles
+ * that predate the split — but a reader that did not ask for it must not be able
+ * to reach for it, so the response type does not promise it.
  */
 export interface WorkspaceListResponse {
   workspaces: WorkspaceEntry[];

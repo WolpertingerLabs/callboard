@@ -482,10 +482,12 @@ export function listWorkspaceEntries(filter?: { status?: Workspace["status"] }, 
  * Every workspace with its removability verdict attached.
  *
  * **Expensive, and linear in git subprocesses** — see
- * {@link WorkspaceWithRemovability}. Nothing user-facing polls this; the HTTP
- * listing only produces it behind an explicit `includeRemovability=true`, and
- * the agent-facing `list_workspaces` tool asks for it because a verdict per
- * record is the entire content of what it reports.
+ * {@link WorkspaceWithRemovability}. Two callers, both deliberate: the
+ * agent-facing `list_workspaces` tool, because a verdict per record is the
+ * entire content of what it reports; and `GET /api/workspaces` for a client that
+ * has not sent `includeRemovability=false`, which today means only a browser tab
+ * running a bundle from before {@link getWorkspaceWithRemovability} existed. The
+ * frontend passes `false` and takes the path above.
  */
 export function listWorkspacesWithRemovability(filter?: { status?: Workspace["status"] }, opts?: ListingOptions): WorkspaceWithRemovability[] {
   const ctx = newRemovalContext();

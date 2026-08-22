@@ -278,17 +278,39 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
    * survives — the verdict call does not run `du`, and re-running it per click
    * would put a synchronous `du` back on the path this whole change exists to
    * get off it.
+   *
+   * ## Exactly one confirmation, always
+   *
+   * The fetch is what makes this necessary. Before it, a click opened a modal
+   * synchronously and the overlay swallowed every further click; now there is a
+   * window — ~120 ms against an idle daemon, and this is a surface whose whole
+   * premise is that the daemon is *not* idle — in which a second row's button is
+   * still live. Two dialogs then stack, each correctly scoped to its own record,
+   * and the second click is silently discarded behind the first.
+   *
+   * Two things stop that, and both are wanted. Every Archive button goes inert
+   * while any verdict is in flight, so the second click is refused rather than
+   * dropped; and the two targets are set as a pair here, so whichever confirmation
+   * opens, the other is closed. Neither alone is enough — the buttons are only
+   * one route into this, and clearing the sibling would still leave a click that
+   * appeared to do nothing.
    */
   const openArchive = async (entry: WorkspaceEntry) => {
+    // A second entry while one is in flight would race the pair-setting below.
+    if (evaluating) return;
     setEvaluating(entry.id);
     setError(null);
     try {
       const evaluated = await fetchWorkspaceRemovability(entry.id);
       const target: WorkspaceWithRemovability = { ...entry, ...evaluated, diskUsage: evaluated.diskUsage ?? entry.diskUsage };
-      if (target.removability.removable) setArchiveTarget(target);
-      else setRecordOnlyTarget(target);
+      // Set as a pair: one confirmation opens, the other is explicitly closed.
+      setArchiveTarget(target.removability.removable ? target : null);
+      setRecordOnlyTarget(target.removability.removable ? null : target);
     } catch (err: any) {
-      setError(err.message || "Failed to work out whether this workspace can be removed");
+      // A verdict that could not be fetched is not a verdict, so nothing opens.
+      // The row stays exactly as it was and the banner says why — the one thing
+      // that must not happen is a confirmation built on a guess.
+      setError(err.message || `Could not work out what archiving “${entry.name}” would do. Nothing was changed — try again.`);
     } finally {
       setEvaluating(null);
     }
@@ -843,7 +865,19 @@ function DirectoryGroup({
 
       <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
         {records.map((record) => (
-          <RecordRow key={record.id} record={record} busy={busy} evaluating={evaluating === record.id} onArchive={onArchive} onRename={onRename} />
+          <RecordRow
+            key={record.id}
+            record={record}
+            busy={busy}
+            // Any verdict in flight makes every Archive button inert — that is
+            // what closes the two-dialogs window. Only the record actually being
+            // evaluated says "Checking…"; the rest just stop accepting clicks,
+            // and renaming (which touches no directory) stays available.
+            evaluatingAny={evaluating !== null}
+            evaluating={evaluating === record.id}
+            onArchive={onArchive}
+            onRename={onRename}
+          />
         ))}
       </div>
     </div>
@@ -965,13 +999,16 @@ function RecordRow({
   record,
   busy,
   evaluating,
+  evaluatingAny,
   onArchive,
   onRename,
 }: {
   record: WorkspaceEntry;
   busy: boolean;
-  /** This record's verdict is in flight. */
+  /** This record's verdict is in flight — the button says so. */
   evaluating: boolean;
+  /** Some record's verdict is in flight — every archive button is inert. */
+  evaluatingAny: boolean;
   onArchive: (workspace: WorkspaceEntry) => void;
   onRename: (workspace: WorkspaceEntry, name: string) => Promise<boolean>;
 }) {
@@ -1003,7 +1040,7 @@ function RecordRow({
       <div style={{ flexShrink: 0 }}>
         <button
           onClick={() => onArchive(record)}
-          disabled={busy || evaluating}
+          disabled={busy || evaluatingAny}
           style={{ ...primaryButton(false), background: "var(--bg-secondary)", color: "var(--text)", border: "1px solid var(--border)" }}
           title="Check what archiving this would do, and confirm it. Nothing happens until you do."
         >

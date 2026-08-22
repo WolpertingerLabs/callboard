@@ -8,9 +8,12 @@
  * `GET /api/auth/status` fired 150ms into it took 1.53s, because express has one
  * thread and it was gone. These tests pin the shape of the fix:
  *
- *  1. The default listing carries no verdict at all.
- *  2. `includeRemovability=true` still produces one, for the caller that wants
- *     every verdict and knows what it costs.
+ *  1. `includeRemovability=false` — what every caller in this repo sends —
+ *     carries no verdict at all.
+ *  2. Omitting the parameter still produces one, byte for byte as before. That
+ *     is a *compatibility shim* for browser tabs running a pre-split bundle,
+ *     which read the field unconditionally and take the whole app down without
+ *     it; it is temporary and the test that pins it says so.
  *  3. `GET /:id/removability` produces one for a single record.
  *  4. **The archive does not read any of it.** The verdict is a UI affordance;
  *     the gate is re-evaluated server-side from the record on every archive, and
@@ -105,10 +108,10 @@ const removability = (id: string) => invoke(removabilityHandler, { params: { id 
 const archive = (id: string, body: unknown = {}) => invoke(archiveHandler, { params: { id } as any, body: body as any });
 
 describe("GET /api/workspaces", () => {
-  it("carries no removal verdict by default", async () => {
-    const { cwd } = ownedWorktree("route/default");
+  it("drops the removal verdict when a caller declines it", async () => {
+    const { cwd } = ownedWorktree("route/declined");
 
-    const res = await list({ status: "active" });
+    const res = await list({ status: "active", includeRemovability: "false" });
     expect(res.code).toBe(200);
     expect(res.body.workspaces).toHaveLength(1);
     const [entry] = res.body.workspaces;
@@ -121,7 +124,37 @@ describe("GET /api/workspaces", () => {
     git(["worktree", "remove", cwd], repoDir);
   });
 
-  it("attaches one to every entry when a caller asks for it", async () => {
+  /**
+   * **The compatibility shim, and the reason it exists.**
+   *
+   * A browser tab open across `callboard restart` keeps its old bundle
+   * indefinitely — SSE reconnects, nothing reloads the page. A bundle from
+   * before this split reads `record.removability` unconditionally while
+   * rendering, so an absent field throws inside render, React retries, throws
+   * again, and unmounts the entire root: a white page with no sidebar, no chat
+   * list and no composer. There is no error boundary anywhere in the frontend
+   * and no version-mismatch prompt, so nothing catches it and nothing tells the
+   * user to refresh.
+   *
+   * An old client sends no `includeRemovability` at all. It must therefore get
+   * the pre-split response, byte for byte — not a stub verdict, which would have
+   * that tab promising "the directory is not moved" while the backend
+   * quarantined it anyway.
+   *
+   * Delete this test when the default flips; see the constant in workspaces.ts
+   * for the condition.
+   */
+  it("still answers a client that never heard of the parameter with a full verdict", async () => {
+    const { cwd } = ownedWorktree("route/old-client");
+
+    const res = await list({ status: "active" });
+    expect(res.body.workspaces[0].removability.removable).toBe(true);
+    expect(res.body.workspaces[0].removability.ignored).toBeDefined();
+
+    git(["worktree", "remove", cwd], repoDir);
+  });
+
+  it("attaches one to every entry when a caller asks for it outright", async () => {
     const { cwd } = ownedWorktree("route/opted-in");
 
     const res = await list({ status: "active", includeRemovability: "true" });
@@ -131,16 +164,18 @@ describe("GET /api/workspaces", () => {
   });
 
   /**
-   * The string "true" and nothing else, matching `includeDiskUsage`. A caller
-   * that sends `?includeRemovability=1` gets the cheap listing rather than the
-   * expensive one, which is the right direction for a typo to fail in.
+   * The mirror image of how `includeDiskUsage` is read, and deliberately so:
+   * that one is opt-in on the exact string "true", this one is opt-*out* on the
+   * exact string "false". A typo therefore costs a slow listing rather than a
+   * crashed tab, which is the right direction for it to fail in while the shim
+   * is in place.
    */
-  it("treats anything but the string true as off", async () => {
+  it("treats anything but the string false as on", async () => {
     const { cwd } = ownedWorktree("route/typo");
 
-    for (const value of ["1", "yes", "false", ""]) {
+    for (const value of ["1", "yes", "true", "False", ""]) {
       const res = await list({ status: "active", includeRemovability: value });
-      expect(res.body.workspaces[0].removability).toBeUndefined();
+      expect(res.body.workspaces[0].removability).toBeDefined();
     }
 
     git(["worktree", "remove", cwd], repoDir);
