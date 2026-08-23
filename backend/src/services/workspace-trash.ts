@@ -38,7 +38,7 @@ import type {
   WorktreeDiskUsage,
 } from "shared/types/index.js";
 import { TRASH_MANIFEST_FILE, TRASH_RETENTION_MS, trashRoot, type TrashManifest } from "../utils/worktree-trash.js";
-import { newDiskUsageBudget } from "../utils/disk-usage.js";
+import { newAsyncDiskUsageBudget } from "../utils/disk-usage.js";
 import { resolveCommit } from "../utils/git.js";
 import { clearProjectDirFolderCache } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
@@ -98,14 +98,21 @@ function restoreBlockerFor(manifest: TrashManifest | undefined): string | undefi
  * the directory's mtime — `rename(2)` does not update mtime, so a worktree
  * nobody had touched for a year would look a year old the moment it was
  * quarantined and be deleted on the next sweep.
+ *
+ * Async solely because of the disk-usage budget: the entries below are built
+ * synchronously holding placeholders, and `settle()` fills them from the bounded
+ * pool. The trash is the listing with the least reason of all to block the
+ * daemon on `du` — its directories are quarantined and inert, so their sizes do
+ * not change at all — but its caller (the Manage modal) opts in unconditionally,
+ * which made it the same latent freeze as discovery for the same reason.
  */
-export function listTrash(opts?: { includeDiskUsage?: boolean; root?: string; now?: number; diskUsageBudgetMs?: number }): TrashListing {
+export async function listTrash(opts?: { includeDiskUsage?: boolean; root?: string; now?: number; diskUsageBudgetMs?: number }): Promise<TrashListing> {
   const root = opts?.root ?? trashRoot();
   const now = opts?.now ?? Date.now();
   const listing: TrashListing = { root, retentionDays: Math.round(TRASH_RETENTION_MS / 86_400_000), entries: [] };
-  // `du` blocks the event loop, so a listing of N entries needs a bound on the
-  // whole listing, not just on each `du`. @see newDiskUsageBudget
-  const budget = newDiskUsageBudget({ budgetMs: opts?.diskUsageBudgetMs });
+  // One budget for the whole listing, spent off the event loop, and memoised:
+  // nothing in the trash is being written to. @see newAsyncDiskUsageBudget
+  const budget = newAsyncDiskUsageBudget({ budgetMs: opts?.diskUsageBudgetMs });
 
   if (!existsSync(root)) return listing;
 
@@ -159,6 +166,11 @@ export function listTrash(opts?: { includeDiskUsage?: boolean; root?: string; no
 
   // Soonest to expire first: the entries a user has least time to rescue.
   listing.entries.sort((a, b) => (a.expiresAt ?? "9999").localeCompare(b.expiresAt ?? "9999"));
+
+  // The entries above are holding unfilled measurements; this is what fills
+  // them. It has to happen before `note()` is read or the listing is serialised.
+  await budget.settle();
+
   const diskUsageNote = budget.note(listing.entries.length);
   if (diskUsageNote) {
     log.warn(`Disk usage not measured for ${budget.skipped} trash entr(ies) — budget exhausted`);

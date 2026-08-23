@@ -24,6 +24,7 @@ process.env.CALLBOARD_DATA_DIR = join(root, "data");
 
 const { TRASH_MANIFEST_FILE, TRASH_RETENTION_MS, quarantineDirectory, trashRoot } = await import("../utils/worktree-trash.js");
 const { listTrash, restoreTrashEntry } = await import("./workspace-trash.js");
+const { clearDiskUsageCache } = await import("../utils/disk-usage.js");
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -66,17 +67,17 @@ mkdirSync(badTimestamp, { recursive: true });
 writeFileSync(join(badTimestamp, TRASH_MANIFEST_FILE), JSON.stringify({ workspaceId: "ws-x", quarantinedAt: "not a date", restore: [] }));
 
 describe("listing", () => {
-  it("reports where an entry came from and what it would take to restore it", () => {
-    const entry = listTrash().entries.find((e) => e.entry === entryName)!;
+  it("reports where an entry came from and what it would take to restore it", async () => {
+    const entry = (await listTrash()).entries.find((e) => e.entry === entryName)!;
     expect(entry).toMatchObject({ workspaceId: "ws-feature", originalPath: worktree, repoPath: repo, branch: "feature", restorable: true });
     expect(entry.restore.join(" ")).toContain("git -C");
   });
 
-  it("counts down from the manifest, not from the directory's mtime", () => {
-    const entry = listTrash().entries.find((e) => e.entry === entryName)!;
+  it("counts down from the manifest, not from the directory's mtime", async () => {
+    const entry = (await listTrash()).entries.find((e) => e.entry === entryName)!;
     const expected = Date.parse(entry.quarantinedAt!) + TRASH_RETENTION_MS;
     expect(Date.parse(entry.expiresAt!)).toBe(expected);
-    expect(listTrash().retentionDays).toBe(30);
+    expect((await listTrash()).retentionDays).toBe(30);
   });
 
   /**
@@ -84,8 +85,8 @@ describe("listing", () => {
    * such an entry would be a lie in the dangerous direction — a user would
    * expect it to disappear, and it never will.
    */
-  it("says an undateable entry will never be swept instead of showing an expiry", () => {
-    const entries = listTrash().entries;
+  it("says an undateable entry will never be swept instead of showing an expiry", async () => {
+    const entries = (await listTrash()).entries;
     for (const name of ["no-manifest-entry", "bad-timestamp-entry"]) {
       const entry = entries.find((e) => e.entry === name)!;
       expect(entry.expiresAt).toBeUndefined();
@@ -93,25 +94,34 @@ describe("listing", () => {
     }
   });
 
-  it("refuses to promise a restore it could not perform", () => {
-    const entry = listTrash().entries.find((e) => e.entry === "no-manifest-entry")!;
+  it("refuses to promise a restore it could not perform", async () => {
+    const entry = (await listTrash()).entries.find((e) => e.entry === "no-manifest-entry")!;
     expect(entry.restorable).toBe(false);
     expect(entry.restoreBlocker).toContain("by hand");
   });
 
-  it("measures nothing unless asked", () => {
-    for (const entry of listTrash().entries) expect(entry.diskUsage).toBeUndefined();
-    const measured = listTrash({ includeDiskUsage: true }).entries.find((e) => e.entry === entryName)!;
+  it("measures nothing unless asked", async () => {
+    for (const entry of (await listTrash()).entries) expect(entry.diskUsage).toBeUndefined();
+    const measured = (await listTrash({ includeDiskUsage: true })).entries.find((e) => e.entry === entryName)!;
     expect(measured.diskUsage?.bytes).toBeGreaterThan(0);
   });
 
   /**
-   * `du` is synchronous. Without a budget over the whole listing, N entries is
-   * N × the 15s per-directory timeout of an event loop that serves nothing —
-   * and this endpoint's caller opts in unconditionally.
+   * The per-directory timeout is not a bound on a listing: without a budget over
+   * the whole thing, N entries is N × 15s — and this endpoint's caller opts in
+   * unconditionally, so N is whatever the trash happens to hold. The `du`s now
+   * run off the event loop, which bounds who *waits* for them, not how many
+   * there are; the budget is still the only thing that bounds the listing.
    */
-  it("stops measuring when the listing's budget runs out, and says so", () => {
-    const listing = listTrash({ includeDiskUsage: true, diskUsageBudgetMs: 0 });
+  it("stops measuring when the listing's budget runs out, and says so", async () => {
+    // The memo is emptied first because a hit is served regardless of the
+    // deadline — it costs no `du` and no pool slot, so refusing it would be a
+    // skip reported for nothing. The test above measures one of these entries,
+    // so without this the budget-exhausted listing would legitimately hand back
+    // that entry's real size, and this test would be asserting the memo is cold
+    // rather than that the budget is spent.
+    clearDiskUsageCache();
+    const listing = await listTrash({ includeDiskUsage: true, diskUsageBudgetMs: 0 });
     expect(listing.entries.length).toBeGreaterThan(0);
     for (const entry of listing.entries) {
       expect(entry.diskUsage?.bytes).toBeUndefined();
@@ -153,9 +163,9 @@ describe("restore", () => {
    * The property that makes restore safe to offer: it copies out and leaves the
    * quarantined directory alone, so a restore that half-works costs nothing.
    */
-  it("leaves the trash entry intact so a bad restore loses nothing", () => {
+  it("leaves the trash entry intact so a bad restore loses nothing", async () => {
     expect(existsSync(join(quarantined.trashPath, ".env"))).toBe(true);
-    expect(listTrash().entries.map((e) => e.entry)).toContain(entryName);
+    expect((await listTrash()).entries.map((e) => e.entry)).toContain(entryName);
   });
 
   it("never writes over a directory that has come back", () => {
@@ -164,8 +174,8 @@ describe("restore", () => {
     expect(readFileSync(join(worktree, ".env"), "utf8")).toBe("SECRET=hunter2\n");
   });
 
-  it("marks an entry unrestorable once its original path is occupied", () => {
-    const entry = listTrash().entries.find((e) => e.entry === entryName)!;
+  it("marks an entry unrestorable once its original path is occupied", async () => {
+    const entry = (await listTrash()).entries.find((e) => e.entry === entryName)!;
     expect(entry.restorable).toBe(false);
     expect(entry.restoreBlocker).toContain("exists again");
   });

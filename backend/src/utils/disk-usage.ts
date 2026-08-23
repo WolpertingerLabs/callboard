@@ -15,9 +15,9 @@
  *
  * There are two ways to spend it, and the difference is which thread waits:
  *
- * - {@link newAsyncDiskUsageBudget} — what the polled listings use. `du` runs in
- *   the background, {@link DISK_USAGE_CONCURRENCY} at a time, and the daemon goes
- *   on serving HTTP while it does. Costs the caller one `await settle()`.
+ * - {@link newAsyncDiskUsageBudget} — what every listing uses. `du` runs in the
+ *   background, {@link DISK_USAGE_CONCURRENCY} at a time, and the daemon goes on
+ *   serving HTTP while it does. Costs the caller one `await settle()`.
  * - {@link newDiskUsageBudget} — the synchronous original, kept for the callers
  *   that measure a single directory, and for synchronous call sites that cannot
  *   await. It blocks the event loop for as long as `du` runs.
@@ -205,16 +205,7 @@ export interface DiskUsageBudget {
   note(measured?: number): string | undefined;
 }
 
-export function newDiskUsageBudget(opts?: {
-  budgetMs?: number;
-  /**
-   * Whether to go through the five-minute memo. True for the polled listings
-   * (sidebar, workspaces, trash); discovery measures uncached because a scan is
-   * user-initiated and expected to be current.
-   */
-  cached?: boolean;
-  now?: () => number;
-}): DiskUsageBudget {
+export function newDiskUsageBudget(opts?: { budgetMs?: number; now?: () => number }): DiskUsageBudget {
   const budgetMs = opts?.budgetMs ?? DISK_USAGE_BUDGET_MS;
   const now = opts?.now ?? Date.now;
   const startedAt = now();
@@ -226,7 +217,7 @@ export function newDiskUsageBudget(opts?: {
         skipped++;
         return { error: `not measured — the ${budgetMs}ms disk-usage budget for this listing was exhausted` };
       }
-      return opts?.cached === false ? directoryDiskUsage(directory) : directoryDiskUsageCached(directory);
+      return directoryDiskUsageCached(directory);
     },
     get skipped() {
       return skipped;
@@ -314,9 +305,27 @@ function replaceUsage(target: WorktreeDiskUsage, usage: WorktreeDiskUsage): void
  * A memo hit costs no slot and is served regardless of the deadline — it is not
  * work, and refusing to hand back a number already in memory would be a skip
  * reported for nothing.
+ *
+ * `cached: false` opts out of the memo *read* and keeps the memo *write*. The
+ * asymmetry is the point, and it is what "refresh" means everywhere else: the
+ * caller is saying its own answer must be current, not that the answer it
+ * computes is unfit for anyone else. Discovery is the one caller — a Scan is a
+ * button a human pressed to find out what is on disk *now*, so handing it a
+ * number from before they emptied a `node_modules` would answer a question they
+ * did not ask, with nothing on screen admitting the number is five minutes old.
+ * Dropping the write as well (which is what the synchronous budget's version of
+ * this option did) threw that expensive measurement away and left the very next
+ * polled listing to pay for the same directories again.
  */
-export function newAsyncDiskUsageBudget(opts?: { budgetMs?: number; concurrency?: number; now?: () => number }): AsyncDiskUsageBudget {
+export function newAsyncDiskUsageBudget(opts?: {
+  budgetMs?: number;
+  concurrency?: number;
+  /** Default true. False re-measures rather than recalling — but still publishes. */
+  cached?: boolean;
+  now?: () => number;
+}): AsyncDiskUsageBudget {
   const budgetMs = opts?.budgetMs ?? DISK_USAGE_BUDGET_MS;
+  const cached = opts?.cached !== false;
   const now = opts?.now ?? Date.now;
   const startedAt = now();
   let skipped = 0;
@@ -336,7 +345,17 @@ export function newAsyncDiskUsageBudget(opts?: { budgetMs?: number; concurrency?
       // the synchronous path. Nothing in the codebase does this; the fallback is
       // here so that if something ever does, it gets a number rather than a
       // placeholder that will never be filled in.
-      if (run) return directoryDiskUsageCached(directory, now());
+      //
+      // The uncached fallback publishes by hand, because `directoryDiskUsage`
+      // does not. Skipping that would make one stray call obey the opposite of
+      // the read/write split documented above — the same budget skipping the memo
+      // read on every path but populating it on all of them except this one.
+      if (run) {
+        if (cached) return directoryDiskUsageCached(directory, now());
+        const usage = directoryDiskUsage(directory);
+        cache.set(resolve(directory), { measuredAt: now(), usage });
+        return usage;
+      }
       const target: WorktreeDiskUsage = { error: UNSETTLED };
       pending.push({ key: resolve(directory), directory, target });
       return target;
@@ -377,7 +396,7 @@ export function newAsyncDiskUsageBudget(opts?: { budgetMs?: number; concurrency?
         const [key, { directory, targets }] = queue[index];
 
         // Free: already in memory, so neither a slot nor the deadline applies.
-        const memo = memoPeek(key, now());
+        const memo = cached ? memoPeek(key, now()) : undefined;
         if (memo) {
           for (const target of targets) replaceUsage(target, memo);
           continue;
@@ -397,8 +416,9 @@ export function newAsyncDiskUsageBudget(opts?: { budgetMs?: number; concurrency?
           // written on completion, so two listings that acquire slots for the
           // same directory inside the same window both spawn `du`. Best-effort
           // by design; the cap still bounds the machine either way.
-          const warmed = memoPeek(key, now());
+          const warmed = cached ? memoPeek(key, now()) : undefined;
           const usage = warmed ?? (await directoryDiskUsageAsync(directory));
+          // Written even when the memo was not read: see `cached` above.
           if (!warmed) cache.set(key, { measuredAt: now(), usage });
           for (const target of targets) replaceUsage(target, usage);
         } finally {

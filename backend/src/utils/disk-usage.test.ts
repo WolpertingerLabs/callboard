@@ -159,6 +159,68 @@ describe("the async listing budget", () => {
     expect(third.bytes).toBeGreaterThan(first.bytes!);
   });
 
+  /**
+   * `cached: false` is a read/write split, not an opt-out: skip the memo, still
+   * populate it. A scan is the most expensive measurement in the daemon, and
+   * dropping the write leaves the next polled listing paying for the same
+   * directories again.
+   */
+  it("re-measures without the memo, and still publishes what it measured", async () => {
+    const [dir] = dirs(1, "uncached");
+
+    const seed = newAsyncDiskUsageBudget();
+    const before = seed.measure(dir);
+    await seed.settle();
+
+    writeFileSync(join(dir, "grew.txt"), "y".repeat(512 * 1024));
+
+    // Skips the read: strictly larger than the memo holds, which a budget that
+    // consulted the memo could not report.
+    const fresh = newAsyncDiskUsageBudget({ cached: false });
+    const grown = fresh.measure(dir);
+    await fresh.settle();
+    expect(grown.bytes).toBeGreaterThan(before.bytes!);
+
+    // Keeps the write. Grown a second time first, so that a cold memo and a live
+    // one give different answers — without this, a budget that published nothing
+    // would re-run `du` and land on the same number by coincidence.
+    writeFileSync(join(dir, "grew-again.txt"), "z".repeat(512 * 1024));
+    const after = newAsyncDiskUsageBudget();
+    const recalled = after.measure(dir);
+    await after.settle();
+    expect(recalled.bytes).toBe(grown.bytes);
+  });
+
+  /**
+   * The stray-call fallback obeys the same split. Unreachable from this
+   * codebase — nothing measures after settling — but an aspirational contract
+   * is how the two halves drift apart, so it is pinned rather than described.
+   */
+  it("keeps the read/write split on a measure() that arrives after settle()", async () => {
+    const [dir] = dirs(1, "stray");
+
+    const seed = newAsyncDiskUsageBudget();
+    const before = seed.measure(dir);
+    await seed.settle();
+
+    writeFileSync(join(dir, "grew.txt"), "y".repeat(512 * 1024));
+
+    const budget = newAsyncDiskUsageBudget({ cached: false });
+    await budget.settle(); // nothing registered; the budget is now spent
+    const strayed = budget.measure(dir);
+    // Skipped the read: the memo still holds the pre-growth number.
+    expect(strayed.bytes).toBeGreaterThan(before.bytes!);
+    expect(strayed.error).toBeUndefined();
+
+    // Kept the write. Grown again first, so only a memo the stray call populated
+    // can produce `strayed.bytes` here.
+    writeFileSync(join(dir, "grew-again.txt"), "z".repeat(512 * 1024));
+    const after = newAsyncDiskUsageBudget();
+    const recalled = after.measure(dir);
+    await after.settle();
+    expect(recalled.bytes).toBe(strayed.bytes);
+  });
+
   it("fills every row that asked for the same directory", async () => {
     const [dir] = dirs(1, "shared");
     const budget = newAsyncDiskUsageBudget();

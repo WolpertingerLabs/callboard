@@ -125,7 +125,7 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
       },
       async (args) => {
         try {
-          return ok({ ...listUnmanagedWorktrees(args.repoPath, { includeDiskUsage: args.includeDiskUsage !== false }) });
+          return ok({ ...(await listUnmanagedWorktrees(args.repoPath, { includeDiskUsage: args.includeDiskUsage !== false })) });
         } catch (e: any) {
           log.error(`list_unmanaged_worktrees failed: ${e.message}`);
           return err(`Failed to list unmanaged worktrees: ${e.message}`);
