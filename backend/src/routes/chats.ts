@@ -25,7 +25,7 @@ import { newAsyncDiskUsageBudget } from "../utils/disk-usage.js";
 // them without closing an import cycle back through this route, and
 // `clearListCaches` is the one call that empties both — see list-caches.ts.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
-import { folderListCache, folderListInFlight, FOLDER_LIST_CACHE_TTL, clearFolderListCache } from "../services/folder-list-cache.js";
+import { folderListCache, folderListGeneration, folderListInFlight, FOLDER_LIST_CACHE_TTL, clearFolderListCache } from "../services/folder-list-cache.js";
 import { workspaceRegistryVersion } from "../services/workspace-store.js";
 import { clearListCaches } from "../services/list-caches.js";
 export { clearChatListCache, clearFolderListCache, clearListCaches };
@@ -218,6 +218,10 @@ chatsRouter.get("/folders", async (req, res) => {
     const fingerprint = `${sessionRegistry.version}:${sessionRegistry.metadataVersion}:${pendingRequestFingerprint()}:${workspaceRegistryVersion()}`;
     const bypassCache = req.query.cached === "false";
     const now = Date.now();
+    // Read before anything is read *from*, so an invalidation landing at any
+    // point during the build is caught. Erring early only ever costs a cache
+    // miss; erring late stores rows that predate a delete. @see folderListGeneration
+    const generation = folderListGeneration();
 
     if (!bypassCache) {
       const cached = folderListCache.get(cacheKey);
@@ -294,7 +298,19 @@ chatsRouter.get("/folders", async (req, res) => {
       // fingerprint would hide a transition that landed mid-build, and a
       // post-`settle()` timestamp would grant the entry the whole duration of
       // the `du` sweep as extra TTL.
-      folderListCache.set(cacheKey, { data: responseData, createdAt: now, fingerprint });
+      //
+      // And the write only happens if no invalidation landed while we ran.
+      // The fingerprint cannot cover this: `clearListCaches()` fires for changes
+      // that move no version counter — a deleted chat, a closed card, a toggled
+      // bookmark — so a build that started before one produces an entry whose
+      // fingerprint still matches and would be served as valid for a full TTL.
+      // @see folderListGeneration
+      if (folderListGeneration() === generation) {
+        folderListCache.set(cacheKey, { data: responseData, createdAt: now, fingerprint });
+      }
+      // The response itself is still returned: this request read a consistent
+      // snapshot, and it began before the invalidation did. Only *storing* it
+      // for later requests would be wrong.
       return responseData;
     }
   } catch (err: any) {

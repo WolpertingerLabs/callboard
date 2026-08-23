@@ -307,6 +307,63 @@ describe("key separation", () => {
     expect(bypassed.folders).toHaveLength(1);
   });
 
+  /**
+   * An invalidation that lands *during* a build must not be undone by that
+   * build's own cache write.
+   *
+   * The fingerprint cannot catch this and no amount of tuning it would: it
+   * watches state that moves without a request, while `clearListCaches()` exists
+   * precisely for state that moves *because of* one — a deleted chat, a closed
+   * card, a toggled bookmark, none of which bump a version counter. So the
+   * doomed build's entry looks valid and is served for a full TTL. Unreachable
+   * before `du` went async, because the handler was one synchronous block.
+   */
+  it("does not re-write an entry that was invalidated while the build ran", async () => {
+    // Build starts and suspends at its await...
+    const inFlight = listFolders();
+    // ...and the write plus its invalidation land underneath it. Deliberately
+    // no `notifyMetadata`: a delete moves no version, so the fingerprint the
+    // build captured is still current and cannot tell this happened.
+    chatFileService.updateChat(sessionId, { metadata: JSON.stringify({ title: "second" }) });
+    clearFolderListCache();
+    await inFlight;
+
+    expect(folderListCache.size).toBe(0); // the stale entry was dropped, not stored
+    const next = await listFolders();
+    expect(next.folders[0].chatTitle).toBe("second");
+    expect(discovered.builds).toBe(2); // it genuinely rebuilt rather than serving the re-write
+  });
+
+  it("still rebuilds when the invalidation lands before the build starts", async () => {
+    await listFolders();
+    chatFileService.updateChat(sessionId, { metadata: JSON.stringify({ title: "second" }) });
+    clearFolderListCache();
+
+    // The ordinary case, and the guard must not break it: nothing was in flight,
+    // so the next build's generation matches and its entry is stored.
+    const fresh = await listFolders();
+    expect(fresh.folders[0].chatTitle).toBe("second");
+    expect(folderListCache.size).toBe(1);
+  });
+
+  it("drops a mid-build invalidation's entry even when the row set shrinks", async () => {
+    // The variant that is visible rather than merely stale: a row disappears.
+    const second = randomUUID();
+    discovered.ids = [sessionId, second];
+    discovered.folderById = { [second]: olderFolder };
+    writeFileSync(join(projectsDir, encodedDir, `${second}.jsonl`), `{"type":"user","timestamp":"2026-01-01T00:00:00.000Z"}\n`);
+    chatFileService.createChat(olderFolder, second, JSON.stringify({ title: "other" }));
+    expect((await listFolders()).folders).toHaveLength(2);
+    clearFolderListCache();
+
+    const inFlight = listFolders();
+    discovered.ids = [sessionId]; // the second chat is deleted mid-build
+    clearFolderListCache();
+    await inFlight;
+
+    expect((await listFolders()).folders).toHaveLength(1);
+  });
+
   it("treats an absent maxAgeDays as the default rather than a separate key", async () => {
     await listFolders();
     await listFolders({ maxAgeDays: "5" });
