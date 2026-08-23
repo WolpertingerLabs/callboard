@@ -16,6 +16,12 @@ vi.mock("./agent-settings.js", () => ({
   getAgentSettings: vi.fn((): AgentSettings => ({ proxyMode: "local" })),
 }));
 
+/** Settings with OpenRouter configured, so the periodic refresh is in scope. */
+const usingOpenRouter: AgentSettings = { proxyMode: "local", openRouterApiKey: "sk-or-test" };
+
+/** Settings for a user who never touches OpenRouter. */
+const notUsingOpenRouter: AgentSettings = { proxyMode: "local" };
+
 // Real by default; individual tests make it throw to exercise the "bad
 // configured endpoint" path, which is the one behaviour change inside
 // fetchOpenRouterModels and is otherwise unreachable through a fetch mock.
@@ -36,8 +42,10 @@ import {
   stopOpenRouterModelsRefresh,
 } from "./openrouter-models.js";
 import { resolveOpenRouterApiUrl } from "./openrouter-endpoint.js";
+import { getAgentSettings } from "./agent-settings.js";
 
 const mockResolveUrl = vi.mocked(resolveOpenRouterApiUrl);
+const mockGetAgentSettings = vi.mocked(getAgentSettings);
 
 /** A /models response listing the given tool-calling slugs. */
 function modelsBody(...ids: string[]): Response {
@@ -57,6 +65,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   resetOpenRouterModelsCacheForTesting();
   mockResolveUrl.mockImplementation((path: string) => `https://openrouter.ai/api/v1${path}`);
+  mockGetAgentSettings.mockReturnValue(usingOpenRouter);
   fetchMock = vi.fn().mockResolvedValue(modelsBody("anthropic/claude-opus-4.8"));
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -199,19 +208,19 @@ describe("snapshot reads", () => {
   });
 });
 
+/**
+ * Await the warm-up without touching the fake clock. `vi.waitFor` advances
+ * timers to poll, which would stamp `fetchedAt` after the interval's origin and
+ * make the interval tests measure the wrong thing; awaiting the shared
+ * in-flight promise settles the same fetch and costs no extra request.
+ */
+async function initAndWarm(): Promise<void> {
+  initOpenRouterModelsCache();
+  await getOpenRouterModelsAsync();
+}
+
 describe("periodic refresh", () => {
   afterEach(() => stopOpenRouterModelsRefresh());
-
-  /**
-   * Await the warm-up without touching the fake clock. `vi.waitFor` advances
-   * timers to poll, which would stamp `fetchedAt` after the interval's origin
-   * and make these tests measure the wrong thing; awaiting the shared in-flight
-   * promise settles the same fetch and costs no extra request.
-   */
-  async function initAndWarm(): Promise<void> {
-    initOpenRouterModelsCache();
-    await getOpenRouterModelsAsync();
-  }
 
   it("re-fetches on the interval with no reader at all", async () => {
     await initAndWarm();
@@ -233,7 +242,7 @@ describe("periodic refresh", () => {
     await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
 
     // The point of the timer: this sync read is current, not one refresh behind.
-    await vi.waitFor(() => expect(getLatestAnthropicRoleModels().opus).toBe("anthropic/claude-opus-4.9"));
+    expect(getLatestAnthropicRoleModels().opus).toBe("anthropic/claude-opus-4.9");
   });
 
   it("refreshes every period, not every other one", async () => {
@@ -267,6 +276,11 @@ describe("periodic refresh", () => {
     initOpenRouterModelsCache();
     initOpenRouterModelsCache();
 
+    // `advanceTimersByTimeAsync` is load-bearing, not stylistic: it drains
+    // microtasks *between* callbacks scheduled at the same timestamp, so three
+    // un-guarded intervals would each start a fetch (4 calls). The synchronous
+    // `advanceTimersByTime` lets them all dedup into one in-flight promise,
+    // which would make this test pass with the double-start guard removed.
     await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -278,6 +292,81 @@ describe("periodic refresh", () => {
     await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS * 3);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("periodic refresh is gated on OpenRouter being configured", () => {
+  afterEach(() => stopOpenRouterModelsRefresh());
+
+  it("still warms the cache at boot for a user with no OpenRouter config", async () => {
+    // The picker has to be populated the first time Settings → API is opened,
+    // which is before any key exists. Only the recurring cost is gated.
+    mockGetAgentSettings.mockReturnValue(notUsingOpenRouter);
+
+    initOpenRouterModelsCache();
+    expect(await getOpenRouterModelsAsync()).toHaveLength(1);
+  });
+
+  it("ticks silently for a user who never touches OpenRouter", async () => {
+    mockGetAgentSettings.mockReturnValue(notUsingOpenRouter);
+    await initAndWarm();
+
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS * 5);
+
+    // ~690KB a pop; five hours of it buys this user nothing, since the sync
+    // env builder skips the catalog outright without a key.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes on the next tick once OpenRouter is configured", async () => {
+    mockGetAgentSettings.mockReturnValue(notUsingOpenRouter);
+    await initAndWarm();
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Nothing notifies this module; the tick just re-reads settings.
+    mockGetAgentSettings.mockReturnValue(usingOpenRouter);
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["claudeCodeUseOpenRouter", { claudeCodeUseOpenRouter: true }],
+    ["codexUseOpenRouter", { codexUseOpenRouter: true }],
+    ["claudeCodeOpenRouterApiKey", { claudeCodeOpenRouterApiKey: "sk-or-x" }],
+    ["codexOpenRouterApiKey", { codexOpenRouterApiKey: "sk-or-x" }],
+    ["acpOpenRouterApiKey", { acpOpenRouterApiKey: "sk-or-x" }],
+    ["openRouterModelAliases", { openRouterModelAliases: { fast: "anthropic/claude-haiku-4.5" } }],
+  ])("counts %s as OpenRouter being in use", async (_label, extra) => {
+    mockGetAgentSettings.mockReturnValue({ proxyMode: "local", ...extra } as AgentSettings);
+    await initAndWarm();
+
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a blank key as not configured", async () => {
+    mockGetAgentSettings.mockReturnValue({ proxyMode: "local", openRouterApiKey: "   " });
+    await initAndWarm();
+
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the tick instead of crashing when settings cannot be read", async () => {
+    await initAndWarm();
+    // An uncaught throw in a timer callback would take the daemon down.
+    mockGetAgentSettings.mockImplementation(() => {
+      throw new Error("settings file corrupt");
+    });
+
+    await expect(vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS)).resolves.not.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    mockGetAgentSettings.mockReturnValue(usingOpenRouter);
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

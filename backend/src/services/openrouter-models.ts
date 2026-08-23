@@ -7,8 +7,10 @@
  * *and* an unref'd interval re-fetches on the same period regardless of reads.
  * Both are needed — see {@link initOpenRouterModelsCache} for why the TTL alone
  * leaves the synchronous callers a full refresh behind. The endpoint is public
- * — no API key is required — so the cache warms even before the user configures
- * OpenRouter.
+ * — no API key is required — so the boot fetch warms the cache even before the
+ * user configures OpenRouter; the *interval* is gated on OpenRouter actually
+ * being configured, because 690KB an hour forever is not a thing to spend on a
+ * user who never uses it ({@link isOpenRouterInUse}).
  *
  * ## Why a TTL at all
  *
@@ -172,6 +174,39 @@ function ensureOpenRouterModels(opts?: { force?: boolean }): Promise<OpenRouterM
 }
 
 /**
+ * Whether any configured surface actually routes through OpenRouter.
+ *
+ * Gates the periodic refresh only — never the boot warm-up. `/models` is ~690KB,
+ * so an unconditional hourly tick would pull ~16MB/day from a third party on
+ * every callboard daemon in existence, including the many that only ever hold
+ * an Anthropic key. It is the daemon's only recurring outbound third-party
+ * call and there is no telemetry setting to decline it, so it has to justify
+ * itself. It cannot, for an unconfigured user: the tick exists to keep
+ * {@link getLatestAnthropicRoleModels} current for the synchronous env builder,
+ * and that call site is already `claudeCodeOpenRouterKey ? … : {}`.
+ *
+ * Read inside the tick rather than around `setInterval` so that enabling
+ * OpenRouter takes effect on the next tick with nothing to notify.
+ */
+function isOpenRouterInUse(): boolean {
+  try {
+    const s = getAgentSettings();
+    const configured = [s.claudeCodeOpenRouterApiKey, s.openRouterApiKey, s.codexOpenRouterApiKey, s.acpOpenRouterApiKey];
+    return (
+      Boolean(s.claudeCodeUseOpenRouter || s.codexUseOpenRouter) ||
+      configured.some((key) => typeof key === "string" && key.trim().length > 0) ||
+      Object.keys(s.openRouterModelAliases ?? {}).length > 0
+    );
+  } catch (err) {
+    // `getAgentSettings` reads from disk. An uncaught throw here would be an
+    // uncaught exception in a timer callback — i.e. a dead daemon — so skipping
+    // one tick is the only sane answer. Reads still refresh on demand.
+    log.warn(`Skipping OpenRouter catalog refresh: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
  * Initialize the OpenRouter models cache. Call once at startup.
  * Non-blocking — runs in the background.
  *
@@ -182,14 +217,20 @@ function ensureOpenRouterModels(opts?: { force?: boolean }): Promise<OpenRouterM
  * cached list and learns nothing from the refresh it triggers. Without a timer,
  * a daemon that builds env twice a week answers the second build with the first
  * build's catalog — the original bug, moved one read along rather than fixed.
- * The interval is what makes "re-fetched hourly" true for every caller.
+ * The interval is what makes "re-fetched hourly" true for every caller who has
+ * OpenRouter configured — see {@link isOpenRouterInUse} for why the tick, but
+ * not this boot fetch, is gated on that.
  */
 export function initOpenRouterModelsCache(): void {
+  // Unconditional: a populated picker the first time someone opens Settings →
+  // API is the whole reason this warms before any key exists.
   void ensureOpenRouterModels();
   if (refreshTimer) return;
   // Unref'd: keeping the catalog warm is never a reason to hold the process
   // open, and this outlives every request that might want it.
-  refreshTimer = setInterval(() => void ensureOpenRouterModels({ force: true }), OPENROUTER_MODELS_TTL_MS);
+  refreshTimer = setInterval(() => {
+    if (isOpenRouterInUse()) void ensureOpenRouterModels({ force: true });
+  }, OPENROUTER_MODELS_TTL_MS);
   refreshTimer.unref();
 }
 
