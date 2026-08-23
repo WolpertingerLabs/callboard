@@ -118,6 +118,77 @@ export const folderListCache = new Map<string, CachedFolderListResponse>();
  */
 export const FOLDER_LIST_CACHE_TTL = 5_000;
 
+/**
+ * Bumped by every invalidation. A build reads it before it starts and checks it
+ * before it writes; if it moved, the build's rows predate an invalidation and
+ * the entry is dropped rather than stored.
+ *
+ * **This is not something the fingerprint can do**, and the reason is
+ * structural. The cache guards two disjoint classes of change:
+ *
+ *  - state that moves *without* a request — the session registry, parked
+ *    prompts, the workspace registry — which is what the fingerprint watches;
+ *  - state that moves *because of* a request — a chat deleted, a card closed, a
+ *    bookmark toggled — which is what {@link clearFolderListCache} is for, via
+ *    the ~13 `clearListCaches()` sites.
+ *
+ * For the second class the fingerprint is **unchanged by construction**: a
+ * deleted chat bumps no version counter, so a build that started before the
+ * delete produces an entry whose fingerprint still matches, and it is served as
+ * valid. Clearing the map does not help, because the doomed build writes to it
+ * afterwards.
+ *
+ * That was impossible while the handler was one synchronous block — nothing
+ * could interleave between the fingerprint read and the cache write. Moving `du`
+ * off the event loop put an `await` in the middle and opened the window; this
+ * closes it. Exposure was bounded (one TTL, self-healing) but it is a stale
+ * *listing* served to every poll in that window, and the sidebar has no other
+ * freshness mechanism: `listFolders` in frontend/src/api.ts never sends
+ * `cached=false`, so the bypass is unreachable from the UI.
+ */
+let generation = 0;
+
+/** The invalidation counter, read before a build and re-checked before its write. */
+export function folderListGeneration(): number {
+  return generation;
+}
+
 export function clearFolderListCache(): void {
   folderListCache.clear();
+  // Also drops in-flight builds, so a later request cannot join one whose rows
+  // predate this invalidation. A build already joined still receives that
+  // response, which is correct: it arrived before the invalidation, so its own
+  // build would have read the same pre-invalidation state. What must not happen
+  // is that response being *stored* — see `generation`.
+  folderListInFlight.clear();
+  generation++;
 }
+
+/**
+ * The builds currently running, so concurrent requests share one instead of
+ * each computing the same response.
+ *
+ * The cache above only helps a request that arrives *after* another finished —
+ * an entry is written once a response exists. Requests that overlap the build
+ * all miss and all build, and the sidebar polls on a timer from every open tab,
+ * so overlapping is the normal case rather than a rare one. Before the listing
+ * had an `await` in it that was invisible: the handler ran to completion in one
+ * synchronous block, so a second request could not physically interleave with
+ * the first. Measuring `du` off the event loop is what opened the window, and
+ * this is what closes it — two concurrent cold requests now cost one build
+ * rather than two, including the synchronous head (session discovery, git info,
+ * chat metadata) that the disk-usage memo does nothing for.
+ *
+ * **Keyed by cache key *and* fingerprint.** A joiner may only share a build that
+ * started from the same in-memory state it sees; if the registry moved while the
+ * first request was building, the second builds its own rather than accepting
+ * rows that predate what it knows. That is the same rule the cache applies, at
+ * the same granularity — sharing here can never serve anything the cache would
+ * not have served a millisecond later.
+ */
+export interface InFlightFolderList {
+  fingerprint: string;
+  response: Promise<CachedFolderListResponse["data"]>;
+}
+
+export const folderListInFlight = new Map<string, InFlightFolderList>();

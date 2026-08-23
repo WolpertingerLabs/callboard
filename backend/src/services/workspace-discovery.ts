@@ -74,6 +74,22 @@ export function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: Discov
   const includeDiskUsage = opts?.includeDiskUsage !== false;
   // Uncached: a scan is user-initiated and the number it reports is the whole
   // point of running it, so it is measured rather than recalled.
+  //
+  // **This is the largest remaining synchronous `du` in the daemon**, and larger
+  // than the listings that were fixed. Two choices compound here: the memo is
+  // bypassed (above), and `GET /unmanaged` defaults `includeDiskUsage` to *true*
+  // — `!== "false"`, the opposite of every other listing, all of which are
+  // opt-in. So every Scan click re-measures every candidate from cold at roughly
+  // 72ms of fully blocked event loop each, bounded only by the 120s budget: a
+  // repository with 30 unmanaged worktrees — precisely the state adoption exists
+  // for — freezes the daemon for ~2.2s per click.
+  //
+  // Left synchronous on purpose rather than by omission: this is user-initiated
+  // and one click, not a 15-second poll from every open tab, which is what made
+  // the listings urgent. Converting it means `async` through
+  // {@link listUnmanagedWorktrees} and its 11 test call sites, and
+  // {@link newAsyncDiskUsageBudget} is now sitting here ready for whoever does.
+  // The inverted default is worth revisiting at the same time.
   const budget = newDiskUsageBudget({ budgetMs: opts?.diskUsageBudgetMs, cached: false });
 
   const worktrees: UnmanagedWorktree[] = [];

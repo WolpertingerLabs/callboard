@@ -38,7 +38,7 @@ import { listUnmanagedWorktrees } from "../services/workspace-discovery.js";
 import { archiveWorkspace, getWorkspaceWithRemovability, listWorkspaceEntries, listWorkspacesWithRemovability } from "../services/workspace-service.js";
 import { getWorkspace, renameWorkspace } from "../services/workspace-store.js";
 import { listTrash, restoreTrashEntry } from "../services/workspace-trash.js";
-import { newDiskUsageBudget } from "../utils/disk-usage.js";
+import { newAsyncDiskUsageBudget } from "../utils/disk-usage.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("workspaces-route");
@@ -94,7 +94,7 @@ const REMOVABILITY_DEFAULT_ON_FOR_OLD_CLIENTS = true;
 
 // List workspaces and the observed state of each one's directory, plus — for
 // now, and only for now — the removal verdict for each. See the constant above.
-workspacesRouter.get("/", (req, res) => {
+workspacesRouter.get("/", async (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'List workspaces'
   // #swagger.description = 'List workspaces with `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Removability — whether each worktree can be removed and every reason it cannot — is controlled by includeRemovability. PASS includeRemovability=false. It costs roughly five synchronous git subprocesses per record, which at 65 records held the whole daemon for 1.6s with SSE and chat input queued behind it; ask GET /:id/removability for the one workspace that is about to be acted on instead. It is on by default only as a compatibility shim for browser tabs still running a bundle from before that split existed, which crash on a listing without it, and the default will flip to false in a later release. Read-only either way: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
@@ -114,13 +114,16 @@ workspacesRouter.get("/", (req, res) => {
     // the verdict. An old client sends no parameter at all and must get one.
     const includeRemovability =
       req.query.includeRemovability === undefined ? REMOVABILITY_DEFAULT_ON_FOR_OLD_CLIENTS : req.query.includeRemovability !== "false";
-    // One budget for the whole listing. `du` is synchronous, so N entries with
-    // only a per-entry timeout is N × 15s of frozen daemon.
-    const budget = newDiskUsageBudget();
+    // One budget for the whole listing, spent off the event loop. The rows below
+    // are built synchronously and come back holding unfilled measurements;
+    // `settle()` runs the `du`s in parallel and writes the answers into them. It
+    // has to happen before `note()` is read or the rows are serialised.
+    const budget = newAsyncDiskUsageBudget();
     const filter = status ? { status } : undefined;
     const workspaces = includeRemovability
       ? listWorkspacesWithRemovability(filter, { includeDiskUsage, budget })
       : listWorkspaceEntries(filter, { includeDiskUsage, budget });
+    await budget.settle();
     const diskUsageNote = budget.note(workspaces.length);
     res.json({ workspaces, ...(diskUsageNote && { diskUsageNote }) });
   } catch (err: any) {
