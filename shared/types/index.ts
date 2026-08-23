@@ -105,6 +105,9 @@ export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from 
 
 export type { SessionStatus } from "./session.js";
 
+export type { BuildIdFile } from "./build.js";
+export { DEV_BUILD_ID, UNKNOWN_BUILD_ID, BUILD_ID_FILENAME } from "./build.js";
+
 export type { AgentConfig, SystemPromptSection, SystemMessagePreview } from "./agent.js";
 
 export type {

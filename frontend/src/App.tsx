@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import SplitLayout from "./components/SplitLayout";
 import Login from "./pages/Login";
 import CodeLoginModal from "./components/CodeLoginModal";
+import StaleBundleBanner from "./components/StaleBundleBanner";
 import { SessionProvider } from "./contexts/SessionContext";
 import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight";
 import { checkClaudeStatus, type ClaudeAuthStatus } from "./api";
@@ -210,6 +211,9 @@ export default function App() {
         </Routes>
       </BrowserRouter>
       <CodeLoginModal isOpen={showClaudeModal} onClose={handleCloseClaudeModal} onStatusChange={handleClaudeStatusChange} status={claudeStatus} />
+      {/* Outside the router on purpose: the news that the daemon moved is not
+          about the route, and navigating should not re-mount (or clear) it. */}
+      <StaleBundleBanner />
     </SessionProvider>
   );
 }

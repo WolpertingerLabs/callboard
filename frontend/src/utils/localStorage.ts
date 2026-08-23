@@ -38,6 +38,19 @@ interface LocalStorageData {
    * to hide.
    */
   chatSectionsExpanded?: Partial<Record<ChatSectionKey, boolean>>;
+  /**
+   * The daemon build id whose reload prompt the user waved off. Keyed by the
+   * id, not a boolean, so the *next* upgrade is announced again — see
+   * `utils/buildIdentity.ts`.
+   *
+   * Shared across tabs on this origin, which is the intent: one "not now"
+   * quiets the fleet, not just the tab it was clicked in. Note that the store
+   * alone does not achieve that — an already-open tab reads this once at mount
+   * and would never see a later write. `StaleBundleBanner` carries a `storage`
+   * listener for that, and an upgrade is precisely the case where every tab
+   * already has the banner up.
+   */
+  dismissedStaleBuildId?: string;
   themeMode?: ThemeMode;
   customThemeName?: string | null;
   sidebarCollapsed?: boolean;
@@ -420,6 +433,26 @@ export function getChatSectionExpanded(key: ChatSectionKey): boolean {
 export function saveChatSectionExpanded(key: ChatSectionKey, expanded: boolean): void {
   const data = getStorageData();
   data.chatSectionsExpanded = { ...data.chatSectionsExpanded, [key]: expanded };
+  setStorageData(data);
+}
+
+/**
+ * The build id whose reload prompt was dismissed, or `null`.
+ *
+ * Type-checked on the way out rather than trusted: this is JSON on disk, and a
+ * non-string here is compared against a real build id by `shouldPromptReload`.
+ * A stored `0` would never match one, so the failure mode is silent — the
+ * prompt reappears — but "silently ignore the store" is the behaviour to pick
+ * deliberately, not to arrive at by accident.
+ */
+export function getDismissedStaleBuildId(): string | null {
+  const data = getStorageData();
+  return typeof data.dismissedStaleBuildId === "string" ? data.dismissedStaleBuildId : null;
+}
+
+export function saveDismissedStaleBuildId(buildId: string): void {
+  const data = getStorageData();
+  data.dismissedStaleBuildId = buildId;
   setStorageData(data);
 }
 
