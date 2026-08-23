@@ -2,10 +2,13 @@
  * OpenRouter Models Service — caches the list of tool-calling-capable models
  * from OpenRouter's public /models endpoint.
  *
- * Warmed once on startup (non-blocking) and refreshed lazily thereafter: a read
- * that finds the entry older than {@link OPENROUTER_MODELS_TTL_MS} re-fetches.
- * The endpoint is public — no API key is required — so the cache warms even
- * before the user configures OpenRouter.
+ * Warmed on startup (non-blocking) and refreshed two ways after that: a read
+ * that finds the entry older than {@link OPENROUTER_MODELS_TTL_MS} re-fetches,
+ * *and* an unref'd interval re-fetches on the same period regardless of reads.
+ * Both are needed — see {@link initOpenRouterModelsCache} for why the TTL alone
+ * leaves the synchronous callers a full refresh behind. The endpoint is public
+ * — no API key is required — so the cache warms even before the user configures
+ * OpenRouter.
  *
  * ## Why a TTL at all
  *
@@ -31,11 +34,26 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("openrouter-models");
 
-/** How long a successful catalog read is served before a read re-fetches. */
+/** How long a successful catalog read is served before it is re-fetched. */
 export const OPENROUTER_MODELS_TTL_MS = 60 * 60 * 1000;
 
 /** How long a *failed* read is served before a read tries again. */
 export const OPENROUTER_MODELS_RETRY_MS = 60 * 1000;
+
+/**
+ * Ceiling on one catalog fetch.
+ *
+ * Node's global `fetch` defaults to a 300s header/body timeout, which was
+ * survivable when this ran once at boot and every later read hit a warm cache.
+ * It is not survivable now that reads *await* the re-fetch at each TTL
+ * boundary: `GET /api/openrouter/models` and the `list_openrouter_models` tool
+ * share one in-flight promise, so a server that accepts the connection and then
+ * stalls would hang all of them together, once an hour, forever. A timeout also
+ * turns the hang into an ordinary failure, which the retry-and-carry-forward
+ * path below already handles. Matches openrouter-completion.ts's use of
+ * `AbortSignal.timeout` for the same host.
+ */
+const FETCH_TIMEOUT_MS = 30_000;
 
 interface OpenRouterModelsCache {
   models: OpenRouterModelInfo[];
@@ -66,6 +84,9 @@ let fetchPromise: Promise<OpenRouterModelsCache> | null = null;
  */
 let generation = 0;
 
+/** Handle for the periodic refresh started by {@link initOpenRouterModelsCache}. */
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
 async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
   try {
     // Shared with the utility completion client — see openrouter-endpoint.ts for
@@ -76,7 +97,7 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
     const url = resolveOpenRouterApiUrl("/models");
     log.info(`Fetching OpenRouter models from ${url}...`);
 
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} ${res.statusText}`);
     }
@@ -98,11 +119,17 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
 
     log.info(`OpenRouter models fetched: ${models.length} tool-calling models (of ${raw.length} total)`);
     return { models, fetchedAt: Date.now(), ok: true };
-  } catch (err: any) {
+  } catch (err) {
     // Carry the last known-good list forward. A transient refresh failure must
     // not be indistinguishable from "OpenRouter offers no tool-calling models".
+    //
+    // `err` is narrowed rather than assumed to be an Error: this catch is the
+    // last thing standing between a fetch failure and a rejected promise, and a
+    // rejection here would strand `fetchPromise` non-null forever — the exact
+    // never-refreshes bug this module exists to prevent.
+    const message = err instanceof Error ? err.message : String(err);
     const previous = cache?.models ?? [];
-    log.error(`Failed to fetch OpenRouter models: ${err.message}${previous.length > 0 ? ` (keeping ${previous.length} cached)` : ""}`);
+    log.error(`Failed to fetch OpenRouter models: ${message}${previous.length > 0 ? ` (keeping ${previous.length} cached)` : ""}`);
     return { models: previous, fetchedAt: Date.now(), ok: false };
   }
 }
@@ -116,18 +143,30 @@ function isFresh(entry: OpenRouterModelsCache): boolean {
  * The cache, re-fetching first if it has aged out. Concurrent callers share one
  * in-flight fetch. Never rejects — a failure resolves to the last known-good
  * models (see {@link fetchOpenRouterModels}).
+ *
+ * `force` skips the freshness check, and the periodic refresh needs it: the
+ * interval period and the TTL are the same duration, but `fetchedAt` is stamped
+ * when a fetch *resolves*, so every tick lands while the entry is still fresh
+ * by however long the last fetch took. Asking politely would no-op on each tick
+ * and refresh on the one after, quietly doubling the period. Forcing still
+ * shares an in-flight fetch, so a tick during a slow fetch is free.
  */
-function ensureOpenRouterModels(): Promise<OpenRouterModelsCache> {
-  if (cache && isFresh(cache)) return Promise.resolve(cache);
+function ensureOpenRouterModels(opts?: { force?: boolean }): Promise<OpenRouterModelsCache> {
+  if (!opts?.force && cache && isFresh(cache)) return Promise.resolve(cache);
   if (!fetchPromise) {
     const gen = generation;
-    fetchPromise = fetchOpenRouterModels().then((result) => {
-      if (gen === generation) {
-        cache = result;
-        fetchPromise = null;
-      }
-      return result;
-    });
+    fetchPromise = fetchOpenRouterModels()
+      .then((result) => {
+        // A generation bump means a refresh replaced us mid-flight; that newer
+        // fetch owns `cache` and `fetchPromise` now, so leave both alone.
+        if (gen === generation) cache = result;
+        return result;
+      })
+      .finally(() => {
+        // In `finally`, not `then`: if this ever failed to run, `fetchPromise`
+        // would stay non-null and no read could refresh the cache again.
+        if (gen === generation) fetchPromise = null;
+      });
   }
   return fetchPromise;
 }
@@ -135,9 +174,31 @@ function ensureOpenRouterModels(): Promise<OpenRouterModelsCache> {
 /**
  * Initialize the OpenRouter models cache. Call once at startup.
  * Non-blocking — runs in the background.
+ *
+ * Also starts the periodic refresh, which is **not** redundant with the TTL
+ * that {@link ensureOpenRouterModels} enforces. A TTL only re-fetches when
+ * something reads, and the consumer that most needs current data cannot force a
+ * read: {@link getOpenRouterModelsSnapshot} is synchronous, so it hands back the
+ * cached list and learns nothing from the refresh it triggers. Without a timer,
+ * a daemon that builds env twice a week answers the second build with the first
+ * build's catalog — the original bug, moved one read along rather than fixed.
+ * The interval is what makes "re-fetched hourly" true for every caller.
  */
 export function initOpenRouterModelsCache(): void {
   void ensureOpenRouterModels();
+  if (refreshTimer) return;
+  // Unref'd: keeping the catalog warm is never a reason to hold the process
+  // open, and this outlives every request that might want it.
+  refreshTimer = setInterval(() => void ensureOpenRouterModels({ force: true }), OPENROUTER_MODELS_TTL_MS);
+  refreshTimer.unref();
+}
+
+/** Stop the periodic refresh. For tests and clean shutdown. */
+export function stopOpenRouterModelsRefresh(): void {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
 }
 
 /**
@@ -154,9 +215,12 @@ export async function getOpenRouterModelsAsync(): Promise<OpenRouterModelInfo[]>
  * builder in agent-settings — to read the catalog opportunistically.
  *
  * A snapshot read of an aged-out entry still answers from the stale list, but
- * kicks off the refresh in the background so the *next* caller is current. That
- * is what keeps the role-model defaults moving on a daemon nobody restarts,
- * without giving the synchronous callers something to await.
+ * kicks off the refresh in the background so the *next* caller is current.
+ * Note what that does **not** buy: this caller never sees the fetch it started,
+ * so read-triggered refresh alone would leave a rarely-built env one refresh
+ * behind indefinitely. The interval in {@link initOpenRouterModelsCache} is
+ * what actually bounds this path's staleness; the kick here just narrows the
+ * window when a read lands before the timer does.
  */
 export function getOpenRouterModelsSnapshot(): OpenRouterModelInfo[] {
   if (!cache || !isFresh(cache)) void ensureOpenRouterModels();
@@ -205,6 +269,15 @@ export function getLatestAnthropicRoleModels(models?: OpenRouterModelInfo[]): { 
  *
  * Drops the cached models rather than carrying them forward: they describe the
  * host we just stopped pointing at.
+ *
+ * **Currently has no production callers** — don't go hunting for one. Nothing
+ * invalidates on a base-URL change today; the TTL just corrects it within the
+ * hour. Two consequences of that, both pre-existing: a URL change is served
+ * stale until the next refresh, and the carry-forward in
+ * {@link fetchOpenRouterModels} is host-blind, so a private proxy that is down
+ * at an hour boundary keeps serving whatever host answered last. Wiring this
+ * into the settings-update path fixes both, and the generation counter it bumps
+ * is already here for when someone does.
  */
 export function refreshOpenRouterModelsCache(): Promise<OpenRouterModelsCache> {
   generation++;
@@ -213,11 +286,12 @@ export function refreshOpenRouterModelsCache(): Promise<OpenRouterModelsCache> {
   return ensureOpenRouterModels();
 }
 
-/** Test-only: drop the cached catalog and any in-flight fetch. */
+/** Test-only: drop the cached catalog, any in-flight fetch, and the interval. */
 export function resetOpenRouterModelsCacheForTesting(): void {
   generation++;
   cache = null;
   fetchPromise = null;
+  stopOpenRouterModelsRefresh();
 }
 
 /**

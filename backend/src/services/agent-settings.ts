@@ -358,9 +358,11 @@ export function getApiEnvOverrides(settings?: AgentSettings): Record<string, str
     // Role-model defaults. Through OpenRouter, Claude Code's built-in bare model
     // ids (e.g. "claude-opus-4-x") may not resolve — the gateway expects fully
     // qualified `anthropic/*` slugs. So when a role field is blank, fall back to
-    // the newest matching anthropic slug from the OpenRouter catalog, which
-    // re-fetches hourly so a model released after this daemon booted still shows
-    // up. Subagent inherits the sonnet default. Each only fills when the
+    // the newest matching anthropic slug from the OpenRouter catalog. This read
+    // is synchronous, so it reports the last *completed* refresh rather than
+    // fetching — an hourly timer is what keeps that within an hour of current,
+    // so a model released after this daemon booted still shows up here without a
+    // restart. Subagent inherits the sonnet default. Each only fills when the
     // user left it empty (the block just above already set any explicit value).
     //
     // Skipped when the credentials came from the environment: that setup already
