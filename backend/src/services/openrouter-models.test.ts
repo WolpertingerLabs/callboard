@@ -332,6 +332,7 @@ describe("periodic refresh is gated on OpenRouter being configured", () => {
   });
 
   it.each([
+    ["openRouterApiKey", { openRouterApiKey: "sk-or-x" }],
     ["claudeCodeUseOpenRouter", { claudeCodeUseOpenRouter: true }],
     ["codexUseOpenRouter", { codexUseOpenRouter: true }],
     ["claudeCodeOpenRouterApiKey", { claudeCodeOpenRouterApiKey: "sk-or-x" }],
@@ -356,12 +357,17 @@ describe("periodic refresh is gated on OpenRouter being configured", () => {
 
   it("skips the tick instead of crashing when settings cannot be read", async () => {
     await initAndWarm();
-    // An uncaught throw in a timer callback would take the daemon down.
+    // Not a torn JSON read — readAgentSettings already swallows those and
+    // returns defaults. The path that actually throws is ensureDataDir()'s
+    // mkdirSync, which sits outside that guard: EACCES on a permissions change,
+    // EROFS on a remount. Out of a timer callback that is an uncaught
+    // exception, i.e. a dead daemon rather than a skipped refresh.
     mockGetAgentSettings.mockImplementation(() => {
-      throw new Error("settings file corrupt");
+      throw Object.assign(new Error("EACCES: permission denied, mkdir"), { code: "EACCES" });
     });
 
-    await expect(vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS)).resolves.not.toThrow();
+    // A rejection here fails the await — which is the whole assertion.
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     mockGetAgentSettings.mockReturnValue(usingOpenRouter);

@@ -187,6 +187,12 @@ function ensureOpenRouterModels(opts?: { force?: boolean }): Promise<OpenRouterM
  *
  * Read inside the tick rather than around `setInterval` so that enabling
  * OpenRouter takes effect on the next tick with nothing to notify.
+ *
+ * Deliberately a little over-inclusive, so don't "tighten" it: only the two
+ * `claudeCode*` fields feed the synchronous consumer the timer exists for, but
+ * the Codex, ACP and alias surfaces are read-triggered paths that benefit from
+ * a warm catalog anyway — `GET /api/openrouter/models` returning instantly
+ * rather than blocking on 690KB, for someone who has plainly opted in.
  */
 function isOpenRouterInUse(): boolean {
   try {
