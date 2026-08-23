@@ -120,4 +120,34 @@ export const FOLDER_LIST_CACHE_TTL = 5_000;
 
 export function clearFolderListCache(): void {
   folderListCache.clear();
+  folderListInFlight.clear();
 }
+
+/**
+ * The builds currently running, so concurrent requests share one instead of
+ * each computing the same response.
+ *
+ * The cache above only helps a request that arrives *after* another finished —
+ * an entry is written once a response exists. Requests that overlap the build
+ * all miss and all build, and the sidebar polls on a timer from every open tab,
+ * so overlapping is the normal case rather than a rare one. Before the listing
+ * had an `await` in it that was invisible: the handler ran to completion in one
+ * synchronous block, so a second request could not physically interleave with
+ * the first. Measuring `du` off the event loop is what opened the window, and
+ * this is what closes it — two concurrent cold requests now cost one build
+ * rather than two, including the synchronous head (session discovery, git info,
+ * chat metadata) that the disk-usage memo does nothing for.
+ *
+ * **Keyed by cache key *and* fingerprint.** A joiner may only share a build that
+ * started from the same in-memory state it sees; if the registry moved while the
+ * first request was building, the second builds its own rather than accepting
+ * rows that predate what it knows. That is the same rule the cache applies, at
+ * the same granularity — sharing here can never serve anything the cache would
+ * not have served a millisecond later.
+ */
+export interface InFlightFolderList {
+  fingerprint: string;
+  response: Promise<CachedFolderListResponse["data"]>;
+}
+
+export const folderListInFlight = new Map<string, InFlightFolderList>();

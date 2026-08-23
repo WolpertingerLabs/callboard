@@ -740,8 +740,18 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
 
   // The directory just moved, so every memoised `du` for it — and for anything
   // the sweep is about to delete — now describes a path that is not there. Five
-  // minutes of a sidebar showing a size against a gone directory is exactly the
-  // stale reading this cache's TTL was never meant to cover.
+  // minutes of a sidebar showing a size against a gone directory is the stale
+  // reading this cache's TTL was never meant to cover.
+  //
+  // This clears what is *memoised*, not what is *in flight*. Since the listings
+  // measure asynchronously, a worker that already ran `du` on this directory can
+  // write its pre-move size back into the memo after this call, and it will sit
+  // there for the TTL. Left alone deliberately: a quarantined directory drops
+  // out of both listings that show sizes — the workspace record is archived and
+  // the folder no longer exists — so the entry is unreachable rather than wrong
+  // on screen, and the next measurement of the path (if it ever returns) is a
+  // miss. Making it airtight would mean a generation counter on the memo, which
+  // is more machinery than an unreachable entry is worth.
   clearDiskUsageCache();
 
   // Age-out anything that has been in the trash past the retention window.

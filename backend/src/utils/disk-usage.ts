@@ -268,7 +268,14 @@ function noteFor(skipped: number, budgetMs: number, measured?: number): string |
 export interface AsyncDiskUsageBudget extends DiskUsageBudget {
   /**
    * Run every registered measurement, bounded by {@link DISK_USAGE_CONCURRENCY},
-   * and fill in the objects `measure` handed out. Idempotent.
+   * and fill in the objects `measure` handed out.
+   *
+   * Idempotent *and* safe to call concurrently: the second call returns the
+   * first call's promise rather than a fresh resolved one, so awaiting it always
+   * means the placeholders are filled. Returning early on a boolean would hand
+   * the second caller a promise that resolves immediately with every row still
+   * reading "did not settle" — the exact silent failure the placeholder error
+   * exists to make loud.
    */
   settle(): Promise<void>;
 }
@@ -313,7 +320,12 @@ export function newAsyncDiskUsageBudget(opts?: { budgetMs?: number; concurrency?
   const now = opts?.now ?? Date.now;
   const startedAt = now();
   let skipped = 0;
-  let settled = false;
+  /**
+   * The single run, memoised. Not a `settled` boolean: a second `settle()` that
+   * arrives while the first is still in flight must wait for it, not resolve
+   * immediately on placeholders that are not filled in yet.
+   */
+  let run: Promise<void> | undefined;
 
   /** Registrations in listing order, so a skip lands on the tail rather than at random. */
   const pending: Array<{ key: string; directory: string; target: WorktreeDiskUsage }> = [];
@@ -324,67 +336,14 @@ export function newAsyncDiskUsageBudget(opts?: { budgetMs?: number; concurrency?
       // the synchronous path. Nothing in the codebase does this; the fallback is
       // here so that if something ever does, it gets a number rather than a
       // placeholder that will never be filled in.
-      if (settled) return directoryDiskUsageCached(directory, now());
+      if (run) return directoryDiskUsageCached(directory, now());
       const target: WorktreeDiskUsage = { error: UNSETTLED };
       pending.push({ key: resolve(directory), directory, target });
       return target;
     },
 
-    async settle(): Promise<void> {
-      if (settled) return;
-      settled = true;
-
-      // One dispatch per directory, however many rows asked for it: two
-      // workspaces sharing a cwd is a supported state, and it must not be two
-      // `du` processes. Insertion order is preserved, so the tail is still the
-      // tail.
-      const byDirectory = new Map<string, { directory: string; targets: WorktreeDiskUsage[] }>();
-      for (const item of pending) {
-        const group = byDirectory.get(item.key);
-        if (group) group.targets.push(item.target);
-        else byDirectory.set(item.key, { directory: item.directory, targets: [item.target] });
-      }
-
-      const queue = [...byDirectory.entries()];
-      let next = 0;
-
-      const worker = async (): Promise<void> => {
-        for (;;) {
-          const index = next++;
-          if (index >= queue.length) return;
-          const [key, { directory, targets }] = queue[index];
-
-          // Free: already in memory, so neither a slot nor the deadline applies.
-          const memo = memoPeek(key, now());
-          if (memo) {
-            for (const target of targets) replaceUsage(target, memo);
-            continue;
-          }
-
-          await acquireSlot();
-          try {
-            if (now() - startedAt >= budgetMs) {
-              skipped += targets.length;
-              const error = `not measured — the ${budgetMs}ms disk-usage budget for this listing was exhausted`;
-              for (const target of targets) replaceUsage(target, { error });
-              continue;
-            }
-            // Re-check the memo now that we actually hold a slot: while we were
-            // queued, a concurrent listing may have measured this very directory
-            // and filled it in. This is what keeps two tabs opening the Manage
-            // modal at once from measuring everything twice.
-            const warmed = memoPeek(key, now());
-            const usage = warmed ?? (await directoryDiskUsageAsync(directory));
-            if (!warmed) cache.set(key, { measuredAt: now(), usage });
-            for (const target of targets) replaceUsage(target, usage);
-          } finally {
-            releaseSlot();
-          }
-        }
-      };
-
-      await Promise.all(Array.from({ length: Math.min(opts?.concurrency ?? DISK_USAGE_CONCURRENCY, queue.length) }, worker));
-      pending.length = 0;
+    settle(): Promise<void> {
+      return (run ??= drain());
     },
 
     get skipped() {
@@ -395,6 +354,62 @@ export function newAsyncDiskUsageBudget(opts?: { budgetMs?: number; concurrency?
       return noteFor(skipped, budgetMs, measured);
     },
   };
+
+  async function drain(): Promise<void> {
+    // One dispatch per directory, however many rows asked for it: two
+    // workspaces sharing a cwd is a supported state, and it must not be two
+    // `du` processes. Insertion order is preserved, so the tail is still the
+    // tail.
+    const byDirectory = new Map<string, { directory: string; targets: WorktreeDiskUsage[] }>();
+    for (const item of pending) {
+      const group = byDirectory.get(item.key);
+      if (group) group.targets.push(item.target);
+      else byDirectory.set(item.key, { directory: item.directory, targets: [item.target] });
+    }
+
+    const queue = [...byDirectory.entries()];
+    let next = 0;
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = next++;
+        if (index >= queue.length) return;
+        const [key, { directory, targets }] = queue[index];
+
+        // Free: already in memory, so neither a slot nor the deadline applies.
+        const memo = memoPeek(key, now());
+        if (memo) {
+          for (const target of targets) replaceUsage(target, memo);
+          continue;
+        }
+
+        await acquireSlot();
+        try {
+          if (now() - startedAt >= budgetMs) {
+            skipped += targets.length;
+            const error = `not measured — the ${budgetMs}ms disk-usage budget for this listing was exhausted`;
+            for (const target of targets) replaceUsage(target, { error });
+            continue;
+          }
+          // Re-check the memo now that we actually hold a slot. This catches a
+          // concurrent listing that *finished* this directory while we queued —
+          // the tail of an overlapping sweep, not its head: the memo is only
+          // written on completion, so two listings that acquire slots for the
+          // same directory inside the same window both spawn `du`. Best-effort
+          // by design; the cap still bounds the machine either way.
+          const warmed = memoPeek(key, now());
+          const usage = warmed ?? (await directoryDiskUsageAsync(directory));
+          if (!warmed) cache.set(key, { measuredAt: now(), usage });
+          for (const target of targets) replaceUsage(target, usage);
+        } finally {
+          releaseSlot();
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(opts?.concurrency ?? DISK_USAGE_CONCURRENCY, queue.length) }, worker));
+    pending.length = 0;
+  }
 
   return budget;
 }

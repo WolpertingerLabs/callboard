@@ -25,7 +25,7 @@ import { newAsyncDiskUsageBudget } from "../utils/disk-usage.js";
 // them without closing an import cycle back through this route, and
 // `clearListCaches` is the one call that empties both — see list-caches.ts.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
-import { folderListCache, FOLDER_LIST_CACHE_TTL, clearFolderListCache } from "../services/folder-list-cache.js";
+import { folderListCache, folderListInFlight, FOLDER_LIST_CACHE_TTL, clearFolderListCache } from "../services/folder-list-cache.js";
 import { workspaceRegistryVersion } from "../services/workspace-store.js";
 import { clearListCaches } from "../services/list-caches.js";
 export { clearChatListCache, clearFolderListCache, clearListCaches };
@@ -224,56 +224,79 @@ chatsRouter.get("/folders", async (req, res) => {
       if (cached && cached.fingerprint === fingerprint && now - cached.createdAt < FOLDER_LIST_CACHE_TTL) {
         return res.json(cached.data);
       }
+      // Nothing cached, but a build for this exact key and state may already be
+      // running — see folderListInFlight. Joining it costs nothing and saves a
+      // whole duplicate listing, synchronous head included.
+      const sharing = folderListInFlight.get(cacheKey);
+      if (sharing && sharing.fingerprint === fingerprint) {
+        return res.json(await sharing.response);
+      }
     }
-    // One budget across the listing, not one timeout per row: an unbounded
-    // listing would be an unbounded wait even now that the `du`s run in
-    // parallel. What it did not get to is reported rather than silently absent —
-    // `diskUsageNote` has been in FolderListResponse since Phase 4a and this is
-    // what sets it. The rows come back holding unfilled measurements that
-    // `settle()` writes into, below.
-    const budget = newAsyncDiskUsageBudget();
 
-    // Fetch all sessions (large limit to get everything within range)
-    const { sessions } = discoverSessionsPaginated(9999, 0);
+    const build = buildFolderListResponse();
+    // `cached=false` means "compute mine from scratch", so it neither joins a
+    // build nor publishes one for others to join.
+    if (!bypassCache) folderListInFlight.set(cacheKey, { fingerprint, response: build });
+    try {
+      return res.json(await build);
+    } finally {
+      if (folderListInFlight.get(cacheKey)?.response === build) folderListInFlight.delete(cacheKey);
+    }
 
-    // One registry read for the whole listing, not one per row.
-    const workspaces = buildWorkspaceIndex();
+    async function buildFolderListResponse() {
+      // One budget across the listing, not one timeout per row: an unbounded
+      // listing would be an unbounded wait even now that the `du`s run in
+      // parallel. What it did not get to is reported rather than silently
+      // absent — `diskUsageNote` has been in FolderListResponse since Phase 4a
+      // and this is what sets it. The rows come back holding unfilled
+      // measurements that `settle()` writes into, below.
+      const budget = newAsyncDiskUsageBudget();
 
-    const folders = buildFolderSummaries(sessions, {
-      cutoff,
-      workspaces,
-      directoryExists: (folder) => existsSync(folder),
-      chatMetadata: (sessionId) => {
-        // Session id straight from discovery, so this is the direct-filename
-        // read with no fallback scan. This bounds a spike rather than saving
-        // steady-state work: rows whose newest chat has a record cost the same
-        // either way, but one started from a terminal `claude` used to make
-        // getChat readdir + parse the whole chats directory (~88 ms) to prove
-        // the record is absent — once per such row, on a route the sidebar
-        // polls every 15 seconds.
-        const storedChat = chatFileService.getChatBySessionId(sessionId);
-        return storedChat ? JSON.parse(storedChat.metadata || "{}") : {};
-      },
-      isOngoing: (sessionId) => sessionRegistry.has(sessionId),
-      isWaiting: (sessionId) => hasPendingRequest(sessionId),
-      gitInfo: (folder) => getCachedGitInfo(folder),
-      describeDirectory: (workspace) => describeWorkspaceDirectory(workspace),
-      // Absent unless asked for — that absence *is* the opt-in.
-      ...(includeDiskUsage && { diskUsage: (folder: string) => budget.measure(folder) }),
-    });
+      // Fetch all sessions (large limit to get everything within range)
+      const { sessions } = discoverSessionsPaginated(9999, 0);
 
-    // Fills in the measurements the rows are already holding. Must precede both
-    // `note()` and the cache write below — a row cached mid-flight would be
-    // cached with an unfilled placeholder and served that way for the TTL.
-    await budget.settle();
+      // One registry read for the whole listing, not one per row.
+      const workspaces = buildWorkspaceIndex();
 
-    const diskUsageNote = budget.note(folders.length);
-    const responseData = { folders, ...(diskUsageNote && { diskUsageNote }) };
-    // Store the fingerprint read *before* the rows were built. The rows can
-    // only be as fresh as that read, so recording a later one would claim a
-    // freshness they do not have and hide a transition that landed mid-build.
-    folderListCache.set(cacheKey, { data: responseData, createdAt: Date.now(), fingerprint });
-    res.json(responseData);
+      const folders = buildFolderSummaries(sessions, {
+        cutoff,
+        workspaces,
+        directoryExists: (folder) => existsSync(folder),
+        chatMetadata: (sessionId) => {
+          // Session id straight from discovery, so this is the direct-filename
+          // read with no fallback scan. This bounds a spike rather than saving
+          // steady-state work: rows whose newest chat has a record cost the same
+          // either way, but one started from a terminal `claude` used to make
+          // getChat readdir + parse the whole chats directory (~88 ms) to prove
+          // the record is absent — once per such row, on a route the sidebar
+          // polls every 15 seconds.
+          const storedChat = chatFileService.getChatBySessionId(sessionId);
+          return storedChat ? JSON.parse(storedChat.metadata || "{}") : {};
+        },
+        isOngoing: (sessionId) => sessionRegistry.has(sessionId),
+        isWaiting: (sessionId) => hasPendingRequest(sessionId),
+        gitInfo: (folder) => getCachedGitInfo(folder),
+        describeDirectory: (workspace) => describeWorkspaceDirectory(workspace),
+        // Absent unless asked for — that absence *is* the opt-in.
+        ...(includeDiskUsage && { diskUsage: (folder: string) => budget.measure(folder) }),
+      });
+
+      // Fills in the measurements the rows are already holding. Must precede
+      // both `note()` and the cache write below — a row cached mid-flight would
+      // be cached with an unfilled placeholder and served that way for the TTL.
+      await budget.settle();
+
+      const diskUsageNote = budget.note(folders.length);
+      const responseData = { folders, ...(diskUsageNote && { diskUsageNote }) };
+      // Both the fingerprint and `createdAt` are the values read *before* the
+      // rows were built. The rows can only be as fresh as that read, so
+      // recording either later would claim a freshness they do not have — the
+      // fingerprint would hide a transition that landed mid-build, and a
+      // post-`settle()` timestamp would grant the entry the whole duration of
+      // the `du` sweep as extra TTL.
+      folderListCache.set(cacheKey, { data: responseData, createdAt: now, fingerprint });
+      return responseData;
+    }
   } catch (err: any) {
     log.error(`Error listing folders: ${err}`);
     res.status(500).json({ error: "Failed to list folders", details: err.message });

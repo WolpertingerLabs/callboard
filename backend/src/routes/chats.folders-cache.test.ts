@@ -40,6 +40,8 @@ const discovered = vi.hoisted(() => ({
   ids: [] as string[],
   ageDaysById: {} as Record<string, number>,
   folderById: {} as Record<string, string>,
+  /** How many times the route has built a listing. One build = one discovery. */
+  builds: 0,
 }));
 
 vi.mock("../services/claude.js", () => ({
@@ -76,6 +78,7 @@ vi.mock("../agents/factory.js", () => ({
     {
       kind: "claude-code",
       discoverSessions: ({ limit, offset }: { limit: number; offset: number }) => {
+        discovered.builds++;
         const sessions = discovered.ids.map((id, i) => {
           // Now-relative: the route applies a day-based cutoff, so fixed dates
           // would silently empty the listing as the calendar moves.
@@ -163,6 +166,7 @@ beforeEach(() => {
   discovered.ids = [sessionId];
   discovered.ageDaysById = {};
   discovered.folderById = {};
+  discovered.builds = 0;
   writeFileSync(join(projectsDir, encodedDir, `${sessionId}.jsonl`), `{"type":"user","timestamp":"2026-01-01T00:00:00.000Z"}\n`);
   chatFileService.createChat(projectFolder, sessionId, JSON.stringify({ title: "first" }));
 });
@@ -254,7 +258,53 @@ describe("key separation", () => {
 
     // Would silently return the cached sizeless row if the key ignored the flag.
     const withSizes = await listFolders({ maxAgeDays: "5", includeDiskUsage: "true" });
-    expect(withSizes.folders[0].diskUsage).toBeDefined();
+    // `.bytes`, not merely `toBeDefined()`. The budget hands the row an object
+    // it has not filled in yet and `await budget.settle()` fills it; a presence
+    // check is satisfied by the unfilled placeholder, so it would pass with the
+    // settle deleted and the route shipping "did not settle" to every row.
+    expect(withSizes.folders[0].diskUsage!.bytes).toBeGreaterThan(0);
+    expect(withSizes.folders[0].diskUsage!.error).toBeUndefined();
+  });
+
+  /**
+   * The cache only helps a request that arrives after another *finished*. These
+   * pin the other half: requests that overlap a build share it.
+   *
+   * This became reachable when `du` moved off the event loop — before that the
+   * handler ran to completion in one synchronous block and two requests could
+   * not physically interleave. The sidebar polls on a timer from every open tab,
+   * so overlapping is the normal case, and a duplicate build costs the whole
+   * synchronous head (discovery, git info, chat metadata) that no memo covers.
+   */
+  it("builds once for two requests that overlap", async () => {
+    // Not awaited between calls: the second lands while the first is still in
+    // flight, which is exactly the window the cache cannot see.
+    const [a, b] = await Promise.all([listFolders(), listFolders()]);
+
+    expect(discovered.builds).toBe(1);
+    expect(a).toEqual(b);
+    expect(a.folders).toHaveLength(1);
+  });
+
+  it("does not let an overlapping request share a build that predates what it knows", async () => {
+    const first = listFolders();
+    // A session goes live between the two. The second request's fingerprint no
+    // longer matches the build in flight, so sharing would serve it rows that
+    // predate a transition it can already see.
+    registryState.version++;
+    registryState.ongoing.add(sessionId);
+    const second = listFolders();
+
+    const [, b] = await Promise.all([first, second]);
+    expect(discovered.builds).toBe(2);
+    expect(b.folders[0].status).toBe("ongoing");
+  });
+
+  it("does not let cached=false join or publish a build", async () => {
+    const [, bypassed] = await Promise.all([listFolders(), listFolders({ cached: "false" })]);
+    // "Compute mine from scratch" has to mean it, so the two do not collapse.
+    expect(discovered.builds).toBe(2);
+    expect(bypassed.folders).toHaveLength(1);
   });
 
   it("treats an absent maxAgeDays as the default rather than a separate key", async () => {

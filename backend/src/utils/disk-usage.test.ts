@@ -180,4 +180,25 @@ describe("the async listing budget", () => {
     await budget.settle();
     expect(usage.bytes).toBe(measured);
   });
+
+  /**
+   * The dangerous half of idempotence. A `settled` boolean makes the *second*
+   * call resolve immediately — before the first has filled anything in — so a
+   * caller that awaited it would serialise placeholders while believing it had
+   * waited. Awaiting either call has to mean the same thing.
+   */
+  it("makes a second settle already in flight wait for the first", async () => {
+    const budget = newAsyncDiskUsageBudget();
+    const usage = budget.measure(dirs(1, "inflight")[0]);
+
+    const first = budget.settle();
+    const second = budget.settle();
+    expect(second).toBe(first); // the same run, not a fresh resolved promise
+
+    await second;
+    expect(usage.bytes).toBeGreaterThan(0);
+    expect(usage.error).toBeUndefined();
+
+    await first;
+  });
 });
