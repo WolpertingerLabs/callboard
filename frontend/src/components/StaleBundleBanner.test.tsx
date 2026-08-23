@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import StaleBundleBanner from "./StaleBundleBanner";
 import { SessionContext } from "../contexts/SessionContext";
+import { saveDismissedStaleBuildId } from "../utils/localStorage";
 
 const V2 = "1.0.0-alpha.50+gbbbbbbbbbbbb";
 const V3 = "1.0.0-alpha.51+gcccccccccccc";
@@ -56,8 +57,17 @@ describe("when the daemon has moved", () => {
   it("says what happened and offers a reload", () => {
     renderBanner(V2);
     expect(screen.getByTestId("stale-bundle-banner")).toBeTruthy();
-    expect(screen.getByText("Callboard was updated")).toBeTruthy();
+    expect(screen.getByText("Callboard changed on the server")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+  });
+
+  it("does not claim a direction the daemon may not have moved in", () => {
+    // The daemon can be rolled back, and the prompt is still correct then — the
+    // tab no longer matches, and reloading still fixes it. "Updated" would be
+    // the one word in the copy that is simply false in that case.
+    renderBanner(V2);
+    const text = screen.getByTestId("stale-bundle-banner").textContent ?? "";
+    expect(text).not.toMatch(/updated|newer|older|upgrade/i);
   });
 
   it("promises the composer's contents survive the wait", () => {
@@ -115,6 +125,32 @@ describe("dismissal", () => {
 
     renderBanner(V2);
     expect(screen.queryByTestId("stale-bundle-banner")).toBeNull();
+  });
+
+  it("follows a dismissal made in another tab", () => {
+    // An upgrade puts this banner up in *every* open tab at once, and those
+    // tabs have already mounted — they read the store once and would never see
+    // a later write. Without the `storage` listener the user pays one click per
+    // tab, which is the shape of nagging the build-id keying exists to avoid.
+    renderBanner(V2);
+    expect(screen.getByTestId("stale-bundle-banner")).toBeTruthy();
+
+    // What the browser does when the other tab clicks "Not now": the store is
+    // already written by the time the event lands.
+    saveDismissedStaleBuildId(V2);
+    fireEvent(window, new StorageEvent("storage", { key: "claude-code-settings" }));
+
+    expect(screen.queryByTestId("stale-bundle-banner")).toBeNull();
+  });
+
+  it("is not silenced by another tab dismissing a different build", () => {
+    // The listener re-reads the store; it must not degrade into "any storage
+    // write hides the banner".
+    renderBanner(V3);
+    saveDismissedStaleBuildId(V2);
+    fireEvent(window, new StorageEvent("storage", { key: "claude-code-settings" }));
+
+    expect(screen.getByTestId("stale-bundle-banner")).toBeTruthy();
   });
 
   it("comes back when the daemon moves again", () => {

@@ -10,10 +10,13 @@ declare const __CALLBOARD_BUILD_ID__: string | undefined;
 /**
  * This bundle's own build identity.
  *
- * `DEV_BUILD_ID` when the define is absent, which covers two cases that want
- * the same answer: the Vite dev server (which sets it to that sentinel itself)
- * and vitest (which loads these modules without the config's `define` at all).
- * Both are "no identity", and no identity means no prompt.
+ * `DEV_BUILD_ID` whenever the define did not reach this module, which is both
+ * of the cases that want that answer: `vite serve`, which does substitute the
+ * literal but substitutes the `"dev"` sentinel the config chose for it, and
+ * vitest, which loads this module with no `define` step at all and so leaves
+ * the identifier genuinely undeclared — caught by the `typeof` guard, which is
+ * why it is a `typeof` rather than a direct read. Different mechanisms, same
+ * verdict: no identity, and no identity means no prompt.
  */
 export const MY_BUILD_ID: string = typeof __CALLBOARD_BUILD_ID__ === "string" ? __CALLBOARD_BUILD_ID__ : DEV_BUILD_ID;
 
@@ -79,9 +82,15 @@ export function observeServerBuild(state: BuildWatchState, serverBuild: string |
   // 5. First observation of this page load. Seed, say nothing.
   if (state.baseline === undefined) return { baseline: serverBuild };
 
-  // 6. The daemon moved. Re-baseline as well as prompt, so that a *further*
-  //    move produces a new `staleBuildId` and re-prompts past a dismissal of
-  //    the previous one.
+  // 6. The daemon moved. Re-baseline as well as prompt — and the reason is wire
+  //    economy, not re-prompting. Re-prompting works either way: a further move
+  //    lands on rule 6 again and `staleBuildId` takes the newest id regardless
+  //    of what the baseline held. What the re-baseline buys is the `b` the
+  //    client echoes on the next poll. Without it the client would go on
+  //    echoing the id it saw *before* the upgrade, which never matches again,
+  //    so the daemon would include `build` on every single poll for as long as
+  //    the banner stood — breaking the ~40-byte steady state at exactly the
+  //    moment the user is least likely to be reloading soon.
   if (serverBuild !== state.baseline) return { baseline: serverBuild, staleBuildId: serverBuild };
 
   // 7. Unchanged from the baseline we are holding.

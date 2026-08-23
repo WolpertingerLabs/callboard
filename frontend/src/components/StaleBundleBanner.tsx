@@ -1,11 +1,11 @@
-import { useState, type CSSProperties } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
 import { RefreshCw, X } from "lucide-react";
 import { useStaleBuildId } from "../contexts/SessionContext";
 import { shouldPromptReload } from "../utils/buildIdentity";
 import { getDismissedStaleBuildId, saveDismissedStaleBuildId } from "../utils/localStorage";
 
 /**
- * "The server was updated. Reload when you're ready."
+ * "Callboard changed on the server. Reload when you're ready."
  *
  * The signal this draws already existed in the product, twice, and both times
  * only *after* something broke. #364 shipped a REST shape change that an old
@@ -32,11 +32,25 @@ import { getDismissedStaleBuildId, saveDismissedStaleBuildId } from "../utils/lo
  * **It does not nag.** Dismissal is keyed by build id
  * (`utils/buildIdentity.ts`), so "not now" holds for the upgrade it was
  * clicked for and lifts the moment the daemon moves again — which is the one
- * moment the news is new.
+ * moment the news is new. It is also stored rather than held in state, and the
+ * `storage` listener below is what makes that reach the tabs it needs to: an
+ * upgrade puts this banner up in *every* open tab at once, and those are
+ * exactly the tabs that have already mounted and will never re-read the store
+ * on their own. Without the listener, "one click per tab" — which is the shape
+ * of nagging this is meant to avoid.
  */
 export default function StaleBundleBanner() {
   const staleBuildId = useStaleBuildId();
   const [dismissed, setDismissed] = useState<string | null>(() => getDismissedStaleBuildId());
+
+  // `storage` fires in the *other* tabs on this origin, never the one that
+  // wrote — so this is only ever catching someone else's dismissal, and cannot
+  // loop with the write below.
+  useEffect(() => {
+    const onStorage = () => setDismissed(getDismissedStaleBuildId());
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   if (!shouldPromptReload({ staleBuildId: staleBuildId ?? undefined }, dismissed)) return null;
 
@@ -53,9 +67,14 @@ export default function StaleBundleBanner() {
     <div role="status" aria-live="polite" data-testid="stale-bundle-banner" style={wrapStyle}>
       <RefreshCw size={16} style={{ color: "var(--warning)", flexShrink: 0, marginTop: 2 }} aria-hidden="true" />
       <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Callboard was updated</span>
+        {/* Worded without a direction. The daemon usually moves forward, but it
+            can be rolled back, and "Callboard was updated" over a downgrade is
+            simply false — while the advice underneath it stays true either way,
+            because what makes the tab wrong is the mismatch, not which side of
+            it is newer. */}
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Callboard changed on the server</span>
         <span style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.45 }}>
-          This tab is still running the older version. Reload when you&rsquo;re ready — anything you&rsquo;ve typed stays put until you do.
+          This tab is running a different version. Reload when you&rsquo;re ready — anything you&rsquo;ve typed stays put until you do.
         </span>
         <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
           <button type="button" onClick={() => window.location.reload()} style={reloadButtonStyle}>

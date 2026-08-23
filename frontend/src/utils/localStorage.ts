@@ -41,9 +41,14 @@ interface LocalStorageData {
   /**
    * The daemon build id whose reload prompt the user waved off. Keyed by the
    * id, not a boolean, so the *next* upgrade is announced again — see
-   * `utils/buildIdentity.ts`. Shared across tabs on this origin, which is the
-   * intent: one "not now" should quiet the fleet, not just the tab it was
-   * clicked in.
+   * `utils/buildIdentity.ts`.
+   *
+   * Shared across tabs on this origin, which is the intent: one "not now"
+   * quiets the fleet, not just the tab it was clicked in. Note that the store
+   * alone does not achieve that — an already-open tab reads this once at mount
+   * and would never see a later write. `StaleBundleBanner` carries a `storage`
+   * listener for that, and an upgrade is precisely the case where every tab
+   * already has the banner up.
    */
   dismissedStaleBuildId?: string;
   themeMode?: ThemeMode;

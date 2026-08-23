@@ -36,6 +36,7 @@ const { SessionProvider, useStaleBuildId } = await import("./SessionContext");
  */
 let current = V1;
 let calls: URLSearchParams[] = [];
+let bodies: Record<string, unknown>[] = [];
 
 function installFetch() {
   vi.stubGlobal(
@@ -45,6 +46,7 @@ function installFetch() {
       calls.push(params);
       const body: Record<string, unknown> = { version: 1, metadataVersion: 1, sessions: {}, activeSummons: {} };
       if (params.get("b") !== current) body.build = current;
+      bodies.push(body);
       return { ok: true, json: async () => body } as unknown as Response;
     }),
   );
@@ -78,6 +80,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   current = V1;
   calls = [];
+  bodies = [];
   localStorage.clear();
   installFetch();
 });
@@ -141,6 +144,27 @@ describe("the daemon moves", () => {
     await mount();
     current = V2;
     await nextPoll();
+    expect(staleText()).toBe(V2);
+  });
+
+  it("re-baselines, so the response stays tiny while the banner stands", async () => {
+    // The point of re-baselining on rule 6 (see `observeServerBuild`). Echoing
+    // the *pre-upgrade* id would never match again, so the daemon would include
+    // `build` on every poll for as long as the prompt was up — which is exactly
+    // when the user is least likely to reload soon, and so exactly when the
+    // ~40-byte steady state matters most.
+    await mount();
+    current = V2;
+    await nextPoll();
+    expect(staleText()).toBe(V2);
+
+    await nextPoll();
+    await nextPoll();
+    expect(calls[calls.length - 1].get("b")).toBe(V2);
+
+    // And the daemon does go quiet: the fake only sends `build` when `b` differs.
+    expect(bodies[bodies.length - 1]).not.toHaveProperty("build");
+    // Still stale — going quiet is about bytes, not about forgetting.
     expect(staleText()).toBe(V2);
   });
 
