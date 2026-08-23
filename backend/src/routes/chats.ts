@@ -20,7 +20,7 @@ import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 import { describeWorkspaceDirectory } from "../services/workspace-service.js";
-import { newDiskUsageBudget } from "../utils/disk-usage.js";
+import { newAsyncDiskUsageBudget } from "../utils/disk-usage.js";
 // Both listing caches live in standalone modules so services can invalidate
 // them without closing an import cycle back through this route, and
 // `clearListCaches` is the one call that empties both — see list-caches.ts.
@@ -194,7 +194,7 @@ chatsRouter.get("/search", (req, res) => {
 });
 
 // List chats grouped by folder, ordered by most recent chat created
-chatsRouter.get("/folders", (req, res) => {
+chatsRouter.get("/folders", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'List chats grouped by folder'
   // #swagger.description = 'Returns folders with aggregated chat info, ordered by most recently created chat. Folders that no longer exist on disk are filtered out, except when an active workspace record claims them — those are listed with directoryState "missing" so the stale record can be seen and archived. Each row also carries the active workspace records claiming the directory (id, name, isolation, owned, branch, directory state); it deliberately carries no removal verdict, which costs several git subprocesses per record — ask GET /api/workspaces for that.'
@@ -225,11 +225,13 @@ chatsRouter.get("/folders", (req, res) => {
         return res.json(cached.data);
       }
     }
-    // One budget across the listing, not one timeout per row: `du` is
-    // synchronous, so an unbounded listing is an unbounded freeze. What it did
-    // not get to is reported rather than silently absent — `diskUsageNote` has
-    // been in FolderListResponse since Phase 4a and this is what sets it.
-    const budget = newDiskUsageBudget();
+    // One budget across the listing, not one timeout per row: an unbounded
+    // listing would be an unbounded wait even now that the `du`s run in
+    // parallel. What it did not get to is reported rather than silently absent —
+    // `diskUsageNote` has been in FolderListResponse since Phase 4a and this is
+    // what sets it. The rows come back holding unfilled measurements that
+    // `settle()` writes into, below.
+    const budget = newAsyncDiskUsageBudget();
 
     // Fetch all sessions (large limit to get everything within range)
     const { sessions } = discoverSessionsPaginated(9999, 0);
@@ -259,6 +261,11 @@ chatsRouter.get("/folders", (req, res) => {
       // Absent unless asked for — that absence *is* the opt-in.
       ...(includeDiskUsage && { diskUsage: (folder: string) => budget.measure(folder) }),
     });
+
+    // Fills in the measurements the rows are already holding. Must precede both
+    // `note()` and the cache write below — a row cached mid-flight would be
+    // cached with an unfilled placeholder and served that way for the TTL.
+    await budget.settle();
 
     const diskUsageNote = budget.note(folders.length);
     const responseData = { folders, ...(diskUsageNote && { diskUsageNote }) };

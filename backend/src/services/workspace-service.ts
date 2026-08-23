@@ -434,8 +434,16 @@ interface ListingOptions {
   /**
    * The listing's `du` budget. A caller passes one in when it wants to read
    * {@link DiskUsageBudget.note} afterwards; when it does not, one is created
-   * here anyway — `execFileSync` blocks the event loop, so there must be no
-   * path through these functions that measures N directories unbounded.
+   * here anyway — there must be no path through these functions that measures N
+   * directories unbounded.
+   *
+   * Pass an {@link AsyncDiskUsageBudget} — as `GET /api/workspaces` does — and
+   * the measurements do not happen during this call at all: the entries come
+   * back holding placeholders, and the caller's `await budget.settle()` fills
+   * them in from a bounded parallel pool. The default created here is the
+   * synchronous one, which is correct but blocks the event loop for the length
+   * of the listing; it is the right choice only where a single record is being
+   * measured.
    */
   budget?: DiskUsageBudget;
 }
