@@ -28,6 +28,7 @@ import {
   CLAUDE_PROJECTS_DIR,
   folderToProjectDir,
   getIgnoredProjectDirPrefixes,
+  ignoredPrefixGlobs,
   isIgnoredProjectDir,
   listClaudeProjectDirs,
   projectDirToFolder,
@@ -127,9 +128,18 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
   private _discoverPaginated(limit: number, offset: number): DiscoverResult {
     if (!existsSync(CLAUDE_PROJECTS_DIR)) return { sessions: [], total: 0 };
 
-    // Prune directories matching any configured ignore prefix. The glob
-    // (`prefix*`) is interpreted by `find`, so it is passed as a literal token.
-    const pruneArgs = getIgnoredProjectDirPrefixes().flatMap((d) => ["-path", `${CLAUDE_PROJECTS_DIR}/${d}*`, "-prune", "-o"]);
+    // Prune directories matching any configured ignore prefix. The globs are
+    // interpreted by `find`, so they are passed as literal tokens.
+    //
+    // `ignoredPrefixGlobs` rather than a `prefix*` written here, because this
+    // is the second of the ignore list's three matchers and it used to disagree
+    // with the first: `-path .../-tmp*` prunes `-tmpish`, which is not under
+    // `/tmp`. Both branches of the boundary rule now come from one function in
+    // `utils/paths.ts`, and a test drives a real `find` over a fixture to check
+    // the two still agree.
+    const pruneArgs = getIgnoredProjectDirPrefixes().flatMap((d) =>
+      ignoredPrefixGlobs(d).flatMap((glob) => ["-path", `${CLAUDE_PROJECTS_DIR}/${glob}`, "-prune", "-o"]),
+    );
     const output = execFileSync("find", [CLAUDE_PROJECTS_DIR, ...pruneArgs, "-maxdepth", "2", "-name", "*.jsonl", "-type", "f", "-print0"], {
       encoding: "utf8",
       timeout: 30_000,
