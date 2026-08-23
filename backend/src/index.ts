@@ -88,7 +88,7 @@ import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
 import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
 import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
 import { getClaudeAuthStatus } from "./services/claude-auth-status.js";
-import { initOpenRouterModelsCache } from "./services/openrouter-models.js";
+import { initOpenRouterModelsCache, stopOpenRouterModelsRefresh } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 import { listAcpProviderAvailability } from "./agents/adapters/acp/availability.js";
@@ -725,6 +725,7 @@ async function gracefulShutdown(signal: string) {
   shutdownDebounce();
   shutdownEventWatchers();
   shutdownCliWatcher();
+  stopOpenRouterModelsRefresh();
 
   // Stop the callboard-managed drawlatch daemon (no-op in remote mode).
   try {
