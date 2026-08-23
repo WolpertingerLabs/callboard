@@ -276,7 +276,7 @@ import { clearListCaches } from "./services/list-caches.js";
 app.get("/api/ignored-project-dirs", (_req, res) => {
   // #swagger.tags = ['Settings']
   // #swagger.summary = 'Get ignored project-dir prefixes'
-  // #swagger.description = 'Returns the configured list of project-dir name prefixes filtered out of chat listings and chat search, plus the built-in defaults.'
+  // #swagger.description = 'Returns the configured list of project-dir names whose subtrees are filtered out of chat listings and chat search, plus the built-in defaults.'
   res.json({
     prefixes: getIgnoredProjectDirPrefixes(),
     defaults: [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES],
@@ -286,7 +286,7 @@ app.get("/api/ignored-project-dirs", (_req, res) => {
 app.put("/api/ignored-project-dirs", (req, res) => {
   // #swagger.tags = ['Settings']
   // #swagger.summary = 'Update ignored project-dir prefixes'
-  // #swagger.description = 'Replace the ignored prefix list. Any project dir whose slugified name starts with one of these is hidden from chat listings and skipped by chat search, including a search that names the directory outright.'
+  // #swagger.description = 'Replace the ignored prefix list. A project dir is hidden from chat listings and skipped by chat search — including a search that names it outright — when its slugified name equals one of these entries or continues past it at a separator (`-`, the slugified `/`). A name that merely shares leading characters, such as `-tmpish` against `-tmp`, is not matched. An entry written with a trailing `-` matches its whole subtree as spelled.'
   const { prefixes } = req.body ?? {};
   if (!Array.isArray(prefixes)) {
     return res.status(400).json({ error: "prefixes must be an array of strings" });

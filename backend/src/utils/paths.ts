@@ -8,17 +8,20 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
  * Default ignored project-dir prefixes.
  *
  * Project dirs under ~/.claude/projects/ are slugified absolute paths
- * (each `/` becomes `-`). Any project dir whose name starts with one
- * of these prefixes is hidden from chat listings and skipped by chat
- * search — including a folder-scoped search that names it outright. Every
- * provider's `searchSessions` applies the list unconditionally; none of them
- * treat naming a directory as a request to un-ignore it.
+ * (each `/` becomes `-`). Any project dir that *is* one of these entries, or
+ * lies under it, is hidden from chat listings and skipped by chat search —
+ * including a folder-scoped search that names it outright. Every provider's
+ * `searchSessions` applies the list unconditionally; none of them treat naming
+ * a directory as a request to un-ignore it.
  *
- * - "-tmp" — `/tmp/...` throwaway transcripts (created by quick-completion,
- *   sdk-info, and other SDK callers that pass `cwd: tmpdir()`).
+ * "Under it" is a path relation, not a string one — see
+ * {@link matchesIgnoredPrefix} for why, and for what a trailing `-` means.
+ *
+ * - "-tmp" — `/tmp` and `/tmp/...` throwaway transcripts (created by
+ *   quick-completion, sdk-info, and other SDK callers that pass `cwd: tmpdir()`).
  * - "-private-" — macOS resolves `/tmp` to `/private/tmp`; the SDK
  *   sometimes records the realpath, slugifying as `-private-tmp...`.
- *   The same prefix also covers anything else under `/private/`.
+ *   The trailing separator makes this the whole `/private/` subtree.
  */
 export const DEFAULT_IGNORED_PROJECT_DIR_PREFIXES: readonly string[] = ["-tmp", "-private-"];
 
@@ -113,12 +116,80 @@ export function saveIgnoredProjectDirPrefixes(prefixes: string[]): string[] {
 }
 
 /**
+ * What a path separator looks like inside a project-dir name.
+ *
+ * `folderToProjectDir` turns every non-alphanumeric character into `-`, so in
+ * the encoded form a `/` *is* a `-`. That is the only separator the matcher can
+ * see: the encoding is lossy, so a `-` may have been a `/`, a `.`, a `_`, a
+ * space or a literal `-`, and nothing downstream can tell which. Matching in
+ * encoded space is deliberate all the same — it is the one representation all
+ * three consumers share (see {@link matchesIgnoredPrefix}).
+ */
+const ENCODED_SEPARATOR = "-";
+
+/**
+ * True when the project-dir name `dirName` is `prefix` itself, or a path
+ * *below* it — and not merely a name that happens to begin with the same
+ * characters.
+ *
+ * ## Why the boundary
+ *
+ * This was a bare `startsWith`, so an entry for `/home/scratch` (`-home-scratch`)
+ * also hid `/home/scratchpad-repo` (`-home-scratchpad-repo`) — a directory the
+ * user never named and could not un-hide without deleting the entry that hides
+ * the one they did name. Before chat search honoured the list that only cost
+ * them a listing; since it does, such a folder has no in-app route at all.
+ *
+ * The rule is the one `chat-search.ts` already applies when it matches a target
+ * folder against its worktrees: exact name, or the prefix followed by the
+ * encoded separator.
+ *
+ * ## The trailing-separator form
+ *
+ * A prefix that *already* ends in `-` — `-private-`, one of the two built-in
+ * defaults — is a directory boundary as written: it means "everything under
+ * `/private/`". Demanding a further separator after it would break it (encoded
+ * `/private/tmp/x` is `-private-tmp-x`, which never has `--`), so a trailing
+ * separator is accepted as the boundary it already is. That also gives an
+ * existing over-broad entry somewhere to go: `-home-scratch-` still means the
+ * subtree, spelled explicitly.
+ *
+ * ## Kept in step with `find`
+ *
+ * `ClaudeCodeSessionProvider._discoverPaginated` prunes with `find -path`
+ * rather than calling this. {@link ignoredPrefixGlobs} generates those globs
+ * from the same two branches so the two cannot drift; `ignored-prefix-boundary.test.ts`
+ * runs a real `find` over a fixture and asserts the surviving set matches.
+ */
+export function matchesIgnoredPrefix(dirName: string, prefix: string): boolean {
+  if (!dirName.startsWith(prefix)) return false;
+  if (dirName.length === prefix.length) return true;
+  if (prefix.endsWith(ENCODED_SEPARATOR)) return true;
+  return dirName[prefix.length] === ENCODED_SEPARATOR;
+}
+
+/**
+ * The `find -path` glob suffixes that prune exactly the directories
+ * {@link matchesIgnoredPrefix} matches, and no others.
+ *
+ * Two patterns for an ordinary prefix because `find`'s `-path` has no way to
+ * say "or end here" in one glob. Safe to interpolate: a prefix is
+ * `[A-Za-z0-9-]` only (see {@link IGNORED_PREFIX_PATTERN}), so it can carry no
+ * glob metacharacter of its own — and the caller passes these as literal argv
+ * tokens, never through a shell.
+ */
+export function ignoredPrefixGlobs(prefix: string): string[] {
+  if (prefix.endsWith(ENCODED_SEPARATOR)) return [`${prefix}*`];
+  return [prefix, `${prefix}${ENCODED_SEPARATOR}*`];
+}
+
+/**
  * True if the given project-dir name (e.g. "-tmp-xyz" or "-Users-foo-repo")
- * matches any configured ignore prefix.
+ * is, or lies under, any configured ignore prefix.
  */
 export function isIgnoredProjectDir(dirName: string): boolean {
   for (const prefix of getIgnoredProjectDirPrefixes()) {
-    if (dirName.startsWith(prefix)) return true;
+    if (matchesIgnoredPrefix(dirName, prefix)) return true;
   }
   return false;
 }
@@ -133,6 +204,14 @@ export function isIgnoredProjectDir(dirName: string): boolean {
  * hands you (Codex among them). The Claude provider's dirs are pre-slugified on
  * disk, so it calls {@link isIgnoredProjectDir} directly; this keeps every
  * provider checking the same prefixes against the same representation.
+ *
+ * Encoding *first*, rather than comparing `/`-separated paths, is what makes
+ * that true. It costs a little precision — the encoded separator is ambiguous,
+ * so `-home-scratch` also matches `/home/scratch-pad`, which is not a child of
+ * `/home/scratch` — but the alternative is a folder-side rule strictly tighter
+ * than the dir-name-side one, and the two disagreeing about the same folder is
+ * the bigger bug. The prefixes are written against encoded names; they are
+ * matched against encoded names.
  */
 export function isIgnoredProjectFolder(folderPath: string): boolean {
   if (typeof folderPath !== "string" || folderPath.length === 0) return false;

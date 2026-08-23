@@ -990,15 +990,28 @@ export default function GeneralSettings() {
             lineHeight: 1.5,
           }}
         >
-          Sessions whose project-folder name starts with one of these prefixes are hidden from the chat list and excluded from chat search. Project folders
-          under{" "}
+          Sessions in one of these folders, or anywhere beneath it, are hidden from the chat list and excluded from chat search. Project folders under{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>~/.claude/projects/</code> are slugified absolute paths — each{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/</code> becomes{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-</code>. So{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/tmp</code> matches the prefix{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-tmp</code>, and{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/private/...</code> matches{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-private-</code>.
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-tmp</code> hides{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/tmp</code> and everything under it, and{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-private-</code> hides{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/private/...</code>.
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginBottom: 14,
+            lineHeight: 1.5,
+          }}
+        >
+          A match has to end at a folder boundary, so{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-tmp</code> does not hide a separate folder named{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/tmpish</code> — add that as its own entry. An entry already
+          ending in <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-</code> is a boundary as written, and covers
+          everything below it.
         </div>
 
         {/* Current list */}
