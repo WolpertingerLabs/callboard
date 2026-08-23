@@ -42,7 +42,7 @@ interface Props {
 export default function AdoptWorktreesConfirm({ worktrees, busy, onCancel, onConfirm }: Props) {
   const paths = worktrees.map((worktree) => worktree.path);
   return (
-    <ModalOverlay style={{ zIndex: 1100 }}>
+    <ModalOverlay style={{ zIndex: 1100 }} onClose={onCancel}>
       <div
         style={{
           background: "var(--bg)",

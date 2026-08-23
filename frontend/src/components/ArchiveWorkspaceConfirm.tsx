@@ -52,7 +52,7 @@ export default function ArchiveWorkspaceConfirm({ workspace, chatCount, busy, on
   const ignored = workspace.removability.ignored;
 
   return (
-    <ModalOverlay style={{ zIndex: 1100 }}>
+    <ModalOverlay style={{ zIndex: 1100 }} onClose={onCancel}>
       <div
         style={{
           background: "var(--bg)",

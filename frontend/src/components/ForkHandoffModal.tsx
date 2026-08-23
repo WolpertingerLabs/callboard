@@ -55,7 +55,7 @@ export default function ForkHandoffModal({ target, from, onCancel, onConfirm }: 
   const label = LABELS[target];
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onCancel}>
       <div
         style={{
           background: "var(--bg)",

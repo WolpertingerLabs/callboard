@@ -152,7 +152,7 @@ export default function SlashCommandsModal({
   const toolCount = mcpTools?.tools.length ?? 0;
 
   return (
-    <ModalOverlay style={{ padding: "20px" }}>
+    <ModalOverlay style={{ padding: "20px" }} onClose={onClose}>
       <div
         style={{
           backgroundColor: "var(--bg)",

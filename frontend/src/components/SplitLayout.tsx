@@ -9,6 +9,7 @@ import Settings from "../pages/Settings";
 import AgentList from "../pages/agents/AgentList";
 import CreateAgent from "../pages/agents/CreateAgent";
 import AgentDashboard from "../pages/agents/AgentDashboard";
+import ErrorBoundary from "./ErrorBoundary";
 import {
   getSidebarCollapsed,
   saveSidebarCollapsed,
@@ -121,50 +122,45 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
     chatListRefreshRef.current?.();
   };
 
-  // Mobile behavior - keep existing full-page navigation
+  // Mobile behavior - keep existing full-page navigation.
+  // One region boundary around the whole page: on mobile there is only ever one
+  // region on screen, so containment here means "the root survives and you get a
+  // Try again", not "the other column keeps working".
   if (isMobile) {
-    if (isSettings) {
-      return <Settings onLogout={onLogout} />;
-    }
-    if (isAgentList) {
-      return <AgentList />;
-    }
-    if (isCreateAgent) {
-      return <CreateAgent />;
-    }
-    if (isAgentDashboard) {
-      return <AgentDashboard />;
-    }
-    if (isBoard) {
-      return <Board />;
-    }
-    if (isNewChat) {
-      return <Chat onChatListRefresh={refreshChatList} />;
-    }
-    if (activeChatId) {
-      return <Chat onChatListRefresh={refreshChatList} />;
-    }
-    if (viewMode === "folders") {
-      return (
-        <FolderList
-          onRefresh={(fn) => {
-            chatListRefreshRef.current = fn;
-          }}
-          claudeLoggedIn={claudeLoggedIn}
-          onShowClaudeModal={onShowClaudeModal}
-          onViewModeChange={changeViewMode}
-        />
-      );
-    }
     return (
-      <ChatList
-        onRefresh={(fn) => {
-          chatListRefreshRef.current = fn;
-        }}
-        claudeLoggedIn={claudeLoggedIn}
-        onShowClaudeModal={onShowClaudeModal}
-        onViewModeChange={changeViewMode}
-      />
+      <ErrorBoundary region="This page" variant="region" resetKey={`${location.pathname}:${viewMode}`}>
+        {isSettings ? (
+          <Settings onLogout={onLogout} />
+        ) : isAgentList ? (
+          <AgentList />
+        ) : isCreateAgent ? (
+          <CreateAgent />
+        ) : isAgentDashboard ? (
+          <AgentDashboard />
+        ) : isBoard ? (
+          <Board />
+        ) : isNewChat || activeChatId ? (
+          <Chat onChatListRefresh={refreshChatList} />
+        ) : viewMode === "folders" ? (
+          <FolderList
+            onRefresh={(fn) => {
+              chatListRefreshRef.current = fn;
+            }}
+            claudeLoggedIn={claudeLoggedIn}
+            onShowClaudeModal={onShowClaudeModal}
+            onViewModeChange={changeViewMode}
+          />
+        ) : (
+          <ChatList
+            onRefresh={(fn) => {
+              chatListRefreshRef.current = fn;
+            }}
+            claudeLoggedIn={claudeLoggedIn}
+            onShowClaudeModal={onShowClaudeModal}
+            onViewModeChange={changeViewMode}
+          />
+        )}
+      </ErrorBoundary>
     );
   }
 
@@ -193,31 +189,35 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
           overflow: "hidden",
         }}
       >
-        {viewMode === "folders" ? (
-          <FolderList
-            activeChatId={activeChatId ?? undefined}
-            onRefresh={(fn) => {
-              chatListRefreshRef.current = fn;
-            }}
-            sidebarCollapsed={sidebarCollapsed}
-            onToggleSidebar={toggleSidebar}
-            claudeLoggedIn={claudeLoggedIn}
-            onShowClaudeModal={onShowClaudeModal}
-            onViewModeChange={changeViewMode}
-          />
-        ) : (
-          <ChatList
-            activeChatId={activeChatId ?? undefined}
-            onRefresh={(fn) => {
-              chatListRefreshRef.current = fn;
-            }}
-            sidebarCollapsed={sidebarCollapsed}
-            onToggleSidebar={toggleSidebar}
-            claudeLoggedIn={claudeLoggedIn}
-            onShowClaudeModal={onShowClaudeModal}
-            onViewModeChange={changeViewMode}
-          />
-        )}
+        {/* Contained separately from the main pane: a bad row in the chat or
+            folder list must not cost you the chat you are typing into. */}
+        <ErrorBoundary region="The sidebar" variant="region" resetKey={viewMode}>
+          {viewMode === "folders" ? (
+            <FolderList
+              activeChatId={activeChatId ?? undefined}
+              onRefresh={(fn) => {
+                chatListRefreshRef.current = fn;
+              }}
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={toggleSidebar}
+              claudeLoggedIn={claudeLoggedIn}
+              onShowClaudeModal={onShowClaudeModal}
+              onViewModeChange={changeViewMode}
+            />
+          ) : (
+            <ChatList
+              activeChatId={activeChatId ?? undefined}
+              onRefresh={(fn) => {
+                chatListRefreshRef.current = fn;
+              }}
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={toggleSidebar}
+              claudeLoggedIn={claudeLoggedIn}
+              onShowClaudeModal={onShowClaudeModal}
+              onViewModeChange={changeViewMode}
+            />
+          )}
+        </ErrorBoundary>
       </div>
 
       {/* Resize handle — invisible until hover; only when the sidebar is expanded */}
@@ -242,34 +242,38 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
           background: "var(--bg)",
         }}
       >
-        {isSettings ? (
-          <Settings onLogout={onLogout} />
-        ) : isAgentList ? (
-          <AgentList />
-        ) : isCreateAgent ? (
-          <CreateAgent />
-        ) : isAgentDashboard ? (
-          <AgentDashboard />
-        ) : isBoard ? (
-          <Board />
-        ) : isNewChat ? (
-          <Chat onChatListRefresh={refreshChatList} />
-        ) : activeChatId ? (
-          <Chat onChatListRefresh={refreshChatList} />
-        ) : (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "100%",
-              color: "var(--text-muted)",
-              fontSize: 16,
-            }}
-          >
-            Select a chat to start coding
-          </div>
-        )}
+        {/* Keyed on the path so navigating away from the page that threw clears
+            the fallback — otherwise it would sit there over an unrelated route. */}
+        <ErrorBoundary region="This page" variant="region" resetKey={location.pathname}>
+          {isSettings ? (
+            <Settings onLogout={onLogout} />
+          ) : isAgentList ? (
+            <AgentList />
+          ) : isCreateAgent ? (
+            <CreateAgent />
+          ) : isAgentDashboard ? (
+            <AgentDashboard />
+          ) : isBoard ? (
+            <Board />
+          ) : isNewChat ? (
+            <Chat onChatListRefresh={refreshChatList} />
+          ) : activeChatId ? (
+            <Chat onChatListRefresh={refreshChatList} />
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                height: "100%",
+                color: "var(--text-muted)",
+                fontSize: 16,
+              }}
+            >
+              Select a chat to start coding
+            </div>
+          )}
+        </ErrorBoundary>
       </div>
     </div>
   );
