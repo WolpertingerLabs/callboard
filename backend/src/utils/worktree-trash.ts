@@ -205,11 +205,13 @@ export function quarantineDirectory(source: string, opts: QuarantineOptions): Qu
 
   // A directory just stopped existing at `source`, and `projectDirToFolder`
   // decides where a project-dir name points by asking the filesystem. Its memo
-  // would keep answering for up to five minutes — harmless on its own (the old
-  // path is still where the chats were), but it is the half of an
-  // archive-then-restore cycle that makes the *restore* wrong: a decode taken
-  // while the directory is absent falls through to a best-effort guess, and
-  // that guess would then outlive the directory coming back.
+  // would keep answering for up to 7.5 minutes — entries expire on a spread
+  // over [½, 1½] of a five-minute TTL, so five minutes is its *mean* and not a
+  // bound. Harmless on its own (the old path is still where the chats were),
+  // but it is the half of an archive-then-restore cycle that makes the
+  // *restore* wrong: a decode taken while the directory is absent falls through
+  // to a best-effort guess, and that guess would then outlive the directory
+  // coming back.
   clearProjectDirFolderCache();
 
   const manifest: TrashManifest = {

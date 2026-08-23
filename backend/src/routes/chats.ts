@@ -40,6 +40,41 @@ const GIT_CACHE_TTL = 300000; // 5 minutes
 
 /**
  * Get cached git info or fetch and cache it
+ *
+ * ## The entries expire together, and that used to be the whole problem
+ *
+ * Every entry is created by the same request — the one that built the first
+ * listing — so every entry also *expires* at the same instant, five minutes
+ * later. Whichever 15-second poll lands after that boundary re-fetches all of
+ * them in one synchronous run. Measured on a 24-folder sidebar: 24 misses in a
+ * single poll, 347 ms of blocked event loop, recurring at t+303 s and t+606 s
+ * and every five minutes after that for as long as a tab is open. It read as a
+ * cold-start cost in a one-shot measurement and was not one.
+ *
+ * The fix here was to make the underlying read cheap rather than to stagger the
+ * expiry — `getGitInfo` now reads the branch out of `HEAD` instead of spawning
+ * `git branch --show-current`, so refilling *this* memo costs ~12 ms and there
+ * is no herd left worth breaking up at that price. See the header of
+ * `getGitInfo` in utils/git.ts.
+ *
+ * ## The property is general; this memo is just the cheap case now
+ *
+ * **Every memo minted by one request and expired on a fixed TTL has this
+ * shape**, and this one is not the only one on this path. `projectDirToFolder`
+ * (utils/paths.ts) is minted by the same first listing and was on the same
+ * five-minute clock, for 49.8 ms of re-decoding on the same poll — it is why
+ * the `disc` column spiked alongside the `git` column at t+303 s and t+606 s in
+ * the measurements above. A decode cannot be made cheap the way a branch read
+ * could, so that one is fixed by *spreading* the expiries instead; see
+ * `jitteredExpiry` there. Two memos, one property, two different fixes because
+ * the underlying costs differ.
+ *
+ * What that means for anyone editing here: this memo's value is now *bounded*,
+ * because what it memoises is a handful of file reads. It is worth keeping —
+ * the directory set is small and stable, so hits are nearly free — but it can
+ * no longer be relied on to hide an expensive call. Putting a subprocess back
+ * behind it would restore the five-minute spike exactly as it was, and nothing
+ * in a single request's timing would show it.
  */
 function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string } {
   const cached = gitInfoCache.get(folder);

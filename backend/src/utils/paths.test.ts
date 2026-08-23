@@ -839,3 +839,81 @@ describe("projectDirToFolder memoisation", () => {
     expect(projectDirToFolder("-repo-feature")).toBe("/repo.feature");
   });
 });
+
+/**
+ * Entries are minted together — one listing decodes every project-dir name in
+ * one synchronous pass — so a fixed TTL expires them all in the same
+ * millisecond, and whichever 15-second poll lands past the boundary re-decodes
+ * the lot. Measured at 49.8 ms of blocked event loop, every five minutes, for
+ * as long as a tab is open.
+ *
+ * The property these tests pin is **not** "the TTL is five minutes". It is that
+ * expiries are *spread*: minting together must not mean expiring together.
+ */
+describe("projectDirToFolder expiry is spread, not synchronised", () => {
+  const TTL = 300_000;
+  /**
+   * Ask for all 60 distinct names; returns how many `statSync` probes that
+   * cost — a **delta**, so a fully-memoised pass reports 0 and a fully-cold one
+   * reports the whole decode.
+   */
+  function askAll(): number {
+    const statSync = vi.mocked(mockedStatSync);
+    const before = statSync.mock.calls.length;
+    for (let i = 0; i < 60; i++) projectDirToFolder(`-none-${i}-x`);
+    return statSync.mock.calls.length - before;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.spyOn(Math, "random").mockRestore();
+  });
+
+  /** Start a test at a fixed instant with an empty filesystem and empty memo. */
+  function freeze() {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    setupFS({ dirs: [], files: [], listings: {} });
+  }
+
+  it("does not expire every entry at the same instant", () => {
+    freeze();
+    const cold = askAll();
+    expect(cold).toBeGreaterThan(0);
+
+    // One TTL on. With a fixed deadline all 60 would be stale here and this pass
+    // would cost the full `cold` again — that is the herd. With spread expiries
+    // roughly half are stale, so it costs a fraction.
+    vi.setSystemTime(Date.now() + TTL);
+    const atOneTtl = askAll();
+
+    expect(atOneTtl, "something expired — this is still a TTL").toBeGreaterThan(0);
+    expect(atOneTtl, "but nothing like all of it at once").toBeLessThan(cold * 0.9);
+  });
+
+  it("keeps the window at [half, one and a half) TTLs, so the mean is the TTL", () => {
+    freeze();
+    const cold = askAll();
+
+    // Nothing may expire before half a TTL...
+    vi.setSystemTime(Date.now() + TTL * 0.5 - 1);
+    expect(askAll(), "nothing expires before half a TTL").toBe(0);
+
+    // ...and everything must have expired by one and a half, which costs
+    // exactly what a cold pass costs because every entry is re-probed.
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z").getTime() + TTL * 1.5);
+    expect(askAll(), "everything has expired by one and a half TTLs").toBe(cold);
+  });
+
+  it("still answers from the memo within an entry's own window", () => {
+    // The spread must not cost the memo its job: a decode taken now is still
+    // reused two minutes later, which is the case every poll actually hits.
+    freeze();
+    askAll();
+
+    for (let minute = 1; minute <= 2; minute++) {
+      vi.setSystemTime(Date.now() + 60_000);
+      expect(askAll(), `minute ${minute} is still inside every entry's window`).toBe(0);
+    }
+  });
+});

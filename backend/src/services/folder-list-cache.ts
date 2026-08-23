@@ -73,8 +73,11 @@
  *
  * Four caches sit on this path and they nest rather than overlap:
  *
- *  1. `projectDirToFolder` (utils/paths.ts, 5 min) — decodes a project-dir name
- *     to a path. Below discovery; shared with `GET /api/chats` and chat search.
+ *  1. `projectDirToFolder` (utils/paths.ts, 5 min *mean*, 7.5 min worst case) —
+ *     decodes a project-dir name to a path. Below discovery; shared with
+ *     `GET /api/chats` and chat search. Its entries expire on a spread rather
+ *     than a shared deadline, so five minutes is the average window and not a
+ *     bound — see `jitteredExpiry` there for why they must not expire together.
  *  2. `getCachedGitInfo` (routes/chats.ts, 5 min) — `isGitRepo` + branch per
  *     directory.
  *  3. disk-usage memo (utils/disk-usage.ts, 5 min) — `du -sk` per directory,
