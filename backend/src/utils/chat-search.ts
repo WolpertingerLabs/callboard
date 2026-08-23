@@ -71,25 +71,35 @@ function discoverProjectDirs(targetFolder: string): {
     const allDirs = readdirSync(CLAUDE_PROJECTS_DIR);
 
     for (const dirName of allDirs) {
-      // Ignored dirs are dropped *before* the folder match, not after — the
-      // same order Codex, ACP, Cline and Pi use in their own `searchSessions`.
-      // So a folder-scoped search naming an ignored directory finds nothing,
-      // and that is deliberate:
+      // The ignore list applies unconditionally, so a folder-scoped search
+      // naming an ignored directory finds nothing. That is deliberate:
       //
       // - It is the only thing filtering here can change. `folder` is required
       //   and Claude's decoder can't resolve an empty one, so every call that
       //   reaches this function names a directory; there is no global mode to
       //   restrict separately. `GET /api/chats/search` without a folder derives
       //   its folder set from `discoverSessions`, which already prunes.
-      // - The results were unusable anyway. `_findLogPath` and
+      // - What search was returning could not be opened. `_findLogPath` and
       //   `_findSubagentFiles` walk `listClaudeProjectDirs()`, which prunes, so
-      //   a session under an ignored dir has `resolveSession() === null` and
-      //   parses to zero messages. Search was handing callers — `find_chats`
-      //   above all — ids that nothing else in the app would open.
+      //   an *untracked* session under an ignored dir has
+      //   `resolveSession() === null` and parses to zero messages — and every
+      //   session under an ignored dir was untracked on the machine this was
+      //   found on (0 of 8,080 records referenced one). A tracked chat would
+      //   still resolve, via `chatFileService.getChat`, but it is reachable by
+      //   `chatId` without going through search at all.
       //
       // Per *dir name*, not per resolved folder, because a worktree can be
       // ignored while its main repo is not; `dirName` is the representation the
       // prefixes are written against.
+      //
+      // Placed ahead of the folder match to read the same way Codex, ACP, Cline
+      // and Pi do. Do not read that position as semantic: **here it is inert**.
+      // Every dir surviving the folder match belongs to the target folder, so
+      // an ignored target ignores all of them whichever order the two checks
+      // run in — move this line below and the tests stay green, because the
+      // behaviour is the filter's presence, not its position. The order *is*
+      // load-bearing in the other four, where `folder` may be empty and the
+      // folder match therefore admits everything.
       if (isIgnoredProjectDir(dirName)) continue;
 
       // Must be exact match or start with the target prefix followed by a dash

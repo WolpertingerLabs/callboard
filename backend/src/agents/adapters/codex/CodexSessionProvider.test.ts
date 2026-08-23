@@ -232,9 +232,11 @@ describe("searchSessions", () => {
     // Unscoped: the ignored rollout is absent from a search that would
     // otherwise match it on content.
     expect(provider.searchSessions({ folder: "", grep: "refactor" }).chats.map((c) => c.sessionId)).toEqual([UUID_B]);
-    // Scoped: naming the ignored folder does not re-admit it. The ignore
-    // check runs before the folder match, deliberately — chat-search.ts's
-    // `discoverProjectDirs` matches this ordering for the Claude provider.
+    // Scoped: naming the ignored folder does not re-admit it. Here the ignore
+    // check must run *before* the folder match, because `folder: ""` makes the
+    // folder match admit everything — this is the case that pins the order.
+    // chat-search.ts's `discoverProjectDirs` applies the list unconditionally
+    // too, though its ordering is inert; see the comment there.
     expect(provider.searchSessions({ folder: "/tmp/scratch" }).chats).toEqual([]);
   });
 
