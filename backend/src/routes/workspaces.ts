@@ -246,19 +246,23 @@ workspacesRouter.post("/:id/archive", async (req, res) => {
 // Read-only: which worktrees of a repo have no workspace record. Creates
 // nothing. The `naming` field on each entry is a labelled guess, for a human
 // to read — it is not what adoption acts on.
-workspacesRouter.get("/unmanaged", (req, res) => {
+workspacesRouter.get("/unmanaged", async (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'List worktrees with no workspace record'
   // #swagger.description = 'Read-only discovery of adoption candidates: every git worktree of the repository that Callboard has no active workspace record for. Creates no records and writes nothing. Each entry reports branch, disk usage, cleanliness (the same check that gates removal), the gitignored entries that would be quarantined if it were ever archived, whether adoption would be refused and why, and a `naming` HEURISTIC — whether the path looks like one of Callboard\'s worktree naming conventions. That heuristic is a guess about the past (Callboard has used more than one convention) and is presentation only: adoption never reads it.'
   /* #swagger.parameters['repoPath'] = { in: 'query', required: true, type: 'string', description: 'The repository — its main checkout, or any worktree of it.' } */
-  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string false to skip measuring disk usage, which is the slow part. Anything else measures it.' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string false to skip measuring disk usage. Anything else measures it. ON BY DEFAULT, which is the opposite of every other listing that carries sizes, and is deliberate: those are polled, this is a button, and the size is the answer the Scan exists to give. Measured off the event loop on a daemon-wide bounded pool, and NOT memoised — a scan reports what is on disk now. The whole listing shares one wall-clock budget; entries past it carry an error saying so and the response carries a diskUsageNote.' } */
   /* #swagger.responses[200] = { description: "Unmanaged worktrees" } */
   /* #swagger.responses[400] = { description: "Missing repoPath" } */
   try {
     const repoPath = typeof req.query.repoPath === "string" ? req.query.repoPath.trim() : "";
     if (!repoPath) return res.status(400).json({ error: "repoPath is required" });
+    // Opt-*out*, and the only listing here that is. Not a slip for the opt-in
+    // spelling three routes up: see listUnmanagedWorktrees for why this one is
+    // the exception, and workspaces.unmanaged.test.ts for the tests that hold
+    // both spellings in place so neither drifts into the other.
     const includeDiskUsage = req.query.includeDiskUsage !== "false";
-    res.json(listUnmanagedWorktrees(repoPath, { includeDiskUsage }));
+    res.json(await listUnmanagedWorktrees(repoPath, { includeDiskUsage }));
   } catch (err: any) {
     log.error(`Error listing unmanaged worktrees: ${err.message}`);
     res.status(500).json({ error: "Failed to list unmanaged worktrees", details: err.message });
@@ -298,14 +302,14 @@ workspacesRouter.post("/adopt", (req, res) => {
 // The retention sweep is the one thing Callboard deletes without being asked.
 // These two make it inspectable and undoable.
 
-workspacesRouter.get("/trash", (req, res) => {
+workspacesRouter.get("/trash", async (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'List quarantined worktrees'
   // #swagger.description = 'Read-only listing of ~/.callboard/trash: every quarantined worktree, where it came from, the branch and repository needed to restore it, when it was quarantined and when the 30-day retention sweep would delete it. Ages come from each entry\'s own manifest, exactly as the sweep reads them, never from directory mtime (rename does not update it). An entry the sweep will never take — no readable manifest, or no usable timestamp — reports `sweepBlocked` instead of an expiry, because unknowns are kept forever by design. Writes nothing and sweeps nothing.'
-  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each entry with du -sk. Off by default. The whole listing shares one wall-clock budget; entries past it carry an error saying so and the response carries a diskUsageNote.' } */
+  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each entry with du -sk. Off by default. Measured off the event loop on a daemon-wide bounded pool, and memoised for five minutes — a quarantined directory is inert, so its size does not change. The whole listing shares one wall-clock budget; entries past it carry an error saying so and the response carries a diskUsageNote.' } */
   /* #swagger.responses[200] = { description: "Trash entries, soonest to expire first" } */
   try {
-    res.json(listTrash({ includeDiskUsage: req.query.includeDiskUsage === "true" }));
+    res.json(await listTrash({ includeDiskUsage: req.query.includeDiskUsage === "true" }));
   } catch (err: any) {
     log.error(`Error listing trash: ${err.message}`);
     res.status(500).json({ error: "Failed to list trash", details: err.message });

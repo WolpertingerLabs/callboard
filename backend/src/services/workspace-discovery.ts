@@ -33,7 +33,7 @@
 import { resolve } from "path";
 import type { UnmanagedWorktree, UnmanagedWorktreeListing, WorktreeDiskUsage } from "shared/types/index.js";
 import { checkWorktreeClean, listIgnoredEntries, resolveWorktreeToMainRepo } from "../utils/git.js";
-import { DISK_USAGE_BUDGET_MS, newDiskUsageBudget } from "../utils/disk-usage.js";
+import { DISK_USAGE_BUDGET_MS, newAsyncDiskUsageBudget } from "../utils/disk-usage.js";
 import { guessWorktreeNaming } from "../utils/worktree-naming.js";
 import { evaluateAdoption, newAdoptionContext } from "./workspace-adoption.js";
 import { createLogger } from "../utils/logger.js";
@@ -50,7 +50,10 @@ const log = createLogger("workspace-discovery");
 export { DISK_USAGE_BUDGET_MS };
 
 export interface DiscoveryOptions {
-  /** Default true. The motivating number, but the slow part — skippable. */
+  /**
+   * Default true, and the one listing in the codebase for which that is right.
+   * @see listUnmanagedWorktrees
+   */
   includeDiskUsage?: boolean;
   /** Total budget for disk measurement. @see DISK_USAGE_BUDGET_MS */
   diskUsageBudgetMs?: number;
@@ -64,33 +67,43 @@ export interface DiscoveryOptions {
  * holding a worktree path should not have to work out the repository first.
  * The main checkout is never a candidate (Callboard does not manage its
  * removal) but is counted in `totalWorktrees`.
+ *
+ * **Disk usage is on by default here and opt-in everywhere else, on purpose.**
+ * That asymmetry has been mistaken for a typo, so: the other listings that carry
+ * sizes are *polled* — the sidebar refreshes every fifteen seconds from every
+ * open tab — and a size nobody asked for, measured four times a minute forever,
+ * is pure cost. This one is a button. A human pressed Scan on a modal whose
+ * entire job is to answer "which of these 43 worktrees is worth reclaiming", and
+ * the answer to that question is a number of gigabytes: the size column and the
+ * headline total are what the screen is *for*. Defaulting it off would ship that
+ * modal with its main column empty. So `GET /unmanaged` reads the parameter as
+ * opt-*out* (`!== "false"`), which is how it has read it since #287 introduced
+ * it — four PRs before #291 established the opt-in convention for the polled
+ * listings. It did not diverge from that convention; it predates it.
+ *
+ * The cost that made this look like a bug was real, and is what changed: the
+ * measurement now runs on {@link newAsyncDiskUsageBudget}'s bounded pool instead
+ * of freezing the daemon for ~72ms per candidate.
  */
-export function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: DiscoveryOptions): UnmanagedWorktreeListing {
+export async function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: DiscoveryOptions): Promise<UnmanagedWorktreeListing> {
   const given = resolve(repoPathOrWorktree);
   const resolution = resolveWorktreeToMainRepo(given);
   const repoPath = resolution.isWorktree ? resolution.mainRepoPath : given;
 
   const ctx = newAdoptionContext(repoPath);
   const includeDiskUsage = opts?.includeDiskUsage !== false;
-  // Uncached: a scan is user-initiated and the number it reports is the whole
-  // point of running it, so it is measured rather than recalled.
+  // Uncached, and still uncached after the move to the pool: a scan is a human
+  // asking what is on disk *now*, and the memo would answer with a number from
+  // up to five minutes before they emptied the `node_modules` they are looking
+  // at, with nothing on screen admitting its age. Speed is not the thing to buy
+  // here — the pool already bought it, without costing the freshness.
   //
-  // **This is the largest remaining synchronous `du` in the daemon**, and larger
-  // than the listings that were fixed. Two choices compound here: the memo is
-  // bypassed (above), and `GET /unmanaged` defaults `includeDiskUsage` to *true*
-  // — `!== "false"`, the opposite of every other listing, all of which are
-  // opt-in. So every Scan click re-measures every candidate from cold at roughly
-  // 72ms of fully blocked event loop each, bounded only by the 120s budget: a
-  // repository with 30 unmanaged worktrees — precisely the state adoption exists
-  // for — freezes the daemon for ~2.2s per click.
+  // The measurement is still *published* to the memo, so the polled listings
+  // that follow a scan get it free. @see newAsyncDiskUsageBudget
   //
-  // Left synchronous on purpose rather than by omission: this is user-initiated
-  // and one click, not a 15-second poll from every open tab, which is what made
-  // the listings urgent. Converting it means `async` through
-  // {@link listUnmanagedWorktrees} and its 11 test call sites, and
-  // {@link newAsyncDiskUsageBudget} is now sitting here ready for whoever does.
-  // The inverted default is worth revisiting at the same time.
-  const budget = newDiskUsageBudget({ budgetMs: opts?.diskUsageBudgetMs, cached: false });
+  // This function is async solely because of this budget: the rows below are
+  // built synchronously, holding placeholders that `settle()` fills in.
+  const budget = newAsyncDiskUsageBudget({ budgetMs: opts?.diskUsageBudgetMs, cached: false });
 
   const worktrees: UnmanagedWorktree[] = [];
   let managedWorktrees = 0;
@@ -125,6 +138,10 @@ export function listUnmanagedWorktrees(repoPathOrWorktree: string, opts?: Discov
       adoptionBlockers: evaluation.blockers,
     });
   }
+
+  // The rows above are holding unfilled measurements; this is what fills them.
+  // It has to happen before `note()` is read or the listing is serialised.
+  await budget.settle();
 
   const diskUsageNote = budget.note(worktrees.length);
   if (diskUsageNote) {

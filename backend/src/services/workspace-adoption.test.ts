@@ -123,11 +123,11 @@ beforeEach(() => {
 // ── 1. Discovery writes nothing ─────────────────────────────────────
 
 describe("discovery", () => {
-  it("lists an unmanaged worktree — and creates no record while doing it", () => {
+  it("lists an unmanaged worktree — and creates no record while doing it", async () => {
     const cwd = unmanagedWorktree("disco/plain");
     writeFileSync(join(cwd, ".env"), "SECRET=1\n"); // ignored: invisible to status, would ride into the trash
 
-    const listing = listUnmanagedWorktrees(repoDir);
+    const listing = await listUnmanagedWorktrees(repoDir);
     const entry = listing.worktrees.find((w) => w.path === cwd);
 
     expect(entry).toBeTruthy();
@@ -152,10 +152,10 @@ describe("discovery", () => {
     dropWorktree(cwd);
   });
 
-  it("excludes the main checkout, and drops a worktree once it has a record", () => {
+  it("excludes the main checkout, and drops a worktree once it has a record", async () => {
     const cwd = unmanagedWorktree("disco/managed");
 
-    const before = listUnmanagedWorktrees(repoDir, { includeDiskUsage: false });
+    const before = await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false });
     expect(before.worktrees.map((w) => w.path)).toContain(cwd);
     expect(before.worktrees.map((w) => w.path)).not.toContain(repoDir);
     expect(before.totalWorktrees).toBeGreaterThan(before.worktrees.length); // the main checkout is counted, not listed
@@ -163,27 +163,27 @@ describe("discovery", () => {
 
     expect(adoptOnePath(cwd).adopted).toBe(true);
 
-    const after = listUnmanagedWorktrees(repoDir, { includeDiskUsage: false });
+    const after = await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false });
     expect(after.worktrees.map((w) => w.path)).not.toContain(cwd);
     expect(after.managedWorktrees).toBe(1);
 
     dropWorktree(cwd);
   });
 
-  it("accepts a worktree path as the repository argument", () => {
+  it("accepts a worktree path as the repository argument", async () => {
     // A caller holding a worktree path should not have to work out the repo.
     const cwd = unmanagedWorktree("disco/from-worktree");
-    const listing = listUnmanagedWorktrees(cwd, { includeDiskUsage: false });
+    const listing = await listUnmanagedWorktrees(cwd, { includeDiskUsage: false });
     expect(listing.repoPath).toBe(repoDir);
     expect(listing.worktrees.map((w) => w.path)).toContain(cwd);
     dropWorktree(cwd);
   });
 
-  it("reports a detached worktree as a candidate that adoption would refuse", () => {
+  it("reports a detached worktree as a candidate that adoption would refuse", async () => {
     const cwd = join(gitRoot, "repo.detached");
     git(["worktree", "add", "-q", "--detach", cwd, "main"], repoDir);
 
-    const entry = listUnmanagedWorktrees(repoDir, { includeDiskUsage: false }).worktrees.find((w) => w.path === cwd);
+    const entry = (await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false })).worktrees.find((w) => w.path === cwd);
     expect(entry!.branch).toBeNull();
     expect(entry!.adoptable).toBe(false);
     expect(entry!.adoptionBlockers.map((b) => b.code)).toContain("detached-head");
@@ -191,11 +191,33 @@ describe("discovery", () => {
     dropWorktree(cwd);
   });
 
-  it("says so when disk usage was not measured, rather than reporting zero", () => {
+  it("says so when disk usage was not measured, rather than reporting zero", async () => {
     const cwd = unmanagedWorktree("disco/no-du");
-    const entry = listUnmanagedWorktrees(repoDir, { includeDiskUsage: false }).worktrees.find((w) => w.path === cwd);
+    const entry = (await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false })).worktrees.find((w) => w.path === cwd);
     expect(entry!.diskUsage.bytes).toBeUndefined();
     expect(entry!.diskUsage.error).toBeTruthy();
+    dropWorktree(cwd);
+  });
+
+  /**
+   * The other half of "a skip is never silent": the per-entry error above says
+   * why one measurement is missing, and this says the *listing* carries a
+   * sentence a caller can surface. The trash listing has had this test since it
+   * was written; discovery never did, so dropping `diskUsageNote` from the
+   * returned object passed the whole suite.
+   */
+  it("puts a note on the listing when the budget runs out, not just on the entries", async () => {
+    const cwd = unmanagedWorktree("disco/budget-note");
+
+    const listing = await listUnmanagedWorktrees(repoDir, { includeDiskUsage: true, diskUsageBudgetMs: 0 });
+    expect(listing.worktrees.length).toBeGreaterThan(0);
+    for (const w of listing.worktrees) {
+      expect(w.diskUsage.bytes).toBeUndefined();
+      expect(w.diskUsage.error).toContain("budget");
+    }
+    expect(listing.diskUsageNote).toContain("budget");
+    expect(listing.diskUsageNote).toContain("du -sh");
+
     dropWorktree(cwd);
   });
 
@@ -230,11 +252,11 @@ describe("the naming heuristic", () => {
     expect(guessWorktreeNaming(conventionalPath("feat/x"), repoDir, "feat/renamed").convention).toBe("unrecognized");
   });
 
-  it("adopts a worktree whose path matches NO convention", () => {
+  it("adopts a worktree whose path matches NO convention", async () => {
     // If a pattern were a gate for "yes", this would be refused. It is not.
     const cwd = unmanagedWorktree("naming/unrecognized", join(gitRoot, "nothing-like-callboards-layout"));
 
-    const entry = listUnmanagedWorktrees(repoDir, { includeDiskUsage: false }).worktrees.find((w) => w.path === cwd);
+    const entry = (await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false })).worktrees.find((w) => w.path === cwd);
     expect(entry!.naming.matches).toBe(false);
     expect(entry!.adoptable).toBe(true);
 
@@ -264,11 +286,11 @@ describe("the naming heuristic", () => {
 // ── 3. Adoption ─────────────────────────────────────────────────────
 
 describe("adoption", () => {
-  it("writes the identity token and an owned record, and the worktree then passes Phase 2's gate", () => {
+  it("writes the identity token and an owned record, and the worktree then passes Phase 2's gate", async () => {
     const cwd = unmanagedWorktree("adopt/clean");
 
     // Before: unremovable precisely because it is not ours.
-    const preview = listUnmanagedWorktrees(repoDir, { includeDiskUsage: false }).worktrees.find((w) => w.path === cwd);
+    const preview = (await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false })).worktrees.find((w) => w.path === cwd);
     expect(preview).toBeTruthy();
     expect(readWorktreeToken(cwd)).toBeNull();
 
@@ -412,7 +434,7 @@ describe("adoption", () => {
     // goes: git made a fresh admin dir, so it carries no token and is back to
     // being unmanaged — which is correct, and is what adoption is for.
     expect(readWorktreeToken(cwd)).toBeNull();
-    expect(listUnmanagedWorktrees(repoDir, { includeDiskUsage: false }).worktrees.map((w) => w.path)).toContain(cwd);
+    expect((await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false })).worktrees.map((w) => w.path)).toContain(cwd);
 
     dropWorktree(cwd);
   });
@@ -541,7 +563,7 @@ describe("adoption refuses", () => {
     dropWorktree(cwd);
   });
 
-  it("keeps NO record when the identity token cannot be written", () => {
+  it("keeps NO record when the identity token cannot be written", async () => {
     // The invariant that matters most in this phase. A record without a token
     // looks managed and can never be cleaned up — the worst outcome available
     // here — so the record is rolled back and the failure reported.
@@ -563,7 +585,7 @@ describe("adoption refuses", () => {
     expect(readWorktreeToken(cwd)).toBeNull();
     // And the worktree is untouched, still a candidate.
     expect(existsSync(cwd)).toBe(true);
-    expect(listUnmanagedWorktrees(repoDir, { includeDiskUsage: false }).worktrees.map((w) => w.path)).toContain(cwd);
+    expect((await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false })).worktrees.map((w) => w.path)).toContain(cwd);
 
     dropWorktree(cwd);
   });
@@ -595,14 +617,14 @@ describe("adoptWorktrees over several paths", () => {
     dropWorktree(alsoGood);
   });
 
-  it("never marks a workspace owned for a path the caller did not name", () => {
+  it("never marks a workspace owned for a path the caller did not name", async () => {
     // The whole phase in one assertion: two candidates, one named. The other is
     // in the listing, matches the naming convention, is clean and adoptable —
     // and stays untouched, because nobody named it.
     const named = unmanagedWorktree("multi/named");
     const unnamed = unmanagedWorktree("multi/unnamed");
 
-    const candidates = listUnmanagedWorktrees(repoDir, { includeDiskUsage: false }).worktrees;
+    const candidates = (await listUnmanagedWorktrees(repoDir, { includeDiskUsage: false })).worktrees;
     expect(candidates.find((w) => w.path === unnamed)!.naming.convention).toBe("current");
     expect(candidates.find((w) => w.path === unnamed)!.adoptable).toBe(true);
 
