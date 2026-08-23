@@ -276,7 +276,7 @@ import { clearListCaches } from "./services/list-caches.js";
 app.get("/api/ignored-project-dirs", (_req, res) => {
   // #swagger.tags = ['Settings']
   // #swagger.summary = 'Get ignored project-dir prefixes'
-  // #swagger.description = 'Returns the configured list of project-dir name prefixes filtered out of chat listings, plus the built-in defaults.'
+  // #swagger.description = 'Returns the configured list of project-dir name prefixes filtered out of chat listings and chat search, plus the built-in defaults.'
   res.json({
     prefixes: getIgnoredProjectDirPrefixes(),
     defaults: [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES],
@@ -286,7 +286,7 @@ app.get("/api/ignored-project-dirs", (_req, res) => {
 app.put("/api/ignored-project-dirs", (req, res) => {
   // #swagger.tags = ['Settings']
   // #swagger.summary = 'Update ignored project-dir prefixes'
-  // #swagger.description = 'Replace the ignored prefix list. Any project dir whose slugified name starts with one of these is hidden from chat listings.'
+  // #swagger.description = 'Replace the ignored prefix list. Any project dir whose slugified name starts with one of these is hidden from chat listings and skipped by chat search, including a search that names the directory outright.'
   const { prefixes } = req.body ?? {};
   if (!Array.isArray(prefixes)) {
     return res.status(400).json({ error: "prefixes must be an array of strings" });

@@ -1375,7 +1375,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "find_chats",
-        "Search chat sessions for a repo folder, including worktrees. Scans all Claude Code sessions in ~/.claude/projects/. Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
+        "Search chat sessions for a repo folder, including worktrees. Scans all Claude Code sessions in ~/.claude/projects/, minus any project folder the user has ignored in Settings — those are skipped even when this call names one. Ignoring a folder is the user's instruction to leave it alone, so treat an empty result for an ignored folder as the answer, not as a reason to go read ~/.claude/projects/ directly. Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
         {
           folder: z.string().describe("Repo working directory path (also searches worktrees of this repo)"),
           grep: z.string().optional().describe("Search term to grep across session conversation content (messages, tool calls, code, etc.)"),

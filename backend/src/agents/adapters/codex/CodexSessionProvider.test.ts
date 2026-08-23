@@ -223,6 +223,23 @@ describe("searchSessions", () => {
     expect(provider.searchSessions({ folder: "", grep: "nothing" }).chats).toEqual([]);
   });
 
+  it("skips ignored folders, including one the caller names outright", async () => {
+    writeRollout(UUID_A, { cwd: "/tmp/scratch", userPrompt: "refactor the parser" });
+    writeRollout(UUID_B, { cwd: "/p/b", userPrompt: "refactor the parser", date: ["2026", "06", "13"] });
+    await setIgnoredFolder((f) => f.startsWith("/tmp/"));
+    const provider = new CodexSessionProvider();
+
+    // Unscoped: the ignored rollout is absent from a search that would
+    // otherwise match it on content.
+    expect(provider.searchSessions({ folder: "", grep: "refactor" }).chats.map((c) => c.sessionId)).toEqual([UUID_B]);
+    // Scoped: naming the ignored folder does not re-admit it. Here the ignore
+    // check must run *before* the folder match, because `folder: ""` makes the
+    // folder match admit everything — this is the case that pins the order.
+    // chat-search.ts's `discoverProjectDirs` applies the list unconditionally
+    // too, though its ordering is inert; see the comment there.
+    expect(provider.searchSessions({ folder: "/tmp/scratch" }).chats).toEqual([]);
+  });
+
   it("filters by updatedAfter/updatedBefore on the file mtime", () => {
     writeRollout(UUID_A, { mtime: new Date("2026-06-10T00:00:00Z") });
     writeRollout(UUID_B, { date: ["2026", "06", "13"], mtime: new Date("2026-06-20T00:00:00Z") });

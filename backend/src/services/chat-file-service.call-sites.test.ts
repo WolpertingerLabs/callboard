@@ -39,6 +39,13 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 // os.homedir() honours $HOME on POSIX — so chat search reads a fixture tree.
 process.env.HOME = tmpRoot;
 
+// The fixture lives under the system temp dir, and `-tmp` is a *default*
+// ignored project-dir prefix — chat search honours the ignore list, so without
+// an explicit empty list every session below would be correctly filtered out
+// and these call-site guards would assert against zero rows. Declaring the list
+// also decouples the fixture from whatever the defaults happen to be.
+writeFileSync(join(tmpRoot, "ignored-project-dirs.json"), JSON.stringify({ prefixes: [] }));
+
 const projectFolder = join(tmpRoot, "proj");
 mkdirSync(projectFolder, { recursive: true });
 const projectsDir = join(tmpRoot, ".claude", "projects");

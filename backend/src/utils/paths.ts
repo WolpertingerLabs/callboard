@@ -9,7 +9,10 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
  *
  * Project dirs under ~/.claude/projects/ are slugified absolute paths
  * (each `/` becomes `-`). Any project dir whose name starts with one
- * of these prefixes is hidden from chat listings.
+ * of these prefixes is hidden from chat listings and skipped by chat
+ * search — including a folder-scoped search that names it outright. Every
+ * provider's `searchSessions` applies the list unconditionally; none of them
+ * treat naming a directory as a request to un-ignore it.
  *
  * - "-tmp" — `/tmp/...` throwaway transcripts (created by quick-completion,
  *   sdk-info, and other SDK callers that pass `cwd: tmpdir()`).
